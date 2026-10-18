@@ -3624,6 +3624,12 @@
           "label": "Extraktionsdienst",
           "description": "LLM-basierte Dokumentklassifizierung und Metadatenextraktion"
         }
+      },
+      "vectorDbMemory": {
+        "title": "Der Suchindex passt nicht in den Arbeitsspeicher der Vektordatenbank",
+        "message": "Der Suchindex braucht etwa {{needed}} GB Arbeitsspeicher, um schnell zu bleiben; die Vektordatenbank hat etwa {{available}} GB. Suchen lesen deshalb von der Festplatte und werden noch langsamer, wenn mehrere gleichzeitig laufen.",
+        "messageHost": "Der Suchindex braucht etwa {{needed}} GB Arbeitsspeicher, um schnell zu bleiben; der Server der Vektordatenbank hat insgesamt nur etwa {{available}} GB. Suchen lesen deshalb von der Festplatte und werden noch langsamer, wenn mehrere gleichzeitig laufen.",
+        "guide": "Leitfaden zur Größe der Vektordatenbank"
       }
     },
     "tenants": {
@@ -4095,7 +4101,43 @@
       "disableTitle": "Dieses Dienstkonto deaktivieren?",
       "disableDescription": "{{name}} funktioniert sofort nicht mehr – einschließlich aller bereits vorhandenen Tokens, nicht erst bei der nächsten Anmeldung. Alles, was eines dieser Tokens verwendet, schlägt fehl, bis Sie das Konto wieder aktivieren.",
       "disableConfirm": "Deaktivieren",
-      "memberBadge": "Dienstkonto"
+      "memberBadge": "Dienstkonto",
+      "manageDelegations": "Für wen es handeln darf",
+      "delegations": {
+        "title": "Im Namen einer Person handeln",
+        "explainer": "Dieses Dienstkonto kann die Erlaubnis erhalten, für namentlich genannte Personen zu handeln. Dabei liest es genau das, was diese Person lesen darf, und das ausgestellte Token gilt fünf Minuten. Administratoren können hier nicht genannt werden.",
+        "unavailableTitle": "Das Handeln im Namen einer Person ist eine Enterprise-Funktion",
+        "unavailableBody": "Diesem Dienstkonto zu erlauben, als benannte Kollegin oder benannter Kollege zu handeln — die Freigabeliste, das fünf Minuten gültige Token im Namen dieser Person und die Aufzeichnung jedes Versuchs — gehört zur Enterprise-Edition und ist in dieser Edition nicht enthalten.",
+        "unavailableAvailableHere": "Was diese Edition enthält: das Dienstkonto selbst, seinen eigenen Zugriff auf die von Ihnen freigegebenen Wissensdatenbanken sowie Token, die Sie ausstellen und widerrufen können. Das deckt jede Integration ab, die mit eigenen Berechtigungen arbeitet statt mit denen einer anderen Person.",
+        "addTitle": "Erlauben, für jemanden zu handeln",
+        "subjectLabel": "Person",
+        "subjectPlaceholder": "name@beispiel.de",
+        "subjectHelp": "Geben Sie die E-Mail-Adresse der Person ein, für die dieses Dienstkonto handeln darf.",
+        "reasonLabel": "Grund",
+        "reasonPlaceholder": "Warum das nötig ist",
+        "reasonHelp": "Wird angezeigt, wer diese Liste später prüft.",
+        "addConfirm": "Erlauben",
+        "listTitle": "Darf handeln für",
+        "none": "Dieses Dienstkonto kann für niemanden handeln. Es liest nur mit eigenen Berechtigungen.",
+        "loading": "Wird geladen…",
+        "inactive": "Nicht mehr verfügbar",
+        "revoke": "Entfernen",
+        "revokeTitle": "Diese Berechtigung entfernen?",
+        "revokeDescription": "Dieses Dienstkonto kann dann nicht mehr für {{subject}} handeln.",
+        "revokeSuccessTitle": "Berechtigung entfernt",
+        "revokeErrorTitle": "Berechtigung konnte nicht entfernt werden",
+        "grantSuccessTitle": "Berechtigung erteilt",
+        "grantErrorTitle": "Berechtigung konnte nicht erteilt werden",
+        "loadErrorTitle": "Delegationseinstellungen konnten nicht geladen werden",
+        "logTitle": "Letzte Aktivität",
+        "logHelp": "Jede Änderung an dieser Liste und jedes Mal, wenn das Dienstkonto für jemanden handeln wollte – einschließlich der abgelehnten Versuche.",
+        "logNone": "Noch nichts aufgezeichnet.",
+        "outcomeIssued": "Erlaubt",
+        "outcomeRefused": "Abgelehnt",
+        "outcomeGranted": "Berechtigung hinzugefügt",
+        "outcomeRevoked": "Berechtigung entfernt",
+        "byAdmin": "von {{admin}}"
+      }
     }
   },
   "filePreview": {

@@ -4650,7 +4650,7 @@ export const search =
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
     try {
-      const { query, limit, filters } = req.body;
+      const { query, limit, filters, rewriteQuery } = req.body;
       // Only the bounds the caller set, so a search without dates sends what it always did.
       const body = req.body as Record<string, unknown>;
       const dateBounds: Record<string, string> = {};
@@ -4679,7 +4679,14 @@ export const search =
         uri: `${aiBackendUrl}/api/v1/search`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
-        body: { query, limit, filters, ...dateBounds },
+        body: {
+          query,
+          limit,
+          filters,
+          ...dateBounds,
+          // Sent only when the caller set it, so other searches send what they always did.
+          ...(typeof rewriteQuery === 'boolean' ? { rewriteQuery } : {}),
+        },
       });
 
       let aiResponse;
@@ -4732,8 +4739,15 @@ export const search =
         recordsArray.forEach((record) => {
           // Use either _id or _key as the unique key for each record
           const key = record._id || record._key;
+          // `linkedRecords` was filtered for the user who ran this search. A
+          // saved search can be shared, and its records are returned as
+          // stored, so the links are kept out of what is saved.
+          const stored: Record<string, unknown> = {
+            ...(record as Record<string, unknown>),
+          };
+          delete stored.linkedRecords;
           // Convert the record object to a string since your schema expects Map<string, string>
-          recordsMap.set(key, JSON.stringify(record));
+          recordsMap.set(key, JSON.stringify(stored));
         });
       }
       // Save the entire search operation as a single document

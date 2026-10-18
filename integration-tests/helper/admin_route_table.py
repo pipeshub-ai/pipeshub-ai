@@ -155,6 +155,12 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("POST", "/api/v1/service-tokens", admin="invalid"),
     AdminRoute("GET", "/api/v1/service-tokens/scopes"),
     AdminRoute("DELETE", "/api/v1/service-tokens/:tokenId", admin="invalid"),
+    # No rows for /api/v1/service-account-delegations, deliberately. Letting a
+    # service account act as a named person is an Enterprise capability; this
+    # build mounts a stub that answers the capability probe and 501s the rest
+    # (oauth_provider/routes/delegation.routes.ts), with no admin check to
+    # test. The Enterprise overlay carries the admin-gated router, so the rows
+    # belong in whatever inventory covers that build, not this one.
     # tokens_manager/routes/connectors.routes.ts
     _no_admin("POST", "/api/v1/connectors/vector-store/cleanup",
               "drops and recreates the org's vector collection"),
@@ -162,6 +168,8 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
               "re-embeds every connector in the org"),
     _no_admin("POST", "/api/v1/connectors/getTokenFromCode",
               "exchanges an OAuth code and stores the result; no validator follows the check"),
+    # tokens_manager/routes/health.routes.ts (read-only: estimates index memory)
+    AdminRoute("GET", "/api/v1/health/vector-db/memory"),
     # user_management/routes/org.routes.ts
     AdminRoute("PUT", "/api/v1/org", admin="invalid"),
     _no_admin("DELETE", "/api/v1/org", "deletes the test org"),
@@ -257,6 +265,7 @@ ADMIN_BODIES: dict[tuple[str, str], Any] = {
 PYTHON_BEHIND_NODE_ADMIN = frozenset({
     "connectors/api/router.py::cleanup_vector_store",
     "connectors/api/router.py::reindex_vector_store",
+    "connectors_main.py::vector_db_memory_check",
 })
 
 # Python handlers that ask whether the caller is an admin but let members

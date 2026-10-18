@@ -137,6 +137,7 @@ services:
       # Qdrant config
       - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
       - QDRANT_HOST=qdrant
+      - QDRANT_MEMORY_LIMIT=${QDRANT_MEMORY_LIMIT:-4G}
       - QDRANT_GRPC_PORT=6334
       - QDRANT_PORT=6333
 
@@ -580,7 +581,10 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 4G
+          # Search slows sharply once the index outgrows this; size it from
+          # docs/deployment/vector-db-sizing.md. QDRANT_MEMORY_LIMIT also tells
+          # the app the figure, for the warning on the Services page.
+          memory: ${QDRANT_MEMORY_LIMIT:-4G}
         reservations:
           cpus: '2'
           memory: 2G

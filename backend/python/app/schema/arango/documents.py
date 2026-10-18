@@ -591,6 +591,7 @@ ticket_record_schema = {
             "creatorName": {"type": ["string", "null"]},
             "reporterName": {"type": ["string", "null"]},
             "dueDateTimestamp": {"type": ["number", "null"]},
+            "resolvedAtTimestamp": {"type": ["number", "null"]},
             "assigneeSourceTimestamp": {"type": ["number", "null"]},
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
@@ -703,6 +704,8 @@ pull_request_record_schema = {
                 "default": [],
             },
             "lastCommitSha": {"type": ["string", "null"]},
+            "mergedAtTimestamp": {"type": ["number", "null"]},
+            "closedAtTimestamp": {"type": ["number", "null"]},
         },
     },
 }

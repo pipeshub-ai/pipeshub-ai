@@ -483,6 +483,14 @@ async def _fetch_thread_records_impl(
     # Chronological order — easiest for the LLM to reason about a thread.
     found_records.sort(key=lambda r: r.get("source_created_at") or 0)
 
+    # A reply that pasted a pull request's or a ticket's link shows it, with
+    # whether and when it merged or closed.
+    from app.utils.chat_helpers import enrich_read_records_with_address_links
+
+    await enrich_read_records_with_address_links(
+        found_records, graph_provider, effective_org, user_id=user_id,
+    )
+
     logger.info(
         "Fetched Slack thread %s: %d records returned, %d skipped (input record_id=%s)",
         thread_rg_id, len(found_records), len(skipped), record_id,

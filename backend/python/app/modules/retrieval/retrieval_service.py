@@ -103,6 +103,7 @@ from app.utils.aimodels import (
 from app.utils.embedding_retry import await_with_retry
 from app.utils.chat_helpers import (
     GRAPH_BATCH_CHUNK_SIZE,
+    describe_search_records,
     get_flattened_results,
     get_record,
     group_child_results,
@@ -1128,6 +1129,12 @@ class RetrievalService:
                         len(omitted_passages),
                         sum(omitted_passages.values()),
                     )
+                # The assistant reads each record's state in its header, and
+                # the records it links to under it; an API caller (the MCP
+                # search tool) gets the same on each record document.
+                await describe_search_records(
+                    records, self.graph_provider, org_id, user_id=user_id,
+                )
             if search_results or records:
                 response_data = {
                     "searchResults": search_results,

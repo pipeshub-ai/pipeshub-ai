@@ -18,7 +18,10 @@ function makeService() {
     stop: sinon.stub().resolves(),
     publishEvent: sinon.stub().resolves(),
   };
-  const revoker = { revokeAllForServiceAccount: sinon.stub().resolves() };
+  const revoker = {
+    revokeAllForServiceAccount: sinon.stub().resolves(),
+    revokeDelegatedTokensForServiceAccount: sinon.stub().resolves(),
+  };
   const service = new ServiceAccountsService(logger as any, events as any);
   service.setTokenRevoker(revoker as any);
   return { service, events, revoker };
@@ -252,6 +255,7 @@ describe('ServiceAccountsService', () => {
         .returns({ exec: sinon.stub().resolves({}) } as any);
       (service as unknown as { setTokenRevoker: (r: unknown) => void }).setTokenRevoker({
         revokeAllForServiceAccount: sinon.stub().rejects(new Error('broker down')),
+        revokeDelegatedTokensForServiceAccount: sinon.stub().resolves(),
       });
 
       try {

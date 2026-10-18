@@ -71,3 +71,48 @@ own tool-result cap equal to that size, so it is never cut in the middle.
 shared 64,000-character cap (58,000 for the records) and the server's default
 of 200 blocks (`PIPESHUB_FULL_RECORD_MAX_BLOCKS`) applies to records that do
 not fit. It is on by default and does not follow `HIGH_ACCURACY_MODE`.
+
+## Finding with less, then reading the right part (`TARGETED_RETRIEVAL`)
+
+Search results are most of what a knowledge question writes into the prompt:
+each search fills the 64,000-character tool-result cap, and a question
+usually runs about three. Yet when an answer misses a fact, the record that
+holds it was usually found; the fact sat in a part of it the passages did not
+show. `TARGETED_RETRIEVAL=true` (opt-in, not part of `HIGH_ACCURACY_MODE`)
+moves characters from breadth to depth:
+
+- **Smaller searches.** A search result is fitted to
+  `TARGETED_SEARCH_MAX_CHARS` (32,000) instead of 64,000.
+- **A few passages per record.** After step 3 above, each record keeps at
+  most `TARGETED_SEARCH_PASSAGES_PER_RECORD` passages; unset, the count the
+  search API keeps per record (8 at the assistant's limit of 50). A block is
+  one passage, and so is each child of a section, list or table: a match in a
+  long Slack thread or pull request no longer brings the whole section, but
+  the replies the search matched, best first, then those nearest them.
+  Neighbours stay only beside a passage that stayed. A line at the top of the
+  result says records were trimmed, and the end lists them with how many
+  matching passages were not shown.
+- **Nothing sent twice.** Passages an earlier search of the same request
+  showed (or the first-turn context did) go after new ones in a record's
+  share, and a record with nothing new moves behind the others, so it is the
+  first to go when the result is short of room. The result says how many it
+  did not repeat. When there is room they are shown again, so a result leans
+  on an earlier one only when it had to leave something out.
+- **Reading the right part.** `knowledgegraph__fetch_record` takes a `query`.
+  With one, each record is read within `FOCUSED_READ_MAX_CHARS` (16,000) as
+  its blocks most relevant to the query (ranked by `select_relevant_blocks`
+  against that query rather than the question), with the gaps marked; a
+  record that fits is read whole. Without a query, a fetch reads as before.
+  The prompt's record-reading rules add when to use it: a specific detail the
+  passages point to but do not state. Under `THOROUGH_RETRIEVAL`, which reads
+  those records in full, none of this is offered: the tool has no `query`
+  parameter and refuses one as an unknown argument, and the notes on trimmed
+  records ask for the record read whole. A continuation (`start_block`) with
+  a `query` reads on in order within the same focused size.
+- The first-turn context in internal-search chats is fitted the same way. A
+  turn with no tools (a model that cannot call them) gets no note asking it
+  to read a record.
+
+Off, none of this runs: results, the fetch tool's schema and the prompt are
+unchanged. `tests/perf/bench_targeted_retrieval.py` replays a mix of searches
+through this code with both settings and prints the characters each sends.

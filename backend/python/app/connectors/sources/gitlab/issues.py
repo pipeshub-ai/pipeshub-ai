@@ -37,7 +37,7 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
-from app.utils.time_conversion import parse_timestamp, string_to_datetime
+from app.utils.time_conversion import datetime_to_epoch_ms, parse_timestamp, string_to_datetime
 
 from app.models.blocks import wire_block_group_parent_children
 
@@ -243,6 +243,9 @@ class IssuesSync:
                 type=issue_type,
                 labels=list(issue.labels),
                 inherit_permissions=True,
+                resolved_at=datetime_to_epoch_ms(getattr(issue, "closed_at", None)),
+                # A calendar date, "2026-06-10": stored as midnight UTC.
+                due_date=datetime_to_epoch_ms(getattr(issue, "due_date", None), "%Y-%m-%d"),
             )
             # Author and assignees keep access whatever their role. Additive on top
             # of the restricted group, which is the direction the union-with-no-deny

@@ -21,11 +21,6 @@ class CONFIG:
     # packages) and whether agents can load skill tools. Defaults to
     # enabled (Beta) — like ENABLE_ACTIONS, admins may opt out from Labs.
     ENABLE_SKILLS = "ENABLE_SKILLS"
-    # Scopes a search by the containers a user can reach (connector, record
-    # group, root record group) instead of sending every accessible record id
-    # to the vector DB. Defaults to enabled; admins may opt out from Labs to
-    # fall back to the record-id path.
-    ENABLE_CONTAINER_PERMISSION_FILTER = "ENABLE_CONTAINER_PERMISSION_FILTER"
     # Controls whether the default assistant / Universal Agent Mode injects
     # the current user's name, email, and organization into the system prompt.
     # Defaults to enabled; admins may opt out from Labs. Agent Builder agents

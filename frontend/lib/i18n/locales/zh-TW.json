@@ -3908,6 +3908,12 @@
           "label": "Extraction 服務",
           "description": "基於 LLM 的文件分類與中繼資料擷取"
         }
+      },
+      "vectorDbMemory": {
+        "title": "搜尋索引超出了向量資料庫的記憶體",
+        "message": "搜尋索引需要約 {{needed}} GB 記憶體才能保持快速；向量資料庫只有約 {{available}} GB，因此搜尋會從磁碟讀取，多個搜尋同時執行時會更慢。",
+        "messageHost": "搜尋索引需要約 {{needed}} GB 記憶體才能保持快速；執行向量資料庫的伺服器總共只有約 {{available}} GB，因此搜尋會從磁碟讀取，多個搜尋同時執行時會更慢。",
+        "guide": "向量資料庫容量規劃指南"
       }
     },
     "tenants": {
@@ -4167,7 +4173,43 @@
       "disableTitle": "停用此服務帳戶？",
       "disableDescription": "{{name}} 會立即停止運作——包括它已持有的所有 Token，而不只是等到下次登入。在您重新啟用之前，使用這些 Token 的一切都會持續失敗。",
       "disableConfirm": "停用",
-      "memberBadge": "服務帳戶"
+      "memberBadge": "服務帳戶",
+      "manageDelegations": "可代表哪些人",
+      "delegations": {
+        "title": "代表他人執行操作",
+        "explainer": "可以允許此服務帳號代表指定的人員執行操作。此時它讀取的內容與該人員完全一致，所取得的權杖有效期為五分鐘。此處不能指定管理員。",
+        "unavailableTitle": "代表某個人行事屬於企業版功能",
+        "unavailableBody": "允許此服務帳號以指定同事的身分行事 —— 允許名單、以該人名義簽發的五分鐘權杖，以及每次嘗試的紀錄 —— 屬於企業版，本版本不包含該功能。",
+        "unavailableAvailableHere": "本版本包含：服務帳號本身、它對您授予的知識庫的自有存取權限，以及您可以簽發和撤銷的權杖。這足以滿足任何使用自身權限而非他人權限的整合。",
+        "addTitle": "允許代表某人",
+        "subjectLabel": "人員",
+        "subjectPlaceholder": "name@example.com",
+        "subjectHelp": "請輸入此服務帳號可代表的人員的電子郵件地址。",
+        "reasonLabel": "原因",
+        "reasonPlaceholder": "為什麼需要",
+        "reasonHelp": "將顯示給日後審核此清單的人。",
+        "addConfirm": "允許",
+        "listTitle": "可代表",
+        "none": "此服務帳號不能代表任何人，只能以自己的權限讀取。",
+        "loading": "載入中…",
+        "inactive": "不再可用",
+        "revoke": "移除",
+        "revokeTitle": "移除此權限？",
+        "revokeDescription": "此服務帳號將不能再代表 {{subject}}。",
+        "revokeSuccessTitle": "權限已移除",
+        "revokeErrorTitle": "無法移除權限",
+        "grantSuccessTitle": "權限已授予",
+        "grantErrorTitle": "無法授予權限",
+        "loadErrorTitle": "無法載入委派設定",
+        "logTitle": "近期活動",
+        "logHelp": "此清單的每次變更，以及此服務帳號每次請求代表他人的紀錄，包括被拒絕的請求。",
+        "logNone": "尚無紀錄。",
+        "outcomeIssued": "已允許",
+        "outcomeRefused": "已拒絕",
+        "outcomeGranted": "已新增權限",
+        "outcomeRevoked": "已移除權限",
+        "byAdmin": "由 {{admin}}"
+      }
     }
   },
   "filePreview": {
