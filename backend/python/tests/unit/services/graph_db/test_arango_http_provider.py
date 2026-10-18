@@ -12882,7 +12882,7 @@ class TestDeleteRecordWithType:
         )
         swept = [c.args[2] for c in connected_provider.delete_edges_from.await_args_list]
         assert sorted(swept) == sorted([
-            "recordRelations", "isOfType", "belongsTo",
+            "nodeRelations", "isOfType", "belongsTo",
             "belongsToDepartment", "belongsToCategory", "belongsToLanguage", "belongsToTopic", "mentionsEntity",
         ])
         assert connected_provider.delete_edges_to.call_count == 2
