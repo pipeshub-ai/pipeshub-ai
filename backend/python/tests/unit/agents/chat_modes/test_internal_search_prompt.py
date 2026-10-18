@@ -33,10 +33,8 @@ _SPEAKER = "name the person or bot who said it"
 _QUALIFIERS = "\"about\", \"at most\" and AND/OR conditions stay as written"
 _PREMISE = "Correct the question's premise only where that changes the answer"
 _DEFINING_RECORD = "the record that defines it for the exact scope asked about"
-_CONFLICT_ORDER = (
-    "When sources disagree, prefer in order: a record saying it updates, corrects or replaces "
-    "the other"
-)
+_CONFLICT_ORDER = "When sources disagree, prefer in order:"
+_SUPERSESSION = "a record saying it updates, corrects or replaces the other"
 _SECOND_VALUE = "Present a second value for what was asked only when"
 _PARAPHRASE = "A paraphrase is not a false premise"
 _SUBSTANCE_FIRST = "answer with that substance even if it is still requested, pending or in progress"
@@ -58,9 +56,10 @@ _COMPOSITION_MARKERS = (
 )
 _EACH_PART = "the records you read must cover each part"
 _PART_ONLY = "A record read for one part supplies that part only"
-_CONDITION_CHECK = "check that it meets every condition the question sets"
+_CONDITION_CHECK = "check that it meets every condition the question sets for the part it answers"
 _OTHER_WORDS = "a record that states a condition in other words meets it"
-_STATED_AS_GIVEN = "Take what the question states as given: do not dispute or hedge a fact it states"
+_STATED_AS_GIVEN = "Do not add that a record words a met condition differently, or hedge it"
+_CONTRADICTED = "a number, status or scope a record you read contradicts is still corrected"
 _UNMET_AFTER = (
     "Mention an unmet condition only when you answer from a record other than the one the "
     "question describes, in one sentence after the answer."
@@ -209,7 +208,14 @@ class TestStatusFraming:
         assert "do not open with what you yourself cannot do, produce or send" in text
 
     def test_recorded_outcomes_are_not_reopened(self) -> None:
-        assert "one the records mark done, merged or approved is done" in _text(composition=True)
+        text = _text(composition=True)
+        assert "one the records mark done or merged is done" in text
+
+    def test_approval_is_not_delivery(self) -> None:
+        """A fix approved but awaiting deployment is not done."""
+        text = _text(composition=True)
+        assert "one they mark approved is approved, not yet delivered" in text
+        assert "approved is done" not in text
 
     def test_a_paraphrase_is_not_a_false_premise(self) -> None:
         text = _text(composition=True)
@@ -224,11 +230,14 @@ class TestStatusFraming:
 
 
 class TestConflictOrder:
-    def test_shipped_beats_proposed_after_explicit_supersession(self) -> None:
+    def test_shipped_beats_proposed_before_supersession(self) -> None:
+        """A draft that says it replaces a deployed config is still a proposal:
+        for what a system does, it must not win on supersession."""
         text = _text(composition=True)
-        supersede = text.index(_CONFLICT_ORDER)
-        scope = text.index("a narrower record applying a broader rule")
-        assert supersede < text.index(_SHIPPED) < scope
+        order = [_CONFLICT_ORDER, _SHIPPED, "even one that says it replaces it", _SUPERSESSION,
+                 "a narrower record applying a broader rule"]
+        positions = [text.index(marker) for marker in order]
+        assert positions == sorted(positions)
 
     def test_a_settled_conflict_is_answered_not_left_open(self) -> None:
         assert _SETTLED in _text(composition=True)
@@ -251,6 +260,12 @@ class TestConflictOrder:
 class TestSourceTrust:
     """The indexer's summary of a record is a model's reading of it, and it can
     resolve an ambiguity the record leaves open the wrong way."""
+
+    def test_an_ambiguous_reply_is_not_settled_by_a_rule(self) -> None:
+        """"Tried that" after "try A, or switch to B" says neither which nor both."""
+        text = _text(composition=True)
+        assert "does not say which of the proposals before it it answers, do not assert which" in text
+        assert "covers everything the message it answers proposed" not in text
 
     def test_the_generated_summary_never_settles_a_fact(self) -> None:
         text = _text(composition=True)
@@ -285,7 +300,9 @@ class TestReadCoverage:
     @pytest.mark.parametrize("composition", [False, True])
     def test_only_with_thorough(self, composition: bool) -> None:
         text = _text(composition=composition)
-        for marker in (_EACH_PART, _PART_ONLY, _CONDITION_CHECK, _OTHER_WORDS, _STATED_AS_GIVEN, _UNMET_AFTER):
+        for marker in (
+            _EACH_PART, _PART_ONLY, _CONDITION_CHECK, _OTHER_WORDS, _STATED_AS_GIVEN, _CONTRADICTED, _UNMET_AFTER,
+        ):
             assert marker not in text, marker
 
 
@@ -298,10 +315,26 @@ class TestNoConditionCaveats:
         text = _text(thorough=True)
         assert text.index(_CONDITION_CHECK) < text.index(_OTHER_WORDS) < text.index("If one does not hold")
 
-    def test_stated_facts_are_taken_as_given(self) -> None:
+    @pytest.mark.parametrize("composition", [False, True])
+    def test_only_a_met_condition_is_taken_as_given(self, composition: bool) -> None:
+        """An absolute "do not dispute a fact the question states" fought the
+        premise rule and kept a wrong duration or amount the question stated."""
+        text = _text(composition=composition, thorough=True)
+        assert text.index(_OTHER_WORDS) < text.index(_STATED_AS_GIVEN)
+        for absolute in ("Take what the question states as given", "do not dispute or hedge a fact it states"):
+            assert absolute not in text, absolute
+
+    def test_a_contradicted_premise_that_changes_the_answer_is_still_corrected(self) -> None:
         text = _text(thorough=True)
-        assert _STATED_AS_GIVEN in text
-        assert "do not add that a record words it differently" in text
+        assert text.index(_STATED_AS_GIVEN) < text.index(_CONTRADICTED) < text.index(_UNMET_AFTER)
+
+    def test_a_part_record_is_checked_against_its_own_part(self) -> None:
+        """A 2025 EU rollout and a 2024 US rollout asked together: each record
+        meets the conditions of its part, not every condition of the question."""
+        text = _text(thorough=True)
+        assert _CONDITION_CHECK in text
+        assert "meets every condition of its part over one that does not" in text
+        assert "meets every condition the question sets (" not in text
 
     def test_an_unmet_condition_is_named_only_for_another_record_and_after_the_answer(self) -> None:
         assert _text(thorough=True).count(_UNMET_AFTER) == 1

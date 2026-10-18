@@ -34,7 +34,8 @@ _FETCH_WHEN_NEEDED = (
 # Multi-part answers left a part's own record unread, or answered from a record
 # that failed a condition the question set. An exit that asked the model to name
 # the unmet condition made it dispute facts the question states in other words,
-# so an unmet condition is named only when the answer rests on another record.
+# so an unmet condition is named only when the answer rests on another record;
+# a value a record contradicts is still corrected.
 _READ_IN_FULL = (
     "The context you are given contains the most relevant BLOCKS from each document — not "
     "the full documents. Before answering, read in full the records your answer will rest "
@@ -50,13 +51,14 @@ _READ_IN_FULL = (
     "each part: if a listed record is specifically about a part none of them covers, read it "
     "too. A record read for one part supplies that part only: do not turn its optional, "
     "recommended or condition-specific items into requirements of the whole answer. Before "
-    "answering from a record, check that it meets every condition the question sets (scope, "
-    "time window, kind of change, measured effect); a record that states a condition in other "
-    "words meets it. If one does not hold, search again in different words, using the "
-    "question's distinguishing terms (the customer, product or kind of document it names), "
-    "before answering; prefer a record you read that meets every condition over one that does "
-    "not, and lead with it. Take what the question states as given: do not dispute or hedge a "
-    "fact it states, and do not add that a record words it differently. Mention an unmet "
+    "answering from a record, check that it meets every condition the question sets for the "
+    "part it answers (scope, time window, kind of change, measured effect); a record that "
+    "states a condition in other words meets it. If one does not hold, search again in "
+    "different words, using the question's distinguishing terms (the customer, product or kind "
+    "of document it names), before answering; prefer a record you read that meets every "
+    "condition of its part over one that does not, and lead with it. Do not add that a record "
+    "words a met condition differently, or hedge it; a number, status or scope a record you "
+    "read contradicts is still corrected. Mention an unmet "
     "condition only when you answer from a record other than the one the question describes, "
     "in one sentence after the answer."
 )
@@ -121,7 +123,8 @@ _COMPOSE = (
     "sentence after it, never as the opening or as a reason the question cannot be answered; "
     "do not open with what you yourself cannot do, produce or send. Call a fix, decision or "
     "exception open, unconfirmed or unapproved only when a source says so and nothing else you "
-    "read settles it; one the records mark done, merged or approved is done."
+    "read settles it; one the records mark done or merged is done, and one they mark approved "
+    "is approved, not yet delivered."
 )
 
 _SEEK_OTHER_VERSIONS = (
@@ -136,17 +139,19 @@ _REPORT_VERSIONS = (
     "people, teams or sources said, report each version with its source."
 )
 
-# Supersession, then shipped over proposed, then scope, then corroboration, then
-# recency: "authoritative or most recent" let a formal page beat the draft that
-# explicitly replaced it, and a proposal's names beat the ones that shipped. Only
+# Shipped over proposed (for system behaviour), then supersession, then scope,
+# then corroboration, then recency: "authoritative or most recent" let a formal
+# page beat the draft that explicitly replaced it, and a proposal's names beat
+# the ones that shipped; a draft saying it replaces a deployed config is still a
+# proposal. Only
 # between values for one item and scope: a settled conflict otherwise made one
 # tier's rule the answer for a case no source placed in that tier.
 _RESOLVE_CONFLICTS = (
-    "When sources disagree, prefer in order: a record saying it updates, corrects or "
-    "replaces the other (updated, final, vN, deprecated, change log); for what a system does "
-    "or shows its users, a shipped change (a merged pull request, a released config or "
-    "changelog) over a proposal, draft or plan for it; a narrower record "
-    "applying a broader rule to the exact scope asked (an ADR or exception under a "
+    "When sources disagree, prefer in order: for what a system does or shows its users, a "
+    "shipped change (a merged pull request, a released config or changelog) over a proposal, "
+    "draft or plan for it, even one that says it replaces it; a record saying it updates, "
+    "corrects or replaces the other (updated, final, vN, deprecated, change log); a narrower "
+    "record applying a broader rule to the exact scope asked (an ADR or exception under a "
     "standard); the value most independent sources state; the most recent. Title or "
     "formality never decides. Name each other version as a labelled difference: what it "
     "said, where, and why it was not used. Once this order settles it, give the preferred "
@@ -157,14 +162,15 @@ _RESOLVE_CONFLICTS = (
 )
 
 # An agent read a thread in full and still took the indexer's summary's reading
-# of an ambiguous reply ("tried that") over the thread's own messages.
+# of an ambiguous reply ("tried that") over the thread's own messages. Nor does a
+# rule settle it: the reply may answer one of several alternatives.
 _SOURCE_TEXT_DECIDES = (
     "A record's \"Summary:\" line, in its metadata or in a candidate list, is written by a "
     "model when the record is indexed, not by the record's authors, and can merge or "
     "misattribute details: use it to choose what to read, never to settle a fact. When the "
-    "record's own text is ambiguous or says something else, the text decides; a reply such as "
-    "\"tried that\" or \"agreed\" covers everything the message it answers proposed unless "
-    "it narrows it."
+    "record's own text is ambiguous or says something else, the text decides; where a short "
+    "reply such as \"tried that\" or \"agreed\" does not say which of the proposals before it "
+    "it answers, do not assert which."
 )
 
 # A looser mention in the same record (a weekday beside a dated deadline) was
