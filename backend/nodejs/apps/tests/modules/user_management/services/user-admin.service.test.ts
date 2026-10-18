@@ -33,13 +33,29 @@ function stubUsersFindOne(role: 'admin' | 'member' | null | undefined) {
   } as any);
 }
 
-/** Like stubUsersFindOne, but for a record that is a machine identity. */
+/**
+ * Like stubUsersFindOne, but for a record that is a machine identity.
+ *
+ * Hands back the `select` stub so a test can also check what was asked for.
+ * This mock answers with `kind` whatever the projection says, so without that
+ * check the clamp could stop working in production — `kind` dropped from the
+ * projection, so always undefined, so never clamped — while these tests stay
+ * green.
+ */
 function stubServiceAccountFindOne(role: 'admin' | 'member') {
-  return sinon.stub(Users, 'findOne').returns({
-    select: sinon.stub().returns({
-      lean: sinon.stub().resolves({ role, kind: 'service' }),
-    }),
-  } as any);
+  const select = sinon.stub().returns({
+    lean: sinon.stub().resolves({ role, kind: 'service' }),
+  });
+  sinon.stub(Users, 'findOne').returns({ select } as any);
+  return { select };
+}
+
+/** The fields the clamp needs the repository to have asked for. */
+function expectProjectionCarriesKind(select: sinon.SinonStub): void {
+  expect(select.calledOnce).to.equal(true);
+  const projection = String(select.firstCall.args[0] ?? '');
+  expect(projection, 'the role lookup must select kind').to.contain('kind');
+  expect(projection, 'the role lookup must still select role').to.contain('role');
 }
 
 describe('user-admin.service', () => {
@@ -175,8 +191,9 @@ describe('user-admin.service', () => {
 
   describe('isUserOrgAdmin with a service account', () => {
     it('refuses, even when the stored role is admin', async () => {
-      stubServiceAccountFindOne('admin');
+      const { select } = stubServiceAccountFindOne('admin');
       expect(await isUserOrgAdmin(userId, orgId)).to.equal(false);
+      expectProjectionCarriesKind(select);
     });
   });
 
@@ -211,16 +228,18 @@ describe('user-admin.service', () => {
      * `GET /api/v1/users/me/role` for the service account itself.
      */
     it('reads a service account as a member even if its record says admin', async () => {
-      stubServiceAccountFindOne('admin');
+      const { select } = stubServiceAccountFindOne('admin');
       expect(await getActiveUserOrgRole(userId, orgId)).to.equal('member');
+      expectProjectionCarriesKind(select);
     });
 
     it('still answers for a service account rather than refusing it', async () => {
       // Filtering service accounts out of this query would return null here,
       // and the route turns null into "User not found, please login again" —
       // signing out every service account that asks what it is.
-      stubServiceAccountFindOne('member');
+      const { select } = stubServiceAccountFindOne('member');
       expect(await getActiveUserOrgRole(userId, orgId)).to.equal('member');
+      expectProjectionCarriesKind(select);
     });
 
     it('returns null for invalid ObjectIds without querying', async () => {
