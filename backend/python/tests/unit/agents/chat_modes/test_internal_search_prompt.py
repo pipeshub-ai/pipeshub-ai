@@ -38,6 +38,8 @@ _CONFLICT_ORDER = (
     "the other"
 )
 _SECOND_VALUE = "Present a second value for what was asked only when"
+_PARAPHRASE = "A paraphrase is not a false premise"
+_SUBSTANCE_FIRST = "answer with that substance even if it is still requested, pending or in progress"
 _REPORT_ONLY = "said, report each version with its source."
 _READ_IN_FULL = "read in full the records your answer will rest on"
 _BLOCKS_SUFFICE = "the blocks are sufficient"
@@ -48,6 +50,7 @@ _ENTITY_TOOLS = ("knowledgegraph__search_entities", "entity_ids")
 
 _COMPOSITION_MARKERS = (
     _COMPOSE, _SPEAKER, _QUALIFIERS, _PREMISE, _DEFINING_RECORD, _CONFLICT_ORDER, _SECOND_VALUE,
+    _PARAPHRASE, _SUBSTANCE_FIRST,
 )
 _THOROUGH_MARKERS = (_READ_IN_FULL, _SEARCH_AGAIN, _LIST_THE_SET, _SEEK_OTHER)
 
@@ -174,3 +177,28 @@ class TestEveryCombination:
     ) -> None:
         first = _text(composition=composition, thorough=thorough, entity_tools=entity_tools)
         assert first == _text(composition=composition, thorough=thorough, entity_tools=entity_tools)
+
+
+class TestStatusFraming:
+    """Answers opened with what the assistant could not do, or with a status,
+    though the records described what was asked in full."""
+
+    def test_status_follows_the_substance(self) -> None:
+        text = _text(composition=True)
+        assert text.count(_SUBSTANCE_FIRST) == 1
+        assert "never as the opening or as a reason the question cannot be answered" in text
+        assert "do not open with what you yourself cannot do, produce or send" in text
+
+    def test_recorded_outcomes_are_not_reopened(self) -> None:
+        assert "one the records mark done, merged or approved is done" in _text(composition=True)
+
+    def test_a_paraphrase_is_not_a_false_premise(self) -> None:
+        text = _text(composition=True)
+        assert text.index(_PREMISE) < text.index(_PARAPHRASE)
+        assert "adding that the record does not use the question's term" in text
+
+    @pytest.mark.parametrize("thorough", [False, True])
+    def test_only_with_composition(self, thorough: bool) -> None:
+        text = _text(thorough=thorough)
+        assert _PARAPHRASE not in text
+        assert _SUBSTANCE_FIRST not in text

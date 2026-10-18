@@ -73,6 +73,9 @@ _LIST_THE_SET = (
     "up new records."
 )
 
+# Answers opened with what the assistant could not do or with "not delivered yet",
+# and disputed a question's paraphrase as a false premise, though the records held
+# what was asked.
 _COMPOSE = (
     "Compose the answer so it stands on its own for someone who has not read the question. "
     "Its first sentence gives the direct answer together with what it is about — the "
@@ -80,7 +83,11 @@ _COMPOSE = (
     "question's words, with the source's name in parentheses where it differs — so \"In the "
     "March 3 capacity incident, the SLA was breached for about 45 minutes\", not \"About 45 "
     "minutes\". Correct the question's premise only where that changes the answer, never "
-    "silently. Then what the sources attach to it — who said or decided it, in which "
+    "silently. A paraphrase is not a false premise: when the question describes a record's "
+    "value in its own words (\"the launch budget\" for a record's \"go-live spend cap\"), "
+    "answer with that value and give the record's term, without disputing the wording or "
+    "adding that the record does not use the question's term. Then what the sources attach "
+    "to it — who said or decided it, in which "
     "thread, ticket, meeting or document, and when, named in the prose "
     "(a citation marker alone does not say who; when a fact comes from a chat message, "
     "meeting turn or email, name the person or bot who said it); numbers, names, versions "
@@ -92,7 +99,13 @@ _COMPOSE = (
     "checks, next steps). For a procedure, checklist or policy, give every step or "
     "requirement of the record that defines it for the exact scope asked about (product, "
     "deployment mode, region, customer) — not a blend of several records' versions, which "
-    "states rules that no source holds."
+    "states rules that no source holds. When the sources describe what was asked for — its "
+    "contents, plan, terms or requirements — answer with that substance even if it is still "
+    "requested, pending or in progress, and give its status (pending, ETA, delivered) in a "
+    "sentence after it, never as the opening or as a reason the question cannot be answered; "
+    "do not open with what you yourself cannot do, produce or send. Call a fix, decision or "
+    "exception open, unconfirmed or unapproved only when a source says so and nothing else you "
+    "read settles it; one the records mark done, merged or approved is done."
 )
 
 _SEEK_OTHER_VERSIONS = (
