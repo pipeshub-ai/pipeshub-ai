@@ -45,7 +45,7 @@ dependencies = [
   # Starlette comes in through FastAPI, whose range admits releases with known advisories.
   "starlette==1.7.0",
   "fastmcp==3.2.0",
-  "fastembed==0.5.1",
+  "fastembed==0.8.0",
   "feedparser>=6.0.0",
   "trafilatura>=2.0.0",
   "html-to-markdown==2.3.0",
@@ -95,7 +95,7 @@ dependencies = [
   "pagerduty>=5.0.0",
   "pandas==2.2.3",
   "pdfplumber==0.11.9",
-  "Pillow<12.0.0",
+  "Pillow>=12.3.0,<13",
   "pillow-avif-plugin==1.5.5",
   "prometheus-client==0.21.1",
   "protobuf>=4.25.0,<6",
