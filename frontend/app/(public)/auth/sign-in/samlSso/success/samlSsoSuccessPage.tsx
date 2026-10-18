@@ -4,14 +4,12 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/config';
 import { fetchAndSetCurrentUser } from '@/lib/auth/hydrate-user';
-import { getCookie } from '@/lib/utils/cookies';
+import { AuthApi } from '@/app/(public)/api';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { buildDesktopDeepLink, isDesktopOAuthState } from '@/lib/auth/desktop-oauth';
 import DesktopHandoffNotice from '@/app/(public)/auth/desktop-handoff-notice';
 import { getSafeReturnTo } from '@/lib/utils/safe-return-to';
-
-const ACCESS_COOKIE = 'accessToken';
-const REFRESH_COOKIE = 'refreshToken';
+import { takeSamlWebVerifier } from '@/lib/auth/saml-web-pkce';
 
 /** Survives React Strict Mode remounts (useRef resets). */
 let samlBridgeRan = false;
@@ -23,8 +21,8 @@ export default function SamlSsoSuccessPage() {
   const logout = useAuthStore((s) => s.logout);
   const [handoffLink, setHandoffLink] = useState<string | null>(null);
 
-  // A desktop sign-in lands here in the user's browser, with a handoff code
-  // instead of cookies. Forward it to the app, which holds the PKCE verifier.
+  // A desktop sign-in lands here in the user's browser with a handoff code.
+  // Forward it to the app, which holds the PKCE verifier.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const state = params.get('state');
@@ -45,9 +43,20 @@ export default function SamlSsoSuccessPage() {
     samlBridgeRan = true;
 
     const run = async () => {
-      const accessToken = getCookie(ACCESS_COOKIE);
-      const refreshToken = getCookie(REFRESH_COOKIE);
+      const code = new URLSearchParams(window.location.hash.slice(1)).get('code');
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      const codeVerifier = takeSamlWebVerifier();
 
+      if (!code) {
+        logout();
+        router.replace('/login?error=saml_sso');
+        return;
+      }
+
+      const { accessToken, refreshToken } = await AuthApi.exchangeSamlWebCode(
+        code,
+        codeVerifier ?? undefined,
+      );
       if (!accessToken || !refreshToken) {
         logout();
         router.replace('/login?error=saml_sso');
