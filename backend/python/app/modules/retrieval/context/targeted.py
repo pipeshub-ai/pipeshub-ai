@@ -23,9 +23,9 @@ With the switch on, the two halves trade places:
   matching passages than it showed, and the prompt tells the model to read
   the part it needs before answering a specific detail.
 
-Opt-in only, and not part of ``HIGH_ACCURACY_MODE``: it changes what the
-model is shown, and its effect on answers is not measured yet. Off, nothing
-here runs and every result is what it was.
+On unless the deployment sets ``TARGETED_RETRIEVAL=false``, and it does not
+follow ``HIGH_ACCURACY_MODE``. Off, nothing here runs and every result is
+what it was.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ from app.modules.retrieval.record_cut import (
     passages_per_record as record_cut_passages_per_record,
 )
 from app.utils.chat_helpers import group_child_results
-from app.utils.env_utils import env_bool, env_int
+from app.utils.env_utils import enabled_unless_off, env_int
 from app.utils.render_budget import FETCH_MAX_CHARS
 
 if TYPE_CHECKING:
@@ -72,12 +72,15 @@ DEFAULT_HIT_LIMIT = 50
 
 
 def targeted_retrieval_enabled() -> bool:
-    """``TARGETED_RETRIEVAL=true`` turns the feature on; anything else leaves it off.
+    """On unless ``TARGETED_RETRIEVAL`` is ``false``, ``0``, ``no`` or ``off``.
+
+    Unset or blank is on, so a Compose file that passes the variable through
+    empty keeps the default.
 
     Read per call but set per deployment, so the tool schema and prompt text it
     changes are the same for every request and stay in the cached prefix.
     """
-    return env_bool(TARGETED_RETRIEVAL_ENV_VAR, False)
+    return enabled_unless_off(TARGETED_RETRIEVAL_ENV_VAR)
 
 
 def search_max_chars() -> int:

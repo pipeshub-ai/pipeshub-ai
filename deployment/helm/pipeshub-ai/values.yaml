@@ -370,6 +370,10 @@ config:
   # FETCH_SIZE_BY_CHARS is not part of this mode: it is on unless set to
   # "false" through extraEnv. With it on, fetch_record reads as much of each
   # record as fits a share of the context window instead of a block count.
+  # TARGETED_RETRIEVAL is not part of this mode either: it is on unless set to
+  # "false" through extraEnv. With it on, a search returns fewer passages per
+  # record and fetch_record takes a query that reads the part of a record it
+  # names.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network
