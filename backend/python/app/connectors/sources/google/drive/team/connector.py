@@ -1000,6 +1000,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         drive_data_source: GoogleDriveDataSource | None = None,
         *,
         inherited_permissions_disabled: bool = False,
+        inherits_from_drive: bool = True,
     ) -> Tuple[List[Permission], bool, List[str]]:
         """
         Fetch all permissions for a Google Drive resource (file or shared drive) with pagination.
@@ -1195,6 +1196,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             inherited_permissions_disabled=inherited_permissions_disabled,
             is_drive=is_drive,
             organizer_permissions=organizer_permissions,
+            inherits_from_drive=inherits_from_drive,
         )
         # The syncing user may reach the item only through the link (or a group), so add
         # their grant to the list that was read rather than replacing it.
@@ -1207,7 +1209,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 entity_type=EntityType.USER,
             )]
         return (
-            DrivePermissionBatch(stored, saw_permission_details=bool(saw_permission_details and not is_drive)),
+            DrivePermissionBatch(
+                stored, saw_permission_details=bool(saw_permission_details and not is_drive and inherits_from_drive)
+            ),
             False,
             list(individually_shared_emails),
         )
@@ -2431,12 +2435,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # Fetch permissions for this file using the provided drive_data_source
                 # If drive_data_source is provided, use it; otherwise fall back to service account
                 limited_access = bool(metadata.get("inheritedPermissionsDisabled"))
+                item_drive_id = metadata.get("driveId")
                 new_permissions, is_fallback_permissions, individually_shared_emails = await self._fetch_permissions(
                     file_id,
                     is_drive=False,
                     user_email=user_email,
                     drive_data_source=drive_data_source,
                     inherited_permissions_disabled=limited_access,
+                    inherits_from_drive=not item_drive_id or file_record.external_record_group_id == item_drive_id,
                 )
 
                 if is_fallback_permissions:
