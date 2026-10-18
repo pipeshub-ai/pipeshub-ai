@@ -166,8 +166,9 @@ def test_naming_usage_bands_as_missing_is_not_a_leak(fx: dict) -> None:
     assert "leaked restricted" not in verdict, verdict
 
 
-def test_a_restricted_detail_in_alices_answer_is_a_leak(fx: dict) -> None:
-    passed, verdict = kb_harness.score(_question(fx, "q5"), "none", set(), "Bands go up to 5,000 seats.")
+@pytest.mark.parametrize("answer", ["Bands go up to 5,000 seats.", "The bands are 250 and 1,000 seats."])
+def test_a_restricted_detail_in_alices_answer_is_a_leak(fx: dict, answer: str) -> None:
+    passed, verdict = kb_harness.score(_question(fx, "q5"), "none", set(), answer)
     assert passed is False and "leaked restricted" in verdict, verdict
 
 
