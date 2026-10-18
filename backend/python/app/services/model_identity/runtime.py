@@ -126,6 +126,20 @@ class IdentityRuntime:
             pseudonym_key=pseudonym_key,
         )
 
+    async def governance(self, org_id: str):  # noqa: ANN201 - IdentityGovernancePolicy
+        if self._policies is None:
+            return DEFAULT_GOVERNANCE
+        return await self._policies.get(org_id)
+
+    async def pseudonym_key(self) -> Optional[bytes]:
+        return None if self._policies is None else await self._policies.pseudonym_key()
+
+    async def resolve_groups(self, principal: Principal, budget_seconds: float = 2.0):  # noqa: ANN201
+        """One group lookup for ``principal``, waited for (an admin preview, not a model call)."""
+        handle = GroupsHandle(self._resolver, principal, budget_seconds=budget_seconds)
+        handle.prefetch()
+        return await handle.wait(budget_seconds)
+
     @staticmethod
     def _enforce_strict(principal: Principal, workload: Workload, on_missing: str) -> None:
         # Checked here, before any model call, and not in the hook: an exception

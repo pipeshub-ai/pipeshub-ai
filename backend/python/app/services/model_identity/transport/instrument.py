@@ -34,7 +34,29 @@ def settings_from_config(config: Optional[Mapping[str, Any]]) -> ConnectionForwa
     configuration = (config or {}).get("configuration") or {}
     if not isinstance(configuration, Mapping):
         return ConnectionForwardingSettings()
-    return ConnectionForwardingSettings.parse(configuration.get(CONFIG_KEY))
+    nested = configuration.get(CONFIG_KEY)
+    if nested is not None:
+        return ConnectionForwardingSettings.parse(nested)
+    return ConnectionForwardingSettings.parse(_flat_settings(configuration))
+
+
+# The admin dialog renders the registry's flat fields; the same settings may also
+# arrive as one nested object through the API. The nested form wins when present.
+_FLAT_KEYS = {
+    "identityForwardingEnabled": "enabled",
+    "identityForwardingMode": "mode",
+    "identityForwardingPreset": "preset",
+    "identityForwardingServiceApiKey": "serviceApiKey",
+}
+
+
+def _flat_settings(configuration: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    found = {target: configuration[key] for key, target in _FLAT_KEYS.items() if key in configuration}
+    if not found:
+        return None
+    if found.get("serviceApiKey") == "":
+        found.pop("serviceApiKey")
+    return found
 
 
 def instrument_http_client(client: Any, settings: ConnectionForwardingSettings) -> bool:
