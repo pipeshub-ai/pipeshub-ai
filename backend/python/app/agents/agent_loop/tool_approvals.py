@@ -156,7 +156,8 @@ def enabled(source: Source = "mcp") -> bool:
 
 def organization_toolset_tool_rules() -> bool:
     """Whether admins set toolset tools' rules for the organization (an edition extension point)."""
-    from app import edition_config  # Imported late: edition_config imports the routes that import this module.
+    # Imported late: edition_config imports the routes that import this module.
+    from app import edition_config
 
     return bool(getattr(edition_config, "organization_toolset_tool_rules", False))
 
