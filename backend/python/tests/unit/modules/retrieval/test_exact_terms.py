@@ -18,6 +18,8 @@ from app.modules.retrieval.exact_terms import (
     "upgrade to 3.12",
     "defaults in values.yaml",
     "settings under /etc/app/conf",
+    "configs in deploy/docker-compose",
+    "the charts/pipeshub-ai values",
     "https://wiki.example.com/x",
     "retryPolicy default",
     "MAX_RETRIES for the uploader",
@@ -60,6 +62,9 @@ def test_identifier_like_queries_ask_for_exact_matching(query: str) -> None:
     "FY2025 budget",
     "trends in the 1990s",
     "standup at 9am",
+    "docs on and/or conditions",
+    "the client/server split",
+    "CI/CD pipeline owners",
 ])
 def test_plain_language_queries_do_not(query: str | None) -> None:
     assert not has_exact_terms(query)
@@ -74,7 +79,7 @@ def test_a_query_too_long_to_read_cheaply_counts_as_an_anchor(query: str) -> Non
     assert has_exact_terms(query)
 
 
-@pytest.mark.parametrize("unit", ["a-", "1-", "Ab-", "a."])
+@pytest.mark.parametrize("unit", ["a-", "1-", "Ab-", "a.", "a/", "a_/"])
 def test_reading_a_long_query_takes_linear_time(monkeypatch: pytest.MonkeyPatch, unit: str) -> None:
     """Patterns that restarted at every word of a hyphenated or dotted run took
     seconds on 20k characters and would block the event loop."""

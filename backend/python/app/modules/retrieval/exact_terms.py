@@ -94,6 +94,11 @@ _KEBAB_NOT_IDENTIFIER = re.compile(
     re.IGNORECASE,
 )
 
+# A two-part path (src/app_main, charts/pipeshub-ai) reads like "and/or" or
+# "client/server" unless a part carries a name character prose does not use.
+_TWO_PART_PATH = re.compile(r"(?<![\w./-])[\w.-]+/[\w.-]+(?![\w./-])")
+_PATH_NAME_CHARS = frozenset("_.-")
+
 
 def _has_mixed_token(query: str) -> bool:
     return any(
@@ -109,6 +114,13 @@ def _has_kebab_identifier(query: str) -> bool:
     )
 
 
+def _has_two_part_path(query: str) -> bool:
+    return any(
+        not _PATH_NAME_CHARS.isdisjoint(match.group(0))
+        for match in _TWO_PART_PATH.finditer(query)
+    )
+
+
 def has_exact_terms(query: str | None) -> bool:
     """True when ``query`` holds an identifier-like token or a quoted phrase,
     or asks for an exact match in words. A query too long to read cheaply
@@ -121,7 +133,7 @@ def has_exact_terms(query: str | None) -> bool:
         return True
     if any(pattern.search(query) for pattern in _IDENTIFIER_PATTERNS):
         return True
-    return _has_mixed_token(query) or _has_kebab_identifier(query)
+    return _has_mixed_token(query) or _has_kebab_identifier(query) or _has_two_part_path(query)
 
 
 def exact_text_search_gated() -> bool:
