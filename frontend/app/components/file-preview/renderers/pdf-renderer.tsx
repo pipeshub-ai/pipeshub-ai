@@ -17,6 +17,8 @@ import type { PDFRendererProps, PreviewCitation } from '../types';
 const PDF_PAGE_WIDTH = 967;
 const PDF_PAGE_HEIGHT = 747.2272727272727;
 const SCROLL_DELAY_MS = 300;
+// One array, so an empty highlight list never looks like a change to PdfHighlighter.
+const NO_HIGHLIGHTS: IHighlight[] = [];
 const NAVIGATION_SETTLE_MS = 500;
 
 // PdfLoader passes its props straight to pdf.js getDocument(), but its prop
@@ -236,6 +238,16 @@ export function PDFRenderer({
       .map(citationToHighlight)
       .filter((h): h is IHighlight => h !== null);
   }, [citations]);
+
+  // react-pdf-highlighter 7 builds its viewer after an async import, and draws highlights on
+  // every change of this prop: a change before the viewer exists throws reading getPageView.
+  const shownHighlights = useMemo(
+    () =>
+      viewerReadyEpoch > 0 && isViewerReady.current && activeCitationId
+        ? highlights.filter((h) => h.id === activeCitationId)
+        : NO_HIGHLIGHTS,
+    [activeCitationId, highlights, viewerReadyEpoch],
+  );
 
   // Inject custom highlight CSS
   useEffect(() => {
@@ -580,11 +592,7 @@ export function PDFRenderer({
                   </Popup>
                 );
               }}
-              highlights={
-                activeCitationId
-                  ? highlights.filter((h) => h.id === activeCitationId)
-                  : []
-              }
+              highlights={shownHighlights}
             />
           </>
         )}
