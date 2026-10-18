@@ -5151,6 +5151,11 @@ components:
             - AUTO_INDEX_OFF: Auto-indexing disabled for this record
             - EMPTY: File has no extractable content
           example: "COMPLETED"
+        hasIndexedCopy:
+          type: boolean
+          description: |
+            True while the record has a searchable indexed copy. An edited record keeps
+            it until its new version is indexed, so search still returns the previous version.
         indexingStatus:
           type: string
           enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
@@ -5393,6 +5398,9 @@ components:
               nullable: true
             indexingStatus:
               type: string
+            hasIndexedCopy:
+              type: boolean
+              description: The record still has a searchable indexed copy while a newer version waits to be indexed.
             extractionStatus:
               type: string
             reason:
