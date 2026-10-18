@@ -771,7 +771,7 @@ class Outlook:
             ToolParameter(name="bcc_recipients", type=ParameterType.LIST, description="List of BCC recipient email addresses", required=False),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
     )
     async def send_email(
         self,
@@ -919,7 +919,7 @@ class Outlook:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the message to reply to", required=True),
             ToolParameter(name="comment", type=ParameterType.STRING, description="Reply comment / body text", required=True),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
     )
     async def reply_to_message(
         self,
@@ -947,7 +947,7 @@ class Outlook:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the message to reply-all to", required=True),
             ToolParameter(name="comment", type=ParameterType.STRING, description="Reply-all comment / body text", required=True),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
     )
     async def reply_all_to_message(
         self,
@@ -976,7 +976,7 @@ class Outlook:
             ToolParameter(name="to_recipients", type=ParameterType.LIST, description="List of recipient email addresses to forward to", required=True),
             ToolParameter(name="comment", type=ParameterType.STRING, description="Optional comment to include with the forwarded message", required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
     )
     async def forward_message(
         self,

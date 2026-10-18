@@ -1851,7 +1851,7 @@ components:
           description: >-
             Tool name → rule, for everyone in the organization. Each name must be a tool of the
             instance's toolset. A tool without one starts from its kind: `read` at allow, `write`
-            at ask, `destructive` at block.
+            at allow, `destructive` at ask.
     ToolsetToolRules:
       allOf:
         - $ref: '#/components/schemas/ToolsetToolRulesUpdate'
