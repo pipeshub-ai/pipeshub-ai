@@ -98,7 +98,7 @@ class Harness:
         tx_store.batch_upsert_records = AsyncMock(side_effect=_upsert)
 
         @asynccontextmanager
-        async def _transaction():
+        async def _transaction(explicit=None):
             yield tx_store
 
         store_provider = MagicMock()

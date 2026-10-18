@@ -160,7 +160,19 @@ class TestGraphTransactionStore:
         assert await tx_store.link_record_to_group("r1", "g1", inherit=False) == 1
 
         mock_graph_provider.link_record_to_group.assert_awaited_once_with(
-            "r1", "g1", inherit=False, leaving_group_id=None, transaction="txn-123"
+            "r1", "g1", inherit=False, leaving_group_id=None, browse_root=None, transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_link_record_to_group_passes_the_browse_root_through(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.link_record_to_group = AsyncMock(return_value=0)
+
+        await tx_store.link_record_to_group("r1", "g1", inherit=True, leaving_group_id="g0", browse_root=True)
+
+        mock_graph_provider.link_record_to_group.assert_awaited_once_with(
+            "r1", "g1", inherit=True, leaving_group_id="g0", browse_root=True, transaction="txn-123"
         )
 
     @pytest.mark.asyncio
