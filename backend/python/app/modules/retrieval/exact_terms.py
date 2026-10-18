@@ -41,6 +41,9 @@ _FILE_EXTENSIONS = (
     "|png|jpe?g|gif|svg|webp|mp4|mov|wav|mp3|tf|lock|gradle|dockerfile"
 )
 
+_DOTFILES = "gitignore|dockerignore|gitattributes|npmrc|nvmrc|bashrc|zshrc|profile|editorconfig|htaccess"
+_EXTENSIONLESS_FILES = "Dockerfile|Makefile|Jenkinsfile|Procfile|Gemfile|Vagrantfile|Rakefile|Brewfile"
+
 _SUB_DAY_UNITS = r"ms|µs|us|ns|secs?|seconds?|mins?|minutes?|h|hrs?|hours?"
 _MEASURE_UNITS = (
     r"%|percent|[kmgtp]i?b|kbps|mbps|gbps|rps|qps|tps|rpm|iops|req/s|ops/s"
@@ -49,7 +52,8 @@ _MEASURE_UNITS = (
 
 _ID_KEYWORDS = (
     r"error|status|code|http|port|pr|issue|ticket|incident|case|order|invoice|build|release"
-    r"|sprint|ref|po|sku|account|acct|no\.?|number|id"
+    # "no." only with its period: the bare word is English ("no 20 seats left").
+    r"|sprint|ref|po|sku|account|acct|no\.|number|id"
 )
 
 _IDENTIFIER_PATTERNS = (
@@ -63,7 +67,13 @@ _IDENTIFIER_PATTERNS = (
     # Each starts only where its run of name characters starts, not at every
     # word inside it, which made long hyphenated or dotted text quadratic.
     re.compile(rf"(?<![\w-])[\w-]+\.(?:{_FILE_EXTENSIONS})\b", re.IGNORECASE),
-    re.compile(r"(?<![\w/])/[\w.-]+(?:/[\w.-]+)+|(?<![\w.-])[\w.-]+/[\w.-]+/[\w./-]+"),
+    re.compile(rf"(?<![\w./-])\.(?:{_FILE_EXTENSIONS}|{_DOTFILES})\b", re.IGNORECASE),
+    re.compile(rf"\b(?:{_EXTENSIONLESS_FILES})\b", re.IGNORECASE),
+    # A relative path of three parts or more, but not an all-digit date (10/18/2026).
+    re.compile(
+        r"(?<![\w/])/[\w.-]+(?:/[\w.-]+)+"
+        r"|(?<![\w.-])(?!\d+/\d+/\d+(?![\w./-]))[\w.-]+/[\w.-]+/[\w./-]+"
+    ),
     re.compile(r"\bhttps?://\S+", re.IGNORECASE),
     # camelCase, PascalCase with an inner capital, snake_case, SCREAMING_CASE.
     re.compile(r"\b\w*[a-z][A-Z]\w*\b"),
