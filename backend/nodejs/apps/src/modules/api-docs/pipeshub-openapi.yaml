@@ -5154,8 +5154,11 @@ components:
         hasIndexedCopy:
           type: boolean
           description: |
-            True while the record has a searchable indexed copy. An edited record keeps
-            it until its new version is indexed, so search still returns the previous version.
+            True after the record is indexed (every COMPLETED write, including the upgrade
+            backfill for records indexed earlier), and false once it is marked EMPTY. A later
+            re-queue or a failed re-index leaves it as it is, so search keeps returning the
+            previous indexed copy until the new version is indexed. Absent until the record
+            is first indexed.
         indexingStatus:
           type: string
           enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
@@ -5400,7 +5403,12 @@ components:
               type: string
             hasIndexedCopy:
               type: boolean
-              description: The record still has a searchable indexed copy while a newer version waits to be indexed.
+              description: |
+                True after the record is indexed (every COMPLETED write, including the upgrade
+                backfill for records indexed earlier), and false once it is marked EMPTY. A later
+                re-queue or a failed re-index leaves it as it is, so search keeps returning the
+                previous indexed copy until the new version is indexed. Absent until the record
+                is first indexed.
             extractionStatus:
               type: string
             reason:
