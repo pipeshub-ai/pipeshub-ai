@@ -232,8 +232,8 @@ def _result_frame(
     read the rest, and a line at the top points there.
 
     ``matched_record_ids`` (``UNSHOWN_MATCHES_LIST``) are the records the hits
-    matched, best first; those neither shown nor held from earlier in the
-    request are listed at the end, named from ``permitted_records`` (the
+    matched, best first; those neither shown here nor shown or read earlier in
+    the request are listed at the end, named from ``permitted_records`` (the
     retrieval service's permission-checked map) and only if they are in it.
     """
     from app.modules.agents.record_escalation import (
@@ -316,8 +316,14 @@ def _result_frame(
             "one(s) directly.\n\n"
             f"{entity_notes}"
         )
+    # Held means shown or read, not merely loaded: prefetch keeps in the map
+    # records its fit never rendered.
+    known = state.get("known_record_ids")
     unshown = unshown_matches(
-        matched_record_ids or [], shown_vrids | set(full_map), permitted_records or {},
+        matched_record_ids or [],
+        shown_vrids | {entry.get("virtual_record_id") for entry in final_results},
+        permitted_records or {},
+        known_record_ids=known if isinstance(known, set) else (),
     )
     unshown_list = render_unshown_matches(unshown)
     shown_unshown = unshown_list

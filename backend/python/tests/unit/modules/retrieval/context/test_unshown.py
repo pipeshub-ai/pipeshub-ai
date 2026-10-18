@@ -25,6 +25,11 @@ class TestUnshownMatches:
 
         assert found == [UnshownMatch("a", "r-a", "Doc a"), UnshownMatch("c", "r-c", "Doc c")]
 
+    def test_a_record_whose_id_is_already_known_is_skipped(self) -> None:
+        found = unshown_matches(["a", "b"], set(), _permitted("a", "b"), known_record_ids={"r-a"})
+
+        assert [m.record_id for m in found] == ["r-b"]
+
     def test_a_record_the_permission_check_did_not_return_is_never_named(self) -> None:
         """The hits alone are not proof of access: only the retrieval service's
         permission-checked map names a record."""

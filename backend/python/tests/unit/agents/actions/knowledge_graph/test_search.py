@@ -678,7 +678,8 @@ class TestRecordsTheResultDoesNotShow:
 
     async def _search(
         self, ranked: list[str], matched: list[str], *, permitted: tuple[str, ...],
-        held: tuple[str, ...] = (), **state_extra: Any,  # noqa: ANN401
+        held: tuple[str, ...] = (), loaded: tuple[str, ...] = (),
+        **state_extra: Any,  # noqa: ANN401
     ) -> tuple[str, dict[str, Any]]:
         from app.modules.retrieval.context.builder import KnowledgeContext
 
@@ -699,7 +700,10 @@ class TestRecordsTheResultDoesNotShow:
         state = {
             **_state(retrieval),
             "filters": {"apps": ["app-1"], "kb": []},
-            "virtual_record_id_to_result": {vrid: self._record(vrid) for vrid in held},
+            # Held: shown by an earlier search. Loaded: in the map but never
+            # rendered, as prefetch leaves the records its fit dropped.
+            "virtual_record_id_to_result": {vrid: self._record(vrid) for vrid in (*held, *loaded)},
+            "final_results": [self._unit(vrid) for vrid in held],
             **state_extra,
         }
         with patch(f"{self._SEARCH}.KnowledgeContextBuilder", builder), \
@@ -719,15 +723,36 @@ class TestRecordsTheResultDoesNotShow:
             permitted=("vr1", "vr2", "vr3", "vr-held"), held=("vr-held",),
         )
 
-        assert "Also matched, not shown" in result
-        assert "- Record ID: r-vr2 | Doc vr2\n- Record ID: r-vr3 | Doc vr3" in result
-        assert "r-vr-held" not in result, "already held from an earlier call"
+        listed = result.split("Also matched, not shown", 1)[1]
+        assert "- Record ID: r-vr2 | Doc vr2\n- Record ID: r-vr3 | Doc vr3" in listed
+        assert "r-vr-held" not in listed, "shown by an earlier search"
         assert "vr-denied" not in result, "not in the permission-checked map"
         assert {"r-vr2", "r-vr3"} <= state["known_record_ids"]
         assert "r-vr-denied" not in state["known_record_ids"]
         assert state["known_record_names"]["r-vr2"] == "Doc vr2"
         # Named, not loaded: nothing of theirs reaches the records the answer cites.
         assert set(state["virtual_record_id_to_result"]) == {"vr-held", "vr1"}
+
+    @pytest.mark.asyncio
+    async def test_a_record_loaded_earlier_but_never_shown_is_listed(self, monkeypatch) -> None:
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+
+        result, _ = await self._search(["vr1"], ["vr1", "vr2"], permitted=("vr1", "vr2"), loaded=("vr2",))
+
+        assert "- Record ID: r-vr2 | Doc vr2" in result
+
+    @pytest.mark.asyncio
+    async def test_a_record_whose_id_the_model_already_holds_is_not_listed(self, monkeypatch) -> None:
+        """Read by a fetch, or listed by an earlier search of the request."""
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+
+        result, _ = await self._search(
+            ["vr1"], ["vr1", "vr2", "vr3"], permitted=("vr1", "vr2", "vr3"), known_record_ids={"r-vr2"},
+        )
+
+        listed = result.split("Also matched, not shown", 1)[1]
+        assert "r-vr2" not in listed
+        assert "- Record ID: r-vr3 | Doc vr3" in listed
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("env", [{}, {"HIGH_ACCURACY_MODE": "true", "UNSHOWN_MATCHES_LIST": "false"}])

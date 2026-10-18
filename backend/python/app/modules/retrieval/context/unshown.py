@@ -47,10 +47,13 @@ def unshown_matches(
     exclude: Collection[Any],
     permitted_records: Mapping[str, Any],
     limit: int = MAX_UNSHOWN_MATCHES,
+    *,
+    known_record_ids: Collection[str] = (),
 ) -> list[UnshownMatch]:
     """The first ``limit`` of ``matched_record_ids`` (virtual record ids, best
     first) not in ``exclude`` and present in ``permitted_records``, the
-    retrieval service's permission-checked map of graph records."""
+    retrieval service's permission-checked map of graph records. A record
+    whose id is in ``known_record_ids`` (the model already holds it) is skipped."""
     found: list[UnshownMatch] = []
     for vrid in dict.fromkeys(matched_record_ids):
         if len(found) >= limit:
@@ -59,7 +62,7 @@ def unshown_matches(
         if vrid in exclude or not isinstance(record, dict):
             continue
         record_id = record.get("_key") or record.get("id")
-        if record_id:
+        if record_id and str(record_id) not in known_record_ids:
             name = " ".join(str(record.get("recordName") or record.get("record_name") or "").split())
             if len(name) > MAX_TITLE_CHARS:
                 name = name[: MAX_TITLE_CHARS - 1] + "…"
