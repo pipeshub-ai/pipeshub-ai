@@ -196,23 +196,31 @@ DUPLICATE_RECONCILE_ATTEMPTS_FIELD = "duplicateReconcileAttempts"
 DUPLICATE_RECONCILE_GRACE_MS = 10 * 60 * 1000
 
 
+_EXTRACTION_PENDING = frozenset({
+    ProgressStatus.QUEUED.value,
+    ProgressStatus.IN_PROGRESS.value,
+    ProgressStatus.PAUSED.value,
+})
+
+
 def promoted_duplicate_extraction_status(
     new_indexing_status: str, primary: Mapping[str, Any]
 ) -> str | None:
     """``extractionStatus`` for a QUEUED duplicate promoted when ``primary`` finished,
-    or None while the primary's enrichment is still IN_PROGRESS, so the duplicates
-    stay QUEUED until the handler or stale recovery resumes and finishes it.
+    or None while the primary's classification is still pending, so the duplicates
+    stay QUEUED until the classify stage writes the primary's final status and
+    releases them.
 
     The duplicate shares the primary's enrichment, so an indexed primary lends
-    its own outcome: COMPLETED, FAILED, or NOT_STARTED when enrichment was
-    deliberately deferred (an inline enrichment is IN_PROGRESS from the same
-    write that marks the primary indexed). A primary with no status comes from
-    before that write existed; nothing would ever resume it, so it is promoted
-    as the old mapping did, COMPLETED.
+    its own outcome once it has one: COMPLETED, SKIPPED or FAILED. The indexed
+    write sets QUEUED, and older inline enrichment wrote IN_PROGRESS, so both
+    mean "not decided yet". A primary with no status comes from before that write
+    existed; nothing would ever resume it, so it is promoted as the old mapping
+    did, COMPLETED.
     """
     if new_indexing_status == ProgressStatus.COMPLETED.value:
         primary_status = primary.get("extractionStatus")
-        if primary_status == ProgressStatus.IN_PROGRESS.value:
+        if primary_status in _EXTRACTION_PENDING:
             return None
         return primary_status or ProgressStatus.COMPLETED.value
     if new_indexing_status == ProgressStatus.EMPTY.value:
@@ -491,6 +499,16 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def ensure_pipeline_schema(self) -> None:
+        """Ensure what the indexing pipeline writes against: the stage-state store with its
+        unique key and indexes, and the current record schema where the engine enforces one.
+
+        Idempotent, and safe beside the connector service's ``ensure_schema``: the indexing
+        service runs it before consuming because that bootstrap may not have run yet (a first
+        start, or an older connector image). Raises when the schema cannot be ensured.
+        """
+
     # ==================== Transaction Management ====================
 
     @abstractmethod
@@ -546,7 +564,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         """
         Get a document by its key from a collection.
 
@@ -648,7 +666,7 @@ class IGraphDBProvider(ABC):
         *,
         raise_on_error: bool = False,
         after_key: str | None = None,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """
         Fetch a single page of documents from a collection using database-level
         pagination, so memory usage stays proportional to `limit` regardless of
@@ -703,6 +721,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def ensure_nodes(
+        self,
+        nodes: list[dict[str, Any]],
+        collection: str,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Create each node whose ``id`` does not exist yet; never modify an existing one.
+
+        For shared nodes with derived keys (taxonomy terms, entities): concurrent
+        writers of one key neither conflict nor overwrite each other.
+
+        Args:
+            nodes (List[Dict]): Documents with an 'id' field, as for batch_upsert_nodes
+            collection (str): Collection/table name
+            transaction (Optional[Any]): Optional transaction context
+
+        Raises:
+            Exception: when a node could not be created for a reason other than
+                already existing.
+        """
+        pass
+
+    @abstractmethod
     async def delete_nodes(
         self,
         keys: list[str],
@@ -727,7 +769,7 @@ class IGraphDBProvider(ABC):
         self,
         key: str,
         collection: str,
-        node_updates: dict,
+        node_updates: dict[str, Any],
         transaction: str | None = None
     ) -> bool:
         """
@@ -1737,6 +1779,7 @@ class IGraphDBProvider(ABC):
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        status_field: str = "indexingStatus",
     ) -> list['Record']:
         """
         Get records by their indexing status.
@@ -1759,6 +1802,10 @@ class IGraphDBProvider(ABC):
                         on top of status_filters.
             visibility: ``LIVE`` (default) leaves out records in the trash,
                 ``DELETED`` returns only those, ``ALL`` returns both.
+            status_field (str): The status field ``status_filters`` applies to:
+                ``indexingStatus`` (default) or ``extractionStatus`` (a stage
+                retry selects on the latter). ``exclude_statuses`` always
+                applies to ``indexingStatus``.
 
         Returns:
             list[Record]: Typed records matching the filters, sorted by key.
@@ -2034,6 +2081,55 @@ class IGraphDBProvider(ABC):
                        other status and were left alone - a normal outcome, not an error.
         """
         pass
+
+    # ==================== Pipeline stage states ====================
+
+    @abstractmethod
+    async def stage_state_get(self, key: str) -> dict[str, Any] | None:
+        """One stage-state document by key (``id`` holds the key), or None."""
+
+    @abstractmethod
+    async def stage_states_for_revision(self, virtual_record_id: str, rev: str) -> list[dict[str, Any]]:
+        """Every stage-state document of one content revision."""
+
+    @abstractmethod
+    async def stage_state_create(self, document: dict[str, Any]) -> bool:
+        """Insert a stage state on its unique key (``document["id"]``); False when the key exists.
+
+        Raises on infrastructure errors, so an outage is never mistaken for a lost race.
+        """
+
+    @abstractmethod
+    async def stage_state_compare_and_set(
+        self,
+        key: str,
+        expected: str,
+        new: str,
+        fields: dict[str, Any],
+        *,
+        expected_attempt: int | None = None,
+    ) -> bool:
+        """Set ``status`` to ``new`` and write ``fields`` in one statement, only while ``status == expected``
+        (and, with ``expected_attempt``, while ``attempt`` is still that run's).
+
+        False when the status was something else or a concurrent writer won; raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def stage_states_stale(
+        self, statuses: list[str], updated_before_ms: int, limit: int
+    ) -> list[dict[str, Any]]:
+        """Stage states in ``statuses`` with ``updatedAtMs < updated_before_ms``, oldest first."""
+
+    @abstractmethod
+    async def compare_and_set_record_fields(
+        self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
+    ) -> list[str]:
+        """Write ``fields`` on each record whose ``contentRev`` equals ``content_rev``, in one statement.
+
+        Returns the ids updated; a record that moved to another revision is left alone.
+        Raises on infrastructure errors.
+        """
 
     @abstractmethod
     async def get_existing_record_keys(

@@ -2,14 +2,13 @@
 
 import asyncio
 import os
-import threading
-import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Awaitable, List, TypeVar, cast
-from weakref import WeakKeyDictionary
+from typing import TYPE_CHECKING, Awaitable, List, TypeVar, cast
 
-from app.utils.worker_scaling import scaled
+if TYPE_CHECKING:
+    from app.services.llm_gateway.gateway import SlotHealth
+    from app.services.llm_gateway.limiter import CrossLoopSemaphore
 
 T = TypeVar("T")
 
@@ -28,128 +27,58 @@ MAX_CONCURRENT_PAGE_BUILDS = 4
 
 TABLE_ROW_BATCH_SIZE = 50
 
-_sem_by_loop: "WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = (
-    WeakKeyDictionary()
-)
-_sem_lock = threading.Lock()
 
+def max_table_rows_for_llm() -> int:
+    """Table rows per record that get an LLM-written description.
 
-def _indexing_llm_semaphore() -> asyncio.Semaphore:
-    """Return the semaphore bound to the running loop, creating it on first use.
-
-    This process runs several event loops: the uvicorn loop plus the Kafka and Redis
-    indexing consumers, which each call ``asyncio.new_event_loop()`` in a worker thread.
-    ``asyncio.Semaphore`` binds to a loop on first await and then raises if awaited from
-    another, so a single module-level instance would crash. The double-checked init is
-    guarded by a threading lock because those loops live in different threads.
+    Running total across the record's tables; rows past it get deterministic
+    "column: value" text. Every table parser reads the cap from here.
     """
-    loop = asyncio.get_running_loop()
-    sem = _sem_by_loop.get(loop)
-    if sem is None:
-        with _sem_lock:
-            sem = _sem_by_loop.get(loop)
-            if sem is None:
-                sem = asyncio.Semaphore(scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS))
-                _sem_by_loop[loop] = sem
-    return sem
+    return max(0, int(os.getenv("MAX_TABLE_ROWS_FOR_LLM", "1000")))
 
+def _indexing_llm_semaphore() -> "CrossLoopSemaphore":
+    """The LLM gateway's cap: one per process, shared by every event loop in it.
 
-class _SlotStats:
-    """Process-wide totals for the indexing LLM slots, summed over every loop.
-
-    Wait time against hold time is what tells our own slot budget apart from
-    a provider limit: slots saturated with long waits and steady call times
-    mean the budget binds; rising call times or rate-limit retries mean the
-    provider does.
+    A semaphore per loop multiplied the budget by the number of loops (the server
+    loop and the worker loop).
     """
+    # Imported here: the gateway sizes its cap from this module.
+    from app.services.llm_gateway.gateway import get_llm_gateway
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self.in_use = 0
-        self.waiting = 0
-        self.acquired = 0
-        self.wait_s = 0.0
-        self.hold_s = 0.0
-        self.rate_limit_retries = 0
-        # Slots are budgeted per loop (see _indexing_llm_semaphore), so the
-        # free count is per loop too.
-        self.in_use_by_loop: WeakKeyDictionary[asyncio.AbstractEventLoop, int] = WeakKeyDictionary()
-
-    def snapshot(self) -> dict[str, float | int]:
-        with self._lock:
-            acquired = self.acquired
-            # hold_s only grows on release, so in-flight calls must not dilute its mean.
-            released = acquired - self.in_use
-            return {
-                "slots_per_loop": scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS),
-                "loops": len(_sem_by_loop),
-                "in_use": self.in_use,
-                "waiting": self.waiting,
-                "acquired": acquired,
-                "rate_limit_retries": self.rate_limit_retries,
-                "wait_s_total": round(self.wait_s, 1),
-                "hold_s_total": round(self.hold_s, 1),
-                "wait_s_mean": round(self.wait_s / acquired, 3) if acquired else 0.0,
-                "hold_s_mean": round(self.hold_s / released, 3) if released else 0.0,
-            }
+    return get_llm_gateway().limiter
 
 
-_slot_stats = _SlotStats()
+def indexing_llm_stats() -> "SlotHealth":
+    """The /health ``indexing_llm`` block: use of the cap, wait and hold time, rate-limit retries."""
+    from app.services.llm_gateway.gateway import get_llm_gateway
 
-
-def indexing_llm_stats() -> dict[str, float | int]:
-    return _slot_stats.snapshot()
+    return get_llm_gateway().slot_stats()
 
 
 def note_indexing_llm_rate_limit() -> None:
-    with _slot_stats._lock:
-        _slot_stats.rate_limit_retries += 1
+    from app.services.llm_gateway.gateway import get_llm_gateway
+
+    get_llm_gateway().note_rate_limit_retry()
 
 
 def indexing_llm_slots_remaining() -> int:
-    """How many indexing LLM calls can start without waiting.
+    """How many indexing LLM calls can start without waiting, process-wide.
 
-    Used to skip the multi-turn extractor when the process is already
-    saturated. Returns the configured ceiling when no loop is running.
+    Used to skip the multi-turn extractor when the process is already saturated.
     """
-    ceiling = scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS)
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return ceiling
-    with _slot_stats._lock:
-        held = _slot_stats.in_use_by_loop.get(loop, 0)
-    return max(0, ceiling - held)
+    sem = _indexing_llm_semaphore()
+    return max(0, sem.limit - sem.in_use)
 
 
 @asynccontextmanager
 async def indexing_llm_slot() -> AsyncGenerator[None, None]:
-    """Hold a slot in the process-wide indexing LLM budget."""
-    stats = _slot_stats
-    loop = asyncio.get_running_loop()
-    sem = _indexing_llm_semaphore()
-    with stats._lock:
-        stats.waiting += 1
-    asked = time.perf_counter()
-    try:
-        await sem.acquire()
-    finally:
-        with stats._lock:
-            stats.waiting -= 1
-    granted = time.perf_counter()
-    with stats._lock:
-        stats.in_use += 1
-        stats.in_use_by_loop[loop] = stats.in_use_by_loop.get(loop, 0) + 1
-        stats.acquired += 1
-        stats.wait_s += granted - asked
-    try:
+    """Hold a permit of the process-wide indexing LLM cap (the LLM gateway's).
+
+    For a caller that makes its model call itself; ``LLMGateway.invoke`` takes the
+    same permit and adds the breaker, the hang ceiling and rate-limit retries.
+    """
+    async with _indexing_llm_semaphore().slot():
         yield
-    finally:
-        sem.release()
-        with stats._lock:
-            stats.in_use -= 1
-            stats.in_use_by_loop[loop] -= 1
-            stats.hold_s += time.perf_counter() - granted
 
 
 async def gather_with_concurrency(

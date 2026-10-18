@@ -2582,6 +2582,11 @@
         "noRecordTypes": "Keine Datensatztypen verfügbar",
         "localWatcherLabel": "LOKALER WATCHER",
         "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen",
+        "classification": "Klassifizierung",
+        "classificationSkipped": "Übersprungen",
+        "retryFailedClassification": "Fehlgeschlagene Klassifizierung wiederholen",
+        "retryClassificationSuccess": "Klassifizierung erneut eingeplant",
+        "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden",
         "lastRun": {
           "title": "Letzte Synchronisierung",
           "outcome": {
@@ -4516,6 +4521,12 @@
       "noRecordMetadata": "Für dieses Element liegen keine zusätzlichen Metadaten vor."
     },
     "indexingReasonAria": "Details zur Indexierung",
+    "stageTrackLabel": "Pipeline",
+    "stageParsed": "Geparst",
+    "stageSearchable": "Durchsuchbar",
+    "stageClassified": "Klassifiziert",
+    "stageAttempt": "Versuch {{n}}",
+    "stageDetailsAria": "Phasendetails",
     "tabRecordInformation": "Datensatzinformationen",
     "tabDocumentDetails": "Dokumentdetails",
     "chat": "Chat",
@@ -4802,6 +4813,8 @@
   },
   "collections": {
     "stats": {
+      "retryClassificationStart": "Klassifizierung erneut eingeplant",
+      "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden",
       "title": "Analysen",
       "menuLabel": "Analysen",
       "fetchError": "Indexierungsstatistiken konnten nicht geladen werden",

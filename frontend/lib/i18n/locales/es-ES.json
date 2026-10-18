@@ -2602,6 +2602,11 @@
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "VIGILANTE LOCAL",
         "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos",
+        "classification": "Clasificación",
+        "classificationSkipped": "Omitidos",
+        "retryFailedClassification": "Reintentar clasificación fallida",
+        "retryClassificationSuccess": "Reintento de clasificación en cola",
+        "retryClassificationError": "No se pudo reintentar la clasificación",
         "lastRun": {
           "title": "Última sincronización",
           "outcome": {
@@ -4552,6 +4557,12 @@
       "noRecordMetadata": "No hay metadatos adicionales para este elemento."
     },
     "indexingReasonAria": "Detalles del error de indexación",
+    "stageTrackLabel": "Canalización",
+    "stageParsed": "Analizado",
+    "stageSearchable": "Buscable",
+    "stageClassified": "Clasificado",
+    "stageAttempt": "Intento {{n}}",
+    "stageDetailsAria": "Detalles de la etapa",
     "tabRecordInformation": "Información del registro",
     "tabDocumentDetails": "Detalles del documento",
     "chat": "Chat",
@@ -4826,6 +4837,8 @@
   },
   "collections": {
     "stats": {
+      "retryClassificationStart": "Reintento de clasificación en cola",
+      "retryClassificationError": "No se pudo reintentar la clasificación",
       "title": "Analíticas",
       "menuLabel": "Analíticas",
       "fetchError": "No se han podido cargar las estadísticas de indexación",

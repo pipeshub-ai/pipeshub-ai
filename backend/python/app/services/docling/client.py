@@ -186,7 +186,11 @@ class DoclingClient(BaseServiceClient):
             )
             return None
         if not result.get("success"):
-            self.logger.error(f"❌ Docling service returned error for {record_name}: {result.get('error', 'Unknown error')}")
+            self.logger.error(
+                f"❌ Docling service returned error for {record_name} "
+                f"({result.get('errorCode', 'UNKNOWN')}, status {response.status_code}): "
+                f"{result.get('error', 'Unknown error')}"
+            )
             return None
 
         return result["parse_result"]

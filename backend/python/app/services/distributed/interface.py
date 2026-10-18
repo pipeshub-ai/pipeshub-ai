@@ -76,3 +76,6 @@ class IRetryTracker(ABC):
         the backstop disarmed rather than tripping it.
         """
         return 0
+
+    async def clear_deliveries(self, message_id: str) -> None:
+        """Start the delivery count of *message_id* over, keeping its failure count."""

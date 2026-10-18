@@ -6,7 +6,7 @@ import re
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from logging import Logger
-from typing import AsyncContextManager, Optional, TypeVar
+from typing import Any, AsyncContextManager, Optional, TypeVar
 
 # Import Neo4j exceptions with fallback for compatibility
 try:
@@ -743,7 +743,7 @@ class GraphTransactionStore(TransactionStore):
         collection: str,
         *,
         raise_on_error: bool = False,
-    ) -> Optional[dict]:
+    ) -> Optional[dict[str, Any]]:
         return await self.graph_provider.get_edge(
             from_id, from_collection, to_id, to_collection, collection,
             transaction=self.txn, raise_on_error=raise_on_error,
@@ -1123,7 +1123,7 @@ class GraphTransactionStore(TransactionStore):
                 transaction=self.txn
             )
 
-    async def batch_create_edges(self, edges: list[dict], collection: str) -> bool:
+    async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str) -> bool:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
     async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:

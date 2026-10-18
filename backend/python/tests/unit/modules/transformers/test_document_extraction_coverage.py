@@ -180,10 +180,10 @@ class TestFallbackSummaryBranches:
         # Create a response without .content attribute and not a string
         mock_response = MagicMock(spec=[])  # no attributes at all
 
-        ext.llm = AsyncMock()
-        ext.llm.ainvoke = AsyncMock(return_value=mock_response)
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
 
-        result = await ext._fallback_summary([{"type": "text", "text": "content"}])
+        result = await ext._fallback_summary(llm, [{"type": "text", "text": "content"}])
 
         # summary_text will be "" -> stripped -> empty -> returns None
         assert result is None
@@ -196,8 +196,8 @@ class TestFallbackSummaryBranches:
         mock_response = MagicMock()
         mock_response.content = "Summary text"
 
-        ext.llm = AsyncMock()
-        ext.llm.ainvoke = AsyncMock(return_value=mock_response)
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=mock_response)
 
         message_content = [
             {"type": "text", "text": "Document Content: "},
@@ -205,12 +205,12 @@ class TestFallbackSummaryBranches:
             {"type": "audio", "data": "some audio"},  # should be filtered out
         ]
 
-        result = await ext._fallback_summary(message_content)
+        result = await ext._fallback_summary(llm, message_content)
 
         assert result is not None
         assert result.summary == "Summary text"
         # Verify the call included text and image_url but not audio
-        call_args = ext.llm.ainvoke.call_args[0][0]
+        call_args = llm.ainvoke.call_args[0][0]
         # The HumanMessage.content list should have 2 prompt items + 2 from message_content
         content_items = call_args[0].content
         types_in_content = [item.get("type") for item in content_items]

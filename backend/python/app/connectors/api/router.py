@@ -13,7 +13,7 @@ import tempfile
 import time
 from collections.abc import AsyncGenerator, Mapping
 from pathlib import Path
-from typing import Annotated, Any, NamedTuple
+from typing import Annotated, Any, NamedTuple, cast
 from urllib.parse import parse_qs, urlencode, urlparse
 from uuid import uuid4
 
@@ -136,6 +136,8 @@ from app.edition_containers import ConnectorAppContainer
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
 from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
+from app.modules.pipeline.models import RETRYABLE_STAGES
+from app.modules.pipeline.state import stage_summaries
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.platform_settings import (
@@ -1763,6 +1765,23 @@ async def convert_buffer_to_pdf_stream(
             fallback_filename="converted_file.pdf"
         )
 
+async def _stage_states_of(graph_provider: IGraphDBProvider, record: object) -> list[dict[str, Any]]:
+    """Pipeline stage states for the record's current revision; empty when it has none yet."""
+    if not isinstance(record, dict):
+        return []
+    doc = cast("dict[str, object]", record)
+    vrid, rev = doc.get("virtualRecordId"), doc.get("contentRev")
+    if not (isinstance(vrid, str) and vrid and isinstance(rev, str) and rev):
+        return []
+    try:
+        summaries = await stage_summaries(graph_provider, vrid, rev)
+    except Exception:
+        # Stage detail is diagnostics; the record itself is still worth returning.
+        logging.getLogger(__name__).warning("Could not read stage states for revision %s:%s", vrid, rev, exc_info=True)
+        return []
+    return [s.model_dump(mode="json", by_alias=True) for s in summaries]
+
+
 @router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def get_record_by_id(
@@ -1790,6 +1809,8 @@ async def get_record_by_id(
             await _refuse_hidden_demo_record(
                 graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
             )
+            record: object = cast("dict[str, object]", has_access).get("record")
+            has_access["stageStates"] = await _stage_states_of(graph_provider, record)
             return has_access
         else:
             raise HTTPException(
@@ -2352,6 +2373,26 @@ def _parse_status_filters(request_body: dict | None) -> list[str] | None:
     return raw_filters if raw_filters else None
 
 
+def _parse_stages(request_body: dict[str, Any] | None) -> list[str] | None:
+    """Parse optional ``stages``: only these stages re-run, on records selected by their own status."""
+    body = cast("dict[str, object]", request_body or {})
+    raw = body.get("stages")
+    if raw is None:
+        return None
+    items = cast("list[object]", raw) if isinstance(raw, list) else []
+    names = [s for s in items if isinstance(s, str)]
+    if not names or len(names) != len(items):
+        raise HTTPException(status_code=400, detail="stages must be a non-empty array of stage names")
+    unknown = sorted(set(names) - RETRYABLE_STAGES.keys())
+    if unknown:
+        raise HTTPException(
+            status_code=400, detail=f"unknown stages {unknown}; stages that can be re-run: {sorted(RETRYABLE_STAGES)}"
+        )
+    if len({RETRYABLE_STAGES[s] for s in names}) > 1:
+        raise HTTPException(status_code=400, detail="stages re-run together must report the same status field")
+    return list(dict.fromkeys(names))
+
+
 def _build_reindex_event(
     *,
     event_type: str,
@@ -2363,6 +2404,7 @@ def _build_reindex_event(
     depth: int | None = None,
     user_key: str | None = None,
     status_filters: list[str] | None = None,
+    stages: list[str] | None = None,
 ) -> dict:
     """Build the {eventType, topic, payload} envelope for a '*.reindex' sync-event.
 
@@ -2384,6 +2426,8 @@ def _build_reindex_event(
         payload["userKey"] = user_key
     if status_filters:
         payload["statusFilters"] = status_filters
+    if stages:
+        payload["stages"] = stages
     return {"eventType": event_type, "topic": "sync-events", "payload": payload}
 
 
@@ -2782,6 +2826,9 @@ async def reindex_connector(
     Request Body (optional):
         statusFilters: list[str] - indexing statuses to reindex (e.g. ["FAILED"]).
                        Omit to reindex everything.
+        stages: list[str] - re-run only these pipeline stages (e.g. ["classify"]) on
+                records whose stage status matches statusFilters (default FAILED);
+                nothing is re-parsed or re-embedded.
     """
     try:
         container = request.app.container
@@ -2800,6 +2847,7 @@ async def reindex_connector(
         except (json.JSONDecodeError, TypeError):
             request_body = None
         status_filters = _parse_status_filters(request_body)
+        stages = _parse_stages(request_body)
 
         instance = await connector_registry.get_connector_instance(
             connector_id=connector_id,
@@ -2864,6 +2912,7 @@ async def reindex_connector(
             connector_id=connector_id,
             connector_name=connector_normalized,
             status_filters=status_filters,
+            stages=stages,
         )
 
         try:

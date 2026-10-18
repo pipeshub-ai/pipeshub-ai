@@ -129,6 +129,14 @@ class TestRetryManagerIncrementAndCheck:
         assert (numkeys, key, ttl) == (1, "messaging:deliveries:msg-1", manager.ttl_seconds)
 
     @pytest.mark.asyncio
+    async def test_clear_deliveries_drops_only_the_delivery_counter(self, mock_logger, mock_redis) -> None:
+        mock_redis.delete = AsyncMock(return_value=1)
+        manager = RetryManager(mock_logger, redis_client=mock_redis)
+
+        await manager.clear_deliveries("msg-1")
+        mock_redis.delete.assert_awaited_once_with("messaging:deliveries:msg-1")
+
+    @pytest.mark.asyncio
     async def test_increment_second_attempt(self, mock_logger, mock_redis):
         """Test second attempt increments to 2."""
         mock_redis.eval = AsyncMock(return_value=2)

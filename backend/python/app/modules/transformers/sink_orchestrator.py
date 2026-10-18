@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
     from app.models.entities import Record
     from app.modules.entity_resolution import EntityResolver
+    from app.models.entities import EntityRecord
     from app.modules.named_entities.domain.models import NamedEntityExtraction
 
 
@@ -110,6 +111,29 @@ class SinkOrchestrator(Transformer):
         )
         return BlocksContainer(blocks=limited_blocks, block_groups=limited_block_groups)
 
+    async def write_blob(self, ctx: TransformContext) -> None:
+        """Write the record blob with the SQL row limit applied for the duration of the write.
+
+        Every blob write must go through here; a direct ``blob_storage.apply`` (e.g. the
+        rewrite after enrichment) would store every row the limit exists to drop.
+        """
+        record = ctx.record
+        full_block_containers = None
+        is_sql = any(
+            bg.sub_type in (GroupSubType.SQL_TABLE, GroupSubType.SQL_VIEW)
+            for bg in record.block_containers.block_groups
+        ) if record.block_containers and record.block_containers.block_groups else False
+
+        if is_sql and self.LIMIT_SQL_ROW_BLOCKS_TO is not None:
+            full_block_containers = record.block_containers
+            record.block_containers = self._build_limited_sql_block_container(
+                full_block_containers, self.LIMIT_SQL_ROW_BLOCKS_TO
+            )
+        try:
+            await self.blob_storage.apply(ctx)
+        finally:
+            if full_block_containers is not None:
+                record.block_containers = full_block_containers
 
     @staticmethod
     def _activity_labels(record: Record) -> tuple[str, str, str]:
@@ -132,13 +156,8 @@ class SinkOrchestrator(Transformer):
         return connector, org, kb
 
     async def apply(self, ctx: TransformContext) -> None:
-        """Legacy entry-point: runs both phases (index + enrich) sequentially.
-
-        Preserved for backward compatibility with code that has not been
-        migrated to the split ``index()`` / ``enrich()`` API.
-        """
+        """``Transformer`` entry point: index the record. Classification is a pipeline stage."""
         await self.index(ctx)
-        await self.enrich(ctx)
 
     # ------------------------------------------------------------------
     # Phase 1: INDEX — vector store + blob.  Document becomes searchable.
@@ -152,33 +171,16 @@ class SinkOrchestrator(Transformer):
         enrichment (``extractionStatus``) is left unchanged here.
         """
         record = ctx.record
-        full_block_containers = None
         skip_blob = bool(ctx.settings.get("skip_blob"))
         skip_vector_store = bool(ctx.settings.get("skip_vector_store")) or bool(
             ctx.settings.get("sink_only")
         )
 
         if not skip_blob:
-            is_sql = any(
-                bg.sub_type in (GroupSubType.SQL_TABLE, GroupSubType.SQL_VIEW)
-                for bg in record.block_containers.block_groups
-            ) if record.block_containers and record.block_containers.block_groups else False
-
-            if is_sql and self.LIMIT_SQL_ROW_BLOCKS_TO is not None:
-                full_block_containers = record.block_containers
-                record.block_containers = self._build_limited_sql_block_container(
-                    full_block_containers, self.LIMIT_SQL_ROW_BLOCKS_TO
-                )
-
             with stage("images.describe"):
                 await self._describe_images(ctx)
-
-            try:
-                with stage("blob.write"):
-                    await self.blob_storage.apply(ctx)
-            finally:
-                if full_block_containers is not None:
-                    record.block_containers = full_block_containers
+            with stage("blob.write"):
+                await self.write_blob(ctx)
 
         record_id = record.id
         with stage("graph.read"):
@@ -473,10 +475,14 @@ class SinkOrchestrator(Transformer):
         """Mark indexingStatus=COMPLETED.
 
         With ``ENRICHMENT_FOLLOWS`` set, the same write marks extractionStatus
-        IN_PROGRESS and keeps ``processingStartedAt``: no reader may see the
-        record indexed with its enrichment not yet started, which a duplicate
-        would copy as finished, and stale recovery ages a stuck enrichment by
-        that timestamp. Enrichment clears it when it ends.
+        QUEUED: no reader may see the record indexed with an extractionStatus
+        that looks final, which a duplicate would copy as its own. The classify
+        stage owns the status from here, and nothing on the record path is
+        still running, so ``processingStartedAt`` is cleared.
+
+        ``isVLMOcrProcessed`` is written here because only the record path
+        knows how the record was parsed; the stage that enriches it later
+        reads the stored record, not the parse.
         """
         record = ctx.record
         timestamp = get_epoch_timestamp_in_ms()
@@ -486,12 +492,13 @@ class SinkOrchestrator(Transformer):
             "indexingStatus": ProgressStatus.COMPLETED.value,
             **indexed_copy_fields(ProgressStatus.COMPLETED),
             "lastIndexTimestamp": timestamp,
+            "processingStartedAt": None,
             "isDirty": False,
         }
         if ctx.settings.get(ENRICHMENT_FOLLOWS):
-            status["extractionStatus"] = ProgressStatus.IN_PROGRESS.value
-        else:
-            status["processingStartedAt"] = None
+            status["extractionStatus"] = ProgressStatus.QUEUED.value
+        if getattr(record, "is_vlm_ocr_processed", False) is True:
+            status["isVLMOcrProcessed"] = True
         # Update, never upsert: a record deleted mid-indexing would come back as
         # a bare node that keeps its vectors from the orphan sweep.
         updated = await self.graph_provider.batch_update_nodes(
@@ -520,7 +527,8 @@ class SinkOrchestrator(Transformer):
         )
 
     # ------------------------------------------------------------------
-    # Phase 2: ENRICH — graph DB taxonomy.  Can run later (deferred).
+    # Phase 2: ENRICH — run by the classify pipeline stage once the record is
+    # searchable (``app/modules/pipeline/stages/classify.py``).
     # ------------------------------------------------------------------
 
     async def resolve_entities(self, ctx: TransformContext) -> None:
@@ -537,13 +545,67 @@ class SinkOrchestrator(Transformer):
             return
         await self.entity_resolver.resolve(ctx)
 
+    def entity_resolution_mode(self) -> str:
+        """The resolver's mode, ``off`` without one. Part of the classify stage's fingerprint."""
+        if self.entity_resolver is None:
+            return "off"
+        mode = getattr(self.entity_resolver, "mode", None)
+        return str(getattr(mode, "value", mode) or "off")
+
+    async def prepare_enrichment(self, ctx: TransformContext) -> None:
+        """Resolve the classification's taxonomy names to canonical nodes, in place.
+
+        Taxonomy names must be resolved before the stored record, summary and
+        graph writes all consume them. Writes nothing.
+        """
+        metadata = ctx.record.semantic_metadata
+        if metadata is None:
+            return
+        # A None list is unknown (a fallback summary) and must keep the
+        # record's edges; the resolver hands every list back as one.
+        unknown = [name for name in ("topics", "languages") if getattr(metadata, name) is None]
+        with stage("entities.resolve"):
+            await self.resolve_entities(ctx)
+        for name in unknown:
+            setattr(metadata, name, None)
+
+    async def write_enrichment(self, ctx: TransformContext, *, index_summary: bool = True) -> None:
+        """The summary point, graph taxonomy and the entity points it touches, of a
+        prepared classification (``prepare_enrichment``), for ``ctx.record``.
+
+        ``extractionStatus`` is not written: the classify stage's headline owns it,
+        and writes it only while the record is still on the revision classified.
+        ``index_summary`` is False for the other records of the same content, which
+        share the summary point. Named entities are the entities stage's.
+        """
+        record = ctx.record
+        metadata = record.semantic_metadata
+        if metadata is None:
+            return
+        if index_summary and (metadata.summary or "").strip():
+            # Not wrapped in a stage: it times its own steps.
+            await self.vector_store.index_record_summary(
+                record.id,
+                record.virtual_record_id,
+                record.org_id,
+                metadata,
+                record,
+            )
+        with stage("graph.enrich"):
+            touched_entities = await self.graphdb.write_taxonomy(
+                record.id, metadata, resolution=self.graphdb.resolution_of(ctx)
+            )
+        await self._upsert_touched_entities(ctx, touched_entities)
+
     async def enrich(self, ctx: TransformContext) -> None:
-        """Phase 2: write classification metadata to the graph database.
+        """Write classification metadata to the graph database, with extractionStatus.
 
         Calls ``graphdb.apply()`` which already sets
         ``extractionStatus=COMPLETED`` once it finishes.  Callers should
         ensure ``ctx.record.semantic_metadata`` is populated before calling
-        this method.
+        this method. Indexing enriches through the classify stage
+        (``prepare_enrichment`` / ``write_enrichment``), which leaves the status
+        to the stage.
 
         After graph enrichment, the entities touched during this run are
         synced to the entity vector store (non-blocking: failures are logged
@@ -554,7 +616,11 @@ class SinkOrchestrator(Transformer):
         self.logger.debug(
             "✅ Graph enrichment completed for record %s", ctx.record.id
         )
+        await self._upsert_touched_entities(ctx, touched_entities)
 
+    async def _upsert_touched_entities(
+        self, ctx: TransformContext, touched_entities: "list[EntityRecord] | None"
+    ) -> None:
         if self.entity_vector_store and touched_entities:
             try:
                 with stage("entities.upsert", detail=f"{len(touched_entities)} entities"):

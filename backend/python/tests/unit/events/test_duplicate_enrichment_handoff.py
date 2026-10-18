@@ -352,3 +352,22 @@ class TestTheIntervalBetweenIndexingAndEnrichment:
         assert decision.skip_indexing is True
         assert store.records["dup"]["indexingStatus"] == COMPLETED
         assert store.records["dup"]["extractionStatus"] == NOT_STARTED
+
+
+class TestPromotedExtractionStatus:
+    """The mapping a promotion applies; a pending classification must hold the copy."""
+
+    @pytest.mark.parametrize("pending", [QUEUED, IN_PROGRESS, ProgressStatus.PAUSED.value])
+    def test_a_primary_still_classifying_holds_its_duplicates(self, pending: str) -> None:
+        assert promoted_duplicate_extraction_status(COMPLETED, {"extractionStatus": pending}) is None
+
+    @pytest.mark.parametrize("final", [COMPLETED, FAILED, ProgressStatus.SKIPPED.value, NOT_STARTED])
+    def test_a_primary_with_a_final_state_lends_it(self, final: str) -> None:
+        assert promoted_duplicate_extraction_status(COMPLETED, {"extractionStatus": final}) == final
+
+    def test_a_primary_from_before_the_status_existed_counts_as_completed(self) -> None:
+        assert promoted_duplicate_extraction_status(COMPLETED, {}) == COMPLETED
+
+    def test_empty_and_failed_indexing_map_directly(self) -> None:
+        assert promoted_duplicate_extraction_status(ProgressStatus.EMPTY.value, {}) == ProgressStatus.EMPTY.value
+        assert promoted_duplicate_extraction_status(FAILED, {}) == FAILED

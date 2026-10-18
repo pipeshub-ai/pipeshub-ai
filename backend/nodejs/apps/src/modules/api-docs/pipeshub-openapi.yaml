@@ -5258,6 +5258,49 @@ components:
         userPermission:
           type: string
 
+    StageStateSummary:
+      type: object
+      additionalProperties: false
+      description: |
+        Status of one pipeline stage (e.g. `classify`) for the record's current
+        content revision.
+      required:
+        - stage
+        - status
+        - reason
+        - attempt
+        - startedAtMs
+        - finishedAtMs
+        - updatedAtMs
+      properties:
+        stage:
+          type: string
+          description: Pipeline stage name.
+          example: classify
+        status:
+          type: string
+          description: Stage status (same values as `indexingStatus`).
+          example: COMPLETED
+        reason:
+          type: string
+          nullable: true
+          description: Failure or skip reason, when there is one.
+        attempt:
+          type: integer
+          description: Number of times this stage has run for this revision.
+        startedAtMs:
+          type: integer
+          format: int64
+          nullable: true
+        finishedAtMs:
+          type: integer
+          format: int64
+          nullable: true
+        updatedAtMs:
+          type: integer
+          format: int64
+          nullable: true
+
     GetRecordByIdResponseSchema:
       type: object
       additionalProperties: false
@@ -5525,6 +5568,14 @@ components:
               nullable: true
               additionalProperties: false
               properties: {}
+        stageStates:
+          type: array
+          description: |
+            Per-stage pipeline status for the record's current content revision.
+            Empty for records indexed before pipeline stages existed. The
+            `classify` stage's status is mirrored on `record.extractionStatus`.
+          items:
+            $ref: '#/components/schemas/StageStateSummary'
         knowledgeBase:
           type: object
           nullable: true
@@ -6773,6 +6824,19 @@ components:
           description: |
             Statuses to reindex. Omitting this reindexes everything for a KB
             connector; other connector types default server-side to `FAILED`.
+            When `stages` is set, these match the stage's own status field
+            instead of `indexingStatus`.
+        stages:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [classify]
+          description: |
+            Re-run only these pipeline stages instead of the full pipeline.
+            Records are selected by the stage's status field (`classify` ->
+            `extractionStatus`) using `statusFilters`, and are not re-parsed
+            or re-embedded. Omit to reindex the full pipeline.
 
     ResyncConnectorRequestBody:
       type: object
@@ -6829,6 +6893,11 @@ components:
                   description: Records synced from the connector
                 indexingStatus:
                   $ref: '#/components/schemas/ConnectorIndexingStatusCounts'
+                extractionStatus:
+                  type: object
+                  description: Record counts by classification (`classify` stage) status.
+                  additionalProperties:
+                    type: integer
             byRecordType:
               type: array
               description: The same counts per record type; empty before the first sync.
@@ -6846,6 +6915,11 @@ components:
                     type: integer
                   indexingStatus:
                     $ref: '#/components/schemas/ConnectorIndexingStatusCounts'
+                  extractionStatus:
+                    type: object
+                    description: Record counts by classification (`classify` stage) status.
+                    additionalProperties:
+                      type: integer
 
     ConnectorIndexingStatusCounts:
       type: object
