@@ -72,7 +72,7 @@ _IDENTIFIER_PATTERNS = (
     # A relative path of three parts or more, but not an all-digit date (10/18/2026).
     re.compile(
         r"(?<![\w/])/[\w.-]+(?:/[\w.-]+)+"
-        r"|(?<![\w.-])(?!\d+/\d+/\d+(?![\w./-]))[\w.-]+/[\w.-]+/[\w./-]+"
+        r"|(?<![\w.-])(?!\d+/\d+/\d+\.*(?![\w/-]))[\w.-]+/[\w.-]+/[\w./-]+"
     ),
     re.compile(r"\bhttps?://\S+", re.IGNORECASE),
     # camelCase, PascalCase with an inner capital, snake_case, SCREAMING_CASE.
@@ -100,7 +100,7 @@ _MIXED_NOT_IDENTIFIER = re.compile(
 # No lookahead for the digit: one at every start made long hyphenated text quadratic.
 _KEBAB = re.compile(r"\b[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\b")
 _KEBAB_NOT_IDENTIFIER = re.compile(
-    r"\d{4}-\d{2}(?:-\d{2})?|\d+-(?:days?|weeks?|months?|years?|quarters?)",
+    r"\d{4}-\d{2}(?:-\d{2})?|\d{1,2}-\d{1,2}-(?:\d{2}|\d{4})|\d+-(?:days?|weeks?|months?|years?|quarters?)",
     re.IGNORECASE,
 )
 
