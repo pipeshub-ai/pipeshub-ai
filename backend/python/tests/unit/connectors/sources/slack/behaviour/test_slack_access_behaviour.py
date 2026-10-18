@@ -50,9 +50,13 @@ class TestChannelAccess:
 
         await connector.run_sync()
 
-        (grant,) = store.group_access[GENERAL]
-        assert (grant.entity_type, grant.external_id, grant.type) == (EntityType.ROLE, "workspace_member", PermissionType.READ)
+        grants = store.group_access[GENERAL]
+        (role_grant,) = [p for p in grants if p.entity_type == EntityType.ROLE]
+        assert (role_grant.external_id, role_grant.type) == ("workspace_member", PermissionType.READ)
         assert role_member_emails(store) == {"alice@acme.com", "bob@acme.com"}
+        user_grants = [p for p in grants if p.entity_type == EntityType.USER]
+        assert len(user_grants) == len(grants) - 1
+        assert {p.email for p in user_grants} == {"carol@partner.com"}, "only the channel's guests are granted one by one"
 
     async def test_private_channel_is_visible_to_exactly_its_members(self, workspace, store, checkpoints) -> None:
         connector, _ = await workspace_connector(store, checkpoints)
@@ -113,11 +117,8 @@ class TestChannelAccess:
         assert group.name == "On call"
         assert [m.email for m in members] == ["alice@acme.com"]
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "A guest who is a member of a public channel can read it in Slack, but public channels "
-        "are shared only through the workspace-member role, which leaves guests out."
-    ))
     async def test_a_guest_who_is_a_member_of_a_public_channel_can_see_it(self, workspace, store, checkpoints) -> None:
+        workspace.add_user("U0DAVE", "dave@partner.com", "Dave", guest=True)
         connector, _ = await workspace_connector(store, checkpoints)
 
         await connector.run_sync()
@@ -126,6 +127,7 @@ class TestChannelAccess:
             role_member_emails(store) if any(p.entity_type == EntityType.ROLE for p in store.group_access[GENERAL]) else set()
         )
         assert "carol@partner.com" in reachable
+        assert "dave@partner.com" not in reachable, "a guest outside the channel is not let in"
 
 
 class TestFailedReads:

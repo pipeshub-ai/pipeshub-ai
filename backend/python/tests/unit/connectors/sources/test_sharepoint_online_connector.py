@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import CollectionNames, Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
@@ -77,6 +77,7 @@ def _make_mock_deps():
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.reindex_existing_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.inheritance_when_unreadable = AsyncMock(return_value=False)
 
     dsp = MagicMock()
     cs = MagicMock()
@@ -891,6 +892,10 @@ class TestProcessDriveItem:
         result = await c._process_drive_item(item, "site-1", "drive-1", [])
         assert result is not None
         assert result.is_new is True
+        assert result.record.inherit_permissions is False
+        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, None
+        )
 
     @pytest.mark.asyncio
     async def test_deleted_item(self):
@@ -942,11 +947,17 @@ class TestProcessDriveItem:
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=existing)
 
+        c.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=True)
+
         item = _make_drive_item(e_tag="etag-new")
         result = await c._process_drive_item(item, "site-1", "drive-1", [])
         assert result is not None
         assert result.metadata_changed is True
         assert result.is_updated is True
+        assert result.record.inherit_permissions is True
+        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, "rec-1"
+        )
 
     @pytest.mark.asyncio
     async def test_existing_record_content_changed(self):
@@ -969,6 +980,8 @@ class TestProcessDriveItem:
         result = await c._process_drive_item(item, "site-1", "drive-1", [])
         assert result is not None
         assert result.content_changed is True
+        assert result.record.inherit_permissions is False
+        assert result.permissions_changed is False
 
     @pytest.mark.asyncio
     async def test_date_filter_rejects(self):
@@ -1475,11 +1488,13 @@ class TestProcessSitePages:
         page.created_by.user.display_name = "User"
 
         existing = MagicMock()
+        existing.id = "rec-page-1"
         existing.external_revision_id = "old-etag"
 
         mock_tx, _ = _make_tx_store(existing)
         c.data_store_provider.transaction = MagicMock(return_value=mock_tx)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=True)
 
         page_record = MagicMock()
         c._create_page_record = AsyncMock(return_value=page_record)
@@ -1495,6 +1510,10 @@ class TestProcessSitePages:
         assert len(items) == 1
         assert items[0][2].is_updated is True
         assert items[0][2].content_changed is True
+        assert page_record.inherit_permissions is True
+        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, "rec-page-1"
+        )
 
     @pytest.mark.asyncio
     async def test_page_access_denied(self):

@@ -16,7 +16,6 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import quote, unquote
 from xml.sax.saxutils import escape
@@ -583,12 +582,6 @@ class FakeRecordsDb:
         if record_id in self.unreadable_paths:
             return None
         return self._path(record_id)
-
-    async def get_first_user_with_permission_to_node(self, node_id: str, node_collection: str) -> Optional[SimpleNamespace]:
-        record = self._by_id(node_id)
-        if record is None or not self.permissions.get(record.external_record_id):
-            return None
-        return SimpleNamespace(email=self.permissions[record.external_record_id][0].email, source_user_id=None)
 
 
 def _neo4j_property(value: object) -> bool:

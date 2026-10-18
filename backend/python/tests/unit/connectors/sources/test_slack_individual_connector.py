@@ -802,8 +802,7 @@ class TestChannelHelpers:
         assert await c._channel_permissions({}) == []
 
         c.authenticated_user_email = "a@b.com"
-        perms = await c._channel_permissions({"id": "C1"})
-        assert len(perms) == 1
+        assert await c._channel_permissions({"id": "C1"}) == [], "channels inherit the app; no per-channel grant"
 
         mock_ds = MagicMock()
         mock_ds.conversations_members = AsyncMock(
@@ -1125,6 +1124,8 @@ class TestProcessFileAndLink:
         parent = MagicMock(spec=MessageRecord)
         parent.id = "p"
         parent.external_record_id = "1.0"
+        parent.external_record_group_id = "C1"
+        parent.record_group_id = "rg-int"
         lr = await c._process_link("https://x.atlassian.net/browse/ABC-9", parent, ctx, {})
         assert lr.related_external_records == []
 
@@ -1135,6 +1136,8 @@ class TestProcessFileAndLink:
         parent = MagicMock(spec=MessageRecord)
         parent.id = "p"
         parent.external_record_id = "1.0"
+        parent.external_record_group_id = "C1"
+        parent.record_group_id = "rg-int"
         lr = await c._process_link(
             "https://x.atlassian.net/browse/ABC-9", parent, ctx, {"attachments": []}
         )
@@ -1246,6 +1249,8 @@ class TestThreadBurstRecord:
         )
         rec = await c._build_thread_burst_record(burst, "1.0", "rg", ctx)
         assert rec is not None
+        # In the thread's group: a full sync keeps a windowed thread group's records it did not read.
+        assert (rec.external_record_group_id, rec.record_group_id) == ("thread_C1_1.0", "rg")
 
         burst2 = ConversationalBurst(
             messages=[{"ts": "", "user": "U1"}],
@@ -1259,6 +1264,42 @@ class TestThreadBurstRecord:
             side_effect=ValueError,
         ):
             assert await c._build_thread_burst_record(burst, "1.0", "rg", ctx) is None
+
+
+class TestLinkPlacement:
+    @pytest.mark.asyncio
+    async def test_a_link_in_a_thread_reply_sits_in_the_thread_group(self) -> None:
+        from app.connectors.sources.slack.individual.connector import (
+            ConversationalBurst,
+        )
+
+        c = _make_connector()
+        ctx = _ctx(c)
+        burst = ConversationalBurst(messages=[{"ts": "1.5", "user": "U1", "text": "z"}], start_ts=1.5, end_ts=1.5)
+        reply = await c._build_thread_burst_record(burst, "1.0", "rg-thread", ctx)
+
+        link = await c._process_link("https://example.com/doc", reply, ctx, {})
+
+        assert (link.external_record_group_id, link.record_group_id) == ("thread_C1_1.0", "rg-thread")
+        assert link.parent_external_record_id == reply.external_record_id
+
+    @pytest.mark.asyncio
+    async def test_a_link_in_a_channel_message_sits_in_the_channel_group(self) -> None:
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _make_connector()
+        ctx = _ctx(c)
+        parent = MessageRecord(
+            org_id="org-test", record_name="p", record_type=RecordType.MESSAGE,
+            external_record_id="2.0", external_record_group_id="C1", record_group_id="rg-int",
+            version=1, origin=OriginTypes.CONNECTOR, connector_name=Connectors.SLACK,
+            connector_id="conn", mime_type=MimeTypes.BLOCKS.value,
+        )
+
+        link = await c._process_link("https://example.com/doc", parent, ctx, {})
+
+        assert (link.external_record_group_id, link.record_group_id) == ("C1", "rg-int")
 
 
 class TestFetchThreadReplies:

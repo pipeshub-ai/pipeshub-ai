@@ -89,7 +89,7 @@ async def test_entity_filters_keep_container_scoping(monkeypatch):
 
 async def test_entity_filters_intersect_a_tools_record_ids(monkeypatch):
     svc = _service()
-    monkeypatch.setattr(svc, "_resolve_search_scope", AsyncMock(return_value=(None, {"v1": "r1", "v2": "r2"}, None)))
+    monkeypatch.setattr(svc, "_resolve_search_scope", _legacy_scope({"v1": "r1", "v2": "r2"}))
     monkeypatch.setattr(svc, "_execute_parallel_searches", AsyncMock(return_value=[]))
     svc.graph_provider.get_records_for_named_entities = AsyncMock(
         return_value=_hits(("r1", "v1", "a"), ("r2", "v2", "a")),

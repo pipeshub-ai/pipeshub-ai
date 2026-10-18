@@ -8311,7 +8311,7 @@ class TestCheckAndFetchUpdatedComment:
         assert await c._check_and_fetch_updated_comment("org-1", record) is None
 
     @pytest.mark.asyncio
-    async def test_version_changed_returns_record_and_permissions(self):
+    async def test_version_changed_returns_record_inheriting_the_page_access(self):
         c = _mk_connector()
         comment_data = {
             "id": "c1",
@@ -8338,7 +8338,10 @@ class TestCheckAndFetchUpdatedComment:
         assert result is not None
         updated, perms = result
         assert updated.external_revision_id == "3"
-        assert len(perms) == 1
+        assert perms == [], "the page's grants are inherited, not copied onto the comment"
+        assert updated.inherit_permissions is True
+        assert updated.rewrite_permissions is True
+        c._fetch_page_permissions.assert_awaited_once_with("page-1")
 
     @pytest.mark.asyncio
     async def test_permission_fetch_failure_skips_the_record(self) -> None:
