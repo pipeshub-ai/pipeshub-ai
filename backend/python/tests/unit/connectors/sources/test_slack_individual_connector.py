@@ -1268,8 +1268,10 @@ class TestThreadBurstRecord:
 
 class TestLinkPlacement:
     @pytest.mark.asyncio
-    async def test_a_link_in_a_thread_reply_sits_in_the_thread_group(self):
-        from app.connectors.sources.slack.individual.connector import ConversationalBurst
+    async def test_a_link_in_a_thread_reply_sits_in_the_thread_group(self) -> None:
+        from app.connectors.sources.slack.individual.connector import (
+            ConversationalBurst,
+        )
 
         c = _make_connector()
         ctx = _ctx(c)
@@ -1282,7 +1284,7 @@ class TestLinkPlacement:
         assert link.parent_external_record_id == reply.external_record_id
 
     @pytest.mark.asyncio
-    async def test_a_link_in_a_channel_message_sits_in_the_channel_group(self):
+    async def test_a_link_in_a_channel_message_sits_in_the_channel_group(self) -> None:
         from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
         from app.models.entities import MessageRecord, RecordType
 

@@ -1123,7 +1123,7 @@ class TestReindexRecords:
         await nextcloud_connector.reindex_records([])
 
     @pytest.mark.asyncio
-    async def test_no_connected_user_skips(self, nextcloud_connector):
+    async def test_no_connected_user_skips(self, nextcloud_connector) -> None:
         nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=MagicMock())
         nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/test.txt")
         nextcloud_connector.data_source = MagicMock()
@@ -1134,7 +1134,7 @@ class TestReindexRecords:
         nextcloud_connector.data_source.list_directory.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_an_unread_profile_email_does_not_stop_the_reindex(self, nextcloud_connector):
+    async def test_an_unread_profile_email_does_not_stop_the_reindex(self, nextcloud_connector) -> None:
         nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=MagicMock())
         nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/test.txt")
         nextcloud_connector.data_source = MagicMock()

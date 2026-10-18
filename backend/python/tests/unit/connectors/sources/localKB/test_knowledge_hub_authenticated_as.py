@@ -72,6 +72,7 @@ class TestSearch:
         assert provider.get_knowledge_hub_access_v3.await_args.kwargs["user_key"] == USER_KEY
         pages = self._pages(provider)
         assert set(pages) == {"own-1", LINKED}
+        assert {tuple(kwargs["grantee_ids"]) for kwargs in pages.values()} == {(USER_KEY,)}
         assert pages[LINKED]["granted_ids"] == ["issue-1"]
         assert pages[LINKED]["gated_app_ids"] == ["own-1", LINKED]
         assert pages[LINKED]["filters"]["search_query"] == "x"
@@ -82,6 +83,7 @@ class TestSearch:
         provider.get_knowledge_hub_connector_page_v3.assert_awaited_once()
         call = provider.get_knowledge_hub_connector_page_v3.await_args.kwargs
         assert (call["app_id"], call["start_id"], call["flatten"]) == (LINKED, LINKED, True)
+        assert call["user_key"] == USER_KEY
         assert call["gated_app_ids"] == ["own-1", LINKED]
         assert call["filters"]["search_query"] == "x"
 
