@@ -8410,9 +8410,13 @@ components:
           description: |
             Optional list of tool identifiers (fully-qualified action names
             such as `jira.create_issue`) the agent may invoke when
-            regenerating. Applicable only in agent chat modes. Web search is
-            not governed by this list; `agentCapabilities.webSearch` turns it
-            on or off.
+            regenerating. Applicable only in agent chat modes. Regenerating
+            in the assistant's agent mode, web search is not governed by this
+            list; `agentCapabilities.webSearch` turns it on or off.
+            Regenerating a named agent's message (`AgentRegenerateRequest`),
+            a list that leaves out `web_search` turns off the agent's web
+            search for the turn, even when `agentCapabilities.webSearch` is
+            true.
           example: ["jira.create_issue", "confluence.search_content"]
         protocol:
           type: string

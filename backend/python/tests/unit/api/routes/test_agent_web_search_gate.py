@@ -106,6 +106,12 @@ class TestNamedAgent:
         query_info = await _run(NAMED, {"query": "q", "tools": ["jira.search_issues"]}, agent=_agent(**self.WITH_WEB))
         assert query_info["webSearchConfig"] is None
 
+    async def test_the_tool_list_wins_over_the_web_search_switch(self) -> None:
+        query_info = await _run(NAMED, {
+            "query": "q", "tools": ["jira.search_issues"], "agentCapabilities": {"webSearch": True},
+        }, agent=_agent(**self.WITH_WEB))
+        assert query_info["webSearchConfig"] is None
+
     async def test_selecting_web_search_keeps_it(self) -> None:
         query_info = await _run(NAMED, {"query": "q", "tools": ["web_search"]}, agent=_agent(**self.WITH_WEB))
         assert query_info["webSearchConfig"] == DUCKDUCKGO
