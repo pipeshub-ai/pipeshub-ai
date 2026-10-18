@@ -36,6 +36,7 @@ from app.modules.retrieval.exact_terms import (
     "p99 latency budget",
     "SOC2 audit evidence",
     "outage in us-east-1",
+    "comments on pr-18421",
     "commit a3f9c21",
     "timeout of 150 ms",
     "99.9% availability",
