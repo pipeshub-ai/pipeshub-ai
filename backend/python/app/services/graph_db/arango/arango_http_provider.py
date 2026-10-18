@@ -1064,6 +1064,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         for fields in _STAGE_STATE_INDEXES:
             await self.http_client.ensure_persistent_index(CollectionNames.STAGE_STATES.value, list(fields))
+        # SINGLE: virtualRecordToDocIdMapping.virtualRecordId, the fallback of
+        # get_document_id_by_virtual_record_id when the keyed lookup misses
+        # (every record indexed the first time).
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+            ["virtualRecordId"],
+        )
 
         # COMPOSITE: externalRecordId + connectorId (ALWAYS queried together)
         # Pattern: FOR record IN records FILTER record.externalRecordId == @id AND record.connectorId == @cid

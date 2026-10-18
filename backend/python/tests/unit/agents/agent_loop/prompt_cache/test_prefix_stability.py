@@ -414,16 +414,21 @@ _STABLE_BLOCK_SCRIPT = textwrap.dedent('''
     stable, _sections, tools = asyncio.run(_mode_request("internal_search", "Who owns HarborBank?"))
     print(hashlib.sha256((stable + repr(tools)).encode()).hexdigest())
 ''')
+_HASH_SEEDS = (0, 7)
+_PROCESS_TIMEOUT_S = 120
 
 
+# Each seed cold-starts the agent stack in a fresh interpreter (langchain_core alone pulls in
+# transformers), which outgrows pytest.ini's 30s for the whole test.
+@pytest.mark.timeout(len(_HASH_SEEDS) * _PROCESS_TIMEOUT_S + 30)
 def test_answer_rules_prefix_is_the_same_in_every_process() -> None:
     root = Path(__file__).resolve().parents[5]
     digests = set()
-    for seed in (0, 7):
+    for seed in _HASH_SEEDS:
         env = {k: v for k, v in os.environ.items() if k not in (*_ANSWER_RULE_SWITCHES, *_OTHER_PROMPT_SWITCHES)}
         result = subprocess.run(
             [sys.executable, "-c", _STABLE_BLOCK_SCRIPT], capture_output=True, text=True, check=False,
-            env={**env, "PYTHONHASHSEED": str(seed), "PYTHONPATH": str(root)}, cwd=root, timeout=300,
+            env={**env, "PYTHONHASHSEED": str(seed), "PYTHONPATH": str(root)}, cwd=root, timeout=_PROCESS_TIMEOUT_S,
         )
         assert result.returncode == 0, result.stderr[-2000:]
         digests.add(result.stdout.strip().splitlines()[-1])
