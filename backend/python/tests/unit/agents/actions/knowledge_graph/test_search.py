@@ -830,6 +830,30 @@ class TestRecordsTheResultDoesNotShow:
         assert {"r-vr2", "r-vr3"} <= state["known_record_ids"]
 
     @pytest.mark.asyncio
+    async def test_a_list_that_cannot_close_the_gap_is_kept_whole(self, monkeypatch) -> None:
+        """One record alone is over the size: dropping rows would not make the
+        result fit, only lose names the generic cap would have delivered."""
+        from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
+
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+        select = KnowledgeRenderer.select
+
+        def first_record_only(renderer: KnowledgeRenderer, ranked: list, _max_chars: int) -> Selection:
+            chosen = select(renderer, ranked[:1], 10**6)
+            return Selection(ranked=chosen.ranked, omitted_records=len(ranked) - 1, chars=chosen.chars,
+                             record_id_shortener=chosen.record_id_shortener)
+
+        vrids = ["vr1", "vr2", "vr3"]
+        with patch.object(KnowledgeRenderer, "select", first_record_only):
+            full, _ = await self._search(vrids, vrids, permitted=tuple(vrids))
+            listed = full[full.index("\n\nAlso matched, not shown"):]
+            with patch(f"{self._SEARCH}.DEFAULT_MAX_RESULT_CHARS", len(full) - len(listed) - 10):
+                result, state = await self._search(vrids, vrids, permitted=tuple(vrids))
+
+        assert result == full
+        assert {"r-vr2", "r-vr3"} <= state["known_record_ids"]
+
+    @pytest.mark.asyncio
     async def test_listed_ids_are_shortened_like_every_other_id(self, monkeypatch) -> None:
         monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
 

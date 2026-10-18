@@ -212,7 +212,8 @@ def _unshown_within(
     frame: _ResultFrame, over: int, shortener: RecordIdShortener | None,
 ) -> _ResultFrame:
     """``frame`` with the lowest-ranked unshown rows dropped until the result is
-    no longer ``over`` its size, or the list is empty."""
+    no longer ``over`` its size. Unchanged when even the whole list would not
+    close the gap: the generic cap keeps a result's tail, where the list is."""
 
     def size(text: str) -> int:
         if text and shortener is not None:
@@ -221,6 +222,8 @@ def _unshown_within(
 
     unshown = list(frame.unshown)
     listed = size(frame.unshown_list)
+    if over > listed:
+        return frame
     kept = listed
     while unshown and over > listed - kept:
         unshown.pop()
