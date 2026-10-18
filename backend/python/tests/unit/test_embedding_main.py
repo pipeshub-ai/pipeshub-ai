@@ -4,10 +4,12 @@ import asyncio
 import base64
 import struct
 import threading
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
+import torch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -25,6 +27,9 @@ from app.embedding_main import (
     model_manager,
     run,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 async def _passthrough_to_thread(func, *args, **kwargs):
@@ -313,7 +318,10 @@ class TestModelManager:
 
         assert result is loaded
         mock_st.assert_called_once_with(
-            "local-model", local_files_only=True, device="cpu"
+            "local-model",
+            local_files_only=True,
+            device="cpu",
+            model_kwargs={"dtype": torch.float32},
         )
 
     @pytest.mark.asyncio
@@ -392,8 +400,32 @@ class TestModelManager:
             "trusted-model",
             local_files_only=True,
             device="cpu",
+            model_kwargs={"dtype": torch.float32},
             trust_remote_code=True,
         )
+
+    @pytest.mark.asyncio
+    async def test_model_published_in_half_precision_still_loads_in_fp32(self, tmp_path: "Path") -> None:
+        transformers = pytest.importorskip("transformers")
+        if isinstance(transformers, MagicMock):
+            pytest.skip("needs the real transformers library")
+        vocab = tmp_path / "vocab.txt"
+        vocab.write_text("\n".join(["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "hello", "world"]))
+        transformers.BertTokenizerFast(vocab_file=str(vocab)).save_pretrained(tmp_path)
+        config = transformers.BertConfig(
+            vocab_size=7, hidden_size=8, num_hidden_layers=1, num_attention_heads=2,
+            intermediate_size=16, max_position_embeddings=16,
+        )
+        transformers.BertModel(config).to(torch.float16).save_pretrained(tmp_path)
+
+        manager = ModelManager(device="cpu")
+        with patch(
+            "app.embedding_main.asyncio.to_thread",
+            side_effect=_passthrough_to_thread,
+        ):
+            model = await manager.get_model(str(tmp_path))
+
+        assert {p.dtype for p in model.parameters()} == {torch.float32}
 
     @pytest.mark.asyncio
     async def test_warmup_delegates_to_get_model(self):

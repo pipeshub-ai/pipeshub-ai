@@ -68,7 +68,6 @@ dependencies = [
   "langchain-google-genai==4.2.1",
   "langchain-google-vertexai==3.2.4",
   "langchain-groq==1.1.0",
-  "langchain-huggingface==1.1.0",
   "langchain-mistralai==0.2.12",
   "langchain-ollama==1.0.0",
   "langchain-openai==1.1.14",
@@ -117,6 +116,8 @@ dependencies = [
   "requests-toolbelt==1.0.0",
   "requests==2.34.2",
   "sentence-transformers==5.6.0",
+  # Same pin as backend/python/pyproject.toml.
+  "transformers==5.18.0",
   "slack-sdk==3.27.0",
   "tenacity==8.5.0",
   "thrift>=0.16.0",

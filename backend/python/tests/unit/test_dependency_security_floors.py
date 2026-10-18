@@ -21,6 +21,8 @@ INTEGRATION_MANIFEST = Path(__file__).resolve().parents[4] / "integration-tests"
 SECURITY_FLOORS = {
     # GHSA-x3q2-h9hx-4r4j, GHSA-cgc7-9qp3-86m3, GHSA-3cr3-8m4c-fpxw, GHSA-p944-4xh2-x776
     "docling": Version("2.132.0"),
+    # GHSA-29pf-2h5f-8g72, GHSA-fgcw-684q-jj6r, GHSA-xrqw-3rrv-vx5w, GHSA-x9r9-c232-4q39
+    "transformers": Version("5.10.0"),
 }
 
 

@@ -250,7 +250,6 @@ dependencies = [
     "langchain-google-genai==4.3.2",
     "langchain-google-vertexai==3.2.4",
     "langchain-groq==1.1.0",
-    "langchain-huggingface==1.1.0",
     "langchain-mistralai==0.2.12",
     "langchain-ollama==1.0.0",
     "langchain-openai==1.4.1",
@@ -321,6 +320,10 @@ dependencies = [
     "requests==2.34.2",
     "selectolax>=0.3.21",
     "sentence-transformers==5.6.0",
+    # Pinned rather than left to sentence-transformers and docling: both still accept 4.x,
+    # and an install over the published base image keeps the 4.57 already in it
+    # (GHSA-29pf-2h5f-8g72, GHSA-fgcw-684q-jj6r).
+    "transformers==5.18.0",
     "slack-sdk==3.27.0",
     "smbprotocol==1.17.0",
     "talon==1.4.4",
