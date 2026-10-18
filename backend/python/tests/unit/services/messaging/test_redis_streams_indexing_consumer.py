@@ -70,12 +70,12 @@ def _budget(ceiling: int, *, waiters: int) -> concurrency.DispatchBudget:
 
 
 @pytest.fixture
-def logger():
+def logger() -> logging.Logger:
     return logging.getLogger("test_redis_indexing_consumer")
 
 
 @pytest.fixture
-def config():
+def config() -> RedisStreamsConfig:
     return RedisStreamsConfig(
         host="localhost",
         port=6379,
@@ -2656,6 +2656,66 @@ class TestExceedsMaxRetries:
             result = await consumer._should_dead_letter("topic-a", "1-0")
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_capacity_handbacks_are_discounted_from_the_backstop(
+        self, consumer
+    ):
+        """A record that never reached a parse slot must not dead-letter.
+
+        Under a sustained backlog a heavy record circles: buffered for want of
+        capacity, handed back by the ownership sweep, re-claimed by the idle
+        drain (which bumps times_delivered), buffered again. Ten laps used to
+        trip this backstop and fail the record as a crash loop, which is how
+        34 large PDFs ended up FAILED with no parse ever attempted.
+        """
+        consumer.retry_manager = None
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"times_delivered": 11}]
+        )
+        consumer.redis.xack = AsyncMock()
+        consumer._handbacks[("topic-a", "1-0")] = 11
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._should_dead_letter("topic-a", "1-0")
+
+        assert result is False
+        consumer.redis.xack.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_real_redeliveries_still_dead_letter_despite_handbacks(
+        self, consumer
+    ):
+        """The discount must not disarm the backstop it is narrowing: a record
+        whose deliveries exceed its hand-backs by the backstop is still a
+        crash loop."""
+        consumer.retry_manager = None
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range = AsyncMock(
+            return_value=[{"times_delivered": 14}]
+        )
+        consumer.redis.xack = AsyncMock()
+        consumer._handbacks[("topic-a", "1-0")] = 3
+
+        with patch(
+            "app.services.messaging.redis_streams.indexing_consumer.messaging_env"
+        ) as mock_env:
+            mock_env.max_delivery_attempts = 10
+            mock_env.redis_max_deliveries = 11
+            mock_env.max_pending_indexing_tasks = 100
+            mock_env.max_concurrent_parsing = 5
+            mock_env.max_concurrent_indexing = 10
+            result = await consumer._should_dead_letter("topic-a", "1-0")
+
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_backstop_fires_when_retry_manager_present_but_app_counter_lags(

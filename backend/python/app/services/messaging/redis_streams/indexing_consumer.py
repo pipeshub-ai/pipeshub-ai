@@ -95,6 +95,9 @@ _DEFAULT_KEY_LEVEL = "__default__"
 _PENDING_SCAN_PAGE = 100
 _PENDING_SCAN_MAX_PAGES = 20
 _MESSAGE_VALUE_FIELD = "value"
+# Cap on the per-entry hand-back counts kept in memory. An entry whose count
+# is forgotten is only judged more harshly, never less.
+_MAX_TRACKED_HANDBACKS = 10_000
 _MAIN_LOOP_OP_TIMEOUT = 5.0
 # How often the retry-backoff wait re-checks self.running, so a shutdown
 # request can interrupt a long (up to 300s) wait instead of holding an
@@ -257,6 +260,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # backstop reads as a failed attempt.
         # (stream, entry id), for the same reason as the in-flight set.
         self._held_entries: set[tuple[str, str]] = set()
+        # How many times the sweep below has handed each entry back. The
+        # hand-back is not an attempt -- the record never reached a parse slot
+        # -- but the idle drain's XAUTOCLAIM re-claims it and bumps
+        # times_delivered all the same, so a record can circle
+        # buffer -> release -> re-claim until the backstop dead-letters it as
+        # a crash loop it never was. Discounted in _should_dead_letter.
+        self._handbacks: dict[tuple[str, str], int] = {}
         # Lanes that returned entries on the most recent read. Skipping a
         # blocked lane is only sound while some *other* lane is actually
         # producing; an idle lane is not an alternative source of work.
@@ -546,6 +556,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         self._deferred_entries.clear()
         self._held_entries.clear()
+        self._handbacks.clear()
         if self._scheduler is not None:
             drained = self._scheduler.drain_all()
             if drained:
@@ -922,7 +933,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.logger.error("Error checking delivery count: %s", e)
             return False
 
-        if times_delivered >= delivery_backstop:
+        # Deliveries this consumer caused by handing the entry back for want
+        # of capacity are not attempts, so they must not count towards a
+        # backstop whose whole premise is a handler that died mid-record.
+        handbacks = self._handbacks.get((topic, message_id), 0)
+        if times_delivered - handbacks >= delivery_backstop:
             record_id = (
                 parsed_message.payload.get("recordId") if parsed_message else None
             )
@@ -937,9 +952,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 tracking_id,
                 parsed_message,
                 reason=(
-                    f"delivered {times_delivered} times "
-                    f"(backstop {delivery_backstop}); likely crashing "
-                    "the consumer before the failure counter is written"
+                    f"delivered {times_delivered} times, {handbacks} of them "
+                    f"after a capacity hand-back (backstop "
+                    f"{delivery_backstop}); likely crashing the consumer "
+                    "before the failure counter is written"
                 ),
                 attempts=times_delivered,
                 ack=lambda: self.redis.xack(  # type: ignore[union-attr]
@@ -1788,6 +1804,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             2 * self.__ownership_refresh_interval(),
         )
 
+    def __record_handback(self, stream: str, message_id: str) -> None:
+        """Count one release of an entry that never reached a parse slot."""
+        key = (stream, message_id)
+        self._handbacks[key] = self._handbacks.get(key, 0) + 1
+        if len(self._handbacks) > _MAX_TRACKED_HANDBACKS:
+            # Insertion-ordered: drop the oldest, which can only make the
+            # backstop fire sooner, never later.
+            for stale_key in list(self._handbacks)[
+                : len(self._handbacks) - _MAX_TRACKED_HANDBACKS
+            ]:
+                self._handbacks.pop(stale_key, None)
+
     def __sweep_stale_buffered(self) -> None:
         """Release held entries whose ownership is at risk, and only those.
 
@@ -1822,6 +1850,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         dropped = scheduler.purge(lambda item: at_risk(item[0], item[4]))
         for stream, message_id, *_rest in dropped:
             self._held_entries.discard((stream, message_id))
+            self.__record_handback(stream, message_id)
 
         stale_parked = [e for e in self._deferred_entries if at_risk(e[0], e[5])]
         if stale_parked:
@@ -1830,6 +1859,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             )
             for stream, message_id, *_rest in stale_parked:
                 self._held_entries.discard((stream, message_id))
+                self.__record_handback(stream, message_id)
 
         released = len(dropped) + len(stale_parked)
         if released:
@@ -2605,6 +2635,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     message_id,
                 )
             )
+            self._handbacks.pop((stream_name, message_id), None)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
