@@ -22,6 +22,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from app.modules.demo_data.chat import excluded_app_ids
+from app.modules.retrieval.exact_terms import exact_text_search_gated
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.agents.agent_loop.entity_search_tool import (
@@ -884,8 +885,11 @@ class KnowledgeGraph:
         modified_after: str | None = None,
         modified_before: str | None = None,
         entity_ids: list[str] | None = None,
+        exact_match: bool = False,  # noqa: FBT001, FBT002 - tool argument
     ) -> str | list[Part]:
-        """Semantic search — calls ops/search.py execute_search."""
+        """Semantic search — calls ops/search.py execute_search. The schema
+        offers ``exact_match`` only where exact-text search is gated
+        (``tools_for_request``)."""
         from .ops.search import execute_search
         return await execute_search(
             self.state,
@@ -896,6 +900,8 @@ class KnowledgeGraph:
             modified_after=modified_after,
             modified_before=modified_before,
             entity_ids=entity_ids,
+            # A model may send the boolean as a string.
+            exact_match=str(exact_match).strip().lower() == "true",
         )
 
     # -----------------------------------------------------------------------
@@ -1237,8 +1243,9 @@ class KnowledgeGraph:
 
     def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
         """This request's tools: ``search_by_entities`` and the descriptions
-        that go with it only where the deployment offers it, and the
-        named-entity tools only where extraction is on
+        that go with it only where the deployment offers it, the
+        named-entity tools only where extraction is on, and ``search``'s
+        ``exact_match`` only where exact-text search is gated
         (``entity_search_surface``); ``search_timeline`` unless
         ``TIMELINE_SUMMARIES`` is false."""
         from .entity_search_surface import tools_for_request
@@ -1248,6 +1255,7 @@ class KnowledgeGraph:
             self, tools,
             offered=entity_search_offered_in(self.state),
             named_entities=named_entities_enabled_in(self.state),
+            exact_match=exact_text_search_gated(),
         )
 
     # -----------------------------------------------------------------------
