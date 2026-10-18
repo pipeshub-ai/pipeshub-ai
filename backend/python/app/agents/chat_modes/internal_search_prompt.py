@@ -123,8 +123,9 @@ _COMPOSE = (
     "sentence after it, never as the opening or as a reason the question cannot be answered; "
     "do not open with what you yourself cannot do, produce or send. Call a fix, decision or "
     "exception open, unconfirmed or unapproved only when a source says so and nothing else you "
-    "read settles it; one the records mark done is done, and one they mark merged or approved "
-    "is merged or approved, and delivered only where a source says so."
+    "read settles it. Otherwise give the status the records state (done, merged or approved, "
+    "each as stated, and delivered only where a source says so); when sources state different "
+    "statuses, such as a later rollback or reopening, the order below decides."
 )
 
 _SEEK_OTHER_VERSIONS = (
@@ -143,9 +144,8 @@ _REPORT_VERSIONS = (
 # then corroboration, then recency: "authoritative or most recent" let a formal
 # page beat the draft that explicitly replaced it, and a proposal's names beat
 # the ones that shipped; a draft saying it replaces a deployed config is still a
-# proposal. Only
-# between values for one item and scope: a settled conflict otherwise made one
-# tier's rule the answer for a case no source placed in that tier.
+# proposal. A settled conflict made one tier's rule the answer for a case no
+# source placed in that tier, so a conditional rule keeps its condition.
 _RESOLVE_CONFLICTS = (
     "When sources disagree, prefer in order: for what a system does or shows its users, an "
     "implemented change (a merged pull request, a released config or changelog) over a "
@@ -155,10 +155,9 @@ _RESOLVE_CONFLICTS = (
     "standard); the value most independent sources state; the most recent. Title or "
     "formality never decides. Name each other version as a labelled difference: what it "
     "said, where, and why it was not used. Once this order settles it, give the preferred "
-    "value as the answer, not as an open question. Apply the order only to sources stating a "
-    "value for the same item and scope: a rule that applies only under a condition (a risk "
-    "tier, plan, region or size) stays conditional: state it with its condition, and do not "
-    "make it the answer for a case the sources do not place under that condition."
+    "value as the answer, not as an open question. A rule that applies only under a condition "
+    "(a risk tier, plan, region or size) stays conditional: state it with its condition, and do "
+    "not make it the answer for a case the sources do not place under that condition."
 )
 
 # An agent read a thread in full and still took the indexer's summary's reading

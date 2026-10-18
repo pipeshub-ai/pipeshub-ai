@@ -40,7 +40,7 @@ _PARAPHRASE = "A paraphrase is not a false premise"
 _SUBSTANCE_FIRST = "answer with that substance even if it is still requested, pending or in progress"
 _SHIPPED = "an implemented change (a merged pull request, a released config or changelog)"
 _SETTLED = "Once this order settles it, give the preferred value as the answer"
-_CONDITIONAL = "a rule that applies only under a condition"
+_CONDITIONAL = "A rule that applies only under a condition"
 _GENERATED_SUMMARY = "is written by a model when the record is indexed"
 _REPORT_ONLY = "said, report each version with its source."
 _READ_IN_FULL = "read in full the records your answer will rest on"
@@ -208,12 +208,19 @@ class TestStatusFraming:
         assert "do not open with what you yourself cannot do, produce or send" in text
 
     def test_recorded_outcomes_are_not_reopened(self) -> None:
-        assert "one the records mark done is done" in _text(composition=True)
+        assert "Otherwise give the status the records state" in _text(composition=True)
+
+    def test_a_later_rollback_goes_through_the_conflict_order(self) -> None:
+        """An early "done" must not outrank a later rollback or reopening."""
+        text = _text(composition=True)
+        assert "when sources state different statuses, such as a later rollback or reopening, the order below decides" in text
+        assert "done is done" not in text
+        assert text.index("the order below decides") < text.index(_CONFLICT_ORDER)
 
     def test_merged_or_approved_is_not_delivery(self) -> None:
         """A fix merged or approved but awaiting deployment is not done."""
         text = _text(composition=True)
-        assert "one they mark merged or approved is merged or approved, and delivered only where a source says so" in text
+        assert "(done, merged or approved, each as stated, and delivered only where a source says so)" in text
         for claim in ("approved is done", "merged is done", "shipped change"):
             assert claim not in text, claim
 
@@ -247,8 +254,13 @@ class TestConflictOrder:
         case the sources do not place in that tier."""
         text = _text(composition=True)
         assert text.index(_SETTLED) < text.index(_CONDITIONAL)
-        assert "only to sources stating a value for the same item and scope" in text
         assert "stays conditional: state it with its condition" in text
+
+    def test_the_order_still_compares_a_standard_with_its_narrower_exception(self) -> None:
+        """A same-scope limit on the whole order shut out the narrower-record step."""
+        text = _text(composition=True)
+        assert "a narrower record applying a broader rule to the exact scope asked" in text
+        assert "Apply the order only to sources" not in text
 
     @pytest.mark.parametrize("thorough", [False, True])
     def test_only_with_composition(self, thorough: bool) -> None:
