@@ -667,6 +667,7 @@ class TestDegradedVerification:
 
         assert result["status"] == Status.EMPTY_RESPONSE.value
 
+    @pytest.mark.usefixtures("narrow_fallback_off")
     @pytest.mark.asyncio
     async def test_total_denial_retries_with_a_larger_fetch(
         self, retrieval_service, mock_graph_provider
