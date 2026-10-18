@@ -151,7 +151,7 @@ class TestIssueAccess:
         assert permissions == []
         assert record.access_rule == AccessRule.STRICT
         assert record.rewrite_permissions is True
-        assert record.inherit_permissions_from_group is False
+        assert record.inherit_permissions_from_group is True
 
     def test_null_security_in_a_scheme_is_not_the_default_level(self) -> None:
         record = _record()
@@ -302,7 +302,7 @@ class TestIssueAccess:
         assert record.rewrite_permissions is False
         assert record.access_rule == AccessRule.RESTRICTED
 
-    def test_story_under_epic_inherits_the_epic(self) -> None:
+    def test_unsecured_story_under_epic_inherits_the_project_not_the_epic(self) -> None:
         record = _record(parent_external_record_id="epic-1")
         apply_issue_access(
             record,
@@ -311,10 +311,10 @@ class TestIssueAccess:
             project_key="PROJ",
             context=_present(),
         )
-        assert record.inherit_permissions_from_group is False
+        assert record.inherit_permissions_from_group is True
         assert record.access_rule == AccessRule.STRICT
 
-    def test_secured_story_under_epic_inherits_the_epic(self) -> None:
+    def test_secured_story_under_epic_has_its_own_level_and_inherits_the_project(self) -> None:
         record = _record(parent_external_record_id="epic-1")
         apply_issue_access(
             record,
@@ -323,7 +323,7 @@ class TestIssueAccess:
             project_key="PROJ",
             context=_present(members={"20": [{"type": "group", "value": "g"}]}),
         )
-        assert record.inherit_permissions_from_group is False
+        assert record.inherit_permissions_from_group is True
         assert record.access_rule == AccessRule.RESTRICTED
 
     def test_subtask_with_null_security_follows_its_parent_issue(self) -> None:

@@ -32,6 +32,8 @@ Center ``/rest/api/2`` where the server exposes them):
 
 from __future__ import annotations
 
+import hashlib
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -83,20 +85,23 @@ class IssueSecurityContext:
     # team-managed project advances the issue cursor; those issues stay closed.
     defer_checkpoint: bool = False
 
+    def level_fingerprints(self) -> dict[str, str]:
+        """Level id -> a digest of its holders, so a change names the levels it touched."""
+        return {
+            level_id: hashlib.sha1(",".join(sorted(
+                _holder_fingerprint(holder) for holder in holders if isinstance(holder, dict)
+            )).encode()).hexdigest()[:16]
+            for level_id, holders in self.members_by_level.items()
+        }
+
     def fingerprint(self) -> str:
         if self.knowledge == SchemeKnowledge.NONE:
             return "none"
         if self.knowledge != SchemeKnowledge.PRESENT:
             return "unknown"
-        parts = [self.scheme_id or "", "1" if self.members_readable else "0"]
-        for level_id in sorted(self.members_by_level):
-            bits = sorted(
-                _holder_fingerprint(holder)
-                for holder in self.members_by_level[level_id]
-                if isinstance(holder, dict)
-            )
-            parts.append(f"{level_id}={','.join(bits)}")
-        return "|".join(parts)
+        levels = self.level_fingerprints()
+        return "|".join([self.scheme_id or "", "1" if self.members_readable else "0",
+                         *(f"{lid}={levels[lid]}" for lid in sorted(levels))])
 
 
 def _holder_fingerprint(holder: dict[str, Any]) -> str:
@@ -486,10 +491,12 @@ def apply_issue_access(
 ) -> tuple[list[Permission], list[str]]:
     """Set the issue's access rule and return the grants to write.
 
-    A story under an epic in the same project inherits that epic. The epic's
-    level then hides the story from people who cannot open the epic. A parent
-    in another project is handled by the processor, which keeps the story on
-    its own project. Attachments are handled separately and stay empty.
+    A sub-task takes its parent's level and inherits from the parent. Any other
+    child (a story under an epic) has its own level and inherits from the
+    project, so a secured parent does not hide it (Atlassian: sub-tasks inherit
+    the parent's security level, other issues are secured individually). A parent
+    in another project is handled by the processor, which keeps the child on its
+    own project. Attachments are handled separately and stay empty.
     """
     if not context.enforce:
         # A personal account has no issue security. A nested issue inherits its
@@ -499,7 +506,10 @@ def apply_issue_access(
         record.inherit_permissions_from_group = False
         return [], []
     record.inherit_permissions = True
-    record.inherit_permissions_from_group = False
+    # A sub-task has no level of its own and takes its parent's, so it keeps inheriting from
+    # the parent. Any other child has its own level (or none) and is visible by the project's
+    # Browse permission, so it inherits from the project, not from a secured parent.
+    record.inherit_permissions_from_group = not is_subtask
     users = user_by_account_id or {}
     present, level_id = read_security_level(fields)
     security = fields.get("security") if isinstance(fields, dict) else None
