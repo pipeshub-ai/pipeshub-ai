@@ -1366,10 +1366,11 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
 async def vector_db_memory_check(request: Request) -> JSONResponse:
     """Whether the vector database has the memory to keep search fast.
 
-    Advisory only: it never changes the health status. It reports collection
-    names and sizes and the host's RAM, so it is not in EXCLUDE_PATHS and it
-    refuses non-admins itself: the Node.js route checks too, but this port can
-    be reachable directly. Reuses the provider cached by ``/health/vector-db``.
+    Advisory only: it never changes the health status. It reports the index's
+    total size and Qdrant's memory (the host's RAM when no limit is set), so it
+    is not in EXCLUDE_PATHS and it refuses non-admins itself: the Node.js route
+    checks too, but this port can be reachable directly. Reuses the provider
+    cached by ``/health/vector-db``.
     """
     from app.api.middlewares.auth import is_request_admin
     from app.services.vector_db.vector_db_provider_factory import (
