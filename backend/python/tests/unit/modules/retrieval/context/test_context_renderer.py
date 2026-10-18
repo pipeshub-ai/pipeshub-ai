@@ -404,6 +404,24 @@ class TestKnowledgeContextBuilder:
         assert mock_links.await_args.kwargs["user_id"] == "u1"
 
     @pytest.mark.asyncio
+    async def test_reports_every_loaded_record_it_matched_best_first(self, records) -> None:
+        """Records cut from the units, and records with hits but no unit, are
+        reported too; a record whose content did not load is not."""
+        records = {**records, "c": _record("c", "C"), "not-loaded": None}
+        search_results = [
+            {"metadata": {"virtualRecordId": "not-loaded"}, "score": 0.95},
+            {"metadata": {"virtualRecordId": "c"}, "score": 0.05},
+            "not a hit",
+        ]
+        flatten, graph, fk = self._patches([_unit("b", 0, "b0", 0.9), _unit("a", 0, "a0", 0.1)], records)
+        with flatten, graph, fk:
+            knowledge = await self._builder().build(search_results, {}, is_multimodal_llm=False, max_units=1)
+
+        assert [u["virtual_record_id"] for u in knowledge.ranked] == ["b"]
+        assert set(knowledge.virtual_record_id_to_result) == {"b"}
+        assert knowledge.matched_record_ids == ["b", "a", "c"]
+
+    @pytest.mark.asyncio
     async def test_neighbours_take_only_the_slots_the_hits_left(self, records) -> None:
         flatten, graph, fk = self._patches([_unit("a", 4, "a4", 0.2), _unit("b", 2, "b2", 0.9)], records)
         with flatten, graph, fk:
