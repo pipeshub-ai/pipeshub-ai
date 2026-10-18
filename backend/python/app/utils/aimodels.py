@@ -30,6 +30,11 @@ from app.config.constants.ai_models import (
     REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS,
     AzureOpenAILLM,
 )
+from app.services.model_identity.transport.client_paths import (
+    OPENAI_RESOURCE_CLIENTS,
+    OPENAI_ROOT_CLIENTS,
+    OWN_CLIENTS,
+)
 from app.utils.embedding_server_client import get_embedding_server_embeddings
 from app.utils.env_utils import env_int
 from app.utils.llm_api_mode_store import (
@@ -64,14 +69,17 @@ def _decorate_chat_model(model, provider, model_name, config):  # noqa: ANN001, 
     # Imported here: edition_services pulls in connector and graph code that
     # every service using this module should not have to load.
     from app.edition_services import decorate_chat_model
+    from app.services.model_identity.transport.instrument import instrument_model
 
-    return decorate_chat_model(model, provider, model_name, config)
+    # Before the edition decorators, so they wrap a model that already carries identity.
+    return decorate_chat_model(instrument_model(model, provider, config), provider, model_name, config)
 
 
 def _decorate_embeddings(embeddings, provider, model_name, config):  # noqa: ANN001, ANN202
     from app.edition_services import decorate_embeddings
+    from app.services.model_identity.transport.instrument import instrument_model
 
-    return decorate_embeddings(embeddings, provider, model_name, config)
+    return decorate_embeddings(instrument_model(embeddings, provider, config), provider, model_name, config)
 
 def coerce_message_content_to_text(content: Any) -> str:
     """Normalize a LangChain message ``content`` value to plain text.
@@ -282,22 +290,40 @@ async def require_public_endpoint(endpoint: str | None) -> None:
         raise ValueError(f"Model endpoint {endpoint!r} resolves to {reason}.")
 
 
-def _endpoint_client_kwargs(base_url: str) -> dict[str, Any]:
+def _endpoint_client_kwargs(base_url: str, config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """``AsyncOpenAI`` arguments for a configured endpoint, on a client that checks what the
-    name resolves to as it connects and answers a redirect instead of following it."""
-    from openai import DefaultAsyncHttpxClient
+    name resolves to as it connects and answers a redirect instead of following it, and that
+    carries the connection's identity forwarding when it is enabled."""
+    from app.services.model_identity.transport.instrument import model_http_client
 
     require_allowed_endpoint(base_url)
-    http_client = DefaultAsyncHttpxClient()
-    guard_httpx_client(http_client, base_url)
-    return {"base_url": base_url, "http_client": http_client}
+    return {"base_url": base_url, "http_client": model_http_client(base_url, config)}
 
 
-# Where each kind of model keeps its SDK clients (openai.OpenAI, anthropic.Anthropic,
-# ollama.Client and their async twins). Every one of those holds its httpx client in ``_client``.
-_OPENAI_ROOT_CLIENTS = ("root_client", "root_async_client")
-_OPENAI_RESOURCE_CLIENTS = ("client._client", "async_client._client")
-_OWN_CLIENTS = ("_client", "_async_client")
+def _media_client_kwargs(base_url: str | None, identity_forwarding: Mapping[str, Any] | None) -> dict[str, Any]:
+    """HTTP arguments for an image, TTS or STT client.
+
+    ``identity_forwarding`` is the connection's ``configuration.identityForwarding``. A
+    connection with no custom endpoint is only given a client of its own when forwarding is
+    on, so the default path is unchanged.
+    """
+    from app.services.model_identity.transport.instrument import (
+        model_http_client,
+        settings_from_config,
+    )
+
+    config = {"configuration": {"identityForwarding": identity_forwarding}}
+    if base_url:
+        return _endpoint_client_kwargs(base_url, config)
+    if settings_from_config(config).enabled:
+        return {"http_client": model_http_client("", config)}
+    return {}
+
+
+# Where each kind of model keeps its SDK clients; shared with identity forwarding.
+_OPENAI_ROOT_CLIENTS = OPENAI_ROOT_CLIENTS
+_OPENAI_RESOURCE_CLIENTS = OPENAI_RESOURCE_CLIENTS
+_OWN_CLIENTS = OWN_CLIENTS
 
 
 def _guard_clients(model: _SdkModel, sdk_clients: tuple[str, ...], endpoint: str | None) -> _SdkModel:
@@ -410,6 +436,7 @@ def embedding_config_hash(embedding_configs: "list[dict[str, Any]] | None") -> s
             "serviceAccountJson": configuration.get("serviceAccountJson"),
             "project": configuration.get("project"),
             "location": configuration.get("location"),
+            "identityForwarding": configuration.get("identityForwarding"),
         })
     return hashlib.sha256(
         json.dumps(serialisable, sort_keys=True, default=str).encode()
@@ -644,7 +671,7 @@ def openai_async_client_kwargs(configuration: Mapping[str, Any]) -> dict[str, An
     if isinstance(endpoint, str):
         endpoint = endpoint.strip() or None
     if endpoint:
-        kwargs.update(_endpoint_client_kwargs(endpoint))
+        kwargs.update(_endpoint_client_kwargs(endpoint, {"configuration": configuration}))
     return kwargs
 
 
@@ -2419,6 +2446,8 @@ class ImageGenerationAdapter:
     handle obtained from :func:`get_image_generation_model`.
     """
 
+    identity_forwarding: Mapping[str, Any] | None = None
+
     provider: str
     model: str
 
@@ -2480,8 +2509,7 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
             "api_key": self._api_key,
             "organization": self._organization,
         }
-        if self._base_url:
-            client_kwargs.update(_endpoint_client_kwargs(self._base_url))
+        client_kwargs.update(_media_client_kwargs(self._base_url, self.identity_forwarding))
         client = AsyncOpenAI(**client_kwargs)
 
         # The ``response_format`` parameter is **only** accepted by DALL-E
@@ -2546,8 +2574,7 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
             "api_key": self._api_key,
             "organization": self._organization,
         }
-        if self._base_url:
-            client_kwargs.update(_endpoint_client_kwargs(self._base_url))
+        client_kwargs.update(_media_client_kwargs(self._base_url, self.identity_forwarding))
         client = AsyncOpenAI(**client_kwargs)
 
         image_file = io.BytesIO(input_image)
@@ -2853,7 +2880,9 @@ def get_image_generation_model(
     builder = _IMAGE_BUILDERS.get(provider)
     if builder is None:
         raise ValueError(f"Unsupported image generation provider: {provider}")
-    return builder(configuration, model_name)
+    adapter = builder(configuration, model_name)
+    adapter.identity_forwarding = configuration.get("identityForwarding")
+    return adapter
 
 
 # ---------------------------------------------------------------------------
@@ -2881,6 +2910,7 @@ def tts_format_mime(response_format: str) -> str:
 class TTSAdapter:
     """Thin wrapper around a TTS provider SDK that returns raw audio bytes."""
 
+    identity_forwarding: Mapping[str, Any] | None = None
     provider: str
     model: str
     default_voice: str = _OPENAI_TTS_DEFAULT_VOICE
@@ -2935,8 +2965,7 @@ class _OpenAITTSAdapter(TTSAdapter):
             "api_key": self._api_key,
             "organization": self._organization,
         }
-        if self._base_url:
-            client_kwargs.update(_endpoint_client_kwargs(self._base_url))
+        client_kwargs.update(_media_client_kwargs(self._base_url, self.identity_forwarding))
 
         client = AsyncOpenAI(**client_kwargs)
         try:
@@ -3235,7 +3264,9 @@ def get_tts_model(
     builder = _TTS_BUILDERS.get(provider)
     if builder is None:
         raise ValueError(f"Unsupported TTS provider: {provider}")
-    return builder(configuration, model_name)
+    adapter = builder(configuration, model_name)
+    adapter.identity_forwarding = configuration.get("identityForwarding")
+    return adapter
 
 
 # ---------------------------------------------------------------------------
@@ -3246,6 +3277,7 @@ def get_tts_model(
 class STTAdapter:
     """Thin wrapper around an STT provider SDK that returns a transcript."""
 
+    identity_forwarding: Mapping[str, Any] | None = None
     provider: str
     model: str
 
@@ -3306,8 +3338,7 @@ class _OpenAISTTAdapter(STTAdapter):
             "api_key": self._api_key,
             "organization": self._organization,
         }
-        if self._base_url:
-            client_kwargs.update(_endpoint_client_kwargs(self._base_url))
+        client_kwargs.update(_media_client_kwargs(self._base_url, self.identity_forwarding))
         client = AsyncOpenAI(**client_kwargs)
         file_tuple = (
             _stt_filename_for_mime(mime, filename),
@@ -3904,4 +3935,6 @@ def get_stt_model(
     builder = _STT_BUILDERS.get(provider)
     if builder is None:
         raise ValueError(f"Unsupported STT provider: {provider}")
-    return builder(configuration, model_name)
+    adapter = builder(configuration, model_name)
+    adapter.identity_forwarding = configuration.get("identityForwarding")
+    return adapter

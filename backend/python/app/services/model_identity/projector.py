@@ -81,11 +81,12 @@ class IdentityProjector:
 
         subject = self._user_subject(principal, governance)
         if governance.pseudonymize:
-            if self._pseudonym_key is None:
+            key = ctx.pseudonym_key or self._pseudonym_key
+            if key is None:
                 # Never fall back to the raw id when the admin asked for a pseudonym.
                 metrics.inc(metrics.IDENTITY_MISSING, "no_pseudonym_key")
                 return self._service_identity(ctx, governance, principal, purpose)
-            subject = pseudonymize(subject, self._pseudonym_key)
+            subject = pseudonymize(subject, key)
 
         group_ids, complete, source = self._groups(groups, governance)
         return self._base(

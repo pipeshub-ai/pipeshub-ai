@@ -164,6 +164,7 @@ class OpenAITransport(LLMTransport):
         model_key: str | None = None,
         cache_kwargs: dict[str, str] | None = None,
         on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> None:
         super().__init__()
         try:
@@ -186,6 +187,10 @@ class OpenAITransport(LLMTransport):
             client_kwargs["timeout"] = timeout
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
+        # A caller-supplied httpx client carries whatever it was configured with
+        # (an egress guard, request hooks); the SDK does not close it.
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
         self._client = _openai.AsyncOpenAI(**client_kwargs)
         self._init_prompt_cache(cache_kwargs, on_cache_rejected)
         # Cumulative usage across all calls on this transport instance —
@@ -201,6 +206,7 @@ class OpenAITransport(LLMTransport):
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
         cache_kwargs: dict[str, str] | None = None, on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> "OpenAITransport":
         """Build from an already-configured `ChatOpenAI`.
 
@@ -250,6 +256,7 @@ class OpenAITransport(LLMTransport):
             model_key=model_key,
             cache_kwargs=cache_kwargs,
             on_cache_rejected=on_cache_rejected,
+            http_client=http_client,
         )
 
     def _init_prompt_cache(

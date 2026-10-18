@@ -81,6 +81,7 @@ class GroupsHandle:
         self._preset = preset
         self._task: Optional["asyncio.Task[GroupMembership]"] = None
         self._started_at: Optional[float] = None
+        self._timed_out = False
 
     @classmethod
     def resolved(cls, membership: GroupMembership) -> "GroupsHandle":
@@ -119,10 +120,15 @@ class GroupsHandle:
         task = self._task
         if task is None:
             return _degraded("unavailable")
+        if self._timed_out:
+            # One slow lookup must not cost every later call of the request the
+            # budget again: use the answer if it has arrived, else go without.
+            return self.result_nowait() or _degraded("timeout")
         budget = self._budget if budget_seconds is None else budget_seconds
         try:
             result = await asyncio.wait_for(asyncio.shield(task), timeout=max(budget, 0.0))
         except asyncio.TimeoutError:
+            self._timed_out = True
             metrics.inc(metrics.IDENTITY_MISSING, "groups_timeout")
             return _degraded("timeout")
         except asyncio.CancelledError:

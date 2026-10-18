@@ -37,6 +37,7 @@ class ModelCallContext:
     connector_id: Optional[str] = None
     groups: Optional[GroupsHandle] = field(default=None, compare=False, repr=False)
     governance: IdentityGovernancePolicy = field(default=DEFAULT_GOVERNANCE, compare=False, repr=False)
+    pseudonym_key: Optional[bytes] = field(default=None, compare=False, repr=False)
     # Header sets already rendered for this context, keyed by connection and
     # sub-purpose. ``replace()`` does not copy it (init=False), so a narrowed
     # context never reuses headers rendered for the wider one.

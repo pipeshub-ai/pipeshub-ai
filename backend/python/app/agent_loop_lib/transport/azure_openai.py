@@ -59,6 +59,7 @@ class AzureOpenAITransport(OpenAITransport):
         model_key: str | None = None,
         cache_kwargs: dict[str, str] | None = None,
         on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> None:
         # Skip OpenAITransport.__init__ (it builds AsyncOpenAI) but keep the
         # LLMTransport base contract and the cumulative counters its callers read.
@@ -92,6 +93,8 @@ class AzureOpenAITransport(OpenAITransport):
             client_kwargs["timeout"] = timeout
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
         self._client = _openai.AsyncAzureOpenAI(**client_kwargs)
         self._init_prompt_cache(cache_kwargs, on_cache_rejected)
         self.total_input_tokens: int = 0
@@ -104,6 +107,7 @@ class AzureOpenAITransport(OpenAITransport):
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
         cache_kwargs: dict[str, str] | None = None, on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> "AzureOpenAITransport":
         """Build from an already-configured `AzureChatOpenAI`.
 
@@ -162,6 +166,7 @@ class AzureOpenAITransport(OpenAITransport):
             model_key=model_key,
             cache_kwargs=cache_kwargs,
             on_cache_rejected=on_cache_rejected,
+            http_client=http_client,
         )
 
     @property
