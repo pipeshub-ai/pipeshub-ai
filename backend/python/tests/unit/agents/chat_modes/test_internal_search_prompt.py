@@ -56,7 +56,19 @@ _COMPOSITION_MARKERS = (
     _COMPOSE, _SPEAKER, _QUALIFIERS, _PREMISE, _DEFINING_RECORD, _CONFLICT_ORDER, _SECOND_VALUE,
     _PARAPHRASE, _SUBSTANCE_FIRST, _SHIPPED, _SETTLED, _CONDITIONAL, _GENERATED_SUMMARY,
 )
-_THOROUGH_MARKERS = (_READ_IN_FULL, _SEARCH_AGAIN, _LIST_THE_SET, _SEEK_OTHER)
+_EACH_PART = "the records you read must cover each part"
+_PART_ONLY = "A record read for one part supplies that part only"
+_CONDITION_CHECK = "check that it meets every condition the question sets"
+_OTHER_WORDS = "a record that states a condition in other words meets it"
+_STATED_AS_GIVEN = "Take what the question states as given: do not dispute or hedge a fact it states"
+_UNMET_AFTER = (
+    "Mention an unmet condition only when you answer from a record other than the one the "
+    "question describes, in one sentence after the answer."
+)
+_THOROUGH_MARKERS = (
+    _READ_IN_FULL, _SEARCH_AGAIN, _LIST_THE_SET, _SEEK_OTHER,
+    _EACH_PART, _PART_ONLY, _CONDITION_CHECK, _OTHER_WORDS, _STATED_AS_GIVEN, _UNMET_AFTER,
+)
 
 # What a flat enterprise-search chat can call: the knowledge-graph toolset is
 # essential there, and the fetch tool is granted once a result names a record.
@@ -109,7 +121,7 @@ class TestThorough:
 
     def test_adds_search_again_and_seek_other_versions_without_composition(self) -> None:
         text = _text(thorough=True)
-        for marker in (_SEARCH_AGAIN, _LIST_THE_SET, _SEEK_OTHER):
+        for marker in _THOROUGH_MARKERS:
             assert text.count(marker) == 1, marker
         for marker in _COMPOSITION_MARKERS:
             assert marker not in text, marker
@@ -254,3 +266,52 @@ class TestSourceTrust:
         paragraphs = _text(composition=True).split("\n\n")
         assert paragraphs[-2].startswith("A record's \"Summary:\" line")
         assert paragraphs[-1].startswith(_SECOND_VALUE)
+
+
+class TestReadCoverage:
+    """Multi-part answers left a part's own record unread, or settled on a
+    record that failed a condition the question set."""
+
+    def test_each_part_and_condition_needs_a_record(self) -> None:
+        text = _text(thorough=True)
+        assert text.index(_READ_IN_FULL) < text.index(_EACH_PART) < text.index(_CONDITION_CHECK)
+        assert "optional, recommended or condition-specific items into requirements" in text
+
+    def test_a_failed_condition_searches_again_and_leads_with_the_record_that_meets_it(self) -> None:
+        text = _text(thorough=True)
+        check = text.index(_CONDITION_CHECK)
+        assert check < text.index("search again in different words") < text.index("lead with it")
+
+    @pytest.mark.parametrize("composition", [False, True])
+    def test_only_with_thorough(self, composition: bool) -> None:
+        text = _text(composition=composition)
+        for marker in (_EACH_PART, _PART_ONLY, _CONDITION_CHECK, _OTHER_WORDS, _STATED_AS_GIVEN, _UNMET_AFTER):
+            assert marker not in text, marker
+
+
+class TestNoConditionCaveats:
+    """An exit that told the model to say which condition a record does not
+    meet made answers dispute or hedge facts the question states in other
+    words, and append caveats to correct answers."""
+
+    def test_a_condition_stated_in_other_words_is_met(self) -> None:
+        text = _text(thorough=True)
+        assert text.index(_CONDITION_CHECK) < text.index(_OTHER_WORDS) < text.index("If one does not hold")
+
+    def test_stated_facts_are_taken_as_given(self) -> None:
+        text = _text(thorough=True)
+        assert _STATED_AS_GIVEN in text
+        assert "do not add that a record words it differently" in text
+
+    def test_an_unmet_condition_is_named_only_for_another_record_and_after_the_answer(self) -> None:
+        assert _text(thorough=True).count(_UNMET_AFTER) == 1
+
+    @pytest.mark.parametrize(("composition", "entity_tools"), list(itertools.product((False, True), repeat=2)))
+    def test_no_exit_asks_for_the_unmet_condition(self, composition: bool, entity_tools: bool) -> None:
+        text = _text(composition=composition, thorough=True, entity_tools=entity_tools)
+        for exit_clause in (
+            "say which condition it does not meet",
+            "say so if nothing closer exists",
+            "answer from the nearest record",
+        ):
+            assert exit_clause not in text, exit_clause

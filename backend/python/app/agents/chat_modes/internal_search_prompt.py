@@ -31,6 +31,10 @@ _FETCH_WHEN_NEEDED = (
 
 # A block can hold an outdated value, half a list, or a step without its
 # conditions; "blocks are sufficient for a single fact" let answers rest on one.
+# Multi-part answers left a part's own record unread, or answered from a record
+# that failed a condition the question set. An exit that asked the model to name
+# the unmet condition made it dispute facts the question states in other words,
+# so an unmet condition is named only when the answer rests on another record.
 _READ_IN_FULL = (
     "The context you are given contains the most relevant BLOCKS from each document — not "
     "the full documents. Before answering, read in full the records your answer will rest "
@@ -42,7 +46,19 @@ _READ_IN_FULL = (
     "(the candidate list below the context shows \"you have N of M blocks\"). If a fetched "
     "record comes back with blocks not shown and the part you need could be among them, read "
     "on with `start_block` before answering. A record listed in results with no blocks shown "
-    "has not been read."
+    "has not been read. When the question has several parts, the records you read must cover "
+    "each part: if a listed record is specifically about a part none of them covers, read it "
+    "too. A record read for one part supplies that part only: do not turn its optional, "
+    "recommended or condition-specific items into requirements of the whole answer. Before "
+    "answering from a record, check that it meets every condition the question sets (scope, "
+    "time window, kind of change, measured effect); a record that states a condition in other "
+    "words meets it. If one does not hold, search again in different words, using the "
+    "question's distinguishing terms (the customer, product or kind of document it names), "
+    "before answering; prefer a record you read that meets every condition over one that does "
+    "not, and lead with it. Take what the question states as given: do not dispute or hedge a "
+    "fact it states, and do not add that a record words it differently. Mention an unmet "
+    "condition only when you answer from a record other than the one the question describes, "
+    "in one sentence after the answer."
 )
 
 _SEARCH_AGAIN = (
