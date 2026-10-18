@@ -2042,6 +2042,16 @@ async def _enrich_agent_models(agent: dict[str, Any], config_service: Configurat
         logger.warning(f"Failed to enrich models: {e}")
 
 
+
+# The base implementations, under names nothing rebinds. An edition may replace
+# get_services, _enrich_agent_models and sa_forces_org_sharing when it loads
+# (handlers look them up as module globals at call time); tests of the base
+# behaviour pin these back.
+_base_get_services = get_services
+_base_enrich_agent_models = _enrich_agent_models
+_base_sa_forces_org_sharing = sa_forces_org_sharing
+
+
 def _parse_request_body(body: bytes) -> dict[str, Any]:
     """Parse and validate JSON request body"""
     if not body:

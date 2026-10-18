@@ -30,6 +30,16 @@ from app.utils.user_messages import action_failed
 # ---------------------------------------------------------------------------
 # Pydantic model validation tests
 # ---------------------------------------------------------------------------
+def _retrieval_with_llm() -> MagicMock:
+    """A retrieval service whose LLM is found both ways an LLM resolver may look:
+    by reading `.llm` or by awaiting `get_llm_instance()`. The awaited path reads
+    `.llm` when called, so a test that swaps `.llm` later is seen either way."""
+    retrieval = MagicMock()
+    retrieval.llm = MagicMock()
+    retrieval.get_llm_instance = AsyncMock(side_effect=lambda *_a, **_k: retrieval.llm)
+    return retrieval
+
+
 class TestSearchQueryModel:
     """Tests for SearchQuery pydantic model."""
 
@@ -193,8 +203,7 @@ class TestSearchEndpoint:
         """Search without KB filtering should skip KB access validation."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": [], "status_code": 200}
         )
@@ -226,8 +235,7 @@ class TestSearchEndpoint:
         """Search with KB filter - all KBs accessible."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": ["r1"], "status_code": 200}
         )
@@ -341,10 +349,7 @@ class TestSearchEndpoint:
         """An unexpected exception becomes a 500 with fixed text; its own text goes to the log."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
-        # Awaited by a resolver that does not read the cached .llm.
-        mock_retrieval.get_llm_instance = AsyncMock(return_value=MagicMock())
+        mock_retrieval = _retrieval_with_llm()
 
         mock_graph = MagicMock()
         body = SearchQuery(query="test")
@@ -374,8 +379,7 @@ class TestSearchEndpoint:
         """Expanded queries already in rewritten are not duplicated."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": [], "status_code": 200}
         )
@@ -407,8 +411,7 @@ class TestSearchEndpoint:
         """If rewritten query is blank, only expanded queries are used."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": [], "status_code": 200}
         )
@@ -439,8 +442,7 @@ class TestSearchEndpoint:
         """The status code from search results is forwarded in the response."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": [], "status_code": 206}
         )
@@ -469,8 +471,7 @@ class TestSearchEndpoint:
         """When results lack status_code, default to 500."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": []}
         )
@@ -499,8 +500,7 @@ class TestSearchEndpoint:
         """Verify org_id, user_id, limit, knowledge_search are forwarded."""
         request = self._build_request(user_id="u42", org_id="o99")
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": [], "status_code": 200}
         )
@@ -531,8 +531,7 @@ class TestSearchEndpoint:
         assert call_kwargs["time_range"] is None
 
     async def _search_with(self, body: SearchQuery) -> MagicMock:
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": [], "status_code": 200}
         )
@@ -651,8 +650,7 @@ class TestSearchSurvivesQueryTransformationFailure:
         return request
 
     def _retrieval(self) -> MagicMock:
-        retrieval = MagicMock()
-        retrieval.llm = MagicMock()
+        retrieval = _retrieval_with_llm()
         retrieval.search_with_filters = AsyncMock(return_value=dict(self.RESULTS))
         return retrieval
 
