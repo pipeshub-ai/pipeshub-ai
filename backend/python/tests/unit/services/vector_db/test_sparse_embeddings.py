@@ -138,7 +138,7 @@ async def test_init_does_not_block_event_loop():
     assert called_in_thread, "Model construction must be dispatched via asyncio.to_thread"
 
 
-def _fake_fastembed(calls, *, cached: bool):
+def _fake_fastembed(calls: list[bool], *, cached: bool) -> MagicMock:
     class FakeSparse:
         def __init__(self, model_name, **kwargs):
             calls.append(kwargs.get("local_files_only", False))
@@ -151,7 +151,7 @@ def _fake_fastembed(calls, *, cached: bool):
     return fake_module
 
 
-def test_build_model_tries_cache_before_download(monkeypatch):
+def test_build_model_tries_cache_before_download(monkeypatch) -> None:
     """A cache-only load first (local_files_only=True); the Hub only on a cache miss."""
     import sys
 
@@ -163,7 +163,7 @@ def test_build_model_tries_cache_before_download(monkeypatch):
     assert model.model_name == "Qdrant/bm25"
 
 
-def test_build_model_uses_the_cache_without_asking_the_hub(monkeypatch):
+def test_build_model_uses_the_cache_without_asking_the_hub(monkeypatch) -> None:
     import sys
 
     calls: list[bool] = []
@@ -173,7 +173,7 @@ def test_build_model_uses_the_cache_without_asking_the_hub(monkeypatch):
     assert calls == [True]
 
 
-def test_build_model_does_not_download_when_explicitly_offline(monkeypatch):
+def test_build_model_does_not_download_when_explicitly_offline(monkeypatch) -> None:
     import sys
 
     calls: list[bool] = []
@@ -184,7 +184,7 @@ def test_build_model_does_not_download_when_explicitly_offline(monkeypatch):
     assert calls == [True]
 
 
-def test_build_model_leaves_hf_hub_offline_alone(monkeypatch):
+def test_build_model_leaves_hf_hub_offline_alone(monkeypatch) -> None:
     # huggingface_hub reads HF_HUB_OFFLINE once, at import, so the old runtime toggle did nothing.
     import os
     import sys
