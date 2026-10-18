@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
@@ -111,6 +111,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.messages import Part
     from app.modules.agents.qna.chat_state import ChatState
     from app.modules.agents.record_escalation.models import FetchPlan
+    from app.utils.chat_helpers import RecordIdShortener
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,33 @@ class _ResultFrame:
     @property
     def chars(self) -> int:
         return len(self.summary) + self.tail_chars
+
+
+def _unshown_within(
+    frame: _ResultFrame, over: int, shortener: RecordIdShortener | None,
+) -> _ResultFrame:
+    """``frame`` with the lowest-ranked unshown rows dropped until the result is
+    no longer ``over`` its size, or the list is empty."""
+
+    def size(text: str) -> int:
+        if text and shortener is not None:
+            return len(shortener.copy().shorten_record_ids_in_text(text))
+        return len(text)
+
+    unshown = list(frame.unshown)
+    listed = size(frame.unshown_list)
+    kept = listed
+    while unshown and over > listed - kept:
+        unshown.pop()
+        kept = size(render_unshown_matches(unshown))
+    if kept == listed:
+        return frame
+    return replace(
+        frame,
+        unshown=unshown,
+        unshown_list=render_unshown_matches(unshown),
+        tail_chars=frame.tail_chars - (listed - kept),
+    )
 
 
 def _result_frame(
@@ -1267,11 +1295,19 @@ async def _execute_search(
                 break
         else:
             if knowledge.ranked:
-                logger_instance.warning(
-                    "knowledgegraph__search: result still over %d chars after %d fits; "
-                    "the tool-result cap will cut it",
-                    result_max_chars, _MAX_FIT_PASSES,
+                # Each record a pass drops adds a row to the unshown list, so the
+                # list gives way before the generic cap cuts the result.
+                result_frame = _unshown_within(
+                    result_frame,
+                    (selection.chars or 0) + result_frame.chars - result_max_chars,
+                    selection.record_id_shortener,
                 )
+                if (selection.chars or 0) + result_frame.chars > result_max_chars:
+                    logger_instance.warning(
+                        "knowledgegraph__search: result still over %d chars after %d fits; "
+                        "the tool-result cap will cut it",
+                        result_max_chars, _MAX_FIT_PASSES,
+                    )
         rendered = renderer.render(selection)
         pm_shown, pm_hint = keyword_hint(selection)
         state["citation_ref_mapper"] = ref_mapper

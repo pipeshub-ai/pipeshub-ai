@@ -799,6 +799,37 @@ class TestRecordsTheResultDoesNotShow:
         assert set(state["virtual_record_id_to_result"]) == {"vr1"}
 
     @pytest.mark.asyncio
+    async def test_when_the_fit_runs_out_of_passes_the_list_gives_way_first(self, monkeypatch) -> None:
+        """Each record the fit drops adds a row, so the passes can end over the
+        size: the lowest-ranked rows go, and only the ids still shown are
+        remembered."""
+        from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
+
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+        select = KnowledgeRenderer.select
+
+        def first_record_only(renderer: KnowledgeRenderer, ranked: list, _max_chars: int) -> Selection:
+            chosen = select(renderer, ranked[:1], 10**6)
+            return Selection(ranked=chosen.ranked, omitted_records=len(ranked) - 1, chars=chosen.chars,
+                             record_id_shortener=chosen.record_id_shortener)
+
+        vrids = ["vr1", "vr2", "vr3", "vr4", "vr5", "vr6"]
+        with patch.object(KnowledgeRenderer, "select", first_record_only):
+            full, _ = await self._search(vrids, vrids, permitted=tuple(vrids))
+            row = len("\n- Record ID: r-vr6 | Doc vr6")
+            budget = len(full) - 2 * row - 5
+            with patch(f"{self._SEARCH}.DEFAULT_MAX_RESULT_CHARS", budget):
+                result, state = await self._search(vrids, vrids, permitted=tuple(vrids))
+
+        assert "- Record ID: r-vr6 | Doc vr6" in full
+        assert len(result) <= budget
+        assert "- Record ID: r-vr2 | Doc vr2\n- Record ID: r-vr3 | Doc vr3" in result
+        for dropped in ("r-vr4", "r-vr5", "r-vr6"):
+            assert dropped not in result
+            assert dropped not in state["known_record_ids"]
+        assert {"r-vr2", "r-vr3"} <= state["known_record_ids"]
+
+    @pytest.mark.asyncio
     async def test_listed_ids_are_shortened_like_every_other_id(self, monkeypatch) -> None:
         monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
 
