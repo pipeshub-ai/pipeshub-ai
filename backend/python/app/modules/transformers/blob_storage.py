@@ -1761,17 +1761,16 @@ class BlobStorage(Transformer):
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 
-            nodes = await self.graph_provider.get_nodes_by_filters(
+            # The mapping is keyed by the vrid. The field match only finds nodes
+            # older releases keyed f"{vrid}_{documentId}".
+            doc = await self.graph_provider.get_document(
+                virtual_record_id,
+                collection_name
+            )
+            nodes = [doc] if doc else await self.graph_provider.get_nodes_by_filters(
                 collection_name,
                 {"virtualRecordId": virtual_record_id}
             )
-            if not nodes:
-                doc = await self.graph_provider.get_document(
-                    virtual_record_id,
-                    collection_name
-                )
-                if doc:
-                    nodes = [doc]
 
             if nodes:
                 return self._shape_document_lookup(nodes[0])
@@ -2008,12 +2007,11 @@ class BlobStorage(Transformer):
                 if vrid and vrid not in resolved:
                     resolved[vrid] = self._shape_document_lookup(node)
 
-        # Opt-in only. Nothing in this repo writes a `virtualRecordId` field --
-        # the mapping node's key IS the virtual record id -- and that field is
-        # not indexed, so this query never matches on our data and costs a full
-        # label scan for every id the keyed batch missed (a deleted or missing
-        # mapping is normal). Left available for deployments that dual-write the
-        # field; otherwise ids fall straight through to the per-id path below.
+        # Opt-in only. The mapping node's key IS the virtual record id, so the
+        # keyed batch above finds every mapping this release writes; the field
+        # only adds nodes older releases keyed f"{vrid}_{documentId}". Each id
+        # the batch missed (a deleted or missing mapping is normal) costs one
+        # more query here, so it stays off unless a deployment still holds them.
         missing = [vrid for vrid in unique_ids if vrid not in resolved]
         if missing and os.getenv("PIPESHUB_VRID_FIELD_LOOKUP", "").lower() in ("1", "true", "yes"):
             for start in range(0, len(missing), chunk_size):
