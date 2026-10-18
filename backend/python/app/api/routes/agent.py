@@ -629,13 +629,17 @@ def _format_web_search_for_response(raw_web_search: Any) -> dict[str, Any] | Non
     return formatted
 
 
-def _is_web_search_enabled(selected_tools: list[str] | None) -> bool:
+def _is_web_search_enabled(selected_tools: list[str] | None, *, is_universal_agent: bool = False) -> bool:
     """Whether web_search should remain enabled for this request.
 
     `selected_tools is None` means "all actions", so web_search stays enabled.
     When an explicit tools list is provided, require a web_search entry.
+
+    The universal agent's tool pickers (composer and project) never list web search; its
+    Web Search switch (`agentCapabilities.webSearch`) is the control. A narrowed or
+    project-scoped tool list there must not switch web search off behind that switch.
     """
-    if selected_tools is None:
+    if selected_tools is None or is_universal_agent:
         return True
 
     for tool in selected_tools:
@@ -4276,15 +4280,27 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 web_search_tool_config = await web_search_coro if web_search_coro is not None else None
                 connector_configs = await connector_task
                 timer.mark("connector_cfg")
-                if not _is_web_search_enabled(chat_query.tools):
+                # Capabilities can only narrow, never expand beyond what the agent is configured with.
+                if web_search_tool_config is None:
+                    web_search_off = "not_configured"
+                elif not _is_web_search_enabled(
+                    chat_query.tools, is_universal_agent=agent_id == UNIVERSAL_AGENT_ID,
+                ):
+                    web_search_off = "tools_filter"
+                elif not caps.web_search:
+                    web_search_off = "capability_off"
+                else:
+                    web_search_off = None
+                if web_search_off:
                     web_search_provider = None
                     web_search_tool_config = None
-
-                # Apply user-requested capability overrides (capabilities can only narrow,
-                # never expand beyond what the agent is configured with).
-                if not caps.web_search:
-                    web_search_provider = None
-                    web_search_tool_config = None
+                # Without this line a turn that silently lost web search looks like any other.
+                logger.info(
+                    "chat_stream: web search %s (agent_id=%s)",
+                    f"off, reason={web_search_off}" if web_search_off
+                    else f"on, provider={web_search_tool_config.get('provider')}",
+                    agent_id,
+                )
                 if not caps.internal_search:
                     filters = {"apps": [], "kb": [NO_KB_SELECTED_FILTER]}
                     agent_knowledge = []

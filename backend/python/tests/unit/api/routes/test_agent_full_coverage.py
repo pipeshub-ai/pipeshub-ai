@@ -420,6 +420,11 @@ class TestIsWebSearchEnabled:
         from app.api.routes.agent import _is_web_search_enabled
         assert _is_web_search_enabled([]) is False
 
+    def test_universal_agent_ignores_tool_list(self) -> None:
+        from app.api.routes.agent import _is_web_search_enabled
+        assert _is_web_search_enabled(["jira.search"], is_universal_agent=True) is True
+        assert _is_web_search_enabled([], is_universal_agent=True) is True
+
 
 # ============================================================================
 # _resolve_service_account_caller_identity — lines 258-276
