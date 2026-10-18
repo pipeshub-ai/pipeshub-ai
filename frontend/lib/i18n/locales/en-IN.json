@@ -2156,7 +2156,10 @@
         "title": "Tool approvals: {{name}}",
         "description": "What happens when an assistant or agent wants to use one of these tools. The same rules apply to everyone in your organisation.",
         "readOnly": "Only an admin can change these.",
-        "toolsError": "Couldn't load this toolset's tools."
+        "toolsError": "Couldn't load this toolset's tools.",
+        "defaults": "Tools that read or change data run. A tool that deletes data, clears a sheet or sends email asks the person first in a chat in the PipesHub app, and doesn't run where nobody can answer, like the Slack bot or the API.",
+        "enterpriseTitle": "Organization tool approvals",
+        "enterpriseDescription": "Choose which of this toolset's tools run, ask first or never run, for everyone in your organization."
       }
     },
     "archivedChats": {

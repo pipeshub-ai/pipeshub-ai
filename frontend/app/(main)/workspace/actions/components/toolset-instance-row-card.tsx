@@ -9,7 +9,7 @@ import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import { apiClient } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils/formatters';
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
-import { ToolsetToolRulesDialog } from './toolset-tool-rules-dialog';
+import { ToolsetToolRulesDialog } from '@/config';
 
 export interface ToolsetInstanceRowCardProps {
   /** Team = admin catalog (org instances); personal = per-user credentials. */

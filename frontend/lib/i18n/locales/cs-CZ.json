@@ -2381,7 +2381,10 @@
         "title": "Schvalování nástrojů: {{name}}",
         "description": "Co se stane, když asistent nebo agent chce použít některý z těchto nástrojů. Stejná pravidla platí pro všechny ve vaší organizaci.",
         "readOnly": "Měnit je může pouze správce.",
-        "toolsError": "Nástroje této sady nástrojů se nepodařilo načíst."
+        "toolsError": "Nástroje této sady nástrojů se nepodařilo načíst.",
+        "defaults": "Nástroje, které čtou nebo mění data, se spustí. Nástroj, který maže data, vymaže list nebo odešle e-mail, se nejdřív zeptá v chatu v aplikaci PipesHub a nespustí se tam, kde nikdo nemůže odpovědět, například v botovi pro Slack nebo přes API.",
+        "enterpriseTitle": "Schvalování nástrojů v organizaci",
+        "enterpriseDescription": "Vyberte, které nástroje této sady se spustí, nejdřív se zeptají, nebo se nikdy nespustí, a to pro všechny ve vaší organizaci."
       }
     },
     "rightPanel": {

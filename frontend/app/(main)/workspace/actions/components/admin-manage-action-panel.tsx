@@ -36,7 +36,7 @@ import {
   stableStringifyRecord,
 } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
-import { ToolsetToolRulesDialog } from './toolset-tool-rules-dialog';
+import { ToolsetToolRulesDialog } from '@/config';
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { toolsetRedirectUri } from '../utils/toolset-redirect-uri';
 import { useToolsetOauthPopupFlow } from '@/app/(main)/agents/agent-builder/hooks/use-toolset-oauth-popup-flow';

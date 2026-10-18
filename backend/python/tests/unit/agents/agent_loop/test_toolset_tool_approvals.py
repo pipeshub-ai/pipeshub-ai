@@ -62,6 +62,12 @@ class _Jira:
 
 
 @pytest.fixture(autouse=True)
+def _organization_rules(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Most tests here are about an admin's rules; `TestWithoutOrganizationRules` turns them off."""
+    monkeypatch.setattr("app.edition_config.organization_toolset_tool_rules", True, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _nothing_created() -> None:
     _Jira.created = []
     _Jira.deleted = []
@@ -246,6 +252,30 @@ class TestTheGate:
     async def test_the_mcp_switch_doesnt(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("MCP_TOOL_APPROVALS", "false")
         assert (await _gate(_context(), "jira__delete_issue", key="ENG-1")).decision == PreDecision.ASK
+
+
+class TestWithoutOrganizationRules:
+    """The default build: no admin rules, so every toolset tool starts from what it does to data."""
+
+    @pytest.fixture(autouse=True)
+    def _off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("app.edition_config.organization_toolset_tool_rules", False, raising=False)
+
+    async def test_saved_rules_are_not_read(self) -> None:
+        store = _Store()
+        await _set_rules(store, search_issues="block", delete_issue="allow")
+        store.reads_fail = True  # Reading them would refuse every call.
+        context = _context(store)
+        assert (await _gate(context, "jira__search_issues", jql="x")).decision == PreDecision.ALLOW
+        assert (await _gate(context, "jira__create_issue", title="Bug")).decision == PreDecision.ALLOW
+        assert (await _gate(context, "jira__delete_issue", key="ENG-1")).decision == PreDecision.ASK
+
+    async def test_nobody_watching_blocks_a_deleting_tool_without_naming_an_admin(self) -> None:
+        ctx = await _gate(_context(client_name="api"), "jira__delete_issue", key="ENG-1")
+
+        assert ctx.decision == PreDecision.DENY
+        reason = ctx.decision_reason or ""
+        assert "approve it in the PipesHub app" in reason and "admin" not in reason
 
 
 class TestASavedCall:

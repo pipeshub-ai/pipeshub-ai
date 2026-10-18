@@ -4,6 +4,9 @@ knowledge_hub_service_factory = None
 sharing_router = None 
 agent_sharing_router = None
 allowed_connector_list_scopes: set[str] = {"personal", "team"}
+# Organization-wide rules for toolset tools (the "Tool approvals" editor). Off: a toolset tool
+# starts from what it does to data, and the person in the chat answers its approval card.
+organization_toolset_tool_rules = False
 from app.config.redaction import can_reveal_secrets, hide_secrets_by_default
 from app.api.routes.search_llm_resolver import resolve_llm_for_search
 from app.api.routes.toolset_resolvers import (

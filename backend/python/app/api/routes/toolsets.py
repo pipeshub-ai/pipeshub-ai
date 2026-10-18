@@ -1922,6 +1922,14 @@ class ToolsetToolRulesBody(BaseModel):
     tools: dict[str, tool_approvals.Rule] = Field(default_factory=dict)
 
 
+def _require_organization_tool_rules() -> None:
+    if not tool_approvals.organization_toolset_tool_rules():
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail="Organization tool approvals aren't available here. Each person answers the approval card in the chat.",
+        )
+
+
 async def _org_toolset_instance(instance_id: str, org_id: str, config_service: ConfigurationService) -> dict[str, Any]:
     instances = await _load_toolset_instances(org_id, config_service)
     instance = next((i for i in instances if i.get("_id") == instance_id), None)
@@ -1938,6 +1946,7 @@ async def get_toolset_tool_rules(
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
 ) -> dict[str, Any]:
     """The instance's tool rules; `canEdit` says whether the caller may change them."""
+    _require_organization_tool_rules()
     user_context = _get_user_context(request)
     await _org_toolset_instance(instance_id, user_context["org_id"], config_service)
     rules = await tool_approvals.load_instance_rules(config_service, instance_id=instance_id)
@@ -1954,6 +1963,7 @@ async def update_toolset_tool_rules(
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
 ) -> dict[str, Any]:
     """Replaces the instance's tool rules. Admins only: they apply to everyone in the organization."""
+    _require_organization_tool_rules()
     user_context = _get_user_context(request)
     if not await _check_user_is_admin(user_context["user_id"], request, config_service):
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can change a toolset's tool approvals.")

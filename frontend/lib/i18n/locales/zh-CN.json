@@ -2297,7 +2297,10 @@
         "title": "工具审批：{{name}}",
         "description": "当助手或智能体想使用这些工具时会发生什么。这些规则对您组织中的每个人都相同。",
         "readOnly": "只有管理员可以更改这些规则。",
-        "toolsError": "无法加载此工具集的工具。"
+        "toolsError": "无法加载此工具集的工具。",
+        "defaults": "读取或更改数据的工具会直接运行。删除数据、清空表格或发送邮件的工具会先在 PipesHub 应用的聊天中询问，在无人能回应的地方（如 Slack 机器人或 API）不会运行。",
+        "enterpriseTitle": "组织工具审批",
+        "enterpriseDescription": "为组织中的所有人选择此工具集中的哪些工具直接运行、先询问或从不运行。"
       }
     },
     "rightPanel": {

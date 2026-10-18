@@ -2161,7 +2161,10 @@
         "title": "Tool-Freigaben: {{name}}",
         "description": "Was passiert, wenn ein Assistent oder Agent eines dieser Tools verwenden möchte. Dieselben Regeln gelten für alle in Ihrer Organisation.",
         "readOnly": "Nur ein Administrator kann diese ändern.",
-        "toolsError": "Die Tools dieses Toolsets konnten nicht geladen werden."
+        "toolsError": "Die Tools dieses Toolsets konnten nicht geladen werden.",
+        "defaults": "Tools, die Daten lesen oder ändern, werden ausgeführt. Ein Tool, das Daten löscht, eine Tabelle leert oder E-Mails sendet, fragt zuerst im Chat in der PipesHub-App nach und wird nicht ausgeführt, wo niemand antworten kann, etwa im Slack-Bot oder über die API.",
+        "enterpriseTitle": "Tool-Freigaben der Organisation",
+        "enterpriseDescription": "Legen Sie fest, welche Tools dieses Toolsets ausgeführt werden, zuerst nachfragen oder nie ausgeführt werden – für alle in Ihrer Organisation."
       }
     },
     "rightPanel": {

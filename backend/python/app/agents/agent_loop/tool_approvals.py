@@ -154,6 +154,13 @@ def enabled(source: Source = "mcp") -> bool:
     return env_bool(TOOLSET_ENABLED_ENV if source == "toolset" else ENABLED_ENV, True)
 
 
+def organization_toolset_tool_rules() -> bool:
+    """Whether admins set toolset tools' rules for the organization (an edition extension point)."""
+    from app import edition_config  # Imported late: edition_config imports the routes that import this module.
+
+    return bool(getattr(edition_config, "organization_toolset_tool_rules", False))
+
+
 @dataclass(frozen=True)
 class ApprovalTarget:
     """A tool the gate checks: where its rule is kept, what it does to data, and the tool itself."""
@@ -344,10 +351,11 @@ async def _rules_for(context: "AgentContext", source: Source, instance_id: str) 
         try:
             if source == "mcp":
                 rules = await load_own_rules(context.config_service, user_id=context.user_id, instance_id=instance_id)
-            elif instance_id:
+            elif instance_id and organization_toolset_tool_rules():
                 rules = await load_instance_rules(context.config_service, instance_id=instance_id)
             else:
-                # A toolset whose instance couldn't be told apart: nobody could have set its rules.
+                # Without organization rules, or for a toolset whose instance couldn't be told
+                # apart, every tool starts from what it does to data.
                 rules = ToolRules()
         except Exception as e:
             logger.warning(f"Couldn't read the tool rules of {source} instance {instance_id}: {e}")
@@ -362,10 +370,11 @@ def _blocked_message(reason: str, target: ApprovalTarget) -> str:
     # An MCP tool's rules are the person's own; a toolset's are the organization's, set by an admin.
     whose, who = ("the user's", "they") if target.source == "mcp" else ("the organization's", "an admin")
     if reason == "unattended":
+        can_pre_approve = target.source == "toolset" and organization_toolset_tool_rules()
         return (
             f"{tool} on {owner} needs someone to approve it in the PipesHub app, so it wasn't run here. "
             "Tell the user what you wanted to do"
-            + ("." if target.source == "mcp" else ", and that an admin can pre-approve it.")
+            + (", and that an admin can pre-approve it." if can_pre_approve else ".")
         )
     if reason == "default":
         return (

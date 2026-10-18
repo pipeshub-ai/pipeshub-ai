@@ -16,6 +16,11 @@ vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: {} }))
 vi.mock('@/lib/store/toast-store', () => ({ toast: toasts }));
 vi.mock('@/lib/api', () => ({ apiClient: { post: vi.fn(() => new Promise(() => {})) }, isProcessedError: () => false }));
 vi.mock('@/app/components/ui', () => ({ ConnectorIcon: () => null }));
+// The card opens whichever rules dialog the edition exports; these tests are about the editor.
+vi.mock('@/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config')>()),
+  ToolsetToolRulesDialog: (await import('../components/toolset-tool-rules-dialog')).ToolsetToolRulesDialog,
+}));
 
 import { ToolsetToolRulesDialog } from '../components/toolset-tool-rules-dialog';
 import { ToolsetInstanceRowCard } from '../components/toolset-instance-row-card';
