@@ -498,7 +498,7 @@ class TestFailures:
 
 
 class TestTheBetterPageStands:
-    async def test_a_record_id_search_that_admits_less_does_not_replace_the_page(self) -> None:
+    async def test_a_record_id_search_that_admits_nothing_does_not_replace_the_page(self) -> None:
         """The record list over-admits (RESTRICTED pages, a revoked grant still
         cached): its search can be denied wholesale. The container page the
         check admitted stands, and the scope is not remembered."""
@@ -514,6 +514,46 @@ class TestTheBetterPageStands:
         assert response["searchResults"]
         assert _vrids(response) <= readable
         assert not mod.narrow_access_memo._entries
+
+    async def test_a_shorter_record_id_page_is_taken_and_remembered(self) -> None:
+        """Three rewritten queries at limit 10: the container page is cut to the
+        30-hit budget of a 2x over-fetch, the record-id page to 10 per query,
+        deduplicated. Shorter is expected, not worse: the record-id page is what
+        this switch serves, and the scope is remembered so the next search does
+        not run the container search only to switch again."""
+        corpus = _corpus(17, records=600)
+        readable = set(random.Random(17).sample(corpus.vrids, 420))
+        store = _FakeStore(list(corpus.points))
+        graph = _graph(_Access(readable, set(readable)))
+        service = _service(store, graph)
+        queries = ["q", "q two", "q three"]
+
+        adjudicate = service._search_and_adjudicate
+        container_pages: list[int] = []
+
+        async def counting(*args: object, **kwargs: object) -> tuple:
+            result = await adjudicate(*args, **kwargs)
+            container_pages.append(len(result[0]))
+            return result
+
+        service._search_and_adjudicate = counting
+        first = await service.search_with_filters(queries, "alice", ORG, limit=10)
+
+        # The case under test: the record-id page is the shorter one.
+        assert container_pages[0] > len(first["searchResults"])
+        assert store.used_record_ids()[0] is False
+        assert True in store.used_record_ids()
+        assert first["searchResults"]
+        assert _vrids(first) <= readable
+        assert mod.narrow_access_memo.is_narrow(mod.narrow_access_memo.key(ORG, "alice", {}))
+
+        store.requests.clear()
+        graph.get_accessible_virtual_record_ids.reset_mock()
+        second = await service.search_with_filters(queries, "alice", ORG, limit=10)
+
+        assert store.used_record_ids() and all(store.used_record_ids())
+        assert graph.get_accessible_virtual_record_ids.await_count == 1
+        assert _shown(second) == _shown(first)
 
     async def test_an_unreadable_record_list_on_a_remembered_scope_falls_back_to_containers(self) -> None:
         corpus, readable = _half_readable(16)

@@ -863,16 +863,16 @@ class RetrievalService:
                         # org-wide search. What the access check admitted stands.
                         if not search_results:
                             return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
-                    elif len(replacement.results) < len(search_results):
+                    elif not replacement.results:
                         # The record list over-admits (RESTRICTED pages, a revoked
-                        # grant not yet expired), so its search can come back with
-                        # less than the check already admitted. A servable answer
-                        # is never replaced by a smaller one, and the scope is not
-                        # remembered for a route that served it worse.
+                        # grant still cached), so its search can be denied
+                        # wholesale. A servable answer is never replaced by
+                        # nothing, and the scope is not remembered for a route
+                        # that served nothing.
                         self.logger.info(
-                            "record-id search admitted %d hits, the container search %d "
+                            "record-id search admitted no hits, the container search %d "
                             "(user=%s org=%s); keeping the container results",
-                            len(replacement.results), len(search_results), user_id, org_id,
+                            len(search_results), user_id, org_id,
                         )
                         search_results, accessible_virtual_id_to_record_id = adjudicated
                         plan.failed_collections, plan.collections_searched = kept_failed, kept_searched
