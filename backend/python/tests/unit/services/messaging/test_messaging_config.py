@@ -270,6 +270,7 @@ class TestEmptyEnvVarsFallBackToDefaults:
             ("INDEXING_RECORD_LEASE_WAIT_SECONDS", "record_lease_wait_seconds", 10.0),
             ("MAX_DELIVERY_ATTEMPTS", "max_delivery_attempts", 3),
             ("RECORD_PROCESSING_TIMEOUT", "record_processing_timeout", 1800.0),
+            ("PDF_RECORD_PROCESSING_TIMEOUT", "pdf_record_processing_timeout", 5400.0),
             ("SHUTDOWN_TASK_TIMEOUT", "shutdown_task_timeout", 240.0),
         ],
     )
@@ -319,6 +320,45 @@ class TestEmptyEnvVarsFallBackToDefaults:
         """A typo must degrade to the default, not crash the service at import."""
         monkeypatch.setenv(env_var, "not-a-number")
         assert getattr(messaging_env, attribute) == expected
+
+
+class TestRecordProcessingTimeoutFor:
+    """PDFs are parsed by Docling in page batches; a 200+ page filing under
+    load outlasts the general 1800s budget and restarted from page 1 on each
+    retry until it was dead-lettered."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name in (
+            "RECORD_PROCESSING_TIMEOUT",
+            "PDF_RECORD_PROCESSING_TIMEOUT",
+            "STALE_INDEXING_RECOVERY_AFTER_SECONDS",
+            "INDEXING_CONCURRENCY_LEASE_SECONDS",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+    @pytest.mark.parametrize(
+        ("extension", "mime_type"),
+        [("pdf", ""), (".PDF", None), (None, "application/pdf"), ("", "Application/PDF")],
+    )
+    def test_pdf_gets_pdf_budget(self, extension, mime_type) -> None:
+        assert messaging_env.record_processing_timeout_for(extension, mime_type) == 5400.0
+
+    @pytest.mark.parametrize(
+        ("extension", "mime_type"),
+        [("docx", ""), ("", "text/plain"), (None, None), ("pdfx", "")],
+    )
+    def test_other_records_keep_general_budget(self, extension, mime_type) -> None:
+        assert messaging_env.record_processing_timeout_for(extension, mime_type) == 1800.0
+
+    def test_pdf_budget_is_configurable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", "7200")
+        assert messaging_env.record_processing_timeout_for("pdf", "") == 7200.0
+        assert messaging_env.record_processing_timeout_for("docx", "") == 1800.0
+
+    def test_stale_recovery_waits_out_the_longest_budget(self) -> None:
+        """A cutoff under the PDF budget would republish a PDF still parsing."""
+        assert messaging_env.stale_recovery_after_seconds == 5400.0 + 120.0
 
 
 class TestStrandedRecordRepublishDefault:

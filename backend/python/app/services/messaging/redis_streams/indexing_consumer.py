@@ -2967,10 +2967,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if self.message_handler:
                 ctx = context_from_envelope({"requestId": parsed_message.requestId})
                 token = set_context(ctx.root_id)
+                processing_timeout = messaging_env.record_processing_timeout_for(
+                    parsed_message.payload.get("extension"),
+                    parsed_message.payload.get("mimeType"),
+                )
 
                 async def consume_handler_events() -> None:
                     nonlocal parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool
-                    async with asyncio.timeout(messaging_env.record_processing_timeout) as budget:
+                    async with asyncio.timeout(processing_timeout) as budget:
                         event_gen = self.message_handler(parsed_message)
                         try:
                             async for event in event_gen:
@@ -3078,7 +3082,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 except TimeoutError:
                     self.logger.error(
                         "Record processing timed out after %ss for %s",
-                        messaging_env.record_processing_timeout,
+                        processing_timeout,
                         message_id,
                     )
                     raise

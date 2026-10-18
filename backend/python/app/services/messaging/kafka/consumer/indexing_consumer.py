@@ -2649,10 +2649,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 # Carry the producer's trace id into indexing logs.
                 ctx = context_from_envelope({"requestId": parsed_message.requestId})
                 token = set_context(ctx.root_id)
+                processing_timeout = messaging_env.record_processing_timeout_for(
+                    parsed_message.payload.get("extension"),
+                    parsed_message.payload.get("mimeType"),
+                )
 
                 async def consume_handler_events() -> None:
                     nonlocal parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
-                    async with asyncio.timeout(messaging_env.record_processing_timeout) as budget:
+                    async with asyncio.timeout(processing_timeout) as budget:
                         event_gen = self.message_handler(parsed_message)
                         try:
                             async for event in event_gen:
@@ -2768,7 +2772,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     await handler_task
                 except TimeoutError:
                     self.logger.error(
-                        f"Record processing timed out after {messaging_env.record_processing_timeout}s "
+                        f"Record processing timed out after {processing_timeout}s "
                         f"for {message_id}"
                     )
                     raise

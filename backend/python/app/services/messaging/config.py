@@ -299,6 +299,25 @@ class MessagingEnvConfig:
         return _env_seconds("RECORD_PROCESSING_TIMEOUT", 1800.0)
 
     @property
+    def pdf_record_processing_timeout(self) -> float:
+        """Budget for PDF records. Docling parses them a page batch at a time,
+        so a 200+ page filing under load outlasts the general budget and, with
+        no checkpoint, re-parses from page 1 on every retry."""
+        return _env_seconds("PDF_RECORD_PROCESSING_TIMEOUT", 5400.0)
+
+    def record_processing_timeout_for(self, extension: object, mime_type: object) -> float:
+        """The processing budget for a record with this extension/mimeType."""
+        ext = str(extension or "").lower().lstrip(".")
+        mime = str(mime_type or "").lower()
+        if ext == "pdf" or mime == "application/pdf":
+            return self.pdf_record_processing_timeout
+        return self.record_processing_timeout
+
+    @property
+    def max_record_processing_timeout(self) -> float:
+        return max(self.record_processing_timeout, self.pdf_record_processing_timeout)
+
+    @property
     def max_pending_indexing_tasks(self) -> int:
         """Static legacy fallback — prefer
         ``consumer_concurrency.pending_task_ceiling(host)``, which derives
@@ -330,7 +349,9 @@ class MessagingEnvConfig:
 
     @property
     def stale_recovery_after_seconds(self) -> float:
-        default = self.record_processing_timeout + self.concurrency_lease_seconds
+        # The longest budget: a shorter cutoff would republish a PDF that is
+        # still legitimately parsing when leases are not in use.
+        default = self.max_record_processing_timeout + self.concurrency_lease_seconds
         return float(os.getenv("STALE_INDEXING_RECOVERY_AFTER_SECONDS", str(default)))
 
     @property

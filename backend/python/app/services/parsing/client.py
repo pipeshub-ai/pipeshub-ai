@@ -174,7 +174,7 @@ class ParsingClient(BaseServiceClient):
                 files={"file": (record_name, file_content, mime_type or "application/octet-stream")},
                 data=form_data,
                 operation="parse",
-                budget_seconds=messaging_env.record_processing_timeout,
+                budget_seconds=messaging_env.record_processing_timeout_for(extension, mime_type),
                 org_id=org_id,
             )
         except ServiceBackpressureError as exc:
