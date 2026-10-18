@@ -451,10 +451,10 @@ async def test_an_extraction_without_classification_still_reaches_the_blob():
     graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
     blob = MagicMock(get_record_from_storage=AsyncMock(side_effect=get), save_semantic_metadata=AsyncMock(side_effect=save))
     sink = MagicMock(persist_named_entities=AsyncMock(return_value="written"))
-    common = dict(
-        policy=DEFAULT_POLICY, graph=graph, blob_storage=blob, sink=sink, config_service=MagicMock(),
-        record_from_document=convert_record_dict_to_record, record_leases=RecordLeases(),
-    )
+    common = {
+        "policy": DEFAULT_POLICY, "graph": graph, "blob_storage": blob, "sink": sink, "config_service": MagicMock(),
+        "record_from_document": convert_record_dict_to_record, "record_leases": RecordLeases(),
+    }
 
     io = GraphEntitiesIO(_view_job(), Deadline(30), **common)
     await io.current_record_ids(_view_job())

@@ -41,10 +41,10 @@ from app.exceptions.indexing_exceptions import (
     IndexingError,
     ProcessingError,
 )
+from app.models.entities import Record
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.models.entities import Record
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
 from app.modules.reconciliation.service import ReconciliationMetadata

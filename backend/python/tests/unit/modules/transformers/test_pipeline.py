@@ -17,7 +17,10 @@ from app.models.blocks import (
     GroupType,
 )
 from app.modules.transformers.pipeline import IndexingPipeline
-from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS, ReconciliationContext
+from app.modules.transformers.transformer import (
+    ENRICHMENT_FOLLOWS,
+    ReconciliationContext,
+)
 
 _SENTINEL = object()
 

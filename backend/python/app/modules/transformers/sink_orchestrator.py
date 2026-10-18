@@ -6,6 +6,7 @@ from app.config.constants.arangodb import (
     Connectors,
     ProgressStatus,
 )
+from app.exceptions.indexing_exceptions import IndexingError
 from app.models.blocks import (
     BlockGroupChildren,
     BlocksContainer,
@@ -14,9 +15,12 @@ from app.models.blocks import (
 )
 from app.models.entities import Record, RecordGroupType
 from app.modules.transformers.blob_storage import BlobStorage
-from app.modules.transformers.image_description import ImageDescriber, harvest_descriptions
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
+from app.modules.transformers.image_description import (
+    ImageDescriber,
+    harvest_descriptions,
+)
 from app.modules.transformers.transformer import (
     ENRICHMENT_FOLLOWS,
     IMAGE_DESCRIPTION_BUDGET_S,
@@ -25,18 +29,16 @@ from app.modules.transformers.transformer import (
 )
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.cache.invalidation_hooks import notify_record_indexed
+from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
-from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.exceptions.indexing_exceptions import IndexingError
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
-    from app.models.entities import Record
+    from app.models.entities import EntityRecord, Record
     from app.modules.entity_resolution import EntityResolver
-    from app.models.entities import EntityRecord
     from app.modules.named_entities.domain.models import NamedEntityExtraction
 
 
@@ -640,7 +642,9 @@ class SinkOrchestrator(Transformer):
 
         from app.modules.named_entities.domain.models import NamedEntityExtraction
         from app.modules.named_entities.stage import extract_named_entities
-        from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+        from app.services.featureflag.platform_settings import (
+            is_named_entity_extraction_enabled,
+        )
         from app.telemetry.modules.named_entity_metrics import observe_extract
 
         started = time.perf_counter()
@@ -689,7 +693,9 @@ class SinkOrchestrator(Transformer):
         write is recorded as a durable retry: the recovery pass writes the record's
         stored extraction again when it is due (see named_entity_persist_retry)."""
         from app.modules.named_entities.stage import persist_named_entities
-        from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+        from app.services.featureflag.platform_settings import (
+            is_named_entity_extraction_enabled,
+        )
 
         error = "persist_failed"
         try:

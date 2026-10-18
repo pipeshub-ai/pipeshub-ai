@@ -31,6 +31,7 @@ from app.services.messaging.error_classifier import MessageErrorType
 from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
+    RecordEventHandler,
 )
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
 from app.utils import user_errors
@@ -1406,7 +1407,7 @@ class TestAlreadyIndexed:
     """Tests for records that already have COMPLETED indexing status."""
 
     @staticmethod
-    def _queued_for_classification(handoff_lost: bool) -> tuple[Any, MagicMock]:
+    def _queued_for_classification(handoff_lost: bool) -> tuple[RecordEventHandler, MagicMock]:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(return_value={
@@ -1420,7 +1421,7 @@ class TestAlreadyIndexed:
         return handler, ingress
 
     @staticmethod
-    def _logged_already_done(handler: Any) -> bool:
+    def _logged_already_done(handler: RecordEventHandler) -> bool:
         return any("Indexing already done" in str(c.args[0]) for c in handler.logger.info.call_args_list if c.args)
 
     @pytest.mark.asyncio

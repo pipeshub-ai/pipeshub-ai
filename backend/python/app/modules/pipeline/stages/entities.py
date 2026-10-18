@@ -18,7 +18,10 @@ from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Protocol
 
 from app.models.blocks import BlocksContainer
-from app.modules.named_entities.domain.models import EXTRACTOR_VERSION, NamedEntityExtraction
+from app.modules.named_entities.domain.models import (
+    EXTRACTOR_VERSION,
+    NamedEntityExtraction,
+)
 from app.modules.pipeline.leases import RecordBusy, RevisionSuperseded
 from app.modules.pipeline.models import (
     HeadlineField,
