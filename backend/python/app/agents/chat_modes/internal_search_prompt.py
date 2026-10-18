@@ -140,6 +140,17 @@ _RESOLVE_CONFLICTS = (
     "make it the answer for a case the sources do not place under that condition."
 )
 
+# An agent read a thread in full and still took the indexer's summary's reading
+# of an ambiguous reply ("tried that") over the thread's own messages.
+_SOURCE_TEXT_DECIDES = (
+    "A record's \"Summary:\" line, in its metadata or in a candidate list, is written by a "
+    "model when the record is indexed, not by the record's authors, and can merge or "
+    "misattribute details: use it to choose what to read, never to settle a fact. When the "
+    "record's own text is ambiguous or says something else, the text decides; a reply such as "
+    "\"tried that\" or \"agreed\" covers everything the message it answers proposed unless "
+    "it narrows it."
+)
+
 # A looser mention in the same record (a weekday beside a dated deadline) was
 # being reported as a rival value, which reads as an unresolved contradiction;
 # a different person's value in the same thread or meeting is still a version.
@@ -170,6 +181,7 @@ def internal_search_instructions(*, composition: bool, thorough: bool, entity_to
     if composition:
         versions = _SEEK_OTHER_VERSIONS if thorough else _REPORT_VERSIONS
         paragraphs.append(f"{_COMPOSE} {versions} {_RESOLVE_CONFLICTS}")
+        paragraphs.append(_SOURCE_TEXT_DECIDES)
         paragraphs.append(_SECOND_VALUE)
     elif thorough:
         paragraphs.append(_SEEK_OTHER_VERSIONS)

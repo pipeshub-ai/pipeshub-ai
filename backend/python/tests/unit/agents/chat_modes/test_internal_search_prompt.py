@@ -43,6 +43,7 @@ _SUBSTANCE_FIRST = "answer with that substance even if it is still requested, pe
 _SHIPPED = "a shipped change (a merged pull request, a released config or changelog)"
 _SETTLED = "Once this order settles it, give the preferred value as the answer"
 _CONDITIONAL = "a rule that applies only under a condition"
+_GENERATED_SUMMARY = "is written by a model when the record is indexed"
 _REPORT_ONLY = "said, report each version with its source."
 _READ_IN_FULL = "read in full the records your answer will rest on"
 _BLOCKS_SUFFICE = "the blocks are sufficient"
@@ -53,7 +54,7 @@ _ENTITY_TOOLS = ("knowledgegraph__search_entities", "entity_ids")
 
 _COMPOSITION_MARKERS = (
     _COMPOSE, _SPEAKER, _QUALIFIERS, _PREMISE, _DEFINING_RECORD, _CONFLICT_ORDER, _SECOND_VALUE,
-    _PARAPHRASE, _SUBSTANCE_FIRST, _SHIPPED, _SETTLED, _CONDITIONAL,
+    _PARAPHRASE, _SUBSTANCE_FIRST, _SHIPPED, _SETTLED, _CONDITIONAL, _GENERATED_SUMMARY,
 )
 _THOROUGH_MARKERS = (_READ_IN_FULL, _SEARCH_AGAIN, _LIST_THE_SET, _SEEK_OTHER)
 
@@ -145,7 +146,10 @@ class TestBothOn:
 
     def test_paragraph_order(self) -> None:
         text = _text(composition=True, thorough=True, entity_tools=True)
-        order = [_READ_IN_FULL, _SEARCH_AGAIN, _COMPOSE, _SEEK_OTHER, _CONFLICT_ORDER, _SECOND_VALUE]
+        order = [
+            _READ_IN_FULL, _SEARCH_AGAIN, _COMPOSE, _SEEK_OTHER, _CONFLICT_ORDER, _GENERATED_SUMMARY,
+            _SECOND_VALUE,
+        ]
         positions = [text.index(marker) for marker in order]
         assert positions == sorted(positions)
 
@@ -230,3 +234,23 @@ class TestConflictOrder:
         text = _text(thorough=thorough)
         for marker in (_SHIPPED, _SETTLED, _CONDITIONAL):
             assert marker not in text, marker
+
+
+class TestSourceTrust:
+    """The indexer's summary of a record is a model's reading of it, and it can
+    resolve an ambiguity the record leaves open the wrong way."""
+
+    def test_the_generated_summary_never_settles_a_fact(self) -> None:
+        text = _text(composition=True)
+        assert text.count(_GENERATED_SUMMARY) == 1
+        assert "never to settle a fact" in text
+        assert "the text decides" in text
+
+    @pytest.mark.parametrize("thorough", [False, True])
+    def test_only_with_composition(self, thorough: bool) -> None:
+        assert _GENERATED_SUMMARY not in _text(thorough=thorough)
+
+    def test_is_its_own_paragraph_before_the_second_value_one(self) -> None:
+        paragraphs = _text(composition=True).split("\n\n")
+        assert paragraphs[-2].startswith("A record's \"Summary:\" line")
+        assert paragraphs[-1].startswith(_SECOND_VALUE)
