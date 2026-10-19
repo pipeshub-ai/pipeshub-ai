@@ -162,7 +162,6 @@ class TestSqlStatements:
         "EXPLAIN SELECT * FROM t",
         "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent",
         "INSERT INTO t (a) VALUES (1)",
-        "WITH c AS (SELECT 1 AS a) INSERT INTO t SELECT a FROM c",
         "SELECT '#1' AS tag",
         "UPDATE t SET a = 2 WHERE id = 1",
         "SELECT 'drop table x; delete from y' AS note",
@@ -207,6 +206,11 @@ class TestSqlStatements:
         "SELECT * INTO new_table FROM old /*M insert */",
         "SELECT *--insert\nINTO new_table FROM old",
         "SELECT 1 */ DELETE FROM t",
+        # "insert" as an alias doesn't make INTO an INSERT, and a CTE's INSERT asks too.
+        "SELECT 1 AS insert INTO new_table FROM (SELECT 1) s",
+        "SELECT * INTO new_table FROM (SELECT 1) insert",
+        "WITH c AS (SELECT 1 AS a) SELECT a AS insert INTO new_table FROM c",
+        "WITH c AS (SELECT 1 AS a) INSERT INTO t SELECT a FROM c",
     ])
     def test_anything_else_cant_be_undone(self, sql: Any) -> None:  # noqa: ANN401
         assert not approvals.sql_keeps_its_kind(sql)

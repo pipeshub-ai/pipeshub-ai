@@ -208,8 +208,9 @@ def sql_keeps_its_kind(sql: str) -> bool:
     words = _SQL_WORD.findall(statements[0])
     if not words:
         return False
-    if {"outfile", "dumpfile"} & set(words) or ("into" in words and "insert" not in words):
-        # SELECT ... INTO makes a table (Redshift) or writes a file on the server (MariaDB).
+    if {"outfile", "dumpfile"} & set(words) or ("into" in words and words[0] != "insert"):
+        # SELECT ... INTO makes a table (Redshift) or writes a file on the server (MariaDB). Only an
+        # INSERT's own verb makes INTO safe: "insert" can be an alias on Redshift.
         return False
     if words[0] == "with":
         # A CTE: what runs is what the statement does once its named queries are read.
