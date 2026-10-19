@@ -715,7 +715,23 @@ class Agent:
             self._hooks, messages, budget, turn_index=turn_index, max_turns=spec.max_turns, scope=turn_scope,
         )
         if final_answer_only:
-            add_loop_note(messages, _FINAL_ANSWER_NOTE)
+            carried_before = len(messages)
+            if add_loop_note(messages, _FINAL_ANSWER_NOTE) != "step_footer":
+                # No tool result to hang the footer on. `add_loop_note`'s
+                # fallback is an injected user message, which is the shape
+                # its own docstring warns about: an instruction posing as the
+                # user after tool output reads as a prompt attack and Azure
+                # rejects the request. A SystemMessage here is worse --
+                # Anthropic's Messages API refuses `role: system` among the
+                # messages. The system prompt is the one channel every
+                # transport accepts, so the note goes there instead.
+                del messages[carried_before:]
+                if system_blocks:
+                    system_blocks = [*system_blocks, _FINAL_ANSWER_NOTE]
+                system_prompt = (
+                    f"{system_prompt}\n\n{_FINAL_ANSWER_NOTE}" if system_prompt
+                    else _FINAL_ANSWER_NOTE
+                )
 
         cut_off_parts = self._cut_off_reply_parts()
 

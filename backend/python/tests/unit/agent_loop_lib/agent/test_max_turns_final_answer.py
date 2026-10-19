@@ -19,6 +19,7 @@ from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.context import CancellationToken
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
+    SystemMessage,
     ToolCall,
     ToolMessage,
     UserMessage,
@@ -178,7 +179,13 @@ class TestFinalAnswerTurn:
         stored_result = next(m for m in stored if isinstance(m, ToolMessage) and m.tool_call_id == "last")
         assert "maximum number of steps" not in stored_result.step_footer
 
-    async def test_without_a_tool_result_last_the_instruction_falls_back_to_a_message(self) -> None:
+    async def test_without_a_tool_result_last_the_instruction_goes_in_the_system_prompt(self) -> None:
+        """No tool result to hang the footer on, so the note must not be sent
+        as the user either: `add_loop_note`'s own docstring says an
+        instruction posing as the user after tool output reads as a prompt
+        attack, and a `SystemMessage` among the messages is refused outright
+        by Anthropic's Messages API. The system prompt is the one channel
+        every transport accepts."""
         async def always_critique(_turn: object) -> str:
             return "Self-critique: try a narrower query."
 
@@ -191,10 +198,12 @@ class TestFinalAnswerTurn:
         result = await agent.run(_GOAL)
 
         assert result.output == _ANSWER
-        instruction = transport.calls[-1]["messages"][-1]
-        assert isinstance(instruction, UserMessage)
-        assert instruction.injected is True
-        assert "maximum number of steps" in instruction.content
+        final_call = transport.calls[-1]
+        assert "maximum number of steps" in final_call["system"]
+        # Not smuggled back in as a message on any channel.
+        for message in final_call["messages"]:
+            assert "maximum number of steps" not in str(getattr(message, "content", ""))
+            assert not isinstance(message, SystemMessage)
         stored = await agent.context.messages()
         assert not any("maximum number of steps" in str(getattr(m, "content", "")) for m in stored)
 
