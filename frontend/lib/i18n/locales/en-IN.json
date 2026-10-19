@@ -4220,7 +4220,7 @@
       },
       "deleteDialog": {
         "title": "Delete API toolset",
-        "body": "Delete {{name}}? Agents that use its operations lose them, and every saved credential for it is removed."
+        "body": "Delete {{name}}? Every saved credential for it is removed. A toolset an agent uses can't be deleted."
       },
       "editor": {
         "addTitle": "Add API toolset",

@@ -4399,7 +4399,7 @@
       },
       "deleteDialog": {
         "title": "Smazat API sadu nástrojů",
-        "body": "Smazat {{name}}? Agenti, kteří používají její operace, o ně přijdou a všechny uložené přihlašovací údaje k ní budou odstraněny."
+        "body": "Smazat {{name}}? Všechny uložené přihlašovací údaje k ní budou odstraněny. Sadu nástrojů, kterou používá agent, nelze smazat."
       },
       "editor": {
         "addTitle": "Přidat API sadu nástrojů",

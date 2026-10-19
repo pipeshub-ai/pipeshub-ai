@@ -57,8 +57,17 @@ class Harness:
         self.config = InMemoryConfigService()
         self.enabled = True
         self.admins = {ADMIN}
+        # Names of the agents the graph reports for any toolset, or an exception it raises.
+        self.used_by: list[str] | Exception = []
         app = FastAPI()
         app.state.config_service = self.config
+
+        async def check_api_toolset_in_use(_instance_id: str) -> list[str]:
+            if isinstance(self.used_by, Exception):
+                raise self.used_by
+            return self.used_by
+
+        app.state.graph_provider = SimpleNamespace(check_api_toolset_in_use=check_api_toolset_in_use)
 
         @app.middleware("http")
         async def authenticate(request: Request, call_next: Any) -> Any:  # noqa: ANN401
@@ -207,6 +216,22 @@ class TestInstances:
             "name": "Acme", "spec": ACME_SPEC, "baseUrl": "https://helpdesk.acme.test",
             "authSchemeName": "bearerAuth", "operations": ["get_ticket"]})
         assert api.call("GET", "/instances").json()["instances"][0]["isConnected"] is False
+
+    def test_a_toolset_an_agent_uses_is_not_deleted(self, api: Harness) -> None:
+        created = api.create()
+        api.used_by = ["Support bot", "Triage", "Escalations", "Night shift"]
+        resp = api.call("DELETE", f"/instances/{created['id']}", user=ADMIN)
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == (
+            "Acme Helpdesk is used by 'Support bot', 'Triage', 'Escalations' and 1 more. Remove it from those agents first."
+        )
+        assert api.call("GET", f"/instances/{created['id']}").status_code == 200
+
+    def test_nothing_is_deleted_when_usage_cannot_be_read(self, api: Harness) -> None:
+        created = api.create()
+        api.used_by = RuntimeError("graph down")
+        assert api.call("DELETE", f"/instances/{created['id']}", user=ADMIN).status_code == 503
+        assert api.call("GET", f"/instances/{created['id']}").status_code == 200
 
     def test_delete_removes_the_record_and_every_credential(self, api: Harness) -> None:
         created = api.create()

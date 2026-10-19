@@ -4220,7 +4220,7 @@
       },
       "deleteDialog": {
         "title": "API-Toolset löschen",
-        "body": "{{name}} löschen? Agenten verlieren seine Operationen, und alle dafür gespeicherten Zugangsdaten werden entfernt."
+        "body": "{{name}} löschen? Alle dafür gespeicherten Zugangsdaten werden entfernt. Ein Toolset, das ein Agent verwendet, kann nicht gelöscht werden."
       },
       "editor": {
         "addTitle": "API-Toolset hinzufügen",

@@ -44106,7 +44106,9 @@ paths:
       tags:
         - API Toolsets
       summary: Delete an API toolset (administrators)
-      description: Deletes the toolset with every credential and its OAuth app.
+      description: |
+        Deletes the toolset with every credential and its OAuth app. Refused while an agent
+        uses one of its operations.
       operationId: deleteApiToolset
       security:
         - bearerAuth: []
@@ -44119,6 +44121,10 @@ paths:
           description: The caller is not an administrator
         '404':
           description: No such toolset in the organization
+        '409':
+          description: An agent uses the toolset; the detail names it
+        '503':
+          description: Which agents use the toolset couldn't be checked, so nothing was deleted
   /api-toolsets/instances/{instanceId}/config:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'

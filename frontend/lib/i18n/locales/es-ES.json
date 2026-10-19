@@ -4255,7 +4255,7 @@
       },
       "deleteDialog": {
         "title": "Eliminar conjunto de herramientas de API",
-        "body": "¿Eliminar {{name}}? Los agentes que usan sus operaciones las pierden y se eliminan todas sus credenciales guardadas."
+        "body": "¿Eliminar {{name}}? Se eliminan todas sus credenciales guardadas. No se puede eliminar un conjunto de herramientas que usa un agente."
       },
       "editor": {
         "addTitle": "Añadir conjunto de herramientas de API",

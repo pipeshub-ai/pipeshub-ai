@@ -116,11 +116,12 @@ private address (in the integration compose stack it is the `openapi-fixture` se
 - YAML aliases are refused, so a small spec can't expand into a huge one.
 - An answer larger than 256 KB is cut before the model sees it.
 - An OAuth sign-in can be finished only by the person who started it, once, within 10 minutes.
+- A toolset an agent uses can't be deleted; remove it from the agents first. If PipesHub can't
+  tell which agents use it, nothing is deleted.
 
 ## Known limitations
 
 - No admin screen yet to change the approval rule of one operation.
-- Deleting a toolset doesn't detach it from agents; the missing toolset is skipped at chat time.
 - A chat's tool picker doesn't filter API toolset tools.
 - Swagger 2.0, form and multipart bodies, file uploads, OpenID Connect and mutual TLS are not
   supported.

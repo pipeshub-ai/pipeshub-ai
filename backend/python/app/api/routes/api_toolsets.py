@@ -255,9 +255,34 @@ async def delete_api_toolset(request: Request, instance_id: str) -> dict[str, An
     await _require_admin(request, "delete API toolsets")
     _, org_id = _get_user_context(request)
     store = _store(request)
-    await _instance_or_404(store, org_id, instance_id)
+    instance = await _instance_or_404(store, org_id, instance_id)
+    await _assert_not_in_use(request, instance)
     await store.delete_instance(instance_id)
     return {"success": True}
+
+
+_MAX_AGENT_NAMES_SHOWN = 3
+
+
+async def _assert_not_in_use(request: Request, instance: ApiToolsetInstance) -> None:
+    """Refuse while an agent uses the toolset, as for actions and MCP servers. Fails closed:
+    when usage can't be read, nothing is deleted."""
+    graph_provider = getattr(request.app.state, "graph_provider", None)
+    try:
+        agent_names = await graph_provider.check_api_toolset_in_use(instance.id)
+    except Exception as e:
+        logger.error("Could not check which agents use API toolset %s: %s", instance.id, e)
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+            detail="Couldn't check which agents use this toolset, so it wasn't deleted. Try again.",
+        ) from e
+    if agent_names:
+        shown = ", ".join(f"'{name}'" for name in agent_names[:_MAX_AGENT_NAMES_SHOWN])
+        more = f" and {len(agent_names) - _MAX_AGENT_NAMES_SHOWN} more" if len(agent_names) > _MAX_AGENT_NAMES_SHOWN else ""
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=f"{instance.name} is used by {shown}{more}. Remove it from those agents first.",
+        )
 
 
 # ============================================================================

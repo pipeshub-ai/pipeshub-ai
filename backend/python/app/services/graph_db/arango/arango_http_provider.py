@@ -23825,6 +23825,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
             raise
 
+    async def check_api_toolset_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the non-deleted agents with an operation of this API toolset attached."""
+        query = f"""
+        FOR agent IN {CollectionNames.AGENT_INSTANCES.value}
+            FILTER agent.isDeleted != true
+                AND LENGTH((agent.apiToolsetTools || [])[* FILTER STARTS_WITH(CURRENT, @prefix)]) > 0
+            RETURN {{agentId: agent._id, agentName: agent.name}}
+        """
+        agents = await self.http_client.execute_aql(query, bind_vars={"prefix": f"{instance_id}:"}, txn_id=transaction)
+        return dedupe_agents_by_id(agents)
+
     async def check_mcp_instance_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
         """Names of the non-deleted agents with this MCP server instance attached."""
         try:
