@@ -49,6 +49,11 @@ _URL_IN_TEXT = re.compile(r"https?://[^\s'\")]+")
 
 # How many layers of URL-inside-a-parameter (or percent-encoding) are opened.
 _MAX_NESTING = 3
+_TRUNCATED = "[Truncated]"
+# The longest URL redacted for a log line; the rest is dropped. Every pass
+# below is linear, but there are many of them, and a request line or Referer
+# comes from anyone, before authentication.
+_MAX_LOGGED_TEXT_LENGTH = 8 * 1024
 
 
 def _decode_name(key: str) -> str:
@@ -99,10 +104,27 @@ def _logged_name(key: str) -> str:
     return match.group() if match else REDACTED
 
 
+def _is_ascii_alphanumeric(ch: str) -> bool:
+    return "0" <= ch <= "9" or "a" <= ch <= "z" or "A" <= ch <= "Z"
+
+
+def _trim_non_alphanumeric(text: str) -> str:
+    """An index scan rather than ``^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$``: the
+    end-anchored alternative is retried from every offset of a long
+    non-alphanumeric run. ASCII only, so ``ſ`` and the Kelvin sign are not
+    letters here."""
+    start, end = 0, len(text)
+    while start < end and not _is_ascii_alphanumeric(text[start]):
+        start += 1
+    while end > start and not _is_ascii_alphanumeric(text[end - 1]):
+        end -= 1
+    return text[start:end]
+
+
 def is_sensitive_query_key(key: str) -> bool:
     """Stray non-alphanumeric bytes around the name (``code%00``, ``code.``,
     ``code ``) do not hide it."""
-    name = re.sub(r"^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$", "", _param_name(key))
+    name = _trim_non_alphanumeric(_param_name(key))
     if name.lower() in SENSITIVE_QUERY_PARAMS:
         return True
     words = [w for w in re.split(r"[^a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name).lower()) if w]
@@ -327,6 +349,27 @@ def redact_sensitive_query_params(url: str) -> str:
     """
     if not url:
         return url
+    if len(url) <= _MAX_LOGGED_TEXT_LENGTH:
+        return _redact_whole_url(url)
+    # The cut is moved back to a separator, since it could fall inside a
+    # secret. A name always comes before its value, so what is kept reads as
+    # it did in the whole URL, with one exception: a password runs to the
+    # last `@`, so once a dropped `@` could end one, no reading of the kept
+    # text can be trusted and none of it is logged.
+    end = _MAX_LOGGED_TEXT_LENGTH
+    while end > 0 and url[end - 1] not in _CUT_AFTER:
+        end -= 1
+    if _ANY_AT.search(url, end):
+        return f"{REDACTED}{_TRUNCATED}"
+    return f"{_redact_whole_url(url[:end])}{_TRUNCATED}"
+
+
+# Where a URL cut for the log may end: after a raw separator, so that no name
+# or value is kept in part.
+_CUT_AFTER = frozenset("/?#&;=:@")
+
+
+def _redact_whole_url(url: str) -> str:
     # The logged text itself: its raw `&` and `#` are real separators.
     redacted = _redact_segments(url, 0, trusted=True)
     return _redact_wholly(url) if _has_residual_secret(redacted) else redacted
@@ -338,21 +381,86 @@ def redact_sensitive_query_params(url: str) -> str:
 # layer by layer, and if any layer still shows one, the text is replaced
 # wholesale instead of trusting the parse that missed it.
 _MAX_SCAN_LAYERS = 10
-# The shapes `_split_password_url` reads, anywhere in the text: a user name
-# (which may hold an `@` or whitespace) after `//`, or a `scheme:user:` with no `//`, then a
-# `:` followed by neither a port nor `REDACTED@`, and an `@` somewhere after
-# it, past any spaces. A `user:REDACTED` with an `@` still to come is caught
-# too: the redaction stopped short of the real end of the password.
-_PASSWORD_URL = re.compile(
-    "|".join(
-        rf"{head}(?!REDACTED@)(?!{_PORT})[^@]*@"
-        for head in (
-            r"(?:^|[^a-z0-9+.-])(?:[a-z][a-z0-9+.-]*:)?//[^/?#:\[\]]*:",
-            r"(?:^|[^a-z0-9+.-])[a-z][a-z0-9+.-]*:[^/?#:\[\]]+:",
-        )
-    ),
-    re.IGNORECASE,
-)
+# The pieces `_shows_password_url` reads a head and a port with, as written in
+# `_PORT` and in the regex that function replaces.
+_NOT_SCHEME_CHAR = re.compile(r"[^a-z0-9+.-]", re.IGNORECASE)
+_SCHEME_CHAR = re.compile(r"[a-z0-9+.-]", re.IGNORECASE)
+_SCHEME_START = re.compile(r"[a-z]", re.IGNORECASE)
+_AUTHORITY_END = frozenset("/?#:[]")
+_REDACTED_AT = re.compile(r"REDACTED@", re.IGNORECASE)
+_PORT_DIGITS = re.compile(r"\d+(?=[/?#,\s]|$)", re.IGNORECASE)
+_PORT_END = re.compile(r"[?#@]|%(?:25)*40", re.IGNORECASE)
+_QUERY_SEPARATOR = re.compile(r"[&;?#]")
+_WHOLE_QUERY_SEGMENT = re.compile(_QUERY_SEGMENT, re.IGNORECASE)
+
+
+def _shows_password_url(text: str) -> bool:
+    r"""The shapes `_split_password_url` reads, anywhere in the text: a user
+    name (which may hold an `@` or whitespace) after `//`, or a
+    `scheme:user:` with no `//`, then a `:` followed by neither a port nor
+    `REDACTED@`, and an `@` somewhere after it, past any spaces. A
+    `user:REDACTED` with an `@` still to come is caught too: the redaction
+    stopped short of the real end of the password.
+
+    This is the regex
+      (?:^|[^a-z0-9+.-])(?:[a-z][a-z0-9+.-]*:)?//[^/?#:\[\]]*:
+      | (?:^|[^a-z0-9+.-])[a-z][a-z0-9+.-]*:[^/?#:\[\]]+:
+    each followed by (?!REDACTED@)(?!_PORT)[^@]*@, read in one pass, as the
+    Node helper does. As a regex, every head re-ran the port check to the end
+    of the text, which took seconds on 16 KiB of `,//a:1`. Here the port check
+    reuses what it found: the first `?`, `#` or `@` after a head, and the last
+    query segment no port accepts."""
+    last_at = text.rfind("@")
+    if last_at == -1:
+        return False
+
+    separators = [m.start() for m in _QUERY_SEPARATOR.finditer(text)]
+    last_bad_segment = -1
+    for k, at in enumerate(separators):
+        end = separators[k + 1] if k + 1 < len(separators) else len(text)
+        if not _WHOLE_QUERY_SEGMENT.fullmatch(text, at + 1, end):
+            last_bad_segment = at
+    port_end = -1
+
+    def is_port(at: int) -> bool:
+        nonlocal port_end
+        if not _PORT_DIGITS.match(text, at):
+            return False
+        if port_end < at:
+            found = _PORT_END.search(text, at)
+            port_end = found.start() if found else len(text)
+        return port_end == len(text) or (text[port_end] in "?#" and port_end > last_bad_segment)
+
+    # The last of `/?#:[]` seen, and whether a head may end at the next `:`
+    # with what follows it as the user name: `//` there, or a `scheme:`.
+    authority_end = -1
+    after_slashes = after_scheme = False
+    scheme_run = -1
+    for i in range(last_at):
+        ch = text[i]
+        if (
+            ch == ":"
+            and (after_slashes or (after_scheme and authority_end < i - 1))
+            and not _REDACTED_AT.match(text, i + 1)
+            and not is_port(i + 1)
+        ):
+            return True
+        if ch in _AUTHORITY_END:
+            after_slashes = (
+                ch == "/"
+                and i >= 1
+                and text[i - 1] == "/"
+                and (i == 1 or bool(_NOT_SCHEME_CHAR.match(text[i - 2])))
+            )
+            after_scheme = ch == ":" and scheme_run != -1 and bool(_SCHEME_START.match(text[scheme_run]))
+            authority_end = i
+        if not _SCHEME_CHAR.match(ch):
+            scheme_run = -1
+        elif scheme_run == -1:
+            scheme_run = i
+    return False
+
+
 _REDACTED_VALUES = frozenset({"", REDACTED, "REDACTED", "%5BREDACTED%5D", "%5bredacted%5d"})
 
 
@@ -376,10 +484,12 @@ def _shows_secret_pair(layer: str) -> bool:
         parts = segment.split("=")
         for k in range(len(parts) - 1):
             name = parts[k]
+            if not name or not (is_sensitive_query_key(name) or _ENDS_IN_MARKER.search(name)):
+                continue
+            # Joined only for a sensitive name, as the Node helper does: joining
+            # the rest for every name is quadratic in a long run of `=`.
             # Parsers add a trailing `=` to a bare name, so `[REDACTED]=` is clean.
-            value = "=".join(parts[k + 1 :]).rstrip("=")
-            sensitive = is_sensitive_query_key(name) or _ENDS_IN_MARKER.search(name)
-            if name and sensitive and value not in _REDACTED_VALUES:
+            if "=".join(parts[k + 1 :]).rstrip("=") not in _REDACTED_VALUES:
                 return True
     return False
 
@@ -391,7 +501,7 @@ def _has_residual_secret(text: str) -> bool:
         # last one is scanned; that keeps long text with none (or none late)
         # cheap.
         last_at = layer.rfind("@")
-        if last_at != -1 and _PASSWORD_URL.search(layer[: last_at + 1]):
+        if last_at != -1 and _shows_password_url(layer[: last_at + 1]):
             return True
         if _shows_secret_pair(layer):
             return True
