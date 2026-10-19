@@ -582,6 +582,7 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | Parsing / extraction / docling HTTP clients | `backend/python/app/services/parsing/client.py`, `extraction/client.py`, `docling/client.py` |
 | Parsing service route with its own gate + 429 | `backend/python/app/api/routes/parsing.py` |
 | Pipeline and sinks | `backend/python/app/modules/transformers/{pipeline,sink_orchestrator,vectorstore,blob_storage,graphdb}.py` |
+| Identity sent to the LLM gateway for indexing model calls (always the service identity, never a person) | `backend/python/app/services/model_identity/`, [llm-gateway-identity.md](./llm-gateway-identity.md) |
 | Governor / consumer unit tests | `backend/python/tests/unit/services/messaging/`, `tests/unit/services/resource_governor/` |
 
 ## 7. Tunables that matter for throughput

@@ -130,3 +130,4 @@ All questions in one `decide` call share the input; a question that depends on a
 | Stored document and batch save | `backend/nodejs/apps/src/modules/configuration_manager/` |
 | Picker and onboarding | `frontend/app/(main)/workspace/ai-models/` |
 | Decision model clients | `backend/python/app/services/ai_models/decision/` |
+| Identity forwarded to an LLM gateway (user, groups, service identity) | `backend/python/app/services/model_identity/`; see [llm-gateway-identity.md](./llm-gateway-identity.md) |
