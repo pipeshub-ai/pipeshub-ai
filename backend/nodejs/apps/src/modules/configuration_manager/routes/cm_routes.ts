@@ -870,6 +870,21 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getModelRoles(keyValueStoreService),
   );
 
+  /**
+   * @route PUT /api/v1/configurationManager/ai-models/roles
+   * @desc Assign models to named roles (e.g. indexing)
+   * @access Private (admin)
+   * @body { roles: Record<string, { modelType: string; modelKey: string }> }
+   * NOTE: Must be registered before /ai-models/default/:modelType/:modelKey.
+   */
+  router.put(
+    '/ai-models/roles',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    updateModelRoles(keyValueStoreService),
+  );
+
   // Literal path before /ai-models/:modelType, same as /roles.
   router.get(
     '/ai-models/auto-default',
@@ -885,19 +900,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     updateAutoDefault(keyValueStoreService),
-  );
-
-  /**
-   * @route PUT /api/v1/configurationManager/ai-models/roles
-   * @desc Assign models to named roles (e.g. indexing)
-   * @access Private (admin)
-   */
-  router.put(
-    '/ai-models/roles',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONFIG_WRITE),
-    userAdminCheck,
-    updateModelRoles(keyValueStoreService),
   );
 
   /**

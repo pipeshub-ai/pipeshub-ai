@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.service import config_node_constants
 from app.services.ai_models.auto.classifier import (
+    CLASSIFIER_TIMEOUT_S,
     Classification,
     ClassifierError,
     classify,
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
 
 AUTO_MODEL_KEY = "auto"
+_MIN_CHAT_CLASSIFIER_S = 1.5
 
 _GREETING = re.compile(
     r"^\s*(hi|hello|hey|hiya|yo|good (morning|afternoon|evening)|thanks?( you)?|thank you|thx|ty|"
@@ -271,7 +273,9 @@ async def _resolve(
         )
 
     if pinned is not None and _CONTINUATION.match(request.query or ""):
-        effort = request.explicit_effort if request.explicit_effort else pinned_effort
+        effort = (
+            effort_for(pinned, "standard") if request.explicit_effort else pinned_effort
+        )
         if pinned.is_reasoning and not effort:
             effort = effort_for(pinned, "standard")
         return _decide(
@@ -300,9 +304,14 @@ async def _resolve(
     if result is None:
         chat_classifier = pick_classifier(pool, ai_models)
         classifier_name = chat_classifier.model_name
+        # One budget for the whole step: a slow decision model leaves less for this call.
+        remaining = CLASSIFIER_TIMEOUT_S - (time.monotonic() - started)
         try:
             result = await classify(
-                chat_classifier, request.query, request.previous_conversations
+                chat_classifier,
+                request.query,
+                request.previous_conversations,
+                timeout_s=max(remaining, _MIN_CHAT_CLASSIFIER_S),
             )
         except ClassifierError as exc:
             chat_error = exc
@@ -319,8 +328,9 @@ async def _resolve(
                 classifier_ms=elapsed,
                 classifier_model=classifier_name,
             )
+        # The filtered pool, so an image turn still gets a model that can see it.
         return _fallback(
-            full_pool,
+            pool,
             request,
             f"classifier_{exc}",
             classifier_ms=elapsed,

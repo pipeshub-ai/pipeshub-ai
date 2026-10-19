@@ -45,7 +45,7 @@ function chatModelCount(configuredModels: Record<string, ConfiguredModel[]>): nu
       .split(',')
       .map((name) => name.trim())
       .filter(Boolean);
-    return count + (names.length || 1);
+    return count + names.length;
   }, 0);
 }
 
@@ -150,8 +150,6 @@ export function ModelRolesSection({
     [roles, indexingCandidates, t, onRolesUpdated, acknowledge]
   );
 
-  // In onboarding variant the select has no value until the user acknowledges;
-  // this forces the placeholder to display and signals that a choice is required.
   const enoughModelsForAuto = chatModelCount(configuredModels) >= 2;
 
   const handleAutoDefaultChange = useCallback(
@@ -170,6 +168,8 @@ export function ModelRolesSection({
     [t],
   );
 
+  // In onboarding variant the select has no value until the user acknowledges;
+  // this forces the placeholder to display and signals that a choice is required.
   const selectValue =
     variant === 'onboarding' && !acknowledged
       ? undefined

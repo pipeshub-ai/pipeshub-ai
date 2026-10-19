@@ -597,7 +597,8 @@ export const answeredModelInfo = (
   return {
     modelKey: answered.modelKey,
     modelName: answered.modelName,
-    modelProvider: answered.modelProvider ?? requested?.modelProvider ?? '',
+    // The request's provider belongs to whatever the menu last showed, not to the model Auto picked.
+    modelProvider: answered.modelProvider ?? '',
     chatMode: requested?.chatMode ?? 'quick',
     ...(answered.modelFriendlyName && { modelFriendlyName: answered.modelFriendlyName }),
     ...(effort && (REASONING_EFFORT_VALUES as readonly string[]).includes(effort) && {

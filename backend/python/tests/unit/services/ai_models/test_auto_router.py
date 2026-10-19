@@ -211,6 +211,10 @@ def test_parse_label(text, need, reasoning) -> None:
     assert (result.need, result.needs_reasoning) == (need, reasoning)
 
 
+def test_parse_label_takes_the_last_label() -> None:
+    assert parse_label("Not light: this is heavy").need == "heavy"
+
+
 def test_parse_label_rejects_garbage_without_echoing_it() -> None:
     with pytest.raises(ClassifierError) as caught:
         parse_label("I would pick the biggest model")
@@ -249,6 +253,9 @@ def test_reasoning_classifier_turns_thinking_off(monkeypatch) -> None:
         return Done()
 
     monkeypatch.setattr(classifier_module, "get_generator_model_async", fake_builder)
+    monkeypatch.setattr(
+        classifier_module, "lookup_catalog", lambda provider, model: {"supports_none_reasoning_effort": True}
+    )
     source = _entry("k", "gpt-5.4-mini", size="small", reasoning=True, provider="azureOpenAI")
     candidate = build_pool([source])[0]
     result = asyncio.run(classifier_module.classify(candidate, "compare these", []))
@@ -263,18 +270,23 @@ def test_request_cannot_close_its_own_fence() -> None:
 
 
 @pytest.mark.parametrize(
-    ("catalog", "thinking", "effort"),
+    ("catalog", "thinking", "provider", "effort"),
     [
-        ({"supports_none_reasoning_effort": True}, None, "none"),
-        ({"supports_none_reasoning_effort": False, "supports_minimal_reasoning_effort": True}, None, "minimal"),
-        ({"supports_none_reasoning_effort": False}, None, "low"),
-        (None, None, "none"),
-        ({"supports_none_reasoning_effort": True}, "always", "low"),
+        ({"supports_none_reasoning_effort": True}, None, "openAI", "none"),
+        ({"supports_none_reasoning_effort": False, "supports_minimal_reasoning_effort": True}, None, "openAI", "minimal"),
+        ({"supports_none_reasoning_effort": False}, None, "openAI", "low"),
+        ({"supports_none_reasoning_effort": True}, "always", "openAI", "low"),
+        # Unflagged models: "none" only where the provider translates it (Ollama sends think=False).
+        (None, None, "ollama", "none"),
+        (None, None, "groq", "low"),
+        ({"supports_reasoning": True}, None, "openAICompatible", "low"),
     ],
 )
-def test_lowest_effort_follows_what_the_model_accepts(monkeypatch, catalog, thinking, effort) -> None:
+def test_lowest_effort_follows_what_the_model_accepts(monkeypatch, catalog, thinking, provider, effort) -> None:
     monkeypatch.setattr(classifier_module, "lookup_catalog", lambda provider, model: catalog)
-    candidate = build_pool([_entry("k", "acme-r", size="small", thinking=thinking, reasoning=True)])[0]
+    candidate = build_pool(
+        [_entry("k", "acme-r", size="small", thinking=thinking, reasoning=True, provider=provider)]
+    )[0]
     assert classifier_module.lowest_effort(candidate) == effort
 
 
@@ -689,3 +701,47 @@ def test_fallback_survives_a_config_store_error(monkeypatch) -> None:
     monkeypatch.setattr(service_module, "_resolve", boom)
     decision = asyncio.run(resolve_auto_model(_Down(), AutoRequest(query="q")))
     assert decision.fallback and decision.model_key is None
+
+
+def test_classifier_failure_on_an_image_turn_still_picks_a_vision_model(classify_as) -> None:
+    classify_as(error="timeout")
+    blind_default = _entry("k-blind", "acme-blind", size="medium", default=True, multimodal=False)
+    seeing = _entry("k-see", "acme-see", size="large", multimodal=True)
+    seeing_too = _entry("k-see2", "acme-see2", size="small", multimodal=True)
+    decision = _run(
+        [SMALL | {"isMultimodal": False}, blind_default, seeing, seeing_too],
+        AutoRequest(query="what is in this chart?", attachments=[{"mimeType": "image/png"}]),
+    )
+    assert decision.fallback and decision.model_key == "k-see"
+
+
+def test_continuation_clamps_an_explicit_effort(monkeypatch) -> None:
+    pinned = _entry("k-r", "acme-r", size="large", reasoning=True)
+    pinned["configuration"]["reasoningEfforts"] = ["low", "medium", "high"]
+    history = [
+        {"role": "user_query", "content": "compare"},
+        {"role": "bot_response", "content": "a", "modelKey": "k-r", "modelName": "acme-r",
+         "autoRouted": True, "reasoningEffort": "high"},
+    ]
+    decision = _run(
+        [SMALL, pinned],
+        AutoRequest(query="ok", previous_conversations=history, explicit_effort="max"),
+    )
+    assert (decision.reason, decision.reasoning_effort) == ("continuation_pinned", "high")
+
+
+def test_chat_classifier_gets_what_is_left_of_the_budget(monkeypatch) -> None:
+    seen: dict = {}
+
+    async def fake_classify(classifier, query, previous, *, timeout_s):
+        seen["timeout"] = timeout_s
+        return Classification(need="light", needs_reasoning=False)
+
+    async def slow_decision(_config: object, _request: object) -> tuple:
+        await asyncio.sleep(0.05)
+        return None, "d", ClassifierError("timeout")
+
+    monkeypatch.setattr(service_module, "classify", fake_classify)
+    monkeypatch.setattr(service_module, "_classify_with_decision_model", slow_decision)
+    _run([SMALL, MEDIUM, LARGE], AutoRequest(query="who owns payments?"))
+    assert 1.5 <= seen["timeout"] < service_module.CLASSIFIER_TIMEOUT_S

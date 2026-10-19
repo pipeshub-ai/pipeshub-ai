@@ -28,7 +28,10 @@ export function pickModelInfoFromConversationBundle(detail: {
   for (let i = list.length - 1; i >= 0; i -= 1) {
     const m = list[i];
     if (m?.modelInfo) {
-      return m.modelInfo;
+      // An Auto answer names the model Auto picked; the chat itself stays on Auto.
+      return m.modelInfo.autoRouted
+        ? { ...m.modelInfo, modelKey: AUTO_MODEL.modelKey, modelName: AUTO_MODEL.modelName }
+        : m.modelInfo;
     }
   }
   return undefined;

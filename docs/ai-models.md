@@ -83,7 +83,14 @@ sequenceDiagram
 
 ## Decision models
 
-A decision model answers typed questions about an input with calibrated probabilities instead of generated text: yes/no (`predicate`), one option out of a set (`choice`), or a position on an ordered scale (`score`). They are stored in the `decision` bucket of `/services/aiModels`, like any other model type. Admins add one under **For Decisions** in Workspace → AI Models. Auto mode uses the default decision model as its classifier when one is saved.
+A decision model answers typed questions about an input with calibrated probabilities instead of generated text: yes/no (`predicate`), one option out of a set (`choice`), or a position on an ordered scale (`score`). They are stored in the `decision` bucket of `/services/aiModels`, like any other model type. Admins add one under **For Decisions** in Workspace → AI Models. Auto mode uses the default decision model as its classifier when one is saved. To add one through the configuration API instead (`$NODE_URL` is the Node app's address, for example `http://localhost:3000`):
+
+```bash
+curl -X POST "$NODE_URL/api/v1/configurationManager/ai-models/providers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"modelType": "decision", "provider": "openAI", "isDefault": true,
+       "configuration": {"model": "gpt-6-luna", "apiKey": "sk-..."}}'
+```
 
 | Provider | Models | Endpoint |
 | --- | --- | --- |
@@ -117,13 +124,13 @@ Chat's model menu offers **Auto** when two or more chat models are configured. I
 
 1. The candidates are the configured chat models (an agent's own model list on agent routes). With one candidate the router is skipped.
 2. Hard filters drop models that cannot take the turn: no vision for an image, no tool calling on agent routes, a known context window that is too small, or a hosted router such as `openrouter/auto`.
-3. Greetings and bare continuations ("ok", "go on") are decided without a model call. Anything else goes to one short classification call. A configured decision model is used when one exists; otherwise the smallest configured chat model that does not always think (or the `autoRouter` model role, if set). It answers `light`, `standard` or `heavy`, optionally with reasoning.
-4. The need maps to a size (light to small, standard to medium, heavy to large). The smallest model at or above it wins; within a size, the default model first. A conversation never moves to a smaller model than its last Auto pick.
+3. Greetings and bare continuations ("ok", "go on") are decided without a model call. Anything else goes to one short classification call. A configured decision model is used when one exists; otherwise the smallest configured chat model that does not always think (or the `autoRouter` model role, if set). It answers `light`, `standard` or `heavy`, optionally with reasoning. The request reaches it inside `<request>` tags as data, and a chat classifier is asked for the least reasoning its model accepts. A decision model rates six options and the tier is the probability-weighted average; if it fails, the chat classifier takes over within the same time budget.
+4. The need maps to a size (light to small, standard to medium, heavy to large). The smallest model at or above it wins; within a size, the default model first, then models that don't always think. A conversation never moves to a smaller model than its last Auto pick.
 5. Effort is set only for models flagged Reasoning: low, medium or high, never max, at least medium on agent routes.
 
 A classifier timeout, error or unusable answer falls back to the default model (the agent's first model on agent routes). The final answer carries `modelInfo` with `autoRouted: true` and `autoReason`; Node saves it on the message and keeps `modelKey: auto` on the conversation.
 
-Each model's **size** (small, medium, large) and **thinking** (none, optional, always) resolve per field, first hit wins: the value saved in its `configuration`, then the family rules in `discovery/data/model_traits.json`, then the parameter count (from Ollama or the model id), the catalog price, and name keywords. An unknown size counts as medium. The admin can override both in the model form; "Auto-detect" leaves them to detection.
+Each model's **size** (small, medium, large) and **thinking** (none, optional, always) resolve per field, first hit wins. Size: the value saved in its `configuration`, then the parameter count (from Ollama or the model id, so `deepseek-r1:7b` is small), the family rules in `discovery/data/model_traits.json`, the catalog price, and name keywords. Thinking: the saved value, then the family rules, provider facts and the catalog. An unknown size counts as medium. The admin can override both in the model form; "Auto-detect" leaves them to detection.
 
 ## Where to change it
 

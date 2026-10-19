@@ -108,3 +108,18 @@ describe('Auto footer label', () => {
     expect(getAutoRoutedLabel(t, { modelKey: 'k1', modelName: 'gpt-5', chatMode: 'quick' })).toBeNull();
   });
 });
+
+describe('reopening a chat without a saved model', () => {
+  it('stays on Auto when the last answer was Auto-routed', async () => {
+    const { pickModelInfoFromConversationBundle } = await import(
+      '@/chat/utils/apply-conversation-model-info'
+    );
+    const info = pickModelInfoFromConversationBundle({
+      messages: [
+        { modelInfo: { modelKey: 'k1', modelName: 'gpt-5', chatMode: 'quick', autoRouted: true } },
+      ],
+    });
+    expect(info?.modelKey).toBe('auto');
+    expect(info?.modelName).toBe('auto');
+  });
+});
