@@ -11,10 +11,14 @@ TCP 445.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import Connectors, PermissionModel
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectionCheckResult,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -49,6 +53,7 @@ from app.connectors.sources.network_share.operations import (
     walk_shares,
 )
 from app.connectors.sources.network_share.record_mapper import RecordMapper
+from app.connectors.sources.smb.auth import STANDARD_PORTS, auth_problems, port_of
 from app.connectors.sources.smb.common.apps import SmbApp
 from app.models.entities import AppUser, Record, User
 from app.services.notification.types import NotificationSeverity, NotificationType
@@ -255,6 +260,47 @@ class SmbConnector(BaseConnector):
         except (NetworkShareAuthError, DirectoryListingError, ShareListingError, OSError, FileNotFoundError) as exc:
             await self._auth_error("Connection test failed", str(exc))
             return False
+
+    @classmethod
+    def auth_config_problems(cls, auth_config: dict[str, Any]) -> list[str]:
+        return auth_problems(auth_config)
+
+    @classmethod
+    async def check_connection(cls, auth_config: dict[str, Any], logger: Logger) -> ConnectionCheckResult:
+        problems = auth_problems(auth_config)
+        if problems:
+            return ConnectionCheckResult(success=False, message=problems[0])
+        port = port_of(auth_config)
+        if port not in STANDARD_PORTS:
+            # Anyone may run a check, so it only uses the standard SMB ports.
+            return ConnectionCheckResult(
+                success=False,
+                message=(
+                    f"The connection check only uses port 445 or 139. Save the settings and enable the "
+                    f"connector to use port {port}."
+                ),
+            )
+        server = str(auth_config["server"]).strip()
+        share = str(auth_config["share"]).strip()
+        client = SmbClient(
+            server=server,
+            username=str(auth_config["username"]).strip(),
+            password=str(auth_config["password"]),
+            port=port,
+            domain=str(auth_config.get("domain") or "").strip(),
+            share=share,
+            logger=logger,
+        )
+        try:
+            await asyncio.to_thread(client.list_directory, share, "")
+        # Whatever stops the share from opening is the answer to show: smbprotocol raises
+        # LogonFailure, ValueError (no connection) and others outside our error types.
+        except Exception as exc:
+            logger.info("SMB connection check to %s:%s failed: %r", server, port, exc)
+            return ConnectionCheckResult(success=False, message=f"Could not open share {share} on {server}: {exc}")
+        finally:
+            await asyncio.to_thread(client.close)
+        return ConnectionCheckResult(success=True, message=f'Connected to share "{share}" on {server}.')
 
     async def get_signed_url(self, record: Record) -> str | None:
         return None

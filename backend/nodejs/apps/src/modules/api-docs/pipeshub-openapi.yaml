@@ -40189,15 +40189,13 @@ paths:
         a selected group), pass the parent paths via the
         <code>contextGroupPath</code> query parameter on that endpoint.<br><br>
         <b>Which connectors answer:</b><br>
-        Only connectors with auth type <code>API_TOKEN</code>, <code>USERNAME_PASSWORD</code>
-        or <code>OAUTH_ADMIN_CONSENT</code> (and saved settings), and <code>OAUTH</code>
-        connectors that have completed sign-in. Every other connector is refused with <code>400</code>:
-        those with auth type <code>NONE</code> (for example RSS), <code>BASIC_AUTH</code>,
-        <code>ACCESS_KEY</code>, <code>CONNECTION_STRING</code> or <code>CUSTOM</code>
-        (<code>Unsupported authentication type: ...</code>), an OAUTH connector that has not
-        signed in, and a token or password connector with no saved settings.
-        Their filter fields are in the registry schema; dynamic values come from
-        <code>GET /connectors/{connectorId}/filters/{filterKey}/options</code>.
+        An <code>OAUTH</code> connector answers once it has completed sign-in. A connector with
+        any other auth type (<code>API_TOKEN</code>, <code>USERNAME_PASSWORD</code>,
+        <code>OAUTH_ADMIN_CONSENT</code>, <code>BASIC_AUTH</code>, <code>ACCESS_KEY</code>,
+        <code>CONNECTION_STRING</code>, <code>CUSTOM</code>, ...) answers once its settings,
+        including the auth section, are saved. A <code>NONE</code> connector (for example RSS)
+        needs saved settings but no auth section. Otherwise the request is refused with
+        <code>400</code>.
       operationId: getConnectorFilters
       x-pipeshub-sdk: true
       security:
@@ -40226,9 +40224,8 @@ paths:
                   - filterOptions
         '400':
           description: |
-            The connector's auth type has no filter options (for example <code>NONE</code>,
-            <code>BASIC_AUTH</code> or <code>ACCESS_KEY</code>), an OAUTH connector has not
-            signed in, or a token or password connector has no saved settings.
+            An OAUTH connector has not signed in, or another connector has no saved settings
+            (or, for any type except <code>NONE</code>, no saved auth section).
           content:
             application/json:
               schema:

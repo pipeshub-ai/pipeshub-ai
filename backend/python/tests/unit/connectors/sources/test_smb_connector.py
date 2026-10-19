@@ -259,6 +259,74 @@ class TestSmbConnectorInit:
         assert smb_connector.creator_email == "user@test.com"
 
 
+CHECK_AUTH = {"server": "fs01.example", "port": "445", "username": "u", "password": "p", "share": SHARE}
+
+
+class TestSmbConnectionCheck:
+    def test_smb_offers_a_connection_check(self):
+        assert SmbConnector.supports_connection_check()
+
+    def test_auth_settings_are_checked_before_a_save(self):
+        assert SmbConnector.auth_config_problems({**CHECK_AUTH, "port": "99999"}) == [
+            "Port must be a whole number from 1 to 65535."
+        ]
+
+    async def test_lists_the_share_and_closes_the_connection(self, mock_logger):
+        with patch.object(SmbClient, "list_directory", return_value=[]) as listing, patch.object(
+            SmbClient, "close"
+        ) as close:
+            result = await SmbConnector.check_connection(CHECK_AUTH, mock_logger)
+
+        assert result.success
+        listing.assert_called_once_with(SHARE, "")
+        close.assert_called_once()
+
+    async def test_a_login_failure_is_reported(self, mock_logger):
+        with patch.object(SmbClient, "list_directory", side_effect=NetworkShareAuthError("STATUS_LOGON_FAILURE")), patch.object(
+            SmbClient, "close"
+        ):
+            result = await SmbConnector.check_connection(CHECK_AUTH, mock_logger)
+
+        assert not result.success
+        assert "STATUS_LOGON_FAILURE" in result.message
+
+    async def test_a_protocol_error_outside_our_types_is_reported(self, mock_logger):
+        # smbprotocol's LogonFailure, raised by register_session for a wrong password, is one.
+        class LogonFailure(Exception):
+            pass
+
+        with patch.object(SmbClient, "list_directory", side_effect=LogonFailure("STATUS_LOGON_FAILURE")), patch.object(
+            SmbClient, "close"
+        ):
+            result = await SmbConnector.check_connection(CHECK_AUTH, mock_logger)
+
+        assert not result.success
+        assert result.message.startswith(f"Could not open share {SHARE}")
+
+    async def test_a_server_that_cannot_be_reached_is_reported(self, mock_logger):
+        with patch.object(SmbClient, "list_directory", side_effect=ValueError("Failed to connect: timed out")), patch.object(
+            SmbClient, "close"
+        ):
+            result = await SmbConnector.check_connection(CHECK_AUTH, mock_logger)
+
+        assert not result.success
+
+    async def test_invalid_settings_are_not_tried(self, mock_logger):
+        with patch.object(SmbClient, "list_directory") as listing:
+            result = await SmbConnector.check_connection({**CHECK_AUTH, "server": ""}, mock_logger)
+
+        assert result.message == "Server is required."
+        listing.assert_not_called()
+
+    async def test_only_standard_ports_are_tried(self, mock_logger):
+        with patch.object(SmbClient, "list_directory") as listing:
+            result = await SmbConnector.check_connection({**CHECK_AUTH, "port": "3000"}, mock_logger)
+
+        assert not result.success
+        assert "445 or 139" in result.message
+        listing.assert_not_called()
+
+
 class TestSmbConnectorConnection:
     async def test_test_connection_success(self, smb_connector):
         ds = _ds(tree={(SHARE, ""): [_entry("a.txt")]})

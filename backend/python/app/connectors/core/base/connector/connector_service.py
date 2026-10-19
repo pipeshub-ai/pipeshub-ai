@@ -236,6 +236,13 @@ class BaseConnector(ABC):
         raise NotImplementedError(f"{cls.__name__} has no connection check")
 
     @classmethod
+    def auth_config_problems(cls, auth_config: dict[str, Any]) -> list[str]:
+        """What is wrong with auth settings about to be saved, each fit to show the user.
+
+        Called with the merged settings a save would store. None by default."""
+        return []
+
+    @classmethod
     def supports_connection_check(cls) -> bool:
         return cls.check_connection.__func__ is not BaseConnector.check_connection.__func__
 

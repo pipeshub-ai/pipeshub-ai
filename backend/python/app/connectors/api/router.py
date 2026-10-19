@@ -1079,6 +1079,16 @@ def _require_filter_sections_are_objects(filters: object) -> None:
             )
 
 
+def _require_valid_auth_config(connector_type: str, auth_config: dict[str, Any]) -> None:
+    """400 when the connector rejects the auth settings a save would store."""
+    connector_cls = ConnectorFactory.get_connector_class(connector_type.replace(" ", ""))
+    if connector_cls is None:
+        return
+    problems = connector_cls.auth_config_problems(auth_config)
+    if problems:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
+
+
 async def _validate_sync_filter_selections(
     connector_registry: ConnectorRegistry,
     connector_type: str,
@@ -4423,6 +4433,9 @@ async def create_connector_instance(
                 container=container,
             )
 
+        if config and isinstance(config.get(OAuthConfigKeys.AUTH), dict) and config[OAuthConfigKeys.AUTH]:
+            _require_valid_auth_config(connector_type, config[OAuthConfigKeys.AUTH])
+
         # ============================================================
         # 8. Create Connector Instance in Database
         # ============================================================
@@ -5194,6 +5207,7 @@ async def update_connector_instance_auth_config(
         merged_auth_config = existing_auth_config.copy()
         merged_auth_config.update(auth_config_clean)
 
+        _require_valid_auth_config(connector_type, merged_auth_config)
         new_config[OAuthConfigKeys.AUTH] = merged_auth_config
         if connector_type:
             merged_auth_config["connectorType"] = connector_type
@@ -5619,6 +5633,8 @@ async def update_connector_instance_config(
                 connector_registry, instance.get("type", ""), new_config, "saving"
             )
 
+        if auth_updated and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
+            _require_valid_auth_config(connector_type, new_config[OAuthConfigKeys.AUTH])
         if auth_updated and connector_type and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
             new_config[OAuthConfigKeys.AUTH]["connectorType"] = connector_type
 
@@ -7252,21 +7268,16 @@ async def get_connector_instance_filters(
                 )
             token_or_credentials = OAuthToken.from_dict(config[OAuthConfigKeys.CREDENTIALS])
 
-        elif auth_type in ["OAUTH_ADMIN_CONSENT", "API_TOKEN", "USERNAME_PASSWORD"]:
-            if not config or not config.get(OAuthConfigKeys.AUTH):
+        else:
+            # Every other auth type (API token, basic auth, access keys, ...) keeps its
+            # settings in the instance's auth section.
+            if not config or (auth_type != AuthType.NONE and not config.get(OAuthConfigKeys.AUTH)):
                 logger.error("Configuration not found. Please configure first.")
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail="Configuration not found. Please configure first."
                 )
-            token_or_credentials = config.get(OAuthConfigKeys.AUTH, {})
-
-        else:
-            logger.error(f"Unsupported authentication type: {auth_type}")
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Unsupported authentication type: {auth_type}"
-            )
+            token_or_credentials = config.get(OAuthConfigKeys.AUTH) or {}
 
         # Get filter options
         filter_options = await _get_connector_filter_options_from_config(

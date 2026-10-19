@@ -1108,3 +1108,57 @@ class TestMergePreservesExistingAuthFields:
         assert saved["oauth"] is None
         assert "credentials" not in result["config"]
         assert "oauth" not in result["config"]
+
+
+class TestConnectorAuthValidation:
+    """The connector checks the settings a save would store, before anything is stored."""
+
+    SMB_AUTH = {"server": "fs01.example", "port": "445", "username": "svc", "share": "departments"}
+
+    async def _save(self, body_auth: dict, stored_auth: dict) -> tuple[Any, AsyncMock]:
+        config_service = _make_config_service(instance_config={"auth": stored_auth, "credentials": None})
+        registry = _make_connector_registry()
+        request = _make_request(
+            is_admin=True,
+            body={"auth": body_auth},
+            container=_make_container(config_service),
+            connector_registry=registry,
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={"scope": "team"})
+        instance = _base_instance(type="SMB", authType="BASIC_AUTH", scope="team")
+        with (
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=instance),
+            patch(_PATCH_TIMESTAMP, return_value=1),
+        ):
+            result = await update_connector_instance_auth_config("conn1", request, graph_provider)
+        return result, registry
+
+    async def test_a_required_secret_neither_sent_nor_stored_is_a_400(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            await self._save(self.SMB_AUTH, {"connectorScope": "team"})
+
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert exc_info.value.detail == "Password is required."
+
+    async def test_a_stored_secret_counts(self) -> None:
+        result, registry = await self._save(self.SMB_AUTH, {"connectorScope": "team", "password": "kept"})
+
+        assert result["config"]["auth"]["password"] == "kept"
+        registry.update_connector_instance.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        ("change", "detail"),
+        [
+            ({"server": ""}, "Server is required."),
+            ({"port": "99999"}, "Port must be a whole number from 1 to 65535."),
+            ({"server": "192.0.2.1\\evil"}, "Server must be a hostname or an IP address"),
+            ({"share": "qa/../other"}, "Share must be a single share name"),
+        ],
+    )
+    async def test_bad_fields_are_a_400_and_nothing_is_saved(self, change: dict, detail: str) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            await self._save({**self.SMB_AUTH, "password": "p", **change}, {"connectorScope": "team"})
+
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert exc_info.value.detail.startswith(detail)

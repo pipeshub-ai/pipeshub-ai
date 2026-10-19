@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
 
 REPARSE_POINT = 0x0400
+# smbclient waits 60 s by default, longer than a gateway holds a request open.
+CONNECTION_TIMEOUT_SECONDS = 15
 _T = TypeVar("_T")
 
 
@@ -114,6 +116,7 @@ class SmbClient(IClient):
                 username=self.username,
                 password=self.password,
                 port=self.port,
+                connection_timeout=CONNECTION_TIMEOUT_SECONDS,
                 connection_cache=self._connection_cache,
             )
             self._registered = True
@@ -133,6 +136,7 @@ class SmbClient(IClient):
             "port": self.port,
             "username": self.username,
             "password": self.password,
+            "connection_timeout": CONNECTION_TIMEOUT_SECONDS,
         }
 
     def list_directory(self, share: str, path: str) -> list[DirectoryEntry]:
@@ -187,6 +191,7 @@ class SmbClient(IClient):
             created_time=_stat_time(result, "st_ctime"),
             last_write_time=_stat_time(result, "st_mtime"),
             file_id=int(result.st_ino) if getattr(result, "st_ino", None) else None,
+            attributes=attrs,
         )
 
     def open_file(self, share: str, path: str) -> BinaryIO:
@@ -230,6 +235,7 @@ class SmbClient(IClient):
             created_time=created,
             last_write_time=written,
             file_id=file_id,
+            attributes=attrs,
         )
 
     @classmethod
