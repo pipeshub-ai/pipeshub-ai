@@ -576,6 +576,74 @@ class TestTheBetterPageStands:
         assert not mod.narrow_access_memo.is_narrow(key)
 
 
+def _ranked(records: int) -> _Corpus:
+    """One point per record, ranked r0 first: the test chooses which ranks are readable."""
+    points = [
+        SearchResult(
+            id=f"r{i}#0", score=1.0 - i / 10_000,
+            payload={"page_content": f"r{i}", "metadata": {"virtualRecordId": f"r{i}", "orgId": ORG},
+                     CONNECTOR_IDS_FIELD: [APPS[i % len(APPS)]]},
+        )
+        for i in range(records)
+    ]
+    return _Corpus(points=points, vrids=[f"r{i}" for i in range(records)])
+
+
+class TestOnlyTheFirstAttemptDecides:
+    async def test_a_retry_that_reads_into_unreadable_ranks_keeps_its_page(self) -> None:
+        """Three overlapping queries at limit 5 (a 15-hit budget). The first
+        fetch reads the top 10, nine readable: it clears 80% but is short, so
+        the retry reads 30, where the share falls to 40%. That page is the
+        retry's answer; it must not be swapped for a 5-hit record-id page."""
+        corpus = _ranked(200)
+        readable = {f"r{i}" for i in range(9)} | {f"r{i}" for i in range(10, 13)}
+        store = _FakeStore(list(corpus.points))
+        graph = _graph(_Access(readable, set(readable)))
+
+        response = await _service(store, graph).search_with_filters(
+            ["q", "q two", "q three"], "alice", ORG, limit=5,
+        )
+
+        assert {req.limit for req in store.requests} == {10, 30}
+        assert not any(store.used_record_ids())
+        graph.get_accessible_virtual_record_ids.assert_not_awaited()
+        assert not mod.narrow_access_memo._entries
+        assert _vrids(response) == readable
+
+
+class TestAnEmptyRecordListOnARememberedScope:
+    async def test_the_containers_decide_and_the_scope_is_forgotten(self) -> None:
+        corpus = _corpus(18, records=400)
+        readable = set(corpus.vrids)
+        store = _FakeStore(list(corpus.points))
+        graph = _graph(_Access(readable, set()))
+        key = mod.narrow_access_memo.key(ORG, "alice", {})
+        mod.narrow_access_memo.mark(key)
+
+        response = await _search(_service(store, graph), 10)
+
+        assert response["searchResults"]
+        assert _vrids(response) <= readable
+        assert store.used_record_ids() == [False]
+        assert not mod.narrow_access_memo.is_narrow(key)
+
+    async def test_a_demo_exclusion_keeps_the_record_id_answer(self) -> None:
+        """An excluded demo app takes the record-id path with or without the memo;
+        the containers cannot leave one app out, so they are not asked."""
+        corpus = _corpus(19, records=400)
+        store = _FakeStore(list(corpus.points))
+        graph = _graph(_Access(set(corpus.vrids), set()))
+        service = _service(store, graph)
+        service._excluded_demo_apps = AsyncMock(return_value=frozenset({"demo-app"}))
+        mod.narrow_access_memo.mark(mod.narrow_access_memo.key(ORG, "alice", {}))
+
+        response = await _search(service, 10)
+
+        assert response["status"] == mod.Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
+        graph.get_accessible_containers.assert_not_awaited()
+        assert not store.requests
+
+
 class TestBroadUsersStay:
     """A user who reads nearly everything in trusted containers: the first fetch
     is exactly ``limit``, so one denied record leaves the page short. That is

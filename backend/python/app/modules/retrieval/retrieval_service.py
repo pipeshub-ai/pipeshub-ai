@@ -719,9 +719,24 @@ class RetrievalService:
                     # list; the container route checks hits without it. Forget
                     # the scope and try that once.
                     narrow_access_memo.forget(memo_key)
+                    remembered = False
                     self.logger.warning(
                         "record list unreadable for remembered scope (user=%s org=%s); "
                         "trying the container search: %s", user_id, org_id, exc,
+                    )
+                    containers, accessible_virtual_id_to_record_id, user = (
+                        await self._resolve_search_scope(user_id, org_id, filters, time_range)
+                    )
+                if remembered and containers is None and not accessible_virtual_id_to_record_id:
+                    # The remembered route found an empty record list. Access
+                    # changes, and the list can lag a grant: forget the scope and
+                    # let the containers decide, rather than answering "nothing"
+                    # from the memo for minutes. A demo-app exclusion still takes
+                    # the record-id path there, as it does without the memo.
+                    narrow_access_memo.forget(memo_key)
+                    self.logger.info(
+                        "empty record list for remembered scope (user=%s org=%s); "
+                        "trying the container search", user_id, org_id,
                     )
                     containers, accessible_virtual_id_to_record_id, user = (
                         await self._resolve_search_scope(user_id, org_id, filters, time_range)
@@ -1898,7 +1913,11 @@ class RetrievalService:
                 # Retrying would hammer a graph that has just failed to answer.
                 break
 
-            if narrow_access_fallback_enabled() and self._narrow_shortfall(
+            # First attempt only. A page that cleared the share there and was
+            # short is the retry's to fill; the retry reads deeper, where the
+            # share falls, and must not turn that into a move that replaces
+            # the page it widened.
+            if attempt == 0 and narrow_access_fallback_enabled() and self._narrow_shortfall(
                 surviving=surviving,
                 raw=len(search_results),
                 fetch_limit=asked,
