@@ -295,7 +295,8 @@ services:
 
   # Confluence Cloud and Jira Cloud simulators (pipeshub-ai/connectors-simulator) for
   # the Confluence and Jira suites, behind the atlassian-sim profile. Both serve one
-  # generated site with the same people and groups. Seed, sizes and build time are
+  # site with the same people and groups, served from the lumenfold@1 content pack
+  # (CONNSIM_PACK_DIR, downloaded from S3 by the workflow). Pack and build time are
   # pinned, so every run gets the same world and the suites can name fixture issues
   # (integration-tests/connectors/atlassian_sim.env). The test process uses the
   # published ports; the connector uses the aliases. The Confluence connector only
@@ -309,14 +310,12 @@ services:
     command: ["confluence"]
     environment: &connsim-site
       CONNSIM_SOURCES: confluence,jira
-      CONNSIM_PRESET: small
-      CONNSIM_SEED: "12"
-      CONNSIM_PAGES: "1000"
-      CONNSIM_JIRA_ISSUES: "1000"
+      CONNSIM_PACK: /pack
       CONNSIM_BUILD_TIME_MS: "1767225600000"
       CONNSIM_MEDIA_BASE_URL: http://confluence-sim-media.atlassian.net
     volumes:
       - connsim_data:/data
+      - ${CONNSIM_PACK_DIR:-./connsim-pack-not-downloaded}:/pack:ro
     ports:
       - "127.0.0.1:8101:80"
     networks:
@@ -334,6 +333,7 @@ services:
     environment: *connsim-site
     volumes:
       - connsim_data:/data
+      - ${CONNSIM_PACK_DIR:-./connsim-pack-not-downloaded}:/pack:ro
     ports:
       - "127.0.0.1:8102:80"
     networks:
