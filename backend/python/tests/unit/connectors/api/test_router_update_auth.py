@@ -19,6 +19,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
+from app.config.redaction import REDACTED_PLACEHOLDER
 from app.connectors.api.router import update_connector_instance_auth_config
 
 _ROUTER = "app.connectors.api.router"
@@ -1117,7 +1118,17 @@ class TestConnectorAuthValidation:
 
     async def _save(self, body_auth: dict, stored_auth: dict) -> tuple[Any, AsyncMock]:
         config_service = _make_config_service(instance_config={"auth": stored_auth, "credentials": None})
+        self.config_service = config_service
         registry = _make_connector_registry()
+        registry.get_connector_metadata = AsyncMock(
+            return_value={
+                "config": {
+                    "auth": {
+                        "schemas": {"BASIC_AUTH": {"fields": [{"name": "password", "fieldType": "PASSWORD"}]}}
+                    }
+                }
+            }
+        )
         request = _make_request(
             is_admin=True,
             body={"auth": body_auth},
@@ -1144,7 +1155,8 @@ class TestConnectorAuthValidation:
     async def test_a_stored_secret_counts(self) -> None:
         result, registry = await self._save(self.SMB_AUTH, {"connectorScope": "team", "password": "kept"})
 
-        assert result["config"]["auth"]["password"] == "kept"
+        assert result["config"]["auth"]["password"] == REDACTED_PLACEHOLDER
+        assert self.config_service.set_config.await_args.args[1]["auth"]["password"] == "kept"
         registry.update_connector_instance.assert_awaited_once()
 
     @pytest.mark.parametrize(

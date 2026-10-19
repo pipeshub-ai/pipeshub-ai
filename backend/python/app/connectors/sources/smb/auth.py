@@ -26,7 +26,8 @@ def parse_port(value: object) -> int | None:
         return None
     if isinstance(value, int):
         port = value
-    elif isinstance(value, str) and value.strip().isdigit():
+    # int() rejects some characters isdigit() accepts, such as superscripts.
+    elif isinstance(value, str) and value.strip().isascii() and value.strip().isdigit():
         port = int(value.strip())
     else:
         return None
@@ -62,8 +63,11 @@ def auth_problems(auth: dict[str, Any]) -> list[str]:
         problems.append("Port must be a whole number from 1 to 65535.")
     if not str(auth.get("username") or "").strip():
         problems.append("Username is required.")
-    if not auth.get("password"):
+    password = auth.get("password")
+    if not password:
         problems.append("Password is required.")
+    elif not isinstance(password, str):
+        problems.append("Password must be text.")
     share = str(auth.get("share") or "").strip()
     if not share:
         problems.append("Share is required.")

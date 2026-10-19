@@ -4433,7 +4433,7 @@ async def create_connector_instance(
                 container=container,
             )
 
-        if config and isinstance(config.get(OAuthConfigKeys.AUTH), dict) and config[OAuthConfigKeys.AUTH]:
+        if config and isinstance(config.get(OAuthConfigKeys.AUTH), dict):
             _require_valid_auth_config(connector_type, config[OAuthConfigKeys.AUTH])
 
         # ============================================================
