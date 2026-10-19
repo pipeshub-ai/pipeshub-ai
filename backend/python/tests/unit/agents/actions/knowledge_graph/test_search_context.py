@@ -478,7 +478,7 @@ class TestManyGrepOnlyRecords:
         for i in unlisted:
             assert f"rec-g{i:02d}" not in state["known_record_ids"]
         if unlisted:
-            assert f"{len(unlisted)} more matched record" in result
+            assert f"{len(unlisted)} more keyword-matched record" in result
 
     @pytest.mark.asyncio
     async def test_a_few_grep_only_records_render_as_before(self) -> None:

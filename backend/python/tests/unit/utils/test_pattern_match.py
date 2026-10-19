@@ -2693,15 +2693,40 @@ class TestRenderPatternMatchHint:
     def test_past_the_room_records_are_counted_not_named(self) -> None:
         entries = [{"virtual_record_id": f"vrid-{i}"} for i in range(10)]
         vr_map = {f"vrid-{i}": {"id": f"rec-{i}", "recordName": f"Doc {i}"} for i in range(10)}
-        one_line = len("- Doc 0 (Record ID: rec-0)") + 1
+        room = len(render_pattern_match_hint([], vr_map, brief_records=entries[:4], unlisted=6)) + 1
 
-        full, brief, unlisted = split_hint_entries(entries, vr_map, one_line * 4, max_full=0)
+        full, brief, unlisted = split_hint_entries(entries, vr_map, room, max_full=0)
         result = render_pattern_match_hint(full, vr_map, brief_records=brief, unlisted=unlisted)
 
         assert (len(full), len(brief), unlisted) == (0, 4, 6)
         assert "- Doc 3 (Record ID: rec-3)" in result
         assert "rec-4" not in result
-        assert "6 more matched records not listed." in result
+        assert "6 more keyword-matched records not listed." in result
+
+    @pytest.mark.parametrize("max_full", [0, 3, 10])
+    def test_the_hint_is_never_longer_than_the_room_it_was_split_for(self, max_full: int) -> None:
+        entries = [{"virtual_record_id": f"vrid-{i}", "_match_count": 3} for i in range(30)]
+        vr_map = {
+            f"vrid-{i}": {"id": f"rec-{i}", "recordName": f"Doc {i}", "webUrl": "https://x.example/" + "u" * 200}
+            for i in range(30)
+        }
+
+        for room in range(150, 8_000, 61):
+            full, brief, unlisted = split_hint_entries(entries, vr_map, room, max_full=max_full)
+            hint = render_pattern_match_hint(
+                full, vr_map, max_records=max(len(full), 1), brief_records=brief, unlisted=unlisted,
+            )
+            assert len(hint) <= room, (room, len(full), len(brief), unlisted)
+
+    def test_when_no_record_fits_the_hint_still_counts_them(self) -> None:
+        entries = [{"virtual_record_id": f"vrid-{i}"} for i in range(3)]
+        vr_map = {f"vrid-{i}": {"id": f"rec-{i}", "recordName": "N" * 2_000} for i in range(3)}
+
+        full, brief, unlisted = split_hint_entries(entries, vr_map, 2_000, max_full=10)
+        result = render_pattern_match_hint(full, vr_map, brief_records=brief, unlisted=unlisted)
+
+        assert (full, brief, unlisted) == ([], [], 3)
+        assert result.strip() == "3 more keyword-matched records not listed."
 
 
 # ===========================================================================

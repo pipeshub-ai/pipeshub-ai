@@ -110,7 +110,7 @@ async def test_a_hit_named_on_one_line_fetches_by_the_id_it_shows(id_field: str)
     graph = _graph_provider(_graph_record(id_field))
 
     entries, vr_map = await _merge(graph)
-    full, brief, unlisted = split_hint_entries(entries, vr_map, max_chars=200, max_full=0)
+    full, brief, unlisted = split_hint_entries(entries, vr_map, max_chars=1_000, max_full=0)
     hint = render_pattern_match_hint(full, vr_map, brief_records=brief, unlisted=unlisted)
 
     assert (full, unlisted) == ([], 0)

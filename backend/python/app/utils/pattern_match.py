@@ -101,6 +101,8 @@ _PATTERN_MATCH_INDEX_ENV_VAR = "PATTERN_MATCH_INDEX"
 _SCAN_BELOW_CHUNKS_ENV_VAR = "PATTERN_MATCH_SCAN_BELOW_CHUNKS"
 _DEFAULT_SCAN_BELOW_CHUNKS = 200_000
 _MAX_PATTERN_MATCH_RECORDS = 50
+_DEFAULT_FETCH_TOOL_REF = "knowledgegraph__fetch_record"
+_BRIEF_HINT_HEADING = "Also matched (name and Record ID only):"
 _MAX_RECORDS_PER_CONNECTOR = 10
 # Fallback budget when a caller has no per-request limit to pass (e.g. limit=None).
 # Pattern match fans out per-connector (max_results=10 each) and then expands each
@@ -2242,30 +2244,43 @@ def grep_hits_within(
 
 
 def split_hint_entries(
-    entries: list[dict], virtual_record_id_to_result: Mapping[str, Any], max_chars: int, *, max_full: int,
+    entries: list[dict],
+    virtual_record_id_to_result: Mapping[str, Any],
+    max_chars: int,
+    *,
+    max_full: int,
+    has_semantic_blocks: bool = True,
+    fetch_tool_ref: str = _DEFAULT_FETCH_TOOL_REF,
 ) -> tuple[list[dict], list[dict], int]:
     """``entries``, in order, split into those the hint shows with full
     metadata, those it names on one line, and how many it leaves out.
 
-    The leading ``max_full`` that fit in ``max_chars`` get full metadata and
-    the rest are named while the room lasts, so a long list of keyword
-    matches takes a bounded share of the result instead of its passages.
+    The leading ``max_full`` that fit get full metadata and the rest are
+    named while the room lasts, so a long list of keyword matches takes a
+    bounded share of the result instead of its passages. The hint that
+    ``render_pattern_match_hint`` makes of the split, header, footer and
+    count of the rest included, is at most ``max_chars`` long.
     """
     named = [entry for entry in entries if virtual_record_id_to_result.get(entry.get("virtual_record_id", ""))]
+    header, footer = _hint_frame(has_semantic_blocks=has_semantic_blocks, fetch_tool_ref=fetch_tool_ref)
+    count_room = len(_unlisted_line(len(named))) + 1
     full: list[dict] = []
     brief: list[dict] = []
-    used = 0
+    used = len(header) + len(footer)
     for index, entry in enumerate(named):
+        reserve = count_room if index < len(named) - 1 else 0
         if not brief and len(full) < max_full:
-            section = _hint_section(entry, virtual_record_id_to_result) or ""
-            if used + len(section) + 1 <= max_chars:
-                used += len(section) + 1
+            cost = len(_hint_section(entry, virtual_record_id_to_result) or "") + 1
+            if used + cost + reserve <= max_chars:
+                used += cost
                 full.append(entry)
                 continue
-        line = _hint_line(entry, virtual_record_id_to_result) or ""
-        if used + len(line) + 1 > max_chars:
+        cost = len(_hint_line(entry, virtual_record_id_to_result) or "") + 1
+        if not brief:
+            cost += len(_BRIEF_HINT_HEADING) + 1
+        if used + cost + reserve > max_chars:
             return full, brief, len(named) - index
-        used += len(line) + 1
+        used += cost
         brief.append(entry)
     return full, brief, 0
 
@@ -2353,7 +2368,7 @@ def _hint_line(entry: dict, virtual_record_id_to_result: Mapping[str, Any]) -> s
 def render_pattern_match_hint(
     pm_records: list[dict],
     virtual_record_id_to_result: dict[str, dict],
-    fetch_tool_ref: str = "knowledgegraph__fetch_record",
+    fetch_tool_ref: str = _DEFAULT_FETCH_TOOL_REF,
     max_records: int = _MAX_PATTERN_MATCH_RECORDS,
     has_semantic_blocks: bool = True,
     brief_records: list[dict] | None = None,
@@ -2384,12 +2399,18 @@ def render_pattern_match_hint(
         if (line := _hint_line(entry, virtual_record_id_to_result)) is not None
     ]
     if not sections and not lines:
-        return ""
+        # No fetch instruction: none of these records is named.
+        return f"\n\n{_unlisted_line(unlisted)}" if unlisted else ""
     if lines:
-        sections.append("Also matched (name and Record ID only):\n" + "\n".join(lines))
+        sections.append(_BRIEF_HINT_HEADING + "\n" + "\n".join(lines))
     if unlisted:
-        sections.append(f"{unlisted} more matched record{'s' if unlisted != 1 else ''} not listed.")
+        sections.append(_unlisted_line(unlisted))
+    header, footer = _hint_frame(has_semantic_blocks=has_semantic_blocks, fetch_tool_ref=fetch_tool_ref)
+    return header + "\n" + "\n".join(sections) + footer
 
+
+def _hint_frame(*, has_semantic_blocks: bool, fetch_tool_ref: str) -> tuple[str, str]:
+    """The header and footer around the records the keyword hint names."""
     if has_semantic_blocks:
         header = (
             "\n\nAdditional records found via pattern matching (metadata only — "
@@ -2406,7 +2427,11 @@ def render_pattern_match_hint(
         f"\nTo read the full content of any record above, call "
         f"`{fetch_tool_ref}` with its record_id."
     )
-    return header + "\n" + "\n".join(sections) + footer
+    return header, footer
+
+
+def _unlisted_line(count: int) -> str:
+    return f"{count} more keyword-matched record{'s' if count != 1 else ''} not listed."
 
 
 def cap_pattern_match_blocks(
