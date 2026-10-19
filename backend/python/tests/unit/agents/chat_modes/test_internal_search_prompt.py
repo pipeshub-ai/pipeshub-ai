@@ -246,6 +246,15 @@ class TestConflictOrder:
         positions = [text.index(marker) for marker in order]
         assert positions == sorted(positions)
 
+    def test_shipped_first_is_for_current_behaviour_not_what_was_decided(self) -> None:
+        """Asked what format a team is standardizing on, an older PR implementing
+        a template beat the decision record marking the final spec agreed."""
+        text = _text(composition=True)
+        shipped_step = text[text.index(_CONFLICT_ORDER):text.index(_SUPERSESSION)]
+        assert "for what a system does or shows its users now" in shipped_step
+        assert "but not for what was decided, agreed or standardized, or for the plan or policy" in shipped_step
+        assert "even where an earlier implementation differs" in shipped_step
+
     def test_a_settled_conflict_is_answered_not_left_open(self) -> None:
         assert _SETTLED in _text(composition=True)
 
