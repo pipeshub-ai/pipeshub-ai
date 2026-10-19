@@ -8505,6 +8505,21 @@ class TestParentRecordInAnotherGroup:
         tx_store.delete_edge.assert_awaited_once_with(*_group_to_record_edge("rg-b", "story-1"))
 
     @pytest.mark.asyncio
+    async def test_a_link_stub_without_a_group_joins_its_childs_group(self) -> None:
+        """A Jira issue first seen as a link target is a stub with no project; named
+        as a parent later, it takes the child's, or the ancestor backfill skips it."""
+        proc = _make_processor()
+        stub = self._epic(is_placeholder=True, external_record_group_id=None, record_group_id=None)
+        tx_store = self._store({"ext-epic": stub})
+
+        await proc._process_record(self._story(), [], tx_store)
+
+        assert stub.external_record_group_id == "ext-b"
+        tx_store.batch_update_nodes.assert_any_await(
+            [{"id": "epic-1", "externalGroupId": "ext-b"}], CollectionNames.RECORDS.value
+        )
+
+    @pytest.mark.asyncio
     async def test_a_stored_placeholder_of_another_group_still_hides_the_record(self) -> None:
         proc = _make_processor()
         tx_store = self._store({"ext-epic": self._epic(record_group_id="rg-a", is_placeholder=True)})

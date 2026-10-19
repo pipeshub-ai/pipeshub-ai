@@ -721,6 +721,19 @@ class DataSourceEntitiesProcessor:
                 if record_group_id:
                     await self._link_record_to_group(parent_record, record_group_id, tx_store)
             elif parent_record is not None and parent_record.is_placeholder:
+                # A stub minted as a link target has no group; as a parent it shares
+                # the child's, else the connector's backfill never finds it.
+                if (
+                    not parent_record.external_record_group_id
+                    and not parent_record.record_group_id
+                    and record.external_record_group_id
+                ):
+                    parent_record.external_record_group_id = record.external_record_group_id
+                    parent_record.record_group_type = record.record_group_type
+                    await tx_store.batch_update_nodes(
+                        [{"id": parent_record.id, "externalGroupId": record.external_record_group_id}],
+                        CollectionNames.RECORDS.value,
+                    )
                 # A pre-existing placeholder never re-syncs as a real record, so its
                 # record-group (BELONGS_TO) edge isn't restored after a full sync (which
                 # deletes all edges). Re-anchor it here — idempotently — so the placeholder
