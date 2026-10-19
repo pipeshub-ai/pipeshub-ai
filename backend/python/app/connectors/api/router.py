@@ -1063,6 +1063,15 @@ def _without_masked_secrets(auth: dict[str, Any], secret_auth_fields: frozenset[
     }
 
 
+def _require_auth_is_object(auth: object) -> None:
+    """400 when ``auth`` is present but not an object; the save paths read it as a dict."""
+    if auth is not None and not isinstance(auth, dict):
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="Auth configuration must be an object.",
+        )
+
+
 def _require_filter_sections_are_objects(filters: object) -> None:
     """400 when ``filters.sync`` / ``filters.indexing`` is present but not an object.
 
@@ -4433,6 +4442,8 @@ async def create_connector_instance(
                 container=container,
             )
 
+        if isinstance(config, dict):
+            _require_auth_is_object(config.get(OAuthConfigKeys.AUTH))
         if config and isinstance(config.get(OAuthConfigKeys.AUTH), dict):
             _require_valid_auth_config(connector_type, config[OAuthConfigKeys.AUTH])
 
@@ -5033,6 +5044,11 @@ async def update_connector_instance_auth_config(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Auth configuration is required"
             )
+        if not isinstance(body["auth"], dict):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="Auth configuration must be an object.",
+            )
 
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
@@ -5544,6 +5560,7 @@ async def update_connector_instance_config(
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
         _require_filter_sections_are_objects(body.get("filters"))
+        _require_auth_is_object(body.get("auth"))
         secret_auth_fields = await _secret_auth_field_names(connector_registry, connector_type)
         if isinstance(body.get("auth"), dict):
             body["auth"] = _without_masked_secrets(

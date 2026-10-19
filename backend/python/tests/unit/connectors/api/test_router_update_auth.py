@@ -20,7 +20,10 @@ from fastapi import HTTPException
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.redaction import REDACTED_PLACEHOLDER
-from app.connectors.api.router import update_connector_instance_auth_config
+from app.connectors.api.router import (
+    _require_auth_is_object,
+    update_connector_instance_auth_config,
+)
 
 _ROUTER = "app.connectors.api.router"
 
@@ -1158,6 +1161,24 @@ class TestConnectorAuthValidation:
         assert result["config"]["auth"]["password"] == REDACTED_PLACEHOLDER
         assert self.config_service.set_config.await_args.args[1]["auth"]["password"] == "kept"
         registry.update_connector_instance.assert_awaited_once()
+
+    @pytest.mark.parametrize("auth", [None, "secret", ["a"]])
+    async def test_auth_that_is_not_an_object_is_a_400(self, auth: object) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            await self._save(auth, {"connectorScope": "team"})  # type: ignore[arg-type]
+
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert exc_info.value.detail == "Auth configuration must be an object."
+
+    @pytest.mark.parametrize("auth", ["secret", ["a"], 5])
+    def test_create_refuses_auth_that_is_not_an_object(self, auth: object) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            _require_auth_is_object(auth)
+
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+
+    def test_create_without_auth_is_fine(self) -> None:
+        _require_auth_is_object(None)
 
     @pytest.mark.parametrize(
         ("change", "detail"),

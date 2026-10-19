@@ -15,6 +15,15 @@ def test_open_file_shares_read_write_and_delete() -> None:
     assert kwargs["share_access"] == "rwd"
 
 
+def test_a_bracketed_ipv6_address_is_dialled_without_brackets() -> None:
+    client = SmbClient(server="[fd00::5]", username="u", password="p")
+    fake = MagicMock()
+    with patch.object(client, "_smbclient", return_value=fake):
+        client.register()
+
+    assert fake.register_session.call_args.args[0] == "fd00::5"
+
+
 def test_registering_waits_a_bounded_time_for_the_server() -> None:
     client = SmbClient(server="files.example", username="u", password="p")
     fake = MagicMock()

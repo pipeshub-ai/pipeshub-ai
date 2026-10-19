@@ -73,7 +73,8 @@ class SmbClient(IClient):
         share: str | None = None,
         logger: Logger | None = None,
     ) -> None:
-        self.server = server
+        # smbclient takes an IPv6 address without the brackets a URL would use.
+        self.server = server.removeprefix("[").removesuffix("]")
         self.port = port
         self.username = f"{domain}\\{username}" if domain else username
         self.password = password
