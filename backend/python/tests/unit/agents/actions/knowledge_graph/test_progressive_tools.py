@@ -34,7 +34,7 @@ _EXPECTED_TOOL_PATHS = {
     # Declared on the class; the toolset withholds it unless the deployment
     # offers it (``KnowledgeGraph.tools_for_request``).
     "/tools/knowledgegraph/search_by_entities",
-    # Withheld unless the deployment sets TIMELINE_SUMMARIES.
+    # Withheld when the deployment sets TIMELINE_SUMMARIES=false.
     "/tools/knowledgegraph/search_timeline",
 }
 

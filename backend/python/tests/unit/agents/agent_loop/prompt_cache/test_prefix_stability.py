@@ -217,7 +217,9 @@ def test_tool_order_is_the_same_in_every_process() -> None:
 
 _ANSWER_RULE_SWITCHES = ("ANSWER_COMPOSITION_RULES", "THOROUGH_RETRIEVAL", "MULTI_STEP_ANSWER_RULES")
 # Other switches that change prompt text; pinned off so only the answer rules vary.
-_OTHER_PROMPT_SWITCHES = ("HIGH_ACCURACY_MODE", "KEYWORD_SEARCH_QUERIES", "TARGETED_RETRIEVAL")
+_OTHER_PROMPT_SWITCHES = (
+    "HIGH_ACCURACY_MODE", "KEYWORD_SEARCH_QUERIES", "TARGETED_RETRIEVAL", "TIMELINE_SUMMARIES",
+)
 _MODES = ("quick", "react", "planExecute", "deep", "internal_search")
 _SNAPSHOT = Path(__file__).parent / "snapshots" / "answer_rules_sections.json"
 _SECTIONS = ("agent_instructions", "finding_information")
@@ -293,7 +295,8 @@ async def _mode_request(mode: str, question: str) -> tuple[str, dict[str, str | 
 def _set_answer_rules(monkeypatch: pytest.MonkeyPatch, *, on: bool) -> None:
     monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "false")
     for name in _OTHER_PROMPT_SWITCHES:
-        # "false", not unset: TARGETED_RETRIEVAL is on when unset.
+        # "false", not unset: TARGETED_RETRIEVAL and TIMELINE_SUMMARIES are on
+        # when unset.
         monkeypatch.setenv(name, "false")
     for name in _ANSWER_RULE_SWITCHES:
         if on:

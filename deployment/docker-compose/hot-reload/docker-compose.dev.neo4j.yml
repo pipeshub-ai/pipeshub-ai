@@ -179,6 +179,7 @@ services:
       - THOROUGH_RETRIEVAL=${THOROUGH_RETRIEVAL:-}
       - MULTI_STEP_ANSWER_RULES=${MULTI_STEP_ANSWER_RULES:-}
       - ENTITY_SEARCH_TOOL=${ENTITY_SEARCH_TOOL:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
       - TIMELINE_SUMMARIES=${TIMELINE_SUMMARIES:-}
       - FETCH_SIZE_BY_CHARS=${FETCH_SIZE_BY_CHARS:-}
       # On unless set to false; HIGH_ACCURACY_MODE does not change it.

@@ -1168,8 +1168,8 @@ class KnowledgeGraph:
     def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
         """This request's tools: ``search_by_entities`` and the descriptions
         that go with it only where the deployment offers it
-        (``entity_search_surface``); ``search_timeline`` only under
-        ``TIMELINE_SUMMARIES``."""
+        (``entity_search_surface``); ``search_timeline`` unless
+        ``TIMELINE_SUMMARIES`` is false."""
         from .entity_search_surface import tools_for_request
         from .ops.timeline import without_timeline_unless_enabled
         tools = without_timeline_unless_enabled(tools)

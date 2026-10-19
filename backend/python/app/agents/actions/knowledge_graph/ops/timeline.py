@@ -24,8 +24,8 @@ the periods where the whole-span search found the most.
 Keyword (grep) matching is left out: it scans every stored record file, and
 running it once per period would multiply the slowest step of a search.
 
-The deployment switch ``TIMELINE_SUMMARIES`` offers the tool; it is off unless
-set to ``true``, and does not follow ``HIGH_ACCURACY_MODE``.
+The deployment switch ``TIMELINE_SUMMARIES`` offers the tool; it is on unless
+set to ``false``, and does not follow ``HIGH_ACCURACY_MODE``.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ from app.modules.agents.qna.chat_state import (
 from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
-from app.utils.env_utils import env_bool
+from app.utils.env_utils import enabled_unless_off
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.messages import Part
@@ -113,7 +113,12 @@ _DAY_MS = 24 * 60 * 60 * 1000
 
 
 def timeline_summaries_enabled() -> bool:
-    return env_bool(TIMELINE_SUMMARIES_ENV_VAR, False)
+    """On unless ``TIMELINE_SUMMARIES`` is ``false``, ``0``, ``no`` or ``off``.
+
+    Unset or blank is on, so a Compose file that passes the variable through
+    empty keeps the default.
+    """
+    return enabled_unless_off(TIMELINE_SUMMARIES_ENV_VAR)
 
 
 def without_timeline_unless_enabled(tools: list[Tool]) -> list[Tool]:

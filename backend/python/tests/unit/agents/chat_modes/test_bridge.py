@@ -741,7 +741,9 @@ class TestRunChatStream:
     @pytest.mark.parametrize(("switch", "query", "prefetched"), [
         ("true", "Between March and May 2026, what problems came up with the Slack bot?", False),
         ("true", "What is the redirect URI for the Dropbox team app?", True),
-        (None, "Between March and May 2026, what problems came up with the Slack bot?", True),
+        # On when unset.
+        (None, "Between March and May 2026, what problems came up with the Slack bot?", False),
+        ("false", "Between March and May 2026, what problems came up with the Slack bot?", True),
     ])
     async def test_a_span_question_skips_the_upfront_search_only_with_the_timeline_on(
         self, monkeypatch: pytest.MonkeyPatch, switch: str | None, query: str, prefetched: bool,

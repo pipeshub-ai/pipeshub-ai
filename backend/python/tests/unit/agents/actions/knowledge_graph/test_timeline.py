@@ -32,6 +32,7 @@ from app.agents.actions.knowledge_graph.ops.timeline import (
     execute_timeline_search,
     plan_periods,
     span_of,
+    timeline_summaries_enabled,
 )
 from app.models.blocks import BlockType
 
@@ -97,28 +98,35 @@ def test_the_span_is_the_earliest_and_latest_dated_record() -> None:
     assert span_of({}, "created") is None
 
 
-class TestOfferedOnlyUnderTheSwitch:
+class TestOfferedUnlessSwitchedOff:
     def _served(self) -> list[str]:
         instance = KnowledgeGraph(state={})
         declared = ToolsetBuilder(instance, name="knowledgegraph", description="", path_prefix="/tools/knowledgegraph").tools
         return [t.name for t in instance.tools_for_request(list(declared))]
 
-    @pytest.mark.parametrize("value", [None, "", "false", "1", "yes"])
-    def test_withheld_unless_set_to_true(self, monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
+    @pytest.mark.parametrize("value", [None, "", "true", "TRUE", "1", "yes"])
+    def test_offered_unless_set_to_false(self, monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
+        # Unset and blank (what Compose passes for an unset variable) are on.
         if value is None:
             monkeypatch.delenv(TIMELINE_SUMMARIES_ENV_VAR, raising=False)
         else:
             monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, value)
-        assert TIMELINE_TOOL_NAME not in self._served()
-
-    def test_high_accuracy_mode_alone_does_not_offer_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(TIMELINE_SUMMARIES_ENV_VAR, raising=False)
-        monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
-        assert TIMELINE_TOOL_NAME not in self._served()
-
-    def test_offered_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "TRUE")
+        assert timeline_summaries_enabled() is True
         assert TIMELINE_TOOL_NAME in self._served()
+
+    @pytest.mark.parametrize("value", ["false", "FALSE", "0", "no", "off", " false "])
+    def test_withheld_when_set_to_false(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+        monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, value)
+        assert timeline_summaries_enabled() is False
+        assert TIMELINE_TOOL_NAME not in self._served()
+
+    @pytest.mark.parametrize("mode", ["true", "false"])
+    def test_high_accuracy_mode_does_not_change_it(self, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+        monkeypatch.setenv("HIGH_ACCURACY_MODE", mode)
+        monkeypatch.delenv(TIMELINE_SUMMARIES_ENV_VAR, raising=False)
+        assert TIMELINE_TOOL_NAME in self._served()
+        monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "false")
+        assert TIMELINE_TOOL_NAME not in self._served()
 
 
 # ── The op ────────────────────────────────────────────────────────────────

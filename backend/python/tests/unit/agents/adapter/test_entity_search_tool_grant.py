@@ -260,6 +260,9 @@ class TestLazyDisclosure:
             TIMELINE_TOOL_NAME,
         )
 
+        # The threshold is counted with the timeline off ("false": it is on
+        # when unset), then the switch adds the tool.
+        monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "false")
         await self._at_threshold(monkeypatch, mode)
         monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "true")
         _context, agent, runtime, _ = await _create(mode)
