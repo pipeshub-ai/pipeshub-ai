@@ -56,7 +56,7 @@ LOG_CREDENTIAL_WORDS = frozenset({
 
 # `<qualifier> key` is a credential (`privateKey`, `api_key`); `key` alone is
 # not, since KV paths are logged as `key: /services/...`.
-_KEY_QUALIFIERS = frozenset({"api", "private", "secret", "access", "auth", "encryption", "signing", "master"})
+_KEY_QUALIFIERS = frozenset({"api", "private", "secret", "access", "auth", "encryption", "signing", "master", "account"})
 
 # OAuth app secret fields, in each spelling the save paths accept.
 OAUTH_CLIENT_SECRET_FIELDS = frozenset({"clientSecret", "client_secret", "clientsecret"})
