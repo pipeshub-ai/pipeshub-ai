@@ -221,6 +221,38 @@ class TestSqlStatements:
         assert approvals.call_kind(target, "/tools/jira/create_issue", {"query": "DROP TABLE t"}) == "write"
 
 
+class TestDocsBatchUpdate:
+    """A Docs batch update keeps its kind unless one of its requests deletes something."""
+
+    @pytest.mark.parametrize("requests", [
+        [{"insertText": {"location": {"index": 1}, "text": "Hi"}}],
+        [{"replaceAllText": {"containsText": {"text": "a"}, "replaceText": "b"}}, {"updateTextStyle": {}}],
+    ])
+    def test_adding_or_changing_content_keeps_its_kind(self, requests: Any) -> None:  # noqa: ANN401
+        assert approvals.docs_requests_keep_their_kind(requests)
+
+    @pytest.mark.parametrize("requests", [
+        [{"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 9}}}],
+        [{"insertText": {}}, {"deleteTableRow": {}}],
+        [{"deleteTab": {"tabId": "t.1"}}],
+        [{"DeleteHeader": {}}],
+        [],
+        [{}],
+        ["deleteContentRange"],
+        "[{\"deleteContentRange\": {}}]",
+        None,
+    ])
+    def test_a_delete_or_an_unreadable_list_cant_be_undone(self, requests: Any) -> None:  # noqa: ANN401
+        assert not approvals.docs_requests_keep_their_kind(requests)
+
+    def test_the_call_takes_the_kind_of_its_requests(self) -> None:
+        target = SimpleNamespace(kind="write")
+        path = "/tools/docs/batch_update_document"
+        assert approvals.call_kind(target, path, {"requests": [{"insertText": {}}]}) == "write"
+        assert approvals.call_kind(target, path, {"requests": [{"deleteContentRange": {}}]}) == "destructive"
+        assert approvals.call_kind(target, path, {}) == "destructive"
+
+
 def _context(store: _Store | None = None, **overrides: Any) -> Any:  # noqa: ANN401
     defaults: dict[str, Any] = {
         "config_service": store or _Store(), "client_name": "pipeshub-ai", "chat_streaming": True,
