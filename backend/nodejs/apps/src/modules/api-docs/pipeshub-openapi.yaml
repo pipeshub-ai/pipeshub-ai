@@ -5157,8 +5157,8 @@ components:
             True after the record is indexed (every COMPLETED write, including the upgrade
             backfill for records indexed earlier), and false once it is marked EMPTY. A later
             re-queue or a failed re-index leaves it as it is, so search keeps returning the
-            previous indexed copy until the new version is indexed. Absent until the record
-            is first indexed.
+            previous indexed copy until the new version is indexed. Absent until the first
+            COMPLETED or EMPTY write sets it.
         indexingStatus:
           type: string
           enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
@@ -5407,8 +5407,8 @@ components:
                 True after the record is indexed (every COMPLETED write, including the upgrade
                 backfill for records indexed earlier), and false once it is marked EMPTY. A later
                 re-queue or a failed re-index leaves it as it is, so search keeps returning the
-                previous indexed copy until the new version is indexed. Absent until the record
-                is first indexed.
+                previous indexed copy until the new version is indexed. Absent until the first
+                COMPLETED or EMPTY write sets it.
             extractionStatus:
               type: string
             reason:
