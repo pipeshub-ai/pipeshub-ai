@@ -19,6 +19,7 @@ import * as cmConfigModule from '../src/modules/configuration_manager/config/con
 import * as messageBrokerModule from '../src/libs/services/message-broker.factory';
 import * as kvMigrationModule from '../src/libs/keyValueStore/migration/kvStoreMigration.service';
 import * as oauthProviderModule from '../src/libs/services/oauth-token-service.provider';
+import * as rateLimitModule from '../src/libs/middlewares/rate-limit.middleware';
 import { RedisConnectionProviderFactory } from '../src/libs/services/redis/connectionProviderFactory';
 import * as redisConnectionProviderFactoryModule from '../src/libs/services/redis/connectionProviderFactory';
 import { TokenManagerContainer } from '../src/modules/tokens_manager/container/token-manager.container';
@@ -712,6 +713,20 @@ describe('Application', () => {
       } finally {
         restoreEnv('STRICT_MODE', original);
       }
+    });
+
+    it('runs the operator-key guard after the global rate limiter, so rejected requests still count', async () => {
+      const globalRateLimiter: express.RequestHandler = (_req, _res, next) => next();
+      sandbox.stub(rateLimitModule, 'createGlobalRateLimiter').returns(globalRateLimiter);
+      const orderedApp = new Application();
+      await orderedApp.initialize();
+
+      const expressApp = (orderedApp as any).app as express.Express;
+      const layerNames: string[] = (expressApp as any)._router.stack.map((layer: any) => layer.name);
+      const limiterAt = layerNames.indexOf('globalRateLimiter');
+      const guardAt = layerNames.indexOf('operatorKeyGuardMiddleware');
+      expect(limiterAt).to.be.greaterThan(-1);
+      expect(guardAt).to.be.greaterThan(limiterAt);
     });
   });
 

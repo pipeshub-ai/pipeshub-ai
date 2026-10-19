@@ -304,6 +304,14 @@ describe('Mongo operator input over HTTP', () => {
       })
     }
 
+    for (const path of ['/API/v1/userGroups', '/Api/V1/UserGroups']) {
+      it(`refuses ?$where=1 on ${path}, which Express routes to the same handler`, async () => {
+        const res = await send('GET', `${path}?$where=1`, { token: session() })
+        expect(res.status).to.equal(400)
+        expect((res.body as { error?: { message?: string } }).error?.message).to.equal(OPERATOR_KEY_MESSAGE)
+      })
+    }
+
     it('lets ordinary pagination and a search with dots in its value through', async () => {
       const res = await send('GET', '/api/v1/userGroups?page=1&limit=10&search=v1.2%20report.pdf', { token: session() })
       expect(res.status).to.equal(200)
@@ -331,13 +339,15 @@ describe('operatorKeyGuardMiddleware outside the API', () => {
     expect(next.calledOnceWithExactly()).to.equal(true)
   })
 
-  it('guards the MCP endpoint', () => {
-    const next = sinon.spy()
-    operatorKeyGuardMiddleware(
-      { path: '/mcp', query: { $where: '1' } } as unknown as express.Request,
-      {} as express.Response,
-      next,
-    )
-    expect(next.firstCall.args[0]).to.have.property('statusCode', 400)
-  })
+  for (const path of ['/mcp', '/MCP', '/Mcp/session']) {
+    it(`guards the MCP endpoint at ${path}`, () => {
+      const next = sinon.spy()
+      operatorKeyGuardMiddleware(
+        { path, query: { $where: '1' } } as unknown as express.Request,
+        {} as express.Response,
+        next,
+      )
+      expect(next.firstCall.args[0]).to.have.property('statusCode', 400)
+    })
+  }
 })

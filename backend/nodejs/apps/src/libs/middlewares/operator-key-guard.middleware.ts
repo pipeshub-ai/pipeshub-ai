@@ -44,8 +44,14 @@ const findOperatorKey = (value: unknown, path: string): string | null => {
 
 // Only the API surface reads Mongo; the SPA and static files are left alone so
 // an outside redirect to a page with an unusual parameter still loads it.
-const isGuardedPath = (path: string): boolean =>
-  path.startsWith('/api/') || path === '/mcp' || path.startsWith('/mcp/');
+// Express matches routes case-insensitively, so /API/v1/... reaches the same
+// handlers and has to be guarded too.
+const isGuardedPath = (path: string): boolean => {
+  const lower = path.toLowerCase();
+  return (
+    lower.startsWith('/api/') || lower === '/mcp' || lower.startsWith('/mcp/')
+  );
+};
 
 export const operatorKeyGuardMiddleware = (
   req: Request,

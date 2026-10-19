@@ -518,7 +518,6 @@ export class Application {
     // Body parsing
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
-    this.app.use(operatorKeyGuardMiddleware);
     this.app.use(xssSanitizationMiddleware);
 
     // Logging — only log API requests, skip static assets.
@@ -560,6 +559,10 @@ export class Application {
     if (isTelemetryEnabled()) {
       this.app.use(metricsMiddleware());
     }
+    // Registered after the rate limiter: a rejection ends the request through
+    // next(error), which skips every later middleware, so these requests would
+    // otherwise never count towards the limit.
+    this.app.use(operatorKeyGuardMiddleware);
   }
 
   private configureRoutes(): void {
