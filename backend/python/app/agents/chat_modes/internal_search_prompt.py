@@ -145,15 +145,15 @@ _REPORT_VERSIONS = (
 # page beat the draft that explicitly replaced it, and a proposal's names beat
 # the ones that shipped; a draft saying it replaces a deployed config is still a
 # proposal. Not for what was decided or standardized, where an older implementing
-# PR beat the spec marked final. A settled conflict made one tier's rule the
-# answer for a case no source placed in that tier, so a conditional rule keeps
-# its condition.
+# PR beat the spec marked final; the policy a system applies is still what it
+# does. A settled conflict made one tier's rule the answer for a case no source
+# placed in that tier, so a conditional rule keeps its condition.
 _RESOLVE_CONFLICTS = (
     "When sources disagree, prefer in order: for what a system does or shows its users now, "
-    "an implemented change (a merged pull request, a released config or changelog) over a "
-    "proposal, draft or plan for it, even one that says it replaces it, but not for what was "
-    "decided, agreed or standardized, or for the plan or policy, even where an earlier "
-    "implementation differs; a record saying it updates, corrects or replaces the other "
+    "including the policy or config it applies, an implemented change (a merged pull request, "
+    "a released config or changelog) over a proposal, draft or plan for it, even one that says "
+    "it replaces it, but not for what was decided, agreed or standardized, even where an "
+    "earlier implementation differs; a record saying it updates, corrects or replaces the other "
     "(updated, final, vN, deprecated, change log); a "
     "narrower record applying a broader rule to the exact scope asked (an ADR or exception under a "
     "standard); the value most independent sources state; the most recent. Title or "

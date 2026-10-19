@@ -252,8 +252,18 @@ class TestConflictOrder:
         text = _text(composition=True)
         shipped_step = text[text.index(_CONFLICT_ORDER):text.index(_SUPERSESSION)]
         assert "for what a system does or shows its users now" in shipped_step
-        assert "but not for what was decided, agreed or standardized, or for the plan or policy" in shipped_step
-        assert "even where an earlier implementation differs" in shipped_step
+        assert ("but not for what was decided, agreed or standardized, even where an earlier "
+                "implementation differs;") in shipped_step
+
+    def test_the_policy_a_system_applies_stays_shipped_first(self) -> None:
+        """Skipping the step for any policy question let a draft that says it
+        replaces a released gateway timeout config win on supersession."""
+        text = _text(composition=True)
+        shipped_step = text[text.index(_CONFLICT_ORDER):text.index(_SUPERSESSION)]
+        applies, carve_out = shipped_step.split("but not for", 1)
+        assert "including the policy or config it applies" in applies
+        assert "policy" not in carve_out
+        assert "plan" not in carve_out
 
     def test_a_settled_conflict_is_answered_not_left_open(self) -> None:
         assert _SETTLED in _text(composition=True)
