@@ -1268,7 +1268,7 @@ async def _validated_personal_settings(
         settings = toolset_store.with_url_schemes(settings, url_fields & set(settings))
         await toolset_store.assert_public_addresses(settings)
     except toolset_store.AddressNotAllowedError as e:
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e  # user-written message
     return settings
 
 
