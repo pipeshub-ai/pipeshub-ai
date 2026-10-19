@@ -227,17 +227,40 @@ def sql_keeps_its_kind(sql: str) -> bool:
     return words[0] in _SQL_READS or words[0] in _SQL_ORDINARY_WRITES
 
 
-def docs_requests_keep_their_kind(requests: Any) -> bool:  # noqa: ANN401
-    """Whether a Google Docs batch update only adds or changes content. A request that deletes
-    (deleteContentRange, deleteTableRow, deleteTab, ...), or requests that aren't a list of
-    request objects, count as a call that can't be undone."""
-    if not isinstance(requests, list) or not requests:
+# Docs batch requests that only add or restyle content. Anything else, a delete, a named-range
+# replace (which drops every range after the first), accepting or rejecting a suggestion, or a
+# request type added to the API later, counts as a call that can't be undone.
+_DOCS_ADDING_REQUESTS = frozenset({
+    "insertText", "insertInlineImage", "insertTable", "insertTableRow", "insertTableColumn",
+    "insertPageBreak", "insertSectionBreak", "insertPerson", "addDocumentTab",
+    "createParagraphBullets", "createNamedRange", "createHeader", "createFooter", "createFootnote",
+    "updateTextStyle", "updateParagraphStyle", "updateTableColumnProperties", "updateTableCellStyle",
+    "updateTableRowStyle", "updateDocumentStyle", "updateSectionStyle", "updateDocumentTabProperties",
+    "pinTableHeaderRows", "mergeTableCells", "unmergeTableCells",
+})
+
+
+def _docs_request_keeps_its_kind(request: Any) -> bool:  # noqa: ANN401
+    if not isinstance(request, dict) or len(request) != 1:
         return False
-    return all(
-        isinstance(request, dict) and request
-        and not any(str(key).lower().startswith("delete") for key in request)
-        for request in requests
-    )
+    (name, body), = request.items()
+    if name == "replaceAllText":
+        # The same change replace_text makes; an empty replacement or a regex match can wipe text.
+        if not isinstance(body, dict):
+            return False
+        contains = body.get("containsText")
+        replacement = body.get("replaceText")
+        return (
+            isinstance(replacement, str) and replacement != ""
+            and isinstance(contains, dict) and contains.get("searchByRegex") is not True
+        )
+    return name in _DOCS_ADDING_REQUESTS
+
+
+def docs_requests_keep_their_kind(requests: Any) -> bool:  # noqa: ANN401
+    """Whether a Google Docs batch update only adds or restyles content. Any other request, or
+    requests that aren't a list of request objects, count as a call that can't be undone."""
+    return isinstance(requests, list) and bool(requests) and all(map(_docs_request_keeps_its_kind, requests))
 
 
 # Tools whose one call can do more than the tool's kind says: the argument that decides, and the

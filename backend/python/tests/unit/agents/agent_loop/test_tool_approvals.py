@@ -226,11 +226,12 @@ class TestSqlStatements:
 
 
 class TestDocsBatchUpdate:
-    """A Docs batch update keeps its kind unless one of its requests deletes something."""
+    """A Docs batch update keeps its kind only when every request adds or restyles content."""
 
     @pytest.mark.parametrize("requests", [
         [{"insertText": {"location": {"index": 1}, "text": "Hi"}}],
         [{"replaceAllText": {"containsText": {"text": "a"}, "replaceText": "b"}}, {"updateTextStyle": {}}],
+        [{"insertTable": {"rows": 2, "columns": 2}}, {"createParagraphBullets": {}}],
     ])
     def test_adding_or_changing_content_keeps_its_kind(self, requests: Any) -> None:  # noqa: ANN401
         assert approvals.docs_requests_keep_their_kind(requests)
@@ -240,6 +241,17 @@ class TestDocsBatchUpdate:
         [{"insertText": {}}, {"deleteTableRow": {}}],
         [{"deleteTab": {"tabId": "t.1"}}],
         [{"DeleteHeader": {}}],
+        # Not deletes by name, but each removes content.
+        [{"replaceNamedRangeContent": {"namedRangeName": "x", "text": "y"}}],
+        [{"acceptSuggestion": {"suggestionId": "s"}}],
+        [{"rejectSuggestion": {"suggestionId": "s"}}],
+        [{"replaceAllText": {"containsText": {"text": "a"}, "replaceText": ""}}],
+        [{"replaceAllText": {"containsText": {"text": ".+", "searchByRegex": True}, "replaceText": "x"}}],
+        [{"replaceAllText": {"containsText": {"text": "a"}}}],
+        [{"replaceImage": {"imageObjectId": "i", "uri": "https://example.com/a.png"}}],
+        # A request type this list doesn't know, or two requests packed into one object.
+        [{"someFutureRequest": {}}],
+        [{"insertText": {}, "deleteContentRange": {}}],
         [],
         [{}],
         ["deleteContentRange"],
