@@ -246,7 +246,9 @@ export function PDFRenderer({
       viewerReadyEpoch > 0 && isViewerReady.current && activeCitationId
         ? highlights.filter((h) => h.id === activeCitationId)
         : NO_HIGHLIGHTS,
-    [activeCitationId, highlights, viewerReadyEpoch],
+    // citationClickVersion: a repeat click on the same citation must hand over a new array,
+    // since the library redraws the layer (and replays the pulse) only when the identity changes.
+    [activeCitationId, highlights, viewerReadyEpoch, citationClickVersion],
   );
 
   // Inject custom highlight CSS
