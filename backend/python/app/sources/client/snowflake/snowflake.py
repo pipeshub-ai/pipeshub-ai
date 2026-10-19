@@ -139,7 +139,7 @@ class SnowflakeRESTClientViaPAT(HTTPClient):
         """
         logger.debug(f"🔧 [PAT] SnowflakeRESTClientViaPAT.__init__ called")
         logger.debug(f"🔧 [PAT] account_identifier: '{account_identifier}'")
-        logger.debug(f"🔧 [PAT] pat_token (first 10 chars): '{pat_token[:10] if pat_token else 'None'}...'")
+        logger.debug(f"🔧 [PAT] pat_token present: {bool(pat_token)}")
         logger.debug(f"🔧 [PAT] timeout: {timeout}")
         
         # Initialize with PAT token using Bearer format
@@ -155,7 +155,8 @@ class SnowflakeRESTClientViaPAT(HTTPClient):
         self.pat_token = pat_token
         self._base_url = self._build_base_url(account_identifier)
         
-        logger.debug(f"🔧 [PAT] Final headers: {self.headers}")
+        # The header values carry the PAT itself.
+        logger.debug(f"🔧 [PAT] Final header names: {sorted(self.headers)}")
         logger.debug(f"🔧 [PAT] Final base_url: '{self._base_url}'")
         logger.info(f"🔧 [PAT] SnowflakeRESTClientViaPAT initialized successfully with base_url: '{self._base_url}'")
 

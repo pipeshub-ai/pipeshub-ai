@@ -34,6 +34,8 @@ from app.sources.client.snowflake.snowflake import (  # noqa: E402
 
 import app.sources.client.snowflake.snowflake as _sf_mod  # noqa: E402
 
+from app.utils.logger import RedactingFormatter  # noqa: E402
+
 _sf_mod.snowflake_connector = _mock_snowflake_connector
 
 
@@ -914,6 +916,9 @@ class TestSnowflakeBuildFromServicesLogging:
     """The decrypted connector config must never reach a log line, even at DEBUG."""
 
     SENTINEL = "SENTINEL-SNOWFLAKE-7f3a"
+    # The PAT client used to log the token's first 10 characters, so the
+    # check looks for that prefix as well as the whole value.
+    PAT = "PATSENTNL9-0123456789abcdef"
 
     @pytest.fixture
     def captured(self) -> Iterator[tuple[logging.Logger, list[logging.LogRecord]]]:
@@ -923,17 +928,30 @@ class TestSnowflakeBuildFromServicesLogging:
             def emit(self, record: logging.LogRecord) -> None:
                 records.append(record)
 
-        lg = logging.getLogger("test_snowflake_client.debug")
-        lg.setLevel(logging.DEBUG)
-        lg.propagate = False
         handler = _ListHandler(level=logging.DEBUG)
-        lg.addHandler(handler)
+        lg = logging.getLogger("test_snowflake_client.debug")
+        # The REST client classes log through the module logger, not the one
+        # passed to build_from_services.
+        module_lg = logging.getLogger(_sf_mod.__name__)
+        saved = [(x, x.level, x.propagate) for x in (lg, module_lg)]
+        for x in (lg, module_lg):
+            x.setLevel(logging.DEBUG)
+            x.propagate = False
+            x.addHandler(handler)
         yield lg, records
-        lg.removeHandler(handler)
+        for x, level, propagate in saved:
+            x.removeHandler(handler)
+            x.setLevel(level)
+            x.propagate = propagate
 
-    @staticmethod
-    def _text(records: list[logging.LogRecord]) -> str:
-        return "\n".join(r.getMessage() for r in records)
+    def _assert_clean(self, records: list[logging.LogRecord]) -> None:
+        formatter = RedactingFormatter("%(name)s - %(levelname)s - %(message)s")
+        for text in (
+            "\n".join(r.getMessage() for r in records),
+            "\n".join(formatter.format(r) for r in records),
+        ):
+            assert self.SENTINEL not in text
+            assert self.PAT[:10] not in text
 
     @pytest.mark.asyncio
     async def test_config_values_are_not_logged(self, captured, cs) -> None:
@@ -942,16 +960,22 @@ class TestSnowflakeBuildFromServicesLogging:
             "accountIdentifier": "acct",
             "auth": {
                 "authType": "PAT",
-                "patToken": f"{self.SENTINEL}-pat",
+                "patToken": self.PAT,
                 "password": f"{self.SENTINEL}-password",
                 "privateKey": f"{self.SENTINEL}-key",
             },
             "credentials": {"access_token": f"{self.SENTINEL}-access"},
         })
-        await SnowflakeClient.build_from_services(lg, cs, "inst-1")
-        text = self._text(records)
+        client = await SnowflakeClient.build_from_services(lg, cs, "inst-1")
+        assert isinstance(client.get_client(), SnowflakeRESTClientViaPAT)
+        assert any(r.name == _sf_mod.__name__ for r in records), "expected the PAT client's DEBUG lines"
+        self._assert_clean(records)
+
+    def test_pat_client_construction_does_not_log_the_token(self, captured) -> None:
+        _, records = captured
+        SnowflakeRESTClientViaPAT(account_identifier="acct", pat_token=self.PAT)
         assert records, "expected the DEBUG lines to be emitted"
-        assert self.SENTINEL not in text
+        self._assert_clean(records)
 
     @pytest.mark.asyncio
     async def test_validation_error_does_not_log_the_rejected_input(self, captured, cs) -> None:
@@ -962,6 +986,5 @@ class TestSnowflakeBuildFromServicesLogging:
         })
         with pytest.raises(ValueError, match="Invalid Snowflake"):
             await SnowflakeClient.build_from_services(lg, cs, "inst-1")
-        text = self._text(records)
-        assert "auth" in text
-        assert self.SENTINEL not in text
+        assert "auth" in "\n".join(r.getMessage() for r in records)
+        self._assert_clean(records)
