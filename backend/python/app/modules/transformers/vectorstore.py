@@ -18,6 +18,7 @@ import codecs
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from typing import Any, List, Optional, Tuple
@@ -34,7 +35,13 @@ from app.exceptions.indexing_exceptions import (
     VectorStoreError,
 )
 from app.exceptions.non_retryable import NonRetryableError
-from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
+from app.models.blocks import (
+    Block,
+    BlockGroup,
+    BlocksContainer,
+    BlockType,
+    SemanticMetadata,
+)
 from app.models.entities import Record
 from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
@@ -513,6 +520,48 @@ def _chunk_oversized_text(
         chunks.append(" ".join(current))
 
     return chunks or [text]
+
+
+_TITLE_MAX_CHARS = 150
+_TITLE_LINES = 2
+_PAGE_NUMBER = re.compile(r"^(?:page\s+)?\d{1,4}$", re.IGNORECASE)
+
+
+def table_titles(blocks: list[Block], groups: list[BlockGroup]) -> dict[int, str]:
+    """Table group index -> the short lines set above its first row on the same page
+    ("Consolidated Balance Sheets", "(in millions)").
+
+    A table's rows are embedded as sentences that never name the statement they
+    belong to, so a search for "balance sheet total current assets" had to match a
+    bare sentence; prefixing the title puts the statement's words in every row.
+    """
+    first_row: dict[int, int] = {}
+    for block in blocks:
+        if block.type == BlockType.TABLE_ROW and block.parent_index is not None:
+            first_row.setdefault(block.parent_index, block.index)
+    titles: dict[int, str] = {}
+    for group in groups:
+        start = first_row.get(group.index)
+        page = group.citation_metadata.page_number if group.citation_metadata else None
+        if start is None or page is None:
+            continue
+        lines: list[str] = []
+        for block in reversed(blocks[max(0, start - 6):start]):
+            text = block.data.strip() if isinstance(block.data, str) else ""
+            same_page = block.citation_metadata and block.citation_metadata.page_number == page
+            if block.type != BlockType.TEXT or not same_page or not text or len(text) > _TITLE_MAX_CHARS:
+                break
+            if not _PAGE_NUMBER.match(text):
+                lines.insert(0, " ".join(text.split()))
+            if len(lines) >= _TITLE_LINES:
+                break
+        if lines:
+            titles[group.index] = " ".join(lines)
+    return titles
+
+
+def _with_title(title: str | None, text: str) -> str:
+    return f"{title}: {text}" if title else text
 
 
 def _bounded_documents(text: str, metadata: dict) -> list[Document]:
@@ -1789,6 +1838,7 @@ class VectorStore(Transformer):
         # deployment with no chat model configured.
         blocks = block_containers.blocks
         block_groups = block_containers.block_groups
+        titles = table_titles(blocks, block_groups)
 
         tokens = await self._bind_membership(virtual_record_id, record)
         try:
@@ -2031,7 +2081,7 @@ class VectorStore(Transformer):
                         table_summary = anchor_text_only(table_data.get("table_summary", ""))
                         if table_summary:
                             documents_to_embed.extend(_bounded_documents(
-                                table_summary,
+                                _with_title(titles.get(block_group.index), table_summary),
                                 {
                                     "virtualRecordId": virtual_record_id,
                                     "blockId": block_group.id,
@@ -2099,7 +2149,7 @@ class VectorStore(Transformer):
                         )
                         if row_text:
                             documents_to_embed.extend(_bounded_documents(
-                                row_text,
+                                _with_title(titles.get(block.parent_index), row_text),
                                 {
                                     "virtualRecordId": virtual_record_id,
                                     "blockId": block.id,
