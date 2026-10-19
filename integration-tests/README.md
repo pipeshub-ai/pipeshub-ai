@@ -261,6 +261,8 @@ pytest -m mcp -v                                     # compare with the golden
 pytest response-validation/mcp --update-mcp-golden   # rewrite the golden from the live server
 ```
 
+**MCP tools** (`response-validation/mcp/integration_test_mcp_tools.py`): calls every tool on `/mcp` with a client_credentials token minted from the same OAuth app's client id and secret, and checks each answer against a document indexed for the run in a collection of its own and an agent with that collection as its knowledge. It needs the AI model credentials that indexing needs, and `pipeshub_chat` makes two model calls. It runs with `pytest -m mcp`.
+
 **Storage backends** (`storage/`): drives upload, download, versioning, rollback and metadata through the running product, against each configured backend. These repoint the whole deployment's storage while they run, so they never join a plain `pytest` or `-m integration` session — ask for them by name:
 
 ```bash
@@ -386,9 +388,9 @@ Tests clone the [pipeshub-ai/integration-test](https://github.com/pipeshub-ai/in
 | `conftest.py`        | Loads `.env` then `.env.local` or `.env.prod`, exports Neo4j env, local OAuth fixture. |
 | `helper/local_auth.py` | Gets OAuth client creds from local backend (initAuth → authenticate → create app). `obtain_user_session_token` also handles the enterprise `auth/token/switch` step. |
 | `helper/mcp_oauth.py` | Registers a full-access OAuth app and mints tokens (authorization_code + PKCE, client_credentials) with API calls only. |
-| `helper/mcp_client.py` | Reads the `/mcp` surface (initialize, tools, prompts) with `fastmcp` as plain JSON. |
+| `helper/mcp_client.py` | Reads the `/mcp` surface (initialize, tools, prompts) with `fastmcp` as plain JSON, and calls a tool (`call_mcp_tool`). |
 | `helper/mcp_pin.py` | Reads the `@pipeshub-ai/mcp` pin from `backend/nodejs/apps/package.json`. |
-| `response-validation/mcp/` | MCP surface tests and the per-version golden files. |
+| `response-validation/mcp/` | MCP surface tests, the per-version golden files, and the tool tests. |
 | `helper/pipeshub_client.py` | HTTP client for Pipeshub connector API (client_credentials). |
 | `helper/graph_provider.py` | `GraphProviderProtocol` — common graph test helper interface. |
 | `helper/graph_provider_utils.py` | Shared polling helpers (`wait_until_graph_condition`, etc.). |
