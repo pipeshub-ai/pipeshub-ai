@@ -10,6 +10,7 @@ import { Logger } from '../../../libs/services/logger.service'
 import { AuthTokenService } from '../../../libs/services/authtoken.service'
 import { createOAuthRedirectMiddleware } from '../middlewares/oauth.redirect.middleware'
 import { OAuthAuthMiddleware } from '../middlewares/oauth.auth.middleware'
+import { oauthTokenValidationErrorHandler } from '../middlewares/oauth.token-validation-error.middleware'
 import { refuseServiceAccountCaller } from '../../user_management/middlewares/refuseServiceAccountCaller'
 import { AppConfig } from '../../tokens_manager/config/config'
 import {
@@ -102,6 +103,7 @@ export function createOAuthProviderRouter(container: Container): Router {
     ValidationMiddleware.validate(tokenSchema),
     (req: Request, res: Response, next: NextFunction) =>
       controller.token(req, res, next),
+    oauthTokenValidationErrorHandler,
   )
 
   /**
