@@ -1345,14 +1345,8 @@ async def _execute_search(
         if targeted:
             remember_shown(state, final_results)
         unshown_list = result_frame.unshown_list
-        if result_frame.unshown:
-            remember_record_ids(
-                state,
-                [match.record_id for match in result_frame.unshown],
-                names={match.record_id: match.name for match in result_frame.unshown},
-            )
-            if record_id_shortener is not None:
-                unshown_list = record_id_shortener.shorten_record_ids_in_text(unshown_list)
+        if unshown_list and record_id_shortener is not None:
+            unshown_list = record_id_shortener.shorten_record_ids_in_text(unshown_list)
         text = (
             result_frame.summary
             + rendered.text
@@ -1361,6 +1355,14 @@ async def _execute_search(
             + pm_hint
             + outside_dates_text
         )
+        # Past the shared cap its middle cut may take the list; a known id
+        # is one the model was shown.
+        if result_frame.unshown and len(text) <= DEFAULT_MAX_RESULT_CHARS:
+            remember_record_ids(
+                state,
+                [match.record_id for match in result_frame.unshown],
+                names={match.record_id: match.name for match in result_frame.unshown},
+            )
         return tool_output(text, rendered.images, state)
 
     except Exception as exc:

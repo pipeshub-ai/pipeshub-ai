@@ -22,6 +22,8 @@ from app.agents.actions.knowledge_graph.ops.search import (
 from app.modules.retrieval.entity_permissions import EntityAccessError
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from app.utils.pattern_match import PatternMatchCoverage
 
 # ---------------------------------------------------------------------------
@@ -798,14 +800,12 @@ class TestRecordsTheResultDoesNotShow:
         assert "- Record ID: r-vr2 | Doc vr2" in result
         assert set(state["virtual_record_id_to_result"]) == {"vr1"}
 
-    @pytest.mark.asyncio
-    async def test_when_the_fit_runs_out_of_passes_the_list_gives_way_first(self, monkeypatch) -> None:
-        """Each record the fit drops adds a row, so the passes can end over the
-        size: the lowest-ranked rows go, and only the ids still shown are
-        remembered."""
+    @staticmethod
+    def _first_record_only() -> AbstractContextManager[Any]:
+        """A fit that keeps the first record whatever the budget, as one
+        oversized unit is kept."""
         from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
 
-        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
         select = KnowledgeRenderer.select
 
         def first_record_only(renderer: KnowledgeRenderer, ranked: list, _max_chars: int) -> Selection:
@@ -813,8 +813,17 @@ class TestRecordsTheResultDoesNotShow:
             return Selection(ranked=chosen.ranked, omitted_records=len(ranked) - 1, chars=chosen.chars,
                              record_id_shortener=chosen.record_id_shortener)
 
+        return patch.object(KnowledgeRenderer, "select", first_record_only)
+
+    @pytest.mark.asyncio
+    async def test_when_the_fit_runs_out_of_passes_the_list_gives_way_first(self, monkeypatch) -> None:
+        """Each record the fit drops adds a row, so the passes can end over the
+        size: the lowest-ranked rows go, and only the ids still shown are
+        remembered."""
+        monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
+
         vrids = ["vr1", "vr2", "vr3", "vr4", "vr5", "vr6"]
-        with patch.object(KnowledgeRenderer, "select", first_record_only):
+        with self._first_record_only():
             full, _ = await self._search(vrids, vrids, permitted=tuple(vrids))
             row = len("\n- Record ID: r-vr6 | Doc vr6")
             budget = len(full) - 2 * row - 5
@@ -830,28 +839,28 @@ class TestRecordsTheResultDoesNotShow:
         assert {"r-vr2", "r-vr3"} <= state["known_record_ids"]
 
     @pytest.mark.asyncio
-    async def test_a_list_that_cannot_close_the_gap_is_kept_whole(self, monkeypatch) -> None:
+    @pytest.mark.parametrize("targeted", [False, True])
+    async def test_a_list_that_cannot_close_the_gap_is_kept_whole(self, monkeypatch, targeted: bool) -> None:
         """One record alone is over the size: dropping rows would not make the
-        result fit, only lose names the generic cap would have delivered."""
-        from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
-
+        result fit, only lose names. The ids count as known only where no cap
+        cuts the result: the shared cap's middle cut may take the list, while
+        under TARGETED_RETRIEVAL the fit budget sits below that cap."""
         monkeypatch.setenv("UNSHOWN_MATCHES_LIST", "true")
-        select = KnowledgeRenderer.select
-
-        def first_record_only(renderer: KnowledgeRenderer, ranked: list, _max_chars: int) -> Selection:
-            chosen = select(renderer, ranked[:1], 10**6)
-            return Selection(ranked=chosen.ranked, omitted_records=len(ranked) - 1, chars=chosen.chars,
-                             record_id_shortener=chosen.record_id_shortener)
+        monkeypatch.setenv("TARGETED_RETRIEVAL", str(targeted).lower())
 
         vrids = ["vr1", "vr2", "vr3"]
-        with patch.object(KnowledgeRenderer, "select", first_record_only):
+        with self._first_record_only():
             full, _ = await self._search(vrids, vrids, permitted=tuple(vrids))
-            listed = full[full.index("\n\nAlso matched, not shown"):]
-            with patch(f"{self._SEARCH}.DEFAULT_MAX_RESULT_CHARS", len(full) - len(listed) - 10):
+            budget = len(full) - len(full[full.index("\n\nAlso matched, not shown"):]) - 10
+            over_budget = (
+                patch(f"{self._SEARCH}.search_max_chars", return_value=budget) if targeted
+                else patch(f"{self._SEARCH}.DEFAULT_MAX_RESULT_CHARS", budget)
+            )
+            with over_budget:
                 result, state = await self._search(vrids, vrids, permitted=tuple(vrids))
 
         assert result == full
-        assert {"r-vr2", "r-vr3"} <= state["known_record_ids"]
+        assert ({"r-vr2", "r-vr3"} <= state["known_record_ids"]) is targeted
 
     @pytest.mark.asyncio
     async def test_listed_ids_are_shortened_like_every_other_id(self, monkeypatch) -> None:
