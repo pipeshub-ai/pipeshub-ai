@@ -221,6 +221,7 @@ class GitHubExpected:
             inherit_permissions=True,
             preview_renderable=False,
             status=_issue_status(issue),
+            resolved_at=epoch_ms(issue.get("closed_at")),
             priority=_issue_priority(issue.get("issue_field_values")),
             type=item_type,
             labels=[_label_name(x) for x in (issue.get("labels") or [])],
@@ -281,6 +282,9 @@ class GitHubExpected:
             weburl=pr.get("html_url"),
             source_created_at=created_ms,
             source_updated_at=updated_ms,
+            # The connector stores both from the listing payload (#4295).
+            merged_at=epoch_ms(pr.get("merged_at")),
+            closed_at=epoch_ms(pr.get("closed_at")),
             inherit_permissions=True,
             preview_renderable=False,
             status=_pr_status(pr),
