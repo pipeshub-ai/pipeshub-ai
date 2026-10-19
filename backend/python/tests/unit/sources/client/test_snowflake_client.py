@@ -3,6 +3,7 @@
 import json
 import logging
 import sys
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -907,3 +908,60 @@ class TestSnowflakeSDKClientExecuteMany:
         c = self._make_connected(cursor)
         with pytest.raises(RuntimeError, match="Query execution failed"):
             c.execute_many("BAD SQL", [(1,)])
+
+
+class TestSnowflakeBuildFromServicesLogging:
+    """The decrypted connector config must never reach a log line, even at DEBUG."""
+
+    SENTINEL = "SENTINEL-SNOWFLAKE-7f3a"
+
+    @pytest.fixture
+    def captured(self) -> Iterator[tuple[logging.Logger, list[logging.LogRecord]]]:
+        records: list[logging.LogRecord] = []
+
+        class _ListHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        lg = logging.getLogger("test_snowflake_client.debug")
+        lg.setLevel(logging.DEBUG)
+        lg.propagate = False
+        handler = _ListHandler(level=logging.DEBUG)
+        lg.addHandler(handler)
+        yield lg, records
+        lg.removeHandler(handler)
+
+    @staticmethod
+    def _text(records: list[logging.LogRecord]) -> str:
+        return "\n".join(r.getMessage() for r in records)
+
+    @pytest.mark.asyncio
+    async def test_config_values_are_not_logged(self, captured, cs) -> None:
+        lg, records = captured
+        cs.get_config = AsyncMock(return_value={
+            "accountIdentifier": "acct",
+            "auth": {
+                "authType": "PAT",
+                "patToken": f"{self.SENTINEL}-pat",
+                "password": f"{self.SENTINEL}-password",
+                "privateKey": f"{self.SENTINEL}-key",
+            },
+            "credentials": {"access_token": f"{self.SENTINEL}-access"},
+        })
+        await SnowflakeClient.build_from_services(lg, cs, "inst-1")
+        text = self._text(records)
+        assert records, "expected the DEBUG lines to be emitted"
+        assert self.SENTINEL not in text
+
+    @pytest.mark.asyncio
+    async def test_validation_error_does_not_log_the_rejected_input(self, captured, cs) -> None:
+        lg, records = captured
+        cs.get_config = AsyncMock(return_value={
+            "accountIdentifier": "acct",
+            "auth": f"{self.SENTINEL}-not-a-dict",
+        })
+        with pytest.raises(ValueError, match="Invalid Snowflake"):
+            await SnowflakeClient.build_from_services(lg, cs, "inst-1")
+        text = self._text(records)
+        assert "auth" in text
+        assert self.SENTINEL not in text
