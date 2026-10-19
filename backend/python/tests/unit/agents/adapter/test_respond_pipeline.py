@@ -571,3 +571,48 @@ class TestCancelledPath:
 
         assert result["status"] == "stopped"
         assert "reasoning" in result
+
+
+class TestAssemblyFailureClassification:
+    """A crash inside `_run_success_path` is classified from the real
+    exception, not reported as `unknown`. Before this, every assembly
+    failure returned one fixed sentence, so a client reading `errorCode`
+    could not tell a rate limit from a content filter."""
+
+    async def test_assembly_failure_classifies_from_the_exception(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        async def _boom(*_args, **_kwargs) -> None:
+            raise RuntimeError("429 Too Many Requests")
+
+        finalizer._run_success_path = _boom
+
+        result = await finalizer.run(
+            agent_success=True, agent_error=None, agent_output="partial", event_sink=sink,
+        )
+
+        assert result["errorCode"] == "rate_limit"
+        assert result["answer"] == _USER_MESSAGES["rate_limit"]
+        assert result["answerMatchType"] == "Error"
+
+    async def test_assembly_failure_does_not_leak_the_exception_text(self) -> None:
+        """The classification reads the exception; the user must not see it."""
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        async def _boom(*_args, **_kwargs) -> None:
+            raise RuntimeError("postgres://user:hunter2@10.0.0.4/db unreachable")
+
+        finalizer._run_success_path = _boom
+
+        result = await finalizer.run(
+            agent_success=True, agent_error=None, agent_output="partial", event_sink=sink,
+        )
+
+        assert result["errorCode"] == "unknown"
+        assert result["answer"] == _USER_MESSAGES["unknown"]
+        assert "hunter2" not in result["answer"]
+        assert all("hunter2" not in str(e) for e in sink.events)
