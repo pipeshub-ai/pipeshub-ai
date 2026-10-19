@@ -1,7 +1,7 @@
 """Shared rate limiting and retry policy for connectors.
 
 Deliberately transport-agnostic: only ~2 of the connectors that rate limit today
-route through ``HTTPClient``/httpx — the rest talk to vendor SDKs (aioboto3,
+route through ``HTTPClient``/httpx — the rest talk to vendor SDKs (aiobotocore,
 azure-storage, msgraph/kiota, dropbox, asyncpg) that an httpx transport cannot
 see. HTTP clients consume this via
 ``app.sources.client.http.http_resilient_transport``; SDK call sites use

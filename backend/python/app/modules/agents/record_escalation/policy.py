@@ -225,7 +225,22 @@ FULL_READ_SKIP = (
 )
 
 
-def policy_text(tool_ref: str, *, read_in_full: bool = False) -> str:
+# TARGETED_RETRIEVAL: search shows a few passages per record, so a detail the
+# question names is read from the record before it is answered.
+def focused_read_policy(tool_ref: str) -> str:
+    return (
+        "\n\nReading the right part: search shows only a few passages of each "
+        "record. When the question asks for a specific detail (an exact value, "
+        "version, tag, name, field, setting, rule, status or date) and the "
+        "passages you hold point to the record but do not state that detail word "
+        f"for word, call `{tool_ref}` with that record_id and a `query` naming "
+        "the detail before answering. Prefer that to another broad search once "
+        "you know which record holds the answer, and never fill in a detail the "
+        "passages only imply."
+    )
+
+
+def policy_text(tool_ref: str, *, read_in_full: bool = False, focused_reads: bool = False) -> str:
     """
     Return the full-record fetch policy injected into system prompts.
 
@@ -245,6 +260,10 @@ def policy_text(tool_ref: str, *, read_in_full: bool = False) -> str:
     skip case to a record already held in full: an answer resting on a fact
     seen in one block used an outdated value or half a list, which the rest
     of the record would have revised or completed.
+
+    ``focused_reads`` (``TARGETED_RETRIEVAL``) adds when to read the part of a
+    record that holds a specific detail. Ignored under ``read_in_full``, whose
+    rule already reads those records whole.
     """
     skip_case = (
         f"{FULL_READ_SKIP}."
@@ -275,4 +294,5 @@ def policy_text(tool_ref: str, *, read_in_full: bool = False) -> str:
         f"each record you hold ('you have 4 of 87 blocks'), which tells you "
         f"whether reading further would add anything; use it when present. "
         f"Pass the exact Record ID value(s) shown — never invent IDs."
+        + (focused_read_policy(tool_ref) if focused_reads and not read_in_full else "")
     )

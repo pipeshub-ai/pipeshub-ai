@@ -3085,7 +3085,7 @@ class TestApplyFileEventBatchDirectoryRename:
         on_records_moved instead of deleting the old row and creating a
         new one.
         """
-        owner = await self._setup(folder_connector, tmp_path)
+        await self._setup(folder_connector, tmp_path)
         folder_connector.config_service.get_config = AsyncMock(
             return_value={"sync": {"customValues": {SYNC_ROOT_PATH_KEY: str(tmp_path / "desktop-only")}}}
         )
@@ -3112,7 +3112,8 @@ class TestApplyFileEventBatchDirectoryRename:
         assert folder_record.local_fs_relative_path == "docs"
         assert folder_record.is_file is False
         assert folder_record.mime_type == MimeTypes.FOLDER.value
-        assert perms[0].email == owner.email
+        assert folder_record.inherit_permissions is True
+        assert perms == []
         folder_connector.data_entities_processor.on_new_records.assert_not_awaited()
         folder_connector._delete_external_ids.assert_not_awaited()
 

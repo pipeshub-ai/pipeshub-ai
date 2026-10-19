@@ -841,7 +841,7 @@ class TestFetchPermissionsDeep:
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
         perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
-        assert is_fallback is False
+        assert is_fallback is True, "a failed read keeps the stored grants"
 
     async def test_generic_exception_on_drive_raises(self, connector):
         """Generic exception on drive raises."""

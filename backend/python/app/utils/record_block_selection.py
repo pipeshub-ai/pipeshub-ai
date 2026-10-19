@@ -115,10 +115,12 @@ def estimate_render_chars(record: dict[str, Any], start_block: int = 0) -> int:
 def estimate_frame_chars(record: dict[str, Any], *, selection: bool = False) -> int:
     """What a record's render spends outside its blocks: the header carrying
     its metadata, and room held for the hint and closing tag."""
-    metadata = record.get("context_metadata")
+    # Imported here: chat_helpers imports this module.
+    from app.utils.chat_helpers import record_header_metadata
+
     return (
         _RECORD_FRAME_OVERHEAD
-        + (len(metadata) if isinstance(metadata, str) else 0)
+        + len(record_header_metadata(record))
         + record_trailer_reserve(record, selection=selection)
     )
 

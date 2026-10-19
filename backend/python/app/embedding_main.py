@@ -561,9 +561,16 @@ class ModelManager:
             status.updated_at = time.time()
 
             def _load() -> Any:
+                import torch
                 from sentence_transformers import SentenceTransformer
 
-                load_kwargs: dict[str, Any] = {"device": self._device}
+                # transformers 5 loads weights at the dtype in the model's config, so a
+                # repo published in fp16/bf16 would no longer load in fp32 and its vectors
+                # would drift from the ones already stored.
+                load_kwargs: dict[str, Any] = {
+                    "device": self._device,
+                    "model_kwargs": {"dtype": torch.float32},
+                }
                 if trust_remote_code:
                     load_kwargs["trust_remote_code"] = True
 

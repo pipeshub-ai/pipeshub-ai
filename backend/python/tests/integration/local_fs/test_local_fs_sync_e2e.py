@@ -767,28 +767,42 @@ class TestRunSync:
         assert guessable["mimeType"] == "text/plain"
         assert opaque["mimeType"] == MimeTypes.UNKNOWN.value
 
-    async def test_records_carry_an_owner_permission_edge(
-        self, connector: LocalFsConnector, graph_store
+    async def test_records_reach_the_owner_through_the_app(
+        self, connector: LocalFsConnector, processor, graph_store
     ) -> None:
-        # Without this edge the file is indexed but invisible to the only
-        # person who can see it, which no record-count assertion would catch.
-        await self._run(connector, [(_events_for("nested/a.txt"), False)])
+        # Records carry no grant of their own: each inherits up to the app, and
+        # the owner is the app's only user. A broken link anywhere in that chain
+        # leaves the file indexed but invisible to the only person who can see it.
+        linked = AsyncMock(wraps=processor.on_new_app_users)
+        with patch.object(processor, "on_new_app_users", linked):
+            await self._run(connector, [(_events_for("nested/a.txt"), False)])
 
-        perm_edges = graph_store.edges.get(CollectionNames.PERMISSION.value, [])
-        owner_ref = f"{CollectionNames.USERS.value}/{OWNER.id}"
-        # The synthesized parent folder needs one too, or the tree it hangs in
+        [app_users] = linked.await_args.args
+        assert [(u.source_user_id, u.email) for u in app_users] == [(OWNER.id, OWNER.email)]
+
+        inherits = {
+            edge["_from"]: edge["_to"]
+            for edge in graph_store.edges.get(CollectionNames.INHERIT_PERMISSIONS.value, [])
+        }
+        granted_to = {edge.get("_to") for edge in graph_store.edges.get(CollectionNames.PERMISSION.value, [])}
+        app_ref = f"{CollectionNames.APPS.value}/{CONNECTOR_ID}"
+        # The synthesized parent folder is part of the chain, or the tree it hangs in
         # is unreachable.
         for rel_path in ("nested/a.txt", "nested"):
             doc = _record_for(connector, graph_store, rel_path)
             assert doc is not None, f"{rel_path} was not indexed"
-            record_ref = f"{CollectionNames.RECORDS.value}/{doc['_key']}"
-            granted = [
-                edge
-                for edge in perm_edges
-                if edge.get("_to") == record_ref and edge.get("_from") == owner_ref
-            ]
-            assert granted, f"{rel_path} has no owner permission edge"
-            assert granted[0]["role"] == "OWNER"
+            node = f"{CollectionNames.RECORDS.value}/{doc['_key']}"
+            assert node not in granted_to, f"{rel_path} carries a grant of its own"
+            if rel_path == "nested/a.txt":
+                folder = _record_for(connector, graph_store, "nested")
+                assert folder is not None, "nested was not indexed"
+                assert inherits.get(node) == f"{CollectionNames.RECORDS.value}/{folder['_key']}", (
+                    f"{rel_path} does not inherit from its folder"
+                )
+            chain = [node]
+            while chain[-1] in inherits and len(chain) < 10:
+                chain.append(inherits[chain[-1]])
+            assert chain[-1] == app_ref, f"{rel_path} does not inherit up to the app: {chain}"
 
     async def test_owner_device_comes_from_the_app_document(
         self, connector: LocalFsConnector, graph_store

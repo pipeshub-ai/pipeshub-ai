@@ -288,6 +288,18 @@ def test_the_prompt_tells_a_step_still_ahead_from_a_condition_that_takes_the_cla
     assert "never makes a claim that the step has already happened true" in prompt
 
 
+def test_the_prompt_says_the_receipt_duty_is_not_a_conflict() -> None:
+    prompt = " ".join(aj.SYSTEM_PROMPT.split())
+    # f2 failed on every persona on 2026-10-17: "…without manager approval, as long as you
+    # submit the receipt within 30 days" was read as a condition on the approval.
+    assert "is \"supported\" and does not conflict, so its sentence is not listed in conflicting_sentence_ids" in prompt
+    assert "submitting a receipt does not change whether a manager has to approve" in prompt
+    # The rule stays narrow: takebacks the prompt names are still conflicts.
+    assert "A requirement about something the claim doesn't speak of" not in prompt
+    assert 'but only if the board reverses its cancellation" does conflict' in prompt
+    assert 'sentence 1 also conflicting' in prompt
+
+
 def test_a_must_state_claim_with_a_conflicting_sentence_is_contradicted_whatever_the_verdict() -> None:
     judge, _ = judge_with(reply_with_conflicts("supported", [2], [1]))
     claim = judge.judge(CONTRADICTS_ITSELF, [NO_APPROVAL]).claims[0]

@@ -1,5 +1,5 @@
-import { z } from 'zod'
-import { OAuthGrantType } from '../schema/oauth.app.schema'
+import { z } from 'zod';
+import { OAuthGrantType } from '../schema/oauth.app.schema';
 
 // OAuth Provider Validators
 
@@ -7,13 +7,13 @@ import { OAuthGrantType } from '../schema/oauth.app.schema'
  * RFC 7636 PKCE code_verifier validation
  * Must be 43-128 characters, only [A-Za-z0-9-._~] allowed
  */
-const codeVerifierPattern = /^[A-Za-z0-9\-._~]{43,128}$/
+const codeVerifierPattern = /^[A-Za-z0-9\-._~]{43,128}$/;
 
 /**
  * RFC 7636 PKCE code_challenge validation (base64url encoded)
  * Must be 43-128 characters, only [A-Za-z0-9-_] allowed (no padding)
  */
-const codeChallengePattern = /^[A-Za-z0-9\-_]{43,128}$/
+const codeChallengePattern = /^[A-Za-z0-9\-_]{43,128}$/;
 
 export const authorizeQuerySchema = z.object({
   query: z.object({
@@ -23,12 +23,15 @@ export const authorizeQuerySchema = z.object({
     scope: z.string().min(1),
     state: z.string().min(1),
     // RFC 7636: code_challenge must be base64url encoded (no padding)
-    code_challenge: z.string().regex(codeChallengePattern, 'Invalid code_challenge format').optional(),
+    code_challenge: z
+      .string()
+      .regex(codeChallengePattern, 'Invalid code_challenge format')
+      .optional(),
     // RFC 9700: only S256; `plain` exposes the verifier on the wire
     code_challenge_method: z.enum(['S256']).optional(),
     nonce: z.string().optional(),
   }),
-})
+});
 
 export const authorizeConsentSchema = z.object({
   body: z.object({
@@ -38,11 +41,14 @@ export const authorizeConsentSchema = z.object({
     state: z.string().min(1),
     consent: z.enum(['granted', 'denied']),
     // RFC 7636: code_challenge must be base64url encoded (no padding)
-    code_challenge: z.string().regex(codeChallengePattern, 'Invalid code_challenge format').optional(),
+    code_challenge: z
+      .string()
+      .regex(codeChallengePattern, 'Invalid code_challenge format')
+      .optional(),
     // RFC 9700: only S256; `plain` exposes the verifier on the wire
     code_challenge_method: z.enum(['S256']).optional(),
   }),
-})
+});
 
 export const tokenSchema = z.object({
   body: z.object({
@@ -51,6 +57,7 @@ export const tokenSchema = z.object({
       OAuthGrantType.CLIENT_CREDENTIALS,
       OAuthGrantType.REFRESH_TOKEN,
       OAuthGrantType.DEVICE_CODE,
+      OAuthGrantType.TOKEN_EXCHANGE,
     ]),
     code: z.string().optional(),
     redirect_uri: z.string().url().optional(),
@@ -60,10 +67,19 @@ export const tokenSchema = z.object({
     refresh_token: z.string().optional(),
     scope: z.string().optional(),
     // RFC 7636: code_verifier must match the pattern [A-Za-z0-9-._~]{43,128}
-    code_verifier: z.string().regex(codeVerifierPattern, 'Invalid code_verifier format').optional(),
+    code_verifier: z
+      .string()
+      .regex(codeVerifierPattern, 'Invalid code_verifier format')
+      .optional(),
     device_code: z.string().min(1).optional(),
+    // RFC 8693 token exchange. Bounded here so an oversized body is refused
+    // before any of it is parsed as a token; `requested_subject` holds a user
+    // id or an email address, so it is capped at the schema's email length.
+    subject_token: z.string().min(1).max(8192).optional(),
+    subject_token_type: z.string().max(128).optional(),
+    requested_subject: z.string().min(1).max(320).optional(),
   }),
-})
+});
 
 export const dcrRequestSchema = z.object({
   body: z.object({
@@ -83,28 +99,28 @@ export const dcrRequestSchema = z.object({
     software_id: z.string().optional(),
     software_version: z.string().optional(),
   }),
-})
+});
 
 export const deviceAuthorizationSchema = z.object({
   body: z.object({
     client_id: z.string().min(1),
     scope: z.string().optional(),
   }),
-})
+});
 
 export const deviceUserCodeSchema = z.object({
   body: z.object({
     user_code: z.string().min(1).max(32),
     consent: z.enum(['granted', 'denied']).optional(),
   }),
-})
+});
 
 export const deviceConsentSchema = z.object({
   body: z.object({
     user_code: z.string().min(1).max(32),
     consent: z.enum(['granted', 'denied']),
   }),
-})
+});
 
 export const revokeSchema = z.object({
   body: z.object({
@@ -113,7 +129,7 @@ export const revokeSchema = z.object({
     client_id: z.string().min(1),
     client_secret: z.string().optional(),
   }),
-})
+});
 
 export const introspectSchema = z.object({
   body: z.object({
@@ -122,17 +138,17 @@ export const introspectSchema = z.object({
     client_id: z.string().min(1),
     client_secret: z.string().optional(),
   }),
-})
+});
 
 // Developer Apps Validators
 
-export const mongoIdRegex = /^[a-fA-F0-9]{24}$/
+export const mongoIdRegex = /^[a-fA-F0-9]{24}$/;
 
 export const appIdParamsSchema = z.object({
   params: z.object({
     appId: z.string().regex(mongoIdRegex, 'Invalid App ID'),
   }),
-})
+});
 
 /**
  * `serviceAccountId: null` puts the app back to acting as its creator, which
@@ -148,66 +164,92 @@ export const setAppTokenIdentitySchema = z.object({
       .regex(mongoIdRegex, 'Invalid service account ID')
       .nullable(),
   }),
-})
+});
 
 export const createAppSchema = z.object({
-  body: z.object({
-    name: z.string().min(1).max(100),
-    description: z.string().max(500).optional(),
-    redirectUris: z.array(z.string().url()).max(10).optional(),
-    allowedGrantTypes: z
-      .array(
-        z.enum([OAuthGrantType.AUTHORIZATION_CODE, OAuthGrantType.CLIENT_CREDENTIALS, OAuthGrantType.REFRESH_TOKEN]),
-      )
-      .optional(),
-    allowedScopes: z.array(z.string()).min(1),
-    homepageUrl: z.string().url().optional(),
-    privacyPolicyUrl: z.string().url().optional(),
-    termsOfServiceUrl: z.string().url().optional(),
-    isConfidential: z.boolean().optional(),
-    accessTokenLifetime: z.number().int().min(300).max(86400).optional(),
-    refreshTokenLifetime: z.number().int().min(3600).max(31536000).optional(),
-  }).refine((data) => {
-    const grantTypes = data.allowedGrantTypes || [OAuthGrantType.AUTHORIZATION_CODE, OAuthGrantType.REFRESH_TOKEN];
-    if (grantTypes.includes(OAuthGrantType.AUTHORIZATION_CODE)) {
-      return data.redirectUris && data.redirectUris.length >= 1;
-    }
-    return true;
-  }, {
-    message: 'At least one redirect URI is required when authorization_code grant type is enabled',
-    path: ['redirectUris'],
-  }),
-})
+  body: z
+    .object({
+      name: z.string().min(1).max(100),
+      description: z.string().max(500).optional(),
+      redirectUris: z.array(z.string().url()).max(10).optional(),
+      allowedGrantTypes: z
+        .array(
+          z.enum([
+            OAuthGrantType.AUTHORIZATION_CODE,
+            OAuthGrantType.CLIENT_CREDENTIALS,
+            OAuthGrantType.REFRESH_TOKEN,
+          ]),
+        )
+        .optional(),
+      allowedScopes: z.array(z.string()).min(1),
+      homepageUrl: z.string().url().optional(),
+      privacyPolicyUrl: z.string().url().optional(),
+      termsOfServiceUrl: z.string().url().optional(),
+      isConfidential: z.boolean().optional(),
+      accessTokenLifetime: z.number().int().min(300).max(86400).optional(),
+      refreshTokenLifetime: z.number().int().min(3600).max(31536000).optional(),
+    })
+    .refine(
+      (data) => {
+        const grantTypes = data.allowedGrantTypes || [
+          OAuthGrantType.AUTHORIZATION_CODE,
+          OAuthGrantType.REFRESH_TOKEN,
+        ];
+        if (grantTypes.includes(OAuthGrantType.AUTHORIZATION_CODE)) {
+          return data.redirectUris && data.redirectUris.length >= 1;
+        }
+        return true;
+      },
+      {
+        message:
+          'At least one redirect URI is required when authorization_code grant type is enabled',
+        path: ['redirectUris'],
+      },
+    ),
+});
 
 export const updateAppSchema = z.object({
   params: z.object({
     appId: z.string().regex(mongoIdRegex, 'Invalid App ID'),
   }),
-  body: z.object({
-    name: z.string().min(1).max(100).optional(),
-    description: z.string().max(500).optional(),
-    redirectUris: z.array(z.string().url()).max(10).optional(),
-    allowedGrantTypes: z
-      .array(
-        z.enum([OAuthGrantType.AUTHORIZATION_CODE, OAuthGrantType.CLIENT_CREDENTIALS, OAuthGrantType.REFRESH_TOKEN]),
-      )
-      .optional(),
-    allowedScopes: z.array(z.string()).min(1).optional(),
-    homepageUrl: z.string().url().optional().nullable(),
-    privacyPolicyUrl: z.string().url().optional().nullable(),
-    termsOfServiceUrl: z.string().url().optional().nullable(),
-    accessTokenLifetime: z.number().int().min(300).max(86400).optional(),
-    refreshTokenLifetime: z.number().int().min(3600).max(31536000).optional(),
-  }).refine((data) => {
-    if (data.allowedGrantTypes?.includes(OAuthGrantType.AUTHORIZATION_CODE) && data.redirectUris !== undefined) {
-      return data.redirectUris.length >= 1;
-    }
-    return true;
-  }, {
-    message: 'At least one redirect URI is required when authorization_code grant type is enabled',
-    path: ['redirectUris'],
-  }),
-})
+  body: z
+    .object({
+      name: z.string().min(1).max(100).optional(),
+      description: z.string().max(500).optional(),
+      redirectUris: z.array(z.string().url()).max(10).optional(),
+      allowedGrantTypes: z
+        .array(
+          z.enum([
+            OAuthGrantType.AUTHORIZATION_CODE,
+            OAuthGrantType.CLIENT_CREDENTIALS,
+            OAuthGrantType.REFRESH_TOKEN,
+          ]),
+        )
+        .optional(),
+      allowedScopes: z.array(z.string()).min(1).optional(),
+      homepageUrl: z.string().url().optional().nullable(),
+      privacyPolicyUrl: z.string().url().optional().nullable(),
+      termsOfServiceUrl: z.string().url().optional().nullable(),
+      accessTokenLifetime: z.number().int().min(300).max(86400).optional(),
+      refreshTokenLifetime: z.number().int().min(3600).max(31536000).optional(),
+    })
+    .refine(
+      (data) => {
+        if (
+          data.allowedGrantTypes?.includes(OAuthGrantType.AUTHORIZATION_CODE) &&
+          data.redirectUris !== undefined
+        ) {
+          return data.redirectUris.length >= 1;
+        }
+        return true;
+      },
+      {
+        message:
+          'At least one redirect URI is required when authorization_code grant type is enabled',
+        path: ['redirectUris'],
+      },
+    ),
+});
 
 export const listAppsQuerySchema = z.object({
   query: z.object({
@@ -226,4 +268,4 @@ export const listAppsQuerySchema = z.object({
     status: z.enum(['active', 'suspended', 'revoked']).optional(),
     search: z.string().optional(),
   }),
-})
+});

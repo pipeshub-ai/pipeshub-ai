@@ -3898,6 +3898,12 @@
           "label": "提取服务",
           "description": "基于 LLM 的文档分类和元数据提取"
         }
+      },
+      "vectorDbMemory": {
+        "title": "搜索索引超出了向量数据库的内存",
+        "message": "搜索索引需要约 {{needed}} GB 内存才能保持快速；向量数据库只有约 {{available}} GB，因此搜索会从磁盘读取，多个搜索同时运行时会更慢。",
+        "messageHost": "搜索索引需要约 {{needed}} GB 内存才能保持快速；运行向量数据库的服务器总共只有约 {{available}} GB，因此搜索会从磁盘读取，多个搜索同时运行时会更慢。",
+        "guide": "向量数据库容量规划指南"
       }
     },
     "tenants": {
@@ -4157,7 +4163,43 @@
       "disableTitle": "停用此服务账号？",
       "disableDescription": "{{name}} 会立即停止工作——包括它已持有的所有令牌，而不只是等到下次登录。在您重新启用之前，使用这些令牌的一切都会持续失败。",
       "disableConfirm": "停用",
-      "memberBadge": "服务账户"
+      "memberBadge": "服务账户",
+      "manageDelegations": "可代表哪些人",
+      "delegations": {
+        "title": "代表他人执行操作",
+        "explainer": "可以允许此服务账号代表指定的人员执行操作。此时它读取的内容与该人员完全一致，所获得的令牌有效期为五分钟。此处不能指定管理员。",
+        "unavailableTitle": "代表某个人行事属于企业版功能",
+        "unavailableBody": "允许此服务账户以指定同事的身份行事 —— 允许名单、以该人名义签发的五分钟令牌，以及每次尝试的记录 —— 属于企业版，本版本不包含该功能。",
+        "unavailableAvailableHere": "本版本包含：服务账户本身、它对您授予的知识库的自有访问权限，以及您可以签发和吠回的令牌。这足以满足任何使用自身权限而非他人权限的集成。",
+        "addTitle": "允许代表某人",
+        "subjectLabel": "人员",
+        "subjectPlaceholder": "name@example.com",
+        "subjectHelp": "输入此服务账号可代表的人员的电子邮件地址。",
+        "reasonLabel": "原因",
+        "reasonPlaceholder": "为什么需要",
+        "reasonHelp": "将显示给日后审核此列表的人。",
+        "addConfirm": "允许",
+        "listTitle": "可代表",
+        "none": "此服务账号不能代表任何人，只能以自己的权限读取。",
+        "loading": "加载中…",
+        "inactive": "不再可用",
+        "revoke": "移除",
+        "revokeTitle": "移除此权限？",
+        "revokeDescription": "此服务账号将不能再代表 {{subject}}。",
+        "revokeSuccessTitle": "权限已移除",
+        "revokeErrorTitle": "无法移除权限",
+        "grantSuccessTitle": "权限已授予",
+        "grantErrorTitle": "无法授予权限",
+        "loadErrorTitle": "无法加载委托设置",
+        "logTitle": "近期活动",
+        "logHelp": "此列表的每次变更，以及此服务账号每次请求代表他人的记录，包括被拒绝的请求。",
+        "logNone": "尚无记录。",
+        "outcomeIssued": "已允许",
+        "outcomeRefused": "已拒绝",
+        "outcomeGranted": "已添加权限",
+        "outcomeRevoked": "已移除权限",
+        "byAdmin": "由 {{admin}}"
+      }
     }
   },
   "filePreview": {

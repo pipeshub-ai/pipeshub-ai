@@ -3910,6 +3910,12 @@
           "label": "Extraction Service",
           "description": "LLM-based document classification and metadata extraction"
         }
+      },
+      "vectorDbMemory": {
+        "title": "Search index doesn't fit in the vector database's memory",
+        "message": "The search index needs about {{needed}} GB of memory to stay fast; the vector database has about {{available}} GB, so searches read from disk and slow down further when several run at once.",
+        "messageHost": "The search index needs about {{needed}} GB of memory to stay fast; the server running the vector database has only about {{available}} GB in total, so searches read from disk and slow down further when several run at once.",
+        "guide": "Vector database sizing guide"
       }
     },
     "tenants": {
@@ -4169,7 +4175,43 @@
       "disableTitle": "Disable this service account?",
       "disableDescription": "{{name}} will stop working immediately, including every token it already holds. Any integration using one of those tokens will fail until you enable the account again.",
       "disableConfirm": "Disable",
-      "memberBadge": "Service account"
+      "memberBadge": "Service account",
+      "manageDelegations": "Who it can act as",
+      "delegations": {
+        "title": "Acting on behalf of someone",
+        "explainer": "This service account can be allowed to act as named people. When it does, it reads exactly what that person can read, and the token it receives lasts five minutes. Administrators cannot be named here.",
+        "unavailableTitle": "Acting on behalf of a person is an Enterprise capability",
+        "unavailableBody": "Letting this service account act as a named colleague — the allow-list, the five-minute token issued in that person’s name, and the record of every attempt — is part of the Enterprise edition and is not built into this one.",
+        "unavailableAvailableHere": "What this edition does include: the service account itself, its own access to the knowledge bases you grant it, and tokens you can issue and revoke. That covers any integration that works with its own permissions rather than someone else’s.",
+        "addTitle": "Allow it to act as someone",
+        "subjectLabel": "Person",
+        "subjectPlaceholder": "name@example.com",
+        "subjectHelp": "Enter the email address of the person this service account may act as.",
+        "reasonLabel": "Reason",
+        "reasonPlaceholder": "Why this is needed",
+        "reasonHelp": "Shown to whoever reviews this list later.",
+        "addConfirm": "Allow",
+        "listTitle": "Allowed to act as",
+        "none": "This service account cannot act as anyone. It reads only with its own permissions.",
+        "loading": "Loading…",
+        "inactive": "No longer available",
+        "revoke": "Remove",
+        "revokeTitle": "Remove this permission?",
+        "revokeDescription": "This service account will no longer be able to act as {{subject}}.",
+        "revokeSuccessTitle": "Permission removed",
+        "revokeErrorTitle": "Could not remove the permission",
+        "grantSuccessTitle": "Permission granted",
+        "grantErrorTitle": "Could not grant the permission",
+        "loadErrorTitle": "Could not load delegation settings",
+        "logTitle": "Recent activity",
+        "logHelp": "Every change to this list, and every time the service account asked to act as someone — including the times it was refused.",
+        "logNone": "Nothing recorded yet.",
+        "outcomeIssued": "Allowed",
+        "outcomeRefused": "Refused",
+        "outcomeGranted": "Permission added",
+        "outcomeRevoked": "Permission removed",
+        "byAdmin": "by {{admin}}"
+      }
     }
   },
   "filePreview": {

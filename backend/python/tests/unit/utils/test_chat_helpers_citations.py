@@ -570,6 +570,33 @@ class TestTableHitsThroughTheContextPipeline:
         assert [u["content"] for u in expanded[len(units):]] == ["Table 3: fees by plan", "Fees exclude VAT"]
 
 
+class TestTableCaptionsInSearchResults:
+    """Both search-result table paths carry the caption stored in
+    ``table_metadata``: a small table returned whole, and the rows of a large one."""
+
+    @staticmethod
+    def _table(num_cells: int | None) -> dict:
+        rows = [{"index": i, "type": "table_row", "parent_index": 0,
+                 "data": {"row_natural_language_text": f"row {i}"}} for i in range(3)]
+        table = {"index": 0, "type": "table", "data": {"table_summary": "Fees by plan"},
+                 "children": {"block_ranges": [{"start": 0, "end": 2}]},
+                 "table_metadata": {"captions": ["Fees in 2024"]}}
+        if num_cells is not None:
+            table["table_metadata"]["num_of_cells"] = num_cells
+        return blob("v1", rows, [table])
+
+    @pytest.mark.parametrize(("num_cells", "hits"), [
+        (6, [hit("v1", 0, group=True)]),
+        (None, [hit("v1", 1)]),
+    ], ids=["whole-table", "rows"])
+    async def test_the_table_summary_is_led_by_its_caption(self, num_cells: int | None, hits: list) -> None:
+        store = InMemoryBlobStore({"v1": self._table(num_cells)})
+        units, _ = await flatten(store, hits, {"v1": graph_record("r1")})
+
+        tables = [u for u in units if u.get("block_type") == "table"]
+        assert [u["content"][0] for u in tables] == ["Fees in 2024\nFees by plan"]
+
+
 class TestSearchResultFragmentImagesAreSearchHits:
     """An image inside a table row of a search result counts against the
     share of the cap search may use, like any other search-hit image."""

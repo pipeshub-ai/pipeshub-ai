@@ -359,18 +359,18 @@ class TestProcessGmailMessage:
         assert result is not None
         assert "OTHERS" in result.record.external_record_group_id
 
-    async def test_process_message_owner_permission_for_sender(self, connector):
+    async def test_sent_message_inherits_instead_of_owner_grant(self, connector):
         msg = _make_gmail_message(from_email="user@example.com")
         result = await connector._process_gmail_message("user@example.com", msg, "thread-1", None)
         assert result is not None
-        perms = result.new_permissions
-        assert any(p.type == PermissionType.OWNER for p in perms)
+        assert result.new_permissions == []
+        assert result.record.inherit_permissions is True
 
-    async def test_process_message_read_permission_for_recipient(self, connector):
+    async def test_received_message_inherits_instead_of_read_grant(self, connector):
         msg = _make_gmail_message(from_email="other@example.com")
         result = await connector._process_gmail_message("user@example.com", msg, "thread-1", None)
-        perms = result.new_permissions
-        assert any(p.type == PermissionType.READ for p in perms)
+        assert result.new_permissions == []
+        assert result.record.inherit_permissions is True
 
     async def test_process_message_with_invalid_internal_date(self, connector):
         msg = _make_gmail_message(internal_date="invalid")
@@ -420,8 +420,10 @@ class TestExtractAttachmentInfos:
 
     def test_drive_attachment(self, connector):
         msg = _make_gmail_message(has_drive_attachment=True)
-        infos = connector._extract_attachment_infos(msg)
-        assert any(att["isDriveFile"] is True for att in infos)
+        infos = connector._extract_attachment_infos(msg, "user@example.com", google_user_id="g-1")
+        drive_infos = [att for att in infos if att["isDriveFile"] is True]
+        assert len(drive_infos) == 1
+        assert drive_infos[0]["stableAttachmentId"].startswith("gdrive:g-1:")
 
     def test_drive_file_in_body_content(self, connector):
         html = '<a href="https://drive.google.com/file/d/ABCDEF123/view?usp=drive_web">link</a>'
@@ -429,8 +431,12 @@ class TestExtractAttachmentInfos:
         # The body has text/plain as mimeType, need text/html for extraction
         msg["payload"]["mimeType"] = "text/html"
         msg["payload"]["body"]["data"] = base64.urlsafe_b64encode(html.encode()).decode()
-        infos = connector._extract_attachment_infos(msg)
-        assert any(att.get("driveFileId") == "ABCDEF123" for att in infos)
+        infos = connector._extract_attachment_infos(msg, "user@example.com", google_user_id="g-1")
+        assert any(
+            att.get("driveFileId") == "ABCDEF123"
+            and att["stableAttachmentId"] == "gdrive:g-1:ABCDEF123"
+            for att in infos
+        )
 
     def test_no_parts(self, connector):
         msg = {"id": "msg-1", "payload": {"headers": [], "parts": []}}
@@ -809,10 +815,19 @@ class TestSyncUserGroups:
 
 class TestSyncRecordGroups:
     async def test_creates_inbox_sent_others(self, connector):
-        users = [_make_app_user()]
-        await connector._sync_record_groups(users)
-        # Called 3 times: INBOX, SENT, OTHERS
-        assert connector.data_entities_processor.on_new_record_groups.call_count == 3
+        user = _make_app_user()
+        await connector._sync_record_groups([user])
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        (groups,) = connector.data_entities_processor.on_new_record_groups.await_args.args
+        mailbox_id = f"mailbox:{user.email}"
+        assert [(g.external_group_id, g.parent_external_group_id) for g, _ in groups] == [
+            (mailbox_id, None),
+            (f"{user.email}:INBOX", mailbox_id),
+            (f"{user.email}:SENT", mailbox_id),
+            (f"{user.email}:OTHERS", mailbox_id),
+        ]
+        assert [(p.email, p.type) for p in groups[0][1]] == [(user.email, PermissionType.OWNER)]
+        assert all(perms == [] and g.inherit_permissions for g, perms in groups[1:])
 
     async def test_no_users(self, connector):
         await connector._sync_record_groups([])

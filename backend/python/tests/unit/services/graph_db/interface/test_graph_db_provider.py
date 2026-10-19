@@ -806,14 +806,14 @@ class TestRecordLinkDefaults:
     @pytest.mark.asyncio
     async def test_a_move_counts_only_the_inherit_edges_it_removed(self) -> None:
         instance = _make_concrete_class()()
-        instance.batch_delete_edges.side_effect = [1, 1, 1]
+        instance.batch_delete_edges.side_effect = [1, 1, 1, 1]
 
         removed = await instance.link_record_to_group(
             "r1", "new", inherit=False, leaving_group_id="old", transaction="tx"
         )
 
         assert [call.args[1] for call in instance.batch_delete_edges.await_args_list] == [
-            "belongsTo", "inheritPermissions", "inheritPermissions"
+            "belongsTo", "inheritPermissions", "nodeRelations", "inheritPermissions"
         ]
         assert removed == 2
 

@@ -58,6 +58,10 @@ from app.modules.agents.record_escalation.policy import (
     FULL_READ_SKIP,
     ONE_BLOCK_IS_NOT_ENOUGH,
 )
+from app.modules.retrieval.context.targeted import (
+    focused_read_chars,
+    targeted_retrieval_enabled,
+)
 from app.utils.render_budget import fetch_size_by_chars_enabled
 
 # ---------------------------------------------------------------------------
@@ -120,6 +124,27 @@ _SKIP_CASE = (
     "or assignee.)"
 )
 _FULL_READ_SKIP_CASE = f"(Skip only when {FULL_READ_SKIP}. {ONE_BLOCK_IS_NOT_ENOUGH})"
+
+# TARGETED_RETRIEVAL: the fetch reads a part of a record when given a query.
+def _focused_read_description() -> str:
+    return (
+        "\nTo read only the part you need, pass `query` naming it (a value, "
+        "version, tag, name, field, setting, rule, status or date the search "
+        "passages did not show): each record too long to read whole then shows "
+        f"its blocks most relevant to that query, about {focused_read_chars():,} "
+        "characters per record, instead of the whole record. Use it before "
+        "answering a specific detail you have not seen stated, and instead of "
+        "another broad search once you know which record holds the answer."
+    )
+
+
+_QUERY_DESCRIPTION = (
+    "Optional. The detail you need from these records, in a few words (e.g. "
+    "'docker image tag', 'retry limit setting'). Reads the most "
+    "relevant part of each record instead of the whole record. Omit it to read "
+    "records in full."
+)
+
 
 _MAX_BLOCKS_DESCRIPTION = (
     "Maximum number of blocks to return per record. Leave unset to use the "
@@ -188,6 +213,9 @@ class _FetchFullRecordTool(Tool):
     """
 
     _ACCEPTED_ARGS = ("record_ids", "reason", "start_block", "max_blocks")
+    # Accepted only while TARGETED_RETRIEVAL is on, so the tool reads the same
+    # as before when it is off.
+    _FOCUSED_ARGS = ("query",)
 
     def __init__(self, collector: CitationCollector, context: AgentContext) -> None:
         self._collector = collector
@@ -196,6 +224,14 @@ class _FetchFullRecordTool(Tool):
     @property
     def name(self) -> str:
         return _FETCH_FULL_RECORD_TOOL_NAME
+
+    def _focused_reads(self) -> bool:
+        """Whether this request's fetch takes a `query`: TARGETED_RETRIEVAL on,
+        and not under THOROUGH_RETRIEVAL's full-read policy, which reads the
+        records an answer rests on whole."""
+        return targeted_retrieval_enabled() and not self._context.tool_state.get(
+            READ_RECORDS_IN_FULL_STATE_KEY,
+        )
 
     @property
     def display_name(self) -> str | None:
@@ -209,9 +245,12 @@ class _FetchFullRecordTool(Tool):
     def description(self) -> str:
         # Fixed for the request (set by the chat bridge before the first
         # turn), so the schema stays inside the cached prefix.
+        description = _FETCH_FULL_RECORD_DESCRIPTION
         if self._context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY):
-            return _FETCH_FULL_RECORD_DESCRIPTION.replace(_SKIP_CASE, _FULL_READ_SKIP_CASE)
-        return _FETCH_FULL_RECORD_DESCRIPTION
+            description = description.replace(_SKIP_CASE, _FULL_READ_SKIP_CASE)
+        if self._focused_reads():
+            description += _focused_read_description()
+        return description
 
     @property
     def path(self) -> str:
@@ -219,7 +258,7 @@ class _FetchFullRecordTool(Tool):
 
     @property
     def parameters(self) -> list[ToolParameter]:
-        return [
+        parameters = [
             ToolParameter(
                 name="record_ids",
                 type=ParameterType.ARRAY,
@@ -258,6 +297,14 @@ class _FetchFullRecordTool(Tool):
                 required=False,
             ),
         ]
+        if self._focused_reads():
+            parameters.append(ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description=_QUERY_DESCRIPTION,
+                required=False,
+            ))
+        return parameters
 
     def validate(self, kwargs: dict[str, Any]) -> None:
         return
@@ -298,15 +345,22 @@ class _FetchFullRecordTool(Tool):
 
         # Not forwarded as `**kwargs`: a model sending `record_id=` (singular)
         # must get a correctable error, not a silent empty fetch.
-        unexpected = sorted(set(kwargs) - set(self._ACCEPTED_ARGS))
+        accepted = (
+            (*self._ACCEPTED_ARGS, *self._FOCUSED_ARGS)
+            if self._focused_reads() else self._ACCEPTED_ARGS
+        )
+        unexpected = sorted(set(kwargs) - set(accepted))
         if unexpected:
             return ToolOutput(
                 success=False,
                 error=(
                     f"Unexpected argument(s): {', '.join(unexpected)}. "
-                    f"Accepted: {', '.join(self._ACCEPTED_ARGS)}."
+                    f"Accepted: {', '.join(accepted)}."
                 ),
             )
+        query = kwargs.get("query")
+        if query is not None and not isinstance(query, str):
+            return ToolOutput(success=False, error="query must be a short text naming the detail you need.")
 
         record_ids = kwargs.get("record_ids") or []
         if isinstance(record_ids, str):
@@ -340,6 +394,7 @@ class _FetchFullRecordTool(Tool):
             start_block=start_block,
             max_blocks=kwargs.get("max_blocks"),
             start_block_sent=kwargs.get("start_block") not in (None, ""),
+            query=query,
         )
         if ref_mapper is not ref_mapper_in:
             self._context.tool_state["citation_ref_mapper"] = ref_mapper

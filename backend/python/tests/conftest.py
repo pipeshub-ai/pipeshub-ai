@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import tempfile
+from collections.abc import Iterator
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock
 
@@ -268,6 +269,19 @@ def _reset_default_backpressure_coordinator():
     set_default_backpressure_coordinator(None)
     yield
     set_default_backpressure_coordinator(None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_narrow_access_memo() -> Iterator[None]:
+    """Search remembers, per process, scopes its container filter could not
+    serve. A scope marked in one test must not route another test's search."""
+    retrieval = sys.modules.get("app.modules.retrieval.retrieval_service")
+    if retrieval is not None:
+        retrieval.narrow_access_memo.clear()
+    yield
+    retrieval = sys.modules.get("app.modules.retrieval.retrieval_service")
+    if retrieval is not None:
+        retrieval.narrow_access_memo.clear()
 
 
 @pytest.fixture(autouse=True)

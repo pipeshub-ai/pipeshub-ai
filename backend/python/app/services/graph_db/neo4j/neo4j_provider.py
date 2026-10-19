@@ -970,6 +970,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "FOR (n:Record) ON (n.virtualRecordId)"
         )
 
+        # get_document_id_by_virtual_record_id falls back to this field when the
+        # keyed lookup misses, which it does for every record indexed the first
+        # time; unindexed, that is a label scan per record.
+        mapping_label = collection_to_label(CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+        indexes.append(
+            f"CREATE INDEX {mapping_label.lower()}_virtual_record_id IF NOT EXISTS "
+            f"FOR (n:{mapping_label}) ON (n.virtualRecordId)"
+        )
+
         # SINGLE: connectorId (queried independently in many patterns)
         indexes.append(
             "CREATE INDEX record_connector_id IF NOT EXISTS "

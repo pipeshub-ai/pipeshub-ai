@@ -448,10 +448,11 @@ class TestExtractAttachmentInfos:
                 }],
             },
         }
-        infos = connector._extract_attachment_infos(msg)
+        infos = connector._extract_attachment_infos(msg, "user@test.com", google_user_id="g-1")
         assert len(infos) == 1
         assert infos[0]["isDriveFile"] is True
         assert infos[0]["driveFileId"] == "drive-file-1"
+        assert infos[0]["stableAttachmentId"] == "gdrive:g-1:drive-file-1"
 
     def test_no_attachments(self, connector):
         msg = {
@@ -476,8 +477,12 @@ class TestExtractAttachmentInfos:
                 }],
             },
         }
-        infos = connector._extract_attachment_infos(msg)
-        assert any(info.get("driveFileId") == "FILEID123" for info in infos)
+        infos = connector._extract_attachment_infos(msg, "user@test.com", google_user_id="g-1")
+        assert any(
+            info.get("driveFileId") == "FILEID123"
+            and info["stableAttachmentId"] == "gdrive:g-1:FILEID123"
+            for info in infos
+        )
 
 
 # ===========================================================================

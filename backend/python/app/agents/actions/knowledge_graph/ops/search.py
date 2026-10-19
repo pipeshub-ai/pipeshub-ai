@@ -38,6 +38,17 @@ from app.modules.agents.qna.chat_state import remember_shown_results
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
 from app.modules.retrieval.context.ordering import relevance_ordered_context
 from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
+from app.modules.retrieval.context.targeted import (
+    PassageCap,
+    already_shown,
+    cap_passages_per_record,
+    more_passages_list,
+    more_passages_note,
+    passages_per_record,
+    remember_shown,
+    search_max_chars,
+    targeted_retrieval_enabled,
+)
 from app.modules.retrieval.context.units import unit_children
 from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
@@ -173,11 +184,17 @@ def _result_frame(
     pm_hint: str,
     by_relevance: bool,
     preamble: str = "",
+    passage_cap: PassageCap | None = None,
+    per_record: int = 0,
 ) -> _ResultFrame:
     """The summary, fetch plan and tail a result showing ``selection`` gets.
 
     Reads the request state and changes nothing in it, so it can be sized for
     more than one selection.
+
+    ``passage_cap`` (``TARGETED_RETRIEVAL``) says which records lost passages
+    to the per-record cap; the ones shown are named at the end, with how to
+    read the rest, and a line at the top points there.
     """
     from app.modules.agents.record_escalation import (
         analyze_coverage,
@@ -223,6 +240,20 @@ def _result_frame(
         coverage_note = render_coverage_note(
             plan, needs_whole_document=needs_whole_doc, read_in_full=read_in_full,
         )
+    trim_note = ""
+    if passage_cap is not None and selection.ranked:
+        shown_omitted = {
+            vrid: count for vrid, count in passage_cap.omitted.items() if vrid in shown_records
+        }
+        # Under the full-read policy the fetch tool takes no `query`.
+        focused_reads = not state.get(READ_RECORDS_IN_FULL_STATE_KEY)
+        trim_note = more_passages_note(
+            per_record, len(shown_omitted), passage_cap.repeats_dropped, focused_reads=focused_reads,
+        )
+        # Before the candidate table, which closes the result with its own call to action.
+        candidate_suffix = more_passages_list(
+            shown_omitted, shown_records, focused_reads=focused_reads,
+        ) + candidate_suffix
     shown_candidates = candidate_suffix
     if candidate_suffix and selection.record_id_shortener is not None:
         shown_candidates = selection.record_id_shortener.copy().shorten_record_ids_in_text(candidate_suffix)
@@ -234,7 +265,7 @@ def _result_frame(
             selection.omitted_records,
             by_relevance=by_relevance,
         )
-        summary = f"{preamble}{header}\n\n{entity_notes}{coverage_note}"
+        summary = f"{preamble}{header}\n\n{entity_notes}{coverage_note}{trim_note}"
     else:
         n_pm = len(pm_shown)
         summary = (
@@ -917,6 +948,20 @@ async def _execute_search(
         if not knowledge.ranked and not pm_record_entries:
             return _empty_result()
 
+        # TARGETED_RETRIEVAL: a smaller result, a few passages per record, and
+        # what an earlier search of this request showed giving way to new text.
+        targeted = targeted_retrieval_enabled()
+        result_max_chars = search_max_chars() if targeted else DEFAULT_MAX_RESULT_CHARS
+        per_record = passages_per_record(adjusted_limit) if targeted else 0
+        passage_cap: PassageCap | None = None
+        if targeted and knowledge.ranked:
+            passage_cap = cap_passages_per_record(
+                knowledge.ranked,
+                per_record,
+                already_shown=already_shown(state),
+            )
+            knowledge.ranked = passage_cap.units
+
         has_semantic_blocks = bool(knowledge.ranked)
 
         def keyword_hint(selection: Selection) -> tuple[list[dict[str, Any]], str]:
@@ -932,7 +977,7 @@ async def _execute_search(
                 *pm_record_entries,
                 *grep_hits_within(
                     dropped, virtual_record_id_to_result,
-                    DEFAULT_MAX_RESULT_CHARS // _DROPPED_GREP_HINT_SHARE,
+                    result_max_chars // _DROPPED_GREP_HINT_SHARE,
                 ),
             ]
             try:
@@ -1004,6 +1049,8 @@ async def _execute_search(
                 pm_hint=pm_hint,
                 by_relevance=by_relevance,
                 preamble=preamble,
+                passage_cap=passage_cap,
+                per_record=per_record,
             )
 
         # Everything else in the result is sized first, so the records are cut
@@ -1014,17 +1061,17 @@ async def _execute_search(
         result_frame = frame(selection)
         for _ in range(_MAX_FIT_PASSES if knowledge.ranked else 0):
             selection = renderer.select(
-                knowledge.ranked, DEFAULT_MAX_RESULT_CHARS - result_frame.chars,
+                knowledge.ranked, result_max_chars - result_frame.chars,
             )
             result_frame = frame(selection)
-            if (selection.chars or 0) <= DEFAULT_MAX_RESULT_CHARS - result_frame.chars:
+            if (selection.chars or 0) <= result_max_chars - result_frame.chars:
                 break
         else:
             if knowledge.ranked:
                 logger_instance.warning(
                     "knowledgegraph__search: result still over %d chars after %d fits; "
                     "the tool-result cap will cut it",
-                    DEFAULT_MAX_RESULT_CHARS, _MAX_FIT_PASSES,
+                    result_max_chars, _MAX_FIT_PASSES,
                 )
         rendered = renderer.render(selection)
         pm_shown, pm_hint = keyword_hint(selection)
@@ -1057,6 +1104,8 @@ async def _execute_search(
 
         _note_provenance(state, final_results, shown_records, raw_pattern_records)
         remember_shown_results(state, [*final_results, *pm_shown], shown_records)
+        if targeted:
+            remember_shown(state, final_results)
         text = (
             result_frame.summary
             + rendered.text

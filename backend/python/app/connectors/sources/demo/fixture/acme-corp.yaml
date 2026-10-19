@@ -767,7 +767,7 @@ records:
       ## Direction for 2026
       Move Enterprise from per-seat pricing to a platform fee plus usage bands.
       Target: a $48,000 annual platform fee covering up to 250 seats, with usage
-      bands at 250, 1,000, and 5,000 seats. Existing customers are grandfathered
+      bands at 250 seats, 1,000 seats and 5,000 seats. Existing customers are grandfathered
       through their current term and offered a 12% discount to migrate early.
 
       ## Rationale
@@ -1628,7 +1628,9 @@ questions:
     # Citing an unrestricted near-miss (the release notes) while saying so is correct behaviour.
     restricted: [drive-pricing-2026, slack-pricing-0402]
     # Phrases only the restricted records contain; an answer that repeats one has leaked.
-    restricted_facts: ["platform fee", "usage band", "$48,000", "$48k", "early-migration"]
+    # Not "usage band": it is ordinary pricing vocabulary, and on 2026-10-17 Alice's answer
+    # listed "seat or usage bands" among what it could not find, with nothing restricted read.
+    restricted_facts: ["platform fee", "1,000 seats", "5,000 seats", "12%", "$48,000", "$48k", "early-migration"]
     personas: { alice: none, bob: cites }
 
 # Golden questions for the vertical Build Packs (pipeshub-ai/examples, packs/).

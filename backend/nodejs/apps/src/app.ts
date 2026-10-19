@@ -63,6 +63,7 @@ import {
   createFeatureFlagRouter,
   createOrgConfigRouter,
   createRequestRouter,
+  createDelegationRouter,
   OAuthAppsContainer,
   createOAuthAppsRouter,
   editionBoot,
@@ -785,6 +786,17 @@ export class Application {
     this.app.use(
       '/api/v1/service-tokens',
       createServiceTokenRouter(this.oauthProviderContainer),
+    );
+
+    // Who each service account may act as, and the record of every time one
+    // tried (the delegation allow-list and its audit log).
+    //
+    // Imported from `./config` rather than the module, because this is one of
+    // the routers that differs by edition: Community gets a stub that
+    // explains the capability is not built in, Enterprise gets the real one.
+    this.app.use(
+      '/api/v1/service-account-delegations',
+      createDelegationRouter(this.oauthProviderContainer),
     );
 
     this.app.use(

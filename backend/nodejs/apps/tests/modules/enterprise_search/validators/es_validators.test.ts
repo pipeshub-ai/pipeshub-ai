@@ -606,6 +606,24 @@ describe('enterprise_search/validators/es_validators', () => {
       })
     })
 
+    it('keeps rewriteQuery when the caller sets it, and leaves it out otherwise', () => {
+      for (const rewriteQuery of [true, false]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', rewriteQuery } })
+        expect(result.success).to.be.true
+        expect(result.data!.body.rewriteQuery).to.equal(rewriteQuery)
+      }
+      const omitted = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q' } })
+      expect(omitted.success).to.be.true
+      expect(omitted.data!.body).to.not.have.property('rewriteQuery')
+    })
+
+    it('rejects a rewriteQuery that is not a boolean', () => {
+      for (const rewriteQuery of ['false', 0, null]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', rewriteQuery } })
+        expect(result.success, JSON.stringify(rewriteQuery)).to.be.false
+      }
+    })
+
     it('rejects an empty or overlong date bound', () => {
       for (const modifiedAfter of ['', '   ', '2'.repeat(65)]) {
         const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', modifiedAfter } })

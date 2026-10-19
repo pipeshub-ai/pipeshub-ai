@@ -312,6 +312,8 @@ check "wizard port scan skips this project's own port" "$inner" 'port_in_use "$A
 check "reconfigure seeds port from existing .env" "$inner" 'get_existing_val APP_PORT "$DEFAULT_APP_PORT"'
 check "reconfigure keeps the private-address switch" "$inner" 'get_existing_val PIPESHUB_BLOCK_PRIVATE_ADDRESSES'
 check "the private-address switch is written to .env" "$inner" 'optional_env_line PIPESHUB_BLOCK_PRIVATE_ADDRESSES'
+check "reconfigure keeps Qdrant's memory limit" "$inner" 'get_existing_val QDRANT_MEMORY_LIMIT'
+check "Qdrant's memory limit is written to .env" "$inner" 'optional_env_line QDRANT_MEMORY_LIMIT'
 if [[ "$compose" == *"container_name:"* ]]; then
   fail "compose must not pin container_name (blocks a second project)"
 else

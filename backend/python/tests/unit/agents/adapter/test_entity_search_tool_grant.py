@@ -251,6 +251,23 @@ class TestLazyDisclosure:
         assert any(name.startswith("acmecrm__") or "agent" in name for name in names - {SEARCH_BY_ENTITIES_TOOL_NAME})
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ("quick", "react", "planExecute"))
+    async def test_the_timeline_switch_does_not_make_a_request_lazy(
+        self, monkeypatch: pytest.MonkeyPatch, mode: str,
+    ) -> None:
+        from app.agents.actions.knowledge_graph.ops.timeline import (
+            TIMELINE_SUMMARIES_ENV_VAR,
+            TIMELINE_TOOL_NAME,
+        )
+
+        await self._at_threshold(monkeypatch, mode)
+        monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "true")
+        _context, agent, runtime, _ = await _create(mode)
+        assert agent.spec.tool_disclosure != "lazy"
+        assert "fetch_tools" not in agent.spec.tool_names
+        assert runtime.tool_registry.has(TIMELINE_TOOL_NAME)
+
+    @pytest.mark.asyncio
     async def test_a_request_already_over_the_threshold_is_lazy_either_way(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

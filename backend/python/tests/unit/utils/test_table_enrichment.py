@@ -190,3 +190,34 @@ class TestRowDescriptionAlignment:
         assert texts["SEO"] == "DESC<SEO>"
         assert texts["Onboarding"] != "DESC<SEO>"
         assert texts["BackToSchool"] != "DESC<Onboarding>"
+
+
+class TestCaptionsSurviveEnrichment:
+    @pytest.mark.asyncio
+    async def test_sibling_tables_keep_their_captions_in_the_summary(self) -> None:
+        """Two tables with the same columns, told apart only by <caption>: the LLM
+        summary of the grid replaced the caption the parser stored as the summary."""
+        from app.modules.parsers.html_parser.html_to_blocks import HtmlToBlocksConverter
+
+        table = (
+            "<table><caption>{}</caption><tr><th>Plan</th><th>Fee</th></tr>"
+            "<tr><td>{}</td><td>{}</td></tr></table>"
+        )
+        container = HtmlToBlocksConverter().convert(
+            table.format("Fees in 2023", "Basic", "10")
+            + table.format("Fees in 2024", "Basic", "12")
+        )
+        groups = [g for g in container.block_groups if g.type == GroupType.TABLE]
+
+        for group in groups:
+            await _enrich(group, container, _Harness())
+
+        assert [g.data["table_summary"] for g in groups] == ["Fees in 2023\ns", "Fees in 2024\ns"]
+
+    @pytest.mark.asyncio
+    async def test_a_table_without_a_caption_keeps_the_llm_summary(self) -> None:
+        container, group = _build(header_at=0)
+
+        await _enrich(group, container, _Harness())
+
+        assert group.data["table_summary"] == "s"

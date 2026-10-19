@@ -1,7 +1,11 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
-import { Users } from '../../../config';
+// From the schema module, not the config barrel: the barrel re-exports the auth
+// routers, whose controllers import this service, so importing it here made the
+// two depend on each other. The schema module returns whatever `users` model is
+// already registered, which is the same object the barrel would give.
+import { Users } from '../../user_management/schema/users.schema';
 import { UserGroups } from '../../user_management/schema/userGroup.schema';
 import {
   EntitiesEventProducer,

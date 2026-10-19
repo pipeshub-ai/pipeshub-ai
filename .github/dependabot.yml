@@ -32,7 +32,7 @@ updates:
       - dependency-name: "microsoft-kiota-http"
         versions: [">=1.13"]
       - dependency-name: "Pillow"
-        versions: [">=12"]
+        versions: [">=13"]
       - dependency-name: "protobuf"
         versions: [">=6"]
       - dependency-name: "reportlab"
@@ -51,7 +51,7 @@ updates:
         update-types: [minor, patch]
     ignore:
       - dependency-name: "Pillow"
-        versions: [">=12"]
+        versions: [">=13"]
       - dependency-name: "protobuf"
         versions: [">=6"]
 

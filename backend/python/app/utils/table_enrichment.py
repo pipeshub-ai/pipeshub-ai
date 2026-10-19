@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from app.models.blocks import summary_with_captions
 from app.modules.parsers.excel.prompt_template import (
     RowDescriptions,
     TableEnrichment,
@@ -377,7 +378,8 @@ async def _enhance_one_table(
 
     if table_group.data is None:
         table_group.data = {}
-    table_group.data["table_summary"] = enrichment.summary
+    captions = table_group.table_metadata.captions if table_group.table_metadata else None
+    table_group.data["table_summary"] = summary_with_captions(enrichment.summary, captions)
     table_group.data["column_headers"] = enrichment.headers
 
     # zip() truncates silently, so a count mismatch would misalign every row without

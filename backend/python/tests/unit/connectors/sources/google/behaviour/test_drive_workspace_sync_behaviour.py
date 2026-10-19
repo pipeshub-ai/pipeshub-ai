@@ -481,12 +481,6 @@ async def test_a_user_whose_sync_fails_on_a_full_resync_keeps_their_records(ws: 
     assert ws.names() == before
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A failed permission read is treated as 'this file is shared with nobody', so the next "
-    "change to the file replaces its stored access with an empty list and people lose access "
-    "(the rule from #3521/#3528 is that a failed read keeps what is stored).",
-)
 async def test_a_failed_permission_read_keeps_the_stored_access(ws: Workspace) -> None:
     ws.world.add_item("shared", "plan.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB)])
     await ws.sync()
@@ -500,11 +494,6 @@ async def test_a_failed_permission_read_keeps_the_stored_access(ws: Workspace) -
     assert (BOB, "USER", "READ") in ws.grants("shared")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="If the second page of a file's permissions fails, the first page is saved as the "
-    "complete list, silently dropping everyone listed after it.",
-)
 async def test_a_permission_list_that_fails_on_a_later_page_is_not_saved_as_complete(ws: Workspace) -> None:
     ws.world.perm_page_size = 2
     ws.world.add_item("shared", "plan.txt", parent="root-alice", owner=ALICE,

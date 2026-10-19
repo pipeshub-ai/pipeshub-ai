@@ -501,7 +501,7 @@ class TestTaxonomyNodeWithoutKey:
         )
         monkeypatch.setattr(
             "app.connectors.core.base.data_store.graph_data_store.GraphTransactionStore",
-            lambda provider, txn: store,
+            lambda provider, txn, **_kwargs: store,
         )
         return store
 

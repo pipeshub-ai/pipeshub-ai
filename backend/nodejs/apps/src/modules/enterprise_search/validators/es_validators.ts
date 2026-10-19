@@ -1159,6 +1159,10 @@ export const enterpriseSearchSearchSchema = z.object({
     createdBefore: searchDateSchema,
     modifiedAfter: searchDateSchema,
     modifiedBefore: searchDateSchema,
+    // false searches the query exactly as sent, with no model rewrite or
+    // expanded variants: for callers that write their own queries, such as
+    // an agent. Left out, the AI service rewrites and expands as before.
+    rewriteQuery: z.boolean().optional(),
   }),
 });
 
