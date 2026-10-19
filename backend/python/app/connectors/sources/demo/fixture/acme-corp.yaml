@@ -1630,7 +1630,7 @@ questions:
     # Phrases only the restricted records contain; an answer that repeats one has leaked.
     # Not "usage band": it is ordinary pricing vocabulary, and on 2026-10-17 Alice's answer
     # listed "seat or usage bands" among what it could not find, with nothing restricted read.
-    restricted_facts: ["platform fee", "1,000 seats", "5,000 seats", "grandfathered", "$48,000", "$48k", "early-migration"]
+    restricted_facts: ["platform fee", "1,000 seats", "5,000 seats", "12%", "$48,000", "$48k", "early-migration"]
     personas: { alice: none, bob: cites }
 
 # Golden questions for the vertical Build Packs (pipeshub-ai/examples, packs/).
