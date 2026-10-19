@@ -162,6 +162,8 @@ class TestSqlStatements:
         "EXPLAIN SELECT * FROM t",
         "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent",
         "INSERT INTO t (a) VALUES (1)",
+        "WITH c AS (SELECT 1 AS a) INSERT INTO t SELECT a FROM c",
+        "SELECT '#1' AS tag",
         "UPDATE t SET a = 2 WHERE id = 1",
         "SELECT 'drop table x; delete from y' AS note",
         "SELECT 1 -- delete everything later\n",
@@ -190,6 +192,13 @@ class TestSqlStatements:
         "SELECT 1 /*! ; DROP TABLE t */",
         "SELECT 1 --x; DELETE FROM t",
         "SELECT 1 # ; DROP TABLE t",
+        "# update cancelled orders\nDELETE FROM orders WHERE status='cancelled'",
+        "# select the old rows\nDROP TABLE t",
+        # SELECT ... INTO makes a table, or writes a file on the database server.
+        "SELECT * INTO new_table FROM old",
+        "SELECT * FROM t INTO OUTFILE '/tmp/t.csv'",
+        "SELECT * FROM t INTO DUMPFILE '/tmp/t.bin'",
+        "WITH c AS (SELECT 1 AS a) SELECT a FROM c INTO OUTFILE '/tmp/a.txt'",
     ])
     def test_anything_else_cant_be_undone(self, sql: Any) -> None:  # noqa: ANN401
         assert not approvals.sql_keeps_its_kind(sql)

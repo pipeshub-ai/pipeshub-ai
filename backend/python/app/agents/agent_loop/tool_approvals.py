@@ -186,7 +186,7 @@ _SQL_TOOL_PATHS: dict[str, str] = {
 }
 # Only what reads the same in MariaDB and Redshift is stripped. Backticks, `#`, MySQL's
 # executable /*! */ comments and "--" with no space after it are left in, so a statement they
-# could hide still counts.
+# could hide still counts; a `#` left in makes the call count as destructive.
 _SQL_STRING_OR_COMMENT = re.compile(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|--(?=\s)[^\n]*|/\*(?![!M])[\s\S]*?\*/")
 _SQL_READS = frozenset({"select", "show", "describe", "desc", "explain"})
 _SQL_ORDINARY_WRITES = frozenset({"insert", "update"})
@@ -201,11 +201,17 @@ def sql_keeps_its_kind(sql: str) -> bool:
         # A backslash escapes a quote in one dialect and not the other: where a string ends is unclear.
         return False
     code = _SQL_STRING_OR_COMMENT.sub(" ", sql).lower()
+    if "#" in code:
+        # A comment in MariaDB, an operator in Redshift: the two would run different statements.
+        return False
     statements = [part for part in code.split(";") if part.strip()]
     if len(statements) != 1:
         return False
     words = _SQL_WORD.findall(statements[0])
     if not words:
+        return False
+    if {"outfile", "dumpfile"} & set(words) or ("into" in words and "insert" not in words):
+        # SELECT ... INTO makes a table (Redshift) or writes a file on the server (MariaDB).
         return False
     if words[0] == "with":
         # A CTE: what runs is what the statement does once its named queries are read.
