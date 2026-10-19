@@ -199,6 +199,14 @@ class TestSqlStatements:
         "SELECT * FROM t INTO OUTFILE '/tmp/t.csv'",
         "SELECT * FROM t INTO DUMPFILE '/tmp/t.bin'",
         "WITH c AS (SELECT 1 AS a) SELECT a FROM c INTO OUTFILE '/tmp/a.txt'",
+        # Comments that MariaDB runs or ignores and Redshift ignores: fail closed on any left over.
+        "/*!select*/ DELETE FROM orders",
+        "/*!update*/ TRUNCATE orders",
+        "/*!50701 select */ DELETE FROM orders",
+        "/*!insert*/ SELECT * INTO new_table FROM old",
+        "SELECT * INTO new_table FROM old /*M insert */",
+        "SELECT *--insert\nINTO new_table FROM old",
+        "SELECT 1 */ DELETE FROM t",
     ])
     def test_anything_else_cant_be_undone(self, sql: Any) -> None:  # noqa: ANN401
         assert not approvals.sql_keeps_its_kind(sql)
