@@ -4613,7 +4613,9 @@ export const unarchiveConversation = async (
  * retry after a dropped response is safe.
  */
 const setConversationPinned =
-  (pinned: boolean): ((
+  (
+    pinned: boolean,
+  ): ((
     req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
@@ -4623,8 +4625,8 @@ const setConversationPinned =
     const startTime = Date.now();
     try {
       const { conversationId } = req.params;
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
+      const userId = req.user?.userId as string | undefined;
+      const orgId = req.user?.orgId as string | undefined;
       if (!userId || !orgId) {
         throw new BadRequestError('User ID and Organization ID are required');
       }
@@ -4648,7 +4650,9 @@ const setConversationPinned =
       ).exec();
 
       if (!updated) {
-        throw new NotFoundError('Conversation not found or not owned by caller');
+        throw new NotFoundError(
+          'Conversation not found or not owned by caller',
+        );
       }
 
       res.status(HTTP_STATUS.OK).json({

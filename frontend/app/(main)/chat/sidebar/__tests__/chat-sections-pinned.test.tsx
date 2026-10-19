@@ -21,7 +21,8 @@ const { useChatStore } = await import('@/chat/store');
 const { ChatSections } = await import('../chat-sections');
 
 const initialState = useChatStore.getState();
-const NOW = Date.now();
+// Midday, so no fixture (up to 9 hours old) crosses local midnight into another day group.
+const NOW = new Date(2026, 0, 15, 12, 0, 0).getTime();
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 
@@ -64,10 +65,16 @@ function sidebarOrder(): string[] {
 }
 
 beforeEach(() => {
+  // Only Date is faked: Radix and React timers must keep running.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(NOW);
   installBrowserShims();
   useChatStore.setState({ ...initialState });
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe('the Your Chats list in the sidebar', () => {
   it('shows a Pinned heading above Today, with the pinned chat under it and not again under its day', () => {

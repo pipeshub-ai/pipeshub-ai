@@ -518,7 +518,7 @@ export function createConversationalRouter(container: Container): Router {
    */
   router.patch(
     '/:conversationId/pin',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationIdParamsSchema),
     pinConversation,
@@ -532,7 +532,7 @@ export function createConversationalRouter(container: Container): Router {
    */
   router.patch(
     '/:conversationId/unpin',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationIdParamsSchema),
     unpinConversation,
