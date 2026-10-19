@@ -364,6 +364,13 @@ function ModelMeta({ model }: { model: DiscoveredModel }) {
       : null,
     model.isMultimodal ? t('workspace.aiModels.badgeVision') : null,
     model.isReasoning ? t('workspace.aiModels.badgeReasoning') : null,
+    // A `default` size is a guess (unknown = medium), not something worth showing.
+    model.traits?.size && model.traits.source?.size !== 'default'
+      ? t(`workspace.aiModels.traitSize.${model.traits.size}`)
+      : null,
+    model.traits?.thinking && model.traits.thinking !== 'none'
+      ? t(`workspace.aiModels.traitThinking.${model.traits.thinking}`)
+      : null,
     model.deprecated ? t('workspace.aiModels.badgeDeprecated') : null,
   ].filter(Boolean);
   if (parts.length === 0) return null;

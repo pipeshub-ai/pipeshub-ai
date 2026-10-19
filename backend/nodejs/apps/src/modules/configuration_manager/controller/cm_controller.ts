@@ -3095,11 +3095,13 @@ export const getAvailableModelsByType =
       }
 
       const aiModels = await new AiModelsConfigRepository(keyValueStoreService).read();
+      const autoDefault = modelType === 'llm' && aiModels?.autoDefault === true;
 
       if (!aiModels) {
         res.status(200).json({
           status: 'success',
           models: [],
+          autoDefault: false,
           message: `No ${modelType} models found`,
         });
         return;
@@ -3109,6 +3111,7 @@ export const getAvailableModelsByType =
         res.status(200).json({
           status: 'success',
           models: [],
+          autoDefault,
           message: `No ${modelType} models found`,
         });
         return;
@@ -3159,6 +3162,7 @@ export const getAvailableModelsByType =
       res.status(200).json({
         status: 'success',
         models: flattenedModels,
+        autoDefault,
         message: `Found ${flattenedModels.length} ${modelType} models`,
       });
       return;
@@ -5177,6 +5181,47 @@ export const updateModelRoles =
       });
     } catch (error: any) {
       logger.error('Error updating model roles', { error });
+      next(error);
+    }
+  };
+
+export const getAutoDefault =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const aiModels = await new AiModelsConfigRepository(keyValueStoreService).read();
+      res.status(200).json({
+        status: 'success',
+        autoDefault: aiModels?.autoDefault === true,
+      });
+    } catch (error: any) {
+      logger.error('Error getting the Auto default', { error });
+      next(error);
+    }
+  };
+
+export const updateAutoDefault =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { autoDefault } = req.body as { autoDefault?: unknown };
+      if (typeof autoDefault !== 'boolean') {
+        res.status(400).json({
+          status: 'error',
+          message: 'Request body must contain "autoDefault" as a boolean',
+        });
+        return;
+      }
+
+      const saved = await new AiModelsConfigRepository(keyValueStoreService).mutate((aiModels) => {
+        aiModels.autoDefault = autoDefault;
+      });
+      res.status(200).json({
+        status: 'success',
+        autoDefault: saved.autoDefault === true,
+      });
+    } catch (error: any) {
+      logger.error('Error updating the Auto default', { error });
       next(error);
     }
   };

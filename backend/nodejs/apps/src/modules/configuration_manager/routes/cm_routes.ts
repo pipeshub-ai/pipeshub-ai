@@ -74,6 +74,8 @@ import {
   getAIModelProviderSchema,
   getModelRoles,
   updateModelRoles,
+  getAutoDefault,
+  updateAutoDefault,
 } from '../controller/cm_controller';
 import {
   batchAddAIModels,
@@ -868,12 +870,27 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getModelRoles(keyValueStoreService),
   );
 
+  // Literal path before /ai-models/:modelType, same as /roles.
+  router.get(
+    '/ai-models/auto-default',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    getAutoDefault(keyValueStoreService),
+  );
+
+  router.put(
+    '/ai-models/auto-default',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    updateAutoDefault(keyValueStoreService),
+  );
+
   /**
    * @route PUT /api/v1/configurationManager/ai-models/roles
    * @desc Assign models to named roles (e.g. indexing)
    * @access Private (admin)
-   * @body { roles: Record<string, { modelType: string; modelKey: string }> }
-   * NOTE: Must be registered before /ai-models/default/:modelType/:modelKey.
    */
   router.put(
     '/ai-models/roles',

@@ -29,13 +29,28 @@ export function useComposerDraft({
   message,
   setMessage,
   paused = false,
-}: UseComposerDraftOptions): void {
+}: UseComposerDraftOptions): {
+  /** Drop the unsent text now, including what a later id change would copy. */
+  discardDraft: () => void;
+  /** Put text back after a send that did not go out. */
+  keepDraft: (text: string) => void;
+} {
   const messageRef = useRef(message);
   const pausedRef = useRef(paused);
+  // Set when the reader sends, before React re-renders. A conversation id can
+  // arrive, or this composer can unmount, while state still holds the sent text.
+  const discardedRef = useRef(false);
   // Declared first so every effect below sees this commit's values.
   useEffect(() => {
-    messageRef.current = message;
     pausedRef.current = paused;
+    if (discardedRef.current) {
+      if (message === '') {
+        messageRef.current = '';
+        discardedRef.current = false;
+      }
+      return;
+    }
+    messageRef.current = message;
   });
   // The key the text currently in the box belongs to. It only moves in the
   // effect below, so a text change that lands in the same commit as a thread
@@ -82,8 +97,10 @@ export function useComposerDraft({
 
   useEffect(() => {
     const key = ownerKeyRef.current;
-    if (!key || paused) return;
-    const timer = setTimeout(() => saveDraft(key, message), DRAFT_SAVE_DEBOUNCE_MS);
+    if (!key || paused || discardedRef.current) return;
+    const timer = setTimeout(() => {
+      if (!discardedRef.current) saveDraft(key, messageRef.current);
+    }, DRAFT_SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
     // `draftKey` re-arms the timer when the owner changes, so a save queued
     // before a chat got its id cannot land under the new key.
@@ -100,4 +117,19 @@ export function useComposerDraft({
       flush();
     };
   }, []);
+
+  return {
+    discardDraft: () => {
+      discardedRef.current = true;
+      messageRef.current = '';
+      const key = ownerKeyRef.current;
+      if (key) clearDraft(key);
+    },
+    keepDraft: (text: string) => {
+      discardedRef.current = false;
+      messageRef.current = text;
+      const key = ownerKeyRef.current;
+      if (key && !pausedRef.current) saveDraft(key, text);
+    },
+  };
 }

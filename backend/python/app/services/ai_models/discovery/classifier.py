@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from app.services.ai_models.discovery.catalog import capability_from_mode, lookup_catalog
 from app.services.ai_models.discovery.types import DiscoveredModel, RawModel
+from app.services.ai_models.traits import resolve_traits
 
 _EXCLUDE = re.compile(r"(moderation|guard|realtime|\bre-?rank\b|search)", re.IGNORECASE)
 
@@ -112,6 +113,20 @@ def classify(provider_id: str, raw: RawModel) -> DiscoveredModel | None:
         if deprecated is None:
             deprecated = _deprecated_from_catalog(catalog)
 
+    traits = None
+    if "llm" in capabilities:
+        traits = resolve_traits(
+            provider_id,
+            raw.id,
+            provider_facts={
+                "parameter_count": raw.parameter_count,
+                "thinking": raw.thinking,
+                "reasoning_efforts": raw.reasoning_efforts,
+                "output_price": raw.output_price,
+                "supports_tools": supports_tools,
+            },
+        ).model_dump(by_alias=True)
+
     return DiscoveredModel(
         id=raw.id,
         display_name=raw.display_name or raw.id,
@@ -123,4 +138,5 @@ def classify(provider_id: str, raw: RawModel) -> DiscoveredModel | None:
         deprecated=bool(deprecated),
         released_at=raw.released_at,
         source=source,  # type: ignore[arg-type]
+        traits=traits,
     )

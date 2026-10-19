@@ -2,12 +2,13 @@
 """Refresh the pruned LiteLLM model catalog shipped with discovery.
 
 The upstream file is MIT licensed. We keep only the fields the classifier
-reads so the snapshot stays usable offline.
+and the model traits resolver read so the snapshot stays usable offline.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import ssl
 import urllib.request
 from pathlib import Path
@@ -26,7 +27,11 @@ _KEEP = (
     "supports_reasoning",
     "supports_response_schema",
     "deprecation_date",
+    "input_cost_per_token",
+    "output_cost_per_token",
 )
+# Effort flags such as ``supports_xhigh_reasoning_effort`` vary by model, so match the pattern.
+_KEEP_PATTERN = re.compile(r"supports_\w+_reasoning_effort")
 _OUT = Path(__file__).resolve().parents[1] / "app/services/ai_models/discovery/data/model_catalog.json"
 
 
@@ -58,6 +63,7 @@ def main() -> None:
         if not isinstance(value, dict) or key == "sample_spec":
             continue
         kept = {name: value[name] for name in _KEEP if name in value}
+        kept.update({name: flag for name, flag in value.items() if _KEEP_PATTERN.fullmatch(name)})
         if kept:
             pruned[key] = kept
     _OUT.parent.mkdir(parents=True, exist_ok=True)

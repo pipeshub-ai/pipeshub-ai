@@ -104,6 +104,38 @@ IS_REASONING = AIModelField(
     description="Supports chain-of-thought reasoning",
 )
 
+# Used by the chat Auto model mode. "auto" leaves the value to detection
+# (app/services/ai_models/traits.py).
+MODEL_SIZE = AIModelField(
+    name="size",
+    display_name="Size (for Auto)",
+    field_type="SELECT",
+    required=False,
+    default_value="auto",
+    options=[
+        {"value": "auto", "label": "Auto-detect"},
+        {"value": "small", "label": "Small"},
+        {"value": "medium", "label": "Medium"},
+        {"value": "large", "label": "Large"},
+    ],
+    description="How capable the model is. Auto sends harder questions to larger models.",
+)
+
+MODEL_THINKING = AIModelField(
+    name="thinking",
+    display_name="Thinking (for Auto)",
+    field_type="SELECT",
+    required=False,
+    default_value="auto",
+    options=[
+        {"value": "auto", "label": "Auto-detect"},
+        {"value": "none", "label": "Doesn't think"},
+        {"value": "optional", "label": "Thinks when asked"},
+        {"value": "always", "label": "Always thinks"},
+    ],
+    description="Whether the model reasons before answering. Auto avoids always-thinking models for quick questions.",
+)
+
 IS_MULTIMODAL_EMBEDDING = AIModelField(
     name="isMultimodal",
     display_name="Multimodal",
@@ -212,5 +244,5 @@ CUSTOM_PROVIDER = AIModelField(
 # Convenience bundles
 # ---------------------------------------------------------------------------
 
-LLM_COMMON_TAIL = [FRIENDLY_NAME, CONTEXT_LENGTH, IS_MULTIMODAL_LLM, IS_REASONING]
+LLM_COMMON_TAIL = [FRIENDLY_NAME, CONTEXT_LENGTH, IS_MULTIMODAL_LLM, IS_REASONING, MODEL_SIZE, MODEL_THINKING]
 EMBEDDING_COMMON_TAIL = [FRIENDLY_NAME, DIMENSIONS, IS_MULTIMODAL_EMBEDDING]

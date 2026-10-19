@@ -34,6 +34,8 @@ describe('maskConfigSecrets', () => {
           apiKey: 'sk-secret123', endpoint: 'https://api.openai.com',
           deploymentName: 'my-deployment', awsAccessKeyId: 'AKIA', awsAccessSecretKey: 'shh',
           serviceAccountJson: '{"private_key":"x"}',
+          size: 'large', thinking: 'optional', reasoningEfforts: ['low', 'high'],
+          supportsTools: true, strengths: ['coding'],
         },
         modelKey: 'mk-1',
         isDefault: true,
@@ -44,6 +46,11 @@ describe('maskConfigSecrets', () => {
         modelFriendlyName: 'abc',
         dimensions: '',
         defaultReasoningEffort: 'low',
+        size: 'large',
+        thinking: 'optional',
+        reasoningEfforts: ['low', 'high'],
+        supportsTools: true,
+        strengths: ['coding'],
       })
       expect(Object.keys(result)).to.have.members([...AI_PUBLIC_CONFIG_KEYS])
       expect(strip(entry).provider).to.equal('azureOpenAI')

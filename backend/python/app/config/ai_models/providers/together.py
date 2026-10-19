@@ -26,6 +26,8 @@ _TOGETHER_ENDPOINT = AIModelField(
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[3], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[4], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[5], ModelCapability.TEXT_GENERATION) \
     .add_field(API_KEY, ModelCapability.EMBEDDING) \
     .add_field(model_field("e.g., togethercomputer/m2-bert-80M-32k-retrieval"), ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \

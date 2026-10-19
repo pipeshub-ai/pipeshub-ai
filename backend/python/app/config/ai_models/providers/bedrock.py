@@ -54,6 +54,8 @@ BEDROCK_LLM_MODEL = AIModelField(
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[3], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[4], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[5], ModelCapability.TEXT_GENERATION) \
     .add_field(AWS_ACCESS_KEY_ID, ModelCapability.EMBEDDING) \
     .add_field(AWS_SECRET_KEY, ModelCapability.EMBEDDING) \
     .add_field(REGION, ModelCapability.EMBEDDING) \

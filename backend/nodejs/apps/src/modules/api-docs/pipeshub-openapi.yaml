@@ -673,6 +673,33 @@ components:
         source:
           type: string
           enum: [provider_api, catalog, heuristic]
+        traits:
+          type: object
+          nullable: true
+          description: |
+            Detected traits used by chat's Auto mode (chat models only). Saved
+            per model inside `configuration` as `size`, `thinking`,
+            `reasoningEfforts` and `supportsTools`.
+          properties:
+            size:
+              type: string
+              enum: [small, medium, large]
+            thinking:
+              type: string
+              enum: [none, optional, always]
+            reasoningEfforts:
+              type: array
+              items:
+                type: string
+                enum: [low, medium, high, max]
+            supportsTools:
+              type: boolean
+              nullable: true
+            source:
+              type: object
+              additionalProperties:
+                type: string
+              description: Where each value came from (stored, overlay, parameters, price, name, catalog, default)
     AIModelDiscoveryResult:
       type: object
       required: [success, supported, models]
@@ -8009,6 +8036,7 @@ components:
             Available models depend on organization settings. When neither
             `modelKey` nor `modelName` is sent, the organization's default
             model answers and is saved in the conversation's `modelInfo`.
+            Send `auto` to let Auto mode pick one of the configured models and a reasoning effort for each turn; the answer's `modelInfo` then names the model used (`autoRouted: true`, `autoReason`).
           example: "gpt-5.6-luna"
         modelName:
           type: string
@@ -8253,6 +8281,7 @@ components:
           description: |
             AI model configuration id for this turn. Omit to use the agent's
             default model.
+            Send `auto` to let Auto mode pick one of the configured models and a reasoning effort for each turn; the answer's `modelInfo` then names the model used (`autoRouted: true`, `autoReason`).
         modelName:
           type: string
           minLength: 1
@@ -8389,6 +8418,7 @@ components:
             Identifier of the AI model configuration to use for regeneration.
             Typically a UUID returned by the model-management endpoints. When
             omitted, the model used for the original message is reused.
+            Send `auto` to let Auto mode pick one of the configured models and a reasoning effort for each turn; the answer's `modelInfo` then names the model used (`autoRouted: true`, `autoReason`).
           example: "05438a37-68f2-4641-a8dc-6c47e63278ca"
         modelName:
           type: string
@@ -8505,6 +8535,7 @@ components:
             Override the model for this specific message. When neither
             `modelKey` nor `modelName` is sent, the organization's default
             model answers and is saved in the message's `modelInfo`.
+            Send `auto` to let Auto mode pick one of the configured models and a reasoning effort for each turn; the answer's `modelInfo` then names the model used (`autoRouted: true`, `autoReason`).
         modelName:
           type: string
           description: Display name of the model
@@ -8706,6 +8737,7 @@ components:
           description: |
             AI model configuration id override for this turn. Omit to use the
             agent's default model.
+            Send `auto` to let Auto mode pick one of the configured models and a reasoning effort for each turn; the answer's `modelInfo` then names the model used (`autoRouted: true`, `autoReason`).
         modelName:
           type: string
           minLength: 1
@@ -9132,6 +9164,18 @@ components:
         chatMode:
           type: string
           description: Chat mode used for this turn (e.g. `quick`, `internal_search`)
+        reasoningEffort:
+          type: string
+          enum: [none, low, medium, high, max]
+          description: Reasoning effort used for this turn
+        autoRouted:
+          type: boolean
+          description: |
+            True on an answer whose model Auto mode picked. The conversation's own
+            `modelInfo` keeps `modelKey: auto`; each answer names the model used.
+        autoReason:
+          type: string
+          description: Why Auto picked the model (e.g. `classified_heavy`, `greeting`, `single_model`)
 
     FollowUpQuestion:
       type: object
@@ -15362,6 +15406,27 @@ components:
           type: string
           description: UUID of the model entry within the bucket.
           example: 3f2a1c8e-0000-0000-0000-000000000001
+
+    AutoDefaultResponse:
+      type: object
+      required:
+        - status
+        - autoDefault
+      properties:
+        status:
+          type: string
+          enum: [success]
+        autoDefault:
+          type: boolean
+          description: When true, a new assistant chat opens on Auto.
+
+    UpdateAutoDefaultRequest:
+      type: object
+      required:
+        - autoDefault
+      properties:
+        autoDefault:
+          type: boolean
 
     GetModelRolesResponse:
       type: object
@@ -45241,6 +45306,12 @@ paths:
                         stored yet, or the `modelType` key is absent from the
                         stored config entirely.
                     example: "Found 2 llm models"
+                  autoDefault:
+                    type: boolean
+                    description: >-
+                      Present on every response. `true` only for `modelType: llm`
+                      when an admin has set Auto as the default for new chats.
+                    example: false
                   models:
                     type: array
                     description: >-
@@ -47706,6 +47777,55 @@ paths:
                     enum: [error]
                   message:
                     type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden — admin access required
+
+  /configurationManager/ai-models/auto-default:
+    get:
+      tags:
+        - Configuration Manager
+      summary: Get whether Auto is the default chat model
+      description: |
+        Returns the organisation setting that opens new assistant chats on Auto.
+        A person's own model pick is kept, and project chats keep the concrete default model.
+      operationId: getAutoDefault
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Setting retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutoDefaultResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden — admin access required
+    put:
+      tags:
+        - Configuration Manager
+      summary: Set whether Auto is the default chat model
+      operationId: updateAutoDefault
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAutoDefaultRequest'
+      responses:
+        '200':
+          description: Setting saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutoDefaultResponse'
+        '400':
+          description: autoDefault was missing or not a boolean
         '401':
           description: Unauthorized
         '403':

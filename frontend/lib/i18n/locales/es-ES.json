@@ -1236,6 +1236,33 @@
       "high": "Alto",
       "max": "Máximo"
     },
+    "autoModel": {
+      "name": "Auto",
+      "description": "Elige un modelo y un nivel de esfuerzo para cada pregunta",
+      "reason": {
+        "greeting": "Un saludo breve, así que respondió un modelo ligero",
+        "singleModel": "Solo hay un modelo disponible",
+        "classified": "Elegido según la exigencia de la pregunta",
+        "pinned": "Se mantuvo el modelo usado antes en esta conversación",
+        "classifierFallback": "No se pudo clasificar la pregunta, así que se usó uno predeterminado",
+        "noCandidates": "Ningún modelo se ajustaba a la pregunta, así que se usó uno predeterminado",
+        "generic": "Elegido automáticamente"
+      },
+      "property": {
+        "shortGreeting": "Saludo breve",
+        "lightModel": "Modelo ligero",
+        "standardModel": "Modelo estándar",
+        "complexModel": "Modelo complejo",
+        "lowReasoning": "Razonamiento bajo",
+        "mediumReasoning": "Razonamiento medio",
+        "highReasoning": "Razonamiento alto",
+        "keptEarlier": "Se mantuvo el anterior",
+        "onlyModel": "Solo un modelo",
+        "couldNotClassify": "No se pudo clasificar",
+        "noMatch": "Ningún modelo encaja",
+        "defaultModel": "Modelo predeterminado"
+      }
+    },
     "universalAgent": {
       "toolsLoadError": "No se han podido cargar las acciones disponibles.",
       "mcpLoadError": "No se han podido cargar los servidores MCP.",
@@ -1860,6 +1887,13 @@
       "actionSetDefault": "Establecer como predeterminado",
       "actionDelete": "Eliminar",
       "moreOptions": "Más opciones",
+      "autoDefault": {
+        "title": "Default for new chats",
+        "description": "Open new chats on Auto. A model someone already chose stays, and a project keeps its own model.",
+        "needsTwoModels": "Add at least two chat models before Auto can be the default.",
+        "toastSaved": "Saved",
+        "toastSaveError": "Could not save"
+      },
       "roles": {
         "sectionTitle": "Asignación de roles de modelos",
         "sectionDescription": "Asigne modelos dedicados para tareas específicas. Si no se asigna, se usa el modelo predeterminado.",
@@ -1933,6 +1967,20 @@
       "badgeVision": "Visión",
       "badgeReasoning": "Razonamiento",
       "badgeDeprecated": "Obsoleto",
+      "traitSizeLabel": "Tamaño",
+      "traitThinkingLabel": "Razonamiento",
+      "traitDetected": "detectado",
+      "traitAutoDetect": "Detección automática",
+      "traitSize": {
+        "small": "Pequeño",
+        "medium": "Mediano",
+        "large": "Grande"
+      },
+      "traitThinking": {
+        "none": "No razona",
+        "optional": "Razona si se le pide",
+        "always": "Siempre razona"
+      },
       "batchRetry": "Reintentar",
       "batchRemove": "Quitar",
       "rotateCredentials": "Rotar credenciales",

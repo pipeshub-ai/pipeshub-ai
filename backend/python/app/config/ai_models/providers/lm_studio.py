@@ -37,6 +37,8 @@ _LM_STUDIO_ENDPOINT = AIModelField(
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[3], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[4], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[5], ModelCapability.TEXT_GENERATION) \
     .add_field(_LM_STUDIO_ENDPOINT, ModelCapability.EMBEDDING) \
     .add_field(API_KEY_OPTIONAL, ModelCapability.EMBEDDING) \
     .add_field(model_field("e.g. nomic-ai/nomic-embed-text-v1.5-GGUF"), ModelCapability.EMBEDDING) \

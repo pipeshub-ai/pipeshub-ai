@@ -378,6 +378,8 @@ async def run_agent_loop_stream(
             has_slack_connector=has_slack_connector, client_name=client_name,
             entity_vector_store=entity_vector_store,
         )
+        # Read by the formatters' answer_final so the saved answer names the model Auto picked.
+        chat_state["model_info"] = query_info.get("modelInfo")
         exclude_from_state(chat_state, demo_excluded)
         await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
         chat_state["allowed_sql_connector_ids"] = (

@@ -21,6 +21,8 @@ from .common_fields import API_KEY, EMBEDDING_COMMON_TAIL, LLM_COMMON_TAIL, mode
     .add_field(LLM_COMMON_TAIL[1]) \
     .add_field(LLM_COMMON_TAIL[2]) \
     .add_field(LLM_COMMON_TAIL[3]) \
+    .add_field(LLM_COMMON_TAIL[4]) \
+    .add_field(LLM_COMMON_TAIL[5]) \
     .build_decorator()
 class XAIProvider:
     pass
@@ -41,6 +43,8 @@ class XAIProvider:
     .add_field(LLM_COMMON_TAIL[1]) \
     .add_field(LLM_COMMON_TAIL[2]) \
     .add_field(LLM_COMMON_TAIL[3]) \
+    .add_field(LLM_COMMON_TAIL[4]) \
+    .add_field(LLM_COMMON_TAIL[5]) \
     .build_decorator()
 class GroqProvider:
     pass
@@ -61,6 +65,8 @@ class GroqProvider:
     .add_field(LLM_COMMON_TAIL[1]) \
     .add_field(LLM_COMMON_TAIL[2]) \
     .add_field(LLM_COMMON_TAIL[3]) \
+    .add_field(LLM_COMMON_TAIL[4]) \
+    .add_field(LLM_COMMON_TAIL[5]) \
     .build_decorator()
 class MiniMaxProvider:
     pass
@@ -90,6 +96,8 @@ _FIREWORKS_ENDPOINT = AIModelField(
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[3], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[4], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[5], ModelCapability.TEXT_GENERATION) \
     .add_field(API_KEY, ModelCapability.EMBEDDING) \
     .add_field(model_field("e.g. nomic-ai/nomic-embed-text-v1.5"), ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \

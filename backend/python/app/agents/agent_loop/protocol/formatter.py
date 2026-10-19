@@ -120,6 +120,15 @@ class ProtocolFormatter(ABC):
     ) -> list[dict[str, Any]]: ...
 
 
+def with_model_info(context: "AgentContext", completion_data: dict[str, Any]) -> dict[str, Any]:
+    """Adds the model Auto picked for this turn, so the saved answer can name it."""
+    state = getattr(context, "tool_state", None)
+    model_info = state.get("model_info") if isinstance(state, dict) else None
+    if not model_info or not isinstance(completion_data, dict) or "modelInfo" in completion_data:
+        return completion_data
+    return {**completion_data, "modelInfo": model_info}
+
+
 class LegacyFormatter(ProtocolFormatter):
     """Byte-identical to today's hand-built dict literals — the default
     for every request that doesn't explicitly negotiate `agui`."""
@@ -131,6 +140,7 @@ class LegacyFormatter(ProtocolFormatter):
         return [{"event": "answer_chunk", "data": data}]
 
     def answer_final(self, context, *, completion_data):
+        completion_data = with_model_info(context, completion_data)
         return [{"event": "complete", "data": completion_data}]
 
     def ask_user_question(self, context, *, status, tool_data):
@@ -192,6 +202,7 @@ class AGUIFormatter(ProtocolFormatter):
         )]
 
     def answer_final(self, context, *, completion_data):
+        completion_data = with_model_info(context, completion_data)
         return [
             frame(AGUIEventType.STATE_SNAPSHOT, runId=context.run_id, snapshot={"final": True, **completion_data}),
             frame(

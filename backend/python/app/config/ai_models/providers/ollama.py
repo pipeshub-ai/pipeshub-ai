@@ -32,6 +32,8 @@ _OLLAMA_ENDPOINT = AIModelField(
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[3], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[4], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[5], ModelCapability.TEXT_GENERATION) \
     .add_field(model_field("e.g., mxbai-embed-large"), ModelCapability.EMBEDDING) \
     .add_field(_OLLAMA_ENDPOINT, ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \

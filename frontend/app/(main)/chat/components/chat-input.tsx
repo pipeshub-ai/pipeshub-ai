@@ -35,6 +35,7 @@ import { getQueryModeConfig } from '@/chat/constants';
 import {
   useChatStore,
   ctxKeyFromAgent,
+  getEffectiveModel,
   isModelReasoningCapable,
   getModelDefaultReasoningEffort,
 } from '@/chat/store';
@@ -94,6 +95,7 @@ import {
   isFileTypeSupported,
   pasteFallbackExtension,
 } from '../utils/attachment-file-types';
+import { isAutoModel } from '@/chat/utils/auto-model';
 
 type ChatInputVariant = 'full' | 'widget';
 
@@ -289,7 +291,7 @@ export function ChatInput({
   const draftConvId = useChatStore((s) =>
     s.activeSlotId ? (s.slots[s.activeSlotId]?.convId ?? null) : null,
   );
-  useComposerDraft({
+  const { discardDraft, keepDraft } = useComposerDraft({
     draftKey: persistDraft
       ? buildDraftKey({ userId: draftUserId, convId: draftConvId, agentId })
       : null,
@@ -477,12 +479,23 @@ export function ChatInput({
   // model-related reads/writes below are keyed by this so assistant selections
   // don't leak into agents and vice-versa.
   const modelCtxKey = ctxKeyFromAgent(agentId);
-  const contextSelectedModel = settings.selectedModels[modelCtxKey] ?? null;
-  const contextDefaultModel = settings.defaultModels[modelCtxKey] ?? null;
-  const displayModel = contextSelectedModel ?? contextDefaultModel;
-  const displayModelLabel = displayModel
-    ? (displayModel.modelFriendlyName || displayModel.modelName)
-    : t('chat.aiModelsTooltip');
+  const openedProjectId = useChatStore((s) => s.projectScope?.projectId ?? null);
+  const displayModel = useMemo(
+    () => getEffectiveModel(modelCtxKey),
+    [
+      modelCtxKey,
+      openedProjectId,
+      settings.autoDefault,
+      settings.selectedModels,
+      settings.defaultModels,
+      settings.availableModels,
+    ],
+  );
+  const displayModelLabel = isAutoModel(displayModel)
+    ? t('chat.autoModel.name', 'Auto')
+    : displayModel
+      ? (displayModel.modelFriendlyName || displayModel.modelName)
+      : t('chat.aiModelsTooltip');
   const handleModelSelect = useCallback(
     (model: ModelOverride | null) => {
       setSelectedModelForCtx(modelCtxKey, model);
@@ -1076,7 +1089,14 @@ export function ChatInput({
           store.setFilters(mergeMentionFilters(store.settings.filters, kept));
         }
       }
-      const clearDraft = () => {
+      const sentText = message;
+      const sentMentions = mentions;
+      const sentFiles = uploadedFiles;
+      // Clear before the send. A new chat gets its id, and the centered composer
+      // unmounts, while the request is still starting; either one would copy
+      // the question back into the box if it were still the current draft.
+      const clearComposer = () => {
+        discardDraft();
         setMessage('');
         setMentions([]);
         setUploadedFiles([]);
@@ -1085,16 +1105,23 @@ export function ChatInput({
           textareaRef.current.style.height = 'auto';
         }
       };
+      const restoreComposer = () => {
+        keepDraft(sentText);
+        setMessage(sentText);
+        setMentions(sentMentions);
+        setUploadedFiles(sentFiles);
+      };
+      clearComposer();
       const sending = onSend(
-        stripMentionPads(message, kept),
+        stripMentionPads(sentText, kept),
         refs.length > 0 ? refs : undefined,
         sent.length > 0 ? sent : undefined,
       );
       if (sending instanceof Promise) {
         // The host said why it refused (or failed); the draft stays for another try.
-        void sending.then((ok) => { if (ok !== false) clearDraft(); }, () => {});
-      } else if (sending !== false) {
-        clearDraft();
+        void sending.then((ok) => { if (ok === false) restoreComposer(); }, () => restoreComposer());
+      } else if (sending === false) {
+        restoreComposer();
       }
     }
   };
@@ -2194,7 +2221,7 @@ export function ChatInput({
           onClose={() => setIsModelPanelOpen(false)}
         >
           <ModelSelectorPanel
-            selectedModel={contextSelectedModel ?? contextDefaultModel}
+            selectedModel={displayModel}
             onModelSelect={handleModelSelect}
             agentId={agentId}
           />

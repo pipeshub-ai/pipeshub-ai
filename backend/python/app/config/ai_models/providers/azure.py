@@ -67,6 +67,8 @@ _AZURE_AI_ENDPOINT_EMB = AIModelField(
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[3], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[4], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[5], ModelCapability.TEXT_GENERATION) \
     .add_field(_AZURE_AI_ENDPOINT_EMB, ModelCapability.EMBEDDING) \
     .add_field(API_KEY, ModelCapability.EMBEDDING) \
     .add_field(model_field("e.g., text-embedding-ada-002, embed-v-4-0"), ModelCapability.EMBEDDING) \
@@ -104,6 +106,8 @@ _AZURE_OPENAI_ENDPOINT = AIModelField(
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[3], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[4], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[5], ModelCapability.TEXT_GENERATION) \
     .add_field(_AZURE_OPENAI_ENDPOINT, ModelCapability.EMBEDDING) \
     .add_field(API_KEY, ModelCapability.EMBEDDING) \
     .add_field(model_field("e.g., text-embedding-3-small"), ModelCapability.EMBEDDING) \

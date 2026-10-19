@@ -497,6 +497,26 @@ export const providerType = z.string().min(1, 'Provider is required');
 //
 // `.passthrough()` must precede `.refine(...)`, because `refine` returns a
 // `ZodEffects` that does not expose `.passthrough()`.
+// Per-model traits read by chat's Auto model mode. "auto" (or absent) leaves the value to detection.
+const MODEL_SIZE_VALUES = ['auto', 'small', 'medium', 'large'] as const;
+const MODEL_THINKING_VALUES = ['auto', 'none', 'optional', 'always'] as const;
+const MODEL_TRAIT_EFFORT_VALUES = ['low', 'medium', 'high', 'max'] as const;
+export const MODEL_TRAIT_KEYS = ['size', 'thinking', 'reasoningEfforts', 'supportsTools', 'strengths'] as const;
+
+const modelTraitFields = {
+  size: z.enum(MODEL_SIZE_VALUES).optional().describe('Model size used by Auto: small, medium or large'),
+  thinking: z
+    .enum(MODEL_THINKING_VALUES)
+    .optional()
+    .describe('Whether the model thinks: none, optional (when asked) or always'),
+  reasoningEfforts: z
+    .array(z.enum(MODEL_TRAIT_EFFORT_VALUES))
+    .optional()
+    .describe('Reasoning effort levels the model accepts'),
+  supportsTools: z.boolean().optional().describe('Whether the model can call tools'),
+  strengths: z.array(z.string().max(64)).max(20).optional().describe('Reserved: tasks the model is good at'),
+};
+
 export const configurationSchema = z.object({
   model: z.string().optional().describe("Model name(s) - can be comma-separated for multiple models (e.g., 'gpt-5.6-luna, gpt-5.6-terra')"),
   modelFriendlyName: z.string().optional().describe("Friendly name for the model (only allowed when model contains a single model name, not comma-separated)"),
@@ -527,6 +547,7 @@ export const configurationSchema = z.object({
       },
     )
     .describe('Reasoning effort used when a request does not choose one'),
+  ...modelTraitFields,
 }).passthrough().refine(
   (data) => {
     // If modelFriendlyName is provided, model must be a single model (not comma-separated)
@@ -585,14 +606,19 @@ const batchModelSchema = z.object({
   isMultimodal: z.boolean().default(false),
   isReasoning: z.boolean().default(false),
   contextLength: z.number().optional().nullable(),
+  ...modelTraitFields,
 });
 
-/** Drop a shared friendly name before the single-model refine. Each batch model carries its own. */
+/**
+ * Drop shared per-model keys before the single-model refine. Each batch model carries its own
+ * friendly name and traits; a shared one would be stamped onto every model.
+ */
 const batchSharedConfigurationSchema = z.preprocess((value) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  if (!('modelFriendlyName' in value)) return value;
   const copy = { ...(value as Record<string, unknown>) };
-  delete copy.modelFriendlyName;
+  for (const key of ['modelFriendlyName', ...MODEL_TRAIT_KEYS]) {
+    delete copy[key];
+  }
   return copy;
 }, configurationSchema);
 

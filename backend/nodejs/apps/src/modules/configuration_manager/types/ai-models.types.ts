@@ -54,6 +54,11 @@ export interface AIModelsConfig {
    * default model for that model type.
    */
   modelRoles?: Record<string, ModelRoleAssignment>;
+  /**
+   * When true, a new assistant chat opens on Auto. A person's own pick is kept,
+   * and a project chat still uses the concrete default model.
+   */
+  autoDefault?: boolean;
 }
 
 /**

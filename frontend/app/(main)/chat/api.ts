@@ -732,17 +732,28 @@ export const ChatApi = {
   },
 
   /**
-   * Fetch available LLM models for the org.
+   * Fetch available LLM models for the org, plus whether Auto opens new chats.
    * Endpoint: GET /api/v1/configurationManager/ai-models/available/llm
    */
-  async fetchAvailableLlms(): Promise<AvailableLlmModel[]> {
-    const { data } = await apiClient.get<{ status: string; models: AvailableLlmModel[]; message: string }>(
-      '/api/v1/configurationManager/ai-models/available/llm'
-    );
+  async fetchOrgLlmCatalog(): Promise<{ models: AvailableLlmModel[]; autoDefault: boolean }> {
+    const { data } = await apiClient.get<{
+      status: string;
+      models: AvailableLlmModel[];
+      autoDefault?: boolean;
+      message: string;
+    }>('/api/v1/configurationManager/ai-models/available/llm');
     // `data` itself can be null/undefined (e.g. an empty response body), and
     // `?? []` alone wouldn't guard a malformed non-array `models` value — both
     // would otherwise reach callers that call `.find`/`.map` on the result.
-    return Array.isArray(data?.models) ? data.models : [];
+    return {
+      models: Array.isArray(data?.models) ? data.models : [],
+      autoDefault: data?.autoDefault === true,
+    };
+  },
+
+  async fetchAvailableLlms(): Promise<AvailableLlmModel[]> {
+    const { models } = await this.fetchOrgLlmCatalog();
+    return models;
   },
 
   // ── Deprecated: knowledge-hub/nodes approach (commented out) ──

@@ -15,7 +15,7 @@
 
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, getRequestReasoningEffort } from './store';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
 import { appendResumeParts } from './utils/tool-display';
@@ -1767,11 +1767,7 @@ export async function streamRegenerateForSlot(
         : [...new Set(agentToolsSel.map(stripInstancePrefix))];
       const scopedCaps = useChatStore.getState().scopedAgentCapabilities[threadAgentId]
         ?? { internalSearch: true, webSearch: true };
-      const agentRegenReasoningEffortOverride = useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
-      const agentRegenDefault = getAgentDefaultReasoningEffort(regenCtxKey);
-      const agentRegenReasoningEffort =
-        agentRegenReasoningEffortOverride ??
-        (isModelReasoningCapable(regenCtxKey, resolvedModel) ? agentRegenDefault : null);
+      const agentRegenReasoningEffort = getRequestReasoningEffort(regenCtxKey, resolvedModel);
       await ChatApi.streamAgentRegenerate(
         threadAgentId,
         slot.convId,
@@ -1802,9 +1798,7 @@ export async function streamRegenerateForSlot(
             (universalToolsSel === null ? [...universalToolCatalog] : [...universalToolsSel]).map(stripInstancePrefix)
           )]
         : undefined;
-      // Left unset when the user chose nothing, so the backend applies the model's default.
-      const assistantRegenReasoningEffort =
-        useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
+      const assistantRegenReasoningEffort = getRequestReasoningEffort(regenCtxKey, resolvedModel);
       await ChatApi.streamRegenerate(slot.convId, messageId, regenerateCallbacks, {
         modelKey: resolvedModel.modelKey,
         modelName: resolvedModel.modelName,

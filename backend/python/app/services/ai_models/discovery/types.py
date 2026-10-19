@@ -35,6 +35,10 @@ class RawModel(BaseModel):
     supports_tools: bool | None = None
     deprecated: bool | None = None
     released_at: int | None = None
+    parameter_count: float | None = None
+    thinking: str | None = None
+    reasoning_efforts: list[str] | None = None
+    output_price: float | None = None
 
 
 class DiscoveredModel(BaseModel):
@@ -50,6 +54,7 @@ class DiscoveredModel(BaseModel):
     deprecated: bool = False
     released_at: int | None = Field(default=None, serialization_alias="releasedAt")
     source: Literal["provider_api", "catalog", "heuristic"]
+    traits: dict[str, Any] | None = None
 
 
 class DiscoveryRequest(BaseModel):

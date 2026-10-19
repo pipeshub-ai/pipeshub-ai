@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { debugLog } from './debug-logger';
+import { AUTO_MODEL, canUseAuto, isAutoModel } from './utils/auto-model';
 import {
   forgetUnreadConversation,
   loadUnreadConversationIds,
@@ -723,6 +724,7 @@ interface ChatState {
   setReasoningEffortForCtx: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => void;
   /** Store the agent-configured default reasoning effort for a context. */
   setAgentDefaultReasoningEffort: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => void;
+  setAutoDefault: (autoDefault: boolean) => void;
   /** Update universal agent mode capability toggles and persist to localStorage. */
   setAgentCapabilities: (caps: Partial<import('./types').AgentCapabilities>) => void;
   /**
@@ -861,6 +863,7 @@ const initialState = {
     availableModels: {} as Record<string, { models: import('./types').AvailableLlmModel[]; fetchedAt: number }>,
     reasoningEffort: {} as Record<string, import('./types').ReasoningEffort | null>,
     agentDefaultReasoningEffort: {} as Record<string, import('./types').ReasoningEffort | null>,
+    autoDefault: false,
   },
 
   scopedAgentCapabilities: {} as Record<string, AgentCapabilities>,
@@ -1660,6 +1663,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     },
   })),
 
+  setAutoDefault: (autoDefault: boolean) => set((state) => ({
+    settings: { ...state.settings, autoDefault },
+  })),
+
   setAgentCapabilities: (caps) => set((state) => {
     const next: AgentCapabilities = { ...state.settings.agentCapabilities, ...caps };
     lsSetAgentCapabilities(next);
@@ -1757,8 +1764,22 @@ export const ctxKeyFromAgent = (agentId: string | null | undefined): string =>
 export function getEffectiveModel(
   ctxKey: string,
 ): import('./types').ModelOverride | null {
-  const { selectedModels, defaultModels } = useChatStore.getState().settings;
-  return selectedModels[ctxKey] ?? defaultModels[ctxKey] ?? null;
+  const state = useChatStore.getState();
+  const { selectedModels, defaultModels, autoDefault, availableModels } = state.settings;
+  const selected = selectedModels[ctxKey];
+  if (selected) return selected;
+  const concrete = defaultModels[ctxKey] ?? null;
+  // Auto is the org default for a new assistant chat only. A project keeps the
+  // concrete model, and an explicit pick (including one made earlier) wins.
+  if (
+    ctxKey === ASSISTANT_CTX
+    && autoDefault
+    && !state.projectScope
+    && canUseAuto(availableModels[ctxKey]?.models)
+  ) {
+    return AUTO_MODEL;
+  }
+  return concrete;
 }
 
 /**
@@ -1803,6 +1824,20 @@ export function getAgentDefaultReasoningEffort(
   ctxKey: string,
 ): import('./types').ReasoningEffort | null {
   return useChatStore.getState().settings.agentDefaultReasoningEffort[ctxKey] ?? null;
+}
+
+/**
+ * Effort to put on a chat request for `model` in `ctxKey`: the user's pick,
+ * else the agent default for a reasoning model, else none (backend default).
+ */
+export function getRequestReasoningEffort(
+  ctxKey: string,
+  model: import('./types').ModelOverride | null,
+): import('./types').ReasoningEffort | null {
+  // Auto picks its own effort per question; a stale pick would pin it.
+  if (isAutoModel(model)) return null;
+  const picked = useChatStore.getState().settings.reasoningEffort[ctxKey] ?? null;
+  return picked ?? (isModelReasoningCapable(ctxKey, model) ? getAgentDefaultReasoningEffort(ctxKey) : null);
 }
 
 /**

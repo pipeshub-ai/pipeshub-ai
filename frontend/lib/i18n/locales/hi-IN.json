@@ -1221,6 +1221,33 @@
       "high": "अधिक",
       "max": "अधिकतम"
     },
+    "autoModel": {
+      "name": "ऑटो",
+      "description": "हर प्रश्न के लिए एक मॉडल और प्रयास स्तर चुनता है",
+      "reason": {
+        "greeting": "छोटा अभिवादन, इसलिए हल्के मॉडल ने उत्तर दिया",
+        "singleModel": "केवल एक मॉडल उपलब्ध है",
+        "classified": "प्रश्न की जटिलता के अनुसार चुना गया",
+        "pinned": "इस बातचीत में पहले इस्तेमाल हुआ मॉडल ही रखा गया",
+        "classifierFallback": "प्रश्न को वर्गीकृत नहीं किया जा सका, इसलिए डिफ़ॉल्ट का उपयोग किया गया",
+        "noCandidates": "कोई मॉडल प्रश्न के अनुकूल नहीं था, इसलिए डिफ़ॉल्ट का उपयोग किया गया",
+        "generic": "स्वचालित रूप से चुना गया"
+      },
+      "property": {
+        "shortGreeting": "छोटा अभिवादन",
+        "lightModel": "हल्का मॉडल",
+        "standardModel": "मानक मॉडल",
+        "complexModel": "जटिल मॉडल",
+        "lowReasoning": "कम तर्क",
+        "mediumReasoning": "मध्यम तर्क",
+        "highReasoning": "उच्च तर्क",
+        "keptEarlier": "पहले वाला रखा",
+        "onlyModel": "केवल एक मॉडल",
+        "couldNotClassify": "वर्गीकरण नहीं हो सका",
+        "noMatch": "कोई मेल खाता मॉडल नहीं",
+        "defaultModel": "डिफ़ॉल्ट मॉडल"
+      }
+    },
     "universalAgent": {
       "toolsLoadError": "उपलब्ध क्रियाएँ लोड नहीं हो सकीं।",
       "mcpLoadError": "MCP सर्वर लोड नहीं हो सके।",
@@ -1836,6 +1863,13 @@
       "actionSetDefault": "डिफ़ॉल्ट सेट करें",
       "actionDelete": "हटाएँ",
       "moreOptions": "अधिक विकल्प",
+      "autoDefault": {
+        "title": "Default for new chats",
+        "description": "Open new chats on Auto. A model someone already chose stays, and a project keeps its own model.",
+        "needsTwoModels": "Add at least two chat models before Auto can be the default.",
+        "toastSaved": "Saved",
+        "toastSaveError": "Could not save"
+      },
       "roles": {
         "sectionTitle": "मॉडल भूमिका आवंटन",
         "sectionDescription": "विशिष्ट कार्यों के लिए समर्पित मॉडल असाइन करें। आवंटन न होने पर डिफ़ॉल्ट मॉडल उपयोग होगा।",
@@ -1909,6 +1943,20 @@
       "badgeVision": "विज़न",
       "badgeReasoning": "रीज़निंग",
       "badgeDeprecated": "अप्रचलित",
+      "traitSizeLabel": "आकार",
+      "traitThinkingLabel": "सोचना",
+      "traitDetected": "पहचाना गया",
+      "traitAutoDetect": "स्वतः पहचानें",
+      "traitSize": {
+        "small": "छोटा",
+        "medium": "मध्यम",
+        "large": "बड़ा"
+      },
+      "traitThinking": {
+        "none": "नहीं सोचता",
+        "optional": "कहने पर सोचता है",
+        "always": "हमेशा सोचता है"
+      },
       "batchRetry": "फिर कोशिश करें",
       "batchRemove": "हटाएँ",
       "rotateCredentials": "क्रेडेंशियल बदलें",

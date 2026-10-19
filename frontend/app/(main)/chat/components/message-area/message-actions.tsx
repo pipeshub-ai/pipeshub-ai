@@ -17,6 +17,7 @@ import { toast } from '@/lib/store/toast-store';
 import { useChatSpeechSynthesis } from '@/lib/hooks/use-chat-speech-synthesis';
 import { ChatApi, type FeedbackPayload } from '../../api';
 import { useChatStore } from '../../store';
+import { getAutoRoutedLabel } from '../../utils/auto-model';
 
 // ========================================
 // Types & Constants
@@ -315,7 +316,36 @@ export function MessageActions({
   if (isStreaming) return null;
 
   const chatModeLabel = formatChatMode(modelInfo?.chatMode);
-  const modelName = modelInfo?.modelFriendlyName || modelInfo?.modelName || '';
+  const autoRouted = getAutoRoutedLabel(t, modelInfo);
+  const modelName = autoRouted?.label || modelInfo?.modelFriendlyName || modelInfo?.modelName || '';
+  const modelPill = modelName ? (
+    <Flex
+      align="center"
+      justify="center"
+      gap="1"
+      style={{
+        height: '24px',
+        padding: '0 var(--space-2)',
+        borderRadius: 'var(--radius-1)',
+      }}
+    >
+      <MaterialIcon
+        name={autoRouted ? 'auto_awesome' : 'memory'}
+        size={ICON_SIZES.PRIMARY}
+        color="var(--slate-11)"
+      />
+      <Text
+        size="1"
+        style={{
+          color: 'var(--slate-11)',
+          lineHeight: 'var(--line-height-1)',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {modelName}
+      </Text>
+    </Flex>
+  ) : null;
 
   return (
     <>
@@ -780,34 +810,9 @@ export function MessageActions({
         )}
 
         {/* Model name with icon */}
-        {modelName && (
-          <Flex
-            align="center"
-            justify="center"
-            gap="1"
-            style={{
-              height: '24px',
-              padding: '0 var(--space-2)',
-              borderRadius: 'var(--radius-1)',
-            }}
-          >
-            <MaterialIcon
-              name="memory"
-              size={ICON_SIZES.PRIMARY}
-              color="var(--slate-11)"
-            />
-            <Text
-              size="1"
-              style={{
-                color: 'var(--slate-11)',
-                lineHeight: 'var(--line-height-1)',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {modelName}
-            </Text>
-          </Flex>
-        )}
+        {modelPill && (autoRouted ? (
+          <Tooltip content={autoRouted.tooltip} side="top">{modelPill}</Tooltip>
+        ) : modelPill)}
       </Flex>
       </Flex>
 

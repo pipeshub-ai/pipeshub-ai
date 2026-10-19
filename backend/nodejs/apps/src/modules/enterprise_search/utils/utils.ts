@@ -21,7 +21,11 @@ import {
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import Citation, { ICitation } from '../schema/citation.schema';
-import { CONVERSATION_STATUS, ONLY_AGENT } from '../constants/constants';
+import {
+  CONVERSATION_STATUS,
+  ONLY_AGENT,
+  REASONING_EFFORT_VALUES,
+} from '../constants/constants';
 import { Logger } from '../../../libs/services/logger.service';
 import { Response } from 'express';
 import { ChatSession } from '../schema/chat.session.schema';
@@ -577,6 +581,33 @@ export const recordClassifiedFailureOnSession = (
   );
 };
 
+/**
+ * The model an answer actually came from. For Auto turns the AI service reports
+ * the model it picked; the request's `modelInfo` (modelKey "auto") is kept for
+ * the conversation, never mutated here.
+ */
+export const answeredModelInfo = (
+  requested: IAIModel | undefined,
+  answered: IAIModel | undefined,
+): IAIModel | undefined => {
+  if (!answered?.autoRouted || !answered.modelKey) {
+    return requested;
+  }
+  const effort = answered.reasoningEffort;
+  return {
+    modelKey: answered.modelKey,
+    modelName: answered.modelName,
+    modelProvider: answered.modelProvider ?? requested?.modelProvider ?? '',
+    chatMode: requested?.chatMode ?? 'quick',
+    ...(answered.modelFriendlyName && { modelFriendlyName: answered.modelFriendlyName }),
+    ...(effort && (REASONING_EFFORT_VALUES as readonly string[]).includes(effort) && {
+      reasoningEffort: effort,
+    }),
+    autoRouted: true,
+    ...(answered.autoReason && { autoReason: String(answered.autoReason).slice(0, 200) }),
+  };
+};
+
 export const buildAIResponseMessage = (
   aiResponse: AIServiceResponse<IAIResponse>,
   citations: ICitation[] = [],
@@ -617,7 +648,7 @@ export const buildAIResponseMessage = (
       aiTransactionId: data.metadata?.aiTransactionId,
       reason: data.reason,
     },
-    modelInfo: modelInfo,
+    modelInfo: answeredModelInfo(modelInfo, data.modelInfo),
   };
 
   // Include referenceData if present (IDs for follow-up queries)
@@ -838,6 +869,14 @@ export const formatPreviousConversations = (messages: IMessage[]) => {
       // see HOW a past answer was produced instead of text-only history
       // (see `_convert_conversation_turn`, factory.py).
       ...(toolResults.length > 0 && { tool_results: toolResults }),
+      // Auto mode keeps a conversation on the model it last picked (no mid-chat downgrades).
+      ...(msg.messageType === 'bot_response' &&
+        msg.modelInfo?.autoRouted && {
+          autoRouted: true,
+          modelKey: msg.modelInfo.modelKey,
+          modelName: msg.modelInfo.modelName,
+          ...(msg.modelInfo.reasoningEffort && { reasoningEffort: msg.modelInfo.reasoningEffort }),
+        }),
     });
   }
   return result;

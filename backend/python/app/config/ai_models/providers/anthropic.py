@@ -19,6 +19,8 @@ from .common_fields import API_KEY, LLM_COMMON_TAIL, model_field
     .add_field(LLM_COMMON_TAIL[1])
     .add_field(LLM_COMMON_TAIL[2])
     .add_field(LLM_COMMON_TAIL[3])
+    .add_field(LLM_COMMON_TAIL[4])
+    .add_field(LLM_COMMON_TAIL[5])
     .build_decorator()
 )
 

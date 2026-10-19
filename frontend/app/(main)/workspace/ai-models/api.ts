@@ -8,6 +8,8 @@ import type {
   ModelRoleAssignment,
   ModelRolesResponse,
   ModelsByTypeResponse,
+  ModelSize,
+  ModelThinking,
   RegistryResponse,
 } from './types';
 
@@ -46,6 +48,8 @@ export const AIModelsApi = {
         isMultimodal: boolean;
         isReasoning: boolean;
         contextLength?: number | null;
+        size?: ModelSize;
+        thinking?: ModelThinking;
       }>;
       defaultModel?: string;
       connectionId?: string;
@@ -167,6 +171,21 @@ export const AIModelsApi = {
 
   updateRoles: async (roles: Record<string, ModelRoleAssignment>) => {
     const { data } = await apiClient.put(`${BASE}/ai-models/roles`, { roles });
+    return data;
+  },
+
+  getAutoDefault: async () => {
+    const { data } = await apiClient.get<{ status: string; autoDefault: boolean }>(
+      `${BASE}/ai-models/auto-default`,
+    );
+    return data;
+  },
+
+  updateAutoDefault: async (autoDefault: boolean) => {
+    const { data } = await apiClient.put<{ status: string; autoDefault: boolean }>(
+      `${BASE}/ai-models/auto-default`,
+      { autoDefault },
+    );
     return data;
   },
 };

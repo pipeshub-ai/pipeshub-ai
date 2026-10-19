@@ -86,6 +86,8 @@ SERVICE_ACCOUNT_JSON = AIModelField(
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[3], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[4], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[5], ModelCapability.TEXT_GENERATION) \
     .add_field(VERTEX_AI_PROJECT, ModelCapability.EMBEDDING) \
     .add_field(VERTEX_AI_LOCATION, ModelCapability.EMBEDDING) \
     .add_field(SERVICE_ACCOUNT_JSON, ModelCapability.EMBEDDING) \

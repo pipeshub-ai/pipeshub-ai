@@ -413,4 +413,8 @@ export interface IAIModel {
   modelFriendlyName?: string;
   /** Forwarded to the Python LLM factory. */
   reasoningEffort?: ReasoningEffort;
+  /** Set on an answer when chat's Auto mode picked the model. */
+  autoRouted?: boolean;
+  /** Why Auto picked that model, e.g. "classified_heavy". */
+  autoReason?: string;
 }

@@ -91,6 +91,22 @@ export interface ConfiguredModel {
   connectionId?: string;
 }
 
+/** Traits Auto mode routes on. `auto` (stored only) means "use what was detected". */
+export const MODEL_SIZES = ['small', 'medium', 'large'] as const;
+export type ModelSize = (typeof MODEL_SIZES)[number];
+export const MODEL_THINKING_MODES = ['none', 'optional', 'always'] as const;
+export type ModelThinking = (typeof MODEL_THINKING_MODES)[number];
+
+export interface DiscoveredModelTraits {
+  size?: ModelSize | null;
+  thinking?: ModelThinking | null;
+  reasoningEfforts?: string[];
+  supportsTools?: boolean | null;
+  strengths?: string[];
+  /** Where each trait came from, e.g. `{ size: 'price' }`. */
+  source?: Record<string, string>;
+}
+
 export interface DiscoveredModel {
   id: string;
   displayName: string;
@@ -102,6 +118,7 @@ export interface DiscoveredModel {
   deprecated?: boolean;
   /** Unix seconds, when the provider reports it. The server lists newest first. */
   releasedAt?: number | null;
+  traits?: DiscoveredModelTraits;
 }
 
 export interface DiscoveryResponse {
@@ -119,6 +136,9 @@ export interface PickedModel {
   isMultimodal: boolean;
   isReasoning: boolean;
   contextLength?: number | null;
+  /** Set only when the admin overrode the detected value; absent keeps detection authoritative. */
+  size?: ModelSize;
+  thinking?: ModelThinking;
 }
 
 // ========================================
@@ -203,8 +223,7 @@ export const CAPABILITY_SECTION_ORDER: CapabilitySection[] = [
   'image_generation',
   'tts',
   'stt',
-  // Hidden until a feature uses decision models; uncomment to show the For Decisions tab.
-  // 'decision',
+  'decision',
 ];
 
 /** Model API buckets shown under the "For LLMs" tab. */
@@ -234,8 +253,7 @@ export const REGISTRY_BADGE_CAPABILITY_KEYS = [
   'embedding',
   'tts',
   'stt',
-  // Hidden with the For Decisions tab; uncomment together with it.
-  // 'decision',
+  'decision',
 ] as const;
 
 export type RegistryBadgeCapabilityKey = (typeof REGISTRY_BADGE_CAPABILITY_KEYS)[number];

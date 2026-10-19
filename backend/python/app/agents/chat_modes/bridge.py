@@ -490,6 +490,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             has_slack_connector=has_slack_connector, client_name=client_name,
             entity_vector_store=entity_vector_store,
         )
+        # Read by the formatters' answer_final so the saved answer names the model Auto picked.
+        chat_state["model_info"] = query_info.get("modelInfo")
         _apply_policy_to_chat_state(
             chat_state, policy, web_search_config,
             sql_connector_ids=sql_connector_instance_ids(connector_instances, user_info["orgId"]),

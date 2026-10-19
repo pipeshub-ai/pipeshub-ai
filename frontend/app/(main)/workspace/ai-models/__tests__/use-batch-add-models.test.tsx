@@ -57,4 +57,21 @@ describe('useBatchAddModels', () => {
       ['gpt-5.6-terra', 'failed', 'interrupted'],
     ]);
   });
+
+  it('sends size and thinking only for a model whose detected value was overridden', async () => {
+    api.batchAddModels.mockResolvedValue(undefined);
+    const { result } = renderHook(() => useBatchAddModels());
+    await act(async () => {
+      await result.current.run({
+        modelType: 'llm',
+        provider: 'openAI',
+        configuration: { apiKey: 'sk' },
+        models: [{ ...picked('gpt-5.6-luna'), size: 'large', thinking: 'always' }, picked('gpt-5.6-terra')],
+      });
+    });
+    const body = api.batchAddModels.mock.calls[0][0] as { models: Record<string, unknown>[] };
+    expect(body.models[0]).toMatchObject({ size: 'large', thinking: 'always' });
+    expect(body.models[1]).not.toHaveProperty('size');
+    expect(body.models[1]).not.toHaveProperty('thinking');
+  });
 });

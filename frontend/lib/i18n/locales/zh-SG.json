@@ -1305,6 +1305,33 @@
       "high": "高",
       "max": "最高"
     },
+    "autoModel": {
+      "name": "自动",
+      "description": "为每个问题选择模型和推理强度",
+      "reason": {
+        "greeting": "简短问候，因此由轻量模型回答",
+        "singleModel": "只有一个可用模型",
+        "classified": "根据问题的难度选择",
+        "pinned": "沿用了此对话中先前使用的模型",
+        "classifierFallback": "无法对问题分类，因此使用了默认模型",
+        "noCandidates": "没有适合该问题的模型，因此使用了默认模型",
+        "generic": "自动选择"
+      },
+      "property": {
+        "shortGreeting": "简短问候",
+        "lightModel": "轻量模型",
+        "standardModel": "标准模型",
+        "complexModel": "复杂模型",
+        "lowReasoning": "低推理",
+        "mediumReasoning": "中等推理",
+        "highReasoning": "高推理",
+        "keptEarlier": "沿用之前的模型",
+        "onlyModel": "只有一个模型",
+        "couldNotClassify": "无法分类",
+        "noMatch": "没有合适的模型",
+        "defaultModel": "默认模型"
+      }
+    },
     "universalAgent": {
       "toolsLoadError": "加载可用操作失败。",
       "mcpLoadError": "加载 MCP 服务器失败。",
@@ -1972,6 +1999,13 @@
       "actionSetDefault": "设为默认",
       "actionDelete": "删除",
       "moreOptions": "更多选项",
+      "autoDefault": {
+        "title": "Default for new chats",
+        "description": "Open new chats on Auto. A model someone already chose stays, and a project keeps its own model.",
+        "needsTwoModels": "Add at least two chat models before Auto can be the default.",
+        "toastSaved": "Saved",
+        "toastSaveError": "Could not save"
+      },
       "roles": {
         "sectionTitle": "模型角色分配",
         "sectionDescription": "为特定任务分配专用模型。未分配时将使用默认模型。",
@@ -2045,6 +2079,20 @@
       "badgeVision": "视觉",
       "badgeReasoning": "推理",
       "badgeDeprecated": "已弃用",
+      "traitSizeLabel": "规模",
+      "traitThinkingLabel": "思考",
+      "traitDetected": "已检测",
+      "traitAutoDetect": "自动检测",
+      "traitSize": {
+        "small": "小",
+        "medium": "中",
+        "large": "大"
+      },
+      "traitThinking": {
+        "none": "不思考",
+        "optional": "按需思考",
+        "always": "始终思考"
+      },
       "batchRetry": "重试",
       "batchRemove": "移除",
       "rotateCredentials": "轮换凭据",

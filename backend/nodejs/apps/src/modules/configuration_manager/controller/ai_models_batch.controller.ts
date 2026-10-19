@@ -28,6 +28,7 @@ import {
 } from '../services/aiModelsConfig.repository';
 import { AIModelConfiguration } from '../types/ai-models.types';
 import { mergeAiModelCredentials, pickAiModelCredentials } from '../utils/maskConfigSecrets';
+import { MODEL_TRAIT_KEYS } from '../validator/validators';
 
 const logger = Logger.getInstance({ service: 'AI Models Batch Controller' });
 const BATCH_CONCURRENCY = 3;
@@ -38,7 +39,23 @@ type BatchModel = {
   isMultimodal: boolean;
   isReasoning: boolean;
   contextLength?: number | null;
+  size?: string;
+  thinking?: string;
+  reasoningEfforts?: string[];
+  supportsTools?: boolean;
+  strengths?: string[];
 };
+
+/** The per-model traits a batch row carries, stored inside that model's configuration. */
+function pickModelTraits(model: BatchModel): Record<string, unknown> {
+  const traits: Record<string, unknown> = {};
+  for (const key of MODEL_TRAIT_KEYS) {
+    if (model[key] !== undefined) {
+      traits[key] = model[key];
+    }
+  }
+  return traits;
+}
 
 async function publishConfigured(
   eventService: AiConfigEventProducer,
@@ -249,6 +266,7 @@ export function batchAddAIModels(
           ...shared,
           model: model.model,
           ...(model.modelFriendlyName ? { modelFriendlyName: model.modelFriendlyName } : {}),
+          ...pickModelTraits(model),
         };
         const isDefault = model.model === defaultModel;
         const health = await healthCheckModel(

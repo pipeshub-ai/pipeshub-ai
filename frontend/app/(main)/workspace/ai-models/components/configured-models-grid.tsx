@@ -10,7 +10,7 @@ import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
-import { modelTypesForSection, registryCapabilityForModelType } from '../types';
+import { LLM_SECTION_MODEL_TYPES, MODEL_SIZES, modelTypesForSection, registryCapabilityForModelType } from '../types';
 import { MODEL_ROW_ICON_CONTAINER_STYLE, modelRowCardStyle } from './model-row-layout';
 
 const EMBEDDING_BUILTIN_PLACEHOLDER_MODEL_KEY = 'builtin-default' as const;
@@ -183,6 +183,12 @@ function ConfiguredModelRow({
   const capChip = capabilityLabelForModelType(model.modelType, t);
   const mt = model.modelType;
   const isBuiltinPlaceholder = isEmbeddingBuiltinPlaceholder(model);
+  const storedSize = model.configuration?.size;
+  const sizeChip =
+    (LLM_SECTION_MODEL_TYPES as readonly string[]).includes(mt) &&
+    (MODEL_SIZES as readonly unknown[]).includes(storedSize)
+      ? t(`workspace.aiModels.traitSize.${storedSize as string}`)
+      : null;
 
   return (
     <Flex
@@ -228,6 +234,20 @@ function ConfiguredModelRow({
             >
               {capChip}
             </Text>
+            {sizeChip && (
+              <Text
+                size="1"
+                style={{
+                  color: 'var(--gray-11)',
+                  backgroundColor: 'var(--gray-a3)',
+                  padding: '2px 8px',
+                  borderRadius: "2px",
+                  fontWeight: 500,
+                }}
+              >
+                {sizeChip}
+              </Text>
+            )}
             {model.isDefault && (
               <Text
                 size="1"

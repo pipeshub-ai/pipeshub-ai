@@ -659,6 +659,13 @@ class TestReasoningEffortKwargs:
             "use_responses_api": True,
         }
 
+    def test_allow_disabled_reasoning_keeps_none_on_chat_completions(self):
+        config = {"isReasoning": True, "allowDisabledReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "none", config, provider="azureOpenAI", model_name="gpt-5.4-mini",
+        )
+        assert result == {"reasoning_effort": "none"}
+
 
 # ---------------------------------------------------------------------------
 # get_default_embedding_model

@@ -83,16 +83,7 @@ sequenceDiagram
 
 ## Decision models
 
-A decision model answers typed questions about an input with calibrated probabilities instead of generated text: yes/no (`predicate`), one option out of a set (`choice`), or a position on an ordered scale (`score`). They are stored in the `decision` bucket of `/services/aiModels`, like any other model type.
-
-The **For Decisions** tab in Workspace → AI Models is hidden until a feature uses decision models (`'decision'` is commented out of `CAPABILITY_SECTION_ORDER` in `frontend/app/(main)/workspace/ai-models/types.ts`). Until then, add one through the configuration API (`$NODE_URL` is the Node app's address, for example `http://localhost:3000`):
-
-```bash
-curl -X POST "$NODE_URL/api/v1/configurationManager/ai-models/providers" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"modelType": "decision", "provider": "openAI", "isDefault": true,
-       "configuration": {"model": "gpt-6-luna", "apiKey": "sk-..."}}'
-```
+A decision model answers typed questions about an input with calibrated probabilities instead of generated text: yes/no (`predicate`), one option out of a set (`choice`), or a position on an ordered scale (`score`). They are stored in the `decision` bucket of `/services/aiModels`, like any other model type. Admins add one under **For Decisions** in Workspace → AI Models. Auto mode uses the default decision model as its classifier when one is saved.
 
 | Provider | Models | Endpoint |
 | --- | --- | --- |
@@ -120,6 +111,20 @@ if built:
 
 All questions in one `decide` call share the input; a question that depends on an earlier answer needs a second call. An answer the provider declines comes back with `refused=True`; one the response does not contain comes back with `missing=True` (usually a wrong endpoint or format). Failures raise `DecisionModelError`. Rate limits and overload (429, 500, 502, 503, 504, 529) are retried up to twice, unless the provider asks to wait more than 5 seconds.
 
+## Auto model mode
+
+Chat's model menu offers **Auto** when two or more chat models are configured. It is not the starting model unless an admin turns on **Use Auto as the default for new chats** on the AI Models page. A person can still pick a model, and a choice they already made stays. A project chat keeps the concrete default model unless someone picked one. A request with `modelKey: "auto"` is resolved in the query service before the model is built (`backend/python/app/services/ai_models/auto/`):
+
+1. The candidates are the configured chat models (an agent's own model list on agent routes). With one candidate the router is skipped.
+2. Hard filters drop models that cannot take the turn: no vision for an image, no tool calling on agent routes, a known context window that is too small, or a hosted router such as `openrouter/auto`.
+3. Greetings and bare continuations ("ok", "go on") are decided without a model call. Anything else goes to one short classification call. A configured decision model is used when one exists; otherwise the smallest configured chat model that does not always think (or the `autoRouter` model role, if set). It answers `light`, `standard` or `heavy`, optionally with reasoning.
+4. The need maps to a size (light to small, standard to medium, heavy to large). The smallest model at or above it wins; within a size, the default model first. A conversation never moves to a smaller model than its last Auto pick.
+5. Effort is set only for models flagged Reasoning: low, medium or high, never max, at least medium on agent routes.
+
+A classifier timeout, error or unusable answer falls back to the default model (the agent's first model on agent routes). The final answer carries `modelInfo` with `autoRouted: true` and `autoReason`; Node saves it on the message and keeps `modelKey: auto` on the conversation.
+
+Each model's **size** (small, medium, large) and **thinking** (none, optional, always) resolve per field, first hit wins: the value saved in its `configuration`, then the family rules in `discovery/data/model_traits.json`, then the parameter count (from Ollama or the model id), the catalog price, and name keywords. An unknown size counts as medium. The admin can override both in the model form; "Auto-detect" leaves them to detection.
+
 ## Where to change it
 
 | Concern | Location |
@@ -130,3 +135,4 @@ All questions in one `decide` call share the input; a question that depends on a
 | Stored document and batch save | `backend/nodejs/apps/src/modules/configuration_manager/` |
 | Picker and onboarding | `frontend/app/(main)/workspace/ai-models/` |
 | Decision model clients | `backend/python/app/services/ai_models/decision/` |
+| Auto model mode and model traits | `backend/python/app/services/ai_models/auto/`, `backend/python/app/services/ai_models/traits.py` |

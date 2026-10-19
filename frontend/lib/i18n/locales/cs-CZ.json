@@ -1354,6 +1354,33 @@
       "high": "Vysoká",
       "max": "Maximální"
     },
+    "autoModel": {
+      "name": "Auto",
+      "description": "Picks a model and effort for each question",
+      "reason": {
+        "greeting": "A short greeting, so a light model answered",
+        "singleModel": "Only one model is available",
+        "classified": "Matched to how demanding the question is",
+        "pinned": "Kept the model used earlier in this conversation",
+        "classifierFallback": "Could not classify the question, so a default was used",
+        "noCandidates": "No model fit the question, so a default was used",
+        "generic": "Picked automatically"
+      },
+      "property": {
+        "shortGreeting": "Krátký pozdrav",
+        "lightModel": "Lehký model",
+        "standardModel": "Standardní model",
+        "complexModel": "Složitý model",
+        "lowReasoning": "Nízké uvažování",
+        "mediumReasoning": "Střední uvažování",
+        "highReasoning": "Vysoké uvažování",
+        "keptEarlier": "Ponechán předchozí",
+        "onlyModel": "Jen jeden model",
+        "couldNotClassify": "Nelze klasifikovat",
+        "noMatch": "Žádný vhodný model",
+        "defaultModel": "Výchozí model"
+      }
+    },
     "universalAgent": {
       "toolsLoadError": "Nepodařilo se načíst dostupné akce.",
       "mcpLoadError": "Nepodařilo se načíst MCP servery.",
@@ -2054,6 +2081,13 @@
       "actionSetDefault": "Nastavit jako výchozí",
       "actionDelete": "Smazat",
       "moreOptions": "Další možnosti",
+      "autoDefault": {
+        "title": "Default for new chats",
+        "description": "Open new chats on Auto. A model someone already chose stays, and a project keeps its own model.",
+        "needsTwoModels": "Add at least two chat models before Auto can be the default.",
+        "toastSaved": "Saved",
+        "toastSaveError": "Could not save"
+      },
       "roles": {
         "sectionTitle": "Přiřazení rolí modelům",
         "sectionDescription": "Přiřaďte vyhrazené modely konkrétním úlohám. Pokud model není přiřazen, použije se výchozí model.",
@@ -2127,6 +2161,20 @@
       "badgeVision": "Obraz",
       "badgeReasoning": "Uvažování",
       "badgeDeprecated": "Zastaralý",
+      "traitSizeLabel": "Size",
+      "traitThinkingLabel": "Thinking",
+      "traitDetected": "detected",
+      "traitAutoDetect": "Auto-detect",
+      "traitSize": {
+        "small": "Small",
+        "medium": "Medium",
+        "large": "Large"
+      },
+      "traitThinking": {
+        "none": "No thinking",
+        "optional": "Thinks when asked",
+        "always": "Always thinks"
+      },
       "batchRetry": "Zkusit znovu",
       "batchRemove": "Odebrat",
       "rotateCredentials": "Vyměnit přihlašovací údaje",

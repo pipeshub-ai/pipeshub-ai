@@ -1452,10 +1452,12 @@ def _reasoning_effort_kwargs(
         return {}
 
     effort_input = reasoning_effort or model_default_reasoning_effort(config) or DEFAULT_REASONING_EFFORT
-    if effort_input == "none":
+    if effort_input == "none" and not config.get("allowDisabledReasoning"):
         # "none" is no longer offered as a UI choice (see the docstring
         # above) — floor it unconditionally rather than only when a
         # REASONING_MANDATORY fact happens to be learned for this model.
+        # The auto router's classifier sets allowDisabledReasoning: that call
+        # has no tools, and leaving reasoning on misses its timeout.
         effort_input = REASONING_MANDATORY_FALLBACK_EFFORT
 
     if provider == LLMProvider.OLLAMA.value:
@@ -1645,7 +1647,7 @@ def _resolve_bedrock_effort_input(reasoning_effort: str | None, config: dict[str
     model is flagged ``isReasoning``.
     """
     effort_input = reasoning_effort or model_default_reasoning_effort(config) or DEFAULT_REASONING_EFFORT
-    if effort_input == "none":
+    if effort_input == "none" and not config.get("allowDisabledReasoning"):
         return REASONING_MANDATORY_FALLBACK_EFFORT
     return effort_input
 

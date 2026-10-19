@@ -91,6 +91,11 @@ export interface ModelInfo {
   modelFriendlyName?: string;
   /** Restored from the conversation's saved modelInfo when loading a thread. */
   reasoningEffort?: ReasoningEffort;
+  modelProvider?: string;
+  /** Set on a bot message answered in Auto mode; the fields above name the model Auto picked. */
+  autoRouted?: boolean;
+  /** Why Auto picked that model, e.g. `greeting`, `classified_heavy`, `single_model`. */
+  autoReason?: string;
 }
 
 /** Entry in the sharedWith array from conversation API responses */
@@ -417,6 +422,11 @@ export interface ChatSettings {
    * the user hasn't set an explicit override.
    */
   agentDefaultReasoningEffort: Record<string, ReasoningEffort | null>;
+  /**
+   * Org setting: a new assistant chat opens on Auto. A stored pick still wins,
+   * and a project chat keeps the concrete default model.
+   */
+  autoDefault: boolean;
 }
 
 /**

@@ -74,13 +74,18 @@ from app.modules.retrieval.selection_scope import (
 from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
 )
+from app.services.ai_models.auto import (
+    AutoDecision,
+    is_auto_model_key,
+    resolve_requested_model,
+)
 from app.services.graph_db.interface.graph_db_provider import (
     SELECTION_APPS_FILTER_KEY,
     IGraphDBProvider,
 )
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
-from app.utils.aimodels import model_default_reasoning_effort
+from app.utils.aimodels import iter_model_names, model_default_reasoning_effort
 from app.utils.attachment_utils import (
     keep_accessible_attachments,
     resolve_attachments,  # noqa: F401 - re-exported, see above
@@ -122,6 +127,23 @@ def _resolve_protocol(chat_query: "ChatQuery", request: Request) -> str:
 
 # Constants
 SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" separator
+
+
+def _auto_model_info(
+    decision: "AutoDecision | None",
+    llm_config: dict[str, Any] | None,
+    model_key: str | None,
+    model_name: str | None,
+) -> dict[str, Any] | None:
+    """``modelInfo`` for an Auto turn; a fallback reports the agent model that actually answered."""
+    if decision is None:
+        return None
+    info = decision.model_info()
+    if not info.get("modelKey"):
+        info["modelKey"] = (llm_config or {}).get("modelKey") or model_key
+        info["modelName"] = model_name or next(iter(iter_model_names((llm_config or {}).get("configuration"))), None)
+        info["modelProvider"] = (llm_config or {}).get("provider")
+    return {key: value for key, value in info.items() if value is not None}
 
 
 def _parse_agent_capabilities(raw: dict[str, Any] | None) -> AgentCapabilities:
@@ -3874,6 +3896,22 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # get_llm_for_chat() below resolves the organization's default LLM.
                 model_key = chat_query.modelKey
                 model_name = chat_query.modelName
+                auto_decision = None
+                if is_auto_model_key(model_key):
+                    # A fallback returns no key, so the agent's first model below still applies.
+                    model_key, model_name, _, auto_decision = await resolve_requested_model(
+                        services["config_service"],
+                        model_key=model_key,
+                        model_name=model_name,
+                        reasoning_effort=chat_query.reasoningEffort,
+                        query=chat_query.query,
+                        previous_conversations=chat_query.previousConversations,
+                        attachments=chat_query.attachments,
+                        agent_models=agent.get("models") or None,
+                        agent_route=True,
+                        effort_floor=agent.get("defaultReasoningEffort"),
+                        logger=logger,
+                    )
                 if not model_key and not model_name:
                     agent_models = agent.get("models", [])
                     if agent_models:
@@ -3897,6 +3935,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # Get LLM for chat. Explicit per-request effort wins; otherwise fall back
                 # to the agent's configured default (if any).
                 effective_reasoning_effort = chat_query.reasoningEffort or agent.get("defaultReasoningEffort")
+                if auto_decision is not None and auto_decision.reasoning_effort:
+                    effective_reasoning_effort = auto_decision.reasoning_effort
                 # Independent of each other, and both sit before the first streamed byte.
                 llm_result, system_prompts_config = await asyncio.gather(
                     get_llm_for_chat(
@@ -4368,6 +4408,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "isAssistantChat": bool(is_placeholder),
                     "chatStreaming": getattr(request.state, "chat_streaming", True) is not False,
                     "toolApproval": chat_query.toolApproval,
+                    "modelInfo": _auto_model_info(auto_decision, llm_config, model_key, model_name),
                 }
 
                 client_name = request.headers.get("client-name")

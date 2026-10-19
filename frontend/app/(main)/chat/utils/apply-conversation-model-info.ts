@@ -1,5 +1,6 @@
 import { useChatStore, ASSISTANT_CTX } from '@/chat/store';
 import { fetchModelsForContext } from './fetch-models-for-context';
+import { AUTO_MODEL, isAutoModel, isModelInList } from './auto-model';
 import type {
   AgentStrategy,
   AvailableLlmModel,
@@ -74,6 +75,7 @@ function buildModelOverrideFromInfoAndCatalog(
   modelInfo: ModelInfo,
   models: AvailableLlmModel[] | undefined
 ): ModelOverride {
+  if (isAutoModel(modelInfo)) return AUTO_MODEL;
   const fromApi = modelInfo.modelFriendlyName?.trim();
   if (fromApi) {
     return {
@@ -110,7 +112,7 @@ function isConversationModelInCatalog(
   if (!k || !n || !models?.length) {
     return true;
   }
-  return models.some((m) => m.modelKey === k && m.modelName === n);
+  return isModelInList(models, modelInfo);
 }
 
 function mapApiSegmentToAgentStrategy(
@@ -192,14 +194,7 @@ async function refreshSelectedModelFromCatalog(
 ): Promise<void> {
   try {
     const models = await fetchModelsForContext(ctxKey);
-    const k = modelInfo.modelKey?.trim();
-    const n = modelInfo.modelName?.trim();
-    const valid =
-      k &&
-      n &&
-      models.some((m) => m.modelKey === k && m.modelName === n);
-
-    if (!valid) {
+    if (!isModelInList(models, modelInfo)) {
       // Conversation still references a model that was removed from the org/agent
       // list — clear selection so the toolbar shows the default from the catalog.
       useChatStore.getState().setSelectedModelForCtx(ctxKey, null);

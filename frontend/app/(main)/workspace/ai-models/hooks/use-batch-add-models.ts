@@ -112,6 +112,8 @@ export function useBatchAddModels() {
             isMultimodal: model.isMultimodal,
             isReasoning: model.isReasoning,
             contextLength: model.contextLength,
+            ...(model.size ? { size: model.size } : {}),
+            ...(model.thinking ? { thinking: model.thinking } : {}),
           })),
         },
         {

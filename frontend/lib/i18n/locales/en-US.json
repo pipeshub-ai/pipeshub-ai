@@ -1302,6 +1302,33 @@
       "high": "High",
       "max": "Max"
     },
+    "autoModel": {
+      "name": "Auto",
+      "description": "Picks a model and effort for each question",
+      "reason": {
+        "greeting": "A short greeting, so a light model answered",
+        "singleModel": "Only one model is available",
+        "classified": "Matched to how demanding the question is",
+        "pinned": "Kept the model used earlier in this conversation",
+        "classifierFallback": "Could not classify the question, so a default was used",
+        "noCandidates": "No model fit the question, so a default was used",
+        "generic": "Picked automatically"
+      },
+      "property": {
+        "shortGreeting": "Short greeting",
+        "lightModel": "Light model",
+        "standardModel": "Standard model",
+        "complexModel": "Complex model",
+        "lowReasoning": "Low reasoning",
+        "mediumReasoning": "Medium reasoning",
+        "highReasoning": "High reasoning",
+        "keptEarlier": "Kept from earlier",
+        "onlyModel": "Only one model",
+        "couldNotClassify": "Could not classify",
+        "noMatch": "No matching model",
+        "defaultModel": "Default model"
+      }
+    },
     "universalAgent": {
       "toolsLoadError": "Failed to load available actions.",
       "mcpLoadError": "Failed to load MCP servers.",
@@ -1982,6 +2009,13 @@
       "actionSetDefault": "Set default",
       "actionDelete": "Delete",
       "moreOptions": "More options",
+      "autoDefault": {
+        "title": "Default for new chats",
+        "description": "Open new chats on Auto. A model someone already chose stays, and a project keeps its own model.",
+        "needsTwoModels": "Add at least two chat models before Auto can be the default.",
+        "toastSaved": "Saved",
+        "toastSaveError": "Could not save"
+      },
       "roles": {
         "sectionTitle": "Model Role Assignments",
         "sectionDescription": "Assign dedicated models for specific tasks. When not assigned, the default model is used.",
@@ -2055,6 +2089,20 @@
       "badgeVision": "Vision",
       "badgeReasoning": "Reasoning",
       "badgeDeprecated": "Deprecated",
+      "traitSizeLabel": "Size",
+      "traitThinkingLabel": "Thinking",
+      "traitDetected": "detected",
+      "traitAutoDetect": "Auto-detect",
+      "traitSize": {
+        "small": "Small",
+        "medium": "Medium",
+        "large": "Large"
+      },
+      "traitThinking": {
+        "none": "No thinking",
+        "optional": "Thinks when asked",
+        "always": "Always thinks"
+      },
       "batchRetry": "Retry",
       "batchRemove": "Remove",
       "rotateCredentials": "Rotate credentials",

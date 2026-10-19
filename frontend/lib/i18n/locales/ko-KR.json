@@ -1305,6 +1305,33 @@
       "high": "높음",
       "max": "최대"
     },
+    "autoModel": {
+      "name": "자동",
+      "description": "질문마다 모델과 추론 강도를 선택합니다",
+      "reason": {
+        "greeting": "짧은 인사여서 가벼운 모델이 답변했습니다",
+        "singleModel": "사용 가능한 모델이 하나뿐입니다",
+        "classified": "질문의 난이도에 맞춰 선택했습니다",
+        "pinned": "이 대화에서 이전에 사용한 모델을 유지했습니다",
+        "classifierFallback": "질문을 분류하지 못해 기본 모델을 사용했습니다",
+        "noCandidates": "질문에 맞는 모델이 없어 기본 모델을 사용했습니다",
+        "generic": "자동으로 선택됨"
+      },
+      "property": {
+        "shortGreeting": "짧은 인사",
+        "lightModel": "가벼운 모델",
+        "standardModel": "표준 모델",
+        "complexModel": "복잡한 모델",
+        "lowReasoning": "낮은 추론",
+        "mediumReasoning": "중간 추론",
+        "highReasoning": "높은 추론",
+        "keptEarlier": "이전 모델 유지",
+        "onlyModel": "모델 하나뿐",
+        "couldNotClassify": "분류하지 못함",
+        "noMatch": "맞는 모델 없음",
+        "defaultModel": "기본 모델"
+      }
+    },
     "universalAgent": {
       "toolsLoadError": "사용 가능한 작업을 불러오지 못했습니다.",
       "mcpLoadError": "MCP 서버를 불러오지 못했습니다.",
@@ -1972,6 +1999,13 @@
       "actionSetDefault": "기본으로 설정",
       "actionDelete": "삭제",
       "moreOptions": "더 보기",
+      "autoDefault": {
+        "title": "Default for new chats",
+        "description": "Open new chats on Auto. A model someone already chose stays, and a project keeps its own model.",
+        "needsTwoModels": "Add at least two chat models before Auto can be the default.",
+        "toastSaved": "Saved",
+        "toastSaveError": "Could not save"
+      },
       "roles": {
         "sectionTitle": "모델 역할 할당",
         "sectionDescription": "특정 작업에 전용 모델을 할당합니다. 할당하지 않으면 기본 모델이 사용됩니다.",
@@ -2045,6 +2079,20 @@
       "badgeVision": "비전",
       "badgeReasoning": "추론",
       "badgeDeprecated": "사용 중단",
+      "traitSizeLabel": "크기",
+      "traitThinkingLabel": "추론",
+      "traitDetected": "감지됨",
+      "traitAutoDetect": "자동 감지",
+      "traitSize": {
+        "small": "소형",
+        "medium": "중형",
+        "large": "대형"
+      },
+      "traitThinking": {
+        "none": "추론 안 함",
+        "optional": "요청 시 추론",
+        "always": "항상 추론"
+      },
       "batchRetry": "다시 시도",
       "batchRemove": "제거",
       "rotateCredentials": "자격 증명 교체",

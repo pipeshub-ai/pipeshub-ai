@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 
 from app.services.ai_models.discovery.http import MAX_MODELS, MAX_PAGES, DiscoveryHttp, bearer
 from app.services.ai_models.discovery.types import DiscoveryErrorCode, DiscoveryHttpError, RawModel
+from app.services.ai_models.traits import parse_parameter_count
 
 _SHOW_TTL_S = 300
 _show_cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -106,6 +107,17 @@ def _epoch(value: object) -> int | None:
 
 def _released(row: dict[str, Any]) -> int | None:
     return _epoch(row.get("created")) or _epoch(row.get("created_at"))
+
+
+def _per_million(pricing: object, key: str) -> float | None:
+    """A per-token price string such as OpenRouter's ``"0.000002"`` as USD per 1M tokens."""
+    if not isinstance(pricing, dict):
+        return None
+    try:
+        value = float(pricing.get(key))
+    except (TypeError, ValueError):
+        return None
+    return value * 1_000_000 if value > 0 else None
 
 
 def _static(pairs: list[tuple[str, list[str]]], *, deprecated: set[str] | None = None) -> list[RawModel]:
@@ -323,6 +335,13 @@ class OpenRouterStrategy(DiscoveryStrategy):
             else:
                 capabilities = ["llm"]
             params = set(row.get("supported_parameters") or [])
+            reasoning = row.get("reasoning") if isinstance(row.get("reasoning"), dict) else {}
+            thinking = None
+            if reasoning.get("mandatory") is True:
+                thinking = "always"
+            elif "reasoning" in params:
+                thinking = "optional"
+            efforts = reasoning.get("supported_efforts")
             models.append(
                 RawModel(
                     id=model_id,
@@ -336,6 +355,9 @@ class OpenRouterStrategy(DiscoveryStrategy):
                     is_reasoning="reasoning" in params if params else None,
                     supports_tools="tools" in params if params else None,
                     deprecated=bool(row.get("expiration_date")),
+                    thinking=thinking,
+                    reasoning_efforts=efforts if isinstance(efforts, list) else None,
+                    output_price=_per_million(row.get("pricing"), "completion"),
                 )
             )
         return _cap(models, [])
@@ -567,6 +589,8 @@ class OllamaStrategy(DiscoveryStrategy):
             if "completion" in capabilities or not mapped:
                 mapped.append("llm")
             context = _ollama_context(details.get("model_info") or {})
+            row_details = details.get("details") or row.get("details") or {}
+            parameter_size = row_details.get("parameter_size") if isinstance(row_details, dict) else None
             models.append(
                 RawModel(
                     id=model_id,
@@ -575,6 +599,8 @@ class OllamaStrategy(DiscoveryStrategy):
                     is_multimodal=True if "vision" in capabilities else None,
                     is_reasoning=True if "thinking" in capabilities else None,
                     supports_tools=True if "tools" in capabilities else None,
+                    thinking="optional" if "thinking" in capabilities else None,
+                    parameter_count=parse_parameter_count(parameter_size),
                 )
             )
         return _cap(models, [])

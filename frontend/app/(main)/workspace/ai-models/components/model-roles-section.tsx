@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Badge, Box, Flex, Select, Text } from '@radix-ui/themes';
+import { Badge, Box, Flex, Select, Switch, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
@@ -39,6 +39,16 @@ function modelLabel(model: ConfiguredModel): string {
 
 const INDEXING_ELIGIBLE_MODEL_TYPES = ['llm', 'slm', 'reasoning', 'multiModal'] as const;
 
+function chatModelCount(configuredModels: Record<string, ConfiguredModel[]>): number {
+  return (configuredModels.llm ?? []).reduce((count, model) => {
+    const names = String(model.configuration?.model ?? '')
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean);
+    return count + (names.length || 1);
+  }, 0);
+}
+
 export function ModelRolesSection({
   configuredModels,
   onRolesUpdated,
@@ -50,6 +60,7 @@ export function ModelRolesSection({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [roles, setRoles] = useState<Record<string, ModelRoleAssignment>>({});
+  const [autoDefault, setAutoDefault] = useState(false);
   /**
    * Whether the user has explicitly interacted with the dropdown.
    * In onboarding variant the dropdown starts with no value until acknowledged.
@@ -68,6 +79,12 @@ export function ModelRolesSection({
     try {
       const data = await AIModelsApi.getRoles();
       setRoles(data.modelRoles ?? {});
+      try {
+        const flag = await AIModelsApi.getAutoDefault();
+        setAutoDefault(flag.autoDefault === true);
+      } catch {
+        setAutoDefault(false);
+      }
       // If an explicit assignment already exists from a previous session, treat it
       // as acknowledged so we don't block the user needlessly.
       if (data.modelRoles?.[MODEL_ROLE_NAMES.INDEXING]) {
@@ -135,6 +152,24 @@ export function ModelRolesSection({
 
   // In onboarding variant the select has no value until the user acknowledges;
   // this forces the placeholder to display and signals that a choice is required.
+  const enoughModelsForAuto = chatModelCount(configuredModels) >= 2;
+
+  const handleAutoDefaultChange = useCallback(
+    async (checked: boolean) => {
+      setSaving(true);
+      try {
+        const saved = await AIModelsApi.updateAutoDefault(checked);
+        setAutoDefault(saved.autoDefault === true);
+        toast.success(t('workspace.aiModels.autoDefault.toastSaved', 'Saved'));
+      } catch {
+        toast.error(t('workspace.aiModels.autoDefault.toastSaveError', 'Could not save'));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [t],
+  );
+
   const selectValue =
     variant === 'onboarding' && !acknowledged
       ? undefined
@@ -415,6 +450,36 @@ export function ModelRolesSection({
             {(loading || saving) && <Spinner size={14} />}
             {!loading && indexingSelect}
           </Flex>
+        </Flex>
+
+        <Flex
+          align="center"
+          justify="between"
+          gap="6"
+          style={{ padding: '14px 0', minHeight: 60, borderTop: '1px solid var(--gray-4)' }}
+        >
+          <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
+            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {t('workspace.aiModels.autoDefault.title', 'Default for new chats')}
+            </Text>
+            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: '1.5' }}>
+              {enoughModelsForAuto
+                ? t(
+                    'workspace.aiModels.autoDefault.description',
+                    'Open new chats on Auto. A model someone already chose stays, and a project keeps its own model.',
+                  )
+                : t(
+                    'workspace.aiModels.autoDefault.needsTwoModels',
+                    'Add at least two chat models before Auto can be the default.',
+                  )}
+            </Text>
+          </Flex>
+          <Switch
+            checked={autoDefault}
+            disabled={loading || saving || !enoughModelsForAuto}
+            onCheckedChange={(checked) => void handleAutoDefaultChange(checked)}
+            aria-label={t('workspace.aiModels.autoDefault.title', 'Default for new chats')}
+          />
         </Flex>
       </Box>
     </Box>

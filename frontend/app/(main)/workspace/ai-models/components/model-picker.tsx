@@ -1,9 +1,16 @@
 'use client';
 
 import React, { useMemo } from 'react';
-import { Box, Button, Flex, RadioGroup, Switch, Text, TextField } from '@radix-ui/themes';
+import { Box, Button, Flex, RadioGroup, Select, Switch, Text, TextField } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import type { DiscoveredModel, PickedModel } from '../types';
+import {
+  MODEL_SIZES,
+  MODEL_THINKING_MODES,
+  type DiscoveredModel,
+  type ModelSize,
+  type ModelThinking,
+  type PickedModel,
+} from '../types';
 
 export type PerModelFlag = 'isReasoning' | 'isMultimodal';
 
@@ -57,6 +64,8 @@ interface PickedModelsListProps {
   onDefaultChange: (modelId: string) => void;
   flagFields: PerModelFlagField[];
   contextLengthLabel?: string;
+  /** Show the Size / Thinking selects Auto mode routes on (LLMs only). */
+  showTraits?: boolean;
   disabled?: boolean;
 }
 
@@ -70,6 +79,7 @@ export function PickedModelsList({
   onDefaultChange,
   flagFields,
   contextLengthLabel,
+  showTraits = false,
   disabled = false,
 }: PickedModelsListProps) {
   const { t } = useTranslation();
@@ -102,6 +112,7 @@ export function PickedModelsList({
               discovered={discoveredById.get(item.id)}
               flagFields={flagFields}
               contextLengthLabel={contextLengthLabel}
+              showTraits={showTraits}
               showDefault={showDefault}
               disabled={disabled}
               onChange={(patch) => updatePicked(item.id, patch)}
@@ -119,6 +130,7 @@ function PickedModelRow({
   discovered,
   flagFields,
   contextLengthLabel,
+  showTraits,
   showDefault,
   disabled,
   onChange,
@@ -128,6 +140,7 @@ function PickedModelRow({
   discovered?: DiscoveredModel;
   flagFields: PerModelFlagField[];
   contextLengthLabel?: string;
+  showTraits: boolean;
   showDefault: boolean;
   disabled: boolean;
   onChange: (patch: Partial<PickedModel>) => void;
@@ -205,6 +218,30 @@ function PickedModelRow({
             />
           ) : null}
         </Flex>
+        {showTraits ? (
+          <Flex gap="2" wrap="wrap">
+            <TraitSelect
+              label={t('workspace.aiModels.traitSizeLabel')}
+              model={item.id}
+              options={MODEL_SIZES}
+              optionLabel={(value) => t(`workspace.aiModels.traitSize.${value}`)}
+              value={item.size}
+              detected={discovered?.traits?.size ?? undefined}
+              disabled={disabled}
+              onChange={(size) => onChange({ size })}
+            />
+            <TraitSelect
+              label={t('workspace.aiModels.traitThinkingLabel')}
+              model={item.id}
+              options={MODEL_THINKING_MODES}
+              optionLabel={(value) => t(`workspace.aiModels.traitThinking.${value}`)}
+              value={item.thinking}
+              detected={discovered?.traits?.thinking ?? undefined}
+              disabled={disabled}
+              onChange={(thinking) => onChange({ thinking })}
+            />
+          </Flex>
+        ) : null}
         {flagFields.length > 0 ? (
           <Flex gap="4" wrap="wrap">
             {flagFields.map((field) => (
@@ -228,5 +265,59 @@ function PickedModelRow({
         ) : null}
       </Flex>
     </Box>
+  );
+}
+
+const AUTO_DETECT = 'auto';
+
+/**
+ * Shows the admin's override, else the detected value. Picking the detected
+ * value (or Auto-detect) clears the override so detection stays authoritative.
+ */
+function TraitSelect<T extends ModelSize | ModelThinking>({
+  label,
+  model,
+  options,
+  optionLabel,
+  value,
+  detected,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  model: string;
+  options: readonly T[];
+  optionLabel: (value: T) => string;
+  value: T | undefined;
+  detected: T | undefined;
+  disabled: boolean;
+  onChange: (value: T | undefined) => void;
+}) {
+  const { t } = useTranslation();
+  const shown = value ?? detected ?? AUTO_DETECT;
+  return (
+    <Flex direction="column" gap="1" style={{ flex: '1 1 140px' }}>
+      <Text size="1" style={{ color: 'var(--gray-11)' }}>
+        {label}
+        {value === undefined && detected ? ` · ${t('workspace.aiModels.traitDetected')}` : ''}
+      </Text>
+      <Select.Root
+        value={shown}
+        disabled={disabled}
+        onValueChange={(next) =>
+          onChange(next === AUTO_DETECT || next === detected ? undefined : (next as T))
+        }
+      >
+        <Select.Trigger aria-label={t('workspace.aiModels.modelPickerFieldFor', { field: label, model })} />
+        <Select.Content>
+          <Select.Item value={AUTO_DETECT}>{t('workspace.aiModels.traitAutoDetect')}</Select.Item>
+          {options.map((option) => (
+            <Select.Item key={option} value={option}>
+              {optionLabel(option)}
+            </Select.Item>
+          ))}
+        </Select.Content>
+      </Select.Root>
+    </Flex>
   );
 }

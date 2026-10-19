@@ -12,7 +12,7 @@
 
 import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, getRequestReasoningEffort } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import { showNoModelToast } from './utils/no-model-toast';
 import { showRemoteRunInProgressToast } from './utils/remote-run-toast';
@@ -261,13 +261,7 @@ export function buildStreamChatRequestForSlot(
     showNoModelToast();
   }
   const effectiveModel = rawModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
-  // Neither the user nor the agent chose an effort → leave it off the request
-  // so the backend applies the model's own default, then "high".
-  const reasoningEffortOverride = currentState.settings.reasoningEffort[modelCtxKey] ?? null;
-  const agentDefault = getAgentDefaultReasoningEffort(modelCtxKey);
-  const reasoningEffort =
-    reasoningEffortOverride ??
-    (isModelReasoningCapable(modelCtxKey, effectiveModel) ? agentDefault : null);
+  const reasoningEffort = getRequestReasoningEffort(modelCtxKey, effectiveModel);
 
   const isAgent = Boolean(effectiveAgentId);
   const knowledgeScope = currentState.agentKnowledgeScope;

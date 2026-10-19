@@ -558,3 +558,36 @@ def test_a_timestamp_without_an_offset_is_read_as_utc(
     finally:
         monkeypatch.undo()
         time.tzset()
+
+
+@pytest.mark.asyncio
+async def test_ollama_parameter_size_and_thinking_become_traits() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/tags"):
+            return httpx.Response(200, json={"models": [{"name": "custom-chat:latest", "digest": "traits-digest"}]})
+        return httpx.Response(200, json={
+            "capabilities": ["completion", "tools", "thinking"],
+            "details": {"parameter_size": "70.6B"},
+            "model_info": {"llama.context_length": 131072},
+        })
+
+    result = await _service(handler).discover(DiscoveryRequest(
+        provider="ollama", configuration={"endpoint": "http://ollama-traits.example:11434"},
+    ))
+    traits = result.models[0].traits
+    assert traits["size"] == "medium" and traits["source"]["size"] == "parameters"
+    assert traits["thinking"] == "optional"
+    assert traits["supportsTools"] is True
+
+
+@pytest.mark.asyncio
+async def test_non_chat_models_get_no_traits() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/tags"):
+            return httpx.Response(200, json={"models": [{"name": "nomic-embed-text", "digest": "embed-digest"}]})
+        return httpx.Response(200, json={"capabilities": ["embedding"]})
+
+    result = await _service(handler).discover(DiscoveryRequest(
+        provider="ollama", configuration={"endpoint": "http://ollama-embed.example:11434"},
+    ))
+    assert result.models[0].traits is None

@@ -1208,6 +1208,43 @@ describe('ChatInput — keeping an unsent message', () => {
     expect(useChatStore.getState().activeSlotId).not.toBe(first);
   });
 
+  it('does not bring a sent question back when the conversation id arrives before send finishes', async () => {
+    let finish: (ok: boolean) => void = () => {};
+    const send = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    renderInput({ persistDraft: true, onSend: send });
+    type('My first question');
+    pause();
+
+    fireEvent.click(sendButton());
+    act(() => {
+      const store = useChatStore.getState();
+      const slotId = store.activeSlotId ?? store.createSlot(null);
+      store.setActiveSlot(slotId);
+      store.resolveSlotConvId(slotId, 'conv-9');
+    });
+
+    expect(composer().value).toBe('');
+    await act(async () => { finish(true); });
+    pause();
+    expect(composer().value).toBe('');
+    expect(loadDraft('pipeshub-chat-draft:u1:-:conv-9')).toBe('');
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('puts the question back when the send does not go out', async () => {
+    const send = vi.fn(async () => false);
+    renderInput({ persistDraft: true, onSend: send });
+    type('My first question');
+    pause();
+
+    fireEvent.click(sendButton());
+    await act(async () => { await Promise.resolve(); });
+    pause();
+
+    expect(composer().value).toBe('My first question');
+    expect(loadDraft(KEY_NEW)).toBe('My first question');
+  });
+
   it('does not bring a sent message back when a new chat becomes a conversation', () => {
     renderInput({ persistDraft: true });
     type('My first question');

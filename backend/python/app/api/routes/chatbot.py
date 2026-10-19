@@ -57,6 +57,7 @@ from app.modules.transformers.transformer import (
     IMAGE_DESCRIPTION_BUDGET_S,
     TransformContext,
 )
+from app.services.ai_models.auto import resolve_requested_model
 from app.services.artifact_registry.access import is_direct_share, reader_edge
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -1479,12 +1480,23 @@ async def _generate_chat_stream_via_agent_loop(
     # LLM init, system prompts, user/org enrichment, and the entity vector
     # store are independent of each other and all sit before the first
     # streamed byte, so they run as one wave instead of serial round trips.
-    llm_task = asyncio.ensure_future(
-        get_llm_for_chat(
-            config_service, query_info.modelKey, query_info.modelName, query_info.chatMode,
+    async def _select_and_build_llm() -> tuple[Any, Any, Any, Any]:
+        model_key, model_name, effort, decision = await resolve_requested_model(
+            config_service,
+            model_key=query_info.modelKey,
+            model_name=query_info.modelName,
             reasoning_effort=query_info.reasoningEffort,
+            query=query_info.query,
+            previous_conversations=query_info.previousConversations,
+            attachments=query_info.attachments,
+            logger=logger_,
         )
-    )
+        bundle = await get_llm_for_chat(
+            config_service, model_key, model_name, query_info.chatMode, reasoning_effort=effort,
+        )
+        return bundle, model_key, model_name, decision
+
+    llm_task = asyncio.ensure_future(_select_and_build_llm())
     prompts_task = asyncio.ensure_future(load_system_prompts(config_service, logger_))
     user_doc_task = asyncio.ensure_future(_load_user_doc(graph_provider, user_id))
     org_doc_task = asyncio.ensure_future(_load_org_doc(graph_provider, org_id))
@@ -1501,7 +1513,7 @@ async def _generate_chat_stream_via_agent_loop(
     ]
 
     try:
-        llm_bundle = await llm_task
+        llm_bundle, resolved_model_key, resolved_model_name, auto_decision = await llm_task
         if not llm_bundle or llm_bundle[0] is None:
             raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
         llm, model_config, ai_models_config = llm_bundle
@@ -1574,6 +1586,7 @@ async def _generate_chat_stream_via_agent_loop(
         "keywordSearchBudget": query_info.keywordSearchBudget,
         "runId": query_info.runId,
         "is_service_account": bool(user.get("isServiceAccount")),
+        "modelInfo": auto_decision.model_info() if auto_decision else None,
     }
     user_info = {
         "userId": user_id,
@@ -1630,7 +1643,7 @@ async def _generate_chat_stream_via_agent_loop(
         retrieval_service=retrieval_service, graph_provider=graph_provider,
         reranker_service=None, config_service=config_service,
         org_info=org_info,
-        model_name=query_info.modelName, model_key=query_info.modelKey,
+        model_name=resolved_model_name, model_key=resolved_model_key,
         is_multimodal_llm=is_multimodal_llm, context_length=context_length,
         configured_context_window=model_config.get("contextLength"),
         llm_provider=model_config.get("provider") or "",

@@ -45,6 +45,8 @@ _LITELLM_ENDPOINT = AIModelField(
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[3], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[4], ModelCapability.TEXT_GENERATION) \
+    .add_field(LLM_COMMON_TAIL[5], ModelCapability.TEXT_GENERATION) \
     .add_field(_LITELLM_ENDPOINT, ModelCapability.EMBEDDING) \
     .add_field(API_KEY, ModelCapability.EMBEDDING) \
     .add_field(model_field("e.g. text-embedding-3-small, azure-embeddings"), ModelCapability.EMBEDDING) \

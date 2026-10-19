@@ -24,6 +24,7 @@ import {
   type ReasoningEffort,
 } from '@/chat/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { AUTO_MODEL, canUseAuto, isAutoModel } from '@/chat/utils/auto-model';
 
 // Exported so other chat surfaces (e.g. the chat-input toolbar trigger) can
 // render a matching "· High" style indicator without redefining labels.
@@ -85,6 +86,8 @@ interface ModelSelectorPanelProps {
   hideHeader?: boolean;
   /** Optional agent ID - when provided, shows only agent-configured models */
   agentId?: string | null;
+  /** Offer the Auto row (needs 2+ models). Off where a fixed model must be chosen. */
+  allowAuto?: boolean;
 }
 
 function ModelLogo({ provider }: { provider: string }) {
@@ -104,6 +107,7 @@ export function ModelSelectorPanel({
   onModelSelect,
   hideHeader = false,
   agentId,
+  allowAuto = true,
 }: ModelSelectorPanelProps) {
   const { t } = useTranslation();
   const router = useRouter();
@@ -194,7 +198,9 @@ export function ModelSelectorPanel({
   const activeModel = models.find(
     (model) => model.modelKey === activeKey && model.modelName === activeName
   );
-  const showReasoningEffort = Boolean(activeModel?.isReasoning);
+  const showAuto = allowAuto && canUseAuto(models);
+  const isAutoSelected = isAutoModel(selectedModel);
+  const showReasoningEffort = !isAutoSelected && Boolean(activeModel?.isReasoning);
   const modelDefaultEffort = normalizeReasoningEffort(activeModel?.defaultReasoningEffort ?? null);
 
   const handleReasoningEffortSelect = useCallback(
@@ -300,6 +306,10 @@ export function ModelSelectorPanel({
           </Flex>
         )}
 
+        {!isLoading && !error && showAuto && (
+          <AutoModelItem isSelected={isAutoSelected} onSelect={() => onModelSelect(AUTO_MODEL)} />
+        )}
+
         {!isLoading && !error && models.map((model) => (
           <ModelItem
             key={`${model.modelKey}::${model.modelName}`}
@@ -396,6 +406,67 @@ export function ReasoningEffortSelector({ value, onSelect, agentDefault, modelDe
   );
 }
 
+// ─── Auto row: the backend picks a model and effort per question ──────
+
+function SelectedRadio({ isSelected }: { isSelected: boolean }) {
+  return (
+    <RadioGroup.Root
+      value={isSelected ? 'selected' : ''}
+      style={{
+        flexShrink: 0,
+        marginLeft: 'var(--space-3)',
+        pointerEvents: 'none',
+        '--accent-indicator': 'var(--accent-9)',
+      } as React.CSSProperties}
+    >
+      <RadioGroup.Item value="selected" />
+    </RadioGroup.Root>
+  );
+}
+
+const MODEL_CARD_STYLE: React.CSSProperties = {
+  padding: 'var(--space-3) var(--space-4)',
+  borderRadius: 'var(--radius-1)',
+  border: '1px solid var(--olive-3)',
+  backgroundColor: 'var(--olive-2)',
+  cursor: 'pointer',
+};
+
+function AutoModelItem({ isSelected, onSelect }: { isSelected: boolean; onSelect: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <Flex
+      align="center"
+      justify="between"
+      data-testid="chat-model-auto-row"
+      role="button"
+      tabIndex={0}
+      aria-pressed={isSelected}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      style={MODEL_CARD_STYLE}
+    >
+      <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
+        <Flex align="center" gap="2">
+          <MaterialIcon name="auto_awesome" size={20} color="var(--slate-12)" />
+          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+            {t('chat.autoModel.name', 'Auto')}
+          </Text>
+        </Flex>
+        <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '1.4' }}>
+          {t('chat.autoModel.description', 'Picks a model and effort for each question')}
+        </Text>
+      </Flex>
+      <SelectedRadio isSelected={isSelected} />
+    </Flex>
+  );
+}
+
 // ─── Individual model item (card style matching QueryModePanel) ──────
 
 interface ModelItemProps {
@@ -424,13 +495,7 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
       align="center"
       justify="between"
       onClick={() => onSelect(model)}
-      style={{
-        padding: 'var(--space-3) var(--space-4)',
-        borderRadius: 'var(--radius-1)',
-        border: '1px solid var(--olive-3)',
-        backgroundColor: 'var(--olive-2)',
-        cursor: 'pointer',
-      }}
+      style={MODEL_CARD_STYLE}
     >
       {/* Left: all content left-aligned */}
       <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
@@ -483,18 +548,7 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
         </Flex>
       </Flex>
 
-      {/* Right: Radio indicator — vertically centered */}
-      <RadioGroup.Root
-        value={isSelected ? 'selected' : ''}
-        style={{
-          flexShrink: 0,
-          marginLeft: 'var(--space-3)',
-          pointerEvents: 'none',
-          '--accent-indicator': 'var(--accent-9)',
-        } as React.CSSProperties}
-      >
-        <RadioGroup.Item value="selected" />
-      </RadioGroup.Root>
+      <SelectedRadio isSelected={isSelected} />
     </Flex>
   );
 }

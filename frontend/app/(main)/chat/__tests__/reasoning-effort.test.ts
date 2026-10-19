@@ -97,6 +97,7 @@ const { ChatApi } = await import('../api');
 const { normalizeReasoningEffort } = await import('../types');
 const { applyConversationModelInfoToStore } = await import('../utils/apply-conversation-model-info');
 const { getModelDefaultReasoningEffort } = await import('../store');
+const { AUTO_MODEL } = await import('../utils/auto-model');
 const { getAppliedReasoningEffortLabel, ReasoningEffortSelector } = await import(
   '../components/chat-panel/expansion-panels/model-selector/model-selector-panel'
 );
@@ -495,5 +496,78 @@ describe('reasoning effort picker', () => {
     renderPicker({ value: null, agentDefault: 'low', modelDefault: 'max' });
     expect(screen.getByRole('radio', { name: 'Low' }).getAttribute('aria-checked')).toBe('true');
     expect(screen.getByText('Defaults to Low when not set.')).toBeTruthy();
+  });
+});
+
+describe('Auto model', () => {
+  function registerModels(ctxKey: string, count: number) {
+    const models = Array.from({ length: count }, (_, i) => ({
+      modelType: 'llm',
+      provider: 'openai',
+      modelName: `model-${i}`,
+      modelKey: `key-${i}`,
+      isMultimodal: false,
+      isReasoning: true,
+      isDefault: i === 0,
+      modelFriendlyName: `Model ${i}`,
+    }));
+    useChatStore.getState().setAvailableModelsForCtx(ctxKey, models);
+  }
+
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('reopening an Auto conversation keeps Auto selected', async () => {
+    registerModels(ASSISTANT_CTX, 2);
+    applyConversationModelInfoToStore(
+      { modelKey: 'auto', modelName: 'auto', chatMode: 'quick' },
+      ASSISTANT_CTX,
+    );
+    await flush();
+    expect(useChatStore.getState().settings.selectedModels[ASSISTANT_CTX]).toEqual(AUTO_MODEL);
+  });
+
+  it('drops Auto once fewer than two models are left', async () => {
+    registerModels(ASSISTANT_CTX, 1);
+    applyConversationModelInfoToStore(
+      { modelKey: 'auto', modelName: 'auto', chatMode: 'quick' },
+      ASSISTANT_CTX,
+    );
+    await flush();
+    expect(useChatStore.getState().settings.selectedModels[ASSISTANT_CTX]).toBeNull();
+  });
+
+  it('sends no reasoningEffort with Auto, even with a stale pick', () => {
+    registerModels(ASSISTANT_CTX, 2);
+    useChatStore.getState().setSelectedModelForCtx(ASSISTANT_CTX, AUTO_MODEL);
+    useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'max');
+    const request = buildStreamChatRequestForSlot(useChatStore.getState().createSlot(null), 'hello');
+    expect(request?.modelKey).toBe('auto');
+    expect(request).not.toHaveProperty('reasoningEffort');
+  });
+
+  it("sends no reasoningEffort with Auto in an agent chat with a default effort", () => {
+    registerModels('agent-99', 2);
+    setAgentDefault('agent-99', 'medium');
+    useChatStore.getState().setSelectedModelForCtx('agent-99', AUTO_MODEL);
+    const slotId = useChatStore.getState().createSlot(null);
+    useChatStore.getState().updateSlot(slotId, { threadAgentId: 'agent-99' });
+    expect(buildStreamChatRequestForSlot(slotId, 'hello')).not.toHaveProperty('reasoningEffort');
+  });
+
+  it('regenerating with Auto sends no reasoningEffort', async () => {
+    registerModels('agent-99', 2);
+    setAgentDefault('agent-99', 'medium');
+    useChatStore.getState().setReasoningEffortForCtx('agent-99', 'max');
+    const agent = vi.spyOn(ChatApi, 'streamAgentRegenerate').mockResolvedValue(undefined);
+    try {
+      const slotId = useChatStore.getState().createSlot('conv-1');
+      useChatStore.getState().updateSlot(slotId, { threadAgentId: 'agent-99' });
+      await streamRegenerateForSlot(slotId, 'a1', AUTO_MODEL);
+      const body = agent.mock.calls[0][4] as Record<string, unknown>;
+      expect(body.modelKey).toBe('auto');
+      expect(body).not.toHaveProperty('reasoningEffort');
+    } finally {
+      agent.mockRestore();
+    }
   });
 });

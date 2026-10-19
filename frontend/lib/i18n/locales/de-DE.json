@@ -1178,6 +1178,33 @@
       "high": "Hoch",
       "max": "Maximal"
     },
+    "autoModel": {
+      "name": "Auto",
+      "description": "Wählt für jede Frage ein Modell und den Denkaufwand",
+      "reason": {
+        "greeting": "Eine kurze Begrüßung, daher hat ein leichtes Modell geantwortet",
+        "singleModel": "Nur ein Modell ist verfügbar",
+        "classified": "Passend zum Anspruch der Frage gewählt",
+        "pinned": "Das zuvor in dieser Unterhaltung genutzte Modell wurde beibehalten",
+        "classifierFallback": "Die Frage konnte nicht eingeordnet werden, daher wurde ein Standard verwendet",
+        "noCandidates": "Kein Modell passte zur Frage, daher wurde ein Standard verwendet",
+        "generic": "Automatisch gewählt"
+      },
+      "property": {
+        "shortGreeting": "Kurze Begrüßung",
+        "lightModel": "Leichtes Modell",
+        "standardModel": "Standardmodell",
+        "complexModel": "Komplexes Modell",
+        "lowReasoning": "Niedriger Denkaufwand",
+        "mediumReasoning": "Mittlerer Denkaufwand",
+        "highReasoning": "Hoher Denkaufwand",
+        "keptEarlier": "Zuvor beibehalten",
+        "onlyModel": "Nur ein Modell",
+        "couldNotClassify": "Nicht einordenbar",
+        "noMatch": "Kein passendes Modell",
+        "defaultModel": "Voreingestelltes Modell"
+      }
+    },
     "universalAgent": {
       "toolsLoadError": "Verfügbare Aktionen konnten nicht geladen werden.",
       "mcpLoadError": "MCP-Server konnten nicht geladen werden.",
@@ -1836,6 +1863,13 @@
       "actionSetDefault": "Als Standard setzen",
       "actionDelete": "Löschen",
       "moreOptions": "Weitere Optionen",
+      "autoDefault": {
+        "title": "Default for new chats",
+        "description": "Open new chats on Auto. A model someone already chose stays, and a project keeps its own model.",
+        "needsTwoModels": "Add at least two chat models before Auto can be the default.",
+        "toastSaved": "Saved",
+        "toastSaveError": "Could not save"
+      },
       "roles": {
         "sectionTitle": "Modell-Rollenzuweisungen",
         "sectionDescription": "Weisen Sie bestimmten Aufgaben dedizierte Modelle zu. Wenn keine Zuweisung erfolgt, wird das Standardmodell verwendet.",
@@ -1909,6 +1943,20 @@
       "badgeVision": "Bild",
       "badgeReasoning": "Denken",
       "badgeDeprecated": "Veraltet",
+      "traitSizeLabel": "Größe",
+      "traitThinkingLabel": "Denken",
+      "traitDetected": "erkannt",
+      "traitAutoDetect": "Automatisch erkennen",
+      "traitSize": {
+        "small": "Klein",
+        "medium": "Mittel",
+        "large": "Groß"
+      },
+      "traitThinking": {
+        "none": "Denkt nicht",
+        "optional": "Denkt auf Anfrage",
+        "always": "Denkt immer"
+      },
       "batchRetry": "Erneut",
       "batchRemove": "Entfernen",
       "rotateCredentials": "Zugangsdaten erneuern",

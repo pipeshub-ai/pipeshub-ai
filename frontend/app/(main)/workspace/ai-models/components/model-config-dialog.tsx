@@ -38,12 +38,16 @@ const COMPAT_FIELD_NAMES = ['isReasoning', 'isMultimodal', 'trustRemoteCode'] as
 
 const PER_MODEL_FLAGS: readonly PerModelFlag[] = ['isReasoning', 'isMultimodal'];
 
+/** Registry SELECTs that Auto mode routes on; `auto` defers to detection. */
+const TRAIT_FIELD_NAMES = ['size', 'thinking'] as const;
+
 /** Set on each picked row instead of once for the whole form. */
 const PER_MODEL_FIELD_NAMES = new Set([
   'model',
   'modelFriendlyName',
   'contextLength',
   ...PER_MODEL_FLAGS,
+  ...TRAIT_FIELD_NAMES,
 ]);
 
 /** Hidden from the shared form once several models are picked; each row sets its own. */
@@ -171,6 +175,7 @@ const PUBLIC_CONFIG_KEYS = new Set([
   'modelFriendlyName',
   'dimensions',
   'defaultReasoningEffort',
+  ...TRAIT_FIELD_NAMES,
 ]);
 
 /**
@@ -743,6 +748,7 @@ export function ModelConfigDialog({
     [fields]
   );
   const contextLengthLabel = fields.find((f) => f.name === 'contextLength')?.displayName;
+  const hasTraitFields = TRAIT_FIELD_NAMES.some((name) => fields.some((f) => f.name === name));
   const pickerDefaults = useMemo<PickedDefaults>(
     () => ({
       isReasoning: flagFields.some((f) => f.name === 'isReasoning') && boolValue(values.isReasoning),
@@ -757,6 +763,10 @@ export function ModelConfigDialog({
     id,
     modelFriendlyName: String(values.modelFriendlyName ?? '').trim() || undefined,
     ...pickerDefaults,
+    ...(values.size && values.size !== 'auto' ? { size: values.size as PickedModel['size'] } : {}),
+    ...(values.thinking && values.thinking !== 'auto'
+      ? { thinking: values.thinking as PickedModel['thinking'] }
+      : {}),
   });
 
   /**
@@ -801,6 +811,8 @@ export function ModelConfigDialog({
     ...(fields.some((f) => f.name === 'contextLength') ? { contextLength: item.contextLength ?? '' } : {}),
     ...(flagFields.some((f) => f.name === 'isReasoning') ? { isReasoning: item.isReasoning } : {}),
     ...(flagFields.some((f) => f.name === 'isMultimodal') ? { isMultimodal: item.isMultimodal } : {}),
+    ...(fields.some((f) => f.name === 'size') ? { size: item.size ?? 'auto' } : {}),
+    ...(fields.some((f) => f.name === 'thinking') ? { thinking: item.thinking ?? 'auto' } : {}),
   });
 
   const handleModelIdsChange = (ids: string[]) => {
@@ -1046,6 +1058,7 @@ export function ModelConfigDialog({
           onDefaultChange={setDefaultModelId}
           flagFields={flagFields}
           contextLengthLabel={contextLengthLabel}
+          showTraits={hasTraitFields}
           disabled={saving || batch.running}
         />
       ) : null}
