@@ -1177,8 +1177,10 @@ class TestConnectorAuthValidation:
 
         assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
-    def test_create_without_auth_is_fine(self) -> None:
-        _require_auth_is_object(None)
+    def test_a_null_auth_is_fine_only_where_allowed(self) -> None:
+        _require_auth_is_object(None, allow_null=True)
+        with pytest.raises(HTTPException):
+            _require_auth_is_object(None)
 
     @pytest.mark.parametrize(
         ("change", "detail"),

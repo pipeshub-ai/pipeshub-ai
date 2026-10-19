@@ -1063,9 +1063,9 @@ def _without_masked_secrets(auth: dict[str, Any], secret_auth_fields: frozenset[
     }
 
 
-def _require_auth_is_object(auth: object) -> None:
-    """400 when ``auth`` is present but not an object; the save paths read it as a dict."""
-    if auth is not None and not isinstance(auth, dict):
+def _require_auth_is_object(auth: object, *, allow_null: bool = False) -> None:
+    """400 when a supplied ``auth`` is not an object; the save paths read it as a dict."""
+    if not isinstance(auth, dict) and not (allow_null and auth is None):
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
             detail="Auth configuration must be an object.",
@@ -4321,6 +4321,9 @@ async def create_connector_instance(
         connector_type = body.get(ConnectorRequestKeys.CONNECTOR_TYPE)
         instance_name = (body.get(ConnectorRequestKeys.INSTANCE_NAME) or "").strip()
         config = _trim_connector_config(body.get(ConnectorRequestKeys.CONFIG, {})) if body.get(ConnectorRequestKeys.CONFIG) else {}
+        if isinstance(config, dict):
+            # A null auth on create means no auth section yet.
+            _require_auth_is_object(config.get(OAuthConfigKeys.AUTH), allow_null=True)
         oauth_config_id = body.get(ConnectorRequestKeys.OAUTH_CONFIG_ID)
         selected_auth_type = body.get(ConnectorRequestKeys.AUTH_TYPE)
         base_url = body.get(ConnectorRequestKeys.BASE_URL, "")
@@ -4442,8 +4445,6 @@ async def create_connector_instance(
                 container=container,
             )
 
-        if isinstance(config, dict):
-            _require_auth_is_object(config.get(OAuthConfigKeys.AUTH))
         if config and isinstance(config.get(OAuthConfigKeys.AUTH), dict):
             _require_valid_auth_config(connector_type, config[OAuthConfigKeys.AUTH])
 
@@ -5044,11 +5045,7 @@ async def update_connector_instance_auth_config(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Auth configuration is required"
             )
-        if not isinstance(body["auth"], dict):
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Auth configuration must be an object.",
-            )
+        _require_auth_is_object(body["auth"])
 
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
@@ -5560,7 +5557,8 @@ async def update_connector_instance_config(
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
         _require_filter_sections_are_objects(body.get("filters"))
-        _require_auth_is_object(body.get("auth"))
+        if "auth" in body:
+            _require_auth_is_object(body["auth"])
         secret_auth_fields = await _secret_auth_field_names(connector_registry, connector_type)
         if isinstance(body.get("auth"), dict):
             body["auth"] = _without_masked_secrets(
