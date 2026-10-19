@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import stat
 import threading
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,12 @@ from app.connectors.sources.network_share.errors import (
 )
 from app.sources.client.iclient import IClient
 from app.sources.client.smb.share_enum import enumerate_shares
+from app.utils.url_fetcher import (
+    HostCheckError,
+    check_addresses,
+    literal_ip,
+    resolved_addresses,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -54,6 +61,39 @@ def _stat_time(result: object, field: str) -> datetime | None:
     return _as_datetime(getattr(result, field, None))
 
 
+def dial_address(server: str) -> str:
+    """The address to connect to for ``server``, looked up once.
+
+    Every path is then built on this address, so a second lookup cannot move the
+    connection. The deployment's rule for hosts users type applies (``check_addresses``:
+    link-local and cloud metadata never, private ones not while
+    PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on), and loopback, unspecified and multicast
+    addresses are never a file server either. Sessions authenticate with NTLM (the image
+    has no Kerberos), which does not need the server's name.
+
+    Raises:
+        NetworkShareAuthError: the name doesn't resolve or an address is refused.
+    """
+    literal = literal_ip(server)
+    addresses = [literal] if literal is not None else resolved_addresses(server)
+    if not addresses:
+        raise NetworkShareAuthError(f'Could not find a server named "{server}". Check the server name.')
+    plain = [
+        a.ipv4_mapped if isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped is not None else a
+        for a in addresses
+    ]
+    if any(a.is_loopback or a.is_unspecified or a.is_multicast for a in plain):
+        raise NetworkShareAuthError(
+            f"The SMB server address {server} is not allowed: loopback, link-local and multicast "
+            "addresses cannot be used."
+        )
+    try:
+        check_addresses(server, addresses)
+    except HostCheckError as exc:
+        raise NetworkShareAuthError(str(exc)) from exc
+    return str(next((a for a in plain if a.version == 4), plain[0]))
+
+
 def unc(server: str, share: str, rel: str = "") -> str:
     rel = rel.replace("/", "\\").strip("\\")
     if rel:
@@ -75,6 +115,8 @@ class SmbClient(IClient):
     ) -> None:
         # smbclient takes an IPv6 address without the brackets a URL would use.
         self.server = server.removeprefix("[").removesuffix("]")
+        # The address actually dialled, set when the session is registered.
+        self.host = self.server
         self.port = port
         self.username = f"{domain}\\{username}" if domain else username
         self.password = password
@@ -111,9 +153,10 @@ class SmbClient(IClient):
         with self._io_lock:
             if self._registered:
                 return
+            self.host = dial_address(self.server)
             smbclient = self._smbclient()
             smbclient.register_session(
-                self.server,
+                self.host,
                 username=self.username,
                 password=self.password,
                 port=self.port,
@@ -147,7 +190,7 @@ class SmbClient(IClient):
     def _list_directory(self, share: str, path: str) -> list[DirectoryEntry]:
         self.register()
         smbclient = self._smbclient()
-        target = unc(self.server, share, path)
+        target = unc(self.host, share, path)
         entries: list[DirectoryEntry] = []
         try:
             with smbclient.scandir(target, **self._kwargs()) as scan:
@@ -170,7 +213,7 @@ class SmbClient(IClient):
     def _stat(self, share: str, path: str, *, follow: bool = True) -> DirectoryEntry | None:
         self.register()
         smbclient = self._smbclient()
-        target = unc(self.server, share, path)
+        target = unc(self.host, share, path)
         try:
             result = smbclient.stat(target, follow_symlinks=follow, **self._kwargs())
         except FileNotFoundError:
@@ -199,7 +242,7 @@ class SmbClient(IClient):
         with self._io_lock:
             self.register()
             smbclient = self._smbclient()
-            target = unc(self.server, share, path)
+            target = unc(self.host, share, path)
             # The default share mode for "rb" is read-only, so two overlapping
             # previews of one file fail with STATUS_SHARING_VIOLATION.
             return smbclient.open_file(
@@ -210,7 +253,7 @@ class SmbClient(IClient):
         with self._io_lock:
             self.register()
             try:
-                return enumerate_shares(self.server, self._connection_cache, port=self.port)
+                return enumerate_shares(self.host, self._connection_cache, port=self.port)
             except ShareListingError:
                 if self.default_share:
                     return [ShareInfo(name=self.default_share, share_type="disk")]

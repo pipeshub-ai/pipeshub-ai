@@ -116,6 +116,7 @@ from app.connectors.core.sync.sync_coordinator import get_coordinator
 from app.edition_services import max_connector_workers, sync_executor_enabled
 from app.connectors.core.sync.sync_dispatcher import get_dispatcher
 from app.connectors.core.sync.sync_runner import write_app_status
+from app.connectors.core.registry.folder_scope import folder_path_problems
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.vector_cleanup_events import (
     build_soft_delete_events,
@@ -1124,9 +1125,8 @@ async def _validate_sync_filter_selections(
     )
     schema_fields = [f for f in schema_fields if isinstance(f, dict)]
     sync_values = ((config.get("filters") or {}).get("sync") or {}).get("values") or {}
-    problems = sync_filter_selection_problems(
-        schema_fields, sync_values if isinstance(sync_values, dict) else {}, action
-    )
+    sync_values = sync_values if isinstance(sync_values, dict) else {}
+    problems = sync_filter_selection_problems(schema_fields, sync_values, action) + folder_path_problems(sync_values)
     if problems:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
 

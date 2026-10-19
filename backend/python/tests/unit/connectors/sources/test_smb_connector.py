@@ -262,6 +262,50 @@ class TestSmbConnectorInit:
 CHECK_AUTH = {"server": "fs01.example", "port": "445", "username": "u", "password": "p", "share": SHARE}
 
 
+class TestSmbConnectorPorts:
+    """Members create personal connectors; only admins create team ones."""
+
+    @patch("app.connectors.sources.smb.connector.SmbClient.build_from_services", new_callable=AsyncMock)
+    async def test_a_personal_connector_on_another_port_is_refused_before_connecting(self, mock_build, smb_connector):
+        smb_connector.config_service.get_config = AsyncMock(
+            return_value={"auth": {"server": "h", "username": "u", "password": "p", "port": "3000", "share": SHARE}}
+        )
+
+        assert await smb_connector.init() is False
+
+        mock_build.assert_not_awaited()
+        assert smb_connector.notify.await_args.kwargs["title"] == "SMB: Port not allowed"
+
+    @pytest.mark.parametrize("port", ["445", "139", "", None])
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    @patch("app.connectors.sources.smb.connector.SmbClient.build_from_services", new_callable=AsyncMock)
+    async def test_a_personal_connector_on_a_standard_port_connects(self, mock_build, mock_filters, port, smb_connector):
+        mock_filters.return_value = _empty_filters()
+        smb_connector.config_service.get_config = AsyncMock(
+            return_value={"auth": {"server": "h", "username": "u", "password": "p", "port": port, "share": SHARE}}
+        )
+
+        assert await smb_connector.init() is True
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    @patch("app.connectors.sources.smb.connector.SmbClient.build_from_services", new_callable=AsyncMock)
+    async def test_a_team_connector_may_use_any_port(
+        self, mock_build, mock_filters, mock_logger, mock_processor, mock_data_store_provider, mock_config_service
+    ):
+        mock_filters.return_value = _empty_filters()
+        subject = _connector(
+            mock_logger, mock_processor, mock_data_store_provider, mock_config_service, scope=ConnectorScope.TEAM.value
+        )
+        subject.config_service.get_config = AsyncMock(
+            return_value={"auth": {"server": "h", "username": "u", "password": "p", "port": "2445", "share": SHARE}}
+        )
+
+        assert await subject.init() is True
+
+
+CHECK_AUTH = {"server": "fs01.example", "port": "445", "username": "u", "password": "p", "share": SHARE}
+
+
 class TestSmbConnectionCheck:
     def test_smb_offers_a_connection_check(self):
         assert SmbConnector.supports_connection_check()

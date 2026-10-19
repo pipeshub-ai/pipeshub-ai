@@ -49,6 +49,20 @@ def path_in_container(container_name: str | None, external_record_id: str | None
     return external_record_id[len(prefix):] or None
 
 
+def folder_path_problems(sync_values: dict[str, object]) -> list[str]:
+    """A folder filter value that would climb out of the bucket, container or share."""
+    entry = sync_values.get(SyncFilterKey.FOLDER_PATHS.value)
+    if not isinstance(entry, dict):
+        return []
+    raw = entry.get("value")
+    for value in raw if isinstance(raw, list) else [raw]:
+        if value is None:
+            continue
+        if any(part.strip() == ".." for part in str(value).replace("\\", "/").split("/")):
+            return [f'Folder "{value}" must be a path from the top of the store, without "..".']
+    return []
+
+
 @dataclass(frozen=True)
 class FolderScope:
     """Folder prefixes (each ending in ``/``) and whether they are excluded."""

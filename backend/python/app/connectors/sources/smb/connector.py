@@ -224,6 +224,10 @@ class SmbConnector(BaseConnector):
             if not auth.get("password"):
                 await self._auth_error("Credentials missing", "SMB password is required.")
                 return False
+            port = port_of(auth)
+            if self.scope != ConnectorScope.TEAM.value and port not in STANDARD_PORTS:
+                await self._auth_error("Port not allowed", _personal_port_message(port))
+                return False
             self.configured_share = (auth.get("share") or "").strip() or None
             await self._load_creator_email()
             self.data_source = await self._build_data_source()
@@ -272,7 +276,7 @@ class SmbConnector(BaseConnector):
             return ConnectionCheckResult(success=False, message=problems[0])
         port = port_of(auth_config)
         if port not in STANDARD_PORTS:
-            # Anyone may run a check, so it only uses the standard SMB ports.
+            # Anyone may run a check, so it must not reach ports a personal connector could not.
             return ConnectionCheckResult(
                 success=False,
                 message=(
@@ -456,3 +460,10 @@ class SmbConnector(BaseConnector):
             kwargs.get("scope") or ConnectorScope.PERSONAL.value,
             kwargs.get("created_by") or "",
         )
+
+
+def _personal_port_message(port: int) -> str:
+    return (
+        f"Port {port} is not allowed: personal SMB connectors use port 445 or 139. "
+        "An administrator can set up a team connector for another port."
+    )
