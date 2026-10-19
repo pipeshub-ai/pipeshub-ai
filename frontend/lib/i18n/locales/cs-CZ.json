@@ -859,6 +859,8 @@
     "like": "Užitečné",
     "dislike": "Neužitečné",
     "copy": "Kopírovat",
+    "fork": "Rozvětvit chat",
+    "forkFromHere": "Rozvětvit odtud",
     "regenerate": "Vygenerovat znovu",
     "readAloud": "Přečíst nahlas",
     "stopReading": "Zastavit čtení",
@@ -988,7 +990,9 @@
       "editComingSoonDescription": "Na podpoře úprav pracujeme",
       "deprecatedTools": "Tento agent má nástroje, které už nejsou k dispozici. Otevřete Tvůrce agentů a odeberte je.",
       "openAgentBuilder": "Otevřít Tvůrce agentů",
-      "loadConversationFailed": "Tuto konverzaci se nepodařilo otevřít. Obnovte stránku a zkuste to znovu."
+      "loadConversationFailed": "Tuto konverzaci se nepodařilo otevřít. Obnovte stránku a zkuste to znovu.",
+      "forkSuccess": "Zahájena nová konverzace od tohoto místa",
+      "forkError": "Tuto konverzaci se nepodařilo rozvětvit. Zkuste to znovu."
     },
     "queryModes": {
       "chat": {
