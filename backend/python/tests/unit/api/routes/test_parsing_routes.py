@@ -269,7 +269,8 @@ def test_parse_endpoint_unexpected_exception(caplog: pytest.LogCaptureFixture) -
     assert body["success"] is False
     assert body["error"]["code"] == "PARSE_FAILED"
     assert body["error"]["message"] == "Unexpected error while parsing the document"
-    assert body["error"]["details"] == {"exceptionType": "RuntimeError", "requestId": "-"}
+    assert body["error"]["details"] == {"requestId": "-"}
+    assert "RuntimeError" not in response.text
     assert "Boom" not in response.text
     assert "/srv/secret" not in response.text
     assert any(r.exc_info and "Boom" in str(r.exc_info[1]) for r in caplog.records)

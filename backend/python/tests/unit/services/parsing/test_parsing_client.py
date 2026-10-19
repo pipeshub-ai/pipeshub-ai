@@ -296,7 +296,7 @@ async def test_an_unexpected_parser_failure_is_retried_and_stored_as_temporary()
         "error": {
             "code": "PARSE_FAILED",
             "message": "Unexpected error while parsing the document",
-            "details": {"exceptionType": "RuntimeError", "requestId": "req-1"},
+            "details": {"requestId": "req-1"},
         },
     }
     calls = 0
