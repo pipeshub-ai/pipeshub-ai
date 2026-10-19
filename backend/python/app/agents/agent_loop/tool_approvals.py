@@ -192,10 +192,11 @@ _SQL_TOOL_PATHS: dict[str, str] = {
     "/tools/mariadb/execute_query": "query",
     "/tools/redshift/execute_query": "query",
 }
-# Only what reads the same in MariaDB and Redshift is stripped. Backticks, `#`, MySQL's
-# executable /*! */ comments and "--" with no space after it are left in, so a statement they
-# could hide still counts; a `#` left in makes the call count as destructive.
+# Only what reads the same in MariaDB and Redshift is stripped: quoted literals, "-- " followed by
+# whitespace, and plain /* */ comments. Any other comment marker left after that makes the call
+# count as destructive, and backticks are kept, so a statement they could hide still counts.
 _SQL_STRING_OR_COMMENT = re.compile(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|--(?=\s)[^\n]*|/\*(?![!M])[\s\S]*?\*/")
+_SQL_LEFTOVER_COMMENT_MARKERS = ("/*", "*/", "#", "--")
 _SQL_READS = frozenset({"select", "show", "describe", "desc", "explain"})
 _SQL_ORDINARY_WRITES = frozenset({"insert", "update"})
 _SQL_WORD = re.compile(r"[a-z_]+")
@@ -209,8 +210,9 @@ def sql_keeps_its_kind(sql: str) -> bool:
         # A backslash escapes a quote in one dialect and not the other: where a string ends is unclear.
         return False
     code = _SQL_STRING_OR_COMMENT.sub(" ", sql).lower()
-    if "#" in code:
-        # A comment in MariaDB, an operator in Redshift: the two would run different statements.
+    if any(marker in code for marker in _SQL_LEFTOVER_COMMENT_MARKERS):
+        # Fail closed: a comment the two dialects read differently (MySQL's /*! */ and /*M! */,
+        # "--" with no space, "#") could hide or change the statement that runs.
         return False
     statements = [part for part in code.split(";") if part.strip()]
     if len(statements) != 1:
