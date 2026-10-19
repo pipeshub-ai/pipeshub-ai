@@ -2,7 +2,8 @@
 
 Each field resolves on its own, first hit wins: the value stored on the model
 entry, then the family overlay, then what the provider reported, then the
-catalog, then name and price rules. Size falls back to ``medium``.
+catalog, then name and price rules. For size, a parameter count comes before
+the overlay. Size falls back to ``medium``.
 
 These tiers are not ``agents/agent_loop/model_tier.py``'s SMALL/MID/FRONTIER,
 which only shape prompt scaffolding and may disagree (it calls every Ollama
@@ -196,10 +197,11 @@ def resolve_traits(
     if size:
         source["size"] = "stored"
     else:
+        # A parameter count beats family rules: "deepseek-r1:7b" is a small distill, not the large R1.
         for label, candidate in (
-            ("overlay", _valid(rule.get("size"), SIZES)),
             ("parameters", size_from_parameters(facts.get("parameter_count"))),
             ("parameters", size_from_parameters(parse_parameter_count(model_name))),
+            ("overlay", _valid(rule.get("size"), SIZES)),
             ("price", size_from_price(facts.get("output_price") or catalog_output_price(catalog))),
             ("name", size_from_name(model_name)),
         ):

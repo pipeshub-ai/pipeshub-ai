@@ -2026,6 +2026,16 @@ class TestModelDefaultReasoningEffort:
         )
         assert fields == {"reasoning_effort": "low"}
 
+    def test_bedrock_none_with_reasoning_allowed_off_sends_no_thinking(self) -> None:
+        from app.utils.aimodels import _bedrock_additional_model_request_fields
+
+        config = {"isReasoning": True, "allowDisabledReasoning": True}
+        fields = _bedrock_additional_model_request_fields(
+            "none", config, provider_in_bedrock="anthropic",
+            model_name="anthropic.claude-3-7-sonnet-20250219-v1:0",
+        )
+        assert fields == {}
+
     def test_bedrock_request_effort_overrides_model_default(self) -> None:
         from app.utils.aimodels import _bedrock_additional_model_request_fields
 

@@ -148,3 +148,11 @@ def test_shipped_overlay_compiles() -> None:
 )
 def test_openai_family_names_map_to_sizes(no_catalog, model, size) -> None:
     assert resolve_traits("openAI", model).size == size
+
+
+@pytest.mark.parametrize(
+    ("model", "size"),
+    [("deepseek-r1:7b", "small"), ("deepseek-r1:32b", "medium"), ("deepseek-r1", "large"), ("deepseek-chat", "large")],
+)
+def test_parameter_count_beats_family_rules(no_catalog, model, size) -> None:
+    assert resolve_traits("ollama", model).size == size

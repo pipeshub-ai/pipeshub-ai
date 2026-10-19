@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.service import config_node_constants
 from app.services.ai_models.auto.classifier import (
+    Classification,
     ClassifierError,
     classify,
     classify_with_decision,
@@ -189,13 +190,17 @@ async def resolve_auto_model(
             None, None, None, reason=f"error: {type(exc).__name__}", fallback=True
         )
         if not request.agent_route:
-            ai_models = (
-                await config_service.get_config(
-                    config_node_constants.AI_MODELS.value, use_cache=True
+            try:
+                ai_models = (
+                    await config_service.get_config(
+                        config_node_constants.AI_MODELS.value, use_cache=True
+                    )
+                    or {}
                 )
-                or {}
-            )
-            default = _default_candidate(build_pool(ai_models.get("llm") or []))
+                default = _default_candidate(build_pool(ai_models.get("llm") or []))
+            # A key of None already means "the route's default model".
+            except Exception:
+                default = None
             if default is not None:
                 decision = _decide(default, None, decision.reason, fallback=True)
     log.info(
@@ -287,26 +292,22 @@ async def _resolve(
         chosen = pick_for_need(pool, "standard", pinned)
         return _decide(chosen, None, "single_size", need="standard")
 
-    decision_model = await get_decision_model_instance(config_service)
-    if decision_model is not None:
-        decision_client, _decision_config = decision_model
-        classifier_name = decision_client.model_name
-        chat_classifier = None
-    else:
-        decision_client = None
+    started = time.monotonic()
+    result, classifier_name, decision_error = await _classify_with_decision_model(
+        config_service, request
+    )
+    chat_error: ClassifierError | None = None
+    if result is None:
         chat_classifier = pick_classifier(pool, ai_models)
         classifier_name = chat_classifier.model_name
-    started = time.monotonic()
-    try:
-        if decision_client is not None:
-            result = await classify_with_decision(
-                decision_client, request.query, request.previous_conversations
-            )
-        else:
+        try:
             result = await classify(
                 chat_classifier, request.query, request.previous_conversations
             )
-    except ClassifierError as exc:
+        except ClassifierError as exc:
+            chat_error = exc
+    if result is None:
+        exc = chat_error
         elapsed = int((time.monotonic() - started) * 1000)
         if pinned is not None:
             # Keep the conversation where it is rather than moving it on a guess.
@@ -332,6 +333,8 @@ async def _resolve(
     )
     if pinned is not None and chosen is pinned:
         reason += "; kept pinned"
+    if decision_error is not None:
+        reason += f"; decision_{decision_error}"
     return _decide(
         chosen,
         effort_for(chosen, result.need, needs_reasoning=result.needs_reasoning),
@@ -341,6 +344,26 @@ async def _resolve(
         classifier_ms=elapsed,
         classifier_model=classifier_name,
     )
+
+
+async def _classify_with_decision_model(
+    config_service: ConfigurationService, request: AutoRequest
+) -> tuple[Classification | None, str | None, ClassifierError | None]:
+    """Rate the turn with the configured decision model, if any; on failure the chat classifier takes over."""
+    try:
+        decision_model = await get_decision_model_instance(config_service)
+    except Exception as exc:
+        return None, None, ClassifierError(f"error: {type(exc).__name__}")
+    if decision_model is None:
+        return None, None, None
+    client, _config = decision_model
+    try:
+        result = await classify_with_decision(
+            client, request.query, request.previous_conversations
+        )
+    except ClassifierError as exc:
+        return None, client.model_name, exc
+    return result, client.model_name, None
 
 
 def _agent_floor(request: AutoRequest) -> str | None:

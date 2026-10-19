@@ -124,7 +124,13 @@ def apply_filters(
 
 
 def _preference(candidate: Candidate) -> tuple:
-    return (0 if candidate.is_default else 1, candidate.output_price, candidate.order)
+    # A model that always thinks is slower and dearer than its peers of the same size.
+    return (
+        0 if candidate.is_default else 1,
+        1 if candidate.traits.thinking == "always" else 0,
+        candidate.output_price,
+        candidate.order,
+    )
 
 
 def pick_for_need(pool: list[Candidate], need: Need, pinned: Candidate | None) -> Candidate:
@@ -142,6 +148,8 @@ def pick_for_need(pool: list[Candidate], need: Need, pinned: Candidate | None) -
         smallest = min(c.size_rank for c in fitting)
         return min((c for c in fitting if c.size_rank == smallest), key=_preference)
     largest = max(c.size_rank for c in pool)
+    if pinned is not None and pinned.size_rank == largest:
+        return pinned
     return min((c for c in pool if c.size_rank == largest), key=_preference)
 
 

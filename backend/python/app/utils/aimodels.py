@@ -1672,6 +1672,9 @@ def _bedrock_additional_model_request_fields(
         return {}
 
     effort_input = _resolve_bedrock_effort_input(reasoning_effort, config)
+    if effort_input == "none":
+        # Only reachable with allowDisabledReasoning; sending no reasoning fields turns thinking off.
+        return {}
     provider = (provider_in_bedrock or "").lower()
 
     if _bedrock_is_openai(provider, model_name):
