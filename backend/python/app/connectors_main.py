@@ -21,6 +21,7 @@ from app.edition_config import (
 )
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.modules.demo_data.router import demo_data_router
+from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
@@ -87,7 +88,6 @@ from app.services.messaging.utils import MessagingUtils
 from app.telemetry.flag import telemetry_enabled  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
-from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import SOMETHING_WENT_WRONG
