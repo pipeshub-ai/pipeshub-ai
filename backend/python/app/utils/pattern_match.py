@@ -2241,6 +2241,35 @@ def grep_hits_within(
     return kept
 
 
+def split_hint_entries(
+    entries: list[dict], virtual_record_id_to_result: Mapping[str, Any], max_chars: int, *, max_full: int,
+) -> tuple[list[dict], list[dict], int]:
+    """``entries``, in order, split into those the hint shows with full
+    metadata, those it names on one line, and how many it leaves out.
+
+    The leading ``max_full`` that fit in ``max_chars`` get full metadata and
+    the rest are named while the room lasts, so a long list of keyword
+    matches takes a bounded share of the result instead of its passages.
+    """
+    named = [entry for entry in entries if virtual_record_id_to_result.get(entry.get("virtual_record_id", ""))]
+    full: list[dict] = []
+    brief: list[dict] = []
+    used = 0
+    for index, entry in enumerate(named):
+        if not brief and len(full) < max_full:
+            section = _hint_section(entry, virtual_record_id_to_result) or ""
+            if used + len(section) + 1 <= max_chars:
+                used += len(section) + 1
+                full.append(entry)
+                continue
+        line = _hint_line(entry, virtual_record_id_to_result) or ""
+        if used + len(line) + 1 > max_chars:
+            return full, brief, len(named) - index
+        used += len(line) + 1
+        brief.append(entry)
+    return full, brief, 0
+
+
 def _render_loaded_record_metadata(record: dict[str, Any]) -> str:
     """The metadata a semantic search result shows for ``record``."""
     return record.get("context_metadata") or (
@@ -2311,12 +2340,24 @@ def _hint_section(entry: dict, virtual_record_id_to_result: Mapping[str, Any]) -
     return f"<record>\n{metadata_block}{mc_line}{snippet_line}\n</record>"
 
 
+def _hint_line(entry: dict, virtual_record_id_to_result: Mapping[str, Any]) -> str | None:
+    """One record named on a line of the keyword hint, with the id that fetches it."""
+    record = virtual_record_id_to_result.get(entry.get("virtual_record_id", ""))
+    if not record:
+        return None
+    record_id = record.get("id") or record.get("_key") or "N/A"
+    name = record.get("record_name") or record.get("recordName") or record.get("title") or "N/A"
+    return f"- {' '.join(str(name).split())} (Record ID: {record_id})"
+
+
 def render_pattern_match_hint(
     pm_records: list[dict],
     virtual_record_id_to_result: dict[str, dict],
     fetch_tool_ref: str = "knowledgegraph__fetch_record",
     max_records: int = _MAX_PATTERN_MATCH_RECORDS,
     has_semantic_blocks: bool = True,
+    brief_records: list[dict] | None = None,
+    unlisted: int = 0,
 ) -> str:
     """Render pattern-matched records with full metadata and a fetch hint.
 
@@ -2331,20 +2372,23 @@ def render_pattern_match_hint(
     immediately instead of running more searches.
 
     *max_records* caps how many records are rendered (default
-    ``_MAX_PATTERN_MATCH_RECORDS``).
+    ``_MAX_PATTERN_MATCH_RECORDS``). *brief_records* follow them named on
+    one line each, and *unlisted* counts the matches left out of both.
     """
-    if not pm_records:
-        return ""
-
-    capped = pm_records[:max_records]
-
     sections = [
-        section for entry in capped
+        section for entry in pm_records[:max_records]
         if (section := _hint_section(entry, virtual_record_id_to_result)) is not None
     ]
-
-    if not sections:
+    lines = [
+        line for entry in brief_records or ()
+        if (line := _hint_line(entry, virtual_record_id_to_result)) is not None
+    ]
+    if not sections and not lines:
         return ""
+    if lines:
+        sections.append("Also matched (name and Record ID only):\n" + "\n".join(lines))
+    if unlisted:
+        sections.append(f"{unlisted} more matched record{'s' if unlisted != 1 else ''} not listed.")
 
     if has_semantic_blocks:
         header = (

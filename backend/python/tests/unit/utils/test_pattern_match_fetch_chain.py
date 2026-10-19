@@ -15,7 +15,11 @@ from app.config.constants.arangodb import ProgressStatus
 from app.services.graph_db.interface.graph_db_provider import AccessCheck, AccessibleContainers
 from app.utils.chat_helpers import RecordIdShortener
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
-from app.utils.pattern_match import merge_pattern_match_results, render_pattern_match_hint
+from app.utils.pattern_match import (
+    merge_pattern_match_results,
+    render_pattern_match_hint,
+    split_hint_entries,
+)
 
 ORG, USER, RECORD_ID, VRID = "org-1", "user-1", "rec-bob", "vrid-shared"
 
@@ -99,6 +103,30 @@ async def test_grep_hit_is_shown_with_its_record_id_and_fetches_by_it(id_field):
     assert result["records"][0]["record_name"] == "Doc1"
     assert result["records"][0]["block_containers"]["blocks"][0]["data"] == "Q3 revenue grew 12%"
     assert result["not_available_ids"] == []
+
+
+@pytest.mark.parametrize("id_field", ["id", "_key"], ids=["neo4j_shape", "arango_shape"])
+async def test_a_hit_named_on_one_line_fetches_by_the_id_it_shows(id_field: str) -> None:
+    graph = _graph_provider(_graph_record(id_field))
+
+    entries, vr_map = await _merge(graph)
+    full, brief, unlisted = split_hint_entries(entries, vr_map, max_chars=200, max_full=0)
+    hint = render_pattern_match_hint(full, vr_map, brief_records=brief, unlisted=unlisted)
+
+    assert (full, unlisted) == ([], 0)
+    assert f"- Doc1 (Record ID: {RECORD_ID})" in hint
+    assert "<record>" not in hint
+
+    blob_store = MagicMock()
+    blob_store.config_service.get_config = AsyncMock(return_value={})
+    with patch("app.utils.fetch_full_record.get_record", AsyncMock(side_effect=_fake_get_record)), \
+         patch("app.utils.fetch_full_record.excluded_demo_connector_ids", AsyncMock(return_value=frozenset())):
+        result = await _fetch_multiple_records_impl(
+            [RECORD_ID], vr_map, graph_provider=graph, blob_store=blob_store, org_id=ORG, user_id=USER,
+        )
+
+    assert result["ok"] is True, result
+    assert result["records"][0]["block_containers"]["blocks"][0]["data"] == "Q3 revenue grew 12%"
 
 
 async def test_neo4j_shaped_hit_is_served_from_the_map_after_the_one_batch_access_check() -> None:
