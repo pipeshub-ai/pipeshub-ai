@@ -2389,7 +2389,8 @@
         "delete": "Smazat akci",
         "deleteTitle": "Smazat {{name}}?",
         "deleteBody": "Smaže se i vaše ověření a schválení nástrojů pro tuto akci. Tuto operaci nelze vrátit zpět.",
-        "deleted": "Akce byla smazána."
+        "deleted": "Akce byla smazána.",
+        "adminOnly": "{{name}} může přidat pouze správce: připojuje se k serveru podle názvu hostitele. Požádejte správce, aby ji přidal pro vaši organizaci."
       },
       "enterprise": {
         "userActionsTitle": "Vlastní akce uživatelů",

@@ -2164,7 +2164,8 @@
         "delete": "Delete action",
         "deleteTitle": "Delete {{name}}?",
         "deleteBody": "Your sign-in and tool approvals for it are deleted too. This can't be undone.",
-        "deleted": "Action deleted."
+        "deleted": "Action deleted.",
+        "adminOnly": "Only an administrator can add {{name}}: it connects to a server by its host name. Ask your administrator to add it for your organization."
       },
       "enterprise": {
         "userActionsTitle": "People's own actions",

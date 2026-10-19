@@ -2305,7 +2305,8 @@
         "delete": "刪除動作",
         "deleteTitle": "刪除 {{name}}？",
         "deleteBody": "您對此動作的登入資訊和工具核准也會一併刪除。刪除後無法復原。",
-        "deleted": "動作已刪除。"
+        "deleted": "動作已刪除。",
+        "adminOnly": "只有管理員可以新增 {{name}}：它透過主機名稱連線到伺服器。請要求管理員為您的組織新增。"
       },
       "enterprise": {
         "userActionsTitle": "成員自己的動作",

@@ -246,6 +246,12 @@ class AddressNotAllowedError(ValueError):
     show; it doesn't say what the name resolved to."""
 
 
+def connects_by_host(field_names: set[str]) -> bool:
+    """The toolset names its server by host (a database), and connects through a driver that
+    can't be held to the address that was checked. Only administrators add those."""
+    return any(name.lower() in _HOST_FIELDS for name in field_names)
+
+
 def with_url_schemes(settings: dict[str, Any], url_fields: set[str]) -> dict[str, Any]:
     """`settings` with each URL field given without a scheme written as https, the way its client
     reads it (Salesforce adds one itself). Stored that way, the address check on save and on every

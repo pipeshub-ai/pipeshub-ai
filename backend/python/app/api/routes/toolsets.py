@@ -1243,6 +1243,11 @@ async def _validated_personal_settings(
     """A personal instance's settings, refused unless they're its toolset's setup fields, an
     OAuth instance has its own client, and every address is public."""
     allowed = _personal_setting_fields(request, toolset_type, auth_type)
+    if toolset_store.connects_by_host(allowed):
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="Only an administrator can add this action: it connects to a server by its host name.",
+        )
     unexpected = sorted(set(settings) - allowed)
     if unexpected:
         raise HTTPException(

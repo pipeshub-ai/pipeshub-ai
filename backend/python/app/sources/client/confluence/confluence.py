@@ -386,6 +386,7 @@ class ConfluenceClient(IClient):
             # Extract auth configuration from toolset config
             credentials_config = toolset_config.get("credentials", {}) or {}
             auth_type = toolset_config.get("authType", "BEARER_TOKEN")
+            confluence_instance: Optional[dict[str, Any]] = None
 
             # Create appropriate client based on auth type
             if auth_type == "BEARER_TOKEN":
@@ -502,6 +503,11 @@ class ConfluenceClient(IClient):
             else:
                 raise ValueError(f"Invalid auth type: {auth_type}. Supported: OAUTH, API_TOKEN, BEARER_TOKEN, BASIC_AUTH")
 
+            # A personal action's address is its owner's: connect only to the public one checked.
+            from app.agents.toolset_store import is_personal
+
+            if confluence_instance is not None and is_personal(confluence_instance):
+                client.require_public_addresses()
             logger.info(f"Built Confluence client from toolset config with auth type: {auth_type}")
             return cls(client)
 

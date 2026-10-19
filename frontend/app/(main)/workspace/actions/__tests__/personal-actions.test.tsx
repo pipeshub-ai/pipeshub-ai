@@ -32,6 +32,22 @@ const OAUTH_FIELDS = [
   { name: 'clientSecret', displayName: 'Client secret', fieldType: 'PASSWORD', required: true, usage: 'BOTH', isSecret: true },
 ];
 const SCHEMAS: Record<string, unknown> = {
+  mariadb: {
+    toolset: {
+      config: {
+        auth: {
+          schemas: {
+            BASIC_AUTH: {
+              fields: [
+                { name: 'host', displayName: 'Host', fieldType: 'TEXT', required: true, usage: 'CONFIGURE' },
+                { name: 'username', displayName: 'Username', fieldType: 'TEXT', required: true, usage: 'AUTHENTICATE' },
+              ],
+            },
+          },
+        },
+      },
+    },
+  },
   github: {
     toolset: {
       config: {
@@ -64,7 +80,7 @@ const SCHEMAS: Record<string, unknown> = {
 };
 
 function row(name: string, authTypes: string[]): RegistryToolsetRow {
-  const displayName = { gmail: 'Gmail', github: 'GitHub' }[name] ?? 'Jira';
+  const displayName = { gmail: 'Gmail', github: 'GitHub', mariadb: 'MariaDB' }[name] ?? 'Jira';
   return { name, displayName, description: '', category: 'app', appGroup: '', iconPath: '', supportedAuthTypes: authTypes, toolCount: 1 };
 }
 
@@ -151,6 +167,21 @@ describe('adding a personal action', () => {
     await waitFor(() => expect(api.createToolsetInstance).toHaveBeenCalledWith(
       expect.objectContaining({ instanceName: 'GitHub', toolsetType: 'github', scope: 'personal' }),
     ));
+  });
+});
+
+describe('a toolset that names its server by host', () => {
+  it('is left to an administrator: the panel says so and creates nothing', async () => {
+    renderInTheme(
+      <ActionSetupPanel open scope="personal" registryRow={row('mariadb', ['BASIC_AUTH'])} onOpenChange={vi.fn()} />,
+    );
+
+    expect(await screen.findByText(/Only an administrator can add MariaDB/)).toBeTruthy();
+    expect(document.querySelector('[data-ph-field]')).toBeNull();
+    const create = screen.getByRole('button', { name: 'Create' }) as HTMLButtonElement;
+    expect(create.disabled).toBe(true);
+    fireEvent.click(create);
+    expect(api.createToolsetInstance).not.toHaveBeenCalled();
   });
 });
 

@@ -296,6 +296,9 @@ export function ActionSetupPanel({
 
   const toolNames = useMemo(() => toolNamesFromSchema(schemaRaw), [schemaRaw]);
 
+  /** A server named by host (a database) can't be held to a checked address: only admins add those. */
+  const adminOnly = personal && manageFields.some((f) => ['host', 'hostname'].includes(f.name.toLowerCase()));
+
   /** Only show the picker when the org already has OAuth apps for this toolset (otherwise flow is implicit "new app"). */
   const showOAuthAppPicker = useMemo(
     () => !personal && isOAuthType(authType) && !oauthConfigsLoading && oauthConfigs.length > 0,
@@ -660,7 +663,7 @@ export function ActionSetupPanel({
       primaryLabel={editing ? t('action.save') : t('action.create')}
       secondaryLabel={t('action.cancel')}
       primaryLoading={saving}
-      primaryDisabled={saving}
+      primaryDisabled={saving || adminOnly}
       primaryTooltip={saving ? t('action.saving') : undefined}
       onPrimaryClick={() => void handleSubmit()}
       onSecondaryClick={() => onOpenChange(false)}
@@ -669,6 +672,10 @@ export function ActionSetupPanel({
         <Flex align="center" justify="center" py="8" style={{ width: '100%' }}>
           <LottieLoader variant="loader" size={48} showLabel label={t('agentBuilder.loadingSchema')} />
         </Flex>
+      ) : adminOnly ? (
+        <Callout.Root color="gray" variant="surface" size="1">
+          <Callout.Text size="2">{t('workspace.actions.personal.adminOnly', { name: displayName })}</Callout.Text>
+        </Callout.Root>
       ) : (
         <Flex direction="column" gap="6" style={{ minWidth: 0, padding: '4px 0' }}>
           {docLinks.length > 0 ? (

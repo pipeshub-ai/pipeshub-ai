@@ -212,8 +212,14 @@ class DrupalWikiClient(IClient):
             if not api_token:
                 raise ValueError("Personal access token is required for Drupal Wiki API_TOKEN auth")
 
+            client = DrupalWikiRESTClientViaToken(base_url, api_token)
+            # A personal action's address is its owner's: connect only to the public one checked.
+            from app.agents.toolset_store import is_personal
+
+            if instance is not None and is_personal(instance):
+                client.require_public_addresses()
             logger.info("Created Drupal Wiki client from toolset config (auth type: API_TOKEN)")
-            return cls(DrupalWikiRESTClientViaToken(base_url, api_token))
+            return cls(client)
         except Exception as e:
             logger.error(f"Failed to build Drupal Wiki client from toolset: {e}")
             raise ValueError(f"Failed to create Drupal Wiki client: {e}") from e

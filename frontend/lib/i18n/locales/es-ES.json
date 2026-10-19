@@ -2189,7 +2189,8 @@
         "delete": "Eliminar acción",
         "deleteTitle": "¿Eliminar {{name}}?",
         "deleteBody": "También se eliminan su inicio de sesión y las aprobaciones de herramientas de esta acción. No se puede deshacer.",
-        "deleted": "Acción eliminada."
+        "deleted": "Acción eliminada.",
+        "adminOnly": "Solo un administrador puede añadir {{name}}: se conecta a un servidor por su nombre de host. Pida a su administrador que la añada para su organización."
       },
       "enterprise": {
         "userActionsTitle": "Acciones propias de las personas",

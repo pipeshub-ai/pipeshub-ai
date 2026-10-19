@@ -211,6 +211,24 @@ class TestAMemberAddsTheirOwn:
         saved = store.data[USER_PATH.format("u-carol", result["instance"]["_id"])]
         assert saved["auth"]["baseUrl"] == "https://me.atlassian.net"
 
+    async def test_one_that_names_its_server_by_host_is_left_to_administrators(self) -> None:
+        # A database driver can't be held to the address that was checked, as an HTTP client is.
+        mariadb = {"mariadb": {
+            "name": "mariadb", "display_name": "MariaDB", "supported_auth_types": ["BASIC_AUTH"], "tools": [],
+            "config": {"auth": {"schemas": {"BASIC_AUTH": {"fields": [
+                {"name": "host", "usage": "CONFIGURE"}, {"name": "port", "usage": "CONFIGURE"},
+                {"name": "username", "usage": "AUTHENTICATE"}, {"name": "password", "usage": "AUTHENTICATE"},
+            ]}}}},
+        }}
+        store = _store()
+        body = {"instanceName": "My DB", "toolsetType": "mariadb", "authType": "BASIC_AUTH", "authConfig": {"host": "db.example.com"}}
+        with patch.dict(_METADATA, mariadb):
+            for caller in ("u-carol", "admin-1"):
+                with pytest.raises(HTTPException) as exc:
+                    await toolsets.create_toolset_instance(_as(store, caller, {**body, "scope": "personal"}), config_service=store)
+                assert exc.value.status_code == 400 and "administrator" in exc.value.detail
+        assert store.writes == []
+
     async def test_an_address_of_another_kind_is_refused(self) -> None:
         store = _store()
         body = _jira(authConfig={"baseUrl": "ftp://me.atlassian.net"})

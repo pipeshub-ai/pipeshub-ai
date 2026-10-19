@@ -2169,7 +2169,8 @@
         "delete": "Aktion löschen",
         "deleteTitle": "{{name}} löschen?",
         "deleteBody": "Ihre Anmeldung und die Tool-Freigaben dafür werden ebenfalls gelöscht. Dies kann nicht rückgängig gemacht werden.",
-        "deleted": "Aktion gelöscht."
+        "deleted": "Aktion gelöscht.",
+        "adminOnly": "Nur ein Administrator kann {{name}} hinzufügen: Die Aktion verbindet sich über den Hostnamen mit einem Server. Bitten Sie Ihren Administrator, sie für Ihre Organisation hinzuzufügen."
       },
       "enterprise": {
         "userActionsTitle": "Eigene Aktionen der Mitglieder",

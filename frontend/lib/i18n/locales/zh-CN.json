@@ -2305,7 +2305,8 @@
         "delete": "删除操作",
         "deleteTitle": "删除 {{name}}？",
         "deleteBody": "您对该操作的登录信息和工具审批也会一并删除。删除后无法恢复。",
-        "deleted": "操作已删除。"
+        "deleted": "操作已删除。",
+        "adminOnly": "只有管理员可以添加 {{name}}：它通过主机名连接服务器。请让管理员为您的组织添加。"
       },
       "enterprise": {
         "userActionsTitle": "成员自己的操作",
