@@ -2094,9 +2094,10 @@ export const getAllConversations = async (
     }
 
     const { skip, limit, page } = getPaginationParams(req);
-    const sortOptions = buildSortOptions(req);
-
     const isOwned = source === 'owned';
+    // A pin belongs to its owner, so only the owner's own list is pinned-first.
+    const sortOptions = buildSortOptions(req, { pinnedFirst: isOwned });
+
     let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
     if (req.query.search) {
       const escapedSearch = validateAndEscapeSearch(req.query.search);
@@ -2127,7 +2128,7 @@ export const getAllConversations = async (
       .limit(limit)
       .select('-__v');
     if (!isOwned) {
-      selection = selection.select('-sharedWith') as typeof selection;
+      selection = selection.select('-sharedWith -isPinned') as typeof selection;
     }
 
     const [conversations, totalCount] = await Promise.all([
@@ -4436,6 +4437,9 @@ export const archiveConversation = async (
               archivedBy: userId,
               lastActivityAt: Date.now(),
             },
+            // An archived chat is out of the list; restoring it should not
+            // bring back a pin the owner no longer remembers setting.
+            $unset: { isPinned: 1 },
           },
           {
             new: true,
@@ -4601,6 +4605,73 @@ export const unarchiveConversation = async (
     next(error);
   }
 };
+
+/**
+ * Pin is the owner's own ordering of their chat list, so unlike archive it is
+ * not open to people the chat is shared with. Re-pinning a pinned chat (or
+ * unpinning an unpinned one) succeeds without change, so a double click or a
+ * retry after a dropped response is safe.
+ */
+const setConversationPinned =
+  (pinned: boolean): ((
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ) => Promise<void>) =>
+  async (req, res, next) => {
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    try {
+      const { conversationId } = req.params;
+      const userId = req.user?.userId;
+      const orgId = req.user?.orgId;
+      if (!userId || !orgId) {
+        throw new BadRequestError('User ID and Organization ID are required');
+      }
+
+      const updated = await ChatSession.findOneAndUpdate(
+        {
+          _id: conversationId,
+          userId,
+          orgId,
+          initiator: userId,
+          isDeleted: false,
+          // An archived chat is out of the list, so there is nothing to pin.
+          // Unpinning stays allowed so a stale pin can always be cleared.
+          ...(pinned ? { isArchived: false } : {}),
+          ...EXCLUDE_AGENT,
+        },
+        // Unpinning removes the field rather than storing `false`; see the schema.
+        pinned ? { $set: { isPinned: true } } : { $unset: { isPinned: 1 } },
+        // Pinning is not an edit of the chat, so it must not change `updatedAt`.
+        { new: true, timestamps: false },
+      ).exec();
+
+      if (!updated) {
+        throw new NotFoundError('Conversation not found or not owned by caller');
+      }
+
+      res.status(HTTP_STATUS.OK).json({
+        id: updated._id,
+        isPinned: pinned,
+        meta: {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+        },
+      });
+    } catch (error: unknown) {
+      logger.error(`Error ${pinned ? 'pinning' : 'unpinning'} conversation`, {
+        requestId,
+        message: `Error ${pinned ? 'pinning' : 'unpinning'} conversation`,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      next(error);
+    }
+  };
+
+export const pinConversation = setConversationPinned(true);
+export const unpinConversation = setConversationPinned(false);
 
 export const listAllArchivesConversation = async (
   req: AuthenticatedUserRequest,

@@ -869,6 +869,11 @@
     "rename": "重命名",
     "archive": "归档",
     "deleteChat": "删除",
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "pinned": "已置顶",
+    "pinFailed": "无法置顶聊天",
+    "unpinFailed": "无法取消置顶聊天",
     "export": {
       "menuItem": "导出",
       "exporting": "正在导出聊天…",

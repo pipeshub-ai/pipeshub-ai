@@ -6,6 +6,7 @@ import {
   rememberUnreadConversation,
 } from '@/lib/storage/chat-unread';
 import { getCurrentUserId } from './utils/current-user-id';
+import { orderPinnedFirst, withPinned } from './utils/pinned-conversations';
 import {
   ChatKnowledgeFilters,
   CollectionMeta,
@@ -602,6 +603,12 @@ interface ChatState {
    * full refetch.
    */
   moveConversationToProject: (conversationId: string, projectId: string | null) => void;
+  /**
+   * Reflects a pin/unpin in the owner's own list straight away, pinned chats
+   * first. Only `conversations`: a pin is the owner's, so it never shows on
+   * shared or agent rows.
+   */
+  setConversationPinned: (conversationId: string, pinned: boolean) => void;
 
   setAgentSidebarAgentId: (id: string | null) => void;
   setAgentConversations: (conversations: Conversation[]) => void;
@@ -1504,6 +1511,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         conversations: state.conversations.map(patch),
         agentConversations: state.agentConversations.map(patch),
       };
+    }),
+
+  setConversationPinned: (conversationId, pinned) =>
+    set((state) => {
+      const updated = withPinned(state.conversations, conversationId, pinned);
+      return updated === state.conversations ? state : { conversations: orderPinnedFirst(updated) };
     }),
 
   addPendingConversation: (slotId) =>

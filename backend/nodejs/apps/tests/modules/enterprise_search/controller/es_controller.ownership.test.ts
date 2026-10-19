@@ -137,6 +137,8 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
     { name: 'updateTitle', handler: () => controller.updateTitle as JsonHandler, params: (s) => ({ conversationId: s.chatId }), body: { title: 'Hijacked' } },
     { name: 'updateFeedback', handler: () => controller.updateFeedback as JsonHandler, params: (s) => ({ conversationId: s.chatId, messageId: s.botMessageId }), body: { isHelpful: false } },
     { name: 'archiveConversation', handler: () => controller.archiveConversation as JsonHandler, params: (s) => ({ conversationId: s.chatId }) },
+    { name: 'pinConversation', handler: () => controller.pinConversation as JsonHandler, params: (s) => ({ conversationId: s.chatId }) },
+    { name: 'unpinConversation', handler: () => controller.unpinConversation as JsonHandler, params: (s) => ({ conversationId: s.chatId }) },
     { name: 'deleteConversationById', handler: () => controller.deleteConversationById(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.chatId }) },
     { name: 'shareConversationById', handler: () => controller.shareConversationById(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.chatId }), body: { userIds: [String(oid())] } },
     { name: 'unshareConversationById', handler: () => controller.unshareConversationById(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.chatId }), body: { userIds: [String(RECIPIENT)] } },

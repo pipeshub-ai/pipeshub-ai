@@ -906,6 +906,11 @@
     "rename": "Přejmenovat",
     "archive": "Archivovat",
     "deleteChat": "Smazat",
+    "pin": "Připnout",
+    "unpin": "Odepnout",
+    "pinned": "Připnuté",
+    "pinFailed": "Chat se nepodařilo připnout",
+    "unpinFailed": "Chat se nepodařilo odepnout",
     "export": {
       "menuItem": "Exportovat",
       "exporting": "Exportování chatu…",

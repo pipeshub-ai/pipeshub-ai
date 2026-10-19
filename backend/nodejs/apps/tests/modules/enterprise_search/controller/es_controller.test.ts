@@ -4991,8 +4991,8 @@ describe('Enterprise Search Controller', () => {
           userId: VALID_OID3,
           name: 'Priya Sharma',
         })
-        // shared branch strips the sharedWith field from the projection
-        expect(findChain.select.getCalls().some((c: any) => c.args[0] === '-sharedWith')).to.be.true
+        // shared branch strips the sharedWith list and the owner's pin from the projection
+        expect(findChain.select.getCalls().some((c: any) => c.args[0] === '-sharedWith -isPinned')).to.be.true
       }
     })
 

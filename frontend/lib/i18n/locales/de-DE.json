@@ -979,6 +979,11 @@
     "deleteAgentDescription": "Der Agent mit dem Namen",
     "deleteAgentWarning": "wird dauerhaft aus Pipeshub entfernt. Chats, die ihn verwenden, funktionieren möglicherweise nicht mehr wie erwartet.",
     "deleteChat": "Löschen",
+    "pin": "Anheften",
+    "unpin": "Lösen",
+    "pinned": "Angepinnt",
+    "pinFailed": "Der Chat konnte nicht angeheftet werden",
+    "unpinFailed": "Der Chat konnte nicht gelöst werden",
     "export": {
       "menuItem": "Exportieren",
       "exporting": "Chat wird exportiert…",

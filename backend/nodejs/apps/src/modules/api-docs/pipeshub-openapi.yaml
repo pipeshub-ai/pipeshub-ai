@@ -9752,6 +9752,13 @@ components:
           type: string
           enum: [read, write]
           readOnly: true
+        isPinned:
+          type: boolean
+          description: |
+            `true` when the owner pinned this conversation. Absent on
+            conversations that are not pinned (never `false`). Set via
+            `PATCH /conversations/{conversationId}/pin`. Only returned to the
+            owner: lists with `source=shared` omit it.
         projectId:
           type: string
           format: objectId
@@ -9771,6 +9778,36 @@ components:
             `PATCH /conversations/{conversationId}/project-visibility`.
         sharedBy:
           $ref: '#/components/schemas/ConversationSharedBy'
+
+    ConversationPinResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - isPinned
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: Conversation identifier
+        isPinned:
+          type: boolean
+          description: The conversation's pin state after the call.
+        meta:
+          type: object
+          additionalProperties: false
+          properties:
+            requestId:
+              type: string
+              description: Request correlation identifier
+            timestamp:
+              type: string
+              format: date-time
+              description: Response generation timestamp
+            duration:
+              type: integer
+              description: Server processing time in milliseconds
 
     # ==================== PROJECT SCHEMAS ====================
 
@@ -31319,6 +31356,9 @@ paths:
         **Sorting:**
 
         Conversations are sorted by last activity timestamp (most recent first) by default.
+        With `source=owned`, conversations the caller pinned
+        (`PATCH /conversations/{conversationId}/pin`) come first, in the same order,
+        whatever `sortBy` is. `source=shared` is never pinned-first.
       operationId: getAllConversations
       x-pipeshub-sdk: true
       security:
@@ -33701,6 +33741,111 @@ paths:
           description: Forbidden - token is missing the `conversation:write` scope
         '404':
           description: Conversation not found or caller lacks unarchive permission
+        '500':
+          description: Persistence layer failed to update the conversation document.
+
+  /conversations/{conversationId}/pin:
+    patch:
+      tags:
+        - Conversations
+      summary: Pin conversation
+      description: |
+        Pin a conversation so it is listed first in the caller's own conversation list.
+
+        **Access:**
+
+        Owner only: the caller must be the conversation's `initiator`. People the
+        conversation is shared with, even with `write` access, cannot pin it, and
+        their own lists are not affected by the owner's pin.
+
+        **Behaviour:**
+
+        Idempotent: pinning an already pinned conversation succeeds and changes nothing.
+        Archived and deleted conversations cannot be pinned. Archiving a pinned
+        conversation removes its pin. Pinning does not change `lastActivityAt` or
+        `updatedAt`, so the conversation keeps its place among the other pinned chats.
+
+        - Path params: `conversationId`
+        - Query params: none
+        - Body: none
+      operationId: pinConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation is pinned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPinResponse'
+        '400':
+          description: Missing user or organization context, or `conversationId` is not a valid id
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - token is missing the `conversation:write` scope
+        '404':
+          description: Conversation not found, deleted, archived, an agent conversation, or not owned by the caller.
+        '500':
+          description: Persistence layer failed to update the conversation document.
+
+  /conversations/{conversationId}/unpin:
+    patch:
+      tags:
+        - Conversations
+      summary: Unpin conversation
+      description: |
+        Remove a conversation's pin so it is listed by recent activity again.
+
+        **Access:**
+
+        Owner only, as for `PATCH /conversations/{conversationId}/pin`.
+
+        **Behaviour:**
+
+        Idempotent: unpinning a conversation that is not pinned succeeds and changes nothing.
+
+        - Path params: `conversationId`
+        - Query params: none
+        - Body: none
+      operationId: unpinConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation is not pinned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPinResponse'
+        '400':
+          description: Missing user or organization context, or `conversationId` is not a valid id
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - token is missing the `conversation:write` scope
+        '404':
+          description: Conversation not found, deleted, an agent conversation, or not owned by the caller.
         '500':
           description: Persistence layer failed to update the conversation document.
 

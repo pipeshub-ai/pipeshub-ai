@@ -278,6 +278,25 @@ describe('Enterprise Search Routes', () => {
     expect(paths).to.include('/:conversationId/unarchive')
   })
 
+  for (const action of ['pin', 'unpin']) {
+    it(`should register PATCH /:conversationId/${action} behind the same checks as archive`, () => {
+      const router = createConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => layer.route)
+
+      const route = routes.find((r: any) => r.path === `/:conversationId/${action}` && r.methods.patch)
+      const archive = routes.find((r: any) => r.path === '/:conversationId/archive' && r.methods.patch)
+
+      expect(route, 'route is registered').to.exist
+      expect(route.methods.get, 'not readable').to.equal(undefined)
+      expect(route.methods.post, 'not a POST').to.equal(undefined)
+      // authenticate + scope check + param validation + handler: dropping one must fail here.
+      expect(route.stack.length).to.equal(archive.stack.length)
+      expect(route.stack.length).to.equal(4)
+    })
+  }
+
   it('should register search routes', () => {
     const router = createSemanticSearchRouter(container)
     const routes = router.stack

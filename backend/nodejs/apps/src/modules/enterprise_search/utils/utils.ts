@@ -867,13 +867,19 @@ export const getPaginationParams = (req: AuthenticatedUserRequest) => {
   }
 };
 
-export const buildSortOptions = (req: AuthenticatedUserRequest) => {
+export const buildSortOptions = (
+  req: AuthenticatedUserRequest,
+  { pinnedFirst = false }: { pinnedFirst?: boolean } = {},
+) => {
   const allowedSortFields = ['createdAt', 'lastActivityAt', 'title'];
   const sortField = allowedSortFields.includes(req.query?.sortBy as string)
     ? (req.query?.sortBy as string)
     : 'lastActivityAt';
 
   return {
+    // Before the page is cut, so every pinned chat is on page 1 and the
+    // sidebar's Pinned group is never split across pages.
+    ...(pinnedFirst ? { isPinned: -1 } : {}),
     [sortField]: req.query.sortOrder === 'asc' ? 1 : -1,
     _id: -1, // Secondary sort for consistency
   };

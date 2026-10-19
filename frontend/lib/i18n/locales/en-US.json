@@ -868,6 +868,11 @@
     "rename": "Rename",
     "archive": "Archive",
     "deleteChat": "Delete",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "pinned": "Pinned",
+    "pinFailed": "Could not pin the chat",
+    "unpinFailed": "Could not unpin the chat",
     "export": {
       "menuItem": "Export",
       "exporting": "Exporting chat…",

@@ -13,6 +13,7 @@ import {
   getConversationById,
   getSearchById,
   listAllArchivesConversation,
+  pinConversation,
   regenerateAnswers,
   search,
   searchHistory,
@@ -20,6 +21,7 @@ import {
   shareSearch,
   unarchiveConversation,
   unarchiveSearch,
+  unpinConversation,
   unshareConversationById,
   unshareSearch,
   updateFeedback,
@@ -506,6 +508,34 @@ export function createConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationIdParamsSchema),
     unarchiveConversation,
+  );
+
+  /**
+   * @route PATCH /api/v1/conversations/:conversationId/pin
+   * @desc Pin a conversation to the top of the owner's list
+   * @access Private (owner only)
+   * @param {string} conversationId - Conversation ID
+   */
+  router.patch(
+    '/:conversationId/pin',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    ValidationMiddleware.validate(conversationIdParamsSchema),
+    pinConversation,
+  );
+
+  /**
+   * @route PATCH /api/v1/conversations/:conversationId/unpin
+   * @desc Remove a conversation's pin
+   * @access Private (owner only)
+   * @param {string} conversationId - Conversation ID
+   */
+  router.patch(
+    '/:conversationId/unpin',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    ValidationMiddleware.validate(conversationIdParamsSchema),
+    unpinConversation,
   );
 
   /**

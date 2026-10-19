@@ -1021,6 +1021,11 @@
     "deleteAgentDescription": "The agent named",
     "deleteAgentWarning": "will be permanently removed from Pipeshub. Chats that use it may no longer work as expected.",
     "deleteChat": "Delete",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "pinned": "Pinned",
+    "pinFailed": "Could not pin the chat",
+    "unpinFailed": "Could not unpin the chat",
     "export": {
       "menuItem": "Export",
       "exporting": "Exporting chat…",

@@ -869,6 +869,11 @@
     "rename": "이름 변경",
     "archive": "보관",
     "deleteChat": "삭제",
+    "pin": "고정",
+    "unpin": "고정 해제",
+    "pinned": "고정됨",
+    "pinFailed": "채팅을 고정하지 못했습니다",
+    "unpinFailed": "채팅 고정을 해제하지 못했습니다",
     "export": {
       "menuItem": "내보내기",
       "exporting": "채팅을 내보내는 중…",

@@ -126,6 +126,7 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     status: conv.status,
     modelInfo: conv.modelInfo,
     isOwner: conv.isOwner,
+    ...(conv.isPinned === true ? { isPinned: true } : {}),
     sharedBy: conv.sharedBy,
   };
 }
@@ -577,6 +578,13 @@ export const ChatApi = {
   // Restore (unarchive) a conversation
   async restoreConversation(conversationId: string): Promise<void> {
     await apiClient.patch(`/api/v1/conversations/${conversationId}/unarchive`);
+  },
+
+  // Pin or unpin one of the caller's own conversations (idempotent; owner only)
+  async setConversationPinned(conversationId: string, pinned: boolean): Promise<void> {
+    await apiClient.patch(
+      `/api/v1/conversations/${encodeURIComponent(conversationId)}/${pinned ? 'pin' : 'unpin'}`,
+    );
   },
 
   /**
