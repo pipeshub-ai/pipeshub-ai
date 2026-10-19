@@ -8,19 +8,25 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel, Field, ValidationError
 
 from app.utils import log_redaction
-from app.utils.log_redaction import REDACTED, redact_secrets_in_text
+from app.utils.log_redaction import (
+    REDACTED,
+    log_safe_validation_errors,
+    redact_secrets_in_text,
+)
 from app.utils.logger import (
     ColoredFormatter,
     RedactingFormatter,
     create_logger,
     install_log_redaction,
 )
+from app.utils.sensitive_names import is_credential_name
 
 JWT = (
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
@@ -61,6 +67,27 @@ PEM = (
         ("truncated {'password': 'SENTINEL-cut", "SENTINEL-cut"),
         ("bytes password: b'SENTINEL-bytes'", "SENTINEL-bytes"),
         ("dsn connection_string='Server=x;Password=SENTINEL-cs2'", "SENTINEL-cs2"),
+        (
+            "connection_string=DefaultEndpointsProtocol=https;AccountName=acct;"
+            "AccountKey=SENTINELazkey0123==;EndpointSuffix=core.windows.net",
+            "SENTINELazkey0123",
+        ),
+        (
+            "conn Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKeyName=Root;"
+            "SharedAccessKey=SENTINELsbkey0123=",
+            "SENTINELsbkey0123",
+        ),
+        (
+            "BlobEndpoint=https://a.blob.core.windows.net/;"
+            "SharedAccessSignature=sv=2022-11-02&ss=b&sp=rl&sig=SENTINELsas%2Fsig",
+            "SENTINELsas",
+        ),
+        (
+            "1 validation error for Login\npassword\n  String should have at most 4 characters "
+            "[type=string_too_long, input_value='SENTINEL-iv, x]', input_type=str]",
+            "SENTINEL-iv",
+        ),
+        ("cut off ... [type=missing, input_value={'pwd2': 'SENTINEL-ivcut", "SENTINEL-ivcut"),
     ],
 )
 def test_secret_is_masked(text: str, secret: str) -> None:
@@ -86,6 +113,7 @@ def test_secret_is_masked(text: str, secret: str) -> None:
         "GET https://h.example.com/api/v1/records?page=2&limit=50 200",
         "password=",
         "secret: [REDACTED]",
+        "AccountName=acct account_id=4242424242 accountIdentifier=xy12345.eu-west-1 AccountKind=StorageV2",
     ],
 )
 def test_ordinary_text_is_unchanged(text: str) -> None:
@@ -122,19 +150,45 @@ class TestEnvSecrets:
 
 
 class TestLinearTime:
-    """Each shape below makes a backtracking pattern quadratic or worse."""
+    """Each shape below makes a backtracking pattern quadratic or worse.
 
-    MB = 1_000_000
+    Wall-clock limits break under coverage or a loaded xdist worker, so each
+    shape is timed at two sizes instead: linear work grows about 4x from n to
+    4n, quadratic work 16x.
+    """
+
+    SMALL = 250_000
+    LARGE = 4 * SMALL
+    # Below 8x, so a quadratic pass (16x) fails while timer noise on a linear one passes.
+    MAX_GROWTH = 8
+    # Absorbs scheduler jitter when both runs take only a few milliseconds;
+    # a quadratic pass over a megabyte takes far longer than this.
+    SLACK_SECONDS = 0.05
 
     @staticmethod
     def _repeat(unit: str, size: int) -> str:
         return (unit * (size // len(unit) + 1))[:size]
 
+    @staticmethod
+    def _best_of_three(text: str) -> float:
+        best = float("inf")
+        for _ in range(3):
+            start = time.perf_counter()
+            redact_secrets_in_text(text)
+            best = min(best, time.perf_counter() - start)
+        return best
+
+    def _assert_linear(self, make: Callable[[int], str]) -> None:
+        small = self._best_of_three(make(self.SMALL))
+        large = self._best_of_three(make(self.LARGE))
+        assert large < self.MAX_GROWTH * small + self.SLACK_SECONDS, (
+            f"{self.SMALL} chars took {small:.4f}s, {self.LARGE} chars {large:.4f}s"
+        )
+
     def test_one_megabyte_single_token(self) -> None:
-        text = "a" * self.MB
-        start = time.perf_counter()
+        text = "a" * self.LARGE
         assert redact_secrets_in_text(text) == text
-        assert time.perf_counter() - start < 0.5
+        self._assert_linear(lambda n: "a" * n)
 
     @pytest.mark.parametrize(
         "unit",
@@ -143,30 +197,56 @@ class TestLinearTime:
             "password=", 'password:"', "password: '", "a:", "a=", "a.", "a" * 200 + ":",
             "-----BEGIN ", "-----BEGIN PRIVATE KEY-----", "Bearer ", "Basic AAAAAAA= ",
             "https://", "://", "https://h/?" + "=" * 900 + " ", "https://u:" + "p@" * 400 + " ",
-            " ", "'", '"', "\\",
+            " ", "'", '"', "\\", "input_value=", "input_value=x, input_type",
         ],
     )
     def test_pathological_shapes(self, unit: str) -> None:
-        text = self._repeat(unit, self.MB)
-        start = time.perf_counter()
-        redact_secrets_in_text(text)
-        assert time.perf_counter() - start < 2.0
+        self._assert_linear(lambda n: self._repeat(unit, n))
 
     @pytest.mark.parametrize(
-        "text",
+        ("prefix", "fill", "suffix"),
         [
-            "sk-" + "a" * 1_000_000,
-            "Bearer " + "A" * 1_000_000,
-            "password: \"" + "x" * 1_000_000,
-            "x" * 1_000_000 + "://",
-            "https://a/?" + "=" * 1_000_000,
-            "-----BEGIN PRIVATE KEY-----" + "A" * 1_000_000,
+            ("sk-", "a", ""),
+            ("Bearer ", "A", ""),
+            ('password: "', "x", ""),
+            ("", "x", "://"),
+            ("https://a/?", "=", ""),
+            ("-----BEGIN PRIVATE KEY-----", "A", ""),
+            ("input_value=", "x", ""),
         ],
     )
-    def test_one_long_run_after_a_trigger(self, text: str) -> None:
-        start = time.perf_counter()
-        redact_secrets_in_text(text)
-        assert time.perf_counter() - start < 1.0
+    def test_one_long_run_after_a_trigger(self, prefix: str, fill: str, suffix: str) -> None:
+        self._assert_linear(lambda n: prefix + fill * n + suffix)
+
+
+class TestPydanticValidationErrors:
+    class _Login(BaseModel):
+        username: str
+        password: str = Field(max_length=4)
+
+    def test_str_of_a_validation_error_is_redacted_by_the_formatter(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            self._Login(username="bob", password="SENTINEL-pydantic-pw")
+        assert "SENTINEL-pydantic-pw" in str(exc_info.value)
+
+        out = RedactingFormatter("%(message)s").format(_record("invalid: %s", exc_info.value))
+
+        assert "SENTINEL-pydantic-pw" not in out
+        assert "password" in out
+        assert "string_too_long" in out
+
+    def test_log_safe_errors_keep_where_and_why_but_not_the_input(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            self._Login(username="bob", password="SENTINEL-pydantic-pw")
+
+        safe = log_safe_validation_errors(exc_info.value.errors())
+
+        assert safe == [{
+            "type": "string_too_long",
+            "loc": ("password",),
+            "msg": "String should have at most 4 characters",
+            "url": exc_info.value.errors()[0]["url"],
+        }]
 
 
 def _record(msg: str, *args, exc_info=None) -> logging.LogRecord:
@@ -285,3 +365,20 @@ def test_every_service_installs_redaction_at_startup() -> None:
             if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
         }
         assert "install_log_redaction" in calls, path.name
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("AccountKey", True),
+        ("account_key", True),
+        ("SharedAccessKey", True),
+        ("SharedAccessSignature", True),
+        ("AccountName", False),
+        ("account_id", False),
+        ("accountIdentifier", False),
+        ("AccountKind", False),
+    ],
+)
+def test_account_key_is_a_credential_name(name: str, expected: bool) -> None:
+    assert is_credential_name(name) is expected
