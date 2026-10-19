@@ -159,6 +159,8 @@ export function PDFRenderer({
     [],
   );
   const [viewerReadyEpoch, setViewerReadyEpoch] = useState(0);
+  // The same readiness as isViewerReady, as state so render can read it.
+  const [viewerReady, setViewerReady] = useState(false);
 
   // Stable ref to latest pagination callbacks — avoids effects re-running on every render
   const paginationRef = useRef(pagination);
@@ -243,12 +245,12 @@ export function PDFRenderer({
   // every change of this prop: a change before the viewer exists throws reading getPageView.
   const shownHighlights = useMemo(
     () =>
-      viewerReadyEpoch > 0 && isViewerReady.current && activeCitationId
+      viewerReady && activeCitationId
         ? highlights.filter((h) => h.id === activeCitationId)
         : NO_HIGHLIGHTS,
     // citationClickVersion: a repeat click on the same citation must hand over a new array,
     // since the library redraws the layer (and replays the pulse) only when the identity changes.
-    [activeCitationId, highlights, viewerReadyEpoch, citationClickVersion],
+    [activeCitationId, highlights, viewerReady, citationClickVersion],
   );
 
   // Inject custom highlight CSS
@@ -360,6 +362,7 @@ export function PDFRenderer({
   useEffect(() => {
     lastReportedPage.current = 0;
     isViewerReady.current = false;
+    setViewerReady(false);
     setViewerReadyEpoch((n) => n + 1);
   }, [fileUrl]);
 
@@ -532,6 +535,7 @@ export function PDFRenderer({
                 scrollViewerTo.current = scrollTo;
                 if (!isViewerReady.current) {
                   isViewerReady.current = true;
+                  setViewerReady(true);
                   setViewerReadyEpoch((n) => n + 1);
                 }
 
