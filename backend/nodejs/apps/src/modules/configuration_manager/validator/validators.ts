@@ -717,6 +717,12 @@ export const updateDefaultModelSchema = z.object({
   }),
 });
 
+export const updateAutoDefaultSchema = z.object({
+  body: z.object({
+    autoDefault: z.boolean(),
+  }),
+});
+
 export const deleteProviderSchema = z.object({
   params: z.object({
     modelType,

@@ -100,6 +100,7 @@ import {
   metricsCollectionRemoteServerSchema,
   modelTypeSchema,
   updateDefaultModelSchema,
+  updateAutoDefaultSchema,
   deleteProviderSchema,
   addProviderRequestSchema,
   batchAddModelsRequestSchema,
@@ -899,6 +900,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
+    ValidationMiddleware.validate(updateAutoDefaultSchema),
     updateAutoDefault(keyValueStoreService),
   );
 
