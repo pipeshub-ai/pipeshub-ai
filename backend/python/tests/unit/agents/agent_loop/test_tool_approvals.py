@@ -162,7 +162,6 @@ class TestSqlStatements:
         "EXPLAIN SELECT * FROM t",
         "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent",
         "INSERT INTO t (a) VALUES (1)",
-        "WITH c AS (SELECT 1 AS a) INSERT INTO t SELECT a FROM c",
         "SELECT '#1' AS tag",
         "UPDATE t SET a = 2 WHERE id = 1",
         "SELECT 'drop table x; delete from y' AS note",
@@ -207,6 +206,11 @@ class TestSqlStatements:
         "SELECT * INTO new_table FROM old /*M insert */",
         "SELECT *--insert\nINTO new_table FROM old",
         "SELECT 1 */ DELETE FROM t",
+        # "insert" as an alias doesn't make INTO an INSERT, and a CTE's INSERT asks too.
+        "SELECT 1 AS insert INTO new_table FROM (SELECT 1) s",
+        "SELECT * INTO new_table FROM (SELECT 1) insert",
+        "WITH c AS (SELECT 1 AS a) SELECT a AS insert INTO new_table FROM c",
+        "WITH c AS (SELECT 1 AS a) INSERT INTO t SELECT a FROM c",
     ])
     def test_anything_else_cant_be_undone(self, sql: Any) -> None:  # noqa: ANN401
         assert not approvals.sql_keeps_its_kind(sql)
@@ -219,6 +223,38 @@ class TestSqlStatements:
         assert approvals.call_kind(target, path, {}) == "destructive"
         # Other tools keep their own kind, whatever their arguments say.
         assert approvals.call_kind(target, "/tools/jira/create_issue", {"query": "DROP TABLE t"}) == "write"
+
+
+class TestDocsBatchUpdate:
+    """A Docs batch update keeps its kind unless one of its requests deletes something."""
+
+    @pytest.mark.parametrize("requests", [
+        [{"insertText": {"location": {"index": 1}, "text": "Hi"}}],
+        [{"replaceAllText": {"containsText": {"text": "a"}, "replaceText": "b"}}, {"updateTextStyle": {}}],
+    ])
+    def test_adding_or_changing_content_keeps_its_kind(self, requests: Any) -> None:  # noqa: ANN401
+        assert approvals.docs_requests_keep_their_kind(requests)
+
+    @pytest.mark.parametrize("requests", [
+        [{"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 9}}}],
+        [{"insertText": {}}, {"deleteTableRow": {}}],
+        [{"deleteTab": {"tabId": "t.1"}}],
+        [{"DeleteHeader": {}}],
+        [],
+        [{}],
+        ["deleteContentRange"],
+        "[{\"deleteContentRange\": {}}]",
+        None,
+    ])
+    def test_a_delete_or_an_unreadable_list_cant_be_undone(self, requests: Any) -> None:  # noqa: ANN401
+        assert not approvals.docs_requests_keep_their_kind(requests)
+
+    def test_the_call_takes_the_kind_of_its_requests(self) -> None:
+        target = SimpleNamespace(kind="write")
+        path = "/tools/docs/batch_update_document"
+        assert approvals.call_kind(target, path, {"requests": [{"insertText": {}}]}) == "write"
+        assert approvals.call_kind(target, path, {"requests": [{"deleteContentRange": {}}]}) == "destructive"
+        assert approvals.call_kind(target, path, {}) == "destructive"
 
 
 def _context(store: _Store | None = None, **overrides: Any) -> Any:  # noqa: ANN401

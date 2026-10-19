@@ -53,6 +53,8 @@ from app.agents.mcp.models import MCPCamelModel
 from app.utils.env_utils import env_bool
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from app.agent_loop_lib.agent import Agent
     from app.agent_loop_lib.context.manager import ContextManager
     from app.agent_loop_lib.core.scope import RunScope
@@ -187,11 +189,6 @@ def _mcp_target(adapter: "MCPToolAdapter") -> ApprovalTarget:
     )
 
 
-# Tools that run any SQL they're given: what one call does depends on its statement.
-_SQL_TOOL_PATHS: dict[str, str] = {
-    "/tools/mariadb/execute_query": "query",
-    "/tools/redshift/execute_query": "query",
-}
 # Only what reads the same in MariaDB and Redshift is stripped: quoted literals, "-- " followed by
 # whitespace, and plain /* */ comments. Any other comment marker left after that makes the call
 # count as destructive, and backticks are kept, so a statement they could hide still counts.
@@ -220,8 +217,9 @@ def sql_keeps_its_kind(sql: str) -> bool:
     words = _SQL_WORD.findall(statements[0])
     if not words:
         return False
-    if {"outfile", "dumpfile"} & set(words) or ("into" in words and "insert" not in words):
-        # SELECT ... INTO makes a table (Redshift) or writes a file on the server (MariaDB).
+    if {"outfile", "dumpfile"} & set(words) or ("into" in words and words[0] != "insert"):
+        # SELECT ... INTO makes a table (Redshift) or writes a file on the server (MariaDB). Only an
+        # INSERT's own verb makes INTO safe: "insert" can be an alias on Redshift.
         return False
     if words[0] == "with":
         # A CTE: what runs is what the statement does once its named queries are read.
@@ -229,13 +227,36 @@ def sql_keeps_its_kind(sql: str) -> bool:
     return words[0] in _SQL_READS or words[0] in _SQL_ORDINARY_WRITES
 
 
+def docs_requests_keep_their_kind(requests: Any) -> bool:  # noqa: ANN401
+    """Whether a Google Docs batch update only adds or changes content. A request that deletes
+    (deleteContentRange, deleteTableRow, deleteTab, ...), or requests that aren't a list of
+    request objects, count as a call that can't be undone."""
+    if not isinstance(requests, list) or not requests:
+        return False
+    return all(
+        isinstance(request, dict) and request
+        and not any(str(key).lower().startswith("delete") for key in request)
+        for request in requests
+    )
+
+
+# Tools whose one call can do more than the tool's kind says: the argument that decides, and the
+# check that it doesn't. A call that fails the check counts as destructive.
+_CALL_CHECKS: dict[str, tuple[str, Callable[[Any], bool]]] = {
+    "/tools/mariadb/execute_query": ("query", sql_keeps_its_kind),
+    "/tools/redshift/execute_query": ("query", sql_keeps_its_kind),
+    "/tools/docs/batch_update_document": ("requests", docs_requests_keep_their_kind),
+}
+
+
 def call_kind(target: "ApprovalTarget", tool_path: str, arguments: Any) -> ToolKind:  # noqa: ANN401
-    """What this one call does to data: the tool's kind, unless its SQL can't be undone."""
-    field = _SQL_TOOL_PATHS.get(tool_path)
-    if field is None or target.kind == "destructive":
+    """What this one call does to data: the tool's kind, unless this call can't be undone."""
+    check = _CALL_CHECKS.get(tool_path)
+    if check is None or target.kind == "destructive":
         return target.kind
-    sql = arguments.get(field) if isinstance(arguments, dict) else None
-    return target.kind if sql_keeps_its_kind(sql) else "destructive"
+    field, keeps_its_kind = check
+    value = arguments.get(field) if isinstance(arguments, dict) else None
+    return target.kind if keeps_its_kind(value) else "destructive"
 
 
 @dataclass(frozen=True)
