@@ -267,3 +267,57 @@ export interface DownloadProgressPayload {
   updated_at?: number;
   timestamp?: number;
 }
+
+export const IDENTITY_FORWARDING_PROVIDERS = ['litellmProxy', 'openAICompatible', 'openRouter'] as const;
+
+export const IDENTITY_FORWARDING_FIELD_PREFIX = 'identityForwarding';
+
+export function supportsIdentityForwarding(providerId: string): boolean {
+  return (IDENTITY_FORWARDING_PROVIDERS as readonly string[]).includes(providerId);
+}
+
+export type IdentityForwardingMode = 'headers' | 'template' | 'signedJwt';
+export type IdentityForwardingPreset =
+  | 'litellm'
+  | 'portkey'
+  | 'helicone'
+  | 'cloudflare'
+  | 'apim'
+  | 'custom';
+
+export interface IdentityForwardingSettings {
+  enabled: boolean;
+  mode: IdentityForwardingMode;
+  preset: IdentityForwardingPreset;
+  headerTemplates: Record<string, string>;
+  serviceAuth: 'apiKey' | 'jwt';
+  jwtAudience?: string;
+  /** Omit to keep the saved key; an empty string removes it. */
+  serviceApiKey?: string;
+}
+
+export interface IdentityPolicy {
+  subjectSource: 'userId' | 'email' | 'idpObjectId';
+  includeEmail: boolean;
+  includeDisplayName: boolean;
+  groups: { enabled: boolean; allowList: string[]; maxForwarded: number };
+  pseudonymize: boolean;
+  onMissingIdentity: 'service' | 'block';
+  queryEmbeddingIdentity: 'user' | 'service';
+  serviceIdentityPrefix: string;
+}
+
+export interface IdentityPreview {
+  success: boolean;
+  identity: {
+    subject: string;
+    subjectKind: string;
+    email?: string | null;
+    displayName?: string | null;
+    groups: string[];
+    groupsSource: string;
+    groupsComplete: boolean;
+  };
+  headers: Record<string, string> | null;
+  notes: string[];
+}

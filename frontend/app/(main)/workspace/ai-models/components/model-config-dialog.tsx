@@ -18,7 +18,7 @@ import { useBrand } from '@/lib/branding';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import { resolveModelConfigSaveError } from '../resolve-model-config-save-error';
 import type { AIModelProvider, AIModelProviderField, ConfiguredModel, PickedModel } from '../types';
-import { CAPABILITY_TO_MODEL_TYPE } from '../types';
+import { CAPABILITY_TO_MODEL_TYPE, IDENTITY_FORWARDING_FIELD_PREFIX } from '../types';
 import { AIModelsApi } from '../api';
 import { canFetchModels, useModelDiscovery } from '../hooks/use-model-discovery';
 import { useBatchAddModels } from '../hooks/use-batch-add-models';
@@ -334,7 +334,11 @@ export function ModelConfigDialog({
       return;
     }
 
-    const capFields = provider.fields[capability] ?? [];
+    // Identity forwarding is set per connection in its own dialog. Editing one model here
+    // would let a connection's models disagree.
+    const capFields = (provider.fields[capability] ?? []).filter(
+      (f) => !f.name.startsWith(IDENTITY_FORWARDING_FIELD_PREFIX),
+    );
     setFields(capFields as AIModelProviderField[]);
     setPicked([]);
     setDefaultModelId(null);

@@ -8,6 +8,9 @@ import type {
   ModelRoleAssignment,
   ModelRolesResponse,
   ModelsByTypeResponse,
+  IdentityForwardingSettings,
+  IdentityPolicy,
+  IdentityPreview,
   RegistryResponse,
 } from './types';
 
@@ -58,6 +61,39 @@ export const AIModelsApi = {
       `${BASE}/ai-models/connections/${encodeURIComponent(connectionId)}/credentials`,
       { configuration },
     );
+    return data;
+  },
+
+  setConnectionIdentityForwarding: async (
+    connectionId: string,
+    settings: IdentityForwardingSettings,
+  ) => {
+    const { data } = await apiClient.put(
+      `${BASE}/ai-models/connections/${encodeURIComponent(connectionId)}/identity-forwarding`,
+      settings,
+    );
+    return data;
+  },
+
+  getIdentityPolicy: async () => {
+    const { data } = await apiClient.get<{ policy: IdentityPolicy }>(`${BASE}/ai-models/identity-policy`);
+    return data.policy;
+  },
+
+  putIdentityPolicy: async (policy: IdentityPolicy) => {
+    const { data } = await apiClient.put<{ policy: IdentityPolicy }>(
+      `${BASE}/ai-models/identity-policy`,
+      policy,
+    );
+    return data.policy;
+  },
+
+  previewIdentity: async (body: {
+    connectionId?: string;
+    workload?: string;
+    configuration?: Record<string, unknown>;
+  }) => {
+    const { data } = await apiClient.post<IdentityPreview>(`${BASE}/ai-models/identity/preview`, body);
     return data;
   },
 

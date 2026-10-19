@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useEffect } from 'react';
-import { Box } from '@radix-ui/themes';
+import { Box, Button, Flex } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
@@ -9,6 +10,7 @@ import { ProviderGrid, ModelRolesSection } from './components';
 import { useAiModelsManager } from './hooks/use-ai-models-manager';
 
 export default function AIModelsPage() {
+  const { t } = useTranslation();
   const router = useRouter();
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
@@ -47,6 +49,11 @@ export default function AIModelsPage() {
               void manager.loadModels();
             }}
           />
+          <Flex justify="end" pt="3">
+            <Button type="button" variant="ghost" color="gray" onClick={manager.openIdentityPolicy}>
+              {t('workspace.aiModels.identityPolicy.open')}
+            </Button>
+          </Flex>
         </Box>
       )}
 
@@ -64,6 +71,7 @@ export default function AIModelsPage() {
         onSetDefault={manager.handleSetDefault}
         onDelete={manager.openDelete}
         onRotate={manager.openRotate}
+        onIdentityForwarding={manager.openIdentityForwarding}
         isLoading={manager.isLoading}
         onRefresh={() => {
           void manager.loadProviders();
