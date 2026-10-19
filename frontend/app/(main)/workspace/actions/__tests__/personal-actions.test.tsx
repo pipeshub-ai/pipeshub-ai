@@ -32,6 +32,18 @@ const OAUTH_FIELDS = [
   { name: 'clientSecret', displayName: 'Client secret', fieldType: 'PASSWORD', required: true, usage: 'BOTH', isSecret: true },
 ];
 const SCHEMAS: Record<string, unknown> = {
+  warehouse: {
+    toolset: {
+      config: {
+        auth: {
+          schemas: {
+            BASIC_AUTH: { fields: [{ name: 'host', displayName: 'Host', fieldType: 'TEXT', required: true, usage: 'CONFIGURE' }] },
+            API_TOKEN: { fields: [{ name: 'baseUrl', displayName: 'Base URL', fieldType: 'URL', required: true, usage: 'CONFIGURE' }] },
+          },
+        },
+      },
+    },
+  },
   mariadb: {
     toolset: {
       config: {
@@ -182,6 +194,15 @@ describe('a toolset that names its server by host', () => {
     expect(create.disabled).toBe(true);
     fireEvent.click(create);
     expect(api.createToolsetInstance).not.toHaveBeenCalled();
+  });
+
+  it("still lets them pick another of the toolset's auth types", async () => {
+    renderInTheme(
+      <ActionSetupPanel open scope="personal" registryRow={row('warehouse', ['BASIC_AUTH', 'API_TOKEN'])} onOpenChange={vi.fn()} />,
+    );
+
+    expect(await screen.findByText(/Only an administrator can add/)).toBeTruthy();
+    expect(screen.getByRole('combobox')).toBeTruthy();
   });
 });
 

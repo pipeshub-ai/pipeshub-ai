@@ -653,6 +653,27 @@ export function ActionSetupPanel({
     <MaterialIcon name="bolt" size={20} color="var(--slate-12)" />
   );
 
+  // Shown with the admin-only notice too: another of the toolset's auth types may be one a member can add.
+  const authTypeField =
+    authOptions.length > 1 && !editing ? (
+      <FormField label={t('workspace.actions.authType')}>
+        <Select.Root value={authType} onValueChange={setAuthType} size="2">
+          <Select.Trigger style={{ width: '100%' }} />
+          <Select.Content
+            position="popper"
+            container={panelBodyPortal ?? undefined}
+            style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
+          >
+            {authOptions.map((opt) => (
+              <Select.Item key={opt} value={opt}>
+                {opt}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select.Root>
+      </FormField>
+    ) : null;
+
   return (
     <WorkspaceRightPanel
       open={open && Boolean(registryRow)}
@@ -673,9 +694,12 @@ export function ActionSetupPanel({
           <LottieLoader variant="loader" size={48} showLabel label={t('agentBuilder.loadingSchema')} />
         </Flex>
       ) : adminOnly ? (
-        <Callout.Root color="gray" variant="surface" size="1">
-          <Callout.Text size="2">{t('workspace.actions.personal.adminOnly', { name: displayName })}</Callout.Text>
-        </Callout.Root>
+        <Flex direction="column" gap="4" style={{ minWidth: 0, padding: '4px 0' }}>
+          {authTypeField}
+          <Callout.Root color="gray" variant="surface" size="1">
+            <Callout.Text size="2">{t('workspace.actions.personal.adminOnly', { name: displayName })}</Callout.Text>
+          </Callout.Root>
+        </Flex>
       ) : (
         <Flex direction="column" gap="6" style={{ minWidth: 0, padding: '4px 0' }}>
           {docLinks.length > 0 ? (
@@ -781,24 +805,7 @@ export function ActionSetupPanel({
             </FormField>
           </div>
 
-          {authOptions.length > 1 && !editing ? (
-            <FormField label={t('workspace.actions.authType')}>
-              <Select.Root value={authType} onValueChange={setAuthType} size="2">
-                <Select.Trigger style={{ width: '100%' }} />
-                <Select.Content
-                  position="popper"
-                  container={panelBodyPortal ?? undefined}
-                  style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
-                >
-                  {authOptions.map((opt) => (
-                    <Select.Item key={opt} value={opt}>
-                      {opt}
-                    </Select.Item>
-                  ))}
-                </Select.Content>
-              </Select.Root>
-            </FormField>
-          ) : null}
+          {authTypeField}
 
           {showOAuthAppPicker ? (
             <FormField label={t('workspace.actions.oauthAppLabel')}>
