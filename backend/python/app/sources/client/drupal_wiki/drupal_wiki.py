@@ -11,6 +11,8 @@ from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 from app.sources.client.resilience import ResiliencePolicy
+from app.utils.url_fetcher import vetted_addresses
+from app.utils.url_redaction import redact_urls_in_text
 
 # Drupal Wiki only offers personal access tokens: its OpenAPI spec declares a single
 # bearer scheme ("PAT") and there is no OAuth or basic-auth endpoint.
@@ -59,6 +61,122 @@ def normalize_base_url(base_url: str) -> str:
     return url.rstrip("/")
 
 
+# ---------------------------------------------------------------------------
+# Describing a failed call
+#
+# The REST API answers an error with a ``ProblemResponse`` (``status``, ``title``,
+# ``detail``, ``errorCode``); the internal GraphQL API with an ``errors`` array; a
+# proxy or SSO page in front of the wiki with HTML. Every log line and message about
+# a failed call goes through these, so each carries the wiki's own reason and none
+# carries a secret or a whole body.
+# ---------------------------------------------------------------------------
+
+# A reason is a sentence, not a document: a body can echo customer content.
+MAX_REASON_CHARS = 300
+
+_HTML_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_HTML_NOISE = re.compile(r"<(script|style)\b.*?</\1>", re.IGNORECASE | re.DOTALL)
+_TAG = re.compile(r"<[^>]+>")
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _clean(text: str) -> str:
+    text = _WHITESPACE.sub(" ", text).strip()
+    if len(text) > MAX_REASON_CHARS:
+        text = text[:MAX_REASON_CHARS].rstrip() + "..."
+    return redact_urls_in_text(text)
+
+
+def problem_reason(body: object) -> str:
+    """``"<errorCode>: <detail>"`` from a ProblemResponse or GraphQL error body; "" if none."""
+    if not isinstance(body, dict):
+        return ""
+    errors = body.get("errors")
+    if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+        first = errors[0]
+        extensions = first.get("extensions")
+        code = extensions.get("code") or extensions.get("classification") if isinstance(extensions, dict) else None
+        message = first.get("message")
+    else:
+        code = body.get("errorCode") or body.get("error")
+        title, detail = body.get("title"), body.get("detail")
+        message = detail if detail else title
+        if title and detail and str(title) not in str(detail):
+            message = f"{title}: {detail}"
+        message = message or body.get("message")
+    parts = [str(part) for part in (code, message) if part not in (None, "")]
+    return _clean(": ".join(parts)) if parts else ""
+
+
+def text_reason(text: object) -> str:
+    """A short reason from a non-JSON body: an HTML page's title, else its leading text."""
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    title = _HTML_TITLE.search(text)
+    if title and title.group(1).strip():
+        return _clean(title.group(1))
+    return _clean(_TAG.sub(" ", _HTML_NOISE.sub(" ", text)))
+
+
+def describe_response(response: object) -> str:
+    """``"<errorCode>: <detail> (HTTP <status>)"`` for a failed ``HTTPResponse``.
+
+    Falls back to the body's text, then to the status alone. Never raises: it runs on
+    the error path.
+    """
+    status = getattr(response, "status", None)
+    reason = ""
+    try:
+        reason = problem_reason(response.json())  # type: ignore[attr-defined]
+    except Exception:
+        reason = ""
+    if not reason:
+        try:
+            reason = text_reason(response.text())  # type: ignore[attr-defined]
+        except Exception:
+            reason = ""
+    suffix = f"HTTP {status}" if isinstance(status, int) else "no HTTP status"
+    return f"{reason} ({suffix})" if reason else suffix
+
+
+def describe_exception(error: BaseException) -> str:
+    """The same line for an exception: the wiki's reason when it carries a response,
+    else the exception's own message, else its type (a timeout's message is empty)."""
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        reason = ""
+        try:
+            reason = problem_reason(response.json())  # type: ignore[union-attr]
+        except Exception:
+            reason = ""
+        if not reason:
+            try:
+                reason = text_reason(response.text)  # type: ignore[union-attr]
+            except Exception:
+                reason = ""
+        return f"{reason} (HTTP {status})" if reason else f"{type(error).__name__} (HTTP {status})"
+    message = _clean(str(error)) if str(error).strip() else ""
+    return f"{type(error).__name__}: {message}" if message else type(error).__name__
+
+
+async def check_wiki_address(base_url: str) -> None:
+    """Refuse a wiki address this deployment must not call.
+
+    The same rule as other admin-supplied hosts (``vetted_addresses``): link-local and
+    cloud metadata addresses never, private ones only while
+    ``PIPESHUB_BLOCK_PRIVATE_ADDRESSES`` is on, because most Drupal Wikis run on-premise
+    on a private network.
+
+    Raises:
+        HostCheckError: a ``ValueError`` whose message is written for the admin.
+    """
+    host = urlparse(base_url).hostname
+    if not host:
+        raise ValueError(f"Drupal Wiki base URL has no host: {base_url!r}")
+    _ = await vetted_addresses(host)
+
+
 class DrupalWikiRESTClientViaToken(HTTPClient):
     """Drupal Wiki REST client authenticated with a personal access token.
 
@@ -89,7 +207,20 @@ class DrupalWikiRESTClientViaToken(HTTPClient):
         # that carries that cookie and the token together (HTTP 400, "trouble
         # authenticating"), so every call after the first would fail.
         client.cookies.jar.set_policy(_NO_COOKIES)
+        # check_wiki_address vets the wiki's own host at init, but a redirect can point
+        # anywhere and downloads follow redirects, so every hop to another host is vetted.
+        if self._vet_redirect not in client.event_hooks["request"]:
+            client.event_hooks["request"].append(self._vet_redirect)
         return client
+
+    async def _vet_redirect(self, request: httpx.Request) -> None:
+        """Refuse a request to a host other than the wiki's, unless it passes the same check.
+
+        Raises:
+            HostCheckError: the host is one this deployment must not call.
+        """
+        if request.url.host != urlparse(self.base_url).hostname:
+            _ = await vetted_addresses(request.url.host)
 
     def get_base_url(self) -> str:
         return self.base_url
