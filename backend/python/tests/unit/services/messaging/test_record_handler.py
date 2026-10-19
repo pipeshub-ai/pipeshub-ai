@@ -5810,7 +5810,7 @@ class TestRejectedTooLargeCounter:
         gp = handler.event_processor.graph_provider
         record = {"_key": "r1", "virtualRecordId": "vr1",
                   "indexingStatus": ProgressStatus.NOT_STARTED.value, "mimeType": "application/pdf"}
-        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
         handler._trigger_next_queued_duplicate = AsyncMock()
         pipeline = handler.event_processor.processor.indexing_pipeline
