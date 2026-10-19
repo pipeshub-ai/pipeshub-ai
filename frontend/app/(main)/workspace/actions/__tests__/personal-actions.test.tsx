@@ -25,6 +25,7 @@ vi.mock('@/lib/api', () => ({ apiClient: { post: vi.fn(() => new Promise(() => {
 
 import { ActionSetupPanel } from '../components/action-setup-panel';
 import { ToolsetInstanceRowCard } from '../components/toolset-instance-row-card';
+import { typeDetailRegistryRow } from '../types';
 
 const OAUTH_FIELDS = [
   { name: 'clientId', displayName: 'Client ID', fieldType: 'TEXT', required: true, usage: 'BOTH' },
@@ -204,5 +205,22 @@ describe('a personal action in the list', () => {
     );
     expect(screen.queryByText('Yours')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Manage configuration' })).toBeNull();
+  });
+});
+
+describe("a type's page, when adding your own", () => {
+  it("offers the type's sign-in types even when a filter hides every instance", () => {
+    const found = typeDetailRegistryRow('jira', undefined, row('jira', ['OAUTH', 'API_TOKEN']));
+    expect(found.supportedAuthTypes).toEqual(['OAUTH', 'API_TOKEN']);
+  });
+
+  it("falls back to the registry's types when the instance doesn't list them", () => {
+    const listed = personalGmail({ supportedAuthTypes: undefined });
+    expect(typeDetailRegistryRow('gmail', listed, row('gmail', ['OAUTH'])).supportedAuthTypes).toEqual(['OAUTH']);
+    expect(typeDetailRegistryRow('gmail', listed, null).supportedAuthTypes).toEqual(['OAUTH']);
+  });
+
+  it('knows nothing to offer only when neither the list nor the registry has the type', () => {
+    expect(typeDetailRegistryRow('jira', undefined, null).supportedAuthTypes).toEqual(['NONE']);
   });
 });

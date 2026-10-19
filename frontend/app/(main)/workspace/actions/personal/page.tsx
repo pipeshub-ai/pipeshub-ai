@@ -35,6 +35,7 @@ import {
 import {
   actionCatalogItemToRegistryRow,
   mergedMyToolsetsCatalogFromIncludeRegistry,
+  typeDetailRegistryRow,
   type ActionCatalogItem,
   type MyActionsTab,
 } from '../types';
@@ -212,41 +213,38 @@ function PersonalActionsPageContent() {
    * Type-detail header: toolset metadata from any row of this type (not only the first list row),
    * with fallback to catalog my-toolsets so the title stays the integration name when filters empty.
    */
+  /** The type's registry entry, read on its own: a filter can leave the instance list empty. */
+  const [typeRegistryEntry, setTypeRegistryEntry] = useState<RegistryToolsetRow | null>(null);
+  useEffect(() => {
+    setTypeRegistryEntry(null);
+    if (!toolsetTypeParam) return;
+    const q = toolsetTypeParam.toLowerCase();
+    let cancelled = false;
+    ToolsetsApi.getRegistryToolsets({
+      page: 1,
+      limit: MAX_TOOLSETS_LIST_LIMIT,
+      search: toolsetTypeParam,
+      includeTools: false,
+      includeToolCount: true,
+      groupByCategory: false,
+    })
+      .then((res) => {
+        if (!cancelled) setTypeRegistryEntry(res.toolsets.find((r) => r.name.toLowerCase() === q) ?? null);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [toolsetTypeParam]);
+
   const typeRegistryRow = useMemo((): RegistryToolsetRow | null => {
     if (!toolsetTypeParam) return null;
     const q = toolsetTypeParam.toLowerCase();
     const primary =
       typeListInstances.find((i) => (i.toolsetType || '').toLowerCase() === q) ??
       myToolsets.find((i) => (i.toolsetType || '').toLowerCase() === q);
-    if (primary) {
-      const name =
-        primary.toolsetType || primary.normalized_name || primary.name || toolsetTypeParam;
-      const authUpper = primary.authType ? String(primary.authType).toUpperCase() : '';
-      // Every auth type the toolset offers, for adding one of your own.
-      const offered = primary.supportedAuthTypes?.map((a) => String(a).toUpperCase()) ?? [];
-      return {
-        name,
-        displayName: primary.displayName || name,
-        description: primary.description || '',
-        category: primary.category || 'app',
-        appGroup: '',
-        iconPath: primary.iconPath || '',
-        supportedAuthTypes: offered.length ? offered : authUpper ? [authUpper] : ['NONE'],
-        toolCount: primary.toolCount ?? 0,
-        ...(primary.documentationLinks?.length ? { documentationLinks: primary.documentationLinks } : {}),
-      };
-    }
-    return {
-      name: toolsetTypeParam,
-      displayName: toolsetTypeParam,
-      description: '',
-      category: 'app',
-      appGroup: '',
-      iconPath: '',
-      supportedAuthTypes: ['NONE'],
-      toolCount: 0,
-    };
-  }, [toolsetTypeParam, typeListInstances, myToolsets]);
+    return typeDetailRegistryRow(toolsetTypeParam, primary, typeRegistryEntry);
+  }, [toolsetTypeParam, typeListInstances, myToolsets, typeRegistryEntry]);
 
   const handleInstanceTabChange = useCallback(
     (tab: ActionInstanceAuthTab) => {
