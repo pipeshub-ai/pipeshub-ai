@@ -3,45 +3,7 @@
 import re
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
-# Kept in step with backend/nodejs/apps/src/libs/utils/log-redaction.utils.ts.
-# `state` is listed because the connector callback accepts exactly the
-# (code, state) pair; `key` only ever as a whole parameter name (`?key=`).
-SENSITIVE_QUERY_PARAMS = frozenset({
-    "code",
-    "state",
-    "key",
-    "token",
-    "access_token",
-    "refresh_token",
-    "id_token",
-    "client_secret",
-    "api_key",
-    "apikey",
-    "password",
-    "signature",
-    "sig",
-    "x-amz-signature",
-    "x-amz-credential",
-    "x-amz-security-token",
-    "se",
-    "sp",
-})
-
-# Matched against whole words of a name, never substrings, so `passage` or
-# `keyword` stay readable while `X-Amz-Signature` or `apiKey` do not.
-CREDENTIAL_WORDS = frozenset({
-    "password",
-    "passwd",
-    "pass",
-    "pwd",
-    "secret",
-    "token",
-    "signature",
-    "sig",
-    "credential",
-    "credentials",
-    "apikey",
-})
+from app.utils.sensitive_names import CREDENTIAL_WORDS, SENSITIVE_QUERY_PARAMS
 
 REDACTED = "[REDACTED]"
 _URL_IN_TEXT = re.compile(r"https?://[^\s'\")]+")

@@ -10,13 +10,15 @@ from fastapi import HTTPException, Request
 from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.redaction import REDACTED_PLACEHOLDER, hide_secrets_by_default
+from app.config.redaction import (
+    OAUTH_CLIENT_SECRET_FIELDS,
+    REDACTED_PLACEHOLDER,
+    hide_secrets_by_default,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOOLSET_INSTANCES_PATH = "/services/toolset-instances"
-
-_TOOLSET_SECRET_FIELDS = frozenset({"clientSecret", "client_secret", "clientsecret"})
 
 
 def _oauth_config_path(toolset_type: str) -> str:
@@ -203,7 +205,7 @@ def mask_oauth_secrets(
     del is_inherited
     if reveal or not hide_secrets_by_default():
         return dict(cfg_data)
-    return {k: (REDACTED_PLACEHOLDER if k in _TOOLSET_SECRET_FIELDS else v) for k, v in cfg_data.items()}
+    return {k: (REDACTED_PLACEHOLDER if k in OAUTH_CLIENT_SECRET_FIELDS else v) for k, v in cfg_data.items()}
 
 
 def is_redacted_placeholder(value: Any) -> bool:

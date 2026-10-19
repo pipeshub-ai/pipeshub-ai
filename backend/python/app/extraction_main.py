@@ -25,6 +25,7 @@ from app.edition_services import configure_app
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.api.routes.extraction import router as extraction_router
 from app.utils.env_utils import env_int
+from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 
 logger = logging.getLogger("extraction_main")
@@ -67,6 +68,7 @@ class _NoOpGraphProvider:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mark_process_non_dumpable()
+    install_log_redaction()
     app_container = await _get_initialized_container()
     app.container = app_container  # type: ignore[attr-defined]
 

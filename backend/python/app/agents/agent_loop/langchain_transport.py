@@ -67,7 +67,6 @@ from app.agent_loop_lib.transport.provider_conflicts import (
     is_reasoning_mandatory_conflict,
     is_tool_result_image_conflict,
 )
-from app.agents.agent_loop.error_classification import redact_error_for_log
 from app.agents.agent_loop.converters import (
     convert_assistant_message_from_langchain,
     convert_messages_to_langchain,
@@ -76,6 +75,7 @@ from app.agents.agent_loop.converters import (
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
+from app.agents.agent_loop.error_classification import redact_error_for_log
 from app.agents.agent_loop.image_guard import cap_images
 from app.agents.agent_loop.prompt_cache import NoCacheStrategy, cache_target
 from app.utils.llm_api_mode_store import (

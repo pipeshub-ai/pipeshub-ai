@@ -1866,15 +1866,17 @@ class TestStreamCancellationDuringProviderStall:
 
 
 _KEY_SENTINEL = "AIzaSyLOGSENTINEL0123456789abcdefghijkl"
+_BEARER_SENTINEL = "BEARERSENTINEL-4d1c"
 
 
 def _conflict_error_echoing_credentials() -> RuntimeError:
     """A provider conflict whose text echoes the request URL, as an httpx
-    `HTTPStatusError` does, with the API key in the query string."""
+    `HTTPStatusError` does, with the API key in the query string, and the
+    request's Authorization header."""
     exc = _requesty_conflict_error()
     exc.args = (
         f"{exc.args[0]} (POST https://generativelanguage.googleapis.com/v1beta/models:generate"
-        f"?key={_KEY_SENTINEL})",
+        f"?key={_KEY_SENTINEL}; headers: Authorization: Bearer {_BEARER_SENTINEL})",
     )
     return exc
 
@@ -1897,6 +1899,7 @@ class TestProviderErrorLogsAreRedacted:
 
         assert "provider conflict" in caplog.text
         assert _KEY_SENTINEL not in caplog.text
+        assert _BEARER_SENTINEL not in caplog.text
 
     async def test_stream_conflict_warning(self, monkeypatch, caplog) -> None:
         monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: _FakeApiModeStore())
@@ -1912,3 +1915,4 @@ class TestProviderErrorLogsAreRedacted:
 
         assert "provider conflict" in caplog.text
         assert _KEY_SENTINEL not in caplog.text
+        assert _BEARER_SENTINEL not in caplog.text
