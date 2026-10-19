@@ -673,6 +673,10 @@ workflows:
     x-speakeasy-test-group: Knowledge Base
 
   # Needs one indexed document; provision_sdk_test_env.py seeds it. Search answers 404 without one.
+  # Speakeasy fills a field the payload leaves out (or sets to null) from the spec's example, and
+  # the date examples would leave out the seed, which is dated the day it is uploaded. So the
+  # payload sets every date bound, wide enough to hold any upload day. Only an `after` bound in
+  # the future is refused.
   - workflowId: searchLifecycle
     steps:
       - stepId: search
@@ -681,6 +685,10 @@ workflows:
           contentType: application/json
           payload:
             query: What is the codeword?
+            createdAfter: "2000-01-01"
+            createdBefore: "2999-12-31"
+            modifiedAfter: "2000-01-01"
+            modifiedBefore: "2999-12-31"
         successCriteria:
           - condition: $statusCode == 200
           - condition: $response.header.Content-Type == application/json

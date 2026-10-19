@@ -43,7 +43,15 @@ log = logging.getLogger("provision-sdk")
 _TIMEOUT = 30
 _SEED_FILE_NAME = "sdk-test-seed.txt"
 _SEED_FILE_CONTENT = b"PipesHub SDK test seed document. The codeword is pineapple.\n"
-_SEED_QUERY = "What is the codeword?"
+# The search the searchLifecycle workflow in tests.arazzo.yaml sends; keep the two the same.
+_SEED_SEARCH = {
+    "query": "What is the codeword?",
+    "createdAfter": "2000-01-01",
+    "createdBefore": "2999-12-31",
+    "modifiedAfter": "2000-01-01",
+    "modifiedBefore": "2999-12-31",
+    "rewriteQuery": False,
+}
 
 
 def create_org(base_url: str, email: str, password: str) -> None:
@@ -111,22 +119,29 @@ def client_credentials_token(base_url: str, client_id: str, client_secret: str) 
 
 
 def search_answers(base_url: str, headers: dict[str, str]) -> bool:
-    """True once search has content. It answers 404 while the org has no indexed document."""
+    """True once the searchLifecycle test's search finds a document.
+
+    Not "anything but 404": on an org with nothing indexed, a search with no date
+    bounds answers 200 with status empty_response, and one with them answers 404.
+    """
     response = requests.post(
         f"{base_url}/api/v1/search",
         # A limit, because search answers 500 without one (the default is not applied).
-        json={"query": _SEED_QUERY, "limit": 1},
+        json={"limit": 1, **_SEED_SEARCH},
         headers=headers,
         timeout=60,
     )
     if response.status_code == requests.codes.not_found:
         return False
     response.raise_for_status()
-    return True
+    search_response = response.json().get("searchResponse") or {}
+    return search_response.get("status") == "success" and bool(
+        search_response.get("searchResults")
+    )
 
 
 def seed_search_document(base_url: str, token: str) -> None:
-    """Index one document: search answers 404 while the org has none."""
+    """Index one document for the searchLifecycle test to find."""
     headers = {"Authorization": f"Bearer {token}"}
     if search_answers(base_url, headers):
         log.info("Search already has indexed content")
