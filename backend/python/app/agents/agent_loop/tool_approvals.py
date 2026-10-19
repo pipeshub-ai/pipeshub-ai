@@ -32,7 +32,6 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
@@ -54,6 +53,8 @@ from app.agents.mcp.models import MCPCamelModel
 from app.utils.env_utils import env_bool
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from app.agent_loop_lib.agent import Agent
     from app.agent_loop_lib.context.manager import ContextManager
     from app.agent_loop_lib.core.scope import RunScope
