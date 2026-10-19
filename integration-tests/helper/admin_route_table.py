@@ -334,3 +334,12 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/mcp_servers.py::get_my_mcp_servers": "connection details for admins",
     "api/routes/mcp_servers.py::get_agent_mcp_servers": "connection details for admins",
 }
+
+
+# A toolset's tool-rules routes answer 404 with this when the edition has no organization tool
+# rules (`edition_config.organization_toolset_tool_rules`); their admin check is never reached.
+ORG_TOOL_RULES_OFF = "Organization tool approvals aren't available here"
+TOOL_RULES_HANDLERS = frozenset({
+    "api/routes/toolsets.py::get_toolset_tool_rules",
+    "api/routes/toolsets.py::update_toolset_tool_rules",
+})
