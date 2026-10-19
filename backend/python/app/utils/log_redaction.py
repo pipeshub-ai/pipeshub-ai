@@ -15,6 +15,8 @@ absent is skipped, so an ordinary line costs a few substring checks.
 
 import os
 import re
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 from app.utils.sensitive_names import is_credential_name
 from app.utils.url_redaction import redact_sensitive_query_params, redact_url
@@ -98,6 +100,12 @@ _PAIR_VALUE = re.compile(
     r"|b?'(?:[^'\\\n]|\\.)*'?"
     r"|(?:(?i:bearer|basic|token)[ \t]+)?[^\s,;&'\"(){}\[\]<>]+"
 )
+# str(pydantic.ValidationError) echoes each rejected value as
+# `input_value=<repr>, input_type=<type>`; the repr can be a password. A repr
+# may hold `]` or `,` itself, so the value runs to `, input_type=` or, when
+# that was cut off, to the end of the line.
+_PYDANTIC_INPUT_VALUE = re.compile(r"(input_value=)(?:(?!, input_type=)[^\n])+")
+
 _PAIR_TRIGGERS = ("pass", "pwd", "secret", "token", "sig", "credential", "api", "auth", "cookie", "private", "key", "connection")
 _AUTH_SCHEME_WORDS = frozenset({"bearer", "basic", "token"})
 # Counts, ports and limits next to a credential word (`token_limit=4096`).
@@ -205,6 +213,8 @@ def redact_secrets_in_text(text: str) -> str:
             text = text.replace(secret, REDACTED)
     if any(t in lower for t in _KEY_SHAPE_TRIGGERS):
         text = _KEY_SHAPES.sub(REDACTED, text)
+    if "input_value=" in text:
+        text = _PYDANTIC_INPUT_VALUE.sub(rf"\g<1>{REDACTED}", text)
     if any(t in lower for t in _PAIR_TRIGGERS):
         text = _redact_pairs(text)
     if "bearer" in lower or "Basic" in text:
@@ -212,3 +222,13 @@ def redact_secrets_in_text(text: str) -> str:
     if "://" in text:
         text = _redact_urls(text)
     return text
+
+
+# `input` is the rejected value itself and `ctx` can quote it back.
+_UNSAFE_VALIDATION_ERROR_KEYS = frozenset({"input", "ctx"})
+
+
+def log_safe_validation_errors(errors: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Pydantic or FastAPI validation errors reduced to what a log may hold:
+    each error's ``loc``, ``type`` and ``msg``, never the rejected input."""
+    return [{k: v for k, v in error.items() if k not in _UNSAFE_VALIDATION_ERROR_KEYS} for error in errors]

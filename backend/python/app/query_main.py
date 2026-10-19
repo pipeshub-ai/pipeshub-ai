@@ -24,6 +24,8 @@ from app.edition_config import (
     ensure_org_context,
     search_router,
 )
+from app.utils.log_redaction import log_safe_validation_errors
+from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
@@ -42,7 +44,6 @@ from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
-from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.url_redaction import redact_sensitive_query_params
@@ -501,7 +502,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         "Request validation failed for %s %s: %s",
         request.method,
         redact_sensitive_query_params(str(request.url)),
-        errors,
+        log_safe_validation_errors(errors),
     )
     message, detail = friendly_validation_errors(errors)
     return JSONResponse(status_code=422, content={"message": message, "detail": detail})
