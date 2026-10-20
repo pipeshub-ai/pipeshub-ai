@@ -24,8 +24,12 @@ the periods where the whole-span search found the most.
 Keyword (grep) matching is left out: it scans every stored record file, and
 running it once per period would multiply the slowest step of a search.
 
-The deployment switch ``TIMELINE_SUMMARIES`` offers the tool; it is on unless
-set to ``false``, and does not follow ``HIGH_ACCURACY_MODE``.
+The search API's ``timeline`` option runs the same search for API callers,
+such as an agent over MCP (``timeline_search_response``).
+
+The deployment switch ``TIMELINE_SUMMARIES`` offers the tool and the API
+option; it is on unless set to ``false``, and does not follow
+``HIGH_ACCURACY_MODE``.
 """
 
 from __future__ import annotations
@@ -75,6 +79,8 @@ from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTE
 from app.utils.env_utils import enabled_unless_off
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from app.agent_loop_lib.core.messages import Part
     from app.agent_loop_lib.core.types import ToolResult
     from app.agent_loop_lib.tools.base import Tool
@@ -402,6 +408,8 @@ async def _collect(
     end_ms: int | None,
     date_field: str,
     log: logging.Logger,
+    *,
+    period_limit: int = PERIOD_SEARCH_LIMIT,
 ) -> _Collected | str:
     """Run the whole-span and per-period searches and file what they found.
 
@@ -410,12 +418,13 @@ async def _collect(
     It is never narrowed to where the best matches are: they bunch around one
     moment, which is what a timeline has to get past. With no end either, that
     search has no date filter, so a match whose record has no source date is
-    still found (and listed apart).
+    still found (and listed apart). ``period_limit`` is the hits asked for in
+    each period.
     """
     after_key, before_key = _DATE_FIELDS[date_field][2:4]
 
     def period_searches(periods: list[Period]) -> list[Any]:
-        return [search({after_key: p.start_ms, before_key: p.end_ms}, PERIOD_SEARCH_LIMIT) for p in periods]
+        return [search({after_key: p.start_ms, before_key: p.end_ms}, period_limit) for p in periods]
 
     if start_ms is None:
         whole: Any
@@ -552,6 +561,136 @@ async def execute_timeline_search(
     except Exception as exc:
         log.error("knowledgegraph__search_timeline error: %s", exc, exc_info=True)
         return _json("error", f"Timeline search error: {exc}")
+
+
+async def timeline_search_response(
+    search: Callable[[dict[str, int] | None, int], Awaitable[dict[str, Any] | None]],
+    *,
+    start_ms: int | None,
+    end_ms: int | None,
+    date_field: str,
+    period_limit: int = PERIOD_SEARCH_LIMIT,
+    log: logging.Logger = logger,
+) -> dict[str, Any] | None:
+    """The search API's ``timeline`` option: this tool's period-by-period
+    search, returned in the search API's own response shape.
+
+    ``search(time_range, limit)`` runs one search of the caller's query with
+    the caller's filters, adding ``time_range`` (this module's
+    ``source_*_ms`` keys, or None) to any other bounds it has. The caller
+    supplies it, so permissions and filters are exactly those of a plain
+    search. The periods, the whole-span search and the filing of its hits
+    are ``_collect``'s, as for the assistant's tool.
+
+    ``searchResults`` come period by period, oldest first, and by record date
+    within a period; each hit carries ``timelinePeriod``, its index in
+    ``timeline.periods``. When nothing was found and no search succeeded,
+    the first search's own response is returned, as a plain search would
+    have returned it (a refused filter, no accessible records). None when
+    every search raised.
+    """
+    if end_ms is not None:
+        end_ms = min(end_ms, _now_ms())
+    responses: list[dict[str, Any]] = []
+
+    async def recorded(time_range: dict[str, int] | None, limit: int) -> dict[str, Any] | None:
+        result = await search(time_range, limit)
+        if isinstance(result, dict):
+            responses.append(result)
+        return result
+
+    collected = await _collect(
+        recorded, start_ms, end_ms, date_field, log, period_limit=period_limit,
+    )
+    found = isinstance(collected, _Collected) and any(h.results for h in collected.hits)
+    if not found and not any(r.get("status_code", 200) == 200 for r in responses):
+        return responses[0] if responses else None
+    if isinstance(collected, str):
+        return None
+    return _api_response(collected, responses, date_field, start_given=start_ms is not None)
+
+
+def _api_response(
+    collected: _Collected,
+    responses: list[dict[str, Any]],
+    date_field: str,
+    *,
+    start_given: bool,
+) -> dict[str, Any]:
+    search_results: list[dict[str, Any]] = []
+    record_map: dict[str, Any] = {}
+    record_ids: set[str] = set()
+    periods: list[dict[str, Any]] = []
+    for index, bucket in enumerate(collected.hits):
+        ordered = sorted(
+            bucket.results,
+            key=lambda hit, records=bucket.records: (
+                record_date_ms(records.get(_hit_key(hit)[0]), date_field) or 0
+            ),
+        )
+        in_period: set[str] = set()
+        for hit in ordered:
+            search_results.append({**hit, "timelinePeriod": index})
+            record_id = (hit.get("metadata") or {}).get("recordId")
+            if isinstance(record_id, str) and record_id:
+                in_period.add(record_id)
+        record_ids |= in_period
+        record_map.update(bucket.records)
+        period: dict[str, Any] = {
+            "label": bucket.label,
+            "start": _day(bucket.period.start_ms) if bucket.period else None,
+            "end": _day(bucket.period.end_ms) if bucket.period else None,
+            "records": len(in_period),
+            "matches": len(ordered),
+        }
+        if bucket.failed:
+            period["searchFailed"] = True
+        if bucket.incomplete:
+            period["searchIncomplete"] = bucket.incomplete
+        periods.append(period)
+
+    records: dict[str, Any] = {}
+    omitted: dict[str, int] = {}
+    incomplete: str | None = None
+    for response in responses:
+        for record in response.get("records") or []:
+            key = record.get("_key") if isinstance(record, dict) else None
+            if key in record_ids and key not in records:
+                records[key] = record
+        for record_id, count in (response.get("omittedPassages") or {}).items():
+            if record_id in record_ids and isinstance(count, int):
+                omitted[record_id] = max(omitted.get(record_id, 0), count)
+        incomplete = incomplete or response.get("searchIncomplete") or None
+
+    notes: list[str] = []
+    if not start_given:
+        notes.append(
+            f"No start date was given, so this covers {_day(collected.start_ms)} on: a year "
+            "before the end, or the earliest of the best matches if that is older."
+        )
+    payload: dict[str, Any] = {
+        "searchResults": search_results,
+        "records": list(records.values()),
+        "status": "success",
+        "status_code": 200,
+        "message": (
+            "Query processed successfully. Relevant records retrieved." if search_results
+            else "No results found in any period."
+        ),
+        "virtual_to_record_map": record_map,
+        "timeline": {
+            "dateField": date_field,
+            "start": _day(collected.start_ms),
+            "end": _day(collected.end_ms),
+            "periods": periods,
+            "notes": notes,
+        },
+    }
+    if omitted:
+        payload["omittedPassages"] = omitted
+    if incomplete:
+        payload["searchIncomplete"] = incomplete
+    return payload
 
 
 _NOT_SEARCHED = "This period's own search failed."
@@ -834,6 +973,7 @@ __all__ = [
     "record_date_ms",
     "span_of",
     "timeline_result_summary",
+    "timeline_search_response",
     "timeline_summaries_enabled",
     "without_timeline_unless_enabled",
 ]

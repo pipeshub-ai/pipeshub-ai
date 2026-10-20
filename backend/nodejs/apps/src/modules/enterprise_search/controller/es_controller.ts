@@ -4918,7 +4918,7 @@ export const search =
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
     try {
-      const { query, limit, filters, rewriteQuery } = req.body;
+      const { query, limit, filters, rewriteQuery, timeline } = req.body;
       // Only the bounds the caller set, so a search without dates sends what it always did.
       const body = req.body as Record<string, unknown>;
       const dateBounds: Record<string, string> = {};
@@ -4954,6 +4954,7 @@ export const search =
           ...dateBounds,
           // Sent only when the caller set it, so other searches send what they always did.
           ...(typeof rewriteQuery === 'boolean' ? { rewriteQuery } : {}),
+          ...(typeof timeline === 'string' ? { timeline } : {}),
         },
       });
 

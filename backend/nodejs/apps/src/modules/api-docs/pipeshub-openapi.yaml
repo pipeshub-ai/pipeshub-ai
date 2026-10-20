@@ -10248,6 +10248,26 @@ components:
             model call: faster, and suited to callers that write their own queries, such
             as an agent. The results can differ from a search with the rewrite.
           example: false
+        timeline:
+          type: string
+          enum: [created, modified]
+          description: |
+            Search a span of time period by period instead of ranking matches over the whole
+            span, for questions such as "how did this evolve" or "what changed between March
+            and May". A plain search returns the best matches overall, which bunch around one
+            moment; a timeline splits the span into up to 6 periods (calendar months, or weeks
+            within one month), searches each period on its own and beside one search of the
+            whole span, and returns the matches in date order, each labelled with its period.
+
+            The value is the date records are placed by: `created` (when the record was
+            created at its source) or `modified` (its last change). The span is that date's
+            bounds (`createdAfter` / `createdBefore`, or `modifiedAfter` / `modifiedBefore`);
+            with no start it covers the year before the end, or further back to the earliest
+            of the best matches. Bounds on the other date apply to every period. `limit` is the
+            matches per period (10 when left out). Each search applies the same permissions
+            and filters as a plain search. Left out, the search is a plain ranked search, as
+            before. A server whose `TIMELINE_SUMMARIES` setting is `false` ignores it.
+          example: created
 
     SemanticSearchBoundingBox:
       type: object
@@ -10494,6 +10514,12 @@ components:
             a table) brought the whole section back: how many blocks it sits from the passage
             the search matched nearest to it. `0` is a matched passage. Absent when the hit matched
             directly or the section matched as a whole.
+        timelinePeriod:
+          type: integer
+          minimum: 0
+          description: |
+            Set only on a search with `timeline`: the index in `timeline.periods` of the period
+            this hit's record is dated in.
 
     SemanticSearchGraphRecord:
       type: object
@@ -10761,6 +10787,79 @@ components:
           description: Maps virtual record id (object property name) to the accessible graph record document for that id.
           additionalProperties:
             $ref: '#/components/schemas/SemanticSearchGraphRecord'
+        timeline:
+          $ref: '#/components/schemas/SemanticSearchTimeline'
+
+    SemanticSearchTimeline:
+      type: object
+      additionalProperties: false
+      description: |
+        Present only on a search with `timeline` set. `searchResults` then come period by period,
+        oldest first, and by record date within a period; each hit's `timelinePeriod` is its
+        period's index in `periods`.
+      required:
+        - dateField
+        - start
+        - end
+        - periods
+        - notes
+      properties:
+        dateField:
+          type: string
+          enum: [created, modified]
+        start:
+          type: string
+          format: date
+          description: First day of the span searched.
+        end:
+          type: string
+          format: date
+          description: Last day of the span searched, inclusive.
+        periods:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticSearchTimelinePeriod'
+        notes:
+          type: array
+          items:
+            type: string
+          description: Plain-language notes on the span, such as the start chosen when none was given.
+
+    SemanticSearchTimelinePeriod:
+      type: object
+      additionalProperties: false
+      required:
+        - label
+        - start
+        - end
+        - records
+        - matches
+      properties:
+        label:
+          type: string
+          example: "March 2026 (2026-03-01 to 2026-03-31)"
+        start:
+          type: string
+          format: date
+          nullable: true
+          description: First day of the period. `null` for the last bucket, of matches whose record has no source date.
+        end:
+          type: string
+          format: date
+          nullable: true
+        records:
+          type: integer
+          minimum: 0
+          description: Records with matches in this period. `0` may only mean nothing matched this query then.
+        matches:
+          type: integer
+          minimum: 0
+        searchFailed:
+          type: boolean
+          description: This period's own search failed; any matches shown come from the search of the whole span.
+        searchIncomplete:
+          type: string
+          description: The search reached only part of the index for this period, so a record missing here may still exist.
 
     SemanticSearchExecuteResponse:
       type: object

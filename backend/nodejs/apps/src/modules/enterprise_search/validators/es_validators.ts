@@ -1180,6 +1180,11 @@ export const enterpriseSearchSearchSchema = z.object({
     // expanded variants: for callers that write their own queries, such as
     // an agent. Left out, the AI service rewrites and expands as before.
     rewriteQuery: z.boolean().optional(),
+    // Set, the AI service searches the span the matching date bounds give
+    // period by period, as the assistant's timeline tool does, and returns
+    // the matches in date order, each labelled with its period. The value is
+    // the date records are placed by. Left out, a plain ranked search.
+    timeline: z.enum(['created', 'modified']).optional(),
   }),
 });
 

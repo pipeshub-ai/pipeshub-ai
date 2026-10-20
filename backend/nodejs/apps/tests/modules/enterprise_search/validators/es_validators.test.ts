@@ -658,6 +658,24 @@ describe('enterprise_search/validators/es_validators', () => {
       }
     })
 
+    it('keeps timeline when the caller sets it, and leaves it out otherwise', () => {
+      for (const timeline of ['created', 'modified']) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', timeline } })
+        expect(result.success).to.be.true
+        expect(result.data!.body.timeline).to.equal(timeline)
+      }
+      const omitted = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q' } })
+      expect(omitted.success).to.be.true
+      expect(omitted.data!.body).to.not.have.property('timeline')
+    })
+
+    it('rejects a timeline that is not created or modified', () => {
+      for (const timeline of ['updated', '', true, null, 1]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', timeline } })
+        expect(result.success, JSON.stringify(timeline)).to.be.false
+      }
+    })
+
     it('rejects an empty or overlong date bound', () => {
       for (const modifiedAfter of ['', '   ', '2'.repeat(65)]) {
         const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', modifiedAfter } })
