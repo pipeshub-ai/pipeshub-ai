@@ -24,6 +24,7 @@ from app.connectors.sources.s3.base_connector import (
 )
 from app.connectors.sources.s3.connector import S3Connector
 from app.models.entities import RecordType, User
+from app.services.notification.types import NotificationSeverity
 from fastapi import HTTPException
 from app.connectors.core.registry.filters import (
     FilterOption,
@@ -638,6 +639,21 @@ class TestConnectionTestProbesBucketAccess:
         s3_connector.data_source = _access_source(buckets=["finance"])
         assert await s3_connector.test_connection_and_access() is True
         s3_connector.data_source.head_object.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_unreadable_bucket_of_several_warns_and_passes(self, s3_connector):
+        _select_buckets(s3_connector, ["finance", "legal"])
+        source = _access_source(buckets=None)
+        source.list_objects_v2 = AsyncMock(side_effect=lambda Bucket, MaxKeys: (
+            _make_response(False, error="AccessDenied: Access Denied", status_code=403)
+            if Bucket == "legal" else _make_response(True, data={})
+        ))
+        s3_connector.data_source = source
+        s3_connector.notify = AsyncMock()
+        assert await s3_connector.test_connection_and_access() is True
+        warning = s3_connector.notify.await_args.kwargs
+        assert warning["severity"] == NotificationSeverity.WARNING
+        assert "legal" in warning["message"] and "finance" not in warning["message"]
 
     @pytest.mark.asyncio
     async def test_no_selection_without_list_all_my_buckets_names_it(self, s3_connector):

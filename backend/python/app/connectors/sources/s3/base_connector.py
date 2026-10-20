@@ -1324,14 +1324,25 @@ class S3CompatibleBaseConnector(BaseConnector):
     async def _access_problem(self) -> str | None:
         """Why the key cannot sync, or None.
 
-        Every selected bucket must be readable. With no selection, sync takes every
-        bucket the key can list, so one readable bucket is enough.
+        At least one bucket the sync uses must be readable. An unreadable selected bucket
+        next to readable ones only warns: this test also runs when the connector is rebuilt,
+        and one bucket losing access must not stop the sync of the others.
         """
         selected = [self.bucket_name] if self.bucket_name else included_names(self.sync_filters, "buckets")
         if selected:
             # A key scoped to named buckets may lack s3:ListAllMyBuckets; sync does not need it then.
-            problems = await asyncio.gather(*(self._bucket_access_problem(b) for b in selected))
-            return " ".join(p for p in problems if p) or None
+            problems = [p for p in await asyncio.gather(*(self._bucket_access_problem(b) for b in selected)) if p]
+            if len(problems) == len(selected):
+                return " ".join(problems)
+            if problems:
+                self.logger.warning(f"{self.connector_name} cannot read some selected buckets: {' '.join(problems)}")
+                await self.notify(
+                    type=NotificationType.CONNECTOR_AUTH_ERROR,
+                    severity=NotificationSeverity.WARNING,
+                    title=self._notification_title("Some buckets cannot be read"),
+                    message=" ".join(problems),
+                )
+            return None
         response = await self._list_all_buckets()
         if not response.success:
             hint = (
