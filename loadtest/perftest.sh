@@ -204,9 +204,10 @@ MEM_PID=$!
 # across users but reproducible, so two arms of an A/B see the SAME sequence
 # rather than merely the same distribution. The seed defaults to the label, so
 # arms with different labels need PIPESHUB_SEED set alike (qprof.sh does this).
-# PIPESHUB_QUERY_ORDER=unique instead deals the (shuffled) file out round-robin,
-# so no question is asked twice until the file runs out: a run that repeats
-# questions measures cache hits, not the cost of a new question.
+# PIPESHUB_QUERY_ORDER=unique instead deals one shuffled deck in order (user u's
+# turn i gets card i*users+u), so no question repeats until users x turns
+# exceeds the file: a run that repeats questions measures cache hits, not the
+# cost of a new question.
 mapfile -t USER_SEQ < <("$PYTHON" -c '
 import random, sys
 label, users, nq, turns, order = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
@@ -214,8 +215,7 @@ if order == "unique":
     deck = list(range(nq))
     random.Random(label).shuffle(deck)
     for u in range(users):
-        mine = deck[u::users] or deck
-        print(" ".join(str(mine[i % len(mine)]) for i in range(turns)))
+        print(" ".join(str(deck[(i * users + u) % nq]) for i in range(turns)))
 else:
     for u in range(1, users + 1):
         rng = random.Random(f"{label}:{u}")
@@ -282,7 +282,7 @@ PIPESHUB_WINDOW_SECONDS=$WALL_SECS bash "$HERE/throughput.sh" "$START" "$FINISH"
 # the drain is doing the talking.
 if [ "$PIPESHUB_MODE" = "docker" ]; then
   # Error answers excluded, as in throughput.sh.
-  SS_TURNS=$(log_read "$START" "$LOAD_CUTOFF" | grep -a 'AnswerFinalizer:' | grep -avc 'agent run failed' || true)
+  SS_TURNS=$(log_read "$START" "$LOAD_CUTOFF" | grep -aEc "$TURN_DONE_OK_RE" || true)
   say "  steady-state    : $SS_TURNS turns in the ${SECS}s load window  ($("$PYTHON" -c "print(f'{$SS_TURNS*60/$SECS:.1f}')") req/min)"
 fi
 

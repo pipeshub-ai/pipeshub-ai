@@ -27,10 +27,10 @@ fi
 LOGTEXT=$(log_read "$START" "$END")
 marks=$(printf '%s' "$LOGTEXT" | grep -ac 'step=finalize' || true)
 if [ "$marks" -eq 0 ]; then
-    # `AnswerFinalizer:` and not `...: finalized response` — a turn that ends
-    # with an empty answer logs "empty response, using fallback" instead, and
-    # the two are mutually exclusive. It still completed and still cost a turn.
-    marks=$(printf '%s' "$LOGTEXT" | grep -ac "${PIPESHUB_TURN_MARKER:-AnswerFinalizer:}" || true)
+    # One line per finished turn (TURN_DONE_RE). Counting every AnswerFinalizer
+    # line doubles a turn that warns "answer empty after normalization" and then
+    # still logs "finalized response".
+    marks=$(printf '%s' "$LOGTEXT" | grep -aEc "${PIPESHUB_TURN_MARKER:-$TURN_DONE_RE}" || true)
 fi
 
 # A turn whose agent run raised still finalizes and still returns HTTP 200: the

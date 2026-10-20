@@ -110,9 +110,10 @@ def patch_chatbot(src: str, path: str) -> str:
 
 
 # (phase, alternatives): the first alternative whose anchor appears once in the
-# function is applied, so one patcher serves several builds. A phase with no
-# matching anchor is skipped with a warning and its time folds into the next
-# mark; only the terminal mark the phase table counts turns by is mandatory.
+# function, and none of its optional skip-if strings appear, is applied, so one
+# patcher serves several builds. A phase with no matching anchor is skipped with
+# a warning and its time folds into the next mark; only the terminal mark the
+# phase table counts turns by is mandatory.
 BRIDGE_EDITS = [
     ("connector_probe", [(
         "        blob_store = BlobStorage(logger=log, config_service=config_service, graph_provider=graph_provider)\n",
@@ -125,10 +126,13 @@ BRIDGE_EDITS = [
             '        query_info = {**query_info, "attachments": attachments, "previous_conversations": previous_conversations}\n'
             '        _phase_mark("attachments")\n',
         ),
+        # Builds that resolve attachments inside the prefetch gather: a mark here
+        # would time only the connector probes, so leave it to connector_prefetch.
         (
             '        filters = dict(query_info.get("filters") or {})\n',
             '        _phase_mark("attachments")\n'
             '        filters = dict(query_info.get("filters") or {})\n',
+            "                demo_exclusions_for_run(graph_provider, config_service, user_info, log),\n            )\n        )\n",
         ),
     ]),
     ("connector_prefetch", [(
@@ -181,7 +185,8 @@ def patch_bridge(src: str, path: str) -> str:
             continue
         lo, hi = _slice(src, path, "async def run_chat_stream(", "__all__ = ")
         body = src[lo:hi]
-        hit = next(((f, r) for f, r in alternatives if body.count(f) == 1), None)
+        hit = next(((f, r) for f, r, *skip_if in alternatives
+                    if body.count(f) == 1 and not any(s in body for s in skip_if)), None)
         if hit is None:
             if phase in REQUIRED_PHASES:
                 raise PatchError(f"{path}: no anchor for required phase {phase!r} in run_chat_stream")

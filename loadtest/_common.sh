@@ -186,16 +186,29 @@ log_mark() {
     fi
 }
 
+# Exactly one of these per finished turn (respond.py). The OK form leaves out
+# turns answered with an error message.
+TURN_DONE_OK_RE='AnswerFinalizer: (finalized (STOPPED )?response|empty response, using fallback)'
+TURN_DONE_RE="$TURN_DONE_OK_RE|AnswerFinalizer: agent run failed"
+
+# Epochs as UTC ISO seconds, one line per argument. Python, not `date -d`, which
+# BSD/macOS date lacks.
+iso_utc() {
+    detect_python || return 1
+    "$PYTHON" -c 'import sys, time
+for a in sys.argv[1:]: print(time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(int(a))))' "$@"
+}
+
 # PIPESHUB_LOG_CAPTURE names a file that `docker logs --follow --timestamps`
 # wrote during the run (perftest.sh sets it). Reading it instead of `docker logs`
 # after the fact matters: under indexing load the 20 MB rotation happens inside a
 # run, rotated files are not served back, and the window silently reads as zero.
 log_read() {
-    local mark=$1
+    local mark=$1 from="" to=""
     if [ "$PIPESHUB_MODE" = "docker" ] && [ -n "${PIPESHUB_LOG_CAPTURE:-}" ] && [ -s "$PIPESHUB_LOG_CAPTURE" ]; then
-        local from to
-        from=$(date -u -d "@$mark" +%Y-%m-%dT%H:%M:%S)
-        to=$(date -u -d "@${2:-4102444800}" +%Y-%m-%dT%H:%M:%S)
+        { read -r from; read -r to; } < <(iso_utc "$mark" "${2:-4102444800}" 2>/dev/null)
+    fi
+    if [ -n "$from" ] && [ -n "$to" ]; then
         awk -v f="$from" -v t="$to" '{ ts = substr($1, 1, 19) }
             ts >= f && ts < t { sub(/^[^ ]+ /, ""); print }' "$PIPESHUB_LOG_CAPTURE"
     elif [ "$PIPESHUB_MODE" = "docker" ]; then

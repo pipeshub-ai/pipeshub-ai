@@ -68,7 +68,7 @@ question per indexed record and deal them out without repeats:
 
 Trials with the same users and trial number ask the same questions in the same
 order, so two arms of an A/B stay comparable. `--count N` writes a smaller sample;
-keep N above the number of turns a trial runs, or questions start repeating. `report.txt` prints
+keep N above the questions a trial asks (users × turns per user), or questions start repeating. `report.txt` prints
 `distinct questions: X of N` to confirm nothing repeated.
 
 ## Output
