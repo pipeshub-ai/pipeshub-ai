@@ -239,6 +239,8 @@ ANCESTOR_STUB_FIELDS: list[str] = [
     "summary", "status", "priority", "issuetype",
     "project", "parent", "created", "updated",
     "creator", "reporter", "assignee", "resolutiondate", "duedate",
+    # A stub of a leveled ancestor must not show its title to everyone who can browse.
+    "security",
 ]
 
 
@@ -991,7 +993,7 @@ class JiraConnector(BaseConnector):
                     # (PARENT_CHILD) — which a full sync deletes are still restored.
                     record = stub
                 record.is_placeholder = True
-                backfills.append((record, []))
+                backfills.append((record, self._secure_ancestor_stub(record, issue, user_by_account_id)))
                 if record.parent_external_record_id:
                     parent_refs.append(record.parent_external_record_id)
 
@@ -1043,7 +1045,9 @@ class JiraConnector(BaseConnector):
                 response = await self._call_with_retry(
                     lambda ds: ds.bulk_fetch_issues(
                         issueIdsOrKeys=issue_ids,
-                        fields=ANCESTOR_STUB_FIELDS,
+                        fields=ANCESTOR_STUB_FIELDS + sorted({
+                            f for ctx in self._issue_security.values() for f in ctx.custom_field_ids
+                        }),
                     ),
                     ctx=ctx,
                 )
@@ -1069,6 +1073,28 @@ class JiraConnector(BaseConnector):
             issue_by_id.update(chunk_result)
 
         return [issue_by_id.get(stub.external_record_id) for stub in frontier]
+
+    def _secure_ancestor_stub(
+        self, record: Record, issue: dict[str, Any] | None, user_by_account_id: dict[str, AppUser],
+    ) -> list[Permission]:
+        """Give a stub its issue's level, so browsing lists its title only to the level's holders."""
+        fields = (issue or {}).get("fields") or {}
+        context = self._issue_security.get((fields.get("project") or {}).get("id"))
+        if context is None:
+            return []
+        issue_data = self._extract_issue_data(issue, user_by_account_id)
+        permissions, _ = apply_issue_access(
+            record,
+            fields,
+            is_subtask=bool((fields.get("issuetype") or {}).get("subtask")),
+            project_key=(fields.get("project") or {}).get("key") or "",
+            context=context,
+            user_by_account_id=user_by_account_id,
+            app_roles_mapping=self._app_roles_mapping,
+            reporter_email=issue_data["reporter_email"],
+            assignee_email=issue_data["assignee_email"],
+        )
+        return permissions
 
     def _build_ancestor_stub(
         self,
@@ -3603,7 +3629,6 @@ class JiraConnector(BaseConnector):
                 f"🔐 Issue security levels of project {project_key} changed ({'all' if reread_all else changed_levels}): "
                 "re-reading the issues in them"
             )
-            self._issue_build_failures = 0
             try:
                 await self._reread_leveled_issues(
                     project_key, project_id, jira_users, stats, None if reread_all else changed_levels
@@ -3612,10 +3637,9 @@ class JiraConnector(BaseConnector):
                 if e.status != HttpStatusCode.BAD_REQUEST.value or reread_all:
                     raise
                 # The account cannot name some level in JQL; every leveled issue covers it.
-                self._issue_build_failures = 0
                 await self._reread_leveled_issues(project_key, project_id, jira_users, stats, None)
         if is_new_project or changed_levels or reread_all:
-            await self._record_security_levels(project_key, level_fps, security.defer_checkpoint)
+            await self._record_security_levels(project_key, level_fps, deferred=security.defer_checkpoint)
 
         if total_issues_processed == 0:
             self.logger.info(f"ℹ️ No new/updated issues for project {project_key}")
@@ -3629,7 +3653,7 @@ class JiraConnector(BaseConnector):
             "is_new_project": is_new_project,
         }
 
-    async def _record_security_levels(self, project_key: str, level_fps: dict[str, str], deferred: bool) -> None:
+    async def _record_security_levels(self, project_key: str, level_fps: dict[str, str], *, deferred: bool) -> None:
         """Save the digests only after a clean walk and settled reads; otherwise the next sync repeats it."""
         if not self._issue_build_failures and not deferred:
             await self._update_project_sync_checkpoint(

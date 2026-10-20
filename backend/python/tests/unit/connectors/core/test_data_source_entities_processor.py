@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import (
+    AccessRule,
     CollectionNames,
     EntityRelations,
     MimeTypes,
@@ -7401,6 +7402,26 @@ class TestPlaceholderFlag:
 
         assert incoming.is_placeholder is True
         assert incoming.version == 0
+
+    @pytest.mark.asyncio
+    async def test_stub_that_knows_its_restriction_overrides_the_stored_rule(self):
+        """A stub written OPEN by an earlier sync is corrected when the sweep learns its level."""
+        for knows, expected in ((True, AccessRule.RESTRICTED), (False, AccessRule.OPEN)):
+            proc = _make_processor()
+            tx_store = _make_tx_store()
+            existing = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+            existing.id = "rec-1"
+            existing.access_rule = AccessRule.OPEN
+            existing.indexing_status = ProgressStatus.NOT_STARTED.value
+            tx_store.get_record_by_external_id.return_value = existing
+            for name in ("_handle_record_group", "_handle_new_record", "_handle_updated_record",
+                         "_link_record_to_group", "_handle_parent_record", "_handle_record_permissions"):
+                setattr(proc, name, AsyncMock(return_value=MagicMock(permissions_from_group=False, parent_outside_group=False)))
+            incoming = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+            incoming.access_rule = AccessRule.RESTRICTED if knows else AccessRule.STRICT
+            incoming.rewrite_permissions = knows
+            await proc._process_record(incoming, [], tx_store)
+            assert incoming.access_rule == expected
 
     @pytest.mark.asyncio
     async def test_process_record_bumps_version_on_real_revision_change(self):

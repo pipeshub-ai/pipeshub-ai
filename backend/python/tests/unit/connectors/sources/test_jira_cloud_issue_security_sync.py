@@ -11,9 +11,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import AccessRule
+from app.connectors.sources.atlassian.core.jira_issue_security import (
+    IssueSecurityContext,
+    SchemeKnowledge,
+)
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
-from app.connectors.sources.atlassian.core.jira_issue_security import IssueSecurityContext, SchemeKnowledge
-from app.connectors.sources.atlassian.jira_cloud.connector import ISSUE_SEARCH_FIELDS, JiraConnector
+from app.connectors.sources.atlassian.jira_cloud.connector import (
+    ISSUE_SEARCH_FIELDS,
+    JiraConnector,
+)
 from app.models.entities import AppUser, TicketRecord
 from app.models.permission import EntityType
 
@@ -370,3 +376,42 @@ async def test_reindex_keeps_the_stored_access_rule():
         record_group_type="PROJECT")
     result = await c._check_and_fetch_updated_issue(stored, {})
     assert result is not None and result[0].access_rule == AccessRule.RESTRICTED
+
+
+@pytest.mark.asyncio
+async def test_the_failure_counter_is_not_reset_before_the_reread():
+    """R2-2: an issue that failed in the main walk still blocks saving the digests."""
+    async def fail_in_main_walk(c, calls):
+        if len(calls) == 1:
+            c._issue_build_failures += 1
+
+    c, _, _, _ = await TestMemberChangeRereadsOnlyTheAffectedLevels()._sync(
+        stored_levels={"10102": "old"}, fetch_fn=fail_in_main_walk)
+    assert not any(call.args[1].get("security_levels") != json.dumps({"10102": "old"})
+                   for call in c.issues_sync_point.update_sync_point.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_a_stub_of_a_leveled_ancestor_is_restricted_with_the_level_grants():
+    """R2-1: browsing lists stubs, so a stub must carry its issue's level, not the open project rule."""
+    c = _connector()
+    c._issue_security[PROJECT_ID] = _present()
+    stub = TicketRecord(
+        id="rid", org_id="org-1", record_name="x", record_type="TICKET", external_record_id="1001", version=0,
+        origin="CONNECTOR", connector_name="JIRA", connector_id="conn-sec", external_record_group_id=PROJECT_ID,
+        record_group_type="PROJECT", is_placeholder=True)
+    c._bulk_fetch_ancestor_level = AsyncMock(return_value=[_issue({"id": "10102"})])
+    c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+    c.data_entities_processor.get_all_app_users = AsyncMock(return_value=_users())
+    c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    await c._sweep_placeholder_records({PROJECT_ID})
+    record, perms = c.data_entities_processor.on_new_records.await_args.args[0][0]
+    assert record.is_placeholder and record.access_rule == AccessRule.RESTRICTED
+    assert record.rewrite_permissions and perms
+
+
+def test_security_is_requested_for_ancestor_stubs():
+    from app.connectors.sources.atlassian.jira_cloud.connector import (
+        ANCESTOR_STUB_FIELDS,
+    )
+    assert "security" in ANCESTOR_STUB_FIELDS

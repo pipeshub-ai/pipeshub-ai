@@ -2545,10 +2545,13 @@ class DataSourceEntitiesProcessor:
             if record.external_revision_id != existing_record.external_revision_id:
                 if publishes_event:
                     self._stamp_queued_at(record)
-            elif record.is_placeholder:
+            elif record.is_placeholder and not (
+                record.rewrite_permissions or record.access_rule == AccessRule.RESTRICTED
+            ):
                 # The record is upserted below whether or not its content changed,
                 # so a changed restriction reaches the node without a content edit.
-                # A stub carries no ACL and must not reset a real record's rule.
+                # A stub carries no ACL and must not reset a real record's rule, unless it
+                # knows its source restriction (a rewrite, or RESTRICTED) and so corrects it.
                 record.access_rule = existing_record.access_rule
             if restored_from_trash and reindex_restored:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
