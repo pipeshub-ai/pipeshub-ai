@@ -136,3 +136,52 @@ class TestCopyThenDeleteTheOriginal:
         ids = [records[path("b.txt")].id, records[path("c.txt")].id]
         assert len(set(ids)) == 2
         assert original in ids
+
+
+class TestExistenceCheckOfTheOriginal:
+    """S3 and MinIO ask the store whether the original key still exists, with ``head_object``."""
+
+    @pytest.fixture(params=["s3", "minio"])
+    def connector(self, request, store, db, checkpoints, config) -> BaseConnector:
+        return make_connector(request.param, store, db, checkpoints, config)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["error", "raise"])
+    async def test_a_failed_check_counts_as_still_there(self, connector, store, db, failure) -> None:
+        store.put("a.txt", SAME)
+        await connector.run_sync()
+        original = db.by_path()[path("a.txt")].id
+
+        copy(store, "a.txt", "b.txt")
+        connector.data_source.head_fails = failure
+        await connector.run_incremental_sync()
+
+        records = db.by_path()
+        assert records[path("a.txt")].id == original
+        assert records[path("b.txt")].id != original
+
+    @pytest.mark.asyncio
+    async def test_the_check_reads_the_one_key(self, connector, store, db) -> None:
+        # A prefix listing of "a.txt" is not ordered on directory buckets and also matches "a.txt.bak".
+        store.put("a.txt", SAME)
+        await connector.run_sync()
+        original = db.by_path()[path("a.txt")].id
+        connector.data_source.list_objects_v2 = _listing_without(connector.data_source, "a.txt")
+
+        copy(store, "a.txt", "b.txt")
+        await connector.run_incremental_sync()
+
+        assert db.by_path()[path("b.txt")].id != original
+
+
+def _listing_without(source, hidden_from_prefix_listing: str):
+    """The sync listing as is; a prefix listing of exactly ``hidden_from_prefix_listing`` misses it."""
+    real = source.list_objects_v2
+
+    async def list_objects_v2(**kwargs):
+        response = await real(**kwargs)
+        if kwargs.get("Prefix") == hidden_from_prefix_listing and response.data:
+            response.data["Contents"] = [o for o in response.data.get("Contents", []) if o["Key"] != hidden_from_prefix_listing]
+        return response
+
+    return list_objects_v2

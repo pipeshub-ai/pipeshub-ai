@@ -37,6 +37,7 @@ class Response:
     success: bool
     data: Any = None
     error: str | None = None
+    status_code: int | None = None
 
 
 @dataclass
@@ -118,7 +119,22 @@ class _FakeDataSource:
 
 
 class FakeS3DataSource(_FakeDataSource):
-    """``list_objects_v2`` over fake buckets, continuation tokens included."""
+    """``list_objects_v2`` over fake buckets, continuation tokens included.
+
+    ``head_fails`` makes ``head_object`` fail: ``"error"`` answers 503, ``"raise"`` raises.
+    """
+
+    head_fails: str | None = None
+
+    async def head_object(self, Bucket: str, Key: str, **_: object) -> Response:
+        if self.head_fails == "raise":
+            raise ConnectionError("connection reset during HeadObject")
+        if self.head_fails == "error":
+            return Response(False, error="503: Service Unavailable", status_code=503)
+        o = self.stores[Bucket].objects.get(Key)
+        if o is None:
+            return Response(False, error="404: Not Found", status_code=404)
+        return Response(True, {"ETag": f'"{_md5(o.body)}"', "ContentLength": len(o.body), "LastModified": o.modified})
 
     async def list_objects_v2(
         self, Bucket: str, MaxKeys: int = 1000, ContinuationToken: str | None = None, Prefix: str | None = None, **_: object,

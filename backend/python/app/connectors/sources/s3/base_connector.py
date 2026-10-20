@@ -1175,16 +1175,16 @@ class S3CompatibleBaseConnector(BaseConnector):
             return True
         try:
             async with self.rate_limiter:
-                response = await self.data_source.list_objects_v2(Bucket=bucket_name, Prefix=key, MaxKeys=100)
+                response = await self.data_source.head_object(Bucket=bucket_name, Key=key)
         except Exception as e:
             self.logger.warning(f"Could not check whether {bucket_name}/{key} still exists: {e}")
             return True
-        if not response.success:
-            self.logger.warning(f"Could not check whether {bucket_name}/{key} still exists: {response.error}")
+        if response.success:
             return True
-        # General-purpose buckets list in key order, so the key leads the page; directory buckets don't.
-        contents = (response.data or {}).get("Contents") or []
-        return any(obj.get("Key") == key for obj in contents)
+        if getattr(response, "status_code", None) == HttpStatusCode.NOT_FOUND.value:
+            return False
+        self.logger.warning(f"Could not check whether {bucket_name}/{key} still exists: {response.error}")
+        return True
 
     async def _create_s3_permissions(
         self, bucket_name: str, key: str

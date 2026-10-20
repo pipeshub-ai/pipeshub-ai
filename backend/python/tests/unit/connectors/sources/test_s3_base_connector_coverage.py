@@ -482,7 +482,7 @@ class TestProcessS3Object:
         s3_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         s3_connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
         # The old key is gone from the bucket, so equal content at the new key is a move.
-        s3_connector.data_source = MagicMock(list_objects_v2=AsyncMock(return_value=MagicMock(success=True, data={"KeyCount": 0})))
+        s3_connector.data_source = MagicMock(head_object=AsyncMock(return_value=MagicMock(success=False, status_code=404, error="404: Not Found")))
         s3_connector.scope = ConnectorScope.TEAM.value
 
         obj = {
