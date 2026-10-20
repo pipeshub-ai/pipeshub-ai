@@ -80,6 +80,43 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
                 max_length=2000,
                 is_secret=True
             )
+        ]),
+        AuthBuilder.type(AuthType.IAM_ROLE).fields([
+            AuthField(
+                name="accessKey",
+                display_name="Access Key",
+                placeholder="Enter the Access Key that may call sts:AssumeRole",
+                description="Used only to call STS AssumeRole. Give it no S3 access.",
+                field_type="PASSWORD",
+                max_length=2000,
+                is_secret=True
+            ),
+            AuthField(
+                name="secretKey",
+                display_name="Secret Key",
+                placeholder="Enter the Secret Key for that Access Key",
+                description="Used only to call STS AssumeRole.",
+                field_type="PASSWORD",
+                max_length=2000,
+                is_secret=True
+            ),
+            AuthField(
+                name="roleArn",
+                display_name="Role ARN",
+                placeholder="arn:aws:iam::123456789012:role/pipeshub-s3-reader",
+                description="The IAM role in the bucket's account that PipesHub assumes to read S3",
+                field_type="TEXT",
+                max_length=2048,
+            ),
+            AuthField(
+                name="externalId",
+                display_name="External ID",
+                placeholder="Enter the External ID from the role's trust policy",
+                description="Optional. Must match sts:ExternalId in the role's trust policy.",
+                field_type="TEXT",
+                required=False,
+                max_length=1224,
+            ),
         ])
     ])\
     .configure(lambda builder: builder
@@ -87,6 +124,11 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
         .add_documentation_link(DocumentationLink(
             "S3 Access Key Setup",
             "https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            "S3 IAM Role (AssumeRole) Setup",
+            "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_common-scenarios_third-party.html",
             "setup"
         ))
         .add_documentation_link(DocumentationLink(
