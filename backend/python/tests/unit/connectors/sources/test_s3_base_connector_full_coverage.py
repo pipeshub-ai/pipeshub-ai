@@ -279,7 +279,10 @@ class TestTestConnectionAndAccess:
     async def test_failure(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(return_value=_resp(False, error="denied"))
-        assert await connector.test_connection_and_access() is False
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+
+        with pytest.raises(ConnectorInitError, match="denied"):
+            await connector.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_exception(self, connector):

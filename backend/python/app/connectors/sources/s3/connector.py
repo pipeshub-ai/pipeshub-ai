@@ -9,7 +9,7 @@ from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, PermissionModel
-from app.connectors.core.constants import IconPaths
+from app.connectors.core.constants import CONNECTOR_S3_INFO, IconPaths
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -66,7 +66,7 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
                 name="accessKey",
                 display_name="Access Key",
                 placeholder="Enter your Access Key",
-                description="The Access Key from S3 instance",
+                description="Access key of a key with read-only access to the buckets to sync",
                 field_type="PASSWORD",
                 max_length=2000,
                 is_secret=True
@@ -75,7 +75,7 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
                 name="secretKey",
                 display_name="Secret Key",
                 placeholder="Enter your Secret Key",
-                description="The Secret Key from S3 instance",
+                description="Secret key of a key with read-only access to the buckets to sync",
                 field_type="PASSWORD",
                 max_length=2000,
                 is_secret=True
@@ -119,11 +119,12 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
             ),
         ])
     ])\
+    .with_info(CONNECTOR_S3_INFO)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.S3.value))
         .add_documentation_link(DocumentationLink(
-            "S3 Access Key Setup",
-            "https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html#access-keys-and-secret-access-keys",
+            "S3 Read-Only Policy Examples",
+            "https://docs.aws.amazon.com/AmazonS3/latest/userguide/example-policies-s3.html",
             "setup"
         ))
         .add_documentation_link(DocumentationLink(
@@ -141,7 +142,7 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
             display_name="Bucket Names",
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
-            description="Select specific S3 buckets to sync",
+            description="Select the S3 buckets to sync. Leave empty to sync every bucket the key can list.",
             option_source_type=OptionSourceType.DYNAMIC,
             default_operator=MultiselectOperator.IN.value
         ))
@@ -198,7 +199,7 @@ class S3Connector(S3CompatibleBaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR, 
                 severity=NotificationSeverity.ERROR, 
-                title="Configuration not found", 
+                title=self._notification_title("Configuration not found"),
                 message="S3 configuration not found for this connector.", 
                 payload=payload,
             )
@@ -214,7 +215,7 @@ class S3Connector(S3CompatibleBaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,
                 severity=NotificationSeverity.ERROR,
-                title="Credentials missing",
+                title=self._notification_title("Credentials missing"),
                 message=(
                     "S3 access key or secret key is missing in connector configuration."
                 ),
@@ -241,7 +242,7 @@ class S3Connector(S3CompatibleBaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_SYNC_ERROR,
                 severity=NotificationSeverity.ERROR,
-                title="Failed to initialize S3 client",
+                title=self._notification_title("Failed to initialize S3 client"),
                 message=f"Failed to initialize S3 client: {e}",
             )
             return False

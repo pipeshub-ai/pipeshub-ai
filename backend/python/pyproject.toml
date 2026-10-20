@@ -183,7 +183,7 @@ version = "0.1"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "aioboto3>=12.0.0",
+    "aioboto3>=13.3.0",  # botocore>=1.35.74: paged ListBuckets (MaxBuckets, ContinuationToken)
     "aiohttp==3.14.3",
     "aiokafka==0.12.0",
     "aiolimiter==1.2.1",
