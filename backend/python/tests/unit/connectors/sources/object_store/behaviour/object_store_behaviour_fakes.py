@@ -234,6 +234,10 @@ class FakeRecordsDb:
         self.failing: set[str] = set()
         # Groups whose delete answers False, as the processor does when the delete fails.
         self.refused_group_deletes: set[str] = set()
+        # Users by userId, and every permission written: records only ever gain edges, groups get replaced.
+        self.users: dict[str, Any] = {}
+        self.record_permissions: dict[str, list[Any]] = {}
+        self.group_permissions: dict[str, list[Any]] = {}
 
     def _check(self, method: str) -> None:
         if method in self.failing:
@@ -286,8 +290,9 @@ class FakeRecordsDb:
 
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
         self._check("on_new_records")
-        for record, _ in records_with_permissions:
+        for record, permissions in records_with_permissions:
             self.written.append(record.external_record_id)
+            self.record_permissions.setdefault(record.external_record_id, []).extend(permissions)
             # The processor upserts by external id, keeping the stored record's id.
             same_path = self.by_path().get(record.external_record_id)
             if same_path and same_path.id != record.id:
@@ -295,8 +300,9 @@ class FakeRecordsDb:
             self.records[record.id] = record
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
-        for group, _ in groups:
+        for group, permissions in groups:
             self.record_groups[group.external_group_id] = group
+            self.group_permissions[group.external_group_id] = list(permissions)
 
     async def get_nodes_by_filters(
         self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
@@ -324,7 +330,15 @@ class FakeRecordsDb:
     async def ensure_team_app_edge(self, connector_id: str) -> None:
         return None
 
-    async def get_user_by_user_id(self, user_id: str) -> None:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> Any:
+        """As the graph providers answer: a failed query is None unless the caller asks it to raise."""
+        if "get_user_by_user_id" in self.failing:
+            if raise_on_error:
+                self._check("get_user_by_user_id")
+            return None
+        return self.users.get(user_id)
+
+    async def on_new_app_users(self, users: list[Any]) -> None:
         return None
 
 
@@ -380,10 +394,11 @@ class FakeConfigService:
 
 def make_connector(
     kind: str, store: FakeObjectStore, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, config: FakeConfigService,
+    scope: str = "team",
 ) -> BaseConnector:
-    """A team-scoped connector of ``kind`` wired to the fakes, as ``init()`` would leave it for one bucket."""
+    """A connector of ``kind`` (team-scoped unless told) wired to the fakes, as ``init()`` would leave it for one bucket."""
     logger = logging.getLogger(f"test.objstore.{kind}")
-    args = (logger, db, checkpoints, config, CONNECTOR_ID, "team", "creator-1")
+    args = (logger, db, checkpoints, config, CONNECTOR_ID, scope, "creator-1")
     if kind == "s3":
         from app.connectors.sources.s3.connector import S3Connector
 

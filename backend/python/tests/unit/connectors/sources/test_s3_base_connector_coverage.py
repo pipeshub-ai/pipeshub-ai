@@ -298,8 +298,9 @@ class TestCreateRecordGroupsForBuckets:
     async def test_personal_scope_no_creator(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = None
-        await s3_connector._create_record_groups_for_buckets(["bucket1"])
-        s3_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        with pytest.raises(LookupError):
+            await s3_connector._create_record_groups_for_buckets(["bucket1"])
+        s3_connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_bucket_names(self, s3_connector):
@@ -316,12 +317,10 @@ class TestCreateRecordGroupsForBuckets:
     async def test_personal_scope_user_lookup_fails(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
-        # Make user lookup fail
-        provider = _make_mock_data_store_provider(user=None)
-        s3_connector.data_store_provider = provider
-        await s3_connector._create_record_groups_for_buckets(["bucket1"])
-        # Should still create record groups with fallback permissions
-        s3_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        s3_connector.data_entities_processor.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
+        with pytest.raises(RuntimeError):
+            await s3_connector._create_record_groups_for_buckets(["bucket1"])
+        s3_connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
 
 
 # ===========================================================================
@@ -551,9 +550,8 @@ class TestCreateS3Permissions:
     async def test_personal_scope_no_creator(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = None
-        perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        with pytest.raises(Exception):
+            perms = await s3_connector._create_s3_permissions("bucket", "key")
 
 
 # ===========================================================================
@@ -1231,14 +1229,12 @@ class TestCreateS3PermissionsEdgeCases:
         s3_connector.data_entities_processor.get_user_by_user_id = AsyncMock(
             side_effect=Exception("DB error")
         )
-        perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        with pytest.raises(Exception):
+            perms = await s3_connector._create_s3_permissions("bucket", "key")
 
     @pytest.mark.asyncio
-    async def test_exception_fallback(self, s3_connector):
+    async def test_unknown_scope_never_grants_the_org(self, s3_connector):
         s3_connector.scope = "INVALID"
-        # Force an exception in permissions logic
-        s3_connector.data_entities_processor.org_id = "org-1"
+        s3_connector.created_by = "user-1"
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) >= 1
+        assert [p.entity_type.value for p in perms] == ["USER"]

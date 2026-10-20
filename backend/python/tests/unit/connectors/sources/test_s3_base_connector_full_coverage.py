@@ -237,18 +237,16 @@ class TestCreateS3Permissions:
     async def test_personal_scope_no_creator(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = None
-        perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        with pytest.raises(Exception):
+            perms = await connector._create_s3_permissions("bucket", "key")
 
     @pytest.mark.asyncio
     async def test_personal_scope_creator_lookup_fails(self, connector, mock_dsp):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         connector.data_entities_processor.get_user_by_user_id = AsyncMock(side_effect=Exception("DB error"))
-        perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        with pytest.raises(Exception):
+            perms = await connector._create_s3_permissions("bucket", "key")
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_no_email(self, connector, mock_dsp):
@@ -257,9 +255,8 @@ class TestCreateS3Permissions:
         u_no_email = MagicMock()
         u_no_email.email = ""
         connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=u_no_email)
-        perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        with pytest.raises(Exception):
+            perms = await connector._create_s3_permissions("bucket", "key")
 
 
 class TestTestConnectionAndAccess:

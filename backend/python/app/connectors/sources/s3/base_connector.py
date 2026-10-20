@@ -401,21 +401,10 @@ class S3CompatibleBaseConnector(BaseConnector):
                     self.connector_id
                 )
             else:
-                # Personal: create user-app edge only for the creator
-                if self.created_by:
-                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
-                    if creator_user and getattr(creator_user, "email", None):
-                        app_users = self.get_app_users([creator_user])
-                        await self.data_entities_processor.on_new_app_users(app_users)
-                    else:
-                        self.logger.warning(
-                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
-                            self.created_by,
-                        )
-                else:
-                    self.logger.warning(
-                        "Personal connector has no created_by; skipping user-app edges."
-                    )
+                creator = await self._creator_or_notify()
+                if creator is None:
+                    return
+                await self.data_entities_processor.on_new_app_users(self.get_app_users([creator]))
 
             # Get sync filters
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
@@ -531,39 +520,7 @@ class S3CompatibleBaseConnector(BaseConnector):
         for bucket_name in bucket_names:
             if not bucket_name:
                 continue
-            permissions = []
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-                )
-            else:
-                if self.created_by:
-                    try:
-                        user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
-                        if user and getattr(user, "email", None):
-                            permissions.append(
-                                Permission(
-                                    type=PermissionType.OWNER,
-                                    entity_type=EntityType.USER,
-                                    email=user.email,
-                                    external_id=self.created_by
-                                )
-                            )
-                    except Exception as e:
-                        self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
+            permissions = await self._create_s3_permissions(bucket_name, "")
 
             creation_ms = creation_map.get(bucket_name)
             record_group = RecordGroup(
@@ -1227,46 +1184,12 @@ class S3CompatibleBaseConnector(BaseConnector):
     async def _create_s3_permissions(
         self, bucket_name: str, key: str
     ) -> list[Permission]:
-        """Create permissions for an S3 object based on connector scope."""
-        try:
-            permissions = []
+        """Create permissions for an S3 object based on connector scope.
 
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-                )
-            else:
-                if self.created_by:
-                    try:
-                        user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
-                        if user and getattr(user, "email", None):
-                            permissions.append(
-                                Permission(
-                                    type=PermissionType.OWNER,
-                                    entity_type=EntityType.USER,
-                                    email=user.email,
-                                    external_id=self.created_by
-                                )
-                            )
-                    except Exception as e:
-                        self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
-
-            return permissions
-        except Exception as e:
-            self.logger.warning(f"Error creating permissions for {key}: {e}")
+        Personal scope raises when the creator cannot be resolved: falling back to
+        the whole org would widen access, and the edges are never taken back.
+        """
+        if self.scope == ConnectorScope.TEAM.value:
             return [
                 Permission(
                     type=PermissionType.READ,
@@ -1274,6 +1197,40 @@ class S3CompatibleBaseConnector(BaseConnector):
                     external_id=self.data_entities_processor.org_id
                 )
             ]
+        creator = await self._load_creator()
+        return [
+            Permission(
+                type=PermissionType.OWNER,
+                entity_type=EntityType.USER,
+                email=creator.email,
+                external_id=self.created_by
+            )
+        ]
+
+    async def _load_creator(self) -> User:
+        """The personal connector's creator. Raises if the lookup fails or finds no user with an email."""
+        user = (
+            await self.data_entities_processor.get_user_by_user_id(self.created_by, raise_on_error=True)
+            if self.created_by else None
+        )
+        if not user or not getattr(user, "email", None):
+            raise LookupError(f"Creator {self.created_by!r} of connector {self.connector_id} not found or has no email")
+        return user
+
+    async def _creator_or_notify(self) -> User | None:
+        """The creator, or None after telling the user why the sync stopped before writing anything."""
+        try:
+            return await self._load_creator()
+        except Exception as e:
+            self.logger.error(f"Stopping {self.connector_name} sync: {e}")
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                title="Sync stopped",
+                message="The owner of this personal connector could not be looked up, so nothing was synced. "
+                "Existing access is unchanged. The next sync tries again.",
+                severity=NotificationSeverity.ERROR,
+            )
+            return None
 
     async def test_connection_and_access(self) -> bool:
         """Test connection and access."""
