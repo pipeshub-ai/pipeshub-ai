@@ -410,6 +410,7 @@ async def _collect(
     log: logging.Logger,
     *,
     period_limit: int = PERIOD_SEARCH_LIMIT,
+    on_whole_span: Callable[[Any], None] | None = None,
 ) -> _Collected | str:
     """Run the whole-span and per-period searches and file what they found.
 
@@ -419,7 +420,8 @@ async def _collect(
     moment, which is what a timeline has to get past. With no end either, that
     search has no date filter, so a match whose record has no source date is
     still found (and listed apart). ``period_limit`` is the hits asked for in
-    each period.
+    each period. ``on_whole_span``, when given, receives what the whole-span
+    search returned (or raised).
     """
     after_key, before_key = _DATE_FIELDS[date_field][2:4]
 
@@ -434,6 +436,8 @@ async def _collect(
             # Like a failed search in the gather below: the periods still run.
             whole = exc
         whole_failed = _failed(whole, log)
+        if on_whole_span is not None:
+            on_whole_span(whole)
         end_ms = end_ms if end_ms is not None else _now_ms()
         start_ms = end_ms - DEFAULT_LOOKBACK_DAYS * _DAY_MS
         span = None if whole_failed else span_of(whole.get("virtual_to_record_map") or {}, date_field)
@@ -450,6 +454,8 @@ async def _collect(
             return_exceptions=True,
         )
         whole_failed = _failed(whole, log)
+        if on_whole_span is not None:
+            on_whole_span(whole)
     log.info(
         "knowledgegraph__search_timeline: periods=%d field=%s", len(periods), date_field,
     )
@@ -585,9 +591,10 @@ async def timeline_search_response(
     ``searchResults`` come period by period, oldest first, and by record date
     within a period; each hit carries ``timelinePeriod``, its index in
     ``timeline.periods``. When nothing was found and no search succeeded,
-    the first search's own response is returned, as a plain search would
-    have returned it (a refused filter, no accessible records). None when
-    every search raised.
+    the whole-span search's own response is returned, as a plain search
+    would have returned it (a refused filter, no accessible records, an
+    index that is down); if that search raised, a period's failure is
+    returned instead. None when there is no failure to pass on.
     """
     if end_ms is not None:
         end_ms = min(end_ms, _now_ms())
@@ -599,12 +606,22 @@ async def timeline_search_response(
             responses.append(result)
         return result
 
+    whole: list[Any] = []
     collected = await _collect(
-        recorded, start_ms, end_ms, date_field, log, period_limit=period_limit,
+        recorded, start_ms, end_ms, date_field, log,
+        period_limit=period_limit, on_whole_span=whole.append,
     )
     found = isinstance(collected, _Collected) and any(h.results for h in collected.hits)
     if not found and not any(r.get("status_code", 200) == 200 for r in responses):
-        return responses[0] if responses else None
+        # The whole-span search is the plain search over the span, so its
+        # answer is the one a plain search would have given. The period
+        # searches run beside it, and an empty month's quick 404 must not
+        # stand in for its slower 503 or 422.
+        if whole and isinstance(whole[0], dict):
+            return whole[0]
+        return next(
+            (r for r in responses if r.get("status_code") in _FAILED_SEARCH_STATUS_CODES), None,
+        )
     if isinstance(collected, str):
         return None
     return _api_response(collected, responses, date_field, start_given=start_ms is not None)
@@ -663,6 +680,13 @@ def _api_response(
         incomplete = incomplete or response.get("searchIncomplete") or None
 
     notes: list[str] = []
+    caveat = None
+    if not search_results and any(h.failed or h.incomplete for h in collected.hits):
+        caveat = (
+            "Some periods could not be searched in full, so finding nothing does not "
+            "show the information is missing."
+        )
+        notes.append(caveat)
     if not start_given:
         notes.append(
             f"No start date was given, so this covers {_day(collected.start_ms)} on: a year "
@@ -675,7 +699,7 @@ def _api_response(
         "status_code": 200,
         "message": (
             "Query processed successfully. Relevant records retrieved." if search_results
-            else "No results found in any period."
+            else " ".join(filter(None, ["No results found in any period.", caveat]))
         ),
         "virtual_to_record_map": record_map,
         "timeline": {

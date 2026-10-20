@@ -3,6 +3,7 @@ search, through the plain search's own retrieval call."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -323,3 +324,91 @@ class TestTimeline:
             await _search(_quarter(), index)
 
         assert exc_info.value.status_code == 500
+
+
+def _status(code: int, message: str = "") -> dict[str, Any]:
+    return {"searchResults": [], "records": [], "status": "x", "status_code": code, "message": message}
+
+
+class _Scripted:
+    """Answers the whole-span search (the one asking for ``SPAN_SEARCH_LIMIT``)
+    and the period searches separately, the whole span after a delay so the
+    periods finish first."""
+
+    def __init__(self, whole: dict[str, Any] | Exception, period: Any) -> None:  # noqa: ANN401
+        self.whole = whole
+        self.period = period
+
+    async def search_with_filters(self, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
+        if kwargs["limit"] == SPAN_SEARCH_LIMIT:
+            await asyncio.sleep(0.05)
+            if isinstance(self.whole, Exception):
+                raise self.whole
+            return dict(self.whole)
+        answer = self.period(kwargs["time_range"]) if callable(self.period) else self.period
+        return dict(answer)
+
+
+async def _scripted(index: _Scripted) -> tuple[int, dict[str, Any]]:
+    return await _search(_quarter(limit=3), index)  # type: ignore[arg-type]
+
+
+class TestWhenNothingIsFound:
+    @pytest.mark.asyncio
+    async def test_the_whole_span_searchs_failure_wins_over_a_quicker_empty_month(self) -> None:
+        status, body = await _scripted(
+            _Scripted(whole=_status(503, "vector store unavailable"), period=_status(404, "No accessible documents")),
+        )
+
+        assert status == 503
+        assert body["message"] == "vector store unavailable"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_filter_is_passed_on_as_the_plain_search_would(self) -> None:
+        status, body = await _scripted(
+            _Scripted(whole=_status(422, "unknown connector"), period=_status(404)),
+        )
+
+        assert status == 422
+        assert body["message"] == "unknown connector"
+
+    @pytest.mark.asyncio
+    async def test_when_the_whole_span_search_raised_a_periods_failure_is_passed_on(self) -> None:
+        status, _ = await _scripted(
+            _Scripted(whole=RuntimeError("down"), period=_status(503, "vector store unavailable")),
+        )
+
+        assert status == 503
+
+    @pytest.mark.asyncio
+    async def test_when_the_whole_span_search_raised_and_months_were_empty_it_is_a_500(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            await _scripted(_Scripted(whole=RuntimeError("down"), period=_status(404)))
+
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_a_period_that_could_not_be_searched_keeps_empty_from_meaning_missing(self) -> None:
+        april = _ms("2025-04-01")
+
+        def period(time_range: dict[str, int]) -> dict[str, Any]:
+            if time_range["source_created_after_ms"] == april:
+                return _status(503, "vector store unavailable")
+            return _status(200, "No results")
+
+        status, body = await _scripted(_Scripted(whole=_status(200, "No results"), period=period))
+
+        assert status == 200
+        assert [p.get("searchFailed", False) for p in body["timeline"]["periods"]] == [False, True, False]
+        caveat = "Some periods could not be searched in full, so finding nothing does not show the information is missing."
+        assert caveat in body["timeline"]["notes"]
+        assert body["message"] == f"No results found in any period. {caveat}"
+        assert "knowledgegraph__search" not in json.dumps(body)
+
+    @pytest.mark.asyncio
+    async def test_empty_months_that_were_all_searched_carry_no_caveat(self) -> None:
+        status, body = await _scripted(_Scripted(whole=_status(200, "No results"), period=_status(200, "No results")))
+
+        assert status == 200
+        assert body["timeline"]["notes"] == []
+        assert body["message"] == "No results found in any period."

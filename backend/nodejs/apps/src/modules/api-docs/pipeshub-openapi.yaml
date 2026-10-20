@@ -10264,7 +10264,9 @@ components:
             bounds (`createdAfter` / `createdBefore`, or `modifiedAfter` / `modifiedBefore`);
             with no start it covers the year before the end, or further back to the earliest
             of the best matches. Bounds on the other date apply to every period. `limit` is the
-            matches per period (10 when left out). Each search applies the same permissions
+            number of matches each period's own search asks for (10 when left out); matches from
+            the search of the whole span (up to 50) are added to the periods their records are
+            dated in, so a period can hold more than `limit`. Each search applies the same permissions
             and filters as a plain search. Left out, the search is a plain ranked search, as
             before. A server whose `TIMELINE_SUMMARIES` setting is `false` ignores it.
           example: created
