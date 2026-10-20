@@ -445,8 +445,8 @@ class S3CompatibleBaseConnector(BaseConnector):
                     self.logger.error(f"Failed to list buckets: {err}")
                     await self.notify(
                         type=NotificationType.CONNECTOR_SYNC_ERROR,
-                        title="Failed to list S3 buckets",
-                        message=f"Failed to list S3 buckets: {err}. "
+                        title=self._notification_title("Failed to list buckets"),
+                        message=f"Failed to list buckets: {err}. "
                         "Check credentials and s3:ListAllMyBuckets / bucket access.",
                         severity=NotificationSeverity.ERROR,
                     )
@@ -829,7 +829,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                             )
                             await self.notify(
                                 type=NotificationType.CONNECTOR_AUTH_ERROR,
-                                title="Access denied",
+                                title=self._notification_title("Access denied"),
                                 message=f"Access denied when listing objects in bucket '{bucket_name}'. "
                                 f"Verify IAM permissions (s3:ListBucket, s3:GetObject). Details: {error_msg}",
                                 severity=NotificationSeverity.ERROR,
@@ -840,7 +840,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                             )
                             await self.notify(
                                 type=NotificationType.CONNECTOR_SYNC_ERROR,
-                                title="Failed to list objects in bucket",
+                                title=self._notification_title("Failed to list objects in bucket"),
                                 message=f"Failed to list objects in bucket '{bucket_name}': {error_msg}",
                                 severity=NotificationSeverity.ERROR,
                             )
@@ -1287,8 +1287,8 @@ class S3CompatibleBaseConnector(BaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,
                 severity=NotificationSeverity.ERROR,
-                title=f"Connection test failed",
-                message=f"{self.connector_name.value}: {e}",
+                title=self._notification_title("Connection test failed"),
+                message=str(e),
             )
             return False
         if problem is None:
@@ -1298,8 +1298,8 @@ class S3CompatibleBaseConnector(BaseConnector):
         await self.notify(
             type=NotificationType.CONNECTOR_AUTH_ERROR,
             severity=NotificationSeverity.ERROR,
-            title=f"Connection test failed",
-            message=f"{self.connector_name.value}: {problem}",
+            title=self._notification_title("Connection test failed"),
+            message=problem,
         )
         raise ConnectorInitError(f"{self.display_name}: {problem}")
 

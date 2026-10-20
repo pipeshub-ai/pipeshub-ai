@@ -1,8 +1,9 @@
 # pyright: ignore-file
 
-"""S3 setup: the Enable connection test (PP-112) and the setup guidance in the registry (PP-102, PP-104, PP-111)."""
+"""S3 setup: the Enable connection test (PP-112) and its notice (PP-120), and the setup guidance in the registry (PP-102, PP-104, PP-111)."""
 
 import logging
+import time
 import uuid
 
 import pytest
@@ -17,6 +18,19 @@ logger = logging.getLogger("s3-setup-test")
 UNREADABLE_BUCKET = "aws"
 
 
+def _wait_for_notification_title(client: PipeshubClient, prefix: str, timeout: float = 60) -> str | None:
+    """The title of the user's newest notification that starts with ``prefix``; notices go through the broker."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        resp = client.request("GET", "/api/v1/notifications", params={"limit": 50})
+        if resp.status_code == 200:
+            for n in resp.json().get("notifications", []):
+                if str(n.get("title", "")).startswith(prefix):
+                    return n["title"]
+        time.sleep(3)
+    return None
+
+
 @pytest.mark.integration
 @pytest.mark.s3
 @pytest.mark.asyncio(loop_scope="session")
@@ -27,9 +41,8 @@ class TestS3Setup:
         """TC-CONN-001: a key that passes ListBuckets but cannot list the configured bucket is refused on Enable."""
         config = s3_connector_config()
         config["auth"]["bucket"] = UNREADABLE_BUCKET
-        connector = pipeshub_client.create_connector(
-            "S3", f"s3-conn-test-{uuid.uuid4().hex[:8]}", config=config,
-        )
+        instance_name = f"s3-conn-test-{uuid.uuid4().hex[:8]}"
+        connector = pipeshub_client.create_connector("S3", instance_name, config=config)
         try:
             resp = pipeshub_client.request(
                 "POST", f"/api/v1/connectors/{connector.connector_id}/toggle", json={"type": "sync"},
@@ -43,6 +56,9 @@ class TestS3Setup:
             assert not pipeshub_client.get_connector(connector.connector_id).get("isActive"), (
                 "the enable was refused yet the connector is active"
             )
+            # PP-120: the notice names the instance, so two S3 connections can be told apart.
+            title = _wait_for_notification_title(pipeshub_client, instance_name)
+            assert title == f"{instance_name}: Connection test failed", f"unexpected notification title {title!r}"
         finally:
             try:
                 pipeshub_client.delete_connector(connector.connector_id)

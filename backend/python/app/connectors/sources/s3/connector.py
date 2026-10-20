@@ -158,7 +158,7 @@ class S3Connector(S3CompatibleBaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR, 
                 severity=NotificationSeverity.ERROR, 
-                title="Configuration not found", 
+                title=self._notification_title("Configuration not found"),
                 message="S3 configuration not found for this connector.", 
                 payload=payload,
             )
@@ -174,7 +174,7 @@ class S3Connector(S3CompatibleBaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,
                 severity=NotificationSeverity.ERROR,
-                title="Credentials missing",
+                title=self._notification_title("Credentials missing"),
                 message=(
                     "S3 access key or secret key is missing in connector configuration."
                 ),
@@ -201,7 +201,7 @@ class S3Connector(S3CompatibleBaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_SYNC_ERROR,
                 severity=NotificationSeverity.ERROR,
-                title="Failed to initialize S3 client",
+                title=self._notification_title("Failed to initialize S3 client"),
                 message=f"Failed to initialize S3 client: {e}",
             )
             return False
