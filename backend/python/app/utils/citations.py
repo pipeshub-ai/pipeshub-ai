@@ -360,8 +360,14 @@ def _clean_duplicate_citation_links(
             second_link = m.group(4)
             # "[source](ref1) [Pricing review](ref1)": keep the link whose text names the source.
             # A dead target gets no badge, so there a URL is text worth keeping.
-            disposable = _is_label_or_id if _REF_TOKEN_RE.fullmatch(resolved_first) else _is_citation_label
-            if disposable(_link_label(first_link)) and not disposable(_link_label(second_link)):
+            first_label, second_label = _link_label(first_link), _link_label(second_link)
+            if _REF_TOKEN_RE.fullmatch(resolved_first):
+                if _is_url_text(second_label) and not _is_url_text(first_label):
+                    return second_link
+                disposable = _is_label_or_id
+            else:
+                disposable = _is_citation_label
+            if disposable(first_label) and not disposable(second_label):
                 return second_link
             return first_link
 
@@ -463,10 +469,14 @@ def _is_label_or_id(link_text: str) -> bool:
     return bool(_CITATION_LABEL_RE.match(link_text) or _LINK_ID_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
 
 
+def _is_url_text(link_text: str) -> bool:
+    return bool(_LINK_URL_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
+
+
 def _is_citation_label(link_text: str) -> bool:
     """True when link text carries no prose: a generic label ("source", "ref 2")
     or the target itself (a URL, ref or record id)."""
-    return _is_label_or_id(link_text) or bool(_LINK_URL_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
+    return _is_label_or_id(link_text) or _is_url_text(link_text)
 
 
 def _already_written(kept: str, preceding: str) -> bool:
