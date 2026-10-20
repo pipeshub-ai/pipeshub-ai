@@ -90,6 +90,11 @@ const MAX_METADATA_DEPTH = 8;
 const CIRCULAR = '[Circular]';
 const TRUNCATED = '[Truncated]';
 
+// The longest URL or query text redacted for a log line; the rest is dropped.
+// Every pass below is linear, but there are many of them, and Node accepts a
+// request line or Referer of up to 16 KiB from anyone, before authentication.
+const MAX_LOGGED_TEXT_LENGTH = 8 * 1024;
+
 // Encoded `=`, `?`, `#`, `&`, `@`, `://`, or a further layer of encoding (`%25`).
 const ENCODED_URL_SYNTAX = /%(3d|3f|23|26|40|25)|%3a%2f%2f/i;
 
@@ -154,13 +159,30 @@ const paramName = (key: string): string => {
 const loggedName = (key: string): string =>
   /^[\w.-]+/.exec(paramName(key))?.[0] ?? REDACTED;
 
+// ASCII only, as /[^a-z0-9]/i is without the `u` flag: `ſ` and the Kelvin
+// sign `K` are not letters here.
+const isAsciiAlphanumeric = (code: number): boolean =>
+  (code >= 48 && code <= 57) || ((code | 32) >= 97 && (code | 32) <= 122);
+
+// An index scan rather than /^[^a-z0-9]+|[^a-z0-9]+$/: the end-anchored
+// alternative is retried from every offset of a long non-alphanumeric run.
+const trimNonAlphanumeric = (text: string): string => {
+  let start = 0;
+  let end = text.length;
+  while (start < end && !isAsciiAlphanumeric(text.charCodeAt(start)))
+    start += 1;
+  while (end > start && !isAsciiAlphanumeric(text.charCodeAt(end - 1)))
+    end -= 1;
+  return text.slice(start, end);
+};
+
 /**
  * Whether a query parameter (or header) name carries a credential. Stray
  * non-alphanumeric bytes around the name (`code%00`, `code.`, `code `) do not
  * hide it.
  */
 export const isSensitiveQueryKey = (key: string): boolean => {
-  const name = paramName(key).replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '');
+  const name = trimNonAlphanumeric(paramName(key));
   if (SENSITIVE_QUERY_PARAMS.has(name.toLowerCase())) return true;
   const words = keyWords(name);
   return words.some(
@@ -413,9 +435,11 @@ export function redactSensitiveQueryParams(url: string): string {
   if (typeof url !== 'string' || url === '') {
     return url;
   }
-  // The logged text itself: its raw `&` and `#` are real separators.
-  const redacted = redactUrl(url, 0, true);
-  return hasResidualSecret(redacted) ? redactWholly(url) : redacted;
+  return redactCapped(url, (text) => {
+    // The logged text itself: its raw `&` and `#` are real separators.
+    const redacted = redactUrl(text, 0, true);
+    return hasResidualSecret(redacted) ? redactWholly(text) : redacted;
+  });
 }
 
 /**
@@ -435,33 +459,128 @@ export const redactSecretsInText = (text: string): string =>
     .join('')
     .replace(/\b(Bearer|Basic)\s+\S+/gi, `$1 ${REDACTED}`);
 
+// Where a text cut for the log may end: after a raw separator, so that no
+// name or value is kept in part.
+const CUT_AFTER = new Set(['/', '?', '#', '&', ';', '=', ':', '@']);
+
+/**
+ * `redact` applied to at most MAX_LOGGED_TEXT_LENGTH characters of `text`,
+ * marked when the rest was dropped. The cut is moved back to a separator,
+ * since it could fall inside a secret. A name always comes before its value,
+ * so what is kept reads as it did in the whole text, with one exception: a
+ * password runs to the last `@`, so once a dropped `@` could end one, no
+ * reading of the kept text can be trusted and none of it is logged.
+ */
+function redactCapped(text: string, redact: (kept: string) => string): string {
+  if (text.length <= MAX_LOGGED_TEXT_LENGTH) return redact(text);
+  let end = MAX_LOGGED_TEXT_LENGTH;
+  while (end > 0 && !CUT_AFTER.has(text.charAt(end - 1))) end -= 1;
+  if (text.slice(end).search(ANY_AT) !== -1) return `${REDACTED}${TRUNCATED}`;
+  return `${redact(text.slice(0, end))}${TRUNCATED}`;
+}
+
 // The safety net below the structural pass. However a URL was encoded, a
 // secret only matters if some decoding of the logged text shows it as a
 // sensitive `name=value` or a `user:password@` URL. So the output is decoded
 // layer by layer, and if any layer still shows one, the text is replaced
 // wholesale instead of trusting the parse that missed it.
 const MAX_SCAN_LAYERS = 10;
-// The shapes `splitPasswordUrl` reads, anywhere in the text: a user name
-// (which may hold an `@` or whitespace) after `//`, or a `scheme:user:` with no `//`, then a
-// `:` followed by neither a port nor `REDACTED@`, and an `@` somewhere after
-// it, past any spaces. A `user:REDACTED` with an `@` still to come is caught
-// too: the redaction stopped short of the real end of the password.
-const PASSWORD_URL = new RegExp(
-  [
-    String.raw`(?:^|[^a-z0-9+.-])(?:[a-z][a-z0-9+.-]*:)?//[^/?#:[\]]*:`,
-    String.raw`(?:^|[^a-z0-9+.-])[a-z][a-z0-9+.-]*:[^/?#:[\]]+:`,
-  ]
-    .map(
-      (head) =>
-        String.raw`${head}(?!REDACTED@)(?!${PORT.source.slice(1)})[^@]*@`,
-    )
-    .join('|'),
-  'i',
-);
+// The pieces `showsPasswordUrl` reads a head and a port with, as written in
+// `PORT` and in the regex that function replaces.
+const NOT_SCHEME_CHAR = /[^a-z0-9+.-]/i;
+const SCHEME_CHAR = /[a-z0-9+.-]/i;
+const SCHEME_START = /[a-z]/i;
+const AUTHORITY_END = new Set(['/', '?', '#', ':', '[', ']']);
+const REDACTED_AT = /REDACTED@/iy;
+const PORT_DIGITS = /\d+(?=[/?#,\s]|$)/y;
+const PORT_END = /[?#@]|%(?:25)*40/gi;
+const QUERY_SEPARATOR = /[&;?#]/g;
+const WHOLE_QUERY_SEGMENT = new RegExp(`^${QUERY_SEGMENT}$`, 'i');
+
+/**
+ * The shapes `splitPasswordUrl` reads, anywhere in the text: a user name
+ * (which may hold an `@` or whitespace) after `//`, or a `scheme:user:` with
+ * no `//`, then a `:` followed by neither a port nor `REDACTED@`, and an `@`
+ * somewhere after it, past any spaces. A `user:REDACTED` with an `@` still to
+ * come is caught too: the redaction stopped short of the real end of the
+ * password.
+ *
+ * This is the regex
+ *   (?:^|[^a-z0-9+.-])(?:[a-z][a-z0-9+.-]*:)?//[^/?#:[\]]*:
+ *   | (?:^|[^a-z0-9+.-])[a-z][a-z0-9+.-]*:[^/?#:[\]]+:
+ * each followed by (?!REDACTED@)(?!PORT)[^@]*@, read in one pass. As a regex,
+ * every head re-ran the port check to the end of the text, which took seconds
+ * on 16 KiB of `,//a:1`. Here the port check reuses what it found: the first
+ * `?`, `#` or `@` after a head, and the last query segment no port accepts.
+ */
+function showsPasswordUrl(text: string): boolean {
+  const lastAt = text.lastIndexOf('@');
+  if (lastAt === -1) return false;
+
+  const separators = [...text.matchAll(QUERY_SEPARATOR)].map((m) => m.index);
+  let lastBadSegment = -1;
+  separators.forEach((at, k) => {
+    const segment = text.slice(at + 1, separators[k + 1] ?? text.length);
+    if (!WHOLE_QUERY_SEGMENT.test(segment)) lastBadSegment = at;
+  });
+  let portEnd = -1;
+  const isPort = (at: number): boolean => {
+    PORT_DIGITS.lastIndex = at;
+    if (!PORT_DIGITS.test(text)) return false;
+    if (portEnd < at) {
+      PORT_END.lastIndex = at;
+      portEnd = PORT_END.exec(text)?.index ?? text.length;
+    }
+    const mark = text.charAt(portEnd);
+    return (
+      portEnd === text.length ||
+      ((mark === '?' || mark === '#') && portEnd > lastBadSegment)
+    );
+  };
+  const isRedactedAt = (at: number): boolean => {
+    REDACTED_AT.lastIndex = at;
+    return REDACTED_AT.test(text);
+  };
+
+  // The last of `/?#:[]` seen, and whether a head may end at the next `:`
+  // with what follows it as the user name: `//` there, or a `scheme:`.
+  let authorityEnd = -1;
+  let afterSlashes = false;
+  let afterScheme = false;
+  let schemeRun = -1;
+  for (let i = 0; i < lastAt; i += 1) {
+    const ch = text.charAt(i);
+    if (
+      ch === ':' &&
+      (afterSlashes || (afterScheme && authorityEnd < i - 1)) &&
+      !isRedactedAt(i + 1) &&
+      !isPort(i + 1)
+    ) {
+      return true;
+    }
+    if (AUTHORITY_END.has(ch)) {
+      afterSlashes =
+        ch === '/' &&
+        text.charAt(i - 1) === '/' &&
+        (i === 1 || (i > 1 && NOT_SCHEME_CHAR.test(text.charAt(i - 2))));
+      afterScheme =
+        ch === ':' &&
+        schemeRun !== -1 &&
+        SCHEME_START.test(text.charAt(schemeRun));
+      authorityEnd = i;
+    }
+    if (!SCHEME_CHAR.test(ch)) schemeRun = -1;
+    else if (schemeRun === -1) schemeRun = i;
+  }
+  return false;
+}
 
 // Parsers add a trailing `=` to a bare name, so `[REDACTED]=` is still clean.
 const isRedactedValue = (value: string): boolean => {
-  const bare = value.replace(/=+$/, '');
+  // A backward scan, not /=+$/: that is retried from every `=` of a long run.
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 61) end -= 1;
+  const bare = value.slice(0, end);
   return (
     bare === '' ||
     bare === REDACTED ||
@@ -508,7 +627,7 @@ function hasResidualSecret(text: string): boolean {
     // Every password shape ends at an `@`, so only the text up to the last
     // one is scanned; that keeps long text with none (or none late) cheap.
     const lastAt = layer.lastIndexOf('@');
-    if (lastAt !== -1 && PASSWORD_URL.test(layer.slice(0, lastAt + 1))) {
+    if (lastAt !== -1 && showsPasswordUrl(layer.slice(0, lastAt + 1))) {
       return true;
     }
     if (showsSecretPair(layer)) return true;
@@ -586,8 +705,10 @@ export function redactHeadersForLog(
 export function redactQueryForLog(query: unknown, depth = 0): unknown {
   if (depth > MAX_NESTING) return REDACTED;
   if (typeof query === 'string') {
-    const redacted = redactEmbedded(query, 1);
-    return hasResidualSecret(redacted) ? REDACTED : redacted;
+    return redactCapped(query, (text) => {
+      const redacted = redactEmbedded(text, 1);
+      return hasResidualSecret(redacted) ? REDACTED : redacted;
+    });
   }
   if (Array.isArray(query)) {
     return query.map((item) => redactQueryForLog(item, depth + 1));
@@ -600,6 +721,12 @@ export function redactQueryForLog(query: unknown, depth = 0): unknown {
     // and one holding several pairs is logged with those pairs redacted.
     if (isSensitiveQueryKey(key)) {
       out[loggedName(key)] = REDACTED;
+      continue;
+    }
+    // A name is not cut as a URL is: its value may be the secret of a pair
+    // the dropped part of the name ends with, so neither is logged.
+    if (key.length > MAX_LOGGED_TEXT_LENGTH) {
+      out[TRUNCATED] = REDACTED;
       continue;
     }
     const name = redactParamName(key, 1);

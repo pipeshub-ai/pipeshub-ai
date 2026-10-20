@@ -110,6 +110,7 @@ from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.streaming import create_stream_record_response
+from app.utils.time_conversion import datetime_to_epoch_ms
 
 
 # Pagination/constants
@@ -149,6 +150,8 @@ ISSUE_SEARCH_FIELDS: list[str] = [
     "creator", "reporter", "assignee", "created", "updated",
     "issuetype", "project", "parent", "attachment", "security",
     "issuelinks",
+    # When the issue was resolved, and when it is due: shown with its status.
+    "resolutiondate", "duedate",
 ]
 
 DC_EPIC_LINK_FIELD_NAME = "Epic Link"
@@ -163,7 +166,7 @@ PLACEHOLDER_REVISION_PREFIX: str = "placeholder:"
 ANCESTOR_STUB_FIELDS: list[str] = [
     "summary", "status", "priority", "issuetype",
     "project", "parent", "created", "updated",
-    "creator", "reporter", "assignee",
+    "creator", "reporter", "assignee", "resolutiondate", "duedate",
 ]
 
 
@@ -3986,6 +3989,8 @@ class JiraDataCenterConnector(BaseConnector):
             priority=issue_data["priority"],
             status=issue_data["status"],
             source_status=issue_data.get("source_status"),
+            resolved_at=issue_data.get("resolved_at"),
+            due_date=issue_data.get("due_date"),
             type=issue_data["issue_type"],
             creator_email=issue_data["creator_email"],
             creator_name=issue_data["creator_name"],
@@ -4120,6 +4125,10 @@ class JiraDataCenterConnector(BaseConnector):
 
         created_at = self._parse_jira_timestamp(fields.get("created"))
         updated_at = self._parse_jira_timestamp(fields.get("updated"))
+        # Set when the issue is resolved and cleared when it is reopened.
+        resolved_at = self._parse_jira_timestamp(fields.get("resolutiondate")) or None
+        # A calendar date ("2026-06-10"), stored as midnight UTC.
+        due_date = datetime_to_epoch_ms(fields.get("duedate"), "%Y-%m-%d")
 
         return {
             "issue_id": issue_id,
@@ -4143,6 +4152,8 @@ class JiraDataCenterConnector(BaseConnector):
             "assignee_name": assignee_name,
             "created_at": created_at,
             "updated_at": updated_at,
+            "resolved_at": resolved_at,
+            "due_date": due_date,
         }
 
     def _held_issue_attempts(self) -> dict[str, int]:
@@ -4294,6 +4305,8 @@ class JiraDataCenterConnector(BaseConnector):
                     priority=priority,
                     status=status,
                     source_status=issue_data.get("source_status"),
+                    resolved_at=issue_data.get("resolved_at"),
+                    due_date=issue_data.get("due_date"),
                     type=issue_type,
                     creator_email=creator_email,
                     creator_name=creator_name,
@@ -5793,6 +5806,8 @@ class JiraDataCenterConnector(BaseConnector):
                 priority=issue_data["priority"],
                 status=issue_data["status"],
                 source_status=issue_data.get("source_status"),
+                resolved_at=issue_data.get("resolved_at"),
+                due_date=issue_data.get("due_date"),
                 type=issue_data.get("issue_type"),
                 creator_email=issue_data["creator_email"],
                 creator_name=issue_data["creator_name"],

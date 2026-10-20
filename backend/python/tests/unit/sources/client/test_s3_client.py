@@ -84,20 +84,27 @@ class TestS3RESTClientViaAccessKey:
         assert rest_client.bucket_name == "my-bucket"
         assert rest_client.session is None
 
-    @patch("app.sources.client.s3.s3.aioboto3.Session")
-    def test_create_session(self, mock_session_cls, rest_client):
-        mock_session_cls.return_value = MagicMock()
+    @pytest.mark.asyncio
+    async def test_create_session(self, rest_client: S3RESTClientViaAccessKey) -> None:
         session = rest_client.create_session()
-        assert session is not None
-        mock_session_cls.assert_called_once_with(
-            aws_access_key_id="AKID",
-            aws_secret_access_key="SECRET",
-            region_name="us-east-1",
-        )
+        assert session.get_config_variable("region") == "us-east-1"
+        credentials = await session.get_credentials()
+        assert credentials.access_key == "AKID"
+        assert credentials.secret_key == "SECRET"
 
-    @patch("app.sources.client.s3.s3.aioboto3.Session")
-    def test_get_session(self, mock_session_cls, rest_client):
-        mock_session_cls.return_value = MagicMock()
+    @pytest.mark.asyncio
+    async def test_session_builds_an_s3_client_for_the_region(self, rest_client: S3RESTClientViaAccessKey) -> None:
+        async with rest_client.get_session().create_client("s3") as s3:
+            assert s3.meta.region_name == "us-east-1"
+            assert s3.meta.service_model.service_name == "s3"
+
+    @patch("app.sources.client.s3.s3.AioSession")
+    def test_empty_keys_leave_the_default_credential_chain(self, mock_session_cls: MagicMock) -> None:
+        S3RESTClientViaAccessKey("", "", "eu-west-1").create_session()
+        mock_session_cls.return_value.set_credentials.assert_not_called()
+        mock_session_cls.return_value.set_config_variable.assert_called_once_with("region", "eu-west-1")
+
+    def test_get_session(self, rest_client):
         session = rest_client.get_session()
         assert session is not None
         # Second call returns cached
@@ -105,14 +112,14 @@ class TestS3RESTClientViaAccessKey:
         assert session is session2
 
     @pytest.mark.asyncio
-    @patch("app.sources.client.s3.s3.aioboto3.Session")
+    @patch("app.sources.client.s3.s3.AioSession")
     async def test_get_s3_client(self, mock_session_cls):
         mock_session = MagicMock()
-        mock_session.client.return_value = MagicMock()
+        mock_session.create_client.return_value = MagicMock()
         mock_session_cls.return_value = mock_session
         client = S3RESTClientViaAccessKey("AKID", "SECRET", "us-east-1")
         result = await client.get_s3_client()
-        mock_session.client.assert_called_once_with("s3")
+        mock_session.create_client.assert_called_once_with("s3")
 
     def test_get_bucket_name(self, rest_client):
         assert rest_client.get_bucket_name() == "my-bucket"
@@ -201,9 +208,7 @@ class TestS3Client:
         client = S3Client(rest_client)
         assert client.get_region_name() == "us-east-1"
 
-    @patch("app.sources.client.s3.s3.aioboto3.Session")
-    def test_get_session(self, mock_session_cls, rest_client):
-        mock_session_cls.return_value = MagicMock()
+    def test_get_session(self, rest_client):
         client = S3Client(rest_client)
         session = client.get_session()
         assert session is not None
@@ -302,15 +307,15 @@ class TestS3Client:
             )
 
     @pytest.mark.asyncio
-    @patch("app.sources.client.s3.s3.aioboto3.Session")
+    @patch("app.sources.client.s3.s3.AioSession")
     async def test_get_s3_client_via_wrapper(self, mock_session_cls, rest_client):
         """Cover S3Client.get_s3_client (line 137)."""
         mock_session = MagicMock()
-        mock_session.client.return_value = MagicMock()
+        mock_session.create_client.return_value = MagicMock()
         mock_session_cls.return_value = mock_session
         client = S3Client(rest_client)
         result = await client.get_s3_client()
-        mock_session.client.assert_called_once_with("s3")
+        mock_session.create_client.assert_called_once_with("s3")
 
     @pytest.mark.asyncio
     async def test_build_from_services_none_config_via_patched(self, logger, mock_config_service):

@@ -98,6 +98,26 @@ class TestClientConstruction:
         assert t.provider == "azure_direct"
         assert t.model_name == "gpt-5.6-luna"
 
+    def test_only_the_api_key_is_unwrapped_from_secretstr(self, monkeypatch) -> None:
+        captured: dict = {}
+
+        def _init(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        monkeypatch.setattr(AzureOpenAITransport, "__init__", _init)
+        llm = MagicMock()
+        llm.azure_endpoint = "https://example.openai.azure.com"
+        llm.deployment_name = "gpt-5.6-luna"
+        llm.openai_api_key = SecretStr("sk-secret")
+        llm.openai_api_version = "2024-10-01-preview"
+
+        AzureOpenAITransport.from_langchain_model(llm)
+
+        assert captured["api_key"] == "sk-secret"
+        assert captured["azure_endpoint"] == "https://example.openai.azure.com"
+        assert captured["deployment"] == "gpt-5.6-luna"
+        assert captured["api_version"] == "2024-10-01-preview"
+
     def test_non_azure_model_is_rejected_loudly(self) -> None:
         """Silently falling back would hide a misconfiguration behind LangChain."""
         llm = MagicMock()

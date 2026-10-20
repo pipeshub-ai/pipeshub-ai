@@ -3,8 +3,10 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  AlertDialog,
   Badge,
   Box,
+  Button,
   Callout,
   Flex,
   IconButton,
@@ -24,11 +26,18 @@ import type { AuthSchemaField, DocumentationLink, SchemaField } from '@/app/(mai
 import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import {
+  useWorkspaceDrawerNestedModalHost,
   WorkspaceRightPanel,
   WorkspaceRightPanelBodyPortalContext,
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
-import { ToolsetsApi, type RegistryToolsetRow, type ToolsetOauthConfigListRow } from '@/app/(main)/toolsets/api';
+import {
+  ToolsetsApi,
+  type BuilderSidebarToolset,
+  type RegistryToolsetRow,
+  type ToolsetOauthConfigListRow,
+} from '@/app/(main)/toolsets/api';
+import { CONNECTOR_SECRET_MASK } from '@/app/(main)/workspace/connectors/constants';
 import {
   apiErrorDetail,
   configureAuthFieldsForType,
@@ -73,10 +82,20 @@ export interface ActionSetupPanelProps {
   open: boolean;
   registryRow: RegistryToolsetRow | null;
   onOpenChange: (open: boolean) => void;
-  onCreated: () => void;
+  /** After a save: a new instance is passed in; an edit passes nothing. */
+  onCreated: (instance?: Record<string, unknown>) => void;
   onNotify?: (message: string) => void;
   /** After creating an OAuth-backed instance, prompt admins that users must authenticate. */
   onCreatedUserAuthNotice?: () => void;
+  /**
+   * `personal`: the user's own action, which only they see and use, signed in with their own
+   * OAuth app. `org` (default): an administrator's, for everyone.
+   */
+  scope?: 'org' | 'personal';
+  /** A personal action to edit instead of creating one. */
+  editInstance?: BuilderSidebarToolset | null;
+  /** After `editInstance` is deleted. */
+  onDeleted?: () => void;
 }
 
 export function ActionSetupPanel({
@@ -86,9 +105,15 @@ export function ActionSetupPanel({
   onCreated,
   onNotify,
   onCreatedUserAuthNotice,
+  scope = 'org',
+  editInstance = null,
+  onDeleted,
 }: ActionSetupPanelProps) {
   const { t } = useTranslation();
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
+  const personal = scope === 'personal';
+  const editing = personal && Boolean(editInstance?.instanceId);
+  const nestedModalHost = useWorkspaceDrawerNestedModalHost(editing);
   const toolsetType = registryRow?.name ?? '';
   const displayName = registryRow?.displayName || registryRow?.name || '';
 
@@ -107,6 +132,10 @@ export function ActionSetupPanel({
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const lastHydratedOauthIdRef = useRef<string | null>(null);
+  /** Editing: settings saved as secrets, shown blank and kept unless replaced. */
+  const [storedSecrets, setStoredSecrets] = useState<string[]>([]);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const authOptions = useMemo(
     () =>
@@ -118,19 +147,45 @@ export function ActionSetupPanel({
 
   useEffect(() => {
     if (!open || !registryRow) return;
-    setInstanceName(registryRow.displayName || registryRow.name || '');
+    setInstanceName(editInstance?.instanceName || registryRow.displayName || registryRow.name || '');
     setOauthAppName(displayName ? displayName : '');
-    setAuthType(authOptions[0] || 'NONE');
+    setAuthType((editInstance?.authType || authOptions[0] || 'NONE').toUpperCase());
     setFieldValues({});
+    setStoredSecrets([]);
+    setDeleteOpen(false);
     setOauthAppValue(NEW_OAUTH_VALUE);
     setClientId('');
     setClientSecret('');
     setError(null);
     setFieldErrors({});
     lastHydratedOauthIdRef.current = null;
-  }, [open, registryRow, authOptions]);
+  }, [open, registryRow, authOptions, editInstance?.instanceName, editInstance?.authType]);
+
+  // Editing starts from the action's saved settings; a secret comes back masked and stays as it is.
+  useEffect(() => {
+    const instanceId = editing ? editInstance?.instanceId : undefined;
+    if (!open || !instanceId) return;
+    let cancelled = false;
+    ToolsetsApi.getToolsetInstance(instanceId)
+      .then((inst) => {
+        if (cancelled) return;
+        const saved = (inst.auth && typeof inst.auth === 'object' ? inst.auth : {}) as Record<string, unknown>;
+        const masked = Object.keys(saved).filter((key) => saved[key] === CONNECTOR_SECRET_MASK);
+        setStoredSecrets(masked);
+        setFieldValues(Object.fromEntries(Object.entries(saved).filter(([key]) => !masked.includes(key))));
+        if (typeof saved.clientId === 'string') setClientId(saved.clientId);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(apiErrorDetail(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, editing, editInstance?.instanceId]);
 
   useEffect(() => {
+    // An edit keeps its auth type, and its saved settings were just loaded.
+    if (editing) return;
     setOauthAppValue(NEW_OAUTH_VALUE);
     setOauthAppName(displayName ? displayName : '');
     setFieldValues({});
@@ -138,7 +193,7 @@ export function ActionSetupPanel({
     setClientSecret('');
     setFieldErrors({});
     lastHydratedOauthIdRef.current = null;
-  }, [authType]);
+  }, [authType, editing]);
 
   useEffect(() => {
     if (!open || !toolsetType) return;
@@ -160,7 +215,8 @@ export function ActionSetupPanel({
   }, [open, toolsetType]);
 
   useEffect(() => {
-    if (!open || !toolsetType || !isOAuthType(authType)) {
+    // A personal action uses its owner's own OAuth app, never one of the organization's.
+    if (!open || !toolsetType || !isOAuthType(authType) || personal) {
       setOauthConfigs([]);
       return;
     }
@@ -181,7 +237,7 @@ export function ActionSetupPanel({
     return () => {
       cancelled = true;
     };
-  }, [open, toolsetType, authType]);
+  }, [open, toolsetType, authType, personal]);
 
   const authConfigSchema = useMemo(() => getToolsetAuthConfigFromSchema(schemaRaw), [schemaRaw]);
 
@@ -240,10 +296,13 @@ export function ActionSetupPanel({
 
   const toolNames = useMemo(() => toolNamesFromSchema(schemaRaw), [schemaRaw]);
 
+  /** A server named by host (a database) can't be held to a checked address: only admins add those. */
+  const adminOnly = personal && manageFields.some((f) => ['host', 'hostname'].includes(f.name.toLowerCase()));
+
   /** Only show the picker when the org already has OAuth apps for this toolset (otherwise flow is implicit "new app"). */
   const showOAuthAppPicker = useMemo(
-    () => isOAuthType(authType) && !oauthConfigsLoading && oauthConfigs.length > 0,
-    [authType, oauthConfigs.length, oauthConfigsLoading]
+    () => !personal && isOAuthType(authType) && !oauthConfigsLoading && oauthConfigs.length > 0,
+    [authType, oauthConfigs.length, oauthConfigsLoading, personal]
   );
 
   /** If the selected config disappears from the list, fall back to the new-app path. */
@@ -293,6 +352,9 @@ export function ActionSetupPanel({
 
   const schemaFieldForDisplay = useCallback(
     (f: AuthSchemaField): AuthSchemaField => {
+      if (storedSecrets.includes(f.name)) {
+        return { ...f, required: false, placeholder: t('workspace.actions.manage.secretPlaceholder') };
+      }
       const linked = showOAuthAppPicker && oauthAppValue !== NEW_OAUTH_VALUE;
       if (!linked) return f;
       const ln = f.name.toLowerCase();
@@ -306,7 +368,7 @@ export function ActionSetupPanel({
       }
       return f;
     },
-    [oauthAppValue, showOAuthAppPicker, t]
+    [oauthAppValue, showOAuthAppPicker, storedSecrets, t]
   );
 
   const runValidation = useCallback((): boolean => {
@@ -336,13 +398,18 @@ export function ActionSetupPanel({
       isOAuthType(upper) &&
       (!showOAuthAppPicker || oauthAppValue === NEW_OAUTH_VALUE)
     ) {
-      if (!oauthAppName.trim()) {
+      // A personal action's app has no name of its own: it isn't shared with anyone.
+      if (!personal && !oauthAppName.trim()) {
         next.oauthAppName = t('workspace.actions.oauthAppNameRequired');
       }
       if (!schemaFieldsToRender.some((f) => f.name.toLowerCase() === 'clientid') && !clientId.trim()) {
         next.clientId = t('workspace.actions.validation.fieldRequired', { field: t('workspace.actions.oauthClientId') });
       }
-      if (!schemaFieldsToRender.some((f) => f.name.toLowerCase() === 'clientsecret') && !clientSecret.trim()) {
+      if (
+        !schemaFieldsToRender.some((f) => f.name.toLowerCase() === 'clientsecret') &&
+        !clientSecret.trim() &&
+        !storedSecrets.includes('clientSecret')
+      ) {
         next.clientSecret = t('workspace.actions.validation.fieldRequired', {
           field: t('workspace.actions.oauthClientSecret'),
         });
@@ -384,8 +451,31 @@ export function ActionSetupPanel({
     oauthAppName,
     clientId,
     clientSecret,
+    personal,
+    storedSecrets,
     t,
   ]);
+
+  /** What a personal action stores: its toolset's setup fields, and for OAuth its own client. */
+  const personalSettings = useCallback((): Record<string, unknown> => {
+    const upper = (authType || 'NONE').toUpperCase();
+    const settings: Record<string, unknown> = {};
+    for (const f of schemaFieldsToRender) {
+      const v = fieldValues[f.name];
+      if (v !== undefined && v !== null && String(v).trim() !== '') {
+        settings[f.name] = typeof v === 'string' ? v.trim() : v;
+      }
+    }
+    if (isOAuthType(upper)) {
+      if (clientId.trim() && !('clientId' in settings)) settings.clientId = clientId.trim();
+      if (clientSecret.trim() && !('clientSecret' in settings)) settings.clientSecret = clientSecret.trim();
+    }
+    // Left blank, a saved secret is sent back masked, which keeps it.
+    for (const key of storedSecrets) {
+      if (!(key in settings)) settings[key] = CONNECTOR_SECRET_MASK;
+    }
+    return settings;
+  }, [authType, clientId, clientSecret, fieldValues, schemaFieldsToRender, storedSecrets]);
 
   const handleSubmit = useCallback(async () => {
     if (schemaLoading) {
@@ -402,6 +492,28 @@ export function ActionSetupPanel({
     setSaving(true);
     setError(null);
     try {
+      if (personal) {
+        if (editing && editInstance?.instanceId) {
+          await ToolsetsApi.updateToolsetInstance(editInstance.instanceId, {
+            instanceName: name,
+            authConfig: personalSettings(),
+          });
+          onNotify?.(t('workspace.actions.manage.saveSuccess'));
+          onCreated();
+        } else {
+          const created = await ToolsetsApi.createToolsetInstance({
+            instanceName: name,
+            toolsetType: toolsetType.toLowerCase(),
+            authType: upper,
+            authConfig: personalSettings(),
+            scope: 'personal',
+          });
+          onNotify?.(t('workspace.actions.personal.added'));
+          onCreated(created);
+        }
+        onOpenChange(false);
+        return;
+      }
       if (isOAuthType(upper) && showOAuthAppPicker && oauthAppValue !== NEW_OAUTH_VALUE) {
         const authConfig = buildOAuthAuthConfigForCreate(schemaFieldsToRender, fieldValues, {
           stripEmptyClientSecret: true,
@@ -481,7 +593,29 @@ export function ActionSetupPanel({
     t,
     toolsetType,
     schemaLoading,
+    personal,
+    editing,
+    editInstance?.instanceId,
+    personalSettings,
   ]);
+
+  const handleDelete = useCallback(async () => {
+    if (!editInstance?.instanceId) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await ToolsetsApi.deleteToolsetInstance(editInstance.instanceId);
+      onNotify?.(t('workspace.actions.personal.deleted'));
+      setDeleteOpen(false);
+      onDeleted?.();
+      onOpenChange(false);
+    } catch (e) {
+      setDeleteOpen(false);
+      setError(apiErrorDetail(e));
+    } finally {
+      setDeleting(false);
+    }
+  }, [editInstance?.instanceId, onDeleted, onNotify, onOpenChange, t]);
 
   const docLinksFromRegistry = useMemo(
     (): DocumentationLink[] => normalizeDocumentationLinks(registryRow?.documentationLinks),
@@ -519,6 +653,27 @@ export function ActionSetupPanel({
     <MaterialIcon name="bolt" size={20} color="var(--slate-12)" />
   );
 
+  // Shown with the admin-only notice too: another of the toolset's auth types may be one a member can add.
+  const authTypeField =
+    authOptions.length > 1 && !editing ? (
+      <FormField label={t('workspace.actions.authType')}>
+        <Select.Root value={authType} onValueChange={setAuthType} size="2">
+          <Select.Trigger style={{ width: '100%' }} />
+          <Select.Content
+            position="popper"
+            container={panelBodyPortal ?? undefined}
+            style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
+          >
+            {authOptions.map((opt) => (
+              <Select.Item key={opt} value={opt}>
+                {opt}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select.Root>
+      </FormField>
+    ) : null;
+
   return (
     <WorkspaceRightPanel
       open={open && Boolean(registryRow)}
@@ -526,10 +681,10 @@ export function ActionSetupPanel({
       title={t('workspace.actions.configPanelTitle')}
       icon={panelIcon}
       headerActions={headerActions}
-      primaryLabel={t('action.create')}
+      primaryLabel={editing ? t('action.save') : t('action.create')}
       secondaryLabel={t('action.cancel')}
       primaryLoading={saving}
-      primaryDisabled={saving}
+      primaryDisabled={saving || adminOnly}
       primaryTooltip={saving ? t('action.saving') : undefined}
       onPrimaryClick={() => void handleSubmit()}
       onSecondaryClick={() => onOpenChange(false)}
@@ -537,6 +692,13 @@ export function ActionSetupPanel({
       {schemaLoading ? (
         <Flex align="center" justify="center" py="8" style={{ width: '100%' }}>
           <LottieLoader variant="loader" size={48} showLabel label={t('agentBuilder.loadingSchema')} />
+        </Flex>
+      ) : adminOnly ? (
+        <Flex direction="column" gap="4" style={{ minWidth: 0, padding: '4px 0' }}>
+          {authTypeField}
+          <Callout.Root color="gray" variant="surface" size="1">
+            <Callout.Text size="2">{t('workspace.actions.personal.adminOnly', { name: displayName })}</Callout.Text>
+          </Callout.Root>
         </Flex>
       ) : (
         <Flex direction="column" gap="6" style={{ minWidth: 0, padding: '4px 0' }}>
@@ -643,24 +805,7 @@ export function ActionSetupPanel({
             </FormField>
           </div>
 
-          {authOptions.length > 1 ? (
-            <FormField label={t('workspace.actions.authType')}>
-              <Select.Root value={authType} onValueChange={setAuthType} size="2">
-                <Select.Trigger style={{ width: '100%' }} />
-                <Select.Content
-                  position="popper"
-                  container={panelBodyPortal ?? undefined}
-                  style={{ zIndex: WORKSPACE_DRAWER_POPPER_Z_INDEX }}
-                >
-                  {authOptions.map((opt) => (
-                    <Select.Item key={opt} value={opt}>
-                      {opt}
-                    </Select.Item>
-                  ))}
-                </Select.Content>
-              </Select.Root>
-            </FormField>
-          ) : null}
+          {authTypeField}
 
           {showOAuthAppPicker ? (
             <FormField label={t('workspace.actions.oauthAppLabel')}>
@@ -682,7 +827,7 @@ export function ActionSetupPanel({
             </FormField>
           ) : null}
 
-          {isOAuthType(authType) && (!showOAuthAppPicker || oauthAppValue === NEW_OAUTH_VALUE) ? (
+          {isOAuthType(authType) && !personal && (!showOAuthAppPicker || oauthAppValue === NEW_OAUTH_VALUE) ? (
             <Flex data-ph-action-oauth-app-name direction="column" gap="1">
               <FormField
                 label={t('workspace.actions.oauthAppNameLabel')}
@@ -726,7 +871,7 @@ export function ActionSetupPanel({
                 />
               ))}
             </Flex>
-          ) : !isNoneAuthType(authType) ? (
+          ) : !isNoneAuthType(authType) && !personal ? (
             <Callout.Root color="amber" variant="surface" size="1">
               <Callout.Text size="1">{t('agentBuilder.noCredentialFields')}</Callout.Text>
             </Callout.Root>
@@ -758,11 +903,14 @@ export function ActionSetupPanel({
               {!schemaFieldsToRender.some((f) => f.name.toLowerCase() === 'clientsecret') ? (
                 <FormField
                   label={t('workspace.actions.oauthClientSecret')}
-                  required
+                  required={!storedSecrets.includes('clientSecret')}
                   error={fieldErrors.clientSecret}
                 >
                   <TextField.Root
                     type="password"
+                    placeholder={
+                      storedSecrets.includes('clientSecret') ? t('workspace.actions.manage.secretPlaceholder') : undefined
+                    }
                     value={clientSecret}
                     onChange={(e) => {
                       setClientSecret(e.target.value);
@@ -795,19 +943,52 @@ export function ActionSetupPanel({
             </Box>
           ) : null}
 
-          <Callout.Root color="blue" variant="surface" size="1">
-            <Callout.Text size="1" style={{ color: 'var(--slate-11)' }}>
-              {t('workspace.actions.setupInfoCallout')}
-            </Callout.Text>
-          </Callout.Root>
+          {editing ? null : (
+            <Callout.Root color="blue" variant="surface" size="1">
+              <Callout.Text size="1" style={{ color: 'var(--slate-11)' }}>
+                {t(personal ? 'workspace.actions.personal.setupCallout' : 'workspace.actions.setupInfoCallout')}
+              </Callout.Text>
+            </Callout.Root>
+          )}
 
           {error ? (
             <Text size="2" color="red">
               {error}
             </Text>
           ) : null}
+
+          {editing ? (
+            <Flex direction="column" gap="2" align="start">
+              <Separator size="4" />
+              <Button type="button" variant="soft" color="red" onClick={() => setDeleteOpen(true)}>
+                <MaterialIcon name="delete" size={16} color="var(--red-11)" />
+                {t('workspace.actions.personal.delete')}
+              </Button>
+            </Flex>
+          ) : null}
         </Flex>
       )}
+
+      {editing && nestedModalHost ? (
+        <AlertDialog.Root open={deleteOpen} onOpenChange={setDeleteOpen}>
+          <AlertDialog.Content container={nestedModalHost} style={{ maxWidth: 440 }}>
+            <AlertDialog.Title>
+              {t('workspace.actions.personal.deleteTitle', { name: editInstance?.instanceName || displayName })}
+            </AlertDialog.Title>
+            <AlertDialog.Description size="2">{t('workspace.actions.personal.deleteBody')}</AlertDialog.Description>
+            <Flex gap="3" justify="end" mt="4">
+              <AlertDialog.Cancel>
+                <Button variant="soft" color="gray">
+                  {t('action.cancel')}
+                </Button>
+              </AlertDialog.Cancel>
+              <Button color="red" loading={deleting} onClick={() => void handleDelete()}>
+                {t('workspace.actions.personal.delete')}
+              </Button>
+            </Flex>
+          </AlertDialog.Content>
+        </AlertDialog.Root>
+      ) : null}
     </WorkspaceRightPanel>
   );
 }

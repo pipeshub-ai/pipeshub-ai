@@ -26,6 +26,8 @@ import type { Profile, SAML } from '@node-saml/passport-saml';
 const registeredSamlStrategy = () =>
   (passport as unknown as { _strategy(name: string): passport.Strategy | undefined })._strategy('saml');
 
+const WEB_HANDOFF = { client: 'web', codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM' };
+
 const humanAccountQuery = () =>
   ({
     select: sinon.stub().returns({
@@ -84,7 +86,7 @@ describe('createSamlRouter', () => {
       signInViaSAML: sinon.stub(),
       getSamlEmailKeyByOrgId: sinon.stub(),
       updateSAMLStrategy: sinon.stub(),
-      parseRelayState: sinon.stub().returns({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123' }),
+      parseRelayState: sinon.stub().returns({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123', ...WEB_HANDOFF }),
       getSamlEmail: sinon.stub().returns('test@example.com'),
     };
 
@@ -176,7 +178,7 @@ describe('createSamlRouter', () => {
       const server = app.listen(0);
       try {
         const { port } = server.address() as AddressInfo;
-        const relayState = Buffer.from(JSON.stringify({ orgId: profile.orgId })).toString('base64');
+        const relayState = Buffer.from(JSON.stringify({ orgId: profile.orgId, ...WEB_HANDOFF })).toString('base64');
         return await fetch(`http://127.0.0.1:${port}${path}`, {
           method,
           redirect: 'manual',
@@ -188,15 +190,18 @@ describe('createSamlRouter', () => {
       }
     };
 
-    it('completes sign-in from the callback and sets no express-session cookie', async () => {
+    it('completes sign-in from the callback with a one-time code and no cookies', async () => {
+      const handoff = container.get<any>('SamlDesktopHandoffService');
+      handoff.issue.resolves('b'.repeat(64));
+
       const response = await send('POST', '/signIn/callback');
 
       expect(response.status).to.equal(302);
-      expect(response.headers.get('location')).to.equal(`${mockConfig.frontendUrl}/auth/sign-in/samlSso/success`);
-      const cookies = response.headers.getSetCookie();
-      expect(cookies.some((c) => c.startsWith('accessToken='))).to.equal(true);
-      expect(cookies.some((c) => c.startsWith('refreshToken='))).to.equal(true);
-      expect(cookies.some((c) => c.startsWith('connect.sid='))).to.equal(false);
+      expect(response.headers.get('location')).to.equal(
+        `${mockConfig.frontendUrl}/auth/sign-in/samlSso/success?code=${'b'.repeat(64)}`,
+      );
+      expect(response.headers.getSetCookie()).to.deep.equal([]);
+      expect(handoff.issue.firstCall.args[1]).to.equal(WEB_HANDOFF.codeChallenge);
       const sessionService = container.get<SessionService>('SessionService');
       expect((sessionService.completeAuthentication as sinon.SinonStub).calledOnce).to.equal(true);
     });
@@ -371,8 +376,8 @@ describe('createSamlRouter', () => {
       const router = createSamlRouter(container);
       const routes = router.stack.filter((layer: any) => layer.route);
 
-      // GET /signIn, POST /signIn/callback, POST /desktop/exchange, POST /updateAppConfig
-      expect(routes.length).to.equal(4);
+      // GET /signIn, POST /signIn/callback, POST /exchange, POST /desktop/exchange, POST /updateAppConfig
+      expect(routes.length).to.equal(5);
     });
   });
 
@@ -618,7 +623,7 @@ describe('createSamlRouter', () => {
 
     it('POST /signIn/callback handler should redirect when no session token in relay state', async () => {
       const mockSamlController = container.get<any>('SamlController');
-      mockSamlController.parseRelayState.returns({ orgId: '507f1f77bcf86cd799439011' });
+      mockSamlController.parseRelayState.returns({ orgId: '507f1f77bcf86cd799439011', ...WEB_HANDOFF });
 
       const router = createSamlRouter(container);
       const handler = findRouteHandler(router, '/signIn/callback', 'post');
@@ -705,7 +710,7 @@ describe('SAML Routes - handler coverage', () => {
     mockSamlController = {
       signInViaSAML: sinon.stub().resolves(),
       getSamlEmailKeyByOrgId: sinon.stub().returns('email'),
-      parseRelayState: sinon.stub().returns({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123' }),
+      parseRelayState: sinon.stub().returns({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123', ...WEB_HANDOFF }),
       getSamlEmail: sinon.stub().returns('test@test.com'),
     }
 
@@ -850,7 +855,7 @@ describe('SAML Routes - handler coverage', () => {
     it('should call next when session token missing', async () => {
       const handler = findHandler('/signIn/callback', 'post')
       // Override parseRelayState to return no sessionToken
-      mockSamlController.parseRelayState.returns({ orgId: '507f1f77bcf86cd799439011' })
+      mockSamlController.parseRelayState.returns({ orgId: '507f1f77bcf86cd799439011', ...WEB_HANDOFF })
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
@@ -925,7 +930,7 @@ describe('SAML Routes - handler coverage', () => {
     it('should redirect with error when orgId missing and no default org', async () => {
       const handler = findHandler('/signIn/callback', 'post')
       // Override parseRelayState to return no orgId
-      mockSamlController.parseRelayState.returns({})
+      mockSamlController.parseRelayState.returns({ ...WEB_HANDOFF })
       // Override Org.findOne to return no org (so orgId stays undefined)
       ;(Org.findOne as sinon.SinonStub).returns({
         lean: sinon.stub().returns({ exec: sinon.stub().resolves(null) }),
@@ -1002,12 +1007,82 @@ describe('SAML Routes - handler coverage', () => {
     it('ignores a desktop flag without a valid challenge', async () => {
       const handler = findHandler('/signIn/callback', 'post')
       mockSamlController.parseRelayState.returns({ ...desktopRelay, codeChallenge: 'short' })
-      ;(OrgAuthConfig.findOne as sinon.SinonStub).resolves(null)
       const res = mockRes()
 
       await handler(samlReq(), res, sinon.stub())
 
-      expect(res.redirect.firstCall.args[0]).to.equal('http://localhost:3000/login?saml_error=saml_sso_disabled')
+      expect(res.redirect.firstCall.args[0]).to.equal('http://localhost:3000/login?saml_error=sign_in_restart')
+    })
+
+    it('refuses a PipesHub-started callback that never sent a PKCE challenge', async () => {
+      const handler = findHandler('/signIn/callback', 'post')
+      mockSamlController.parseRelayState.returns({ orgId: desktopRelay.orgId, spInitiated: true })
+      const res = mockRes()
+
+      await handler(samlReq(), res, sinon.stub())
+
+      expect(mockHandoffService.issue.called).to.be.false
+      expect(res.redirect.firstCall.args[0]).to.include('saml_error=sign_in_restart')
+    })
+
+    it('completes an IdP-initiated callback with a one-time code and no cookies', async () => {
+      const handler = findHandler('/signIn/callback', 'post')
+      mockSamlController.parseRelayState.returns({ orgId: desktopRelay.orgId })
+      mockIamService.getUserByEmail.resolves({
+        statusCode: 200,
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: desktopRelay.orgId, hasLoggedIn: true },
+      })
+      const res = mockRes()
+
+      await handler(samlReq(), res, sinon.stub())
+
+      expect(res.cookie.called).to.be.false
+      expect(mockHandoffService.issue.firstCall.args[1]).to.equal(undefined)
+      const url = new URL(res.redirect.firstCall.args[0])
+      expect(url.pathname).to.equal('/auth/sign-in/samlSso/success')
+      expect(url.searchParams.get('code')).to.equal('a'.repeat(64))
+      expect(url.search).to.not.include('accessToken')
+    })
+
+    it('refuses a web flow whose challenge is malformed', async () => {
+      const handler = findHandler('/signIn/callback', 'post')
+      mockSamlController.parseRelayState.returns({ orgId: desktopRelay.orgId, client: 'web', codeChallenge: 'short' })
+      const res = mockRes()
+
+      await handler(samlReq(), res, sinon.stub())
+
+      expect(mockHandoffService.issue.called).to.be.false
+      expect(res.redirect.firstCall.args[0]).to.include('saml_error=sign_in_restart')
+    })
+
+    it('hands a web sign-in a code on the success page without a state', async () => {
+      const handler = findHandler('/signIn/callback', 'post')
+      mockSamlController.parseRelayState.returns({ orgId: desktopRelay.orgId, ...WEB_HANDOFF })
+      mockIamService.getUserByEmail.resolves({
+        statusCode: 200,
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: desktopRelay.orgId, hasLoggedIn: true },
+      })
+      const res = mockRes()
+
+      await handler(samlReq(), res, sinon.stub())
+
+      expect(res.cookie.called).to.be.false
+      expect(mockHandoffService.issue.firstCall.args[1]).to.equal(WEB_HANDOFF.codeChallenge)
+      const url = new URL(res.redirect.firstCall.args[0])
+      expect(url.pathname).to.equal('/auth/sign-in/samlSso/success')
+      expect(url.searchParams.get('code')).to.equal('a'.repeat(64))
+      expect(url.searchParams.has('state')).to.be.false
+      expect(url.search).to.not.include('accessToken')
+    })
+
+    it('POST /exchange returns the redeemed tokens', async () => {
+      const handler = findHandler('/exchange', 'post')
+      const res = mockRes()
+
+      await handler({ body: { code: 'c', codeVerifier: 'v' } }, res, sinon.stub())
+
+      expect(mockHandoffService.redeem.calledWith('c', 'v')).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({ accessToken: 'at', refreshToken: 'rt' })
     })
 
     it('POST /desktop/exchange returns the redeemed tokens', async () => {
@@ -1024,7 +1099,7 @@ describe('SAML Routes - handler coverage', () => {
   describe('POST /signIn/callback - existing user success flow', () => {
     it('should not sign into an account that belongs to another org', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      mockSamlController.parseRelayState.returns({ orgId: '507f1f77bcf86cd799439011' })
+      mockSamlController.parseRelayState.returns({ orgId: '507f1f77bcf86cd799439011', ...WEB_HANDOFF })
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
         data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: '507f1f77bcf86cd799439099', hasLoggedIn: true },
@@ -1077,7 +1152,7 @@ describe('SAML Routes - handler coverage', () => {
       await handler(req, res, next)
 
       if (!next.called) {
-        expect(res.cookie.called).to.be.true
+        expect(res.cookie.called).to.be.false
         expect(res.redirect.calledOnce).to.be.true
       }
     })

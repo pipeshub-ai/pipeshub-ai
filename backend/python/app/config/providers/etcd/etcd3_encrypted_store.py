@@ -99,16 +99,16 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         )
 
         def serialize(value: Union[str, int, float, bool, Dict, list, None]) -> bytes:
-            self.logger.debug("🔄 Serializing value: %s (type: %s)", value, type(value))
             if value is None:
                 self.logger.debug("⚠️ Serializing None value to empty bytes")
                 return b""
             if isinstance(value, (str, int, float, bool)):
                 serialized = json.dumps(value).encode("utf-8")
-                self.logger.debug("✅ Serialized primitive value: %s", serialized)
-                return serialized
-            serialized = json.dumps(value, default=str).encode("utf-8")
-            self.logger.debug("✅ Serialized complex value: %s", serialized)
+            else:
+                serialized = json.dumps(value, default=str).encode("utf-8")
+            self.logger.debug(
+                "✅ Serialized %s value (%d bytes)", type(value).__name__, len(serialized)
+            )
             return serialized
 
         def deserialize(value: bytes) -> Union[str, int, float, bool, dict, list, None]:

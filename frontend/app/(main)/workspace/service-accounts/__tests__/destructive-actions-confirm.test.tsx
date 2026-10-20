@@ -82,6 +82,18 @@ vi.mock('../api', () => ({
 import ServiceAccountsPage from '../page';
 import { ServiceAccountTokensPanel } from '../components/service-account-tokens-panel';
 
+// jsdom has no matchMedia; useIsMobile needs it to resolve the touch-target size.
+Object.defineProperty(window, 'matchMedia', {
+  configurable: true,
+  writable: true,
+  value: (query: string) => ({
+    matches: false,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }),
+});
+
 const ACCOUNT = {
   id: '507f1f77bcf86cd799439012',
   slug: 'nightly-sync',

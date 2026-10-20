@@ -1,6 +1,9 @@
 import { Response, NextFunction } from 'express';
 import { User, Users } from '../schema/users.schema'; // Adjust path as needed
-import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import {
+  AuthenticatedServiceRequest,
+  AuthenticatedUserRequest,
+} from '../../../libs/middlewares/types';
 import mongoose from 'mongoose';
 import { UserDisplayPicture } from '../schema/userDp.schema';
 import {
@@ -93,6 +96,13 @@ import {
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 import { ProjectService } from '../../projects/services/project.service';
 import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
+
+// What the auth service reads from an email lookup: the session and refresh
+// tokens it issues, the sign-in checks, and the first-login update.
+export const USER_LOOKUP_FIELDS = '_id orgId email fullName role hasLoggedIn';
+
+export const USER_LOOKUP_EMAIL_MISMATCH_MESSAGE =
+  'This lookup token was issued for a different email address.';
 
 /**
  * Only the account's owner may change its email address.
@@ -656,17 +666,30 @@ export class UserController {
   }
 
   async checkUserExistsByEmail(
-    req: AuthenticatedUserRequest,
+    req: AuthenticatedServiceRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> {
     try {
-      const { email } = req.body;
+      // The lookup is not org-scoped, so the email comes from the token the
+      // auth service minted for this one sign-in, never from the request alone.
+      // A USER_LOOKUP token minted for a userId carries no email and is refused.
+      const tokenEmail = req.tokenPayload?.email;
+      const { email } = req.body as { email: string };
+      if (
+        typeof tokenEmail !== 'string' ||
+        tokenEmail.toLowerCase() !== email.toLowerCase()
+      ) {
+        throw new ForbiddenError(USER_LOOKUP_EMAIL_MISMATCH_MESSAGE);
+      }
 
       const users = await Users.find({
-        email: email,
+        email: tokenEmail.toLowerCase(),
         isDeleted: false,
-      });
+      })
+        .select(USER_LOOKUP_FIELDS)
+        .lean()
+        .exec();
 
       res.json(users);
       return;

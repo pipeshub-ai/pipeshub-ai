@@ -9,6 +9,12 @@ import axios from 'axios';
 import { AppConfig } from '../config/config';
 import { ConfigService } from '../services/cm.service';
 import { BuildInfo, getBuildInfo } from '../../../libs/utils/build-info.utils';
+import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
+import { buildProxyHeaders } from '../controllers/connector.controllers';
 
 const logger = Logger.getInstance({
   service: 'HealthStatus'
@@ -52,6 +58,7 @@ export function createHealthRouter(
   );
 
   const appConfig = container.get<AppConfig>('AppConfig');
+  const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const configService = ConfigService.getInstance();
   // Resolved here, at startup: from source it shells out to git once.
   const build = getBuildInfo();
@@ -323,6 +330,43 @@ export function createHealthRouter(
       });
     }
   });
+
+  // Whether the vector database has the memory to keep search fast. Kept off
+  // GET / because that route is the Helm probe target (5s timeout) and this one
+  // reads every collection's configuration. Admin-only: it reports index sizes.
+  // Advisory: it never changes any service's status.
+  router.get(
+    '/vector-db/memory',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    async (req: AuthenticatedUserRequest, res) => {
+      try {
+        const resp = await axios.get(
+          `${appConfig.connectorBackend}/health/vector-db/memory`,
+          {
+            headers: buildProxyHeaders(req),
+            timeout: 5000,
+            validateStatus: () => true,
+          },
+        );
+        const data: unknown = resp.data;
+        if (resp.status === 200 && typeof data === 'object' && data !== null) {
+          res.status(200).json(data);
+          return;
+        }
+        logger.warn('vector-db memory report returned non-200', {
+          status: resp.status,
+        });
+      } catch (error: unknown) {
+        logger.warn(
+          'vector-db memory report failed',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      res.status(502).json({ status: 'unknown' });
+    },
+  );
 
   return router;
 }

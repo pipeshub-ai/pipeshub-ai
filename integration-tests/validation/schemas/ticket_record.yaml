@@ -25,6 +25,9 @@ fields:
   delivery_status:
     required: false
     type: string
+  due_date:
+    required: false
+    type: integer
   is_email_hidden:
     required: false
     type: boolean
@@ -44,6 +47,9 @@ fields:
     required: false
     type: string
   reporter_source_timestamp:
+    required: false
+    type: integer
+  resolved_at:
     required: false
     type: integer
   source_status:

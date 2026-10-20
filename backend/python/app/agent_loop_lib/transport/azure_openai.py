@@ -120,16 +120,19 @@ class AzureOpenAITransport(OpenAITransport):
         Azure-only, and silently falling back would hide a misconfiguration
         behind a slower path.
         """
-        def _val(name: str) -> str:
+        def _setting(name: str) -> str:
+            return getattr(llm, name, None) or ""
+
+        def _secret(name: str) -> str:
             raw = getattr(llm, name, None)
             # Credentials arrive as pydantic SecretStr on the LangChain model.
-            secret = getattr(raw, "get_secret_value", None)
-            return (secret() if callable(secret) else raw) or ""
+            unwrap = getattr(raw, "get_secret_value", None)
+            return (unwrap() if callable(unwrap) else raw) or ""
 
-        endpoint = _val("azure_endpoint")
-        deployment = _val("deployment_name")
-        api_key = _val("openai_api_key")
-        api_version = _val("openai_api_version")
+        endpoint = _setting("azure_endpoint")
+        deployment = _setting("deployment_name")
+        api_key = _secret("openai_api_key")
+        api_version = _setting("openai_api_version")
         missing = [
             n for n, v in (
                 ("azure_endpoint", endpoint), ("deployment_name", deployment),

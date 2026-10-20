@@ -34,7 +34,7 @@ from app.config.constants.ai_models import (
 )
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.telemetry.setup import setup_telemetry
-from app.utils.logger import create_logger
+from app.utils.logger import create_logger, install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -561,9 +561,16 @@ class ModelManager:
             status.updated_at = time.time()
 
             def _load() -> Any:
+                import torch
                 from sentence_transformers import SentenceTransformer
 
-                load_kwargs: dict[str, Any] = {"device": self._device}
+                # transformers 5 loads weights at the dtype in the model's config, so a
+                # repo published in fp16/bf16 would no longer load in fp32 and its vectors
+                # would drift from the ones already stored.
+                load_kwargs: dict[str, Any] = {
+                    "device": self._device,
+                    "model_kwargs": {"dtype": torch.float32},
+                }
                 if trust_remote_code:
                     load_kwargs["trust_remote_code"] = True
 
@@ -689,6 +696,7 @@ def _format_embedding_vector(
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mark_process_non_dumpable()
+    install_log_redaction()
     app.state.model_manager = model_manager
     logger.info(
         "Starting embedding server warmup for %s (max_concurrency=%d, "

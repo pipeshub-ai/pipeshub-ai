@@ -824,6 +824,8 @@
     "like": "有幫助",
     "dislike": "沒有幫助",
     "copy": "複製",
+    "fork": "分叉對話",
+    "forkFromHere": "從此處分叉",
     "regenerate": "重新產生",
     "readAloud": "朗讀",
     "stopReading": "停止朗讀",
@@ -951,7 +953,9 @@
       "editComingSoonDescription": "我們正在開發編輯功能",
       "deprecatedTools": "此代理包含已不再提供的工具。請開啟代理建構器將其移除。",
       "openAgentBuilder": "開啟代理建構器",
-      "loadConversationFailed": "無法開啟此對話。請重新整理頁面後再試一次。"
+      "loadConversationFailed": "無法開啟此對話。請重新整理頁面後再試一次。",
+      "forkSuccess": "已從此處開始新對話",
+      "forkError": "無法分叉此對話，請重試。"
     },
     "queryModes": {
       "chat": {
@@ -2146,7 +2150,7 @@
       "title": "動作",
       "subtitle": "設定自動化動作，例如建立記錄、更新欄位或觸發工作流程。每個應用程式都有針對其支援功能量身打造的動作。",
       "yourActionsTitle": "您的動作",
-      "yourActionsSubtitle": "驗證並管理管理員為您的帳戶開放的動作。",
+      "yourActionsSubtitle": "登入管理員為您開放的動作，或新增您自己的動作。",
       "tabs": {
         "all": "全部",
         "configured": "已設定",
@@ -2166,7 +2170,7 @@
         "manage": "管理",
         "unavailable": "無法使用",
         "notConfigured": "未設定",
-        "adminSetupRequired": "需要管理員設定"
+        "add": "新增"
       },
       "trailingYourActions": "您的動作",
       "loading": "正在載入動作…",
@@ -2226,7 +2230,7 @@
         "refreshingList": "正在更新清單…",
         "searchInstances": "搜尋執行個體…",
         "teamInstanceInfo": "對貴組織的動作執行個體進行驗證。已驗證的動作可以加入您的代理程式。",
-        "personalInstanceInfo": "對貴組織的動作執行個體進行驗證。完成驗證後，您就可以在代理程式中使用這些動作。",
+        "personalInstanceInfo": "登入組織的動作或新增您自己的動作。登入後即可在代理程式中使用。",
         "instanceTabs": {
           "all": "全部（{{count}}）",
           "authenticated": "已驗證（{{count}}）",
@@ -2290,14 +2294,27 @@
         "numberMin": "請輸入不小於 {{min, number}} 的整數。",
         "numberMax": "請輸入不大於 {{max, number}} 的整數。"
       },
-      "adminRequiredToast": "只有管理員可以新增動作。請請管理員先設定此動作。",
-      "personalNonAdminHint": "標示為「未設定」的動作需由管理員先完成設定，您才能使用。",
       "toolRules": {
         "open": "工具核准",
         "title": "工具核准：{{name}}",
         "description": "當助理或代理程式想使用這些工具時會發生什麼。這些規則對您組織中的每個人都相同。",
         "readOnly": "只有管理員可以變更這些規則。",
         "toolsError": "無法載入此工具集的工具。"
+      },
+      "personal": {
+        "setupCallout": "只有您可以檢視和使用此動作，且無法新增到與組織共用的代理程式中。新增後請登入。",
+        "yours": "我的",
+        "addOwn": "新增我的",
+        "added": "動作已新增。",
+        "delete": "刪除動作",
+        "deleteTitle": "刪除 {{name}}？",
+        "deleteBody": "您對此動作的登入資訊和工具核准也會一併刪除。刪除後無法復原。",
+        "deleted": "動作已刪除。",
+        "adminOnly": "只有管理員可以新增 {{name}}：它透過主機名稱連線到伺服器。請要求管理員為您的組織新增。"
+      },
+      "enterprise": {
+        "userActionsTitle": "成員自己的動作",
+        "userActionsDescription": "檢視並移除組織成員為自己新增的動作。"
       }
     },
     "rightPanel": {
@@ -3898,6 +3915,12 @@
           "label": "Extraction 服務",
           "description": "基於 LLM 的文件分類與中繼資料擷取"
         }
+      },
+      "vectorDbMemory": {
+        "title": "搜尋索引超出了向量資料庫的記憶體",
+        "message": "搜尋索引需要約 {{needed}} GB 記憶體才能保持快速；向量資料庫只有約 {{available}} GB，因此搜尋會從磁碟讀取，多個搜尋同時執行時會更慢。",
+        "messageHost": "搜尋索引需要約 {{needed}} GB 記憶體才能保持快速；執行向量資料庫的伺服器總共只有約 {{available}} GB，因此搜尋會從磁碟讀取，多個搜尋同時執行時會更慢。",
+        "guide": "向量資料庫容量規劃指南"
       }
     },
     "tenants": {
@@ -4157,7 +4180,43 @@
       "disableTitle": "停用此服務帳戶？",
       "disableDescription": "{{name}} 會立即停止運作——包括它已持有的所有 Token，而不只是等到下次登入。在您重新啟用之前，使用這些 Token 的一切都會持續失敗。",
       "disableConfirm": "停用",
-      "memberBadge": "服務帳戶"
+      "memberBadge": "服務帳戶",
+      "manageDelegations": "可代表哪些人",
+      "delegations": {
+        "title": "代表他人執行操作",
+        "explainer": "可以允許此服務帳號代表指定的人員執行操作。此時它讀取的內容與該人員完全一致，所取得的權杖有效期為五分鐘。此處不能指定管理員。",
+        "unavailableTitle": "代表某個人行事屬於企業版功能",
+        "unavailableBody": "允許此服務帳號以指定同事的身分行事 —— 允許名單、以該人名義簽發的五分鐘權杖，以及每次嘗試的紀錄 —— 屬於企業版，本版本不包含該功能。",
+        "unavailableAvailableHere": "本版本包含：服務帳號本身、它對您授予的知識庫的自有存取權限，以及您可以簽發和撤銷的權杖。這足以滿足任何使用自身權限而非他人權限的整合。",
+        "addTitle": "允許代表某人",
+        "subjectLabel": "人員",
+        "subjectPlaceholder": "name@example.com",
+        "subjectHelp": "請輸入此服務帳號可代表的人員的電子郵件地址。",
+        "reasonLabel": "原因",
+        "reasonPlaceholder": "為什麼需要",
+        "reasonHelp": "將顯示給日後審核此清單的人。",
+        "addConfirm": "允許",
+        "listTitle": "可代表",
+        "none": "此服務帳號不能代表任何人，只能以自己的權限讀取。",
+        "loading": "載入中…",
+        "inactive": "不再可用",
+        "revoke": "移除",
+        "revokeTitle": "移除此權限？",
+        "revokeDescription": "此服務帳號將不能再代表 {{subject}}。",
+        "revokeSuccessTitle": "權限已移除",
+        "revokeErrorTitle": "無法移除權限",
+        "grantSuccessTitle": "權限已授予",
+        "grantErrorTitle": "無法授予權限",
+        "loadErrorTitle": "無法載入委派設定",
+        "logTitle": "近期活動",
+        "logHelp": "此清單的每次變更，以及此服務帳號每次請求代表他人的紀錄，包括被拒絕的請求。",
+        "logNone": "尚無紀錄。",
+        "outcomeIssued": "已允許",
+        "outcomeRefused": "已拒絕",
+        "outcomeGranted": "已新增權限",
+        "outcomeRevoked": "已移除權限",
+        "byAdmin": "由 {{admin}}"
+      }
     }
   },
   "filePreview": {
@@ -4517,7 +4576,8 @@
     "mcpAgentApprovals": "依代理程式設定工具核准",
     "limitSource": "選擇 {{name}} 的搜尋範圍",
     "limitSourceHint": "保持勾選整個來源，或取消勾選後勾選代理可以搜尋的資料夾和項目。",
-    "limitSourceCount": "僅限所選的 {{count}} 項"
+    "limitSourceCount": "僅限所選的 {{count}} 項",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} 是您的個人動作，無法新增到與組織共用或以服務帳戶執行的代理程式中。"
   },
   "recordView": {
     "sections": {

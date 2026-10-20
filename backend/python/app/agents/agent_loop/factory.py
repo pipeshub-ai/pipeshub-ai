@@ -105,6 +105,7 @@ from app.agent_loop_lib.transport.opik_tracing import (
 from app.agent_loop_lib.transport.prompt_cache import PromptCacheSettings, routing_key
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
+from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
 from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.artifact_store import build_artifact_store
 from app.agents.agent_loop.cancellation_transport import with_cancellation
@@ -174,6 +175,7 @@ from app.agents.agent_loop.output_cap_transport import (
     with_output_cap,
 )
 from app.agents.agent_loop.parked_turn import ASK_USER_QUESTION_RESUME_PREFIX
+from app.agents.agent_loop.period_summary import period_summary_hint
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.prompt_cache import cache_strategy_for
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
@@ -243,7 +245,7 @@ _DOMAIN_SHARED_NAV_TOOL_NAMES: frozenset[str] = frozenset({
 # Tools a deployment switch adds to the knowledge tools. Not counted toward
 # the lazy-disclosure threshold, so turning one on never hides web search or
 # connector tools behind fetch_tools for a request that was eager without it.
-_SWITCHED_TOOL_NAMES: frozenset[str] = frozenset({SEARCH_BY_ENTITIES_TOOL_NAME})
+_SWITCHED_TOOL_NAMES: frozenset[str] = frozenset({SEARCH_BY_ENTITIES_TOOL_NAME, TIMELINE_TOOL_NAME})
 
 # Matches nodes.py's ReAct/planner loop cap (`MAX_ITERATIONS` — see
 # tool_system.py / react_agent_node's `recursion_limit`); kept as one named
@@ -1132,6 +1134,7 @@ class PipesHubAgentFactory:
 
         # Answers an approval card: settles the stopped call before the loop starts.
         hooks.on(HookEvent.PRE_AGENT).use(resume_parked_call(context))
+        hooks.on(HookEvent.PRE_AGENT).use(period_summary_hint(context))
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))

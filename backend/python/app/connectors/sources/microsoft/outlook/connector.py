@@ -420,7 +420,7 @@ class OutlookConnector(BaseConnector):
     async def _get_credentials(self, connector_id: str) -> OutlookCredentials:
         """Load Outlook credentials from configuration."""
         try:
-            config_path = ConfigPaths.CONNECTOR_CONFIG.format(connector_id=connector_id)
+            config_path = ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=connector_id)
             config = await self.config_service.get_config(config_path)
 
             if not config:

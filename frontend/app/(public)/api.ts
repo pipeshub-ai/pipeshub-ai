@@ -203,6 +203,15 @@ export const AuthApi = {
     );
   },
 
+  /** Redeem the single-use code a browser SAML sign-in hands back on the success page. */
+  async exchangeSamlCode(code: string, codeVerifier?: string): Promise<SignInResponse> {
+    const { data } = await publicAuthClient.post<SignInResponse>(
+      '/api/v1/saml/exchange',
+      codeVerifier ? { code, codeVerifier } : { code },
+    );
+    return data;
+  },
+
   /** Redeem the single-use code a desktop SAML sign-in hands back by deep link. */
   async exchangeSamlDesktopCode(code: string, codeVerifier: string): Promise<SignInResponse> {
     const { data } = await publicAuthClient.post<SignInResponse>(

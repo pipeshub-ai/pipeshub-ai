@@ -16,6 +16,7 @@ from app.models.blocks import (
     IndexRange,
     Point,
     SemanticMetadata,
+    summary_with_captions,
 )
 
 
@@ -822,3 +823,19 @@ class TestBlocksContainerExtend:
 
         assert len(merged.blocks) == 2
         assert len(merged.block_groups) == 1
+
+
+class TestSummaryWithCaptions:
+    def test_a_caption_the_summary_lacks_leads_it(self) -> None:
+        assert summary_with_captions("Fees by plan.", ["Fees in 2024"]) == "Fees in 2024\nFees by plan."
+
+    def test_a_caption_already_in_the_summary_is_not_repeated(self) -> None:
+        assert summary_with_captions("Fees in 2024\nFees by plan.", ["Fees in 2024"]) == "Fees in 2024\nFees by plan."
+
+    def test_blank_and_repeated_captions_are_dropped_and_the_rest_stripped(self) -> None:
+        assert summary_with_captions("S", [" A ", "", None, "A", "B"]) == "A\nB\nS"
+
+    def test_no_summary_is_the_captions_alone(self) -> None:
+        assert summary_with_captions(None, ["A"]) == "A"
+        assert summary_with_captions("", None) == ""
+        assert summary_with_captions("S", []) == "S"

@@ -1713,6 +1713,32 @@ class TestProcessDocxDocument:
         assert events[0].event == "parsing_complete"
         assert events[1].event == "indexing_complete"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("record_name", "expected"),
+        [
+            ("report.docx", "report.docx"),
+            ("Report.DOCX", "Report.DOCX"),
+            ("legacy.doc", "legacy.doc.docx"),
+            ("export.json", "export.json.docx"),
+            ("untitled", "untitled.docx"),
+        ],
+    )
+    async def test_docling_is_given_a_docx_name(self, record_name: str, expected: str) -> None:
+        """Docling falls back to the extension, so a DOCX record must never reach it under another one."""
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = None
+
+        mock_instance = AsyncMock()
+        mock_instance.parse_document = AsyncMock(return_value={})
+        mock_instance.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_processor = mock_instance
+        await _collect(proc.process_docx_document(
+            record_name, "rec-1", 1, "upload", "org-1", b"docx_binary", "vr-1"
+        ))
+
+        mock_instance.parse_document.assert_awaited_once_with(expected, b"docx_binary")
+
 
 # ===========================================================================
 # Processor._enhance_tables_with_llm (lines 674-805)

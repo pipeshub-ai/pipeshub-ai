@@ -40,7 +40,7 @@ from app.models.blocks import (
     GroupType,
     IndexRange,
 )
-from app.utils.time_conversion import parse_timestamp, string_to_datetime
+from app.utils.time_conversion import datetime_to_epoch_ms, parse_timestamp, string_to_datetime
 
 from app.models.blocks import wire_block_group_parent_children
 
@@ -233,6 +233,8 @@ class MergeRequestsSync:
                 assignee=assignee_list,
                 merged_by=merged_by,
                 review_name=reviewer_names,
+                merged_at=datetime_to_epoch_ms(getattr(pr, "merged_at", None)),
+                closed_at=datetime_to_epoch_ms(getattr(pr, "closed_at", None)),
             )
             return RecordUpdate(
                 record=merge_request_record,

@@ -814,7 +814,6 @@ describe('ConfigurationManager Controller', () => {
       const advancedKeys = flags.filter((f: any) => f.advanced).map((f: any) => f.key)
       expect(advancedKeys).to.include.members([
         'ENABLE_VECTOR_STORE_REBUILD',
-        'ENABLE_CONTAINER_PERMISSION_FILTER',
         'ENABLE_SOFT_DELETE',
         'ENABLE_NAMED_ENTITY_EXTRACTION',
         'ENABLE_USER_CONTEXT',

@@ -480,7 +480,7 @@ class TestFetchPermissions:
         http_err.error_details = [{"reason": "insufficientFilePermissions"}]
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
         perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert is_fallback is False
+        assert is_fallback is True, "a failed read keeps the stored grants"
         assert perms == []
 
     @pytest.mark.asyncio
@@ -491,7 +491,7 @@ class TestFetchPermissions:
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
         perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
-        assert is_fallback is False
+        assert is_fallback is True, "a failed read keeps the stored grants"
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_file_generic_error(self, connector):
@@ -2374,7 +2374,7 @@ class TestFetchPermissionsFullCoverage:
         http_err.error_details = [{"reason": "insufficientFilePermissions"}]
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
         perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert is_fallback is False
+        assert is_fallback is True, "a failed read keeps the stored grants"
         assert perms == []
 
     @pytest.mark.asyncio
@@ -2385,7 +2385,7 @@ class TestFetchPermissionsFullCoverage:
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
         perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
-        assert is_fallback is False
+        assert is_fallback is True, "a failed read keeps the stored grants"
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_file_generic_error(self, connector):
@@ -4036,6 +4036,59 @@ class TestInheritedFileGrants:
         assert [p.email for p in perms] == ["direct@t.com"]
         assert is_fallback is False
         assert individually_shared == ["direct@t.com"]
+
+    @pytest.mark.asyncio
+    async def test_item_from_an_unsynced_drive_keeps_its_members(self, connector: GoogleDriveTeamConnector) -> None:
+        """No record group stands for the drive, so its members have nothing to inherit from."""
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "m1", "type": "user", "role": "organizer", "emailAddress": "manager@t.com",
+             "permissionDetails": [{"permissionType": "member", "role": "organizer", "inherited": True}]},
+            _drive_perm("p2", "direct@t.com", inherited=False, role="writer"),
+        ]})
+        meta = _make_file_metadata(parents=["sd-unsynced"])
+        meta["driveId"] = "sd-unsynced"
+
+        result = await connector._process_drive_item(
+            meta, "uid", "direct@t.com", "root-1", force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id is None
+        assert {(p.email, p.type) for p in result.new_permissions} == {
+            ("manager@t.com", PermissionType.OWNER),
+            ("direct@t.com", PermissionType.WRITE),
+        }
+        assert result.record.inherit_permissions is False
+        assert result.permissions_changed is True
+
+    @pytest.mark.asyncio
+    async def test_item_filed_in_its_drive_stores_only_direct_grants(self, connector: GoogleDriveTeamConnector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "m1", "type": "user", "role": "organizer", "emailAddress": "manager@t.com",
+             "permissionDetails": [{"permissionType": "member", "role": "organizer", "inherited": True}]},
+            _drive_perm("p2", "direct@t.com", inherited=False, role="writer"),
+        ]})
+        meta = _make_file_metadata(parents=["sd-1"])
+        meta["driveId"] = "sd-1"
+
+        result = await connector._process_drive_item(meta, "uid", "direct@t.com", "sd-1", is_shared_drive=True)
+
+        assert [p.email for p in result.new_permissions] == ["direct@t.com"]
+        assert result.record.inherit_permissions is True
+
+    @pytest.mark.asyncio
+    async def test_limited_access_item_from_an_unsynced_drive_still_drops_parent_folder_sharees(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            _drive_perm("p1", "parent-sharee@t.com", inherited=True),
+            _drive_perm("p2", "direct@t.com", inherited=False),
+        ]})
+
+        perms, _, _ = await connector._fetch_permissions(
+            "file-1", inherited_permissions_disabled=True, inherits_from_drive=False
+        )
+
+        assert [p.email for p in perms] == ["direct@t.com"]
 
 
 class TestAnyoneLinkKeepsTheReadList:

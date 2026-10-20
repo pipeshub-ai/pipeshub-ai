@@ -906,21 +906,8 @@ class TestGetDocumentIdByVirtualRecordId:
     """Tests for BlobStorage.get_document_id_by_virtual_record_id."""
 
     @pytest.mark.asyncio
-    async def test_found_by_filter(self):
+    async def test_found_by_key_without_the_field_match(self) -> None:
         graph_provider = AsyncMock()
-        graph_provider.get_nodes_by_filters = AsyncMock(
-            return_value=[{"documentId": "doc-1", "fileSizeBytes": 2048}]
-        )
-        bs = _make_blob_storage(graph_provider=graph_provider)
-
-        result = await bs.get_document_id_by_virtual_record_id("vr-1")
-        assert result["record_doc_id"] == "doc-1"
-        assert result["fileSizeBytes"] == 2048
-
-    @pytest.mark.asyncio
-    async def test_found_by_key_fallback(self):
-        graph_provider = AsyncMock()
-        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
         graph_provider.get_document = AsyncMock(
             return_value={"documentId": "doc-2", "fileSizeBytes": 1024}
         )
@@ -929,6 +916,24 @@ class TestGetDocumentIdByVirtualRecordId:
         result = await bs.get_document_id_by_virtual_record_id("vr-1")
         assert result["record_doc_id"] == "doc-2"
         assert result["fileSizeBytes"] == 1024
+        graph_provider.get_document.assert_awaited_once_with("vr-1", "virtualRecordToDocIdMapping")
+        graph_provider.get_nodes_by_filters.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_key_is_found_by_the_field(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value=None)
+        graph_provider.get_nodes_by_filters = AsyncMock(
+            return_value=[{"documentId": "doc-1", "fileSizeBytes": 2048}]
+        )
+        bs = _make_blob_storage(graph_provider=graph_provider)
+
+        result = await bs.get_document_id_by_virtual_record_id("vr-1")
+        assert result["record_doc_id"] == "doc-1"
+        assert result["fileSizeBytes"] == 2048
+        graph_provider.get_nodes_by_filters.assert_awaited_once_with(
+            "virtualRecordToDocIdMapping", {"virtualRecordId": "vr-1"}
+        )
 
     @pytest.mark.asyncio
     async def test_not_found_returns_none(self):
@@ -951,8 +956,8 @@ class TestGetDocumentIdByVirtualRecordId:
     @pytest.mark.asyncio
     async def test_node_without_document_id_returns_none(self):
         graph_provider = AsyncMock()
-        graph_provider.get_nodes_by_filters = AsyncMock(
-            return_value=[{"fileSizeBytes": 2048}]  # Missing documentId
+        graph_provider.get_document = AsyncMock(
+            return_value={"fileSizeBytes": 2048}  # Missing documentId
         )
         bs = _make_blob_storage(graph_provider=graph_provider)
 
@@ -1670,7 +1675,7 @@ class TestGetDocumentIdByVirtualRecordIdDeep:
     async def test_graph_provider_exception_propagates(self):
         """Exception from graph_provider propagates."""
         graph_provider = AsyncMock()
-        graph_provider.get_nodes_by_filters = AsyncMock(
+        graph_provider.get_document = AsyncMock(
             side_effect=RuntimeError("db error")
         )
         bs = _make_blob_storage(graph_provider=graph_provider)
