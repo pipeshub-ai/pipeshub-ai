@@ -159,6 +159,19 @@ class TestFinalAnswerTurn:
         assert "Do not call any more tools" in carrier.step_footer
         # Still sent: providers reject tool history without tool definitions.
         assert [schema.name for schema in final_call["tools"]] == ["run_query"]
+        assert final_call["tool_choice"] == "none"
+        assert [call["tool_choice"] for call in transport.calls[:-1]] == [None, None, None]
+
+    async def test_a_streamed_final_turn_also_asks_for_no_tool_calls(self) -> None:
+        transport = ScriptedTransport(script=[
+            *_tool_turns(2),
+            ScriptedStep(message=AssistantMessage(content=_ANSWER), text_chunks=[_ANSWER]),
+        ])
+        agent = _build(transport, _CountingTool(), max_turns=2)
+
+        _ = [event async for event in agent.stream(_GOAL)]
+
+        assert [call["tool_choice"] for call in transport.calls] == [None, None, "none"]
 
     async def test_the_instruction_never_poses_as_the_user_after_tool_output(self) -> None:
         # Azure OpenAI's content filter rejects an imperative user message
@@ -212,10 +225,13 @@ class TestFinalAnswerTurn:
         # The saved history must stay valid to send to a provider again.
         assert await _unanswered_tool_calls(agent) == []
 
-    async def test_text_written_beside_a_dropped_call_is_the_answer(self) -> None:
-        reply = "The members are Trent Smith, Tyler Hewitt and Annabella Warren. Let me double-check."
+    async def test_text_before_a_dropped_call_is_not_the_answer(self) -> None:
+        # A model that ignores "no more tools" says what it will look up next
+        # and calls a tool; that sentence is not an answer to the question.
+        reply = "I'll check the late-July call record for the exact search-route tuning settings."
         transport = ScriptedTransport(script=[
-            *_tool_turns(2),
+            _tool_turn(call_id="a"),
+            _tool_turn(call_id="b"),
             ScriptedStep(message=AssistantMessage(content=reply, tool_calls=[
                 ToolCall(id="ignored", name="run_query", arguments={"sql": "SELECT 2"}),
             ]), text_chunks=[reply]),
@@ -223,13 +239,14 @@ class TestFinalAnswerTurn:
         tool = _CountingTool()
         agent = _build(transport, tool, max_turns=2)
 
-        events = [event async for event in agent.stream(_GOAL)]
+        _ = [event async for event in agent.stream(_GOAL)]
 
+        result = agent.last_stream_result
         assert tool.executions == 2
-        # It was already streamed, so it must not be swapped for older narration.
-        assert agent.last_stream_result.output == reply
-        streamed = "".join(e.payload.get("delta", "") for e in events if e.event_type == EventType.TEXT_MESSAGE_CONTENT)
-        assert streamed.endswith(reply)
+        assert result.output != reply
+        # The same tail as an empty final reply.
+        assert result.success is False
+        assert "Exceeded max_turns=2" in result.error
         assert await _unanswered_tool_calls(agent) == []
 
     async def test_a_run_ending_call_in_the_final_turn_still_ends_the_run(self) -> None:

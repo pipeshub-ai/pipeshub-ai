@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.messages import Message
     from app.agent_loop_lib.core.responses import ModelResponse, StructuredResponse
     from app.agent_loop_lib.core.streaming import StreamEvent
-    from app.agent_loop_lib.core.tool_schema import ToolSchema
+    from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
     from app.agent_loop_lib.tools.base import ToolOutput
 
 __all__ = [
@@ -416,6 +416,8 @@ class OpikTracingTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> "ModelResponse":
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
@@ -435,6 +437,7 @@ class OpikTracingTransport(LLMTransport):
                 messages=messages, tools=tools, system=system, model=model,
                 thinking_budget=thinking_budget, effort=effort,
                 system_blocks=system_blocks,
+                **({"tool_choice": tool_choice} if tool_choice else {}),
             )
             self._record_completion(span, response)
             return response
@@ -467,9 +470,11 @@ class OpikTracingTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> AsyncIterator["StreamEvent"]:
         return self._traced_stream(
-            messages, tools, system, model, thinking_budget, effort, system_blocks,
+            messages, tools, system, model, thinking_budget, effort, system_blocks, tool_choice=tool_choice,
         )
 
     async def _traced_stream(
@@ -481,6 +486,8 @@ class OpikTracingTransport(LLMTransport):
         thinking_budget: int | None,
         effort: str | None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> AsyncIterator["StreamEvent"]:
         from app.agent_loop_lib.core.streaming import StreamCompleteEvent
 
@@ -504,6 +511,7 @@ class OpikTracingTransport(LLMTransport):
                 messages=messages, tools=tools, system=system, model=model,
                 thinking_budget=thinking_budget, effort=effort,
                 system_blocks=system_blocks,
+                **({"tool_choice": tool_choice} if tool_choice else {}),
             ):
                 if isinstance(event, StreamCompleteEvent):
                     final_response = event.response

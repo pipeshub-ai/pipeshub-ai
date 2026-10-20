@@ -650,9 +650,10 @@ class Agent:
         loop shape.
 
         `final_answer_only=True` is the wrap-up turn after `max_turns` (see
-        `loops.py::_finish_after_max_turns`): only calls to tools that end
-        the run are executed (see `_drop_non_terminal_tool_calls`), so the
-        reply's text or a terminal call is the answer. The request for that
+        `loops.py::_finish_after_max_turns`): the call asks for no tool calls
+        (`tool_choice="none"`), only calls to tools that end the run are
+        executed (see `_drop_non_terminal_tool_calls`), and the reply's text
+        is the answer only if it made no other call. The request for that
         answer rides on the latest tool result's loop footer, this call's
         copy only (see `add_loop_note`). A failed model call
         or a reply with no answer returns `continue` instead of failing the
@@ -720,6 +721,10 @@ class Agent:
         cut_off_parts = self._cut_off_reply_parts()
 
         llm_kwargs: dict = {}
+        if final_answer_only:
+            # Not tools=None: providers reject tool-call history without the
+            # definitions, and the unchanged list keeps the cached prefix.
+            llm_kwargs["tool_choice"] = "none"
         if spec.model.thinking_budget is not None:
             llm_kwargs["thinking_budget"] = spec.model.thinking_budget
         if spec.model.effort is not None:
@@ -867,8 +872,11 @@ class Agent:
             ))
 
         response_msg = response.message
+        dropped_calls = False
         if final_answer_only:
-            response_msg = await self._drop_non_terminal_tool_calls(response_msg, turn_index)
+            kept = await self._drop_non_terminal_tool_calls(response_msg, turn_index)
+            dropped_calls = kept is not response_msg
+            response_msg = kept
         self._usage.add(response.usage)
         if runtime.budget is not None:
             await runtime.budget.record_turn(
@@ -938,7 +946,9 @@ class Agent:
             # Joined as-is: the model resumes exactly where it was cut off,
             # often mid-word, so any separator would corrupt the text.
             output = "".join(cut_off_parts) + self.extract_text(response_msg)
-            if final_answer_only and not output.strip():
+            # Text written before a call it was told not to make is narration
+            # ("I'll check …"), not an answer.
+            if final_answer_only and (dropped_calls or not output.strip()):
                 return StepOutcome("continue")
             try:
                 await hooks.dispatch_guardrail_output(self._hooks, output or "", scope=turn_scope)
@@ -1142,12 +1152,12 @@ class Agent:
 
     async def _drop_non_terminal_tool_calls(self, msg: Message, turn_index: int) -> Message:
         """The final-answer turn still sends the tool list (providers reject
-        tool history without tool definitions), so the model may call a
-        tool anyway. Only calls that end the run (`TAG_LIFECYCLE_TERMINAL`,
-        e.g. `final_answer`, `task_complete`) are kept. The rest are removed
-        before the reply is recorded: history never holds a call without a
-        result, and text streamed beside a removed call becomes the answer
-        rather than being replaced by older narration."""
+        tool history without tool definitions), and a provider that cannot
+        take `tool_choice="none"` may call a tool anyway. Only calls that end
+        the run (`TAG_LIFECYCLE_TERMINAL`, e.g. `final_answer`,
+        `task_complete`) are kept. The rest are removed before the reply is
+        recorded, so history never holds a call without a result; the text
+        beside them is not taken as the answer (see `step`)."""
         registry = self._runtime.tool_registry
         kept: list[ToolCall] = []
         dropped: list[ToolCall] = []
