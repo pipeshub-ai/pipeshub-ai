@@ -267,7 +267,7 @@ class TestSchema:
         lambda: plan_dates_write(_doc(sourceTimestampOrigin=None), None, UPLOAD_ONLY),
         lambda: plan_revert(_content_doc()),
     ])
-    def test_every_write_passes_the_records_schema(self, make) -> None:  # noqa: ANN001
+    def test_every_write_passes_the_records_schema(self, make) -> None:
         import jsonschema
 
         from app.schema.arango.documents import record_schema
