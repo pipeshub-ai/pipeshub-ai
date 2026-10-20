@@ -20,7 +20,7 @@ from app.services.graph_db.common.record_visibility import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
     from app.connectors.core.base.connector.connector_service import BaseConnector
     from app.models.entities import FileRecord, Record
@@ -53,24 +53,30 @@ class FakeObjectStore:
     ``fail_page`` makes the listing fail on that page (0-based): ``"error"``
     returns an unsuccessful response, ``"raise"`` raises mid-listing.
     ``fail_prefix`` makes every listing of that prefix fail the same way.
+    ``before_page`` maps a page (0-based) to a change made, once, just before it is served.
     """
 
     objects: dict[str, StoredObject] = field(default_factory=dict)
     fail_page: int | None = None
     fail_prefix: str | None = None
     fail_mode: str = "error"
+    before_page: dict[int, Callable[[], None]] = field(default_factory=dict)
     clock: datetime = field(default_factory=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
 
     def tick(self) -> datetime:
         self.clock += timedelta(minutes=1)
         return self.clock
 
-    def put(self, key: str, text: str | None = None) -> None:
+    def now_ms(self) -> int:
+        return int(self.clock.timestamp() * 1000)
+
+    def put(self, key: str, text: str | None = None, modified: datetime | None = None) -> None:
+        """``modified`` dates the object as given, as a multipart upload is dated by its start."""
         # Distinct bodies by default: the connectors take equal content at a new key for a move.
         text = key if text is None else text
         now = self.tick()
         existing = self.objects.get(key)
-        self.objects[key] = StoredObject(key, text.encode(), now, existing.created if existing else now)
+        self.objects[key] = StoredObject(key, text.encode(), modified or now, existing.created if existing else now)
 
     def delete(self, key: str) -> None:
         del self.objects[key]
@@ -82,6 +88,9 @@ class FakeObjectStore:
         self.objects[new_key] = StoredObject(new_key, old.body, now, now)
 
     def page(self, prefix: str | None, start: int, size: int) -> tuple[list[StoredObject], int | None]:
+        change = self.before_page.pop(start // size, None)
+        if change:
+            change()
         if self.fail_page == start // size or (self.fail_prefix is not None and prefix == self.fail_prefix):
             if self.fail_mode == "raise":
                 raise ConnectionError("connection reset while listing")

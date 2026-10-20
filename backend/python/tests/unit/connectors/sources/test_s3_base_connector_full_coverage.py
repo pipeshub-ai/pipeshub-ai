@@ -1312,7 +1312,9 @@ class TestFolderFilter:
         assert self._processed(connector) == ["b.pdf"]
         saved = connector.record_sync_point.saved
         assert not any("last_sync_time" in v for v in saved.values())
-        assert {"continuation_token": "t1"} in saved.values()
+        assert saved["FILE/bucket/b1"]["continuation_token"] == "t1"
+        # The resumed run bookmarks by the start of the listing it resumes.
+        assert isinstance(saved["FILE/bucket/b1"]["listing_started_at"], int)
         # The read before listing and the scope cleanup; the failed listing looks for no deletions.
         assert connector.data_entities_processor.get_records_in_record_group.await_count == 2
         connector.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
@@ -1324,7 +1326,9 @@ class TestFolderFilter:
 
         await connector._sync_bucket("b1")
 
-        assert connector.record_sync_point.saved["FILE/bucket/b1"] == {"continuation_token": None}
+        saved = connector.record_sync_point.saved["FILE/bucket/b1"]
+        assert saved["continuation_token"] is None
+        assert "last_sync_time" not in saved
 
     def _page_then_listing_error(self, connector, processed):
         connector.sync_filters = _folder_filter(["tmp"], exclude=True)
@@ -1534,7 +1538,9 @@ class TestFailedObjectCheckpoint:
         with pytest.raises(RuntimeError, match="db"):
             await self._sync(connector)
 
-        assert connector.record_sync_point.saved["FILE/bucket/b1"] == {"continuation_token": None}
+        saved = connector.record_sync_point.saved["FILE/bucket/b1"]
+        assert saved["continuation_token"] is None
+        assert "last_sync_time" not in saved
 
     @pytest.mark.asyncio
     async def test_a_failed_token_clear_does_not_hide_the_save_error(self, connector):
