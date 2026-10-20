@@ -229,6 +229,9 @@ PIPESHUB_MODE=docker ./perftest.sh baseline 8 300
 | `PIPESHUB_QUERY_FILE` | `queries.txt` | the query set users rotate through |
 | `PIPESHUB_QUERY` | — | force a single query instead of the file |
 | `PIPESHUB_THINK_TIME` | `3` | seconds between a user's turns |
+| `PIPESHUB_QUERY_ORDER` | `random` | `unique` asks every question in the file once before any repeats |
+| `PIPESHUB_REASONING_EFFORT` | model default | sent as `reasoningEffort` on every turn; pin it for an A/B |
+| `PIPESHUB_WARMUP` | `0` | `1` sends every query once, unmeasured, before the load starts (`qprof.sh` sets it after a restart) |
 | `PIPESHUB_FLAME` | `cpu` | `cpu` (GIL held), `wall` (all threads, waiting included) or `off` |
 | `PIPESHUB_SEED` | the label | seeds each user's query order; set it alike to replay the same sequence across labels |
 | `PIPESHUB_STACK_CONTAINERS` | the compose project | space-separated containers the resource sampler reads |
@@ -273,6 +276,8 @@ elsewhere and use this only to collect:
 | `restart_query.sh` | restart only the query process, leaving the container up |
 | `locustfile_play.py` | optional locust scenario, if you prefer locust's latency percentiles |
 | `queries.txt` | the query set users draw from — **edit this for your corpus** |
+| `make_queries.py` | writes `queries_unique.txt`, one question per indexed record (Neo4j), for `--order unique` |
+| `wait_idle.sh` | blocks until the stack's CPU stays under a threshold (`qprof.sh --idle-cpu`) |
 | `aggregate.py` | rolls many runs' `summary.json` into one table + `matrix.csv` |
 | `_common.sh` | sourced by the rest: finds docker (with/without sudo), finds Python, checks the container is up |
 | `instr/` | the probes copied into the container, plus the report aggregators |

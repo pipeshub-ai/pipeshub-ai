@@ -69,7 +69,7 @@ def _print_resources(groups: dict[tuple, list[dict]]) -> None:
         for res in rows:
             for scope in ("process", "container"):
                 for name, s in (res.get(scope) or {}).items():
-                    if scope == "process" and name != "QUERY WORKERS TOTAL":
+                    if scope == "process" and name not in ("QUERY WORKERS TOTAL", "query (all processes)", "node"):
                         continue
                     names.setdefault(name, []).append(s)
         arm, workers, users = key

@@ -57,6 +57,7 @@ def main() -> int:
         "steady_state_req_min": _search(report, r"steady-state.*?\(" + NUM + r" req/min\)"),
         "p50_ms": _search(report, r"turn total.*?p50=\s*([0-9]+)", int),
         "p95_ms": _search(report, r"turn total.*?p95=\s*([0-9]+)", int),
+        "failed_answers": _search(report, r"failed answers\s*:\s*([0-9]+)", int),
         "requests": requests,
         "errors": errors,
         "error_rate": round(errors / requests, 4) if requests else None,

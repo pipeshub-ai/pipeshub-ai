@@ -152,7 +152,13 @@ require_target() {
 query_pid() {
     if [ -n "$PIPESHUB_QUERY_PID" ]; then echo "$PIPESHUB_QUERY_PID"; return 0; fi
     local pid=""
-    if command -v pgrep >/dev/null 2>&1; then
+    # Docker: the host pid of THIS container's query service. A host-wide pgrep
+    # picks whichever stack's query_main has the lowest pid when several run.
+    if [ "${PIPESHUB_MODE:-}" = "docker" ] && [ -n "${DOCKER:-}" ]; then
+        pid=$($DOCKER top "$CONTAINER" -eo pid,args 2>/dev/null \
+            | awk '/app[._]query_main/ && !/spawn_main/ {print $1}' | sort -n | head -1)
+    fi
+    if [ -z "$pid" ] && command -v pgrep >/dev/null 2>&1; then
         # Lowest match = the master. `query_rss_mb` sums its children and
         # py-spy runs with --subprocesses, so starting at the master covers the
         # workers; starting at a worker would miss its siblings.
@@ -180,9 +186,19 @@ log_mark() {
     fi
 }
 
+# PIPESHUB_LOG_CAPTURE names a file that `docker logs --follow --timestamps`
+# wrote during the run (perftest.sh sets it). Reading it instead of `docker logs`
+# after the fact matters: under indexing load the 20 MB rotation happens inside a
+# run, rotated files are not served back, and the window silently reads as zero.
 log_read() {
     local mark=$1
-    if [ "$PIPESHUB_MODE" = "docker" ]; then
+    if [ "$PIPESHUB_MODE" = "docker" ] && [ -n "${PIPESHUB_LOG_CAPTURE:-}" ] && [ -s "$PIPESHUB_LOG_CAPTURE" ]; then
+        local from to
+        from=$(date -u -d "@$mark" +%Y-%m-%dT%H:%M:%S)
+        to=$(date -u -d "@${2:-4102444800}" +%Y-%m-%dT%H:%M:%S)
+        awk -v f="$from" -v t="$to" '{ ts = substr($1, 1, 19) }
+            ts >= f && ts < t { sub(/^[^ ]+ /, ""); print }' "$PIPESHUB_LOG_CAPTURE"
+    elif [ "$PIPESHUB_MODE" = "docker" ]; then
         $DOCKER logs "$CONTAINER" --since "$mark" ${2:+--until "$2"} 2>&1
     elif [ -n "$PIPESHUB_QUERY_LOG" ] && [ -f "$PIPESHUB_QUERY_LOG" ]; then
         tail -c "+$((mark + 1))" "$PIPESHUB_QUERY_LOG" 2>/dev/null

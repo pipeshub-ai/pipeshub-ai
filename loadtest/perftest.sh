@@ -114,9 +114,40 @@ for line in sys.stdin.read().splitlines():
     print(json.dumps(body))
 ')
 
+# How long a single turn may take before curl gives up. The default matches the
+# old hard-coded value. Raise it when a config is slow enough that turns outlast
+# it — a truncated SSE stream still reports HTTP 200 (the status line is sent
+# before the body), so the only symptom is curl_exit=28 and a turn that never
+# reaches the server's completion marker.
+# PIPESHUB_MAX_TIME is the older spelling; existing run scripts still pass it,
+# and ignoring it would silently cap turns at 300s and record saturation as
+# errors.
+TURN_MAX_SECONDS=${PIPESHUB_TURN_MAX_SECONDS:-${PIPESHUB_MAX_TIME:-300}}
+
+# --- warm-up, outside the measured window. A freshly started query service
+# spends its first turns importing modules and filling caches: in one restarted
+# run a third of all CPU samples were importlib. PIPESHUB_WARMUP=1 sends every
+# query once, one at a time; the log and the server counters only start after.
+if [ "${PIPESHUB_WARMUP:-0}" != 0 ] && [ "$USERS" -gt 0 ]; then
+  say "== warm-up: ${#BODIES[@]} sequential turns (not measured)"
+  for qi in "${!BODIES[@]}"; do
+    w=$(curl -s -N -o /dev/null -w '%{http_code} %{time_total}' \
+      -X POST "$HOST/api/v1/conversations/stream" \
+      -H "Authorization: Bearer ${TOKENS[0]}" -H "Content-Type: application/json" \
+      -H "Accept: text/event-stream" -d "${BODIES[$qi]}" \
+      --max-time "$TURN_MAX_SECONDS" 2>/dev/null)
+    say "   query $qi: HTTP ${w% *}, ${w#* }s"
+  done
+fi
+
 say "== $LABEL: $USERS users, ${SECS}s, ${#QUERIES[@]} quer$([ ${#QUERIES[@]} -eq 1 ] && echo y || echo ies), host $HOST, mode $PIPESHUB_MODE"
 say "== started $(date -u +%H:%M:%SZ)"
 START=$(log_mark)
+if [ "$PIPESHUB_MODE" = "docker" ]; then
+  export PIPESHUB_LOG_CAPTURE="$OUTDIR/server.log"
+  $DOCKER logs --follow --timestamps --since "$START" "$CONTAINER" > "$PIPESHUB_LOG_CAPTURE" 2>&1 &
+  LOGCAP_PID=$!
+fi
 WALL_START=$(date -u +%s)
 
 # --- profile (py-spy attaches to the live process)
@@ -154,8 +185,10 @@ fi
 # One-off readings of `docker stats` disagreed by 20x within a single run,
 # so this samples kernel counters for the whole window and the report shows
 # the distribution rather than a spot value.
-if [ -x "$HERE/resource_sampler.sh" ]; then
-    "$HERE/resource_sampler.sh" "$OUTDIR" "$(( SECS + 10 ))" 2 >/dev/null 2>&1 &
+# Run through bash, not by exec bit: a copy that lost +x was skipped silently and
+# the report said only "no data".
+if [ -f "$HERE/resource_sampler.sh" ]; then
+    bash "$HERE/resource_sampler.sh" "$OUTDIR" "$(( SECS + 10 ))" 2 >/dev/null 2>&1 &
     RES_PID=$!
 fi
 
@@ -167,32 +200,34 @@ fi
   done ) &
 MEM_PID=$!
 
-# How long a single turn may take before curl gives up. The default matches the
-# old hard-coded value. Raise it when a config is slow enough that turns outlast
-# it — a truncated SSE stream still reports HTTP 200 (the status line is sent
-# before the body), so the only symptom is curl_exit=28 and a turn that never
-# reaches the server's completion marker.
-# PIPESHUB_MAX_TIME is the older spelling; existing run scripts still pass it,
-# and ignoring it would silently cap turns at 300s and record saturation as
-# errors.
-TURN_MAX_SECONDS=${PIPESHUB_TURN_MAX_SECONDS:-${PIPESHUB_MAX_TIME:-300}}
-
 # Query order per user, drawn from a PRNG seeded on (seed, user index): random
 # across users but reproducible, so two arms of an A/B see the SAME sequence
 # rather than merely the same distribution. The seed defaults to the label, so
 # arms with different labels need PIPESHUB_SEED set alike (qprof.sh does this).
+# PIPESHUB_QUERY_ORDER=unique instead deals the (shuffled) file out round-robin,
+# so no question is asked twice until the file runs out: a run that repeats
+# questions measures cache hits, not the cost of a new question.
 mapfile -t USER_SEQ < <("$PYTHON" -c '
 import random, sys
-label, users, nq, turns = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
-for u in range(1, users + 1):
-    rng = random.Random(f"{label}:{u}")
-    print(" ".join(str(rng.randrange(nq)) for _ in range(turns)))
-' "${PIPESHUB_SEED:-$LABEL}" "$USERS" "${#BODIES[@]}" 500)
+label, users, nq, turns, order = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
+if order == "unique":
+    deck = list(range(nq))
+    random.Random(label).shuffle(deck)
+    for u in range(users):
+        mine = deck[u::users] or deck
+        print(" ".join(str(mine[i % len(mine)]) for i in range(turns)))
+else:
+    for u in range(1, users + 1):
+        rng = random.Random(f"{label}:{u}")
+        print(" ".join(str(rng.randrange(nq)) for _ in range(turns)))
+' "${PIPESHUB_SEED:-$LABEL}" "$USERS" "${#BODIES[@]}" 500 "${PIPESHUB_QUERY_ORDER:-random}")
 
 # --- load: each user asks, reads the whole answer, thinks, repeats
 THINK=${PIPESHUB_THINK_TIME:-3}
 END=$(( $(date +%s) + SECS ))
-echo "user,turn,query_index,http_code,time_total,curl_exit" > "$OUTDIR/requests.csv"
+# ts_start/ts_end are epoch seconds; the resource graph uses them to plot how
+# many turns were in flight against CPU at the same moment.
+echo "user,turn,query_index,http_code,time_total,curl_exit,ts_start,ts_end" > "$OUTDIR/requests.csv"
 LOAD_PIDS=()
 for u in $(seq 1 "$USERS"); do
   # Simulated users cycle through the real identities; with one token this is
@@ -205,6 +240,7 @@ for u in $(seq 1 "$USERS"); do
       # Record the outcome of every request. Previously this was `-o /dev/null
       # || true`, so a run where every request 500'd was indistinguishable from
       # one that was merely slow.
+      t0=$(date +%s.%N)
       res=$(curl -s -N -o /dev/null -w '%{http_code} %{time_total}' \
         -X POST "$HOST/api/v1/conversations/stream" \
         -H "Authorization: Bearer $user_token" -H "Content-Type: application/json" \
@@ -216,7 +252,7 @@ for u in $(seq 1 "$USERS"); do
       # exactly the timeouts (28) this column exists to surface. Safe without a
       # guard because the script does not run under `set -e`.
       rc=$?
-      echo "$u,$turn,$qi,${res:-000 0} $rc" | tr ' ' ',' >> "$OUTDIR/requests.csv"
+      echo "$u,$turn,$qi,${res:-000 0} $rc ${t0%??????} $(date +%s.%3N)" | tr ' ' ',' >> "$OUTDIR/requests.csv"
       turn=$((turn + 1))
       sleep "$THINK"
     done ) &
@@ -235,6 +271,7 @@ WALL_SECS=$(( $(date -u +%s) - WALL_START ))
 LOAD_CUTOFF=$(( WALL_START + SECS ))
 kill "$MEM_PID" 2>/dev/null || true
 sleep 3
+[ -n "${LOGCAP_PID:-}" ] && kill "$LOGCAP_PID" 2>/dev/null
 
 say ""
 say "==================== THROUGHPUT ===================="
@@ -244,13 +281,20 @@ PIPESHUB_WINDOW_SECONDS=$WALL_SECS bash "$HERE/throughput.sh" "$START" "$FINISH"
 # turns run long reports a lower rate for the same work. When the two disagree,
 # the drain is doing the talking.
 if [ "$PIPESHUB_MODE" = "docker" ]; then
-  SS_TURNS=$(log_read "$START" "$LOAD_CUTOFF" | grep -ac 'AnswerFinalizer:' || true)
+  # Error answers excluded, as in throughput.sh.
+  SS_TURNS=$(log_read "$START" "$LOAD_CUTOFF" | grep -a 'AnswerFinalizer:' | grep -avc 'agent run failed' || true)
   say "  steady-state    : $SS_TURNS turns in the ${SECS}s load window  ($("$PYTHON" -c "print(f'{$SS_TURNS*60/$SECS:.1f}')") req/min)"
 fi
 
 say ""
 say "==================== REQUESTS (client-side) ===================="
 "$PYTHON" "$HERE/instr/agg_requests.py" "$OUTDIR/requests.csv" | tee -a "$REPORT"
+"$PYTHON" -c '
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1])))
+qs = [r["query_index"] for r in rows]
+print(f"  distinct questions: {len(set(qs))} of {len(qs)} requests ({len(qs) - len(set(qs))} repeats)")
+' "$OUTDIR/requests.csv" | tee -a "$REPORT"
 
 say ""
 say "==================== TURN LATENCY (per phase, ms) ===================="
@@ -297,8 +341,8 @@ if [ -s "$OUTDIR/resources.csv" ]; then
       --json "$OUTDIR/resources.json" 2>/dev/null | tee -a "$REPORT"
     grep -a '^skipped' "$OUTDIR/resources.log" 2>/dev/null | sed 's/^/  /' | tee -a "$REPORT"
     "$PYTHON" "$HERE/instr/plot_resources.py" "$OUTDIR/resources.csv" "$OUTDIR/resources.svg" \
-      "$LABEL — container memory" 2>/dev/null \
-      && say "   container memory graph: $OUTDIR/resources.svg"
+      "$LABEL — $USERS users, ${WORKERS:-${PIPESHUB_WORKERS:-?}} workers" "$OUTDIR/requests.csv" "$(nproc)" \
+      && say "   timeline graph (in-flight turns, host/container/service CPU and memory): $OUTDIR/resources.svg"
 else
     say "  (resource sampler produced no data)"
 fi
@@ -321,11 +365,18 @@ fi
 say ""
 say "==================== BACKEND CALLS (caller-side) ===================="
 if log_available; then
-  log_read "$START" "$FINISH" | grep -a BACKENDAGG \
-    | "$PYTHON" "$HERE/instr/agg_backends.py" 2>/dev/null | tee -a "$REPORT" \
+  FIN_TURNS=$(log_read "$START" "$FINISH" | grep -ac 'step=finalize' || true)
+  log_read "$START" "$FINISH" | grep -a 'BACKENDAGG\|BACKENDOP' \
+    | "$PYTHON" "$HERE/instr/agg_backends.py" "$FIN_TURNS" 2>/dev/null | tee -a "$REPORT" \
     || say "   (no backend data - run ./instrument.sh on to enable)"
 else
   say "   (no log source - set PIPESHUB_QUERY_LOG in .env; see .env.example)"
+fi
+
+say ""
+say "==================== TOOL WORK PER TURN (log markers) ===================="
+if log_available; then
+  log_read "$START" "$FINISH" | "$PYTHON" "$HERE/instr/agg_tools.py" --json "$OUTDIR/tools.json" | tee -a "$REPORT"
 fi
 
 # Machine-readable, so `aggregate.py` can roll many runs into one table without
@@ -339,6 +390,7 @@ fi
 # ~19MB of the ~23MB a run writes. Kept (not deleted) so a profile can be
 # re-analysed later, but not at full size 54 times over.
 [ -s "$OUTDIR/cpu.raw" ] && gzip -f "$OUTDIR/cpu.raw" 2>/dev/null || true
+[ -s "$OUTDIR/server.log" ] && gzip -f "$OUTDIR/server.log" 2>/dev/null || true
 
 say ""
 say "== done. full report: $REPORT"
