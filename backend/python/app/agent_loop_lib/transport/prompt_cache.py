@@ -25,6 +25,8 @@ LangChain and SDK types, so both transport families apply the same rules:
   a ``cache_control`` for Claude and drops it for upstreams without one, and
   routes by ``prompt_cache_key``. Claude also needs one on the last message,
   or no turn reads the history before it.
+- xAI caches every request automatically and routes by ``prompt_cache_key``
+  (its ``x-grok-conv-id``); that key is all it gets.
 - A parameter a host rejects anyway is remembered for the process
   (``RejectedCacheParams``), and later requests go without it.
 """
@@ -53,6 +55,7 @@ AZURE_OPENAI_HOSTS = (".openai.azure.com", ".cognitiveservices.azure.com")
 # only OpenAI's own model names get OpenAI's cache parameters there.
 FOUNDRY_HOSTS = (".services.ai.azure.com", ".models.ai.azure.com")
 OPENROUTER_HOSTS = ("openrouter.ai",)
+KEY_ROUTED_HOSTS = ("api.x.ai",)
 _OPENAI_MODEL = re.compile(r"^(gpt-|o\d)", re.IGNORECASE)
 _GPT_VERSION = re.compile(r"^gpt-(\d+)(?:\.(\d+))?(?:-|$)", re.IGNORECASE)
 _FIRST_BREAKPOINT_VERSION = (5, 6)
@@ -176,14 +179,17 @@ def openai_cache_plan(
     *, model: str | None, base_url: str | None, settings: PromptCacheSettings, scope: CacheScope,
     refused: frozenset[str] = frozenset(),
 ) -> OpenAICachePlan | None:
-    """The cache parameters of a request to OpenAI, Azure OpenAI or OpenRouter,
-    less any in ``refused``; None for any other host or model, or when nothing
-    is left."""
+    """The cache parameters of a request in OpenAI's format (OpenAI, Azure
+    OpenAI, OpenRouter, xAI), less any in ``refused``; None for any other host
+    or model, or when nothing is left."""
     host = _host(base_url)
     if not settings.enabled:
         return None
     if host is not None and _matches(host, OPENROUTER_HOSTS):
         return _openrouter_plan(model, settings, scope, refused)
+    if host is not None and _matches(host, KEY_ROUTED_HOSTS):
+        plan = OpenAICachePlan({OPENAI_KEY_PARAM: scope.key(settings.routing_shards)}).without(refused)
+        return None if plan.empty else plan
     if not _openai_cache_target(model, host):
         return None
     breakpoints = explicit_breakpoints(model)

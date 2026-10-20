@@ -20,6 +20,7 @@ from app.agents.agent_loop.prompt_cache import (
     OpenAICacheStrategy,
     cache_strategy_for,
     cache_target,
+    forget_cache_params,
 )
 
 if TYPE_CHECKING:
@@ -131,15 +132,24 @@ class TestOpenAI:
         assert "prompt_cache_breakpoint" in strategy.sent_params
 
     def test_a_refused_parameter_is_left_out_of_the_next_strategy(self) -> None:
-        REJECTED_CACHE_PARAMS.record("gpt-5.4", None, {"prompt_cache_retention"})
+        forget_cache_params(_openai(), "gpt-5.4", frozenset({"prompt_cache_retention"}))
         assert _strategy(_openai()).finalize([])[1] == {"prompt_cache_key": KEY}
         REJECTED_CACHE_PARAMS.record("gpt-6.1-sol", "https://acme.openai.azure.com", {"prompt_cache_breakpoint"})
         strategy = _strategy(_azure(deployment="gpt-6.1-sol"), model_name="gpt-6.1-sol")
         assert strategy.sent_params == {"prompt_cache_key"}
 
     def test_everything_refused_means_no_caching(self) -> None:
-        REJECTED_CACHE_PARAMS.record("gpt-5.4", None)
+        forget_cache_params(_openai(), "gpt-5.4")
         assert isinstance(_strategy(_openai()), NoCacheStrategy)
+
+    def test_xai_is_named_by_its_own_endpoint_and_gets_the_key_only(self) -> None:
+        from langchain_xai import ChatXAI
+
+        llm = ChatXAI(model="grok-4.7", api_key="test")
+        assert cache_target(llm, "grok-4.7").base_url.startswith("https://api.x.ai")
+        strategy = _strategy(llm, model_name="grok-4.7")
+        assert strategy.finalize([])[1] == {"prompt_cache_key": KEY}
+        assert strategy.sent_params == {"prompt_cache_key"}
 
 
 class TestBedrock:

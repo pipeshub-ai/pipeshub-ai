@@ -69,9 +69,11 @@ def cache_target(chat_model: Any, model_name: str = "") -> CacheTarget:  # noqa:
             getattr(chat_model, "azure_endpoint", None),
         )
     if names & {"BaseChatOpenAI", "ChatOpenAI"}:
+        # A subclass for another provider (ChatXAI) keeps its endpoint off
+        # `openai_api_base`; the client it built knows where it sends.
         return CacheTarget(
             "openai", _first(model_name, getattr(chat_model, "model_name", None)),
-            getattr(chat_model, "openai_api_base", None),
+            _first(getattr(chat_model, "openai_api_base", None), _client_base_url(chat_model)) or None,
         )
     return CacheTarget("none", model_name, None)
 
@@ -145,3 +147,8 @@ _BUILDERS: dict[str, Callable[[CacheTarget, PromptCacheSettings, CacheScope], Ca
 
 def _first(*values: str | None) -> str:
     return next((value for value in values if value), "")
+
+
+def _client_base_url(chat_model: Any) -> str | None:  # noqa: ANN401 - any LangChain chat model
+    base_url = getattr(getattr(chat_model, "root_client", None), "base_url", None)
+    return str(base_url) if base_url else None

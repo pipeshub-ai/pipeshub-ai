@@ -293,6 +293,16 @@ class TestOpenRouterClaude:
         assert len(_breakpoints(body)) == 2
 
 
+class TestXAIKey:
+    async def test_chat_xai_sends_the_key(self, endpoint: Any) -> None:  # noqa: ANN401
+        from langchain_xai import ChatXAI
+
+        llm = ChatXAI(model="grok-4.7", api_key="test", xai_api_base=endpoint.url, max_retries=0)
+        await _send(llm, OpenAICacheStrategy(OpenAICachePlan({"prompt_cache_key": "k"})))
+        assert endpoint.last["prompt_cache_key"] == "k"
+        assert endpoint.last["messages"][0] == {"role": "system", "content": f"{STABLE}\n\n{VOLATILE}"}
+
+
 def _bedrock(model_id: str) -> tuple[Any, MagicMock]:
     from langchain_aws import ChatBedrockConverse
 
