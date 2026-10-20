@@ -141,7 +141,6 @@ MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
         ))
         .add_filter_field(CommonFields.folder_paths_filter("bucket"))
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
-        .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)

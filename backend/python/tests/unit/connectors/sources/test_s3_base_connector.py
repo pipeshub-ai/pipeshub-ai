@@ -322,14 +322,8 @@ class TestDateFiltersExtended:
         obj = {"Key": "file.txt", "LastModified": now}
         past_ms = int((now.timestamp() - 3600) * 1000)
         future_ms = int((now.timestamp() + 3600) * 1000)
-        assert s3_connector._pass_date_filters(obj, past_ms, future_ms, None, None) is True
+        assert s3_connector._pass_date_filters(obj, past_ms, future_ms) is True
 
-    def test_pass_date_filters_all_filters_pass(self, s3_connector):
-        now = datetime.now(timezone.utc)
-        obj = {"Key": "file.txt", "LastModified": now}
-        past_ms = int((now.timestamp() - 3600) * 1000)
-        future_ms = int((now.timestamp() + 3600) * 1000)
-        assert s3_connector._pass_date_filters(obj, past_ms, future_ms, past_ms, future_ms) is True
 
 
 # ===========================================================================
@@ -723,7 +717,8 @@ class TestRunSyncExtended:
         s3_connector.data_source.list_buckets = AsyncMock(
             return_value=_make_response(False, error="err")
         )
-        await s3_connector.run_sync()
+        with pytest.raises(ConnectionError, match="err"):
+            await s3_connector.run_sync()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
@@ -2430,7 +2425,7 @@ class TestProcessS3ObjectAdvanced:
 
 
 class TestGetDateFiltersWithValues:
-    def test_modified_and_created_filters(self, connector):
+    def test_the_created_filter_is_ignored(self, connector):
         mock_modified = MagicMock()
         mock_modified.is_empty.return_value = False
         mock_modified.get_datetime_iso.return_value = ("2025-01-01T00:00:00", "2025-06-01T00:00:00")
@@ -2442,11 +2437,9 @@ class TestGetDateFiltersWithValues:
             "modified": mock_modified,
             "created": mock_created,
         }.get(k))
-        ma, mb, ca, cb = connector._get_date_filters()
+        ma, mb = connector._get_date_filters()
         assert ma is not None
         assert mb is not None
-        assert ca is not None
-        assert cb is not None
 
     def test_partial_modified_after_only(self, connector):
         mock_filter = MagicMock()
@@ -2454,7 +2447,7 @@ class TestGetDateFiltersWithValues:
         mock_filter.get_datetime_iso.return_value = ("2025-03-01T00:00:00", None)
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(side_effect=lambda k: mock_filter if k == "modified" else None)
-        ma, mb, ca, cb = connector._get_date_filters()
+        ma, mb = connector._get_date_filters()
         assert ma is not None
         assert mb is None
 
@@ -2463,8 +2456,8 @@ class TestGetDateFiltersWithValues:
         mock_filter.is_empty.return_value = True
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(return_value=mock_filter)
-        ma, mb, ca, cb = connector._get_date_filters()
-        assert all(x is None for x in (ma, mb, ca, cb))
+        ma, mb = connector._get_date_filters()
+        assert all(x is None for x in (ma, mb))
 
 
 class TestRunSyncAdvanced:
@@ -2489,7 +2482,8 @@ class TestRunSyncAdvanced:
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(return_value=_resp(False, error="denied"))
-        await connector.run_sync()
+        with pytest.raises(ConnectionError, match="denied"):
+            await connector.run_sync()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
@@ -2497,7 +2491,9 @@ class TestRunSyncAdvanced:
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(return_value=_resp(True, {}))
-        await connector.run_sync()
+        # No "Buckets" key is a broken answer, not an account without buckets.
+        with pytest.raises(ConnectionError, match="no bucket list"):
+            await connector.run_sync()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)

@@ -30,6 +30,7 @@ from app.connectors.sources.s3.base_connector import (
 from app.connectors.sources.s3.connector import S3Connector
 from app.models.entities import FileRecord, Record, RecordType, User
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.notification.types import NotificationType
 
 
 @pytest.fixture()
@@ -45,7 +46,7 @@ def mock_dep():
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_records_in_record_group = AsyncMock(return_value=[])
-    proc.on_record_deleted = AsyncMock()
+    proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     u = User(
@@ -1139,7 +1140,7 @@ class TestProcessS3ObjectAdvanced:
 
 
 class TestGetDateFiltersWithValues:
-    def test_modified_and_created_filters(self, connector):
+    def test_the_created_filter_is_ignored(self, connector):
         mock_modified = MagicMock()
         mock_modified.is_empty.return_value = False
         mock_modified.get_datetime_iso.return_value = ("2025-01-01T00:00:00", "2025-06-01T00:00:00")
@@ -1151,11 +1152,9 @@ class TestGetDateFiltersWithValues:
             "modified": mock_modified,
             "created": mock_created,
         }.get(k))
-        ma, mb, ca, cb = connector._get_date_filters()
+        ma, mb = connector._get_date_filters()
         assert ma is not None
         assert mb is not None
-        assert ca is not None
-        assert cb is not None
 
     def test_partial_modified_after_only(self, connector):
         mock_filter = MagicMock()
@@ -1163,7 +1162,7 @@ class TestGetDateFiltersWithValues:
         mock_filter.get_datetime_iso.return_value = ("2025-03-01T00:00:00", None)
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(side_effect=lambda k: mock_filter if k == "modified" else None)
-        ma, mb, ca, cb = connector._get_date_filters()
+        ma, mb = connector._get_date_filters()
         assert ma is not None
         assert mb is None
 
@@ -1172,8 +1171,8 @@ class TestGetDateFiltersWithValues:
         mock_filter.is_empty.return_value = True
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(return_value=mock_filter)
-        ma, mb, ca, cb = connector._get_date_filters()
-        assert all(x is None for x in (ma, mb, ca, cb))
+        ma, mb = connector._get_date_filters()
+        assert all(x is None for x in (ma, mb))
 
 
 class TestRunSyncAdvanced:
@@ -1194,19 +1193,33 @@ class TestRunSyncAdvanced:
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_list_buckets_failure(self, mock_filters, connector):
+    @pytest.mark.parametrize("answer", [_resp(False, error="denied"), _resp(True, {}), _resp(True, None)])
+    async def test_a_failed_bucket_list_fails_the_sync(self, mock_filters, connector, answer):
+        # PP-117: the sync used to finish as if it had succeeded.
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
-        connector.data_source.list_buckets = AsyncMock(return_value=_resp(False, error="denied"))
-        await connector.run_sync()
+        connector.data_source.list_buckets = AsyncMock(return_value=answer)
+        connector.notify = AsyncMock()
+        connector._sync_bucket = AsyncMock()
+
+        with pytest.raises(ConnectionError, match="Failed to list"):
+            await connector.run_sync()
+
+        connector.notify.assert_awaited_once()
+        assert connector.notify.await_args.kwargs["type"] == NotificationType.CONNECTOR_SYNC_ERROR
+        connector._sync_bucket.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_no_buckets_found(self, mock_filters, connector):
+    async def test_an_account_without_buckets_finishes_cleanly(self, mock_filters, connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
-        connector.data_source.list_buckets = AsyncMock(return_value=_resp(True, {}))
+        connector.data_source.list_buckets = AsyncMock(return_value=_resp(True, {"Buckets": []}))
+        connector.notify = AsyncMock()
+
         await connector.run_sync()
+
+        connector.notify.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
@@ -1312,10 +1325,12 @@ class TestFolderFilter:
         assert self._processed(connector) == ["b.pdf"]
         saved = connector.record_sync_point.saved
         assert not any("last_sync_time" in v for v in saved.values())
-        assert {"continuation_token": "t1"} in saved.values()
+        assert saved["FILE/bucket/b1"]["continuation_token"] == "t1"
+        # The resumed run bookmarks by the start of the listing it resumes.
+        assert isinstance(saved["FILE/bucket/b1"]["listing_started_at"], int)
         # The read before listing and the scope cleanup; the failed listing looks for no deletions.
         assert connector.data_entities_processor.get_records_in_record_group.await_count == 2
-        connector.data_entities_processor.on_record_deleted.assert_not_awaited()
+        connector.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_failed_object_clears_the_resume_token(self, connector):
@@ -1324,7 +1339,9 @@ class TestFolderFilter:
 
         await connector._sync_bucket("b1")
 
-        assert connector.record_sync_point.saved["FILE/bucket/b1"] == {"continuation_token": None}
+        saved = connector.record_sync_point.saved["FILE/bucket/b1"]
+        assert saved["continuation_token"] is None
+        assert "last_sync_time" not in saved
 
     def _page_then_listing_error(self, connector, processed):
         connector.sync_filters = _folder_filter(["tmp"], exclude=True)
@@ -1365,13 +1382,13 @@ class TestFolderFilter:
         self._prepare(connector, {"reports/": []})
         processor = connector.data_entities_processor
         processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a, **kw: [_out_of_scope_record()])
-        processor.on_record_deleted = AsyncMock(side_effect=[Exception("graph down"), None])
+        processor.on_records_deleted_cascade = AsyncMock(side_effect=[Exception("graph down"), {"success": True}])
 
         await connector._sync_bucket("b1")
         await connector._sync_bucket("b1")
         await connector._sync_bucket("b1")
 
-        assert processor.on_record_deleted.await_count == 2
+        assert processor.on_records_deleted_cascade.await_count == 2
         # Two reads per sync, plus a scope cleanup until one succeeds.
         assert processor.get_records_in_record_group.await_count == 8
 
@@ -1394,7 +1411,7 @@ class TestFolderFilter:
         await connector._sync_bucket("b1")
 
         assert prefixes == [None]
-        connector.data_entities_processor.on_record_deleted.assert_not_awaited()
+        connector.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
 
 
 
@@ -1534,7 +1551,9 @@ class TestFailedObjectCheckpoint:
         with pytest.raises(RuntimeError, match="db"):
             await self._sync(connector)
 
-        assert connector.record_sync_point.saved["FILE/bucket/b1"] == {"continuation_token": None}
+        saved = connector.record_sync_point.saved["FILE/bucket/b1"]
+        assert saved["continuation_token"] is None
+        assert "last_sync_time" not in saved
 
     @pytest.mark.asyncio
     async def test_a_failed_token_clear_does_not_hide_the_save_error(self, connector):

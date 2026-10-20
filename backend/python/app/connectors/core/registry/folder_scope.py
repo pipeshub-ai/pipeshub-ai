@@ -171,13 +171,29 @@ async def _remove_records(
     reason: str,
     logger: logging.Logger,
 ) -> CleanupResult:
-    """Delete this connector's records in ``container_name`` whose path ``doomed`` picks."""
+    """Delete this connector's records in ``container_name`` whose path ``doomed`` picks.
+
+    The cascade delete, unlike ``on_record_deleted``, also removes the record's type
+    node and every edge. With the trash on, a record already in it is left for the purge.
+    """
+    from app.services.featureflag.platform_settings import is_soft_delete_enabled
+
+    soft_delete: bool | None = None
     removed = failed = 0
     async for record, path in _records_in(data_entities_processor, connector_id, container_name):
         if not doomed(record, path):
             continue
+        if soft_delete is None:
+            soft_delete = await is_soft_delete_enabled(data_entities_processor.config_service)
+        if soft_delete and record.is_deleted:
+            continue
         try:
-            await data_entities_processor.on_record_deleted(record.id)
+            result = await data_entities_processor.on_records_deleted_cascade(
+                [record.id], connector_id, cascade_children=False, include_trashed_roots=True,
+                soft_delete=soft_delete,
+            )
+            if not isinstance(result, dict) or result.get("success") is False or result.get("failed_count"):
+                raise RuntimeError(f"delete failed: {result}")
             removed += 1
         except Exception as e:  # noqa: BLE001 — one failed delete must not stop the rest
             failed += 1
@@ -333,20 +349,33 @@ async def remove_deselected_containers(
     stored = {g.get("externalGroupId") for g in groups if isinstance(g, dict)} - {None, ""}
     stale = sorted(name for name in stored if not name_passes_filter(saved, filter_name, name))
     for container_name in stale:
-        try:
-            result = await _remove_records(
-                data_entities_processor, connector_id, container_name, lambda record, path: True,
-                f"now that the {filter_name} filter leaves {container_name} out", logger,
-            )
-        except Exception as e:  # retried on the next sync
-            logger.warning(f"Could not read the records of de-selected {container_name}: {e}")
-            continue
-        if result.failed:
-            logger.warning(f"{result.failed} records of de-selected {container_name} could not be removed; retrying next sync")
-            continue
-        # The group goes last: while it stays, the next sync finds the container again.
-        if not await data_entities_processor.on_record_group_deleted(container_name, connector_id):
-            logger.warning(f"Could not remove the record group of de-selected {container_name}; retrying next sync")
+        await remove_container(
+            data_entities_processor, connector_id, container_name,
+            f"now that the {filter_name} filter leaves {container_name} out", logger,
+        )
+
+
+async def remove_container(
+    data_entities_processor: DataSourceEntitiesProcessor,
+    connector_id: str,
+    container_name: str,
+    reason: str,
+    logger: logging.Logger,
+) -> None:
+    """Delete every record of ``container_name``, then its record group; what fails is retried next sync."""
+    try:
+        result = await _remove_records(
+            data_entities_processor, connector_id, container_name, lambda record, path: True, reason, logger,
+        )
+    except Exception as e:  # retried on the next sync
+        logger.warning(f"Could not read the records of {container_name} to remove: {e}")
+        return
+    if result.failed:
+        logger.warning(f"{result.failed} records of {container_name} could not be removed; retrying next sync")
+        return
+    # The group goes last: while it stays, the next sync finds the container again.
+    if not await data_entities_processor.on_record_group_deleted(container_name, connector_id):
+        logger.warning(f"Could not remove the record group of {container_name}; retrying next sync")
 
 
 async def clean_up_scope(

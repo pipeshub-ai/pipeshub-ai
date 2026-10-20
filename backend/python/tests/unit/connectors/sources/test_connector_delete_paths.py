@@ -28,7 +28,7 @@ TRASH_AWARE = {
     "delete_record_by_external_id": "by external id",
     "on_records_soft_deleted": "own batch",
     "remove_records_not_listed": "listing scan",
-    # Calls on_record_deleted for each record outside the folders kept in scope.
+    # Calls on_records_deleted_cascade for each record outside the folders kept in scope.
     "remove_records_outside_scope": "listing scan",
 }
 

@@ -333,14 +333,8 @@ class TestDateFiltersExtended:
         obj = {"Key": "file.txt", "LastModified": now}
         past_ms = int((now.timestamp() - 3600) * 1000)
         future_ms = int((now.timestamp() + 3600) * 1000)
-        assert s3_connector._pass_date_filters(obj, past_ms, future_ms, None, None) is True
+        assert s3_connector._pass_date_filters(obj, past_ms, future_ms) is True
 
-    def test_pass_date_filters_all_filters_pass(self, s3_connector):
-        now = datetime.now(timezone.utc)
-        obj = {"Key": "file.txt", "LastModified": now}
-        past_ms = int((now.timestamp() - 3600) * 1000)
-        future_ms = int((now.timestamp() + 3600) * 1000)
-        assert s3_connector._pass_date_filters(obj, past_ms, future_ms, past_ms, future_ms) is True
 
 
 # ===========================================================================
@@ -734,7 +728,8 @@ class TestRunSyncExtended:
         s3_connector.data_source.list_buckets = AsyncMock(
             return_value=_make_response(False, error="err")
         )
-        await s3_connector.run_sync()
+        with pytest.raises(ConnectionError, match="err"):
+            await s3_connector.run_sync()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)

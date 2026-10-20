@@ -792,6 +792,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Connector OAuth app repair failed: {e}", exc_info=True)
 
+    # Before syncs resume: S3 and MinIO no longer read the created filter, so a saved one must move first.
+    try:
+        from app.migrations.s3_created_date_filter_migration import (
+            run_s3_created_date_filter_migration,
+        )
+
+        await run_s3_created_date_filter_migration(
+            app_container.config_service(), data_store.graph_provider, logger
+        )
+    except Exception as e:
+        logger.error(f"❌ S3 created date filter migration failed: {e}", exc_info=True)
+
     logger.debug("🚀 Starting application")
 
     # Start messaging producer first

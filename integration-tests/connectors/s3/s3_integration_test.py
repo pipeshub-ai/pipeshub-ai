@@ -15,6 +15,8 @@ Test cases:
   TC-UPDATE-001 — Content change detection (overwrite blob, verify update in place)
   TC-RENAME-001 — Rename detection (old name gone, new name present)
   TC-MOVE-001   — Move detection (file path reflects new prefix under same container group)
+  TC-DELETE-001 — Delete at the source (record and its vectors leave the index)
+  TC-FILTER-DATE-001 — Narrowing the modified date filter removes older records
 """
 
 import logging
@@ -37,6 +39,8 @@ from helper.assertions import (  # noqa: E402
     assert_permission_model,
 )
 from helper.graph_provider_utils import (  # noqa: E402
+    apply_filter_full_sync,
+    async_poll_until,
     async_wait_for_stable_record_count,
     wait_until_graph_condition,
 )
@@ -51,6 +55,8 @@ from helper.storage_incremental import (  # noqa: E402
 from connectors.s3.s3_storage_helper import (  # type: ignore[import-not-found]  # noqa: E402
     S3StorageHelper,
 )
+from helper.run_folder import folder_filter  # noqa: E402
+from helper.vector_store import VectorStoreProbe  # noqa: E402
 
 logger = logging.getLogger("s3-lifecycle-test")
 
@@ -368,3 +374,119 @@ class TestS3Connector:
             "TC-MOVE-001 passed: file at new path under %s/ (connector %s)",
             new_prefix, connector_id,
         )
+
+    # ------------------------------------------------------------------ #
+    # TC-DELETE-001 — Delete at the source
+    # ------------------------------------------------------------------ #
+    @pytest.mark.order(6)
+    async def test_tc_delete_001_deleted_object_leaves_the_index(
+        self,
+        s3_connector: Dict[str, Any],
+        s3_storage: S3StorageHelper,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+        vector_store: VectorStoreProbe,
+    ) -> None:
+        """
+        TC-DELETE-001: Delete an object in S3. After sync:
+        - Its Record is gone from the graph
+        - Its embeddings are gone from the vector store (PP-103)
+        - The other records stay
+        """
+        connector_id = s3_connector["connector_id"]
+        bucket_name = s3_connector["bucket_name"]
+
+        used = {s3_connector["update_target_key"], s3_connector["move_source_key"]}
+        keys = [k for k in s3_storage.list_objects(bucket_name, prefix=s3_connector["folder"]) if not k.endswith("/")]
+        names = [Path(k).name for k in keys]
+        parents = [Path(k).parent for k in keys]
+        # A unique name, so the lookup by name finds this record; a sibling, so its folder record stays.
+        candidates = sorted(
+            k for k in keys
+            if k not in used and names.count(Path(k).name) == 1 and parents.count(Path(k).parent) > 1
+        )
+        assert candidates, f"TC-DELETE-001: no object left to delete (connector {connector_id})"
+        delete_key = next((k for k in candidates if k.endswith((".txt", ".csv", ".md"))), candidates[0])
+        delete_name = Path(delete_key).name
+
+        async def _indexed() -> Dict[str, Any] | None:
+            record = await graph_provider.get_record_by_name(connector_id, delete_name)
+            vrid = (record or {}).get("virtualRecordId")
+            # A delete test that starts without embeddings proves nothing about their removal.
+            return record if vrid and await vector_store.count_for_virtual_record(vrid) else None
+
+        record = await async_poll_until(_indexed, timeout=300, interval=10, description=f"{delete_name} indexed")
+        vrid = record["virtualRecordId"]
+        await async_wait_for_stable_record_count(graph_provider, connector_id)
+        before_count = await graph_provider.count_records(connector_id)
+
+        s3_storage.delete_object(bucket_name, delete_key)
+        pipeshub_client.toggle_sync(connector_id, enable=False)
+        pipeshub_client.wait(3)
+        pipeshub_client.toggle_sync(connector_id, enable=True)
+
+        async def _gone() -> bool:
+            return await graph_provider.get_record_by_name(connector_id, delete_name) is None
+
+        await wait_until_graph_condition(
+            connector_id, check=_gone, timeout=180, poll_interval=10, description="delete sync",
+        )
+
+        await graph_provider.assert_record_not_exists(connector_id, delete_name)
+        await vector_store.assert_embeddings_gone(vrid)
+        after_count = await graph_provider.count_records(connector_id)
+        assert after_count == before_count - 1, (
+            f"TC-DELETE-001: only {delete_name} should leave the graph; "
+            f"before={before_count}, after={after_count} (connector {connector_id})"
+        )
+        logger.info("TC-DELETE-001 passed: %s and its vectors removed (connector %s)", delete_name, connector_id)
+
+    # ------------------------------------------------------------------ #
+    # TC-FILTER-DATE-001 — Narrowing the modified date filter (PP-118)
+    # ------------------------------------------------------------------ #
+    @pytest.mark.order(7)
+    async def test_tc_filter_date_001_modified_filter_removes_older_records(
+        self,
+        s3_connector: Dict[str, Any],
+        s3_storage: S3StorageHelper,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """
+        TC-FILTER-DATE-001: Set Modified "is after" a time between two objects. After the sync:
+        - The older object's Record is gone
+        - The newer object's Record stays
+        """
+        connector_id = s3_connector["connector_id"]
+        bucket_name = s3_connector["bucket_name"]
+        folder = s3_connector["folder"]
+        old_key, old_name = s3_connector["update_target_key"], s3_connector["update_target_name"]
+        assert await graph_provider.get_record_by_name(connector_id, old_name) is not None
+
+        new_key = f"{folder}date-filter-{uuid.uuid4().hex[:8]}.txt"
+        new_name = Path(new_key).name
+        pipeshub_client.wait(5)
+        s3_storage.upload_object(bucket_name, new_key, f"Newer than the cutoff {uuid.uuid4().hex}".encode(), "text/plain")
+        # The cutoff comes from S3's own clock, so skew between this host and S3 cannot move it.
+        old_ms = int(s3_storage.get_object_metadata(bucket_name, old_key)["last_modified"].timestamp() * 1000)
+        new_ms = int(s3_storage.get_object_metadata(bucket_name, new_key)["last_modified"].timestamp() * 1000)
+        assert new_ms - old_ms >= 2000, f"TC-FILTER-DATE-001: objects too close in time ({old_ms}, {new_ms})"
+        cutoff_ms = (old_ms + new_ms) // 2
+
+        filters = folder_filter(folder)
+        filters["sync"]["values"]["modified"] = {
+            "operator": "is_after", "type": "datetime", "value": {"start": cutoff_ms, "end": None},
+        }
+        await apply_filter_full_sync(pipeshub_client, graph_provider, connector_id, filters)
+
+        async def _narrowed() -> bool:
+            return (
+                await graph_provider.get_record_by_name(connector_id, old_name) is None
+                and await graph_provider.get_record_by_name(connector_id, new_name) is not None
+            )
+
+        await wait_until_graph_condition(
+            connector_id, check=_narrowed, timeout=180, poll_interval=10, description="date filter sync",
+        )
+        await graph_provider.assert_record_not_exists(connector_id, old_name)
+        logger.info("TC-FILTER-DATE-001 passed: %s removed, %s kept (connector %s)", old_name, new_name, connector_id)
