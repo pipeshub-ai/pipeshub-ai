@@ -164,21 +164,33 @@ class TestEveryCallCarriesTheStrategy:
 
 
 class TestRejectedCacheParameter:
-    async def test_complete_resends_once_without_them(self) -> None:
+    async def test_complete_resends_once_without_the_refused_one(self) -> None:
         model = _RecordingModel(errors=[_bad_request("Unrecognized request argument supplied: prompt_cache_retention")])
         transport = _transport(model)
         response = await transport.complete(_messages(), tools=TOOLS, system_blocks=[STABLE, VOLATILE])
         assert response.message.content[0].text == "ok"
-        assert [call["kwargs"] for call in model.calls] == [KWARGS, {}]
+        key_only = {"prompt_cache_key": KWARGS["prompt_cache_key"]}
+        assert [call["kwargs"] for call in model.calls] == [KWARGS, key_only]
         await transport.complete(_messages(), tools=TOOLS)
-        assert model.calls[-1]["kwargs"] == {}
-        assert REJECTED_CACHE_PARAMS.rejected("gpt-5.4", None)
+        assert model.calls[-1]["kwargs"] == key_only
+        assert REJECTED_CACHE_PARAMS.refused("gpt-5.4", None) == {"prompt_cache_retention"}
 
-    async def test_stream_resends_once_without_them(self) -> None:
+    async def test_stream_resends_once_without_the_refused_one(self) -> None:
         model = _RecordingModel(errors=[_bad_request("Unknown parameter: 'prompt_cache_key'.")])
         events = await _stream(_transport(model))
         assert isinstance(events[-1], StreamCompleteEvent)
-        assert [call["kwargs"] for call in model.calls] == [KWARGS, {}]
+        assert [call["kwargs"] for call in model.calls] == [KWARGS, {"prompt_cache_retention": "24h"}]
+
+    async def test_a_refused_breakpoint_keeps_the_key(self) -> None:
+        refusal = _bad_request("{'error': {'message': 'prompt_cache_breakpoint is not supported on this model'}}")
+        model = _RecordingModel(errors=[refusal])
+        strategy = OpenAICacheStrategy({"prompt_cache_key": "k"}, breakpoint_=True)
+        await _transport(model, strategy).complete(_messages(), tools=TOOLS, system_blocks=[STABLE, VOLATILE])
+        first, retry = model.calls
+        assert first["messages"][0].content[0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+        assert retry["kwargs"] == {"prompt_cache_key": "k"}
+        assert retry["messages"][0].content == f"{STABLE}\n\n{VOLATILE}"
+        assert "prompt_cache_breakpoint" not in json.dumps([m.content for m in retry["messages"]])
 
     async def test_anthropic_markers_are_dropped_too(self) -> None:
         import anthropic

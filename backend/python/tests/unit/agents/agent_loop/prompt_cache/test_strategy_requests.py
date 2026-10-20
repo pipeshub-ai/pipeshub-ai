@@ -40,8 +40,7 @@ def _history() -> list[Any]:
 
 async def _send(llm: Any, strategy: CacheStrategy, *, stable: str = STABLE, volatile: str = VOLATILE,  # noqa: ANN401
                 tools: list[dict] | None = None, history: list[Any] | None = None) -> None:
-    system = strategy.system(stable, volatile)
-    messages, kwargs = strategy.finalize([*([system] if system else []), *(history or _history())])
+    messages, kwargs = strategy.finalize([*strategy.system(stable, volatile), *(history or _history())])
     bound = llm.bind_tools(strategy.tools(TOOLS if tools is None else tools)) if (tools is None or tools) else llm
     await bound.ainvoke(messages, **kwargs)
 
@@ -189,6 +188,89 @@ class TestOpenAI:
 
     def test_sent_params_name_the_kwargs(self) -> None:
         assert OpenAICacheStrategy({"prompt_cache_key": "k"}).sent_params == {"prompt_cache_key"}
+        assert OpenAICacheStrategy({"prompt_cache_key": "k"}, breakpoint_=True).sent_params == {
+            "prompt_cache_key", "prompt_cache_breakpoint",
+        }
+
+
+BREAKPOINT = {"mode": "explicit"}
+
+
+def _gpt(endpoint: Any, *, azure: bool, responses: bool) -> Any:  # noqa: ANN401
+    from langchain_openai import AzureChatOpenAI, ChatOpenAI
+
+    if azure:
+        return AzureChatOpenAI(azure_endpoint=endpoint.url, azure_deployment="gpt-6.1-sol", api_key="test",
+                               api_version="2025-04-01-preview", max_retries=0, use_responses_api=responses)
+    return ChatOpenAI(model="gpt-6.1-sol", api_key="test", base_url=endpoint.url, max_retries=0,
+                      use_responses_api=responses)
+
+
+def _system_items(body: dict, *, responses: bool) -> list[dict]:
+    items = body["input"] if responses else body["messages"]
+    return [item for item in items if item.get("role") in ("system", "developer")]
+
+
+def _breakpoints(body: Any) -> list[Any]:  # noqa: ANN401
+    found: list[Any] = []
+
+    def walk(node: Any) -> None:  # noqa: ANN401
+        if isinstance(node, dict):
+            if "prompt_cache_breakpoint" in node:
+                found.append(node)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(body)
+    return found
+
+
+class TestOpenAIBreakpoint:
+    """GPT-5.6 and later write the cache only at breakpoints; the stable block
+    gets an explicit one so a new conversation reads tools + instructions."""
+
+    @pytest.mark.parametrize("azure", [False, True])
+    @pytest.mark.parametrize("responses", [False, True])
+    async def test_the_stable_block_closes_a_marked_system_message(
+        self, endpoint: Any, azure: bool, responses: bool,  # noqa: ANN401
+    ) -> None:
+        strategy = OpenAICacheStrategy({"prompt_cache_key": "k"}, breakpoint_=True)
+        await _send(_gpt(endpoint, azure=azure, responses=responses), strategy)
+        body = endpoint.last
+        stable, volatile = _system_items(body, responses=responses)
+        text_type = "input_text" if responses else "text"
+        assert stable["content"] == [{"type": text_type, "text": STABLE, "prompt_cache_breakpoint": BREAKPOINT}]
+        assert volatile["content"] == VOLATILE
+        assert len(_breakpoints(body)) == 1
+        assert body["prompt_cache_key"] == "k"
+        assert endpoint.paths[-1].split("?")[0].endswith("/responses" if responses else "/chat/completions")
+
+    @pytest.mark.parametrize("responses", [False, True])
+    async def test_without_a_volatile_block_one_message(self, endpoint: Any, responses: bool) -> None:  # noqa: ANN401
+        await _send(_gpt(endpoint, azure=True, responses=responses),
+                    OpenAICacheStrategy({}, breakpoint_=True), volatile="")
+        [stable] = _system_items(endpoint.last, responses=responses)
+        assert stable["content"][0]["prompt_cache_breakpoint"] == BREAKPOINT
+
+    @pytest.mark.parametrize("responses", [False, True])
+    async def test_earlier_models_get_the_prompt_joined_as_before(self, endpoint: Any, responses: bool) -> None:  # noqa: ANN401
+        await _send(_gpt(endpoint, azure=True, responses=responses), OpenAICacheStrategy({"prompt_cache_key": "k"}))
+        [system] = _system_items(endpoint.last, responses=responses)
+        assert system["content"] == f"{STABLE}\n\n{VOLATILE}"
+        assert _breakpoints(endpoint.last) == []
+
+    def test_dropping_a_refused_parameter_keeps_the_rest(self) -> None:
+        strategy = OpenAICacheStrategy({"prompt_cache_key": "k", "prompt_cache_retention": "24h"}, breakpoint_=True)
+        narrowed = strategy.without(frozenset({"prompt_cache_breakpoint"}))
+        assert isinstance(narrowed, OpenAICacheStrategy)
+        assert narrowed.sent_params == {"prompt_cache_key", "prompt_cache_retention"}
+        assert len(narrowed.system(STABLE, VOLATILE)) == 1
+        assert narrowed.without(frozenset({"prompt_cache_key", "prompt_cache_retention"})).name == "none"
+        assert strategy.without(frozenset({"*"})).name == "none"
+        assert strategy.without(frozenset({"cache_control"})) is strategy
 
 
 def _bedrock(model_id: str) -> tuple[Any, MagicMock]:
