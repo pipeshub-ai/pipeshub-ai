@@ -42216,9 +42216,9 @@ paths:
       summary: Get a toolset instance's tool approval rules
       description: >-
         Which of the instance's tools run, ask for approval, or never run. An organization
-        instance's apply to everyone in the organization and every member can read them; a
-        personal instance's are its owner's, and nobody else finds them. `canEdit` says whether
-        the caller may change them. An organization instance's rules are served only when
+        instance's rules apply to everyone in the organization, and every member can read them.
+        A personal instance's rules are its owner's, and nobody else finds them. `canEdit` says
+        whether the caller may change the rules. An organization instance's rules are served only when
         organization tool rules are on (`organization_toolset_tool_rules` in the edition config);
         otherwise 404, and each tool starts from what it does to data. A personal instance's rules
         are served in every edition.
