@@ -376,9 +376,95 @@ class TestS3Connector:
         )
 
     # ------------------------------------------------------------------ #
-    # TC-DELETE-001 — Delete at the source
+    # TC-KEYS-001 — Keys with %, + and spaces download (PP-98)
     # ------------------------------------------------------------------ #
     @pytest.mark.order(6)
+    async def test_tc_keys_001_special_character_keys_stream(
+        self,
+        s3_connector: Dict[str, Any],
+        s3_storage: S3StorageHelper,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """
+        TC-KEYS-001: Objects whose keys hold ``%XX``, ``+`` and spaces sync and
+        stream back byte for byte. The signed URL used to decode the stored key
+        and named another object, so these returned 404.
+        """
+        connector_id = s3_connector["connector_id"]
+        bucket_name = s3_connector["bucket_name"]
+        tag = uuid.uuid4().hex[:8]
+        files = {
+            f"{s3_connector['folder']}keys-{tag}/100%25 {name}": f"{name} {tag}".encode()
+            for name in ("a+b.txt", "a%20b.txt")
+        }
+        for key, body in files.items():
+            s3_storage.upload_object(bucket_name, key, body, content_type="text/plain")
+
+        await sync_until_names_visible(
+            pipeshub_client, graph_provider, connector_id, record_names_from_keys(files)
+        )
+
+        for key, body in files.items():
+            record = await graph_provider.get_record_by_external_id(connector_id, f"{bucket_name}/{key}")
+            assert record is not None, f"No record for {key!r} (connector {connector_id})"
+            resp = pipeshub_client.request("GET", f"/api/v1/knowledgeBase/stream/record/{record.id}")
+            assert resp.status_code == 200, f"Streaming {key!r}: {resp.status_code} {resp.text[:300]}"
+            assert resp.content == body, f"Streaming {key!r} returned other bytes"
+
+        logger.info("TC-KEYS-001 passed: %d special-character keys stream (connector %s)", len(files), connector_id)
+
+    # ------------------------------------------------------------------ #
+    # TC-MOVE-002 — A move keeps the record's indexed content (PP-116)
+    # ------------------------------------------------------------------ #
+    @pytest.mark.order(7)
+    async def test_tc_move_002_move_keeps_indexed_content(
+        self,
+        s3_connector: Dict[str, Any],
+        s3_storage: S3StorageHelper,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """
+        TC-MOVE-002: Renaming a prefix moves each object in place. The record keeps
+        its id, virtual record and indexing status; it is not queued for indexing again.
+        """
+        connector_id = s3_connector["connector_id"]
+        bucket_name = s3_connector["bucket_name"]
+        tag = uuid.uuid4().hex[:8]
+        name = f"keep-{tag}.txt"
+        old_key = f"{s3_connector['folder']}move-from-{tag}/{name}"
+        new_key = f"{s3_connector['folder']}move-to-{tag}/{name}"
+        s3_storage.upload_object(bucket_name, old_key, f"unchanged {tag}".encode(), content_type="text/plain")
+        await sync_until_names_visible(pipeshub_client, graph_provider, connector_id, [name])
+        before = await graph_provider.get_record_by_name(connector_id, name)
+        assert before is not None
+
+        s3_storage.move_object(bucket_name, old_key, new_key)
+
+        async def _moved() -> bool:
+            return await graph_provider.record_name_path_contains(connector_id, name, f"move-to-{tag}")
+
+        pipeshub_client.toggle_sync(connector_id, enable=False)
+        pipeshub_client.wait(3)
+        pipeshub_client.toggle_sync(connector_id, enable=True)
+        await wait_until_graph_condition(
+            connector_id, check=_moved, timeout=120, poll_interval=10, description="move sync",
+        )
+
+        after = await graph_provider.get_record_by_name(connector_id, name)
+        assert (after.get("_key") or after.get("id")) == (before.get("_key") or before.get("id")), (
+            "A move must reuse the record, not create a new one"
+        )
+        assert after.get("virtualRecordId") == before.get("virtualRecordId")
+        if before.get("indexingStatus") == "COMPLETED":
+            assert after.get("indexingStatus") == "COMPLETED", "A move without a content change was indexed again"
+        logger.info("TC-MOVE-002 passed: %s moved in place (connector %s)", name, connector_id)
+
+    # ------------------------------------------------------------------ #
+    # TC-DELETE-001 — Delete at the source
+    # ------------------------------------------------------------------ #
+    @pytest.mark.order(8)
     async def test_tc_delete_001_deleted_object_leaves_the_index(
         self,
         s3_connector: Dict[str, Any],
@@ -444,7 +530,7 @@ class TestS3Connector:
     # ------------------------------------------------------------------ #
     # TC-FILTER-DATE-001 — Narrowing the modified date filter (PP-118)
     # ------------------------------------------------------------------ #
-    @pytest.mark.order(7)
+    @pytest.mark.order(9)
     async def test_tc_filter_date_001_modified_filter_removes_older_records(
         self,
         s3_connector: Dict[str, Any],

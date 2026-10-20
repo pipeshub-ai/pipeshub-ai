@@ -238,18 +238,16 @@ class TestCreateS3Permissions:
     async def test_personal_scope_no_creator(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = None
-        perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        with pytest.raises(Exception):
+            perms = await connector._create_s3_permissions("bucket", "key")
 
     @pytest.mark.asyncio
     async def test_personal_scope_creator_lookup_fails(self, connector, mock_dsp):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         connector.data_entities_processor.get_user_by_user_id = AsyncMock(side_effect=Exception("DB error"))
-        perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        with pytest.raises(Exception):
+            perms = await connector._create_s3_permissions("bucket", "key")
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_no_email(self, connector, mock_dsp):
@@ -258,9 +256,8 @@ class TestCreateS3Permissions:
         u_no_email = MagicMock()
         u_no_email.email = ""
         connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=u_no_email)
-        perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        with pytest.raises(Exception):
+            perms = await connector._create_s3_permissions("bucket", "key")
 
 
 class TestTestConnectionAndAccess:
@@ -1073,7 +1070,7 @@ class TestProcessS3ObjectAdvanced:
         existing.source_created_at = 500
         connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
         # The old key is gone from the bucket, so equal content at the new key is a move.
-        connector.data_source = MagicMock(list_objects_v2=AsyncMock(return_value=MagicMock(success=True, data={"KeyCount": 0})))
+        connector.data_source = MagicMock(head_object=AsyncMock(return_value=MagicMock(success=False, status_code=404, error="404: Not Found")))
         connector.data_entities_processor.delete_parent_child_edge_to_record = AsyncMock()
         connector._create_s3_permissions = AsyncMock(return_value=[])
         now = datetime.now(timezone.utc)
@@ -1081,7 +1078,9 @@ class TestProcessS3ObjectAdvanced:
         record, perms = await connector._process_s3_object(obj, "mybucket")
         assert record is not None
         assert record.id == "moved-id"
-        connector.data_entities_processor.delete_parent_child_edge_to_record.assert_awaited()
+        # The batch saves the move with on_records_moved, which re-points the parent edge itself.
+        assert connector._moved_record_ids == {"moved-id": "mybucket/old/path/file.txt"}
+        connector.data_entities_processor.delete_parent_child_edge_to_record.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_last_modified(self, connector):

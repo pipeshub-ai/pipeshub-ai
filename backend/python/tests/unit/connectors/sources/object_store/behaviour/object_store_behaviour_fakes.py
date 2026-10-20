@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote, unquote, urlsplit
 
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
@@ -36,6 +37,7 @@ class Response:
     success: bool
     data: Any = None
     error: str | None = None
+    status_code: int | None = None
 
 
 @dataclass
@@ -126,7 +128,22 @@ class _FakeDataSource:
 
 
 class FakeS3DataSource(_FakeDataSource):
-    """``list_objects_v2`` over fake buckets, continuation tokens included."""
+    """``list_objects_v2`` over fake buckets, continuation tokens included.
+
+    ``head_fails`` makes ``head_object`` fail: ``"error"`` answers 503, ``"raise"`` raises.
+    """
+
+    head_fails: str | None = None
+
+    async def head_object(self, Bucket: str, Key: str, **_: object) -> Response:
+        if self.head_fails == "raise":
+            raise ConnectionError("connection reset during HeadObject")
+        if self.head_fails == "error":
+            return Response(False, error="503: Service Unavailable", status_code=503)
+        o = self.stores[Bucket].objects.get(Key)
+        if o is None:
+            return Response(False, error="404: Not Found", status_code=404)
+        return Response(True, {"ETag": f'"{_md5(o.body)}"', "ContentLength": len(o.body), "LastModified": o.modified})
 
     async def list_objects_v2(
         self, Bucket: str, MaxKeys: int = 1000, ContinuationToken: str | None = None, Prefix: str | None = None, **_: object,
@@ -154,6 +171,15 @@ class FakeS3DataSource(_FakeDataSource):
 
     async def get_bucket_location(self, Bucket: str, **_: object) -> Response:
         return Response(True, {"LocationConstraint": None})
+
+    async def generate_presigned_url(self, ClientMethod: str, Params: dict[str, str], **_: object) -> Response:
+        """Signs as boto does: the URL path is the given key, percent-encoded."""
+        return Response(True, f"https://{Params['Bucket']}.s3.amazonaws.com/{quote(Params['Key'])}?X-Amz-Signature=x")
+
+    def object_at(self, url: str) -> StoredObject | None:
+        """What a GET of a signed URL returns: the object at the key it names, if any."""
+        parts = urlsplit(url)
+        return self.stores[parts.netloc.split(".")[0]].objects.get(unquote(parts.path[1:]))
 
 
 class FakeGCSDataSource(_FakeDataSource):
@@ -244,9 +270,14 @@ class FakeRecordsDb:
         self.record_groups: dict[str, Any] = {}
         self.deleted: list[str] = []
         self.written: list[str] = []
+        self.moved: list[tuple[str, str]] = []
         self.failing: set[str] = set()
         # Groups whose delete answers False, as the processor does when the delete fails.
         self.refused_group_deletes: set[str] = set()
+        # Users by userId, and every permission written: records only ever gain edges, groups get replaced.
+        self.users: dict[str, Any] = {}
+        self.record_permissions: dict[str, list[Any]] = {}
+        self.group_permissions: dict[str, list[Any]] = {}
 
     def _check(self, method: str) -> None:
         if method in self.failing:
@@ -299,17 +330,30 @@ class FakeRecordsDb:
 
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
         self._check("on_new_records")
-        for record, _ in records_with_permissions:
+        for record, permissions in records_with_permissions:
             self.written.append(record.external_record_id)
+            self.record_permissions.setdefault(record.external_record_id, []).extend(permissions)
             # The processor upserts by external id, keeping the stored record's id.
             same_path = self.by_path().get(record.external_record_id)
             if same_path and same_path.id != record.id:
                 record.id = same_path.id
             self.records[record.id] = record
 
+    async def on_records_moved(self, moves: list[tuple[str, Any, list[Any]]]) -> None:
+        """In place: the stored record at the old external id takes the new path and keeps its id."""
+        self._check("on_records_moved")
+        for old_external_id, record, permissions in moves:
+            self.moved.append((old_external_id, record.external_record_id))
+            stored = self.by_path().get(old_external_id)
+            if stored:
+                record.id = stored.id
+            self.records[record.id] = record
+            self.record_permissions.setdefault(record.external_record_id, []).extend(permissions)
+
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
-        for group, _ in groups:
+        for group, permissions in groups:
             self.record_groups[group.external_group_id] = group
+            self.group_permissions[group.external_group_id] = list(permissions)
 
     async def get_nodes_by_filters(
         self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
@@ -344,7 +388,15 @@ class FakeRecordsDb:
     async def ensure_team_app_edge(self, connector_id: str) -> None:
         return None
 
-    async def get_user_by_user_id(self, user_id: str) -> None:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> Any:
+        """As the graph providers answer: a failed query is None unless the caller asks it to raise."""
+        if "get_user_by_user_id" in self.failing:
+            if raise_on_error:
+                self._check("get_user_by_user_id")
+            return None
+        return self.users.get(user_id)
+
+    async def on_new_app_users(self, users: list[Any]) -> None:
         return None
 
 
@@ -407,10 +459,11 @@ class FakeConfigService:
 
 def make_connector(
     kind: str, store: FakeObjectStore, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, config: FakeConfigService,
+    scope: str = "team",
 ) -> BaseConnector:
-    """A team-scoped connector of ``kind`` wired to the fakes, as ``init()`` would leave it for one bucket."""
+    """A connector of ``kind`` (team-scoped unless told) wired to the fakes, as ``init()`` would leave it for one bucket."""
     logger = logging.getLogger(f"test.objstore.{kind}")
-    args = (logger, db, checkpoints, config, CONNECTOR_ID, "team", "creator-1")
+    args = (logger, db, checkpoints, config, CONNECTOR_ID, scope, "creator-1")
     if kind == "s3":
         from app.connectors.sources.s3.connector import S3Connector
 

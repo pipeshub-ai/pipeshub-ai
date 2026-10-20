@@ -111,6 +111,8 @@ def _bucket_creation_dates_from_list_buckets(
 
 # Default connector endpoint for signed URL generation
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
+# The only caller fetches the URL at once on the server; S3 checks expiry when the GET starts.
+PRESIGNED_URL_EXPIRY_SECONDS = 300
 
 
 def _s3_last_modified_to_epoch_ms(last_modified: Any) -> int:
@@ -341,9 +343,10 @@ class S3CompatibleBaseConnector(BaseConnector):
         self.data_source: Any | None = None  # Will be S3DataSource or MinIODataSource
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
-        # Records moved during this listing, per bucket: two new copies of a deleted object
-        # must not both take its record before the batch naming it is saved.
-        self._moved_record_ids: dict[str, set[str]] = {}
+        # Per bucket, records moved during this listing, by id, to the external id they moved from:
+        # two new copies of a deleted object must not both take its record before the
+        # batch naming it is saved, and the batch saves each move in place.
+        self._moved_record_ids: dict[str, dict[str, str]] = {}
         self.bucket_name: str | None = None
         self.region: str | None = None
         self.bucket_regions: dict[str, str] = {}  # Cache for bucket-to-region mapping
@@ -351,6 +354,8 @@ class S3CompatibleBaseConnector(BaseConnector):
         # "{bucket}/{segment}". Cleared at the start of every run_sync so a
         # folder removed between runs is still re-created.
         self._ensured_folders: set[str] = set()
+        # Personal scope's creator, looked up once per run; a failed lookup is never kept.
+        self._creator: User | None = None
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
@@ -408,6 +413,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             # Per-run, so folder edges are still rebuilt on every full sync —
             # the memo only removes repeats *within* one run.
             self._ensured_folders.clear()
+            self._creator = None
 
             # Reload sync and indexing filters to pick up configuration changes
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -419,21 +425,10 @@ class S3CompatibleBaseConnector(BaseConnector):
                     self.connector_id
                 )
             else:
-                # Personal: create user-app edge only for the creator
-                if self.created_by:
-                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
-                    if creator_user and getattr(creator_user, "email", None):
-                        app_users = self.get_app_users([creator_user])
-                        await self.data_entities_processor.on_new_app_users(app_users)
-                    else:
-                        self.logger.warning(
-                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
-                            self.created_by,
-                        )
-                else:
-                    self.logger.warning(
-                        "Personal connector has no created_by; skipping user-app edges."
-                    )
+                creator = await self._creator_or_notify()
+                if creator is None:
+                    return
+                await self.data_entities_processor.on_new_app_users(self.get_app_users([creator]))
 
             # Get sync filters
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
@@ -555,39 +550,7 @@ class S3CompatibleBaseConnector(BaseConnector):
         for bucket_name in bucket_names:
             if not bucket_name:
                 continue
-            permissions = []
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-                )
-            else:
-                if self.created_by:
-                    try:
-                        user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
-                        if user and getattr(user, "email", None):
-                            permissions.append(
-                                Permission(
-                                    type=PermissionType.OWNER,
-                                    entity_type=EntityType.USER,
-                                    email=user.email,
-                                    external_id=self.created_by
-                                )
-                            )
-                    except Exception as e:
-                        self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
+            permissions = await self._create_s3_permissions(bucket_name, "")
 
             creation_ms = creation_map.get(bucket_name)
             record_group = RecordGroup(
@@ -776,7 +739,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     await self._ensure_parent_folders_exist(bucket_name, segments)
                 record, permissions = await self._process_s3_object(obj, bucket_name)
                 if record:
-                    await self.data_entities_processor.on_new_records([(record, permissions)])
+                    await self._save_records(*self._split_moves([(record, permissions)], bucket_name))
                 elif holder is not None:
                     listed.add(held_at)
             except Exception as e:
@@ -830,7 +793,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.logger.debug(f"Using last_sync_time for incremental sync: {modified_after_ms}")
 
         batch_records = []
-        self._moved_record_ids[bucket_name] = set()
+        self._moved_record_ids[bucket_name] = {}
         has_more = True
         listing_failed = bucket_gone = False
         failed = FailedItems()
@@ -940,9 +903,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                                 batch_records.append((record, permissions))
 
                                 if len(batch_records) >= self.batch_size:
-                                    await self.data_entities_processor.on_new_records(
-                                        batch_records
-                                    )
+                                    await self._save_records(*self._split_moves(batch_records, bucket_name))
                                     batch_records = []
                             elif key.lstrip("/"):
                                 # The processor returns no record for a real key only on an error.
@@ -980,7 +941,7 @@ class S3CompatibleBaseConnector(BaseConnector):
 
         if batch_records:
             try:
-                await self.data_entities_processor.on_new_records(batch_records)
+                await self._save_records(*self._split_moves(batch_records, bucket_name))
             except Exception:
                 # The unsaved records sit on pages a resume token would skip, so
                 # clear it and let the error fail the sync; no checkpoint is written.
@@ -1014,6 +975,32 @@ class S3CompatibleBaseConnector(BaseConnector):
         await self.record_sync_point.update_sync_point(sync_point_key, done)
 
         return listed, not (resumed or unjudged)
+
+    def _split_moves(
+        self, batch: list[tuple[FileRecord, list[Permission]]], bucket_name: str
+    ) -> tuple[list[tuple[FileRecord, list[Permission]]], list[tuple[str, FileRecord, list[Permission]]]]:
+        """Split a batch into new or changed records and moves (old external id, record, permissions)."""
+        records, moves = [], []
+        for record, permissions in batch:
+            moved_from = self._moved_record_ids.get(bucket_name, {}).get(record.id)
+            if moved_from and moved_from != record.external_record_id:
+                moves.append((moved_from, record, permissions))
+            else:
+                records.append((record, permissions))
+        return records, moves
+
+    async def _save_records(
+        self,
+        records: list[tuple[FileRecord, list[Permission]]],
+        moves: list[tuple[str, FileRecord, list[Permission]]],
+    ) -> None:
+        # A move is saved in place, keeping its indexed content; on_new_records would
+        # take it for a new record and index it again. Moves go first so a new object
+        # at a moved record's old key is not written onto that record.
+        if moves:
+            await self.data_entities_processor.on_records_moved(moves)
+        if records:
+            await self.data_entities_processor.on_new_records(records)
 
     async def _ensure_parent_folders_exist(
         self, bucket_name: str, path_segments: list[str]
@@ -1089,10 +1076,8 @@ class S3CompatibleBaseConnector(BaseConnector):
            │   └─ Same → Skip (no changes)
            └─ Not Found → Try lookup by etag (externalRevisionId) - FALLBACK
                ├─ Found, and its key is gone from the bucket → Move/rename detected
-               │   ├─ Extract old path from existing record
-               │   ├─ Remove old parent relationship
-               │   ├─ Update externalRecordId, path, recordName
-               │   └─ Update record via data_entities_processor
+               │   ├─ Reuse the record id; _moved_record_ids keeps the old external id
+               │   └─ The batch saves it with on_records_moved (no re-index unless the type changed)
                └─ Not Found, or its key is still listed (a copy) → New file → Create new record
         """
         try:
@@ -1122,8 +1107,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.connector_id, external_record_id
             )
 
-            is_move = False
-
             if existing_record:
                 # Found by path - check if revision (composite) changed (content change)
                 stored_revision = existing_record.external_revision_id or ""
@@ -1147,7 +1130,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     self.connector_id, composite_revision
                 )
                 if existing_record and (
-                    existing_record.id in self._moved_record_ids.get(bucket_name, set()) or await self._still_in_bucket(existing_record)
+                    existing_record.id in self._moved_record_ids.get(bucket_name, {}) or await self._still_in_bucket(existing_record)
                 ):
                     self.logger.info(
                         f"New document: {normalized_key} is a copy of {existing_record.external_record_id}, not a move"
@@ -1157,8 +1140,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 if existing_record:
                     # Same composite can only match same key; if path differs it's a move/rename (key changed, etag same)
                     if existing_record.external_record_id != external_record_id:
-                        is_move = True
-                        self._moved_record_ids.setdefault(bucket_name, set()).add(existing_record.id)
+                        self._moved_record_ids.setdefault(bucket_name, {})[existing_record.id] = existing_record.external_record_id
                         self.logger.info(
                             f"Move/rename detected: {normalized_key} - file moved from {existing_record.external_record_id} to {external_record_id}"
                         )
@@ -1184,10 +1166,6 @@ class S3CompatibleBaseConnector(BaseConnector):
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
-
-            # For moves/renames, remove old parent relationship before processing
-            if is_move and existing_record:
-                await self.data_entities_processor.delete_parent_child_edge_to_record(record_id)
 
             version = 0 if not existing_record else existing_record.version + 1
 
@@ -1252,60 +1230,26 @@ class S3CompatibleBaseConnector(BaseConnector):
             return True
         try:
             async with self.rate_limiter:
-                response = await self.data_source.list_objects_v2(Bucket=bucket_name, Prefix=key, MaxKeys=100)
+                response = await self.data_source.head_object(Bucket=bucket_name, Key=key)
         except Exception as e:
             self.logger.warning(f"Could not check whether {bucket_name}/{key} still exists: {e}")
             return True
-        if not response.success:
-            self.logger.warning(f"Could not check whether {bucket_name}/{key} still exists: {response.error}")
+        if response.success:
             return True
-        # General-purpose buckets list in key order, so the key leads the page; directory buckets don't.
-        contents = (response.data or {}).get("Contents") or []
-        return any(obj.get("Key") == key for obj in contents)
+        if getattr(response, "status_code", None) == HttpStatusCode.NOT_FOUND.value:
+            return False
+        self.logger.warning(f"Could not check whether {bucket_name}/{key} still exists: {response.error}")
+        return True
 
     async def _create_s3_permissions(
         self, bucket_name: str, key: str
     ) -> list[Permission]:
-        """Create permissions for an S3 object based on connector scope."""
-        try:
-            permissions = []
+        """Create permissions for an S3 object based on connector scope.
 
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-                )
-            else:
-                if self.created_by:
-                    try:
-                        user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
-                        if user and getattr(user, "email", None):
-                            permissions.append(
-                                Permission(
-                                    type=PermissionType.OWNER,
-                                    entity_type=EntityType.USER,
-                                    email=user.email,
-                                    external_id=self.created_by
-                                )
-                            )
-                    except Exception as e:
-                        self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
-
-            return permissions
-        except Exception as e:
-            self.logger.warning(f"Error creating permissions for {key}: {e}")
+        Personal scope raises when the creator cannot be resolved: falling back to
+        the whole org would widen access, and the edges are never taken back.
+        """
+        if self.scope == ConnectorScope.TEAM.value:
             return [
                 Permission(
                     type=PermissionType.READ,
@@ -1313,6 +1257,42 @@ class S3CompatibleBaseConnector(BaseConnector):
                     external_id=self.data_entities_processor.org_id
                 )
             ]
+        creator = await self._load_creator()
+        return [
+            Permission(
+                type=PermissionType.OWNER,
+                entity_type=EntityType.USER,
+                email=creator.email,
+                external_id=self.created_by
+            )
+        ]
+
+    async def _load_creator(self) -> User:
+        """The personal connector's creator. Raises if the lookup fails or finds no user with an email."""
+        if self._creator is None:
+            user = (
+                await self.data_entities_processor.get_user_by_user_id(self.created_by, raise_on_error=True)
+                if self.created_by else None
+            )
+            if not user or not getattr(user, "email", None):
+                raise LookupError(f"Creator {self.created_by!r} of connector {self.connector_id} not found or has no email")
+            self._creator = user
+        return self._creator
+
+    async def _creator_or_notify(self) -> User | None:
+        """The creator, or None after telling the user why the sync stopped before writing anything."""
+        try:
+            return await self._load_creator()
+        except Exception as e:
+            self.logger.error(f"Stopping {self.connector_name} sync: {e}")
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                title="Sync stopped",
+                message="The owner of this personal connector could not be looked up, so nothing was synced. "
+                "Existing access is unchanged. The next sync tries again.",
+                severity=NotificationSeverity.ERROR,
+            )
+            return None
 
     async def test_connection_and_access(self) -> bool:
         """Check that the key can list and read the buckets the sync uses."""
@@ -1418,9 +1398,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 key = external_record_id[len(f"{bucket_name}/"):]
             else:
                 key = external_record_id.lstrip("/")
-
-            from urllib.parse import unquote
-            key = unquote(key)
+            # Sync stores the key as listed (botocore decodes it), so decoding it again names another object.
 
             bucket_region = await self._get_bucket_region(bucket_name)
 
@@ -1432,7 +1410,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             response = await self.data_source.generate_presigned_url(
                 ClientMethod="get_object",
                 Params={"Bucket": bucket_name, "Key": key},
-                ExpiresIn=86400,
+                ExpiresIn=PRESIGNED_URL_EXPIRY_SECONDS,
                 region_name=bucket_region
             )
 
@@ -1765,6 +1743,9 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             # Per run, as in run_sync: a folder removed between runs must be re-created.
             self._ensured_folders.clear()
+            self._creator = None
+            if self.scope != ConnectorScope.TEAM.value and await self._creator_or_notify() is None:
+                return
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, self.filter_key, self.connector_id, self.logger

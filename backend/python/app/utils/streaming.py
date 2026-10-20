@@ -193,8 +193,7 @@ async def stream_content(
     log_parts.append(f"File path: {file_path_info}")
     log_prefix = " | ".join(log_parts)
 
-    # Log truncated presigned URL for debugging (first 150 chars to see structure)
-    logger.debug(f"Fetching presigned URL (truncated): {signed_url[:150]}...")
+    logger.debug(f"Fetching presigned URL: {file_path_info}")
 
     try:
         # Use a timeout to prevent hanging requests
