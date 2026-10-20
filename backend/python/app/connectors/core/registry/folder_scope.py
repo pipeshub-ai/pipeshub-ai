@@ -171,29 +171,13 @@ async def _remove_records(
     reason: str,
     logger: logging.Logger,
 ) -> CleanupResult:
-    """Delete this connector's records in ``container_name`` whose path ``doomed`` picks.
-
-    The cascade delete, unlike ``on_record_deleted``, also removes the record's type
-    node and every edge. With the trash on, a record already in it is left for the purge.
-    """
-    from app.services.featureflag.platform_settings import is_soft_delete_enabled
-
-    soft_delete: bool | None = None
+    """Delete this connector's records in ``container_name`` whose path ``doomed`` picks."""
     removed = failed = 0
     async for record, path in _records_in(data_entities_processor, connector_id, container_name):
         if not doomed(record, path):
             continue
-        if soft_delete is None:
-            soft_delete = await is_soft_delete_enabled(data_entities_processor.config_service)
-        if soft_delete and record.is_deleted:
-            continue
         try:
-            result = await data_entities_processor.on_records_deleted_cascade(
-                [record.id], connector_id, cascade_children=False, include_trashed_roots=True,
-                soft_delete=soft_delete,
-            )
-            if not isinstance(result, dict) or result.get("success") is False or result.get("failed_count"):
-                raise RuntimeError(f"delete failed: {result}")
+            await data_entities_processor.on_record_deleted(record.id)
             removed += 1
         except Exception as e:  # noqa: BLE001 — one failed delete must not stop the rest
             failed += 1

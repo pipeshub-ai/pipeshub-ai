@@ -46,7 +46,7 @@ def mock_dep():
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_records_in_record_group = AsyncMock(return_value=[])
-    proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     u = User(
@@ -1333,7 +1333,7 @@ class TestFolderFilter:
         assert isinstance(saved["FILE/bucket/b1"]["listing_started_at"], int)
         # The read before listing and the scope cleanup; the failed listing looks for no deletions.
         assert connector.data_entities_processor.get_records_in_record_group.await_count == 2
-        connector.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+        connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_failed_object_clears_the_resume_token(self, connector):
@@ -1385,13 +1385,13 @@ class TestFolderFilter:
         self._prepare(connector, {"reports/": []})
         processor = connector.data_entities_processor
         processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a, **kw: [_out_of_scope_record()])
-        processor.on_records_deleted_cascade = AsyncMock(side_effect=[Exception("graph down"), {"success": True}])
+        processor.on_record_deleted = AsyncMock(side_effect=[Exception("graph down"), None])
 
         await connector._sync_bucket("b1")
         await connector._sync_bucket("b1")
         await connector._sync_bucket("b1")
 
-        assert processor.on_records_deleted_cascade.await_count == 2
+        assert processor.on_record_deleted.await_count == 2
         # Two reads per sync, plus a scope cleanup until one succeeds.
         assert processor.get_records_in_record_group.await_count == 8
 
@@ -1414,7 +1414,7 @@ class TestFolderFilter:
         await connector._sync_bucket("b1")
 
         assert prefixes == [None]
-        connector.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+        connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
 
 

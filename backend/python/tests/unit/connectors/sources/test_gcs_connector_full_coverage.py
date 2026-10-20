@@ -77,7 +77,7 @@ def mock_data_entities_processor():
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_records_in_record_group = AsyncMock(return_value=[])
-    proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.initialize = AsyncMock()

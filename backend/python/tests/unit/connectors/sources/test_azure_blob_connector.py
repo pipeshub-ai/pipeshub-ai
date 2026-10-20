@@ -45,12 +45,11 @@ def mock_data_entities_processor():
     
     proc = MagicMock(spec=AzureBlobDataSourceEntitiesProcessor)
     proc.org_id = "org-az-1"
-    proc.config_service = None
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_records_in_record_group = AsyncMock(return_value=[])
-    proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
@@ -334,7 +333,7 @@ def mock_data_entities_processor_cov():
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_records_in_record_group = AsyncMock(return_value=[])
-    proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
@@ -1335,7 +1334,7 @@ def mock_dep():
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_records_in_record_group = AsyncMock(return_value=[])
-    proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.get_record_by_external_id = AsyncMock(return_value=None)
@@ -2701,12 +2700,12 @@ class TestFolderFilter:
         self._prepare(c, {"reports/": []})
         processor = c.data_entities_processor
         processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a, **kw: [_out_of_scope_record()])
-        processor.on_records_deleted_cascade = AsyncMock(side_effect=[Exception("graph down"), {"success": True}])
+        processor.on_record_deleted = AsyncMock(side_effect=[Exception("graph down"), None])
 
         await c._sync_container("c1")
         await c._sync_container("c1")
 
-        assert processor.on_records_deleted_cascade.await_count == 2
+        assert processor.on_record_deleted.await_count == 2
 
     @pytest.mark.asyncio
     async def test_a_listing_that_breaks_off_saves_no_checkpoint(self, azure_blob_connector):
