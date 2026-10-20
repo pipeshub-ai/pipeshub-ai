@@ -23,10 +23,16 @@ usage_usec() {
     for id in $ids; do
         v=$(awk '/^usage_usec/{print $2}' "/sys/fs/cgroup/system.slice/docker-$id.scope/cpu.stat" 2>/dev/null \
             || $DOCKER exec "$id" awk '/^usage_usec/{print $2}' /sys/fs/cgroup/cpu.stat 2>/dev/null)
-        tot=$((tot + ${v:-0}))
+        [ -n "$v" ] || { echo -1; return; }
+        tot=$((tot + v))
     done
     echo "$tot"
 }
+
+if [ "$(usage_usec)" -lt 0 ]; then
+    echo "   WARN: cannot read container CPU counters (needs cgroup v2), not waiting for idle"
+    exit 0
+fi
 
 start=$(date +%s)
 while :; do
@@ -35,7 +41,9 @@ while :; do
     b=$(usage_usec); t1=$(date +%s.%N)
     cpu=$(awk -v a="$a" -v b="$b" -v t0="$t0" -v t1="$t1" 'BEGIN{printf "%.0f", (b - a) / ((t1 - t0) * 1e6) * 100}')
     waited=$(( $(date +%s) - start ))
-    if [ "$cpu" -le "$MAX" ]; then
+    # A failed read (-1) or a counter that went backwards (container restart)
+    # says nothing about load: sample again, as resource_sampler.sh does.
+    if [ "$a" -ge 0 ] && [ "$b" -ge 0 ] && [ "$cpu" -ge 0 ] && [ "$cpu" -le "$MAX" ]; then
         echo "   stack quiet: ${cpu}% of one core over ${WINDOW}s (limit ${MAX}%), waited ${waited}s"
         exit 0
     fi

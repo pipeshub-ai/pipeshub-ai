@@ -50,8 +50,8 @@ def container(pattern: str, explicit: str | None) -> str:
 
 def cypher(neo4j: str, password: str, query: str) -> list[list[str]]:
     out = subprocess.run(
-        ["docker", "exec", neo4j, "cypher-shell", "-u", "neo4j", "-p", password, "--format", "plain", query],
-        capture_output=True, text=True,
+        ["docker", "exec", "-e", "NEO4J_PASSWORD", neo4j, "cypher-shell", "-u", "neo4j", "--format", "plain", query],
+        capture_output=True, text=True, env={**os.environ, "NEO4J_PASSWORD": password},
     )
     if out.returncode != 0:
         sys.exit(f"cypher-shell failed: {out.stderr.strip()}")
@@ -105,6 +105,8 @@ def main() -> None:
             out.append(rng.choice(TEMPLATES.get(connector, DEFAULT_TEMPLATE)).format(n=name))
             quota -= 1
     rng.shuffle(out)
+    if args.count:
+        out = out[:args.count]
     with open(args.out, "w", encoding="utf-8") as f:
         f.write("# One question per indexed record, written by make_queries.py.\n")
         f.write("# Use with PIPESHUB_QUERY_ORDER=unique so no question repeats within a run.\n")

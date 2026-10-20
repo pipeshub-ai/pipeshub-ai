@@ -26,11 +26,13 @@ fi
 # both: an instrumented run emits BOTH, and summing them doubles every turn.
 LOGTEXT=$(log_read "$START" "$END")
 marks=$(printf '%s' "$LOGTEXT" | grep -ac 'step=finalize' || true)
+marker=
 if [ "$marks" -eq 0 ]; then
+    marker=${PIPESHUB_TURN_MARKER:-$TURN_DONE_RE}
     # One line per finished turn (TURN_DONE_RE). Counting every AnswerFinalizer
     # line doubles a turn that warns "answer empty after normalization" and then
     # still logs "finalized response".
-    marks=$(printf '%s' "$LOGTEXT" | grep -aEc "${PIPESHUB_TURN_MARKER:-$TURN_DONE_RE}" || true)
+    marks=$(printf '%s' "$LOGTEXT" | grep -aEc "$marker" || true)
 fi
 
 # A turn whose agent run raised still finalizes and still returns HTTP 200: the
@@ -38,7 +40,10 @@ fi
 # unnoticed, and a failed turn is shorter than a real one, so they inflate the
 # rate. They are subtracted here and reported, and above 5% the run is INVALID.
 failed=$(printf '%s' "$LOGTEXT" | grep -ac 'AnswerFinalizer: agent run failed' || true)
-marks=$(( marks > failed ? marks - failed : 0 ))
+# step=finalize counts failed turns too; a custom marker may not.
+counted=$failed
+[ -n "$marker" ] && counted=$(printf '%s' "$LOGTEXT" | grep -aE "$marker" | grep -ac 'AnswerFinalizer: agent run failed' || true)
+marks=$(( marks > counted ? marks - counted : 0 ))
 citations=$(printf '%s' "$LOGTEXT" | grep -ao 'finalized response ([0-9]* chars, [0-9]* citations)' \
     | sed -E 's/.*, ([0-9]+) citations\)/\1/' | tr '\n' ' ')
 reasons=$(printf '%s' "$LOGTEXT" | grep -a 'AnswerFinalizer: agent run failed' \

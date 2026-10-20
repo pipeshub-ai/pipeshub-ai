@@ -206,7 +206,7 @@ for a in sys.argv[1:]: print(time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(int(
 log_read() {
     local mark=$1 from="" to=""
     if [ "$PIPESHUB_MODE" = "docker" ] && [ -n "${PIPESHUB_LOG_CAPTURE:-}" ] && [ -s "$PIPESHUB_LOG_CAPTURE" ]; then
-        { read -r from; read -r to; } < <(iso_utc "$mark" "${2:-4102444800}" 2>/dev/null)
+        { read -r from; read -r to; } < <(iso_utc "$mark" "${2:-4102444800}" 2>/dev/null | tr -d '\r')
     fi
     if [ -n "$from" ] && [ -n "$to" ]; then
         awk -v f="$from" -v t="$to" '{ ts = substr($1, 1, 19) }

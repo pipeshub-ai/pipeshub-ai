@@ -142,11 +142,19 @@ fi
 
 say "== $LABEL: $USERS users, ${SECS}s, ${#QUERIES[@]} quer$([ ${#QUERIES[@]} -eq 1 ] && echo y || echo ies), host $HOST, mode $PIPESHUB_MODE"
 say "== started $(date -u +%H:%M:%SZ)"
+FLAME=${PIPESHUB_FLAME:-cpu}
+case "$FLAME" in
+  cpu)  PYSPY_MODE=(--gil) ;;
+  wall) PYSPY_MODE=(--idle) ;;
+  off)  ;;
+  *) say "ABORT: PIPESHUB_FLAME must be cpu, wall or off, got '$FLAME'."; exit 1 ;;
+esac
 START=$(log_mark)
 if [ "$PIPESHUB_MODE" = "docker" ]; then
   export PIPESHUB_LOG_CAPTURE="$OUTDIR/server.log"
   $DOCKER logs --follow --timestamps --since "$START" "$CONTAINER" > "$PIPESHUB_LOG_CAPTURE" 2>&1 &
   LOGCAP_PID=$!
+  trap '[ -n "${LOGCAP_PID:-}" ] && kill "$LOGCAP_PID" 2>/dev/null' EXIT
 fi
 WALL_START=$(date -u +%s)
 
@@ -156,13 +164,6 @@ WALL_START=$(date -u +%s)
 #        Awaits still show as the event loop's select(), not as the coroutine.
 # Two recorders: the SVG is py-spy's interactive one; speedscope keeps the timeline
 # and per-thread split, and cpu.raw for top_functions.py is folded from it.
-FLAME=${PIPESHUB_FLAME:-cpu}
-case "$FLAME" in
-  cpu)  PYSPY_MODE=(--gil) ;;
-  wall) PYSPY_MODE=(--idle) ;;
-  off)  ;;
-  *) say "ABORT: PIPESHUB_FLAME must be cpu, wall or off, got '$FLAME'."; exit 1 ;;
-esac
 if [ "$FLAME" = off ]; then
   :
 elif command -v py-spy >/dev/null 2>&1 || [ -x "$HOME/.local/bin/py-spy" ]; then
