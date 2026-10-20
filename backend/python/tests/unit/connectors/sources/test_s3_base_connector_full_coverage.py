@@ -811,7 +811,8 @@ class TestRunIncrementalSync:
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(return_value=_resp(False, error="denied"))
-        await connector.run_incremental_sync()
+        with pytest.raises(ConnectionError, match="denied"):
+            await connector.run_incremental_sync()
 
 
 class TestSyncBucket:

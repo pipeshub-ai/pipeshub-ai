@@ -32,7 +32,7 @@ from app.connectors.sources.s3.base_connector import (
 )
 from app.connectors.sources.s3.connector import S3Connector
 from app.models.entities import FileRecord, Record, RecordType, User
-from app.services.notification.types import NotificationSeverity
+from app.services.notification.types import NotificationSeverity, NotificationType
 
 
 # ---------------------------------------------------------------------------
@@ -1420,6 +1420,24 @@ class TestRunIncrementalSync:
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_failed_list_buckets_raises_and_notifies(self, mock_filters, s3_connector):
+        """PP-117: as in the full sync, a run that could not list the buckets must not pass for a sync."""
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        s3_connector.data_source = MagicMock()
+        s3_connector.data_source.list_buckets = AsyncMock(return_value=_make_response(False, error="AccessDenied"))
+        s3_connector.notify = AsyncMock()
+        s3_connector._sync_buckets = AsyncMock()
+
+        with pytest.raises(ConnectionError, match="AccessDenied"):
+            await s3_connector.run_incremental_sync()
+
+        notice = s3_connector.notify.await_args.kwargs
+        assert notice["type"] == NotificationType.CONNECTOR_SYNC_ERROR
+        assert notice["title"] == s3_connector._notification_title("Failed to list buckets")
+        s3_connector._sync_buckets.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
     async def test_bucket_sync_error_continues(self, mock_filters, s3_connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         s3_connector.data_source = MagicMock()
@@ -2305,7 +2323,8 @@ class TestRunIncrementalSyncFullCoverage:
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(return_value=_resp(False, error="denied"))
-        await connector.run_incremental_sync()
+        with pytest.raises(ConnectionError, match="denied"):
+            await connector.run_incremental_sync()
 
 
 class TestSyncBucketFullCoverage:

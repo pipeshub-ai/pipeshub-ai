@@ -454,20 +454,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
             else:
                 self.logger.info("Listing all buckets...")
-                buckets_response = await self._list_all_buckets()
-                if not buckets_response.success:
-                    err = buckets_response.error or "unknown error"
-                    self.logger.error(f"Failed to list buckets: {err}")
-                    await self.notify(
-                        type=NotificationType.CONNECTOR_SYNC_ERROR,
-                        title=self._notification_title("Failed to list buckets"),
-                        message=f"Failed to list buckets: {err}. "
-                        "Check credentials and s3:ListAllMyBuckets / bucket access.",
-                        severity=NotificationSeverity.ERROR,
-                    )
-                    raise ConnectionError(f"Failed to list {self.connector_name} buckets: {err}")
-
-                list_buckets_payload = buckets_response.data["Buckets"]
+                list_buckets_payload = await self._list_buckets_or_raise()
                 buckets_to_sync = [
                     bucket.get("Name") for bucket in list_buckets_payload
                     if name_passes_filter(sync_filters, "buckets", bucket.get("Name"))
@@ -646,6 +633,22 @@ class S3CompatibleBaseConnector(BaseConnector):
             token = (response.data or {}).get("ContinuationToken")
             if not token:
                 return S3Response(success=True, data={"Buckets": buckets})
+
+    async def _list_buckets_or_raise(self) -> list[dict]:
+        """Every bucket, or a notification and ConnectionError: an empty run must not pass for a sync."""
+        response = await self._list_all_buckets()
+        if not response.success:
+            err = response.error or "unknown error"
+            self.logger.error(f"Failed to list buckets: {err}")
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                title=self._notification_title("Failed to list buckets"),
+                message=f"Failed to list buckets: {err}. "
+                "Check credentials and s3:ListAllMyBuckets / bucket access.",
+                severity=NotificationSeverity.ERROR,
+            )
+            raise ConnectionError(f"Failed to list {self.connector_name} buckets: {err}")
+        return response.data["Buckets"]
 
     async def _get_bucket_region(self, bucket_name: str) -> str:
         """Get the region for a bucket, using cache if available."""
@@ -1276,7 +1279,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             self.logger.error(f"Stopping {self.connector_name} sync: {e}")
             await self.notify(
                 type=NotificationType.CONNECTOR_SYNC_ERROR,
-                title="Sync stopped",
+                title=self._notification_title("Sync stopped"),
                 message="The owner of this personal connector could not be looked up, so nothing was synced. "
                 "Existing access is unchanged. The next sync tries again.",
                 severity=NotificationSeverity.ERROR,
@@ -1763,12 +1766,10 @@ class S3CompatibleBaseConnector(BaseConnector):
                 buckets_to_sync = selected_buckets
                 self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
             else:
-                buckets_response = await self._list_all_buckets()
-                if buckets_response.success:
-                    buckets_to_sync = [
-                        bucket.get("Name") for bucket in buckets_response.data["Buckets"]
-                        if name_passes_filter(sync_filters, "buckets", bucket.get("Name"))
-                    ]
+                buckets_to_sync = [
+                    bucket.get("Name") for bucket in await self._list_buckets_or_raise()
+                    if name_passes_filter(sync_filters, "buckets", bucket.get("Name"))
+                ]
 
             if not buckets_to_sync:
                 self.logger.warning("No buckets to sync")
