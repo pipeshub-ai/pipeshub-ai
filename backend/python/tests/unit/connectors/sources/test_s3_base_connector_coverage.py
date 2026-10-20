@@ -298,9 +298,8 @@ class TestCreateRecordGroupsForBuckets:
     async def test_personal_scope_no_creator(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = None
-        with pytest.raises(LookupError):
-            await s3_connector._create_record_groups_for_buckets(["bucket1"])
-        s3_connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
+        await s3_connector._create_record_groups_for_buckets(["bucket1"])
+        s3_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_empty_bucket_names(self, s3_connector):
@@ -318,9 +317,10 @@ class TestCreateRecordGroupsForBuckets:
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
         s3_connector.data_entities_processor.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
-        with pytest.raises(RuntimeError):
-            await s3_connector._create_record_groups_for_buckets(["bucket1"])
-        s3_connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
+        await s3_connector._create_record_groups_for_buckets(["bucket1"])
+        # Buckets carry no permission edges, so the creator is never looked up here.
+        s3_connector.data_entities_processor.get_user_by_user_id.assert_not_awaited()
+        s3_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
 
 # ===========================================================================

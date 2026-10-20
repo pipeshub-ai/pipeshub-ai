@@ -278,6 +278,7 @@ class FakeRecordsDb:
         self.users: dict[str, Any] = {}
         self.record_permissions: dict[str, list[Any]] = {}
         self.group_permissions: dict[str, list[Any]] = {}
+        self.app_users: list[Any] = []
 
     def _check(self, method: str) -> None:
         if method in self.failing:
@@ -397,7 +398,7 @@ class FakeRecordsDb:
         return self.users.get(user_id)
 
     async def on_new_app_users(self, users: list[Any]) -> None:
-        return None
+        self.app_users.extend(users)
 
 
 class FakeCheckpointStore:
