@@ -427,13 +427,10 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
         return ref_to_url[inner_ref]
     return target
 
-# Any ``[text](ref…)`` link.  Only ``ref<digits>`` targets can ever resolve
-# (``_MD_LINK_PATTERN``), and those that did were already rewritten to
-# ``[N](url)`` by the time this runs, so whatever still matches is dead.
-_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _ANY_REF_TARGET + r'\)')
-# A ``[text](https://refN.xyz)`` web-citation alias that matched no read page, usually one the
-# model made up.
-_UNRESOLVED_WEB_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(https?://ref\d+\.xyz/?\)')
+# A ``[text](ref…)`` or ``[text](https://refN.xyz)`` link.  Resolvable refs were already
+# rewritten to ``[N](url)`` by the time this runs, so whatever still matches is dead.  One
+# pattern, so a later link sees every earlier one already stripped.
+_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _REF_TOKEN + r'\)')
 _CITATION_LABEL_RE = re.compile(
     r'^\s*(?:(?:sources?|refs?|links?|citations?)\s*#?\s*\d*|\d+(?:\s*[,;]\s*\d+)*)?\s*$', re.IGNORECASE,
 )
@@ -540,7 +537,6 @@ def _strip_unresolved_ref_citations(text: str) -> str:
         kept = m.group(1).strip()
         return '' if _already_written(kept, written) else kept
 
-    text = sub_in_order(_UNRESOLVED_WEB_REF_LINK_RE, text, _keep_text)
     return sub_in_order(_UNRESOLVED_REF_LINK_RE, text, _keep_text)
 
 

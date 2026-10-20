@@ -44,14 +44,15 @@ from app.utils.citations import kept_citation_link_text, sub_in_order
 
 # Matches [text](url) where text is NOT purely digits (already-numbered
 # citations are left alone) and the target is a citation reference:
-#   - tiny ref:   [source](ref5)  or  [source](https://ref5.xyz)
-#   - record URL: [source](https://host/record/{uuid}/preview#blockIndex=N)
+#   - tiny ref:   [source](ref5)  or  [source](https://ref5.xyz)  -> group "ref"
+#   - record URL: [source](https://host/record/{uuid}/preview#blockIndex=N)  -> group "record"
 # The tiny-ref path is the primary one (TINY_URL_THRESHOLD=0 aliases all URLs).
-_NON_NUMBERED_TINY_REF_LINK_RE = re.compile(
-    r'\[(?!\d+\])([^\]]*)\]\(((?:https?://)?ref(\d+)(?:\.xyz/?)?[^)]*)\)'
-)
-_NON_NUMBERED_RECORD_LINK_RE = re.compile(
-    r'\[(?!\d+\])([^\]]*)\]\(([^)]*\/record\/([a-f0-9-]+)[^)]*)\)'
+# One pattern, so a link sees every earlier one already rewritten.
+_NON_NUMBERED_CITATION_LINK_RE = re.compile(
+    r'\[(?!\d+\])([^\]]*)\]\(('
+    r'(?:https?://)?ref(?P<ref>\d+)(?:\.xyz/?)?[^)]*'
+    r'|[^)]*\/record\/(?P<record>[a-f0-9-]+)[^)]*'
+    r')\)'
 )
 
 if TYPE_CHECKING:
@@ -233,22 +234,13 @@ class TranscriptCollector(EventEmitter):
             kept = kept_citation_link_text(m.group(1), written)
             return f"{kept} [{num}]({url})" if kept else f"[{num}]({url})"
 
-        def _ref_replacer(m: re.Match[str], written: str) -> str:
-            key = f"ref{m.group(3)}"
-            url = m.group(2)
+        def _replacer(m: re.Match[str], written: str) -> str:
+            key = f"ref{m.group('ref')}" if m.group('ref') is not None else m.group('record')
             if key not in seen:
                 seen[key] = len(seen) + 1
-            return _badge(m, written, seen[key], url)
+            return _badge(m, written, seen[key], m.group(2))
 
-        def _record_replacer(m: re.Match[str], written: str) -> str:
-            record_id = m.group(3)
-            url = m.group(2)
-            if record_id not in seen:
-                seen[record_id] = len(seen) + 1
-            return _badge(m, written, seen[record_id], url)
-
-        text = sub_in_order(_NON_NUMBERED_TINY_REF_LINK_RE, text, _ref_replacer)
-        return sub_in_order(_NON_NUMBERED_RECORD_LINK_RE, text, _record_replacer)
+        return sub_in_order(_NON_NUMBERED_CITATION_LINK_RE, text, _replacer)
 
     def _detach_last_text(self, container: list[MessagePart], run_id: str) -> str:
         """Removes `run_id`'s last ended text part (a reply cut off at the

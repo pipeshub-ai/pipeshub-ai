@@ -464,3 +464,15 @@ class TestNarrationCitations:
         await collector.emit(_event(EventType.TEXT_MESSAGE_END, {}))
 
         assert collector.parts[0]["content"] == "See the pricing review [1](ref1) [2](ref2)."
+
+    async def test_a_record_link_before_a_ref_link_writes_their_text_once(self) -> None:
+        collector = TranscriptCollector()
+        record = "https://host/record/abc-123/preview"
+        text = f"See [Pricing]({record}) [Pricing](ref1)."
+
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": text}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_END, {}))
+
+        assert collector.parts[0]["content"] == f"See Pricing [1]({record}) [2](ref1)."

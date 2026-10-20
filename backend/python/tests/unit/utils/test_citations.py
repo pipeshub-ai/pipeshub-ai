@@ -2592,6 +2592,12 @@ class TestDescriptiveLinkTextIsKept:
         out = self._normalize(normalizer, "The Q2 forecast [Q2 forecast](ref99) slipped. Cap 15% [source](ref1).")
         assert out == f"The Q2 forecast  slipped. Cap 15% [1]({self.U1})."
 
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    @pytest.mark.parametrize("first,second", [("ref98", "https://ref99.xyz"), ("https://ref99.xyz", "ref98")])
+    def test_two_dead_links_of_either_shape_write_their_text_once(self, normalizer, first, second) -> None:
+        out = self._normalize(normalizer, f"See [Q2 forecast]({first}) [Q2 forecast]({second}). Cap 15% [source](ref1).")
+        assert out == f"See Q2 forecast . Cap 15% [1]({self.U1})."
+
     def test_streamed_prefixes_only_ever_grow(self) -> None:
         """The streaming path emits ``normalized[prev_len:]`` per chunk, so the
         normalized text of a prefix must be a prefix of the next one."""
