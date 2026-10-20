@@ -1222,7 +1222,7 @@ class AzureFilesConnector(BaseConnector):
             return set(), True
 
         try:
-            await self._write_moves(move_candidates, seen)
+            await self._write_moves(move_candidates, seen, paths_by_revision)
             await flush(force=True)
         except Exception as e:
             complete = False
@@ -1262,26 +1262,44 @@ class AzureFilesConnector(BaseConnector):
         self,
         candidates: list[tuple[str, FileRecord, list[Permission]]],
         seen: set[str],
+        paths_by_revision: dict[str, list[str]] | None = None,
     ) -> None:
         """Write the items found under a stored record's FileId at a new path.
 
-        Only once the whole share is listed is it known whether the old path is
-        still there: then the item is a copy that kept its FileId (AzCopy, robocopy)
-        and gets a record of its own; otherwise the stored record moves, keeping
-        its index when the content did not change.
+        Only once the whole share is listed is it known which stored paths are
+        gone. Each new path takes one of those with its revision (the record moves,
+        keeping its index when the content did not change); a new path left with
+        none is a copy that kept its FileId (AzCopy, robocopy) and gets a record
+        of its own.
         """
         moves: list[tuple[str, FileRecord, list[Permission]]] = []
         copies: list[tuple[FileRecord, list[Permission]]] = []
-        moved_ids: set[str] = set()
+        taken: set[str] = set()
         for old_external_id, record, permissions in candidates:
-            # A stored record moves once; any other path with its FileId is a copy.
-            if old_external_id in seen or record.id in moved_ids:
+            if paths_by_revision is None:
+                gone = [] if old_external_id in seen else [old_external_id]
+            else:
+                gone = paths_by_revision.get(record.external_revision_id or "", [])
+            gone = [path for path in gone if path not in seen and path not in taken]
+            old_path = old_external_id if old_external_id in gone else next(iter(gone), None)
+            stored = None
+            if old_path and old_path != old_external_id:
+                # Paired with another stored path of the same revision than the one picked
+                # while the share was still being listed: take that record's identity.
+                stored = await self.data_entities_processor.get_record_by_external_id(self.connector_id, old_path)
+                if stored is None:
+                    old_path = None
+            if old_path is None:
                 record.id = str(uuid.uuid4())
                 record.version = 0
                 copies.append((record, permissions))
-            else:
-                moved_ids.add(record.id)
-                moves.append((old_external_id, record, permissions))
+                continue
+            if stored is not None:
+                record.id = stored.id
+                record.version = stored.version + 1
+                record.source_created_at = stored.source_created_at
+            taken.add(old_path)
+            moves.append((old_path, record, permissions))
         for start in range(0, len(moves), self.batch_size):
             await self.data_entities_processor.on_records_moved(moves[start:start + self.batch_size])
         for start in range(0, len(copies), self.batch_size):

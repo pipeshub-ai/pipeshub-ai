@@ -106,6 +106,8 @@ class FakeProcessor:
         self.kept: list[str] = []
         self.groups: set[str] = set()
         self.full_sync = False
+        # The graph does not order get_nodes_by_filters.
+        self.reverse_nodes = False
 
     def _store(self, record) -> None:
         for ext, existing in list(self.records.items()):
@@ -141,7 +143,7 @@ class FakeProcessor:
             return [{"externalGroupId": g} for g in sorted(self.groups)]
         assert collection == CollectionNames.RECORDS.value
         out = []
-        for r in self.records.values():
+        for r in (reversed(list(self.records.values())) if self.reverse_nodes else self.records.values()):
             if "externalGroupId" in filters and r.external_record_group_id != filters["externalGroupId"]:
                 continue
             out.append({
@@ -398,6 +400,24 @@ class TestB3FileIdAcrossShares:
         proc.full_sync = True
         await _sync(conn)
         assert proc.records["s/new.txt"].id == rid
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    async def test_rename_beside_a_same_file_id_copy_keeps_both_records(self, reverse: bool) -> None:
+        ds = FakeDataSource({})
+        ds.add("s", "a.txt", file_id="7")
+        ds.add("s", "b.txt", file_id="7")  # a copy that kept FileId, size and time
+        proc = FakeProcessor()
+        proc.reverse_nodes = reverse  # the survivor first, or the renamed one
+        conn = _connector(ds, proc, shares=["s"])
+        await _sync(conn)
+        a_id, b_id = proc.records["s/a.txt"].id, proc.records["s/b.txt"].id
+        item = ds.shares["s"].pop("a.txt")
+        ds.shares["s"]["c.txt"] = {**item, "name": "c.txt", "path": "c.txt"}
+        await _sync(conn)
+        assert proc.records["s/c.txt"].id == a_id
+        assert proc.records["s/b.txt"].id == b_id
+        assert "s/a.txt" not in proc.records
+        assert proc.moved_calls == [[("s/a.txt", "s/c.txt")]]
 
     async def test_copy_keeping_file_id_in_same_share_is_not_a_move(self) -> None:
         ds = FakeDataSource({})
