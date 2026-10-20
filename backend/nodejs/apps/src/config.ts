@@ -4,6 +4,11 @@ export { Org } from './modules/user_management/schema/org.schema';
 
 // --- Shared cross-cutting middleware ---
 export { AuthMiddleware } from './libs/middlewares/auth.middleware';
+// Session rules for connections that outlive a single request (the desktop socket).
+export {
+  findSessionRefusal,
+  findSessionRefusals,
+} from './libs/utils/user-session.utils';
 
 // --- Storage & connectors ---
 export { StorageContainer } from './modules/storage/container/storage.container';
