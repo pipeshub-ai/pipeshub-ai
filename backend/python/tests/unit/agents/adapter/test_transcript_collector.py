@@ -438,3 +438,18 @@ class TestLargeToolArgsStayParseable:
         """`default=str` handled this before; it still has to."""
         part = await self._tool_call_part({"when": object(), "code": "x" * 5000})
         assert json.loads(part["args"])
+
+
+class TestNarrationCitations:
+    async def test_descriptive_link_text_is_kept_before_the_badge(self) -> None:
+        collector = TranscriptCollector()
+        text = "Per the [Velora renewal](ref5), the cap is 15% [source](https://ref6.xyz)."
+
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": text}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_END, {}))
+
+        assert collector.parts[0]["content"] == (
+            "Per the Velora renewal [1](ref5), the cap is 15% [2](https://ref6.xyz)."
+        )

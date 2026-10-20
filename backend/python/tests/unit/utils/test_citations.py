@@ -3,6 +3,8 @@
 import re
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.models.blocks import BlockType, GroupType
 import app.utils.citations as citations_mod
 
@@ -1154,14 +1156,12 @@ class TestRenumberCitationLinksMarkdownPattern:
         out = _renumber_citation_links(text, matches, {page: 9})
         assert "[9]" in out
 
-    def test_descriptive_link_text_replaced_with_numeric_badge(self):
-        """``_renumber_citation_links`` always emits ``[N](full_url)`` (discards anchor text)."""
+    def test_descriptive_link_text_kept_before_numeric_badge(self):
         page = "https://readable.example/guide"
         text = f"Details in [Installation guide]({page}) please."
         matches = list(re.finditer(citations_mod._MD_LINK_PATTERN, text))
         out = _renumber_citation_links(text, matches, {page: 4})
-        assert out == f"Details in [4]({page}) please."
-        assert "[Installation guide]" not in out
+        assert out == f"Details in Installation guide [4]({page}) please."
 
 
 class TestChatDocCitation:
@@ -2499,3 +2499,94 @@ class TestDeadRefLinksWithNonNumericIds:
             )
             assert normalized == f"Shipped [1]({url}) .", answer
             assert len(cites) == 1
+
+
+class TestDescriptiveLinkTextIsKept:
+    """A model that writes a title as link text ("In the [Velora renewal](ref1), …")
+    must not lose those words when the link becomes a numbered badge."""
+
+    U1 = _url(REC1, 0)
+    U2 = _url(REC2, 3)
+    DOCS = [
+        _make_doc(REC1, 0, "discount cap 15%", block_web_url=_url(REC1, 0)),
+        _make_doc(REC2, 3, "security review", block_web_url=_url(REC2, 3)),
+    ]
+    REFS = {"ref1": _url(REC1, 0), "ref2": _url(REC2, 3)}
+    NORMALIZERS = [normalize_citations_and_chunks, normalize_citations_and_chunks_for_agent]
+
+    def _normalize(self, normalizer, answer: str) -> str:
+        text, _ = normalizer(answer, self.DOCS, records=[], ref_to_url=self.REFS)
+        return text
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_title_link_keeps_its_text_before_the_badge(self, normalizer) -> None:
+        out = self._normalize(normalizer, "In the [Velora AI Solutions opportunity](ref1), the cap is 15%.")
+        assert out == f"In the Velora AI Solutions opportunity [1]({self.U1}), the cap is 15%."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    @pytest.mark.parametrize("label", ["source", "Sources", "1", "ref", "ref 2", "Source #3", "1, 2", "", " "])
+    def test_generic_label_becomes_only_the_badge(self, normalizer, label) -> None:
+        out = self._normalize(normalizer, f"The cap is 15% [{label}](ref1).")
+        assert out == f"The cap is 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    @pytest.mark.parametrize("label", [
+        "ref1", "https://ref1.xyz", _url(REC1, 0), "<http://app.example.com/record/x>",
+        "444d5fad-0bf9-4daa-8c29-cc133ca4a3a6", "`65f1c0de9a1b2c3d4e5f6a7b`",
+    ])
+    def test_link_text_that_restates_the_target_is_dropped(self, normalizer, label) -> None:
+        out = self._normalize(normalizer, f"The cap is 15% [{label}](ref1).")
+        assert out == f"The cap is 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_several_links_in_one_sentence(self, normalizer) -> None:
+        out = self._normalize(
+            normalizer,
+            "Both the [Velora renewal](ref2) and the [pricing review](ref1) cap it [source](ref1).",
+        )
+        assert out == (
+            f"Both the Velora renewal [1]({self.U2}) and the pricing review [2]({self.U1})"
+            f" cap it [2]({self.U1})."
+        )
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_same_target_gets_the_same_number(self, normalizer) -> None:
+        out = self._normalize(normalizer, "The [pricing review](ref1) says 15%; the [pricing review](ref1) also caps it.")
+        assert out == (
+            f"The pricing review [1]({self.U1}) says 15%; the pricing review [1]({self.U1}) also caps it."
+        )
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_text_already_written_before_the_link_is_not_repeated(self, normalizer) -> None:
+        out = self._normalize(normalizer, "The pricing review [Pricing Review](ref1) caps it.")
+        assert out == f"The pricing review [1]({self.U1}) caps it."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_text_is_not_dropped_for_a_partial_word_match(self, normalizer) -> None:
+        out = self._normalize(normalizer, "An opinion [ion](ref1) here.")
+        assert out == f"An opinion ion [1]({self.U1}) here."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_one_link_to_several_refs_writes_the_text_once(self, normalizer) -> None:
+        out = self._normalize(normalizer, "Per the [pricing review](ref1, ref2), 15%.")
+        assert out == f"Per the pricing review [1]({self.U1}) [2]({self.U2}), 15%."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_dead_ref_keeps_descriptive_text_and_drops_a_label(self, normalizer) -> None:
+        out = self._normalize(normalizer, "In the [Q2 forecast](ref99), it held [source](ref98). Cap 15% [source](ref1).")
+        assert out == f"In the Q2 forecast, it held . Cap 15% [1]({self.U1})."
+
+    def test_streamed_prefixes_only_ever_grow(self) -> None:
+        """The streaming path emits ``normalized[prev_len:]`` per chunk, so the
+        normalized text of a prefix must be a prefix of the next one."""
+        answer = (
+            "In the [Velora renewal](ref2), the [pricing review](ref1) caps it at 15% [source](ref1); "
+            "the pricing review [pricing review](ref1) also names an owner."
+        )
+        cuts = [m.end() for m in re.finditer(r"\)", answer)] + [len(answer)]
+        previous = ""
+        for cut in cuts:
+            current = self._normalize(normalize_citations_and_chunks, answer[:cut])
+            assert current.startswith(previous)
+            previous = current
+        assert "Velora renewal [1]" in previous and "pricing review [2]" in previous

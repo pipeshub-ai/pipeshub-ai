@@ -431,10 +431,47 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
 # ``[N](url)`` by the time this runs, so whatever still matches is dead.
 _UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _ANY_REF_TARGET + r'\)')
 # A ``[text](https://refN.xyz)`` web-citation alias that matched no read page, usually one the
-# model made up. The link goes; descriptive text ("India – Wikipedia") stays in the sentence, a
-# bare citation label ("source", "3") goes with it.
+# model made up.
 _UNRESOLVED_WEB_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(https?://ref\d+\.xyz/?\)')
-_CITATION_LABEL_RE = re.compile(r'^\s*(?:sources?|refs?|links?|citations?|\d+)?\s*$', re.IGNORECASE)
+_CITATION_LABEL_RE = re.compile(
+    r'^\s*(?:(?:sources?|refs?|links?|citations?)\s*#?\s*\d*|\d+(?:\s*[,;]\s*\d+)*)?\s*$', re.IGNORECASE,
+)
+# Link text that only restates where the link points: a URL, a ref token, or a record id.
+_LINK_TARGET_TEXT_RE = re.compile(
+    r'^(?:<?(?:https?://|www\.)\S*>?'
+    rf'|{_REF_TOKEN}'
+    r'|[0-9A-Fa-f]{8}(?:-?[0-9A-Fa-f]{4}){3}-?[0-9A-Fa-f]{12}'
+    r'|[0-9A-Fa-f]{24})$'
+)
+_LINK_TEXT_WRAPPERS = ' \t\n`\'"[]()<>'
+_CITATION_BADGE = r'\[\d+\]\([^)]*\)'
+# How far back an already-written copy of the link text is looked for.
+_LINK_TEXT_ECHO_WINDOW = 2000
+
+
+def _is_citation_label(link_text: str) -> bool:
+    """True when link text carries no prose: a generic label ("source", "ref 2")
+    or the target itself (a URL, ref or record id)."""
+    return bool(
+        _CITATION_LABEL_RE.match(link_text)
+        or _LINK_TARGET_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS))
+    )
+
+
+def kept_citation_link_text(link_text: str, preceding: str) -> str:
+    """The prose a citation link keeps in the sentence once its link becomes a badge.
+
+    Empty for a label, and for text the answer already wrote just before the
+    link (``the Q3 review [Q3 review](ref1)``) or before the badges in front of
+    it (``[Q3 review](ref1, ref2)`` expands to one link per ref).
+    """
+    if _is_citation_label(link_text):
+        return ''
+    kept = link_text.strip()
+    echo = re.compile(rf'(?<!\w){re.escape(kept)}\s*(?:{_CITATION_BADGE}\s*)*$', re.IGNORECASE)
+    if echo.search(preceding[-(len(kept) + _LINK_TEXT_ECHO_WINDOW):]):
+        return ''
+    return kept
 
 
 def _renumber_citation_links(
@@ -446,22 +483,26 @@ def _renumber_citation_links(
     """
     Replace citation markdown links with sequential ``[N](url)`` badges.
     Resolves tiny refs to full URLs in the output so the frontend receives full URLs.
-    Processes matches in reverse order to preserve string positions.
 
-    All matched links — whether their text is a generic label ("source") or
-    descriptive ("India - Wikipedia") — are replaced with ``[N](url)`` so the
-    frontend can render them as numbered citation chips.  The original link text
-    is discarded because the citation metadata already stores the title/content.
+    A generic label ("source", "3") is replaced by the badge.  Descriptive text
+    ("the Velora renewal") is part of the sentence, so it stays as plain text
+    in front of the badge: ``the Velora renewal [1](url)``.
     """
-    for match in reversed(md_matches):
+    out = ''
+    pos = 0
+    for match in md_matches:
         raw_target = match.group(2).strip()
         full_url = _resolve_ref(raw_target, ref_to_url)
         new_num = url_to_citation_num.get(full_url)
-        if new_num is not None:
-            replacement = f"[{new_num}]({full_url})"
-            text = text[:match.start()] + replacement + text[match.end():]
-    text = _strip_unresolved_ref_citations(text)
-    return text
+        out += text[pos:match.start()]
+        if new_num is None:
+            out += match.group(0)
+        else:
+            kept = kept_citation_link_text(match.group(1), out)
+            out += f"{kept} [{new_num}]({full_url})" if kept else f"[{new_num}]({full_url})"
+        pos = match.end()
+    out += text[pos:]
+    return _strip_unresolved_ref_citations(out)
 
 
 def _strip_unresolved_ref_citations(text: str) -> str:
@@ -471,12 +512,14 @@ def _strip_unresolved_ref_citations(text: str) -> str:
     conversation turn whose ``CitationRefMapper`` no longer exists, or
     invented by the model from a record id (``[source](ref444d5fad-…)``),
     which no mapper ever mints.  Leaving them renders as broken
-    ``[source](ref209)`` links in the UI.
+    ``[source](ref209)`` links in the UI.  The link goes; descriptive text
+    ("India – Wikipedia") stays in the sentence, a label goes with it.
     """
-    text = _UNRESOLVED_WEB_REF_LINK_RE.sub(
-        lambda m: '' if _CITATION_LABEL_RE.match(m.group(1)) else m.group(1), text,
-    )
-    return _UNRESOLVED_REF_LINK_RE.sub('', text)
+    def _keep_text(m: re.Match) -> str:
+        return '' if _is_citation_label(m.group(1)) else m.group(1).strip()
+
+    text = _UNRESOLVED_WEB_REF_LINK_RE.sub(_keep_text, text)
+    return _UNRESOLVED_REF_LINK_RE.sub(_keep_text, text)
 
 
 def _extract_block_index_from_url(url: str) -> int | None:

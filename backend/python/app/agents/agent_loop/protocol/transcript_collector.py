@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 from app.agent_loop_lib.agent.tool_loop import RESULT_PREVIEW_CHARS
 from app.agent_loop_lib.events.base import EventEmitter, EventType, ToolCallStatus
 from app.agents.agent_loop.protocol.result_views import ResultViewBudget
+from app.utils.citations import kept_citation_link_text
 
 # Matches [text](url) where text is NOT purely digits (already-numbered
 # citations are left alone) and the target is a citation reference:
@@ -211,7 +212,8 @@ class TranscriptCollector(EventEmitter):
 
     @staticmethod
     def _prenormalize_source_citations(text: str) -> str:
-        """Convert ``[source](refN)`` / ``[source](/record/…)`` → ``[N](…)``.
+        """Convert ``[source](refN)`` / ``[source](/record/…)`` → ``[N](…)``,
+        keeping descriptive link text in front of the badge.
 
         During streaming the LLM emits ``[source](ref5)`` (or the tiny-URL
         variant ``[source](https://ref5.xyz)``) instead of ``[N](url)``.
@@ -227,19 +229,23 @@ class TranscriptCollector(EventEmitter):
         """
         seen: dict[str, int] = {}
 
+        def _badge(m: re.Match, num: int, url: str) -> str:
+            kept = kept_citation_link_text(m.group(1), m.string[:m.start()])
+            return f"{kept} [{num}]({url})" if kept else f"[{num}]({url})"
+
         def _ref_replacer(m: re.Match) -> str:
             key = f"ref{m.group(3)}"
             url = m.group(2)
             if key not in seen:
                 seen[key] = len(seen) + 1
-            return f"[{seen[key]}]({url})"
+            return _badge(m, seen[key], url)
 
         def _record_replacer(m: re.Match) -> str:
             record_id = m.group(3)
             url = m.group(2)
             if record_id not in seen:
                 seen[record_id] = len(seen) + 1
-            return f"[{seen[record_id]}]({url})"
+            return _badge(m, seen[record_id], url)
 
         text = _NON_NUMBERED_TINY_REF_LINK_RE.sub(_ref_replacer, text)
         text = _NON_NUMBERED_RECORD_LINK_RE.sub(_record_replacer, text)
