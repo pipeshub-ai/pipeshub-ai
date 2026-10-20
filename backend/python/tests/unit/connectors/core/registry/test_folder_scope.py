@@ -413,6 +413,28 @@ class TestRemoveRecordsNotListed:
         assert [c.args[0][0] for c in processor.on_records_deleted_cascade.await_args_list] == ["gone"]
         assert result == CleanupResult(removed=1, failed=0)
 
+    @pytest.mark.asyncio
+    async def test_a_record_gone_at_the_source_has_its_vectors_deleted(self) -> None:
+        """PP-103: the removal pass reaches the processor's delete, which asks indexing to drop the vectors."""
+        gone = MagicMock(id="gone", external_record_id="b1/q2.pdf", mime_type="application/pdf", is_deleted=False)
+        processor = TestCleanUpScope.real_processor(pages=[[gone]])
+        del processor.on_records_deleted_cascade  # the processor's own delete, not the helper's stand-in
+        tx = await processor.data_store_provider.transaction().__aenter__()
+        tx.delete_records_recursive = AsyncMock(return_value={
+            "success": True, "successfully_deleted": 1, "failed_count": 0,
+            "eventData": {"payloads": [{"recordId": "gone", "virtualRecordId": "vr-gone", "orgId": "org-1"}]},
+        })
+
+        result = await remove_records_not_listed(processor, "c", "b1", [""], set(), logging.getLogger("t"))
+
+        assert result == CleanupResult(removed=1, failed=0)
+        tx.delete_records_recursive.assert_awaited_once_with(
+            ["gone"], "c", cascade_children=False, within_folder_id=None, include_trashed_roots=True,
+        )
+        event = processor.messaging_producer.send_message.await_args[0][1]
+        assert event["eventType"] == "deleteRecord"
+        assert event["payload"]["virtualRecordId"] == "vr-gone"
+
 
 class TestFilterField:
     def test_is_a_free_text_list_defaulting_to_include(self):
