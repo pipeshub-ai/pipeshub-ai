@@ -11,6 +11,7 @@ import mimetypes
 import uuid
 from abc import abstractmethod
 from collections.abc import Callable, Container
+from contextlib import AbstractAsyncContextManager, nullcontext
 from datetime import datetime, timezone
 from logging import Logger
 from typing import Any
@@ -284,6 +285,11 @@ class S3CompatibleBaseConnector(BaseConnector):
     the abstract methods to provide storage-specific behavior.
     """
 
+    # Keys per ListObjectsV2 page, the most S3 returns; batch_size stays the graph write size.
+    list_page_size = 1000
+    # Buckets synced at once; botocore's default pool of 10 connections covers them.
+    bucket_concurrency = 4
+
     def __init__(
         self,
         app: App,
@@ -328,9 +334,9 @@ class S3CompatibleBaseConnector(BaseConnector):
         self.data_source: Any | None = None  # Will be S3DataSource or MinIODataSource
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
-        # Records moved during this listing: two new copies of a deleted object
+        # Records moved during this listing, per bucket: two new copies of a deleted object
         # must not both take its record before the batch naming it is saved.
-        self._moved_record_ids: set[str] = set()
+        self._moved_record_ids: dict[str, set[str]] = {}
         self.bucket_name: str | None = None
         self.region: str | None = None
         self.bucket_regions: dict[str, str] = {}  # Cache for bucket-to-region mapping
@@ -382,6 +388,10 @@ class S3CompatibleBaseConnector(BaseConnector):
 
     async def run_sync(self) -> None:
         """Runs a full synchronization from buckets."""
+        async with self._shared_client():
+            await self._run_full_sync()
+
+    async def _run_full_sync(self) -> None:
         try:
             self.logger.info(f"Starting {self.connector_name} full sync.")
 
@@ -490,23 +500,34 @@ class S3CompatibleBaseConnector(BaseConnector):
             # Create record groups for buckets first
             await self._create_record_groups_for_buckets(buckets_to_sync, bucket_creation_ms)
 
-            # Sync each bucket
-            for bucket_name in buckets_to_sync:
-                if not bucket_name:
-                    continue
-                try:
-                    self.logger.info(f"Syncing bucket: {bucket_name}")
-                    await self._sync_bucket(bucket_name)
-                except Exception as e:
-                    self.logger.error(
-                        f"Error syncing bucket {bucket_name}: {e}", exc_info=True
-                    )
-                    continue
+            await self._sync_buckets(buckets_to_sync)
 
             self.logger.info(f"{self.connector_name} full sync completed.")
         except Exception as ex:
             self.logger.error(f"❌ Error in {self.connector_name} connector run: {ex}", exc_info=True)
             raise
+
+    def _shared_client(self) -> AbstractAsyncContextManager[object]:
+        """One data-source client for the whole run, where the data source offers it."""
+        shared_client = getattr(self.data_source, "shared_client", None)
+        return shared_client() if shared_client else nullcontext()
+
+    async def _sync_buckets(self, bucket_names: list[str]) -> None:
+        """Sync the buckets a few at a time; one failed bucket does not stop the others."""
+        semaphore = asyncio.Semaphore(self.bucket_concurrency)
+
+        async def sync_one(bucket_name: str) -> None:
+            async with semaphore:
+                try:
+                    self.logger.info(f"Syncing bucket: {bucket_name}")
+                    await self._sync_bucket(bucket_name)
+                except Exception as e:
+                    self.logger.error(f"Error syncing bucket {bucket_name}: {e}", exc_info=True)
+
+        async with asyncio.TaskGroup() as tasks:
+            for bucket_name in bucket_names:
+                if bucket_name:
+                    tasks.create_task(sync_one(bucket_name))
 
     async def _create_record_groups_for_buckets(
         self,
@@ -796,7 +817,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.logger.debug(f"Using last_sync_time for incremental sync: {modified_after_ms}")
 
         batch_records = []
-        self._moved_record_ids = set()
+        self._moved_record_ids[bucket_name] = set()
         has_more = True
         listing_failed = False
         failed = FailedItems()
@@ -809,7 +830,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 async with self.rate_limiter:
                     response = await self.data_source.list_objects_v2(
                         Bucket=bucket_name,
-                        MaxKeys=self.batch_size,
+                        MaxKeys=self.list_page_size,
                         ContinuationToken=continuation_token,
                         Prefix=prefix or None,
                     )
@@ -1109,7 +1130,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     self.connector_id, composite_revision
                 )
                 if existing_record and (
-                    existing_record.id in self._moved_record_ids or await self._still_in_bucket(existing_record)
+                    existing_record.id in self._moved_record_ids.get(bucket_name, set()) or await self._still_in_bucket(existing_record)
                 ):
                     self.logger.info(
                         f"New document: {normalized_key} is a copy of {existing_record.external_record_id}, not a move"
@@ -1120,7 +1141,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     # Same composite can only match same key; if path differs it's a move/rename (key changed, etag same)
                     if existing_record.external_record_id != external_record_id:
                         is_move = True
-                        self._moved_record_ids.add(existing_record.id)
+                        self._moved_record_ids.setdefault(bucket_name, set()).add(existing_record.id)
                         self.logger.info(
                             f"Move/rename detected: {normalized_key} - file moved from {existing_record.external_record_id} to {external_record_id}"
                         )
@@ -1719,6 +1740,10 @@ class S3CompatibleBaseConnector(BaseConnector):
 
     async def run_incremental_sync(self) -> None:
         """Run an incremental synchronization from buckets."""
+        async with self._shared_client():
+            await self._run_incremental_sync()
+
+    async def _run_incremental_sync(self) -> None:
         try:
             self.logger.info(f"Starting {self.connector_name} incremental sync.")
 
@@ -1766,17 +1791,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 if bucket_name:
                     await self._get_bucket_region(bucket_name)
 
-            for bucket_name in buckets_to_sync:
-                if not bucket_name:
-                    continue
-                try:
-                    self.logger.info(f"Incremental sync for bucket: {bucket_name}")
-                    await self._sync_bucket(bucket_name)
-                except Exception as e:
-                    self.logger.error(
-                        f"Error in incremental sync for bucket {bucket_name}: {e}", exc_info=True
-                    )
-                    continue
+            await self._sync_buckets(buckets_to_sync)
 
             self.logger.info(f"{self.connector_name} incremental sync completed.")
         except Exception as ex:

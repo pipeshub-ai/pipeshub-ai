@@ -1,4 +1,7 @@
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
@@ -27,6 +30,8 @@ class S3DataSource:
         """Initialize with S3Client."""
         self._s3_client = s3_client
         self._session = None
+        # Per task tree: a call from a request outside shared_client() must not get a client that scope may close.
+        self._shared_client: ContextVar[Any] = ContextVar(f"s3_shared_client_{id(self)}", default=None)
 
     async def _get_aioboto3_session(self) -> aioboto3.Session:  # type: ignore[valid-type]
         """Get or create the aioboto3 session."""
@@ -42,6 +47,31 @@ class S3DataSource:
             #     region_name=credentials['region_name']
             # )
         return self._session
+
+    @asynccontextmanager
+    async def shared_client(self) -> AsyncIterator[None]:
+        """Make every call in this scope, and in tasks started inside it, reuse one client."""
+        if self._shared_client.get() is not None:
+            yield
+            return
+        session = await self._get_aioboto3_session()
+        async with session.client('s3') as s3_client:
+            token = self._shared_client.set(s3_client)
+            try:
+                yield
+            finally:
+                self._shared_client.reset(token)
+
+    @asynccontextmanager
+    async def _client(self) -> AsyncIterator[Any]:
+        """The shared client inside shared_client(), else a new client for this call."""
+        shared = self._shared_client.get()
+        if shared is not None:
+            yield shared
+            return
+        session = await self._get_aioboto3_session()
+        async with session.client('s3') as s3_client:
+            yield s3_client
 
     def _handle_s3_response(self, response: object) -> S3Response:
         """Handle S3 API response with comprehensive error handling."""
@@ -87,8 +117,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'abort_multipart_upload')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -143,8 +172,7 @@ class S3DataSource:
             kwargs['SSECustomerKeyMD5'] = SSECustomerKeyMD5
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'complete_multipart_upload')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -323,8 +351,7 @@ class S3DataSource:
             kwargs['ExpectedSourceBucketOwner'] = ExpectedSourceBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'copy_object')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -387,8 +414,7 @@ class S3DataSource:
             kwargs['ObjectOwnership'] = ObjectOwnership
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'create_bucket')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -529,8 +555,7 @@ class S3DataSource:
             kwargs['ChecksumAlgorithm'] = ChecksumAlgorithm
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'create_multipart_upload')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -561,8 +586,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -595,8 +619,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket_analytics_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -627,8 +650,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket_cors')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -659,8 +681,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket_encryption')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -693,8 +714,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket_intelligent_tiering_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -727,8 +747,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket_inventory_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -759,8 +778,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket_lifecycle')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -793,8 +811,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket_metrics_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -825,8 +842,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket_ownership_controls')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -857,8 +873,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket_policy')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -889,8 +904,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket_replication')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -921,8 +935,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket_tagging')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -953,8 +966,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_bucket_website')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1003,8 +1015,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_object')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1041,8 +1052,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_object_tagging')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1091,8 +1101,7 @@ class S3DataSource:
             kwargs['ChecksumAlgorithm'] = ChecksumAlgorithm
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_objects')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1123,8 +1132,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'delete_public_access_block')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1167,8 +1175,7 @@ class S3DataSource:
             kwargs['Config'] = Config
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'download_file')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1194,7 +1201,7 @@ class S3DataSource:
         Args:
             Bucket (str): Required parameter
             Key (str): Required parameter
-            Fileobj (Any): Required parameter
+            Fileobj (object): Required parameter
             ExtraArgs (Optional[Optional[Dict[str, Any]]]): Optional parameter
             Callback (Optional[object]): Optional parameter
             Config (Optional[object]): Optional parameter
@@ -1211,8 +1218,7 @@ class S3DataSource:
             kwargs['Config'] = Config
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'download_fileobj')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1253,8 +1259,7 @@ class S3DataSource:
             kwargs['ExpiresIn'] = ExpiresIn
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'generate_presigned_post')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1345,8 +1350,7 @@ class S3DataSource:
             kwargs['RequestPayer'] = RequestPayer
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_accelerate_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1377,8 +1381,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_acl')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1411,8 +1414,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_analytics_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1443,8 +1445,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_cors')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1475,8 +1476,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_encryption')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1509,8 +1509,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_intelligent_tiering_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1543,8 +1542,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_inventory_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1575,8 +1573,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_lifecycle')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1607,8 +1604,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_lifecycle_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1639,8 +1635,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_location')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1671,8 +1666,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_logging')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1705,8 +1699,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_metrics_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1737,8 +1730,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_notification')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1769,8 +1761,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_notification_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1801,8 +1792,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_ownership_controls')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1833,8 +1823,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_policy')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1865,8 +1854,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_policy_status')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1897,8 +1885,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_replication')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1929,8 +1916,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_request_payment')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1961,8 +1947,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_tagging')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -1993,8 +1978,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_versioning')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2025,8 +2009,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_bucket_website')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2131,8 +2114,7 @@ class S3DataSource:
             kwargs['ChecksumMode'] = ChecksumMode
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_object')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2173,8 +2155,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_object_acl')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2237,8 +2218,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_object_attributes')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2279,8 +2259,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_object_legal_hold')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2311,8 +2290,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_object_lock_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2353,8 +2331,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_object_retention')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2395,8 +2372,7 @@ class S3DataSource:
             kwargs['RequestPayer'] = RequestPayer
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_object_tagging')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2433,8 +2409,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_object_torrent')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2465,8 +2440,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'get_public_access_block')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2497,8 +2471,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'head_bucket')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2579,8 +2552,7 @@ class S3DataSource:
             kwargs['ChecksumMode'] = ChecksumMode
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'head_object')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2615,8 +2587,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'list_bucket_analytics_configurations')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2651,8 +2622,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'list_bucket_intelligent_tiering_configurations')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2687,8 +2657,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'list_bucket_inventory_configurations')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2723,8 +2692,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'list_bucket_metrics_configurations')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2748,8 +2716,7 @@ class S3DataSource:
         kwargs = {}
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'list_buckets')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2808,8 +2775,7 @@ class S3DataSource:
             kwargs['RequestPayer'] = RequestPayer
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'list_multipart_uploads')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2872,8 +2838,7 @@ class S3DataSource:
             kwargs['OptionalObjectAttributes'] = OptionalObjectAttributes
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'list_object_versions')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -2932,8 +2897,7 @@ class S3DataSource:
             kwargs['OptionalObjectAttributes'] = OptionalObjectAttributes
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'list_objects')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3000,8 +2964,7 @@ class S3DataSource:
             kwargs['OptionalObjectAttributes'] = OptionalObjectAttributes
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'list_objects_v2')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3060,8 +3023,7 @@ class S3DataSource:
             kwargs['SSECustomerKeyMD5'] = SSECustomerKeyMD5
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'list_parts')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3098,8 +3060,7 @@ class S3DataSource:
             kwargs['ChecksumAlgorithm'] = ChecksumAlgorithm
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_accelerate_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3162,8 +3123,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_acl')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3198,8 +3158,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_analytics_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3236,8 +3195,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_cors')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3274,8 +3232,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_encryption')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3310,8 +3267,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_intelligent_tiering_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3346,8 +3302,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_inventory_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3384,8 +3339,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_lifecycle')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3424,8 +3378,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_lifecycle_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3462,8 +3415,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_logging')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3498,8 +3450,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_metrics_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3536,8 +3487,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_notification')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3574,8 +3524,7 @@ class S3DataSource:
             kwargs['SkipDestinationValidation'] = SkipDestinationValidation
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_notification_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3612,8 +3561,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_ownership_controls')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3654,8 +3602,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_policy')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3696,8 +3643,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_replication')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3734,8 +3680,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_request_payment')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3772,8 +3717,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_tagging')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3814,8 +3758,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_versioning')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -3852,8 +3795,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_bucket_website')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4022,8 +3964,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_object')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4096,8 +4037,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_object_acl')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4146,8 +4086,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_object_legal_hold')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4194,8 +4133,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_object_lock_configuration')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4248,8 +4186,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_object_retention')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4296,8 +4233,7 @@ class S3DataSource:
             kwargs['RequestPayer'] = RequestPayer
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_object_tagging')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4334,8 +4270,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'put_public_access_block')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4384,8 +4319,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'restore_object')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4446,8 +4380,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'select_object_content')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4490,8 +4423,7 @@ class S3DataSource:
             kwargs['Config'] = Config
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'upload_file')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4515,7 +4447,7 @@ class S3DataSource:
         """S3 Upload Fileobj operation.
 
         Args:
-            Fileobj (Any): Required parameter
+            Fileobj (object): Required parameter
             Bucket (str): Required parameter
             Key (str): Required parameter
             ExtraArgs (Optional[Optional[Dict[str, Any]]]): Optional parameter
@@ -4534,8 +4466,7 @@ class S3DataSource:
             kwargs['Config'] = Config
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'upload_fileobj')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4620,8 +4551,7 @@ class S3DataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'upload_part')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -4712,8 +4642,7 @@ class S3DataSource:
             kwargs['ExpectedSourceBucketOwner'] = ExpectedSourceBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, 'upload_part_copy')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:

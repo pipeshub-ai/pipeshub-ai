@@ -1,4 +1,7 @@
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from io import IOBase
 from typing import Any, Dict, Optional, Union
@@ -29,6 +32,8 @@ class MinIODataSource:
         """Initialize with MinIOClient."""
         self._minio_client = minio_client
         self._session = None
+        # Per task tree: a call from a request outside shared_client() must not get a client that scope may close.
+        self._shared_client: ContextVar[Any] = ContextVar(f"minio_shared_client_{id(self)}", default=None)
         # Get endpoint configuration from client
         credentials = self._minio_client.get_credentials()
         self._endpoint_url = credentials.get('endpoint_url')
@@ -52,6 +57,31 @@ class MinIODataSource:
             'endpoint_url': self._endpoint_url,
             'verify': self._verify_ssl
         }
+
+    @asynccontextmanager
+    async def shared_client(self) -> AsyncIterator[None]:
+        """Make every call in this scope, and in tasks started inside it, reuse one client."""
+        if self._shared_client.get() is not None:
+            yield
+            return
+        session = await self._get_aioboto3_session()
+        async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            token = self._shared_client.set(s3_client)
+            try:
+                yield
+            finally:
+                self._shared_client.reset(token)
+
+    @asynccontextmanager
+    async def _client(self) -> AsyncIterator[Any]:
+        """The shared client inside shared_client(), else a new client for this call."""
+        shared = self._shared_client.get()
+        if shared is not None:
+            yield shared
+            return
+        session = await self._get_aioboto3_session()
+        async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            yield s3_client
 
     def _handle_s3_response(self, response: object) -> S3Response:
         """Handle S3 API response with comprehensive error handling."""
@@ -77,8 +107,7 @@ class MinIODataSource:
     async def list_buckets(self) -> S3Response:
         """MinIO List Buckets operation."""
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.list_buckets()
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -127,8 +156,7 @@ class MinIODataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.list_objects_v2(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -156,8 +184,7 @@ class MinIODataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.get_bucket_location(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -219,8 +246,7 @@ class MinIODataSource:
             kwargs['ChecksumMode'] = ChecksumMode
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.head_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -300,8 +326,7 @@ class MinIODataSource:
             kwargs['ChecksumMode'] = ChecksumMode
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.get_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -476,8 +501,7 @@ class MinIODataSource:
             kwargs['ChecksumSHA256'] = ChecksumSHA256
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.put_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -515,8 +539,7 @@ class MinIODataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.delete_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -549,8 +572,7 @@ class MinIODataSource:
             kwargs['Metadata'] = Metadata
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.copy_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:

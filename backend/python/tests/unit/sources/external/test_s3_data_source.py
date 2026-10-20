@@ -1,5 +1,6 @@
 """S3DataSource and MinIODataSource: error status and client reuse."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from unittest.mock import MagicMock
@@ -56,3 +57,41 @@ async def test_client_error_carries_http_status(index: int) -> None:
     assert response.success is False
     assert response.status_code == 403
     assert response.error.startswith("AccessDenied")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("index", [0, 1], ids=["s3", "minio"])
+async def test_calls_inside_shared_client_reuse_one_client(index: int) -> None:
+    session = _FakeSession()
+    source = _sources(session)[index]
+
+    await source.list_objects_v2(Bucket="b")
+    await source.list_objects_v2(Bucket="b")
+    assert session.opened == 2
+
+    async with source.shared_client():
+        await source.list_objects_v2(Bucket="b")
+        await asyncio.gather(*(source.list_objects_v2(Bucket="b") for _ in range(3)))
+    assert session.opened == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("index", [0, 1], ids=["s3", "minio"])
+async def test_shared_client_is_not_lent_to_tasks_started_outside_the_scope(index: int) -> None:
+    """A stream request on the same connector must not use a sync's client, which closes when the sync ends."""
+    session = _FakeSession()
+    source = _sources(session)[index]
+    inside = asyncio.Event()
+    release = asyncio.Event()
+
+    async def sync() -> None:
+        async with source.shared_client():
+            inside.set()
+            await release.wait()
+
+    task = asyncio.create_task(sync())
+    await inside.wait()
+    await source.list_objects_v2(Bucket="b")
+    release.set()
+    await task
+    assert session.opened == 2

@@ -411,4 +411,5 @@ def make_connector(
         raise ValueError(kind)
     connector.bucket_name = BUCKET
     connector.batch_size = 2
+    connector.list_page_size = 2
     return connector
