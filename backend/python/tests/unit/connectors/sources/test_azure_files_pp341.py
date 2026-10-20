@@ -584,12 +584,16 @@ class TestO2ConnectionTest:
         conn.sync_filters = _filters(["s"])
         assert await conn.test_connection_and_access() is True
 
-    async def test_missing_selected_share_fails(self):
+    async def test_missing_selected_share_warns_but_does_not_block_the_connector(self):
+        # Enabling sync runs this test; failing here would stop the sync that removes
+        # a gone share's files (PP-343).
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
+        ds.get_file_properties = AsyncMock(wraps=ds.get_file_properties)
         conn = _connector(ds, FakeProcessor())
-        conn.sync_filters = _filters(["s", "typo"])
-        assert await conn.test_connection_and_access() is False
+        conn.sync_filters = _filters(["gone", "s"])
+        assert await conn.test_connection_and_access() is True
+        ds.get_file_properties.assert_awaited_once_with("s", "a.txt")
 
     async def test_list_only_sas_fails_on_read(self):
         ds = FakeDataSource({})

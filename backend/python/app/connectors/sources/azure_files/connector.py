@@ -1552,32 +1552,33 @@ class AzureFilesConnector(BaseConnector):
                 shares = [s.get("name") for s in response.data or [] if s.get("name")][:1]
 
             # Listing each selected root also works for a share SAS, which cannot list shares.
-            root_items: list[dict] | None = None
+            readable: tuple[str, list[dict]] | None = None
             for share_name in shares:
                 listing = await self.data_source.list_directories_and_files(share_name=share_name)
-                if not listing.success:
-                    problem = (
-                        "not found" if "not found" in (listing.error or "").lower()
-                        else "cannot be listed (needs List permission)"
-                    )
+                if listing.success:
+                    readable = readable or (share_name, listing.data or [])
+                elif "not found" in (listing.error or "").lower():
+                    # Not a credential problem: the sync removes a gone share's files and
+                    # tells the owner, which it could not do if the connector never started.
+                    self.logger.warning(f"Azure Files connection test: selected share {share_name} not found")
+                else:
                     self.logger.error(
-                        f"Azure Files connection test failed: share {share_name} {problem}: {listing.error}"
+                        f"Azure Files connection test failed: share {share_name} cannot be listed "
+                        f"(needs List permission): {listing.error}"
                     )
                     return False
-                if root_items is None:
-                    root_items = listing.data or []
 
-            first_file = next(
-                (i for i in root_items or [] if not i.get("is_directory") and i.get("path")), None
-            )
-            if first_file:
-                props = await self.data_source.get_file_properties(shares[0], first_file["path"])
-                if not props.success:
-                    self.logger.error(
-                        f"Azure Files connection test failed: cannot read files in share {shares[0]} "
-                        f"(needs Read permission): {props.error}"
-                    )
-                    return False
+            if readable:
+                share_name, items = readable
+                first_file = next((i for i in items if not i.get("is_directory") and i.get("path")), None)
+                if first_file:
+                    props = await self.data_source.get_file_properties(share_name, first_file["path"])
+                    if not props.success:
+                        self.logger.error(
+                            f"Azure Files connection test failed: cannot read files in share {share_name} "
+                            f"(needs Read permission): {props.error}"
+                        )
+                        return False
 
             self.logger.info("Azure Files connection test successful.")
             return True
