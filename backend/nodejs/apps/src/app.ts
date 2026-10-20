@@ -23,6 +23,8 @@ import { startOrgMetricsRefresh } from './modules/user_management/services/metri
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
+import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guard.middleware';
+import { isApiPath } from './libs/utils/api-path.utils';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
@@ -63,6 +65,7 @@ import {
   createFeatureFlagRouter,
   createOrgConfigRouter,
   createRequestRouter,
+  createDelegationRouter,
   OAuthAppsContainer,
   createOAuthAppsRouter,
   editionBoot,
@@ -542,7 +545,7 @@ export class Application {
         stream: {
           write: (message: string) => this.logger.info(message.trim()),
         },
-        skip: (req) => !req.path.startsWith('/api/'),
+        skip: (req) => !isApiPath(req.path),
       }),
     );
 
@@ -557,6 +560,10 @@ export class Application {
     if (isTelemetryEnabled()) {
       this.app.use(metricsMiddleware());
     }
+    // Registered after the rate limiter: a rejection ends the request through
+    // next(error), which skips every later middleware, so these requests would
+    // otherwise never count towards the limit.
+    this.app.use(operatorKeyGuardMiddleware);
   }
 
   private configureRoutes(): void {
@@ -785,6 +792,17 @@ export class Application {
     this.app.use(
       '/api/v1/service-tokens',
       createServiceTokenRouter(this.oauthProviderContainer),
+    );
+
+    // Who each service account may act as, and the record of every time one
+    // tried (the delegation allow-list and its audit log).
+    //
+    // Imported from `./config` rather than the module, because this is one of
+    // the routers that differs by edition: Community gets a stub that
+    // explains the capability is not built in, Enterprise gets the real one.
+    this.app.use(
+      '/api/v1/service-account-delegations',
+      createDelegationRouter(this.oauthProviderContainer),
     );
 
     this.app.use(

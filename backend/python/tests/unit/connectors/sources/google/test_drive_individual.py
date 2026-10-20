@@ -9,7 +9,7 @@ import pytest
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection
 from app.models.entities import FileRecord, RecordGroupType, RecordType
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import EntityType, Permission
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +272,7 @@ class TestProcessDriveItem:
         )
         assert result.record.is_shared is True
 
-    async def test_permissions_include_owner(self, connector):
+    async def test_record_inherits_instead_of_granting_the_owner(self, connector) -> None:
         metadata = _make_file_metadata()
         result = await connector._process_drive_item(
             metadata=metadata,
@@ -280,9 +280,9 @@ class TestProcessDriveItem:
             user_email="user@example.com",
             drive_id="drive-1",
         )
-        assert len(result.new_permissions) == 1
-        assert result.new_permissions[0].type == PermissionType.OWNER
-        assert result.new_permissions[0].email == "user@example.com"
+        assert result.new_permissions == []
+        assert result.record.inherit_permissions is True
+        assert result.record.rewrite_permissions is True, "a grant stored before the migration is cleared"
 
     async def test_google_doc_mime_type_detected(self, connector):
         metadata = _make_file_metadata(

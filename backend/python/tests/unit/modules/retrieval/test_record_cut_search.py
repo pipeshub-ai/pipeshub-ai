@@ -382,6 +382,7 @@ class TestPermissions:
         assert set(filters[0]["must"]["virtualRecordId"]) == {"secret", "r0", "r1"}
 
 
+@pytest.mark.usefixtures("narrow_fallback_off")
 class TestTheContainerPath:
     async def test_the_overfetch_headroom_is_dropped_by_record(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A score cut of the over-fetched set would hand back the long record

@@ -739,6 +739,8 @@
     "like": "Helpful",
     "dislike": "Not helpful",
     "copy": "Copy",
+    "fork": "Fork chat",
+    "forkFromHere": "Fork from here",
     "regenerate": "Regenerate",
     "readAloud": "Read aloud",
     "stopReading": "Stop reading",
@@ -835,7 +837,9 @@
       "editComingSoonDescription": "We're building out support for edit",
       "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
       "openAgentBuilder": "Open Agent Builder",
-      "loadConversationFailed": "We couldn't open this conversation. Refresh the page to try again."
+      "loadConversationFailed": "We couldn't open this conversation. Refresh the page to try again.",
+      "forkSuccess": "Started a new chat from this point",
+      "forkError": "Couldn't fork this chat. Try again."
     },
     "queryModes": {
       "chat": {
@@ -2005,7 +2009,7 @@
       "title": "Actions",
       "subtitle": "Configure automated actions like creating records, updating fields, or triggering workflows. Each app has an action tailored to its supported functions.",
       "yourActionsTitle": "Your actions",
-      "yourActionsSubtitle": "Authenticate and manage actions your administrator has made available for your account.",
+      "yourActionsSubtitle": "Sign in to the actions your administrator made available, or add your own.",
       "tabs": {
         "all": "All",
         "configured": "Configured",
@@ -2025,7 +2029,7 @@
         "manage": "Manage",
         "unavailable": "Not available",
         "notConfigured": "Not configured",
-        "adminSetupRequired": "Admin setup required"
+        "add": "Add"
       },
       "trailingYourActions": "Your actions",
       "loading": "Loading actions…",
@@ -2085,7 +2089,7 @@
         "refreshingList": "Updating list…",
         "searchInstances": "Search instances…",
         "teamInstanceInfo": "Authenticate against your organization’s action instances. Authenticated actions can be added to your agents.",
-        "personalInstanceInfo": "Authenticate against your organization’s action instances. Once authenticated, you can use these actions in your agents.",
+        "personalInstanceInfo": "Sign in to your organization's actions or add your own. Once signed in, you can use them in your agents.",
         "instanceTabs": {
           "all": "All ({{count}})",
           "authenticated": "Authenticated ({{count}})",
@@ -2149,8 +2153,6 @@
         "numberMin": "Enter a whole number of at least {{min, number}}.",
         "numberMax": "Enter a whole number no larger than {{max, number}}."
       },
-      "adminRequiredToast": "Only admins can add new actions. Ask your admin to configure this action first.",
-      "personalNonAdminHint": "Actions marked \"Not configured\" need to be set up by an admin before you can use them.",
       "toolRules": {
         "open": "Tool approvals",
         "title": "Tool approvals: {{name}}",
@@ -2160,6 +2162,21 @@
         "defaults": "Tools that read or change data run. A tool that deletes data, clears a sheet or sends email asks the person first in a chat in the PipesHub app, and doesn't run where nobody can answer, like the Slack bot or the API.",
         "enterpriseTitle": "Organization tool approvals",
         "enterpriseDescription": "Choose which of this toolset's tools run, ask first or never run, for everyone in your organization."
+      },
+      "personal": {
+        "setupCallout": "Only you can see and use this action, and it can't be added to agents shared with your organization. Sign in to it once it's added.",
+        "yours": "Yours",
+        "addOwn": "Add your own",
+        "added": "Action added.",
+        "delete": "Delete action",
+        "deleteTitle": "Delete {{name}}?",
+        "deleteBody": "Your sign-in and tool approvals for it are deleted too. This can't be undone.",
+        "deleted": "Action deleted.",
+        "adminOnly": "Only an administrator can add {{name}}: it connects to a server by its host name. Ask your administrator to add it for your organization."
+      },
+      "enterprise": {
+        "userActionsTitle": "People's own actions",
+        "userActionsDescription": "Review and remove the actions people in your organization add for themselves."
       }
     },
     "archivedChats": {
@@ -3607,6 +3624,12 @@
           "label": "Extraction Service",
           "description": "LLM-based document classification and metadata extraction"
         }
+      },
+      "vectorDbMemory": {
+        "title": "Search index doesn't fit in the vector database's memory",
+        "message": "The search index needs about {{needed}} GB of memory to stay fast; the vector database has about {{available}} GB, so searches read from disk and slow down further when several run at once.",
+        "messageHost": "The search index needs about {{needed}} GB of memory to stay fast; the server running the vector database has only about {{available}} GB in total, so searches read from disk and slow down further when several run at once.",
+        "guide": "Vector database sizing guide"
       }
     },
     "tenants": {
@@ -4087,7 +4110,43 @@
       "disableTitle": "Disable this service account?",
       "disableDescription": "{{name}} will stop working immediately, including every token it already holds. Any integration using one of those tokens will fail until you enable the account again.",
       "disableConfirm": "Disable",
-      "memberBadge": "Service account"
+      "memberBadge": "Service account",
+      "manageDelegations": "Who it can act as",
+      "delegations": {
+        "title": "Acting on behalf of someone",
+        "explainer": "This service account can be allowed to act as named people. When it does, it reads exactly what that person can read, and the token it receives lasts five minutes. Administrators cannot be named here.",
+        "unavailableTitle": "Acting on behalf of a person is an Enterprise capability",
+        "unavailableBody": "Letting this service account act as a named colleague — the allow-list, the five-minute token issued in that person’s name, and the record of every attempt — is part of the Enterprise edition and is not built into this one.",
+        "unavailableAvailableHere": "What this edition does include: the service account itself, its own access to the knowledge bases you grant it, and tokens you can issue and revoke. That covers any integration that works with its own permissions rather than someone else’s.",
+        "addTitle": "Allow it to act as someone",
+        "subjectLabel": "Person",
+        "subjectPlaceholder": "name@example.com",
+        "subjectHelp": "Enter the email address of the person this service account may act as.",
+        "reasonLabel": "Reason",
+        "reasonPlaceholder": "Why this is needed",
+        "reasonHelp": "Shown to whoever reviews this list later.",
+        "addConfirm": "Allow",
+        "listTitle": "Allowed to act as",
+        "none": "This service account cannot act as anyone. It reads only with its own permissions.",
+        "loading": "Loading…",
+        "inactive": "No longer available",
+        "revoke": "Remove",
+        "revokeTitle": "Remove this permission?",
+        "revokeDescription": "This service account will no longer be able to act as {{subject}}.",
+        "revokeSuccessTitle": "Permission removed",
+        "revokeErrorTitle": "Could not remove the permission",
+        "grantSuccessTitle": "Permission granted",
+        "grantErrorTitle": "Could not grant the permission",
+        "loadErrorTitle": "Could not load delegation settings",
+        "logTitle": "Recent activity",
+        "logHelp": "Every change to this list, and every time the service account asked to act as someone — including the times it was refused.",
+        "logNone": "Nothing recorded yet.",
+        "outcomeIssued": "Allowed",
+        "outcomeRefused": "Refused",
+        "outcomeGranted": "Permission added",
+        "outcomeRevoked": "Permission removed",
+        "byAdmin": "by {{admin}}"
+      }
     }
   },
   "filePreview": {
@@ -4449,7 +4508,8 @@
     "mcpAgentApprovals": "Tool approvals per agent",
     "limitSource": "Choose what {{name}} searches",
     "limitSourceHint": "Keep the whole source ticked, or untick it and tick the folders and items the agent may search.",
-    "limitSourceCount": "Limited to {{count}} selected"
+    "limitSourceCount": "Limited to {{count}} selected",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} is your personal action. It can't be added to an agent shared with your organization or running as a service account."
   },
   "recordView": {
     "sections": {

@@ -24,6 +24,8 @@ from app.edition_config import (
     ensure_org_context,
     search_router,
 )
+from app.utils.log_redaction import log_safe_validation_errors
+from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
@@ -161,6 +163,7 @@ async def stop_kafka_consumers(container: QueryAppContainer) -> bool|None:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
     mark_process_non_dumpable()
+    install_log_redaction()
 
     # Before anything builds a pool or semaphore off a per-process budget.
     set_process_worker_count(configured_worker_count())
@@ -499,7 +502,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         "Request validation failed for %s %s: %s",
         request.method,
         redact_sensitive_query_params(str(request.url)),
-        errors,
+        log_safe_validation_errors(errors),
     )
     message, detail = friendly_validation_errors(errors)
     return JSONResponse(status_code=422, content={"message": message, "detail": detail})

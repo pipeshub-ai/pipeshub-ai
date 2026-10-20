@@ -2828,15 +2828,15 @@ class SlackConnector(BaseConnector):
     ) -> Optional[LinkRecord]:
         try:
             unfurl       = self._unfurl_data(url, msg)
-            rg_id        = ctx.channel_groups_map.get(ctx.channel_id)
 
             return LinkRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=unfurl.get("title") or url[:100],
                 record_type=RecordType.LINK,
                 external_record_id=hashlib.md5(url.encode()).hexdigest(),
-                external_record_group_id=ctx.channel_id,
-                record_group_id=rg_id,
+                # A link in a thread reply sits in the thread group with its message.
+                external_record_group_id=parent.external_record_group_id or ctx.channel_id,
+                record_group_id=parent.record_group_id or ctx.channel_groups_map.get(ctx.channel_id),
                 root_record_group_id=self._root_rg_id(ctx),
                 parent_external_record_id=parent.external_record_id,
                 parent_record_type=RecordType.MESSAGE,

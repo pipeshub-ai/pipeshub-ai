@@ -10,6 +10,7 @@ const chat = vi.hoisted(() => ({
   buildStreamChatRequestForSlot: vi.fn((slotId: string, query: string) => ({ slotId, query })),
   state: { activeSlotId: 'slot-1', slots: { 'slot-1': { isOwner: true as boolean | null, isStreaming: false } } },
 }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: {} }));

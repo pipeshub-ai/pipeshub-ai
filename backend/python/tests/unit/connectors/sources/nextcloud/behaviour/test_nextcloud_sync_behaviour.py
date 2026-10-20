@@ -40,7 +40,6 @@ from app.connectors.sources.nextcloud.connector import (
     NextcloudConnector,
 )
 from app.models.entities import FileRecord
-from app.models.permission import EntityType, PermissionType
 from app.services.notification.types import NotificationType
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
@@ -54,7 +53,9 @@ from app.sources.external.nextcloud.nextcloud import NextcloudDataSource
 CONNECTOR_ID = "nextcloud-1"
 BASE = "https://cloud.example.com"
 MADE_UP_DOMAIN = "@nextcloud.local"
-ALICE_OWNER = [(EntityType.USER, PermissionType.OWNER, "alice@example.com")]
+# No grant of its own: a record inherits up its folders to the drive, and the drive to the app,
+# whose only user is the one who connected it.
+INHERITED = ([], True)
 # Each makes a fresh answer, so an outage can give one to every retry.
 BAD_ANSWERS = [
     pytest.param(lambda: httpx.Response(503), id="server-error"),
@@ -132,8 +133,10 @@ def seed_drive(server: FakeNextcloud) -> None:
     server.add_file("readme.txt", b"top level")
 
 
-def owners(db: FakeRecordsDb, name: str) -> list[tuple[str, str, str]]:
-    return [(p.entity_type, p.type, p.email) for p in db.permissions[db.by_name(name).external_record_id]]
+def access_of(db: FakeRecordsDb, name: str) -> tuple[list[tuple[str, str, str]], bool]:
+    record = db.by_name(name)
+    grants = [(p.entity_type, p.type, p.email) for p in db.permissions[record.external_record_id]]
+    return grants, record.inherit_permissions
 
 
 def ids_of(server: FakeNextcloud) -> dict[str, str]:
@@ -237,7 +240,8 @@ class TestAppPasswordAuth:
         assert server.requests and {r.headers["authorization"] for r in server.requests} == {expected}
         assert {r.headers.get("ocs-apirequest") for r in server.calls("GET", "/ocs/")} == {"true"}
         assert connector.current_user_email == "alice@example.com"
-        assert owners(db, "q1.pdf") == ALICE_OWNER
+        assert [u.email for u in db.app_users] == ["alice@example.com"]
+        assert access_of(db, "q1.pdf") == INHERITED
 
     async def test_an_app_password_with_colons_and_accents_still_authenticates(self, server, db, store) -> None:
         server.app_password = "pässwörd:with:colons"
@@ -374,9 +378,9 @@ class TestAppPasswordAuth:
 
         outage.end()
         await connector.run_sync()
-        emails = {p.email for perms in db.permissions.values() for p in perms}
-        assert emails == {"alice@example.com"}
-        assert owners(db, "q1.pdf") == ALICE_OWNER
+        assert [u.email for u in db.app_users] == ["alice@example.com"]
+        assert all(not perms for perms in db.permissions.values())
+        assert access_of(db, "q1.pdf") == INHERITED
 
 
 class TestFullSync:
@@ -400,7 +404,7 @@ class TestFullSync:
         folder = db.by_name("Docs")
         assert (folder.mime_type, folder.is_file, folder.extension) == (MimeTypes.FOLDER.value, False, "")
         assert [u.email for u in db.app_users] == ["alice@example.com"]
-        assert [(p.email, p.type) for p in db.record_group_permissions["alice"]] == [("alice@example.com", PermissionType.OWNER)]
+        assert db.record_group_permissions["alice"] == [] and db.record_groups["alice"].inherit_permissions is True
         listing = server.calls("PROPFIND")
         assert [r.headers["depth"] for r in listing] == ["100"]
         anchor = server.calls("GET", ACTIVITY_PATH)[-1].url.params
@@ -789,7 +793,7 @@ class TestIncrementalSync:
         assert (after.id, after.version) == (before.id, before.version + 1)
         assert after.external_revision_id == server.nodes["Docs/notes.txt"].etag
         assert len(db.records) == count
-        assert owners(db, "notes.txt") == ALICE_OWNER
+        assert access_of(db, "notes.txt") == INHERITED
 
     async def test_a_rename_keeps_the_record_and_its_folder(self, server, db, store) -> None:
         connector = await synced(server, db, store)
@@ -1499,9 +1503,10 @@ class TestPermissions:
 
         await connector.run_sync()
 
-        assert {name: owners(db, name) for name in db.names()} == dict.fromkeys(db.names(), ALICE_OWNER)
-        emails = {p.email for perms in db.permissions.values() for p in perms}
-        assert emails == {"alice@example.com"}, "a Nextcloud share never widens access in PipesHub"
+        assert {name: access_of(db, name) for name in db.names()} == dict.fromkeys(db.names(), INHERITED), (
+            "a Nextcloud share never widens access in PipesHub"
+        )
+        assert [u.email for u in db.app_users] == ["alice@example.com"]
 
     async def test_a_failed_fetch_writes_no_record_and_no_access(self, server, db, store) -> None:
         connector = await synced(server, db, store)

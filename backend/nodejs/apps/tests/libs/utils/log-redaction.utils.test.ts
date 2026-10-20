@@ -649,6 +649,18 @@ describe('log-redaction.utils', () => {
       expect(isSensitiveQueryKey('STATE')).to.equal(true)
       expect(isSensitiveQueryKey('Key')).to.equal(true)
     })
+
+    it('trims stray non-alphanumeric characters from both ends', () => {
+      for (const key of ['..code..', '%00code', '__token__', 'code\u212a']) {
+        expect(isSensitiveQueryKey(key), key).to.equal(true)
+      }
+    })
+
+    it('reads only ASCII letters, so look-alikes are not a sensitive name', () => {
+      // `ſ` and the Kelvin sign case-fold to `s` and `k` under Unicode rules.
+      expect(isSensitiveQueryKey('\u017ftate')).to.equal(false)
+      expect(isSensitiveQueryKey('\u212aey')).to.equal(false)
+    })
   })
 
   describe('redactHeadersForLog', () => {
@@ -885,3 +897,115 @@ describe('redactSecretsInText', () => {
     expect(Date.now() - started).to.be.below(1000);
   });
 });
+
+describe('redaction on adversarial input', () => {
+  // Each of these took seconds before (ReDoS); linear code takes a few ms.
+  // The bound is loose so a loaded CI runner cannot fail it.
+  const BOUND_MS = 200
+  const N = 50_000
+  const elapsedMs = (run: () => unknown): number => {
+    const started = process.hrtime.bigint()
+    run()
+    return Number(process.hrtime.bigint() - started) / 1e6
+  }
+
+  // `/^[^a-z0-9]+|[^a-z0-9]+$/gi` in isSensitiveQueryKey.
+  const trimShape = `a${'/'.repeat(N)}a`
+  // `/=+$/` in isRedactedValue.
+  const equalsShape = `a=b=c=d=e=token${'='.repeat(N)}x`
+  // Many `//user:` heads, each followed by a port: the password-URL regex
+  // re-ran its port check to the end of the text for every head. Each text
+  // stays under the logging cap, so only linear code keeps the total low.
+  const passwordShape = `${',//a:1'.repeat(1300)}?=@`
+  const manyPasswordShapes = Array.from({ length: 60 }, () => passwordShape)
+
+  const cases: [string, () => unknown][] = [
+    ['isSensitiveQueryKey, trim shape', () => isSensitiveQueryKey(trimShape)],
+    ['redactSensitiveQueryParams, trim shape', () => redactSensitiveQueryParams(`/x?${trimShape}=1`)],
+    ['redactQueryForLog, trim shape', () => redactQueryForLog({ [trimShape]: '1' })],
+    ['redactSecretsInText, trim shape', () => redactSecretsInText(`/x?${trimShape}=1`)],
+    ['redactSensitiveQueryParams, trailing = shape', () => redactSensitiveQueryParams(`/x?${equalsShape}`)],
+    ['redactSensitiveQueryParams, trailing = shape as a Referer', () => redactSensitiveQueryParams(`https://h.example/x?${equalsShape}`)],
+    ['redactQueryForLog, trailing = shape', () => redactQueryForLog(equalsShape)],
+    ['redactSecretsInText, trailing = shape', () => redactSecretsInText(equalsShape)],
+    ['redactQueryForLog, password-URL shape', () => redactQueryForLog({ q: manyPasswordShapes })],
+    ['redactSecretsInText, password-URL shape', () => redactSecretsInText(manyPasswordShapes.join(' '))],
+    ['redactLogMetadata, password-URL shape', () => redactLogMetadata({ urls: manyPasswordShapes.map((p) => `/x?a=${p}`) })],
+  ]
+  for (const [name, run] of cases) {
+    it(`${name} finishes in linear time`, () => {
+      expect(elapsedMs(run)).to.be.below(BOUND_MS)
+    })
+  }
+
+  it('still reads a user:password URL after many port-like heads', () => {
+    const out = redactSensitiveQueryParams(`/x?a=${',//a:1'.repeat(200)},//u:hunter2@h`)
+    expect(out).to.not.contain('hunter2')
+  })
+
+  it('counts a marker followed by any run of = as redacted', () => {
+    expect(redactSecretsInText('[REDACTED]===')).to.equal('[REDACTED]===')
+    expect(redactSensitiveQueryParams('/cb?x=[REDACTED]===')).to.equal('/cb?x=[REDACTED]===')
+  })
+})
+
+describe('logging cap', () => {
+  const CAP = 8 * 1024
+  const TRUNCATED = '[Truncated]'
+
+  it('logs a URL up to the cap as it is', () => {
+    const url = `/api/v1/x?q=${'a'.repeat(CAP - 12)}`
+    expect(url).to.have.length(CAP)
+    expect(redactSensitiveQueryParams(url)).to.equal(url)
+  })
+
+  it('cuts a longer URL back to a separator and marks it', () => {
+    const out = redactSensitiveQueryParams(`/api/v1/x?page=1&q=${'a'.repeat(CAP)}`)
+    expect(out).to.equal(`/api/v1/x?page=1&q=${TRUNCATED}`)
+  })
+
+  it('never keeps part of a secret the cut falls inside', () => {
+    const pad = 'a'.repeat(CAP - 20)
+    const out = redactSensitiveQueryParams(`/x?pad=${pad}&code=${'S'.repeat(200)}`)
+    expect(out).to.not.contain('SSS')
+    expect(out).to.contain(`code=${encodeURIComponent(REDACTED)}`)
+    expect(out.endsWith(TRUNCATED)).to.equal(true)
+  })
+
+  it('drops a secret that lies past the cut', () => {
+    const out = redactSensitiveQueryParams(`/x?q=${'a'.repeat(CAP)}&code=${FAKE_CODE}`)
+    expect(out).to.not.contain('FAKE-auth-code')
+  })
+
+  it('logs nothing of a URL whose dropped part holds an @', () => {
+    for (const tail of ['@host/x', '%40host/x', '%2540host/x']) {
+      for (const url of [
+        `https://user:p?x=1&${'y'.repeat(CAP)}${tail}`,
+        `https://user:${'p'.repeat(CAP)}${tail}`,
+        `/cb?next=https://u:p%3Fx%3D1%26y/${'z'.repeat(CAP)}${tail}`,
+      ]) {
+        expect(redactSensitiveQueryParams(url), url.slice(0, 40)).to.equal(`${REDACTED}${TRUNCATED}`)
+      }
+    }
+  })
+
+  it('caps each word of free text', () => {
+    const out = redactSecretsInText(`failed: /x?q=${'a'.repeat(CAP)} at foo`)
+    expect(out).to.equal(`failed: /x?q=${TRUNCATED} at foo`)
+  })
+
+  it('caps a query string value, and logs no part of an oversized name', () => {
+    const out = redactQueryForLog({
+      q: `page=1&q=${'a'.repeat(CAP)}`,
+      [`x${'a'.repeat(CAP)}`]: FAKE_CODE,
+    }) as Record<string, unknown>
+    expect(out.q).to.equal(`page=1&q=${TRUNCATED}`)
+    expect(out[TRUNCATED]).to.equal(REDACTED)
+    expect(JSON.stringify(out)).to.not.contain('FAKE-auth-code')
+  })
+
+  it('still redacts an oversized sensitive name by its whole text', () => {
+    const out = redactQueryForLog({ [`code${'%00'.repeat(CAP)}`]: FAKE_CODE }) as Record<string, unknown>
+    expect(out).to.deep.equal({ code: REDACTED })
+  })
+})

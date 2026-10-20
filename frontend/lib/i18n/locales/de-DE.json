@@ -738,6 +738,8 @@
     "like": "Hilfreich",
     "dislike": "Nicht hilfreich",
     "copy": "Kopieren",
+    "fork": "Chat abzweigen",
+    "forkFromHere": "Ab hier abzweigen",
     "regenerate": "Neu generieren",
     "readAloud": "Vorlesen",
     "stopReading": "Vorlesen beenden",
@@ -834,7 +836,9 @@
       "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt",
       "deprecatedTools": "Dieser Agent hat Tools, die nicht mehr verfügbar sind. Öffnen Sie den Agent Builder, um sie zu entfernen.",
       "openAgentBuilder": "Agent Builder öffnen",
-      "loadConversationFailed": "Diese Unterhaltung konnte nicht geöffnet werden. Laden Sie die Seite neu, um es erneut zu versuchen."
+      "loadConversationFailed": "Diese Unterhaltung konnte nicht geöffnet werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+      "forkSuccess": "Neuer Chat ab diesem Punkt gestartet",
+      "forkError": "Der Chat konnte nicht abgezweigt werden. Bitte erneut versuchen."
     },
     "queryModes": {
       "chat": {
@@ -2010,7 +2014,7 @@
       "title": "Aktionen",
       "subtitle": "Konfigurieren Sie automatisierte Aktionen wie das Erstellen von Datensätzen, Aktualisieren von Feldern oder Auslösen von Workflows. Jede App bietet eine Aktion, die auf ihre unterstützten Funktionen zugeschnitten ist.",
       "yourActionsTitle": "Ihre Aktionen",
-      "yourActionsSubtitle": "Authentifizieren und verwalten Sie Aktionen, die Ihr Administrator für Ihr Konto bereitgestellt hat.",
+      "yourActionsSubtitle": "Melden Sie sich bei den Aktionen an, die Ihr Administrator bereitgestellt hat, oder fügen Sie eigene hinzu.",
       "tabs": {
         "all": "Alle",
         "configured": "Konfiguriert",
@@ -2030,7 +2034,7 @@
         "unavailable": "Nicht verfügbar",
         "notConfigured": "Nicht konfiguriert",
         "manage": "Verwalten",
-        "adminSetupRequired": "Einrichtung durch einen Administrator erforderlich"
+        "add": "Hinzufügen"
       },
       "trailingYourActions": "Ihre Aktionen",
       "loading": "Aktionen werden geladen…",
@@ -2090,7 +2094,7 @@
         "refreshingList": "Liste wird aktualisiert…",
         "searchInstances": "Instanzen suchen…",
         "teamInstanceInfo": "Authentifizieren Sie sich gegen die Aktionsinstanzen Ihrer Organisation. Authentifizierte Aktionen können Ihren Agenten hinzugefügt werden.",
-        "personalInstanceInfo": "Authentifizieren Sie sich gegen die Aktionsinstanzen Ihrer Organisation. Nach der Authentifizierung können Sie diese Aktionen in Ihren Agenten verwenden.",
+        "personalInstanceInfo": "Melden Sie sich bei den Aktionen Ihrer Organisation an oder fügen Sie eigene hinzu. Nach der Anmeldung können Sie sie in Ihren Agenten verwenden.",
         "instanceTabs": {
           "all": "Alle ({{count}})",
           "authenticated": "Authentifiziert ({{count}})",
@@ -2154,8 +2158,6 @@
         "numberMin": "Geben Sie eine ganze Zahl ab {{min, number}} ein.",
         "numberMax": "Geben Sie eine ganze Zahl bis {{max, number}} ein."
       },
-      "adminRequiredToast": "Nur Administratoren können neue Aktionen hinzufügen. Bitten Sie Ihren Administrator, diese Aktion zuerst zu konfigurieren.",
-      "personalNonAdminHint": "Als „Nicht konfiguriert“ markierte Aktionen müssen zunächst von einem Administrator eingerichtet werden, bevor Sie sie verwenden können.",
       "toolRules": {
         "open": "Tool-Freigaben",
         "title": "Tool-Freigaben: {{name}}",
@@ -2165,6 +2167,21 @@
         "defaults": "Tools, die Daten lesen oder ändern, werden ausgeführt. Ein Tool, das Daten löscht, eine Tabelle leert oder E-Mails sendet, fragt zuerst im Chat in der PipesHub-App nach und wird nicht ausgeführt, wo niemand antworten kann, etwa im Slack-Bot oder über die API.",
         "enterpriseTitle": "Tool-Freigaben der Organisation",
         "enterpriseDescription": "Legen Sie fest, welche Tools dieses Toolsets ausgeführt werden, zuerst nachfragen oder nie ausgeführt werden – für alle in Ihrer Organisation."
+      },
+      "personal": {
+        "setupCallout": "Nur Sie können diese Aktion sehen und verwenden, und sie kann nicht zu Agenten hinzugefügt werden, die mit Ihrer Organisation geteilt sind. Melden Sie sich nach dem Hinzufügen bei ihr an.",
+        "yours": "Ihre",
+        "addOwn": "Eigene hinzufügen",
+        "added": "Aktion hinzugefügt.",
+        "delete": "Aktion löschen",
+        "deleteTitle": "{{name}} löschen?",
+        "deleteBody": "Ihre Anmeldung und die Tool-Freigaben dafür werden ebenfalls gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        "deleted": "Aktion gelöscht.",
+        "adminOnly": "Nur ein Administrator kann {{name}} hinzufügen: Die Aktion verbindet sich über den Hostnamen mit einem Server. Bitten Sie Ihren Administrator, sie für Ihre Organisation hinzuzufügen."
+      },
+      "enterprise": {
+        "userActionsTitle": "Eigene Aktionen der Mitglieder",
+        "userActionsDescription": "Prüfen und entfernen Sie die Aktionen, die Mitglieder Ihrer Organisation für sich selbst hinzufügen."
       }
     },
     "rightPanel": {
@@ -3616,6 +3633,12 @@
           "label": "Extraktionsdienst",
           "description": "LLM-basierte Dokumentklassifizierung und Metadatenextraktion"
         }
+      },
+      "vectorDbMemory": {
+        "title": "Der Suchindex passt nicht in den Arbeitsspeicher der Vektordatenbank",
+        "message": "Der Suchindex braucht etwa {{needed}} GB Arbeitsspeicher, um schnell zu bleiben; die Vektordatenbank hat etwa {{available}} GB. Suchen lesen deshalb von der Festplatte und werden noch langsamer, wenn mehrere gleichzeitig laufen.",
+        "messageHost": "Der Suchindex braucht etwa {{needed}} GB Arbeitsspeicher, um schnell zu bleiben; der Server der Vektordatenbank hat insgesamt nur etwa {{available}} GB. Suchen lesen deshalb von der Festplatte und werden noch langsamer, wenn mehrere gleichzeitig laufen.",
+        "guide": "Leitfaden zur Größe der Vektordatenbank"
       }
     },
     "tenants": {
@@ -4087,7 +4110,43 @@
       "disableTitle": "Dieses Dienstkonto deaktivieren?",
       "disableDescription": "{{name}} funktioniert sofort nicht mehr – einschließlich aller bereits vorhandenen Tokens, nicht erst bei der nächsten Anmeldung. Alles, was eines dieser Tokens verwendet, schlägt fehl, bis Sie das Konto wieder aktivieren.",
       "disableConfirm": "Deaktivieren",
-      "memberBadge": "Dienstkonto"
+      "memberBadge": "Dienstkonto",
+      "manageDelegations": "Für wen es handeln darf",
+      "delegations": {
+        "title": "Im Namen einer Person handeln",
+        "explainer": "Dieses Dienstkonto kann die Erlaubnis erhalten, für namentlich genannte Personen zu handeln. Dabei liest es genau das, was diese Person lesen darf, und das ausgestellte Token gilt fünf Minuten. Administratoren können hier nicht genannt werden.",
+        "unavailableTitle": "Das Handeln im Namen einer Person ist eine Enterprise-Funktion",
+        "unavailableBody": "Diesem Dienstkonto zu erlauben, als benannte Kollegin oder benannter Kollege zu handeln — die Freigabeliste, das fünf Minuten gültige Token im Namen dieser Person und die Aufzeichnung jedes Versuchs — gehört zur Enterprise-Edition und ist in dieser Edition nicht enthalten.",
+        "unavailableAvailableHere": "Was diese Edition enthält: das Dienstkonto selbst, seinen eigenen Zugriff auf die von Ihnen freigegebenen Wissensdatenbanken sowie Token, die Sie ausstellen und widerrufen können. Das deckt jede Integration ab, die mit eigenen Berechtigungen arbeitet statt mit denen einer anderen Person.",
+        "addTitle": "Erlauben, für jemanden zu handeln",
+        "subjectLabel": "Person",
+        "subjectPlaceholder": "name@beispiel.de",
+        "subjectHelp": "Geben Sie die E-Mail-Adresse der Person ein, für die dieses Dienstkonto handeln darf.",
+        "reasonLabel": "Grund",
+        "reasonPlaceholder": "Warum das nötig ist",
+        "reasonHelp": "Wird angezeigt, wer diese Liste später prüft.",
+        "addConfirm": "Erlauben",
+        "listTitle": "Darf handeln für",
+        "none": "Dieses Dienstkonto kann für niemanden handeln. Es liest nur mit eigenen Berechtigungen.",
+        "loading": "Wird geladen…",
+        "inactive": "Nicht mehr verfügbar",
+        "revoke": "Entfernen",
+        "revokeTitle": "Diese Berechtigung entfernen?",
+        "revokeDescription": "Dieses Dienstkonto kann dann nicht mehr für {{subject}} handeln.",
+        "revokeSuccessTitle": "Berechtigung entfernt",
+        "revokeErrorTitle": "Berechtigung konnte nicht entfernt werden",
+        "grantSuccessTitle": "Berechtigung erteilt",
+        "grantErrorTitle": "Berechtigung konnte nicht erteilt werden",
+        "loadErrorTitle": "Delegationseinstellungen konnten nicht geladen werden",
+        "logTitle": "Letzte Aktivität",
+        "logHelp": "Jede Änderung an dieser Liste und jedes Mal, wenn das Dienstkonto für jemanden handeln wollte – einschließlich der abgelehnten Versuche.",
+        "logNone": "Noch nichts aufgezeichnet.",
+        "outcomeIssued": "Erlaubt",
+        "outcomeRefused": "Abgelehnt",
+        "outcomeGranted": "Berechtigung hinzugefügt",
+        "outcomeRevoked": "Berechtigung entfernt",
+        "byAdmin": "von {{admin}}"
+      }
     }
   },
   "filePreview": {
@@ -4449,7 +4508,8 @@
     "mcpAgentApprovals": "Tool-Freigaben pro Agent",
     "limitSource": "Auswählen, was {{name}} durchsucht",
     "limitSourceHint": "Lassen Sie die gesamte Quelle angehakt, oder entfernen Sie den Haken und wählen Sie die Ordner und Elemente, die der Agent durchsuchen darf.",
-    "limitSourceCount": "Auf {{count}} ausgewählte Elemente begrenzt"
+    "limitSourceCount": "Auf {{count}} ausgewählte Elemente begrenzt",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} ist Ihre persönliche Aktion. Sie kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft."
   },
   "recordView": {
     "sections": {

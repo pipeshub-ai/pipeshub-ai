@@ -518,6 +518,7 @@ class TestRequeryGuards:
         assert not retrieval_service._should_requery(**self._args(allow_requery=False))
 
 
+@pytest.mark.usefixtures("narrow_fallback_off")
 class TestRequeryBehaviour:
     @pytest.mark.asyncio
     async def test_second_attempt_uses_a_larger_limit(
@@ -666,6 +667,7 @@ class TestDegradedVerification:
 
         assert result["status"] == Status.EMPTY_RESPONSE.value
 
+    @pytest.mark.usefixtures("narrow_fallback_off")
     @pytest.mark.asyncio
     async def test_total_denial_retries_with_a_larger_fetch(
         self, retrieval_service, mock_graph_provider
@@ -751,6 +753,7 @@ class TestResultsAreCappedAtLimit:
         assert [r["metadata"]["virtualRecordId"] for r in results] == ["v4", "v3"]
 
 
+@pytest.mark.usefixtures("narrow_fallback_off")
 class TestRetryNeverRegresses:
     @pytest.mark.asyncio
     async def test_a_worse_second_attempt_is_discarded(
@@ -864,6 +867,7 @@ class TestRouting:
 
         mock_graph_provider.get_accessible_virtual_record_ids.assert_not_awaited()
 
+    @pytest.mark.usefixtures("narrow_fallback_off")
     @pytest.mark.asyncio
     async def test_the_verifier_is_scoped_on_every_attempt(
         self, retrieval_service, mock_graph_provider
@@ -1225,6 +1229,7 @@ class TestTheContainerPathReturnsAsMuchAsTheRecordIdPath:
             "what the record-id path concatenates"
         )
 
+@pytest.mark.usefixtures("narrow_fallback_off")
 class TestTheRetryTargetsTheWholeFanOut:
     """`surviving` is counted across every expanded query, so comparing it to
     `limit` made the retry give up at one query's worth of results. With

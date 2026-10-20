@@ -209,6 +209,75 @@ describe('SamlController', () => {
       expect(authenticate.firstCall.args[1]).to.include({ session: false });
     });
 
+    describe('handoff client in RelayState', () => {
+      const challenge = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
+
+      const relayStateFor = async (query: Record<string, string>) => {
+        const req: any = { query: { email: 'user@example.com', ...query }, body: {}, headers: {} };
+        sinon.stub(OrgAuthConfig, 'findOne').returns({
+          lean: sinon.stub().returnsThis(),
+          exec: sinon.stub().resolves({ orgId: 'o1', isDeleted: false }),
+        } as any);
+        sinon.stub(passport, 'authenticate').returns(sinon.stub());
+
+        await controller.signInViaSAML(req, res, next);
+
+        return JSON.parse(Buffer.from(req.query.RelayState, 'base64').toString('utf8'));
+      };
+
+      it('carries the challenge for a web sign-in', async () => {
+        const relayState = await relayStateFor({ client: 'web', code_challenge: challenge });
+
+        expect(relayState).to.deep.equal({
+          orgId: 'o1',
+          spInitiated: true,
+          client: 'web',
+          codeChallenge: challenge,
+        });
+      });
+
+      it('carries state and challenge for a desktop sign-in', async () => {
+        const relayState = await relayStateFor({ client: 'desktop', state: 'phd.abc', code_challenge: challenge });
+
+        expect(relayState).to.deep.equal({
+          orgId: 'o1',
+          spInitiated: true,
+          client: 'desktop',
+          state: 'phd.abc',
+          codeChallenge: challenge,
+        });
+      });
+
+      it('marks an email-only start so the callback cannot treat it as IdP-initiated', async () => {
+        expect(await relayStateFor({})).to.deep.equal({ orgId: 'o1', spInitiated: true });
+      });
+
+      it('keeps the client when the challenge is missing so the callback can refuse', async () => {
+        expect(await relayStateFor({ client: 'web' })).to.deep.equal({
+          orgId: 'o1',
+          client: 'web',
+          spInitiated: true,
+        });
+      });
+
+      it('keeps the client when the challenge is malformed so the callback can refuse', async () => {
+        expect(await relayStateFor({ client: 'web', code_challenge: 'short' })).to.deep.equal({
+          orgId: 'o1',
+          client: 'web',
+          spInitiated: true,
+        });
+      });
+
+      it('keeps a desktop client without a valid challenge so the callback can refuse', async () => {
+        expect(await relayStateFor({ client: 'desktop', state: 'phd.abc' })).to.deep.equal({
+          orgId: 'o1',
+          client: 'desktop',
+          state: 'phd.abc',
+          spInitiated: true,
+        });
+      });
+    });
+
     it('should call next(NotFoundError) when certificate is missing in credentials', async () => {
       const req: any = {
         query: { email: 'user@example.com', sessionToken: 'token123' },

@@ -18,6 +18,7 @@ import { parseScopeString } from '../../modules/oauth_provider/services/scope.va
 import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
+import { assertDelegationStillHolds } from '../../modules/oauth_provider/services/delegation-guard';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
 
@@ -262,6 +263,25 @@ export class AuthMiddleware {
     // is to be used by long-lived automation holding a long-lived token.
     if (user.isDisabled) {
       throw new UnauthorizedError('This account is disabled');
+    }
+
+    // A delegated token speaks as a person, and the rules that let it be
+    // issued have to keep holding for as long as it works — not only at the
+    // moment it was signed. Five minutes is plenty of time for a promotion or
+    // a switched-off service account to matter, and nothing else here would
+    // notice: every check below is about the person named in `userId`, who is
+    // a colleague in good standing.
+    //
+    // These refuse the token outright rather than downgrading it. Clamping
+    // `req.user.role` would fix Node and leave the Python services wrong,
+    // because they ask `GET /api/v1/users/me/role`, which re-reads the user
+    // document (`users.routes.ts:319`) instead of trusting the request. There
+    // is no value to clamp that both halves would agree on, so the only
+    // answer that fails closed is no token at all.
+    if (payload.act?.sub !== undefined) {
+      // The rules live in one place because OAuthAuthMiddleware needs the
+      // same ones for the OIDC endpoints; see delegation-guard.ts.
+      await assertDelegationStillHolds(payload.act.sub, userId, orgId, user);
     }
 
     email = user.email;

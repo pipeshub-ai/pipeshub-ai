@@ -746,6 +746,8 @@
     "like": "Útil",
     "dislike": "No útil",
     "copy": "Copiar",
+    "fork": "Bifurcar chat",
+    "forkFromHere": "Bifurcar desde aquí",
     "regenerate": "Regenerar",
     "readAloud": "Leer en voz alta",
     "stopReading": "Dejar de leer",
@@ -843,7 +845,9 @@
       "editComingSoonDescription": "Estamos desarrollando soporte para editar",
       "deprecatedTools": "Este agente tiene herramientas que ya no están disponibles. Abre el Agent Builder para eliminarlas.",
       "openAgentBuilder": "Abrir Agent Builder",
-      "loadConversationFailed": "No pudimos abrir esta conversación. Recarga la página para intentarlo de nuevo."
+      "loadConversationFailed": "No pudimos abrir esta conversación. Recarga la página para intentarlo de nuevo.",
+      "forkSuccess": "Se inició un chat nuevo desde este punto",
+      "forkError": "No se pudo bifurcar este chat. Inténtelo de nuevo."
     },
     "queryModes": {
       "chat": {
@@ -2030,7 +2034,7 @@
       "title": "Acciones",
       "subtitle": "Configure acciones automatizadas como crear registros, actualizar campos o activar flujos de trabajo. Cada aplicación tiene una acción adaptada a sus funciones admitidas.",
       "yourActionsTitle": "Sus acciones",
-      "yourActionsSubtitle": "Autentique y gestione las acciones que su administrador ha puesto a disposición de su cuenta.",
+      "yourActionsSubtitle": "Inicie sesión en las acciones que su administrador ha puesto a su disposición o añada las suyas.",
       "tabs": {
         "all": "Todas",
         "configured": "Configuradas",
@@ -2050,7 +2054,7 @@
         "manage": "Gestionar",
         "unavailable": "No disponible",
         "notConfigured": "No configurada",
-        "adminSetupRequired": "Requiere configuración del administrador"
+        "add": "Añadir"
       },
       "trailingYourActions": "Sus acciones",
       "loading": "Cargando acciones…",
@@ -2110,7 +2114,7 @@
         "refreshingList": "Actualizando lista…",
         "searchInstances": "Buscar instancias…",
         "teamInstanceInfo": "Autentíquese contra las instancias de acción de su organización. Las acciones autenticadas pueden añadirse a sus agentes.",
-        "personalInstanceInfo": "Autentíquese contra las instancias de acción de su organización. Una vez autenticado, puede usar estas acciones en sus agentes.",
+        "personalInstanceInfo": "Inicie sesión en las acciones de su organización o añada las suyas. Una vez iniciada la sesión, puede usarlas en sus agentes.",
         "instanceTabs": {
           "all": "Todas ({{count}})",
           "authenticated": "Autenticadas ({{count}})",
@@ -2174,8 +2178,6 @@
         "numberMin": "Introduce un número entero de al menos {{min, number}}.",
         "numberMax": "Introduce un número entero de hasta {{max, number}}."
       },
-      "adminRequiredToast": "Solo los administradores pueden añadir acciones nuevas. Pida a su administrador que configure primero esta acción.",
-      "personalNonAdminHint": "Las acciones marcadas como \"No configurada\" debe configurarlas un administrador antes de que pueda usarlas.",
       "toolRules": {
         "open": "Aprobaciones de herramientas",
         "title": "Aprobaciones de herramientas: {{name}}",
@@ -2185,6 +2187,21 @@
         "defaults": "Las herramientas que leen o cambian datos se ejecutan. Una herramienta que borra datos, vacía una hoja o envía correo pregunta primero en un chat de la aplicación PipesHub y no se ejecuta donde nadie puede responder, como el bot de Slack o la API.",
         "enterpriseTitle": "Aprobaciones de herramientas de la organización",
         "enterpriseDescription": "Elige qué herramientas de este conjunto se ejecutan, preguntan primero o nunca se ejecutan, para todos en tu organización."
+      },
+      "personal": {
+        "setupCallout": "Solo usted puede ver y usar esta acción, y no se puede añadir a agentes compartidos con su organización. Inicie sesión en ella después de añadirla.",
+        "yours": "Suya",
+        "addOwn": "Añadir la suya",
+        "added": "Acción añadida.",
+        "delete": "Eliminar acción",
+        "deleteTitle": "¿Eliminar {{name}}?",
+        "deleteBody": "También se eliminan su inicio de sesión y las aprobaciones de herramientas de esta acción. No se puede deshacer.",
+        "deleted": "Acción eliminada.",
+        "adminOnly": "Solo un administrador puede añadir {{name}}: se conecta a un servidor por su nombre de host. Pida a su administrador que la añada para su organización."
+      },
+      "enterprise": {
+        "userActionsTitle": "Acciones propias de las personas",
+        "userActionsDescription": "Revise y elimine las acciones que las personas de su organización añaden para sí mismas."
       }
     },
     "rightPanel": {
@@ -3642,6 +3659,12 @@
           "label": "Servicio de extracción",
           "description": "Clasificación de documentos y extracción de metadatos basada en LLM"
         }
+      },
+      "vectorDbMemory": {
+        "title": "El índice de búsqueda no cabe en la memoria de la base de datos vectorial",
+        "message": "El índice de búsqueda necesita unos {{needed}} GB de memoria para ser rápido; la base de datos vectorial tiene unos {{available}} GB, así que las búsquedas leen del disco y van aún más lentas cuando se ejecutan varias a la vez.",
+        "messageHost": "El índice de búsqueda necesita unos {{needed}} GB de memoria para ser rápido; el servidor de la base de datos vectorial solo tiene unos {{available}} GB en total, así que las búsquedas leen del disco y van aún más lentas cuando se ejecutan varias a la vez.",
+        "guide": "Guía de dimensionamiento de la base de datos vectorial"
       }
     },
     "tenants": {
@@ -4121,7 +4144,43 @@
       "disableTitle": "¿Desactivar esta cuenta de servicio?",
       "disableDescription": "{{name}} deja de funcionar de inmediato, incluidos todos los tokens que ya tenga, no solo en el siguiente inicio de sesión. Todo lo que use uno de esos tokens empezará a fallar hasta que vuelva a activarla.",
       "disableConfirm": "Desactivar",
-      "memberBadge": "Cuenta de servicio"
+      "memberBadge": "Cuenta de servicio",
+      "manageDelegations": "En nombre de quién puede actuar",
+      "delegations": {
+        "title": "Actuar en nombre de alguien",
+        "explainer": "Esta cuenta de servicio puede autorizarse para actuar en nombre de personas concretas. Cuando lo hace, lee exactamente lo que esa persona puede leer, y el token que recibe dura cinco minutos. Aquí no se pueden indicar administradores.",
+        "unavailableTitle": "Actuar en nombre de una persona es una capacidad de Enterprise",
+        "unavailableBody": "Permitir que esta cuenta de servicio actúe como un compañero concreto — la lista de permitidos, el token de cinco minutos emitido a nombre de esa persona y el registro de cada intento — forma parte de la edición Enterprise y no está incluido en esta.",
+        "unavailableAvailableHere": "Lo que sí incluye esta edición: la propia cuenta de servicio, su acceso a las bases de conocimiento que le concedas y los tokens que puedes emitir y revocar. Eso cubre cualquier integración que funcione con sus propios permisos en lugar de los de otra persona.",
+        "addTitle": "Permitir que actúe en nombre de alguien",
+        "subjectLabel": "Persona",
+        "subjectPlaceholder": "nombre@ejemplo.com",
+        "subjectHelp": "Introduzca el correo electrónico de la persona en cuyo nombre puede actuar esta cuenta de servicio.",
+        "reasonLabel": "Motivo",
+        "reasonPlaceholder": "Por qué es necesario",
+        "reasonHelp": "Se mostrará a quien revise esta lista más adelante.",
+        "addConfirm": "Permitir",
+        "listTitle": "Puede actuar en nombre de",
+        "none": "Esta cuenta de servicio no puede actuar en nombre de nadie. Solo lee con sus propios permisos.",
+        "loading": "Cargando…",
+        "inactive": "Ya no disponible",
+        "revoke": "Quitar",
+        "revokeTitle": "¿Quitar este permiso?",
+        "revokeDescription": "Esta cuenta de servicio ya no podrá actuar en nombre de {{subject}}.",
+        "revokeSuccessTitle": "Permiso quitado",
+        "revokeErrorTitle": "No se pudo quitar el permiso",
+        "grantSuccessTitle": "Permiso concedido",
+        "grantErrorTitle": "No se pudo conceder el permiso",
+        "loadErrorTitle": "No se pudo cargar la configuración de delegación",
+        "logTitle": "Actividad reciente",
+        "logHelp": "Cada cambio en esta lista y cada vez que la cuenta de servicio pidió actuar en nombre de alguien, incluidas las veces que se rechazó.",
+        "logNone": "Todavía no hay nada registrado.",
+        "outcomeIssued": "Permitido",
+        "outcomeRefused": "Rechazado",
+        "outcomeGranted": "Permiso añadido",
+        "outcomeRevoked": "Permiso quitado",
+        "byAdmin": "por {{admin}}"
+      }
     }
   },
   "filePreview": {
@@ -4485,7 +4544,8 @@
     "mcpAgentApprovals": "Aprobaciones de herramientas por agente",
     "limitSource": "Elegir qué busca {{name}}",
     "limitSourceHint": "Deja marcada toda la fuente, o desmárcala y marca las carpetas y elementos en los que el agente puede buscar.",
-    "limitSourceCount": "Limitado a {{count}} seleccionados"
+    "limitSourceCount": "Limitado a {{count}} seleccionados",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} es su acción personal. No se puede añadir a un agente compartido con su organización ni a uno que se ejecute como cuenta de servicio."
   },
   "recordView": {
     "sections": {

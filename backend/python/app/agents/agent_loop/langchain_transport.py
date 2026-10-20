@@ -75,6 +75,7 @@ from app.agents.agent_loop.converters import (
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
+from app.agents.agent_loop.error_classification import redact_error_for_log
 from app.agents.agent_loop.image_guard import cap_images
 from app.agents.agent_loop.prompt_cache import NoCacheStrategy, cache_target
 from app.utils.llm_api_mode_store import (
@@ -458,7 +459,7 @@ class LangChainTransport(LLMTransport):
         and so is every later run for this model and endpoint in this process."""
         if not is_prompt_cache_param_conflict(exc, self._cache.sent_params):
             return False
-        logger.warning("LangChainTransport: prompt-cache parameters rejected; resending without them: %s", exc)
+        logger.warning("LangChainTransport: prompt-cache parameters rejected; resending without them: %s", redact_error_for_log(str(exc)))
         REJECTED_CACHE_PARAMS.record(self._cache_target.model, self._cache_target.base_url)
         self._cache = NoCacheStrategy()
         self._bound_by_tools.clear()
@@ -718,7 +719,7 @@ class LangChainTransport(LLMTransport):
                 logger.warning(
                     "LangChainTransport.complete: model=%s rejected images inside tool "
                     "results, retrying once with them moved to a user message: %s",
-                    self._model, exc,
+                    self._model, redact_error_for_log(str(exc)),
                 )
                 try:
                     ai_message = await self._ainvoke(messages, tools, prompt, relocate=True)
@@ -726,7 +727,7 @@ class LangChainTransport(LLMTransport):
                     logger.error(
                         "LangChainTransport.complete: tool-image relocation retry also "
                         "failed for model=%s: %s — raising the ORIGINAL error",
-                        self._model, retry_exc,
+                        self._model, redact_error_for_log(str(retry_exc)),
                     )
                     raise self._wrap_error(exc, "complete") from exc
                 # Pinned for the rest of this run so every later call builds
@@ -740,7 +741,7 @@ class LangChainTransport(LLMTransport):
             logger.warning(
                 "LangChainTransport.complete: provider conflict for model=%s, "
                 "retrying once with api_mode=%s: %s",
-                self._model, mode, exc,
+                self._model, mode, redact_error_for_log(str(exc)),
             )
             try:
                 ai_message = await self._ainvoke(messages, tools, prompt, llm=fallback_llm)
@@ -748,7 +749,7 @@ class LangChainTransport(LLMTransport):
                 logger.error(
                     "LangChainTransport.complete: retry with api_mode=%s also failed for "
                     "model=%s: %s — raising the ORIGINAL error",
-                    mode, self._model, retry_exc,
+                    mode, self._model, redact_error_for_log(str(retry_exc)),
                 )
                 raise self._wrap_error(exc, "complete") from exc
             # Pinned for the rest of this agent loop (many more calls will
@@ -839,7 +840,7 @@ class LangChainTransport(LLMTransport):
             first_attempt_error = exc
             logger.warning(
                 "LangChainTransport: raw-schema attempt raised %s: %s",
-                type(exc).__name__, exc,
+                type(exc).__name__, redact_error_for_log(str(exc)),
             )
 
         second_raw: Any = None
@@ -1029,7 +1030,7 @@ class LangChainTransport(LLMTransport):
                         "LangChainTransport.stream: retry (api_mode=%s, "
                         "relocated_images=%s) also failed for model=%s: %s — "
                         "raising the ORIGINAL error",
-                        fallback_mode, relocated_images, self._model, exc,
+                        fallback_mode, relocated_images, self._model, redact_error_for_log(str(exc)),
                     )
                     raise self._wrap_error(original_exc, "stream") from original_exc
                 if chunks:
@@ -1055,7 +1056,7 @@ class LangChainTransport(LLMTransport):
                     logger.warning(
                         "LangChainTransport.stream: model=%s rejected images inside tool "
                         "results, retrying once with them moved to a user message: %s",
-                        self._model, exc,
+                        self._model, redact_error_for_log(str(exc)),
                     )
                     continue
                 fallback = self._conflict_fallback(exc)
@@ -1075,7 +1076,7 @@ class LangChainTransport(LLMTransport):
                 logger.warning(
                     "LangChainTransport.stream: provider conflict for model=%s, "
                     "retrying once with api_mode=%s: %s",
-                    self._model, fallback_mode, exc,
+                    self._model, fallback_mode, redact_error_for_log(str(exc)),
                 )
             finally:
                 # Best-effort: never let cleanup mask the real outcome (an

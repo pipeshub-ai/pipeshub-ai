@@ -166,8 +166,7 @@ class TestAzureFilesProcessorComprehensive:
         )
         proc.account_name = "myaccount"
         url = proc._generate_directory_url("myshare/subdir/folder")
-        assert "myaccount.file.core.windows.net" in url
-        assert "myshare" in url
+        assert url == "https://myaccount.file.core.windows.net/myshare/subdir/folder"
 
     def test_generate_directory_url_root(self):
         proc = AzureFilesDataSourceEntitiesProcessor.__new__(

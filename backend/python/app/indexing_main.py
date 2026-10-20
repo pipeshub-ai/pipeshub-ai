@@ -79,6 +79,7 @@ from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.logger import install_log_redaction
 from app.utils.loop_lag_monitor import LoopLagMonitor
 from app.utils.loop_share import LoopShare
 from app.utils.process_hardening import mark_process_non_dumpable
@@ -1724,6 +1725,7 @@ async def stop_kafka_consumers(container: IndexingAppContainer) -> None:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
     mark_process_non_dumpable()
+    install_log_redaction()
 
     app_container = await get_initialized_container()
     app.container = app_container

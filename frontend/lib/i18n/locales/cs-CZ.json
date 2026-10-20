@@ -859,6 +859,8 @@
     "like": "Užitečné",
     "dislike": "Neužitečné",
     "copy": "Kopírovat",
+    "fork": "Rozvětvit chat",
+    "forkFromHere": "Rozvětvit odtud",
     "regenerate": "Vygenerovat znovu",
     "readAloud": "Přečíst nahlas",
     "stopReading": "Zastavit čtení",
@@ -988,7 +990,9 @@
       "editComingSoonDescription": "Na podpoře úprav pracujeme",
       "deprecatedTools": "Tento agent má nástroje, které už nejsou k dispozici. Otevřete Tvůrce agentů a odeberte je.",
       "openAgentBuilder": "Otevřít Tvůrce agentů",
-      "loadConversationFailed": "Tuto konverzaci se nepodařilo otevřít. Obnovte stránku a zkuste to znovu."
+      "loadConversationFailed": "Tuto konverzaci se nepodařilo otevřít. Obnovte stránku a zkuste to znovu.",
+      "forkSuccess": "Zahájena nová konverzace od tohoto místa",
+      "forkError": "Tuto konverzaci se nepodařilo rozvětvit. Zkuste to znovu."
     },
     "queryModes": {
       "chat": {
@@ -2230,7 +2234,7 @@
       "title": "Akce",
       "subtitle": "Nakonfigurujte automatizované akce, jako je vytváření záznamů, aktualizace polí nebo spouštění workflow. Každá aplikace má akci přizpůsobenou funkcím, které podporuje.",
       "yourActionsTitle": "Vaše akce",
-      "yourActionsSubtitle": "Ověřte se a spravujte akce, které váš správce zpřístupnil pro váš účet.",
+      "yourActionsSubtitle": "Ověřte se vůči akcím, které zpřístupnil váš správce, nebo přidejte vlastní.",
       "tabs": {
         "all": "Vše",
         "configured": "Nakonfigurované",
@@ -2250,7 +2254,7 @@
         "manage": "Spravovat",
         "unavailable": "Není k dispozici",
         "notConfigured": "Nenakonfigurováno",
-        "adminSetupRequired": "Vyžaduje nastavení správcem"
+        "add": "Přidat"
       },
       "trailingYourActions": "Vaše akce",
       "loading": "Načítání akcí…",
@@ -2310,7 +2314,7 @@
         "refreshingList": "Aktualizace seznamu…",
         "searchInstances": "Hledat instance…",
         "teamInstanceInfo": "Ověřte se vůči instancím akcí vaší organizace. Ověřené akce lze přidat do vašich agentů.",
-        "personalInstanceInfo": "Ověřte se vůči instancím akcí vaší organizace. Po ověření můžete tyto akce používat ve svých agentech.",
+        "personalInstanceInfo": "Ověřte se vůči akcím vaší organizace nebo přidejte vlastní. Po ověření je můžete používat ve svých agentech.",
         "instanceTabs": {
           "all": "Vše ({{count}})",
           "authenticated": "Ověřené ({{count}})",
@@ -2374,8 +2378,6 @@
         "numberMin": "Zadejte celé číslo nejméně {{min, number}}.",
         "numberMax": "Zadejte celé číslo nejvýše {{max, number}}."
       },
-      "adminRequiredToast": "Nové akce mohou přidávat pouze správci. Požádejte svého správce, aby tuto akci nejprve nakonfiguroval.",
-      "personalNonAdminHint": "Akce označené jako \"Nenakonfigurováno\" musí nejprve nastavit správce, než je budete moci používat.",
       "toolRules": {
         "open": "Schvalování nástrojů",
         "title": "Schvalování nástrojů: {{name}}",
@@ -2385,6 +2387,21 @@
         "defaults": "Nástroje, které čtou nebo mění data, se spustí. Nástroj, který maže data, vymaže list nebo odešle e-mail, se nejdřív zeptá v chatu v aplikaci PipesHub a nespustí se tam, kde nikdo nemůže odpovědět, například v botovi pro Slack nebo přes API.",
         "enterpriseTitle": "Schvalování nástrojů v organizaci",
         "enterpriseDescription": "Vyberte, které nástroje této sady se spustí, nejdřív se zeptají, nebo se nikdy nespustí, a to pro všechny ve vaší organizaci."
+      },
+      "personal": {
+        "setupCallout": "Tuto akci vidíte a používáte jen vy a nelze ji přidat k agentům sdíleným s vaší organizací. Po přidání se vůči ní ověřte.",
+        "yours": "Vaše",
+        "addOwn": "Přidat vlastní",
+        "added": "Akce byla přidána.",
+        "delete": "Smazat akci",
+        "deleteTitle": "Smazat {{name}}?",
+        "deleteBody": "Smaže se i vaše ověření a schválení nástrojů pro tuto akci. Tuto operaci nelze vrátit zpět.",
+        "deleted": "Akce byla smazána.",
+        "adminOnly": "{{name}} může přidat pouze správce: připojuje se k serveru podle názvu hostitele. Požádejte správce, aby ji přidal pro vaši organizaci."
+      },
+      "enterprise": {
+        "userActionsTitle": "Vlastní akce uživatelů",
+        "userActionsDescription": "Zkontrolujte a odeberte akce, které si lidé ve vaší organizaci přidali sami."
       }
     },
     "rightPanel": {
@@ -4003,6 +4020,12 @@
           "label": "Služba Extraction",
           "description": "Klasifikace dokumentů a extrakce metadat pomocí LLM"
         }
+      },
+      "vectorDbMemory": {
+        "title": "Vyhledávací index se nevejde do paměti vektorové databáze",
+        "message": "Vyhledávací index potřebuje asi {{needed}} GB paměti, aby zůstal rychlý; vektorová databáze má asi {{available}} GB, takže vyhledávání čte z disku a při více souběžných dotazech se dál zpomaluje.",
+        "messageHost": "Vyhledávací index potřebuje asi {{needed}} GB paměti, aby zůstal rychlý; server s vektorovou databází má celkem jen asi {{available}} GB, takže vyhledávání čte z disku a při více souběžných dotazech se dál zpomaluje.",
+        "guide": "Průvodce dimenzováním vektorové databáze"
       }
     },
     "tenants": {
@@ -4262,7 +4285,43 @@
       "disableTitle": "Zakázat tento servisní účet?",
       "disableDescription": "{{name}} přestane okamžitě fungovat, včetně všech tokenů, které již má. Každá integrace používající některý z těchto tokenů bude selhávat, dokud účet znovu nepovolíte.",
       "disableConfirm": "Zakázat",
-      "memberBadge": "Servisní účet"
+      "memberBadge": "Servisní účet",
+      "manageDelegations": "Za koho může jednat",
+      "delegations": {
+        "title": "Jednání jménem někoho jiného",
+        "explainer": "Tomuto servisnímu účtu lze povolit, aby jednal jménem konkrétních osob. Když tak činí, čte přesně to, co může číst daná osoba, a token, který obdrží, platí pět minut. Správce zde uvést nelze.",
+        "unavailableTitle": "Jednání jménem osoby je funkce edice Enterprise",
+        "unavailableBody": "Umožnit tomuto servisnímu účtu jednat jménem konkrétního kolegy — seznam povolených osob, pětiminutový token vydaný na jméno dané osoby a záznam o každém pokusu — je součástí edice Enterprise a v této edici není obsaženo.",
+        "unavailableAvailableHere": "Co tato edice obsahuje: samotný servisní účet, jeho vlastní přístup ke znalostním bázím, které mu udělíte, a tokeny, které můžete vydávat a odvolávat. To pokrývá každou integraci, která pracuje s vlastními oprávněními, nikoli s oprávněními někoho jiného.",
+        "addTitle": "Povolit jednat jménem osoby",
+        "subjectLabel": "Osoba",
+        "subjectPlaceholder": "jmeno@example.com",
+        "subjectHelp": "Zadejte e-mailovou adresu osoby, jejímž jménem může tento servisní účet jednat.",
+        "reasonLabel": "Důvod",
+        "reasonPlaceholder": "Proč je to potřeba",
+        "reasonHelp": "Zobrazí se tomu, kdo bude tento seznam později kontrolovat.",
+        "addConfirm": "Povolit",
+        "listTitle": "Smí jednat jménem",
+        "none": "Tento servisní účet nemůže jednat jménem nikoho. Čte pouze s vlastními oprávněními.",
+        "loading": "Načítání…",
+        "inactive": "Již není k dispozici",
+        "revoke": "Odebrat",
+        "revokeTitle": "Odebrat toto oprávnění?",
+        "revokeDescription": "Tento servisní účet již nebude moci jednat jménem {{subject}}.",
+        "revokeSuccessTitle": "Oprávnění odebráno",
+        "revokeErrorTitle": "Oprávnění se nepodařilo odebrat",
+        "grantSuccessTitle": "Oprávnění uděleno",
+        "grantErrorTitle": "Oprávnění se nepodařilo udělit",
+        "loadErrorTitle": "Nastavení delegování se nepodařilo načíst",
+        "logTitle": "Nedávná aktivita",
+        "logHelp": "Každá změna tohoto seznamu a každý případ, kdy servisní účet požádal o jednání jménem někoho jiného — včetně případů, kdy byl odmítnut.",
+        "logNone": "Zatím nic zaznamenáno.",
+        "outcomeIssued": "Povoleno",
+        "outcomeRefused": "Odmítnuto",
+        "outcomeGranted": "Oprávnění přidáno",
+        "outcomeRevoked": "Oprávnění odebráno",
+        "byAdmin": "uživatelem {{admin}}"
+      }
     }
   },
   "filePreview": {
@@ -4628,7 +4687,8 @@
     "mcpAgentApprovals": "Schvalování nástrojů pro jednotlivé agenty",
     "limitSource": "Vyberte, co {{name}} prohledává",
     "limitSourceHint": "Ponechte zaškrtnutý celý zdroj, nebo jej odškrtněte a zaškrtněte složky a položky, které smí agent prohledávat.",
-    "limitSourceCount": "Omezeno na vybrané položky: {{count}}"
+    "limitSourceCount": "Omezeno na vybrané položky: {{count}}",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} je vaše osobní akce. Nelze ji přidat k agentovi sdílenému s vaší organizací ani k agentovi běžícímu jako servisní účet."
   },
   "recordView": {
     "sections": {

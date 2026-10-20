@@ -230,9 +230,9 @@ constraint is too broad is the filter reported as too broad.
 The match runs first and grants nothing. It is one capped graph lookup
 that returns the mentioning records' virtual record ids, and those ids
 narrow the search the same way a tool's id list does. The normal
-permission path still decides what the user may read: with
-`ENABLE_CONTAINER_PERMISSION_FILTER` on, the search keeps its container
-scope and adjudicates the hits. An entity filter never loads the user's
+permission path still decides what the user may read: a search scoped
+by the connectors the user can enter keeps that scope and checks every
+hit. An entity filter never loads the user's
 whole accessible-record map to intersect a few thousand matches. A filter
 that matches more entities than the cap is reported as truncated and not
 searched, rather than searched on an arbitrary subset. A failed lookup is

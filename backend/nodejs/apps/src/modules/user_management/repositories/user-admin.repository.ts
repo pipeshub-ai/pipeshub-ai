@@ -20,16 +20,28 @@ import { Org } from '../schema/org.schema';
 const NOT_A_SERVICE_ACCOUNT = { kind: { $ne: 'service' } } as const;
 
 export const UserAdminRepository = {
+  /**
+   * Reads `kind` alongside the role, which the two queries below instead use
+   * to filter.
+   *
+   * The difference is deliberate. Those answer "who administers this
+   * organisation", so a service account should not be in the answer at all.
+   * This one answers "what is this caller", and the caller may legitimately
+   * be a service account — `GET /api/v1/users/me/role` is how the Python
+   * services learn the role of whoever is asking, and filtering here would
+   * return nothing and sign them out. So the kind comes back and the service
+   * layer clamps it.
+   */
   async findActiveUserRole(
     userId: string,
     orgId: string,
-  ): Promise<{ role?: UserRole | null } | null> {
+  ): Promise<{ role?: UserRole | null; kind?: string | null } | null> {
     return Users.findOne({
       _id: userId,
       orgId,
       isDeleted: { $ne: true },
     })
-      .select('role')
+      .select('role kind')
       .lean();
   },
 

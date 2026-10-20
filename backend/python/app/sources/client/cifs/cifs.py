@@ -281,7 +281,7 @@ class CifsClient(IClient):
         connector_instance_id: str,
     ) -> "CifsClient":
         config = await config_service.get_config(
-            ConfigPaths.CONNECTOR_CONFIG.format(connector_id=connector_instance_id)
+            ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=connector_instance_id)
         )
         if not config:
             raise NetworkShareAuthError("CIFS configuration not found")

@@ -824,6 +824,8 @@
     "like": "도움이 됨",
     "dislike": "도움이 안 됨",
     "copy": "복사",
+    "fork": "채팅 분기",
+    "forkFromHere": "여기서 분기",
     "regenerate": "다시 생성",
     "readAloud": "소리 내어 읽기",
     "stopReading": "읽기 중지",
@@ -951,7 +953,9 @@
       "editComingSoonDescription": "편집 기능을 준비하고 있습니다",
       "deprecatedTools": "이 에이전트에 더 이상 사용할 수 없는 도구가 있습니다. Agent Builder를 열어 제거하세요.",
       "openAgentBuilder": "Agent Builder 열기",
-      "loadConversationFailed": "이 대화를 열 수 없습니다. 페이지를 새로 고친 후 다시 시도해 주세요."
+      "loadConversationFailed": "이 대화를 열 수 없습니다. 페이지를 새로 고친 후 다시 시도해 주세요.",
+      "forkSuccess": "이 지점부터 새 채팅을 시작했습니다",
+      "forkError": "채팅을 분기하지 못했습니다. 다시 시도하세요."
     },
     "queryModes": {
       "chat": {
@@ -2146,7 +2150,7 @@
       "title": "액션",
       "subtitle": "레코드 생성, 필드 업데이트, 워크플로우 트리거 같은 자동화된 액션을 구성합니다. 각 앱에는 지원되는 기능에 맞춘 액션이 있습니다.",
       "yourActionsTitle": "내 액션",
-      "yourActionsSubtitle": "관리자가 내 계정에 제공한 액션을 인증하고 관리합니다.",
+      "yourActionsSubtitle": "관리자가 제공한 액션에 로그인하거나 직접 추가하세요.",
       "tabs": {
         "all": "전체",
         "configured": "구성됨",
@@ -2166,7 +2170,7 @@
         "manage": "관리",
         "unavailable": "사용 불가",
         "notConfigured": "구성되지 않음",
-        "adminSetupRequired": "관리자 설정 필요"
+        "add": "추가"
       },
       "trailingYourActions": "내 액션",
       "loading": "액션을 불러오는 중…",
@@ -2226,7 +2230,7 @@
         "refreshingList": "목록 업데이트 중…",
         "searchInstances": "인스턴스 검색…",
         "teamInstanceInfo": "조직의 액션 인스턴스에 대해 인증합니다. 인증된 액션은 에이전트에 추가할 수 있습니다.",
-        "personalInstanceInfo": "조직의 액션 인스턴스에 대해 인증합니다. 인증이 완료되면 에이전트에서 이 액션들을 사용할 수 있습니다.",
+        "personalInstanceInfo": "조직의 액션에 로그인하거나 직접 추가하세요. 로그인하면 에이전트에서 사용할 수 있습니다.",
         "instanceTabs": {
           "all": "전체({{count}})",
           "authenticated": "인증됨({{count}})",
@@ -2290,8 +2294,6 @@
         "numberMin": "{{min, number}} 이상의 정수를 입력하세요.",
         "numberMax": "{{max, number}} 이하의 정수를 입력하세요."
       },
-      "adminRequiredToast": "관리자만 새 작업을 추가할 수 있습니다. 관리자에게 이 작업을 먼저 구성해 달라고 요청하세요.",
-      "personalNonAdminHint": "\"구성되지 않음\"으로 표시된 작업은 사용하기 전에 관리자가 설정해야 합니다.",
       "toolRules": {
         "open": "도구 승인",
         "title": "도구 승인: {{name}}",
@@ -2301,6 +2303,21 @@
         "defaults": "데이터를 읽거나 변경하는 도구는 실행됩니다. 데이터를 삭제하거나 시트를 비우거나 이메일을 보내는 도구는 PipesHub 앱 채팅에서 먼저 묻고, Slack 봇이나 API처럼 아무도 응답할 수 없는 곳에서는 실행되지 않습니다.",
         "enterpriseTitle": "조직 도구 승인",
         "enterpriseDescription": "조직의 모든 사용자에게 이 도구 세트의 어떤 도구를 실행할지, 먼저 물을지, 실행하지 않을지 선택하세요."
+      },
+      "personal": {
+        "setupCallout": "이 액션은 나만 보고 사용할 수 있으며, 조직과 공유된 에이전트에는 추가할 수 없습니다. 추가한 후 로그인하세요.",
+        "yours": "내 액션",
+        "addOwn": "직접 추가",
+        "added": "액션을 추가했습니다.",
+        "delete": "액션 삭제",
+        "deleteTitle": "{{name}}을(를) 삭제할까요?",
+        "deleteBody": "이 액션의 로그인 정보와 도구 승인도 함께 삭제됩니다. 되돌릴 수 없습니다.",
+        "deleted": "액션을 삭제했습니다.",
+        "adminOnly": "{{name}}은(는) 관리자만 추가할 수 있습니다. 호스트 이름으로 서버에 연결하기 때문입니다. 관리자에게 조직용으로 추가해 달라고 요청하세요."
+      },
+      "enterprise": {
+        "userActionsTitle": "구성원의 개인 액션",
+        "userActionsDescription": "조직 구성원이 직접 추가한 액션을 검토하고 삭제합니다."
       }
     },
     "rightPanel": {
@@ -3901,6 +3918,12 @@
           "label": "추출 서비스",
           "description": "LLM 기반 문서 분류 및 메타데이터 추출"
         }
+      },
+      "vectorDbMemory": {
+        "title": "검색 인덱스가 벡터 데이터베이스 메모리에 들어가지 않습니다",
+        "message": "검색 인덱스가 빠르게 동작하려면 약 {{needed}} GB의 메모리가 필요하지만 벡터 데이터베이스에는 약 {{available}} GB만 있습니다. 그래서 검색이 디스크에서 읽어 오며, 여러 검색이 동시에 실행되면 더 느려집니다.",
+        "messageHost": "검색 인덱스가 빠르게 동작하려면 약 {{needed}} GB의 메모리가 필요하지만 벡터 데이터베이스가 실행되는 서버의 전체 메모리는 약 {{available}} GB뿐입니다. 그래서 검색이 디스크에서 읽어 오며, 여러 검색이 동시에 실행되면 더 느려집니다.",
+        "guide": "벡터 데이터베이스 용량 산정 가이드"
       }
     },
     "tenants": {
@@ -4160,7 +4183,43 @@
       "disableTitle": "이 서비스 계정을 사용 중지할까요?",
       "disableDescription": "{{name}}은(는) 즉시 작동을 멈춥니다. 다음 로그인 때가 아니라 이미 보유한 모든 토큰이 함께 중지됩니다. 다시 사용 설정할 때까지 그 토큰을 사용하는 모든 것이 실패합니다.",
       "disableConfirm": "사용 안 함",
-      "memberBadge": "서비스 계정"
+      "memberBadge": "서비스 계정",
+      "manageDelegations": "누구를 대신할 수 있는지",
+      "delegations": {
+        "title": "다른 사람을 대신하여 작업",
+        "explainer": "이 서비스 계정은 지정된 사람을 대신하도록 허용할 수 있습니다. 그렇게 하면 그 사람이 읽을 수 있는 것만 읽으며, 발급되는 토큰은 5분 동안만 유효합니다. 관리자는 여기에 지정할 수 없습니다.",
+        "unavailableTitle": "특정 사용자를 대신해 작업하는 기능은 Enterprise 기능입니다",
+        "unavailableBody": "이 서비스 계정이 지정된 동료로서 작업하도록 허용하는 것 — 허용 목록, 해당 사용자 이름으로 발급되는 5분짜리 토큰, 그리고 모든 시도의 기록 — 은 Enterprise 에디션의 일부이며 이 에디션에는 포함되어 있지 않습니다.",
+        "unavailableAvailableHere": "이 에디션에 포함된 것: 서비스 계정 자체, 직접 부여한 지식 베이스에 대한 자체 접근 권한, 그리고 발급하고 취소할 수 있는 토큰입니다. 다른 사람의 권한이 아닌 자체 권한으로 동작하는 모든 통합을 포괄합니다.",
+        "addTitle": "누군가를 대신하도록 허용",
+        "subjectLabel": "사용자",
+        "subjectPlaceholder": "name@example.com",
+        "subjectHelp": "이 서비스 계정이 대신할 수 있는 사람의 이메일 주소를 입력하세요.",
+        "reasonLabel": "사유",
+        "reasonPlaceholder": "필요한 이유",
+        "reasonHelp": "나중에 이 목록을 검토하는 사람에게 표시됩니다.",
+        "addConfirm": "허용",
+        "listTitle": "대신할 수 있는 사람",
+        "none": "이 서비스 계정은 아무도 대신할 수 없습니다. 자신의 권한으로만 읽습니다.",
+        "loading": "불러오는 중…",
+        "inactive": "더 이상 사용할 수 없음",
+        "revoke": "제거",
+        "revokeTitle": "이 권한을 제거할까요?",
+        "revokeDescription": "이 서비스 계정은 더 이상 {{subject}}을(를) 대신할 수 없습니다.",
+        "revokeSuccessTitle": "권한이 제거되었습니다",
+        "revokeErrorTitle": "권한을 제거하지 못했습니다",
+        "grantSuccessTitle": "권한이 부여되었습니다",
+        "grantErrorTitle": "권한을 부여하지 못했습니다",
+        "loadErrorTitle": "위임 설정을 불러오지 못했습니다",
+        "logTitle": "최근 활동",
+        "logHelp": "이 목록의 모든 변경과, 이 서비스 계정이 누군가를 대신하겠다고 요청한 모든 기록으로, 거부된 경우도 포함됩니다.",
+        "logNone": "아직 기록이 없습니다.",
+        "outcomeIssued": "허용됨",
+        "outcomeRefused": "거부됨",
+        "outcomeGranted": "권한 추가됨",
+        "outcomeRevoked": "권한 제거됨",
+        "byAdmin": "{{admin}}"
+      }
     }
   },
   "filePreview": {
@@ -4520,7 +4579,8 @@
     "mcpAgentApprovals": "에이전트별 도구 승인",
     "limitSource": "{{name}}에서 검색할 범위 선택",
     "limitSourceHint": "소스 전체를 선택된 상태로 두거나, 선택을 해제하고 에이전트가 검색할 폴더와 항목을 선택하세요.",
-    "limitSourceCount": "선택한 {{count}}개 항목으로 제한됨"
+    "limitSourceCount": "선택한 {{count}}개 항목으로 제한됨",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 액션입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다."
   },
   "recordView": {
     "sections": {

@@ -38,7 +38,6 @@ from app.models.entities import (
     RecordType,
     WebpageRecord,
 )
-from app.models.permission import EntityType, PermissionType
 from app.sources.client.confluence.confluence import ConfluenceRESTClientViaToken
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 
@@ -265,20 +264,20 @@ class TestFirstFullSync:
         assert checkpoints.values_for("confluence_pages/HR") is None, "nothing synced, so no checkpoint"
         assert atlassian_api.unrouted == []
 
-    async def test_only_the_creator_group_is_granted_access(self, atlassian_api, records_db, checkpoints, search) -> None:
+    async def test_only_the_creator_is_linked_to_the_app_and_nothing_carries_a_grant(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
         stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
         search.add("page", "ENG", 0, listing([content("p1")]))
         connector = await make_connector(atlassian_api, records_db, checkpoints)
 
         await connector.run_sync()
 
-        (group, members), = records_db.user_groups
-        assert [m.email for m in members] == ["owner@example.com"]
-        (grant,) = records_db.record_group_permissions["10"]
-        assert grant.entity_type == EntityType.GROUP
-        assert grant.type == PermissionType.READ
-        assert grant.external_id == group.source_user_group_id == f"internal-{CONNECTOR_ID}"
-        assert records_db.record_permissions["p1"] == [], "pages inherit the space grant rather than carrying their own"
+        assert {u.email for u in records_db.app_users} == {"owner@example.com"}
+        assert records_db.user_groups == [], "no ConnectorGroup is written"
+        assert records_db.record_group_permissions["10"] == [], "the space inherits from the app"
+        assert records_db.record_groups["10"].inherit_permissions is True
+        assert records_db.record_permissions["p1"] == [], "pages inherit from the space rather than carrying their own"
 
     async def test_without_a_known_creator_nobody_is_granted_access(self, atlassian_api, checkpoints, search) -> None:
         db = FakeRecordsDb(creator_email=None)
@@ -287,6 +286,7 @@ class TestFirstFullSync:
 
         await connector.run_sync()
 
+        assert db.app_users == []
         assert db.user_groups == []
         assert db.record_group_permissions["10"] == []
 

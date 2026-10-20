@@ -168,6 +168,7 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         dep.on_record_content_update = AsyncMock()
         dep.on_updated_record_permissions = AsyncMock()
         dep.add_permission_to_record = AsyncMock()
+        dep.inheritance_when_unreadable = AsyncMock(return_value=False)
         dep.get_all_active_users = AsyncMock(return_value=[])
         dep.reindex_existing_records = AsyncMock()
         dep.delete_permission_from_record = AsyncMock()
@@ -1002,7 +1003,8 @@ class TestFetchPermissions:
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
         perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email=None)
-        assert is_fallback is False
+        assert perms == []
+        assert is_fallback is True, "a failed read keeps the stored grants"
 
     @pytest.mark.asyncio
     async def test_403_non_insufficient_reason_for_file(self):
@@ -1016,7 +1018,8 @@ class TestFetchPermissions:
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
         perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
-        assert is_fallback is False
+        assert perms == []
+        assert is_fallback is True, "a failed read keeps the stored grants"
 
     @pytest.mark.asyncio
     async def test_non_403_http_error_for_file(self):
@@ -1029,7 +1032,8 @@ class TestFetchPermissions:
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
         perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False)
-        assert is_fallback is False
+        assert perms == []
+        assert is_fallback is True, "a failed read keeps the stored grants"
 
     @pytest.mark.asyncio
     async def test_http_error_for_drive_raises(self):
@@ -1050,7 +1054,8 @@ class TestFetchPermissions:
         conn = _make_connector()
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=Exception("fail"))
         perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False)
-        assert is_fallback is False
+        assert perms == []
+        assert is_fallback is True, "a failed read keeps the stored grants"
 
     @pytest.mark.asyncio
     async def test_generic_error_for_drive_raises(self):
@@ -1129,7 +1134,8 @@ class TestFetchPermissions:
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
         perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
-        assert is_fallback is False
+        assert perms == []
+        assert is_fallback is True, "a failed read keeps the stored grants"
 
 
 # ===========================================================================
@@ -2064,7 +2070,11 @@ class TestProcessDriveItem:
         metadata = _make_file_metadata(parents=["parent-1"], head_revision_id="rev-old")
         result = await conn._process_drive_item(metadata, "u1", "u@x.com", "d1")
         assert result is not None
+        assert result.permissions_changed is False
         conn.data_entities_processor.add_permission_to_record.assert_called_once()
+        record, added = conn.data_entities_processor.add_permission_to_record.call_args.args
+        assert record is existing
+        assert [(p.email, p.type) for p in added] == [("u@x.com", PermissionType.READ)]
 
     @pytest.mark.asyncio
     async def test_permission_fetch_error(self):

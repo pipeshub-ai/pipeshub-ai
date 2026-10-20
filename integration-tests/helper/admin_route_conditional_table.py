@@ -73,6 +73,8 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
         "toolset", "toolset_name", "toolset_key",
         "toolset_oauth_name", "toolset_client_id", "toolset_secret",
     ),
+    # The creator's personal toolset.
+    "personal_toolsets": ("personal_toolset", "personal_toolset_name"),
     # A note in the admin's private knowledge base, and one in a member's.
     "records": ("admin_record", "admin_record_text", "member_record", "member_record_text", "member_kb"),
     # A download link for the admin's note, made out to the admin.
@@ -88,7 +90,10 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
 }
 # Made new each time they are asked for: a connector, or an MCP server (the
 # admin's, or the creator's personal one) for a case that deletes it.
-FRESH_KEYS = frozenset({"fresh_team", "fresh_personal", "fresh_mcp", "fresh_personal_mcp", "unique_name"})
+FRESH_KEYS = frozenset({
+    "fresh_team", "fresh_personal", "fresh_mcp", "fresh_personal_mcp",
+    "fresh_toolset", "fresh_personal_toolset", "unique_name",
+})
 DERIVED_KEYS = frozenset({"target", "target_name", "target_state"})
 WORLD_KEYS = frozenset(key for keys in WORLD_GROUPS.values() for key in keys)
 
@@ -261,6 +266,9 @@ _SKILLS = "/api/v1/skills"
 _MCP_ROOT = "/api/v1/mcp-servers"
 _MCP = f"{_MCP_ROOT}/instances"
 _TOOLSETS = "/api/v1/toolsets"
+_TOOLSET_NOT_FOUND = "This toolset was removed, or you no longer have access"
+_TOOLSET_UPDATED = "Toolset instance updated successfully"
+_TOOLSET_DELETED = "Toolset instance deleted successfully"
 _OAUTH = f"/api/v1/oauth/{OAUTH_CONNECTOR_TYPE}"
 
 
@@ -426,10 +434,13 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
              admin_hidden=("{toolset_secret}",) if _HIDE_SECRETS else (),
              admin_also=() if _HIDE_SECRETS else ("{toolset_secret}",)),
     ConditionalRoute(
-        "api/routes/toolsets.py::get_toolset_tool_rules", "GET", f"{_TOOLSETS}/instances/{{toolset}}/tool-rules",
+        "api/routes/toolsets.py::get_toolset_tool_rules", "GET", f"{_TOOLSETS}/instances/{{target}}/tool-rules",
         cases=(
             Case("toolset", MEMBER, False, 200, words='"canEdit":false', absent=('"canEdit":true',)),
             Case("toolset", ADMIN, True, 200, words='"canEdit":true', absent=('"canEdit":false',)),
+            Case("personal_toolset", CREATOR, True, 200, words='"canEdit":true'),
+            Case("personal_toolset", MEMBER, False, 404, _TOOLSET_NOT_FOUND),
+            Case("personal_toolset", ADMIN, False, 404, _TOOLSET_NOT_FOUND),
         ),
     ),
     # The knowledge hub lists what the caller may open; the admin flag only labels the
@@ -453,6 +464,55 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
             Case("member_kb", ADMIN, False, 404, "Node not found"),
         ),
         params={"limit": "50"},
+    ),
+    # A member gets no org toolset: theirs is personal, which keeps only its setup fields, so a sign-in
+    # endpoint is refused for it. The admin's is the org's, refused for the name the org's own
+    # toolset already has. Nothing is made either way.
+    ConditionalRoute(
+        "api/routes/toolsets.py::create_toolset_instance", "POST", f"{_TOOLSETS}/instances",
+        cases=(
+            Case("toolset", MEMBER, False, 400, "Unexpected settings for this action", absent=("already exists",)),
+            Case("toolset", ADMIN, True, 409, "already exists"),
+        ),
+        body={
+            "instanceName": "{toolset_name}", "toolsetType": KEYED_TOOLSET_TYPE, "authType": "API_TOKEN",
+            "authConfig": {"tokenUrl": "http://127.0.0.1:1/token"},
+        },
+    ),
+    # Renamed to the name it has, so nothing changes once past the check.
+    ConditionalRoute(
+        "api/routes/toolsets.py::update_toolset_instance", "PUT", f"{_TOOLSETS}/instances/{{target}}",
+        cases=(
+            Case("toolset", MEMBER, False, 403, "Only administrators can update toolset instances"),
+            Case("toolset", ADMIN, True, 200, _TOOLSET_UPDATED),
+            Case("personal_toolset", CREATOR, True, 200, _TOOLSET_UPDATED),
+            Case("personal_toolset", MEMBER, False, 403, "Only administrators can update toolset instances"),
+            Case("personal_toolset", ADMIN, False, 404, _TOOLSET_NOT_FOUND),
+        ),
+        body={"instanceName": "{target_name}"},
+    ),
+    # Each case deletes a toolset made for it; an admin doesn't find a user's personal one.
+    ConditionalRoute(
+        "api/routes/toolsets.py::delete_toolset_instance", "DELETE", f"{_TOOLSETS}/instances/{{target}}",
+        cases=(
+            Case("fresh_toolset", MEMBER, False, 403, "Only administrators can delete toolset instances"),
+            Case("fresh_toolset", ADMIN, True, 200, _TOOLSET_DELETED),
+            Case("fresh_personal_toolset", CREATOR, True, 200, _TOOLSET_DELETED),
+            Case("fresh_personal_toolset", MEMBER, False, 403, "Only administrators can delete toolset instances"),
+            Case("fresh_personal_toolset", ADMIN, False, 404, _TOOLSET_NOT_FOUND),
+        ),
+    ),
+    # No rules: saving that changes nothing anyone sees.
+    ConditionalRoute(
+        "api/routes/toolsets.py::update_toolset_tool_rules", "PUT", f"{_TOOLSETS}/instances/{{target}}/tool-rules",
+        cases=(
+            Case("toolset", MEMBER, False, 403, "Only administrators can change a toolset's tool approvals"),
+            Case("toolset", ADMIN, True, 200, '"canEdit":true'),
+            Case("personal_toolset", CREATOR, True, 200, '"canEdit":true'),
+            Case("personal_toolset", MEMBER, False, 404, _TOOLSET_NOT_FOUND),
+            Case("personal_toolset", ADMIN, False, 404, _TOOLSET_NOT_FOUND),
+        ),
+        body={"tools": {}},
     ),
     # Being an admin opens no record: the admin is refused a member's private
     # note exactly as a member is refused the admin's.

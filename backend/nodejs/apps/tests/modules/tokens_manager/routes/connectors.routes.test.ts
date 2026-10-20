@@ -2,7 +2,11 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { Container } from 'inversify'
-import { createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
+import {
+  createConnectorRouter,
+  requireVectorStoreRebuild,
+} from '../../../../src/modules/tokens_manager/routes/connectors.routes'
+import { ForbiddenError } from '../../../../src/libs/errors/http.errors'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import type { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
@@ -975,6 +979,30 @@ describe('Connector Routes', () => {
       )
       expect(cleanupIdx).to.be.lessThan(paramReindexIdx)
       expect(reindexAllIdx).to.be.lessThan(paramReindexIdx)
+    })
+
+    it('guards both vector-store rebuild routes with the availability check', () => {
+      const router = createConnectorRouter(container, mockCrawlingContainer)
+      for (const path of ['/vector-store/cleanup', '/vector-store/reindex']) {
+        const layer = (router as any).stack.find(
+          (l: any) => l.route && l.route.path === path && l.route.methods.post,
+        )
+        const names = layer.route.stack.map((h: any) => h.name)
+        expect(names, path).to.include('vectorStoreRebuildGuard')
+      }
+    })
+
+    it('lets a rebuild request through when this deployment offers it', () => {
+      const next = sinon.stub()
+      requireVectorStoreRebuild(true)({}, {} as any, next)
+      expect(next.calledOnceWithExactly()).to.equal(true)
+    })
+
+    it('refuses a rebuild request with 403 when this deployment does not offer it', () => {
+      const next = sinon.stub()
+      requireVectorStoreRebuild(false)({}, {} as any, next)
+      expect(next.calledOnce).to.equal(true)
+      expect(next.firstCall.args[0]).to.be.instanceOf(ForbiddenError)
     })
 
     it('allows a token scoped only "connector:sync" (non-KB reindex, e.g. Google Drive) to pass', () => {

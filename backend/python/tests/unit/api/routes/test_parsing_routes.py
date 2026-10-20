@@ -246,22 +246,34 @@ def test_parse_endpoint_invalid_provider() -> None:
     assert body["success"] is False
 
 
-def test_parse_endpoint_unexpected_exception() -> None:
+def test_parse_endpoint_unexpected_exception(caplog: pytest.LogCaptureFixture) -> None:
+    """The 500 body names the failure without echoing the exception text,
+    which stays in the service's own log with its traceback."""
     registry = MagicMock(spec=ParserRegistry)
     mock_parser = MagicMock()
-    mock_parser.parse = AsyncMock(side_effect=RuntimeError("Boom"))
+    mock_parser.parse = AsyncMock(side_effect=RuntimeError("Boom /srv/secret token=abc"))
     registry.resolve = MagicMock(return_value=mock_parser)
 
     app = _build_app(registry)
     client = TestClient(app)
 
-    response = client.post(
-        "/api/v1/parse",
-        files={"file": ("test.pdf", b"data", "application/pdf")},
-        data={"mime_type": "application/pdf", "provider": "default"},
-    )
+    with caplog.at_level(logging.ERROR, logger="app.api.routes.parsing"):
+        response = client.post(
+            "/api/v1/parse",
+            files={"file": ("test.pdf", b"data", "application/pdf")},
+            data={"mime_type": "application/pdf", "provider": "default"},
+        )
 
     assert response.status_code == 500
+    body = response.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "PARSE_FAILED"
+    assert body["error"]["message"] == "Unexpected error while parsing the document"
+    assert body["error"]["details"] == {"requestId": "-"}
+    assert "RuntimeError" not in response.text
+    assert "Boom" not in response.text
+    assert "/srv/secret" not in response.text
+    assert any(r.exc_info and "Boom" in str(r.exc_info[1]) for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

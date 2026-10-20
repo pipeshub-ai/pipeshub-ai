@@ -63,20 +63,21 @@ class TestMinIORESTClientViaAccessKey:
         assert client.verify_ssl is True
         assert client.region_name == "us-east-1"
 
-    @patch("app.sources.client.minio.minio.aioboto3.Session")
-    def test_create_session(self, mock_session_cls, rest_client):
-        mock_session_cls.return_value = MagicMock()
+    @pytest.mark.asyncio
+    async def test_create_session(self, rest_client: MinIORESTClientViaAccessKey) -> None:
         session = rest_client.create_session()
-        assert session is not None
-        mock_session_cls.assert_called_once_with(
-            aws_access_key_id="AKID",
-            aws_secret_access_key="SECRET",
-            region_name="us-east-1",
-        )
+        assert session.get_config_variable("region") == "us-east-1"
+        credentials = await session.get_credentials()
+        assert credentials.access_key == "AKID"
+        assert credentials.secret_key == "SECRET"
 
-    @patch("app.sources.client.minio.minio.aioboto3.Session")
-    def test_get_session(self, mock_session_cls, rest_client):
-        mock_session_cls.return_value = MagicMock()
+    @pytest.mark.asyncio
+    async def test_s3_client_targets_the_minio_endpoint(self, rest_client: MinIORESTClientViaAccessKey) -> None:
+        async with await rest_client.get_s3_client() as s3:
+            assert s3.meta.endpoint_url == "http://localhost:9000"
+            assert s3.meta.region_name == "us-east-1"
+
+    def test_get_session(self, rest_client):
         session = rest_client.get_session()
         assert session is not None
         # Second call returns cached
@@ -84,14 +85,14 @@ class TestMinIORESTClientViaAccessKey:
         assert session is session2
 
     @pytest.mark.asyncio
-    @patch("app.sources.client.minio.minio.aioboto3.Session")
+    @patch("app.sources.client.s3.s3.AioSession")
     async def test_get_s3_client(self, mock_session_cls):
         mock_session = MagicMock()
-        mock_session.client.return_value = MagicMock()
+        mock_session.create_client.return_value = MagicMock()
         mock_session_cls.return_value = mock_session
         client = MinIORESTClientViaAccessKey("A", "S", "http://localhost:9000", verify_ssl=False)
         result = await client.get_s3_client()
-        mock_session.client.assert_called_once_with(
+        mock_session.create_client.assert_called_once_with(
             "s3", endpoint_url="http://localhost:9000", verify=False
         )
 
@@ -203,9 +204,7 @@ class TestMinIOClient:
         client = MinIOClient(rest_client)
         assert client.get_endpoint_url() == "http://localhost:9000"
 
-    @patch("app.sources.client.minio.minio.aioboto3.Session")
-    def test_get_session(self, mock_session_cls, rest_client):
-        mock_session_cls.return_value = MagicMock()
+    def test_get_session(self, rest_client):
         client = MinIOClient(rest_client)
         session = client.get_session()
         assert session is not None
@@ -313,15 +312,15 @@ class TestMinIOClient:
             )
 
     @pytest.mark.asyncio
-    @patch("app.sources.client.minio.minio.aioboto3.Session")
+    @patch("app.sources.client.s3.s3.AioSession")
     async def test_get_s3_client_via_wrapper(self, mock_session_cls, rest_client):
         """Cover MinIOClient.get_s3_client (line 154)."""
         mock_session = MagicMock()
-        mock_session.client.return_value = MagicMock()
+        mock_session.create_client.return_value = MagicMock()
         mock_session_cls.return_value = mock_session
         client = MinIOClient(rest_client)
         result = await client.get_s3_client()
-        mock_session.client.assert_called_once_with(
+        mock_session.create_client.assert_called_once_with(
             "s3", endpoint_url="http://localhost:9000", verify=False
         )
 

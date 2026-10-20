@@ -107,6 +107,8 @@ const createToolsetInstanceSchema = z.object({
     baseUrl: z.string().optional(),
     oauthConfigId: z.string().optional(),
     oauthInstanceName: z.string().optional(),
+    // 'personal' for the caller's own instance; otherwise an administrator's is the org's.
+    scope: z.enum(['org', 'personal']).optional(),
   }),
 });
 
@@ -239,6 +241,8 @@ const getMyToolsetsSchema = z.object({
     authStatus: z
       .enum(['authenticated', 'not-authenticated'])
       .optional(),
+    /** 'org' leaves the caller's own personal instances out (the admin catalog). */
+    scope: z.enum(['org']).optional(),
   }),
 });
 
@@ -457,7 +461,7 @@ export function createToolsetsRouter(container: Container): Router {
 
   /**
    * POST /instances
-   * Create a new toolset instance (admin only)
+   * Create a toolset instance: an org instance for an administrator, a personal one otherwise
    */
   router.post(
     '/instances',

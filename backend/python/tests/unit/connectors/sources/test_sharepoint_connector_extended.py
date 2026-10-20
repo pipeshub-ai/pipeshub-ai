@@ -42,7 +42,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import CollectionNames, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -90,6 +90,7 @@ def _make_connector():
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.reindex_existing_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.inheritance_when_unreadable = AsyncMock(return_value=False)
 
     dsp = MagicMock()
     # Set up transaction context manager
@@ -1186,6 +1187,10 @@ class TestProcessDriveItem:
         assert result is not None
         assert result.is_new is True
         assert result.record is not None
+        assert result.record.inherit_permissions is False
+        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, None
+        )
 
     @pytest.mark.asyncio
     async def test_updated_file(self):

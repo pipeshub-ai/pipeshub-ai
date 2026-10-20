@@ -10,6 +10,7 @@ interface ToolsetToolRulesNoticeProps {
   instanceId: string;
   instanceName: string;
   toolsetType: string;
+  personal?: boolean;
   /** Portal host, to stack above a workspace drawer (`useWorkspaceDrawerNestedModalHost`). */
   container?: HTMLElement | null;
 }

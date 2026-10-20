@@ -21,6 +21,9 @@ info:
 
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
+
+    ## Query parameter names
+    On every `/api/v1` and `/mcp` endpoint, a query parameter whose name starts with `$` or contains `.` (including a nested name such as `filter[$ne]` or `a.b`) is refused with `400` and error code `VALIDATION_ERROR`. Only names are checked: values may contain dots, such as file names.
   version: 1.0.0
   contact:
     name: API Support
@@ -1849,9 +1852,10 @@ components:
             type: string
             enum: [allow, ask, block]
           description: >-
-            Tool name → rule, for everyone in the organization. Each name must be a tool of the
-            instance's toolset. A tool without one starts from its kind: `read` at allow, `write`
-            at allow, `destructive` at ask.
+            Tool name → rule: for everyone in the organization on an organization instance, for
+            its owner on a personal one. Each name must be a tool of the instance's toolset. A tool
+            without one starts from its kind: `read` at allow, `write` at allow, `destructive` at
+            ask.
     ToolsetToolRules:
       allOf:
         - $ref: '#/components/schemas/ToolsetToolRulesUpdate'
@@ -1859,7 +1863,9 @@ components:
           properties:
             canEdit:
               type: boolean
-              description: Whether the caller may change the rules (an admin).
+              description: >-
+                Whether the caller may change the rules: an admin on an organization instance,
+                the owner on a personal one.
     McpToolInfo:
       type: object
       properties:
@@ -2125,12 +2131,21 @@ components:
       properties:
         grant_type:
           type: string
-          enum: [authorization_code, client_credentials, refresh_token]
+          enum:
+            - authorization_code
+            - client_credentials
+            - refresh_token
+            - urn:ietf:params:oauth:grant-type:token-exchange
           description: |
             OAuth grant type:
             - `authorization_code`: Exchange auth code for tokens
             - `client_credentials`: Machine-to-machine auth
             - `refresh_token`: Get new access token using refresh token
+            - `urn:ietf:params:oauth:grant-type:token-exchange`: Service-account
+              delegation (RFC 8693). Exchanges a service token for a
+              short-lived token that acts as one named person. Enterprise
+              edition; kept in this enum because the request shape is the same
+              wherever the grant is offered.
         code:
           type: string
           description: Authorization code (required for authorization_code grant)
@@ -2156,6 +2171,26 @@ components:
             PKCE code verifier (RFC 7636). Required if code_challenge was used.
             Must be 43-128 characters from [A-Za-z0-9-._~]
           pattern: '^[A-Za-z0-9\-._~]{43,128}$'
+        subject_token:
+          type: string
+          maxLength: 8192
+          description: |
+            The service token being exchanged (token-exchange grant only).
+            This is the only authentication the grant has: no `client_id` or
+            `client_secret` is sent, because the service token already carries
+            a verified identity and the scopes that bound it.
+        subject_token_type:
+          type: string
+          description: |
+            Optional. Must be `urn:ietf:params:oauth:token-type:access_token`
+            when sent (token-exchange grant only).
+        requested_subject:
+          type: string
+          maxLength: 320
+          description: |
+            The person to act as, by user id or email address (token-exchange
+            grant only). Must be on the service account's allow-list, and must
+            not be an administrator.
       required:
         - grant_type
 
@@ -2185,6 +2220,97 @@ components:
         id_token:
           type: string
           description: OpenID Connect ID token (JWT) if openid scope was requested
+        issued_token_type:
+          type: string
+          description: |
+            The type of the issued token (RFC 8693 Section 2.2.1). Returned by
+            the token-exchange grant, where it is always
+            `urn:ietf:params:oauth:token-type:access_token`.
+          example: "urn:ietf:params:oauth:token-type:access_token"
+
+    ServiceAccountDelegation:
+      type: object
+      description: |
+        One entry on a service account's allow-list: permission for it to act
+        as one named person for a few minutes at a time.
+      properties:
+        id:
+          type: string
+        serviceAccountId:
+          type: string
+        subjectUserId:
+          type: string
+        subjectEmail:
+          type: string
+        subjectFullName:
+          type: string
+        inactive:
+          type: boolean
+          description: |
+            True when the person can no longer be acted as. The entry is still
+            returned, because the exchange refuses it and a review screen
+            should not disagree with the system.
+        inactiveReason:
+          type: string
+        grantedBy:
+          type: string
+        reason:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    DelegationEvent:
+      type: object
+      description: One attempt by a service account to act as someone.
+      properties:
+        id:
+          type: string
+        serviceAccountId:
+          type: string
+        serviceAccountEmail:
+          type: string
+        subjectUserId:
+          type: string
+        subjectEmail:
+          type: string
+        requestedSubject:
+          type: string
+          description: What was asked for, verbatim, even where it resolved to nobody
+        outcome:
+          type: string
+          enum: [issued, refused, granted, revoked]
+          description: |
+            `issued` and `refused` are the token exchange; `granted` and
+            `revoked` are changes to the allow-list, kept so that withdrawing
+            a permission does not erase the record of who gave it.
+        refusedReason:
+          type: string
+          description: |
+            Machine-readable cause, e.g. `not_on_allow_list`, `subject_is_admin`,
+            `subject_not_found`. Only ever returned here, never to the caller
+            of the token endpoint.
+        scopes:
+          type: array
+          items:
+            type: string
+        actedBy:
+          type: string
+          description: The administrator behind a `granted` or `revoked` entry
+        actedByEmail:
+          type: string
+        note:
+          type: string
+          description: The reason given when the permission was granted
+        jti:
+          type: string
+          description: The issued token's id, as it appears in later logs
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
 
     OAuthRevokeRequest:
       type: object
@@ -2294,10 +2420,16 @@ components:
             - `unsupported_grant_type` - Grant type not supported
             - `invalid_scope` - Requested scope is invalid or exceeds allowed
             - `access_denied` - User denied authorization
+            - `invalid_target` - The requested subject cannot be acted as
+              (RFC 8693). Returned by the token-exchange grant for every
+              refusal about the person asked for, with one wording, so a
+              service token cannot tell "no such person" from "not on your
+              list". The real cause is in the delegation log.
           enum:
             - invalid_request
             - invalid_client
             - invalid_grant
+            - invalid_target
             - unauthorized_client
             - unsupported_grant_type
             - invalid_scope
@@ -5025,6 +5157,14 @@ components:
             - AUTO_INDEX_OFF: Auto-indexing disabled for this record
             - EMPTY: File has no extractable content
           example: "COMPLETED"
+        hasIndexedCopy:
+          type: boolean
+          description: |
+            True after the record is indexed (every COMPLETED write, including the upgrade
+            backfill for records indexed earlier), and false once it is marked EMPTY. A later
+            re-queue or a failed re-index leaves it as it is, so search keeps returning the
+            previous indexed copy until the new version is indexed. Absent until the first
+            COMPLETED or EMPTY write sets it.
         indexingStatus:
           type: string
           enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
@@ -5267,6 +5407,14 @@ components:
               nullable: true
             indexingStatus:
               type: string
+            hasIndexedCopy:
+              type: boolean
+              description: |
+                True after the record is indexed (every COMPLETED write, including the upgrade
+                backfill for records indexed earlier), and false once it is marked EMPTY. A later
+                re-queue or a failed re-index leaves it as it is, so search keeps returning the
+                previous indexed copy until the new version is indexed. Absent until the first
+                COMPLETED or EMPTY write sets it.
             extractionStatus:
               type: string
             reason:
@@ -7907,7 +8055,8 @@ components:
             Optional list of tool identifiers (fully-qualified action names such as
             "jira.create_issue") that the AI agent is permitted to invoke for this
             request. When omitted the agent may use any configured tool. Applicable
-            only when `chatMode` is `agent`.
+            only when `chatMode` is `agent`. Web search is not governed by this
+            list; `agentCapabilities.webSearch` turns it on or off.
           example: ["jira.create_issue", "confluence.search_content"]
         protocol:
           type: string
@@ -8135,7 +8284,8 @@ components:
           description: |
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
-            tools for this turn.
+            tools for this turn. A list that leaves out `web_search` turns off
+            the agent's web search for the turn.
         protocol:
           type: string
           enum:
@@ -8282,7 +8432,13 @@ components:
           description: |
             Optional list of tool identifiers (fully-qualified action names
             such as `jira.create_issue`) the agent may invoke when
-            regenerating. Applicable only in agent chat modes.
+            regenerating. Applicable only in agent chat modes. Regenerating
+            in the assistant's agent mode, web search is not governed by this
+            list; `agentCapabilities.webSearch` turns it on or off.
+            Regenerating a named agent's message (`AgentRegenerateRequest`),
+            a list that leaves out `web_search` turns off the agent's web
+            search for the turn, even when `agentCapabilities.webSearch` is
+            true.
           example: ["jira.create_issue", "confluence.search_content"]
         protocol:
           type: string
@@ -8581,7 +8737,8 @@ components:
           description: |
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
-            tools for this turn.
+            tools for this turn. A list that leaves out `web_search` turns off
+            the agent's web search for the turn.
         protocol:
           type: string
           enum:
@@ -9939,6 +10096,62 @@ components:
             updated, new ids are added. The project owner is silently
             skipped if included (ownership is implicit).
 
+    ForkConversationResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - forkedFrom
+        - messageCount
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: New conversation identifier
+        title:
+          type: string
+          description: Title of the forked conversation
+        projectId:
+          type: string
+          format: objectId
+          description: |
+            Project the fork is linked to. Present only when the source conversation
+            belonged to a project that the caller can still view; otherwise omitted.
+        forkedFrom:
+          type: object
+          additionalProperties: false
+          required:
+            - conversationId
+            - messageId
+          properties:
+            conversationId:
+              type: string
+              format: objectId
+            messageId:
+              type: string
+              format: objectId
+        messageCount:
+          type: integer
+          minimum: 0
+          description: Number of messages copied into the new conversation
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+            - timestamp
+            - duration
+          properties:
+            requestId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+            duration:
+              type: integer
+              description: Server-side processing time in milliseconds
+
     ShareRequest:
       type: object
       description: Request to share a conversation or search with other users
@@ -10026,6 +10239,15 @@ components:
             `createdBefore`. Records with no source date are left out whenever a bound on
             that date is set.
           example: "2026-09-30T23:59:59Z"
+        rewriteQuery:
+          type: boolean
+          default: true
+          description: |
+            Whether the AI model rewrites the query and adds expanded variants before
+            searching. Set it to `false` to search the query exactly as sent, with no
+            model call: faster, and suited to callers that write their own queries, such
+            as an agent. The results can differ from a search with the rewrite.
+          example: false
 
     SemanticSearchBoundingBox:
       type: object
@@ -10436,6 +10658,48 @@ components:
         rowCount:
           type: number
           nullable: true
+        statusSummary:
+          type: string
+          description: |
+            Where a ticket, pull request or project stands, in one short phrase, on
+            `records` entries only: for example `Merged 2026-09-25 by alice`,
+            `Closed without merging 2026-09-26`, or
+            `DONE (Jira: Done), resolved 2026-06-06, assignee Bo, priority HIGH`.
+            Dates are days in UTC. Absent for record types with no state of their own.
+        linkedRecords:
+          type: array
+          description: |
+            On `records` entries only: the records that name this one (`mentionedIn`) and
+            that it names (`linksTo`) by web address or issue key, across connectors,
+            limited to records the caller may read, at most 10 per relation. Absent when
+            there are none.
+          items:
+            $ref: '#/components/schemas/SemanticSearchLinkedRecord'
+
+    SemanticSearchLinkedRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - relation
+        - recordId
+        - recordName
+        - recordType
+        - connector
+      properties:
+        relation:
+          type: string
+          enum: [mentionedIn, linksTo]
+        recordId:
+          type: string
+        recordName:
+          type: string
+        recordType:
+          type: string
+        connector:
+          type: string
+        status:
+          type: string
+          description: The linked record's `statusSummary`, when it has one.
 
     SemanticSearchAppliedFilters:
       type: object
@@ -17889,6 +18153,82 @@ paths:
                         type: string
                   build:
                     $ref: '#/components/schemas/BuildInfo'
+  /health/vector-db/memory:
+    get:
+      tags:
+        - Health
+      summary: Whether the vector database has the memory to keep search fast
+      description: |
+        Estimates the memory search needs to stay fast (quantized vectors, HNSW
+        graph, sparse index and payload indexes of every collection, plus about
+        2 GiB for Qdrant itself) and compares it with the memory Qdrant has.
+        The memory figure is `QDRANT_MEMORY_LIMIT`, which compose and Helm set
+        from the same value as Qdrant's container limit; without it, the host RAM
+        Qdrant reports can only prove a shortfall. Advisory: it never changes a
+        service's health status. Org admins only. Sizing guidance:
+        https://github.com/pipeshub-ai/pipeshub-ai/blob/main/docs/deployment/vector-db-sizing.md
+      operationId: getVectorDbMemoryReport
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      responses:
+        '200':
+          description: Memory report, or `{"status":"unsupported"}` for a vector database the estimate does not cover
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+                      - insufficient
+                      - unknown
+                      - unsupported
+                    description: |
+                      `insufficient` when the estimate exceeds the memory Qdrant has and
+                      the index is at least 1 GiB; `unknown` when the memory Qdrant has is
+                      not known well enough to say it is enough.
+                  neededBytes:
+                    type: integer
+                    format: int64
+                  indexBytes:
+                    type: integer
+                    format: int64
+                  baseBytes:
+                    type: integer
+                    format: int64
+                  availableBytes:
+                    type: integer
+                    format: int64
+                    nullable: true
+                  availableSource:
+                    type: string
+                    nullable: true
+                    description: '`configured` (QDRANT_MEMORY_LIMIT) or `host` (the RAM Qdrant reports)'
+                  points:
+                    type: integer
+                    format: int64
+                  nodes:
+                    type: integer
+        '401':
+          description: Unauthorized
+        '403':
+          description: Not an org admin, or missing config:read
+        '502':
+          description: The connector service could not produce the report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - unknown
   /models:
     get:
       tags:
@@ -18536,6 +18876,256 @@ paths:
             redirect URI is invalid, or the app belongs to a different
             workspace than the signed-in user.
 
+  /service-account-delegations/capability:
+    get:
+      tags:
+        - OAuth Provider
+      summary: Whether this deployment can delegate at all
+      description: |
+        Answers in both editions, which is the point: the screen that would
+        offer delegation asks this first, so the Community build can explain
+        the capability and where it lives rather than failing at the moment
+        somebody reaches for it.
+      operationId: getServiceAccountDelegationCapability
+      responses:
+        '200':
+          description: The edition's answer.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  available:
+                    type: boolean
+                    description: False in Community, true in Enterprise.
+                  edition:
+                    type: string
+                    example: community
+                  capability:
+                    type: string
+                    example: service-account-delegation
+  /service-account-delegations:
+    get:
+      tags:
+        - OAuth Provider
+      summary: List who a service account may act as
+      description: |
+        **Enterprise edition.** The Community build serves this path from a
+        stub that answers `501 Not Implemented`; only the capability probe
+        responds there. A service account acting with its own access is
+        available in both editions.
+
+        The service account's allow-list. Administrator only.
+
+        Entries whose person has since left, been disabled or become an
+        administrator are returned with `inactive: true` and a reason, rather
+        than hidden: the token exchange already refuses them, and a review
+        screen should not disagree with what the system does.
+      operationId: listServiceAccountDelegations
+      security:
+        - bearerAuth: []
+        - oauth2: [user:read]
+      parameters:
+        - name: serviceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The service account whose allow-list to read
+      responses:
+        '200':
+          description: The allow-list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delegations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ServiceAccountDelegation'
+        '403':
+          description: Not an organisation administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such service account in this organisation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - OAuth Provider
+      summary: Allow a service account to act as one named person
+      description: |
+        **Enterprise edition.** The Community build serves this path from a
+        stub that answers `501 Not Implemented`; only the capability probe
+        responds there. A service account acting with its own access is
+        available in both editions.
+
+        Administrator only. Granting the same person twice returns the
+        existing entry rather than failing.
+
+        Administrators cannot be named: service accounts are held to member
+        rights, and a delegated administrator token would bypass that rule by
+        construction. Nor can another service account, which would chain
+        machine identities together.
+      operationId: grantServiceAccountDelegation
+      security:
+        - bearerAuth: []
+        - oauth2: [user:invite]
+      requestBody:
+        description: "Request payload"
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - serviceAccountId
+                - subject
+              properties:
+                serviceAccountId:
+                  type: string
+                subject:
+                  type: string
+                  maxLength: 320
+                  description: The person, by user id or email address
+                reason:
+                  type: string
+                  maxLength: 280
+                  description: Why the grant exists; shown to whoever reviews it later
+      responses:
+        '201':
+          description: The service account may now act as this person
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delegation:
+                    $ref: '#/components/schemas/ServiceAccountDelegation'
+        '400':
+          description: |
+            The person is an administrator, a service account, disabled, not in
+            this organisation, or the allow-list is already at its limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not an organisation administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /service-account-delegations/events:
+    get:
+      tags:
+        - OAuth Provider
+      summary: Read the delegation log
+      description: |
+        **Enterprise edition.** The Community build serves this path from a
+        stub that answers `501 Not Implemented`; only the capability probe
+        responds there. A service account acting with its own access is
+        available in both editions.
+
+        Every attempt a service account made to act as someone, newest first,
+        including the ones that were refused. Administrator only.
+
+        Refusals are recorded as deliberately as successes: a run of them is
+        the clearest sign a credential has been taken. The token endpoint
+        returns the same wording for every refusal about who was asked for, so
+        this log is the only place the actual cause appears.
+
+        Omit `serviceAccountId` to read across the whole organisation.
+      operationId: listServiceAccountDelegationEvents
+      security:
+        - bearerAuth: []
+        - oauth2: [user:read]
+      parameters:
+        - name: serviceAccountId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        '200':
+          description: The log
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DelegationEvent'
+        '403':
+          description: Not an organisation administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /service-account-delegations/{subjectUserId}:
+    delete:
+      tags:
+        - OAuth Provider
+      summary: Stop a service account acting as this person
+      description: |
+        **Enterprise edition.** The Community build serves this path from a
+        stub that answers `501 Not Implemented`; only the capability probe
+        responds there. A service account acting with its own access is
+        available in both editions.
+
+        Administrator only, and effective at once. Tokens already issued under
+        the entry are not revoked because they do not need to be: the auth
+        middleware reads this row on every request a delegated token makes, so
+        removing it stops those tokens immediately.
+      operationId: revokeServiceAccountDelegation
+      security:
+        - bearerAuth: []
+        - oauth2: [user:delete]
+      parameters:
+        - name: subjectUserId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: serviceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Removed
+        '403':
+          description: Not an organisation administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such delegation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /oauth2/token:
     post:
       tags:
@@ -18544,12 +19134,24 @@ paths:
       description: |
         OAuth 2.0 Token Endpoint (RFC 6749 Section 4.1.3).
 
-        Exchanges an authorization code, client credentials, or refresh token for access tokens.
+        Exchanges an authorization code, client credentials, refresh token, or
+        service token for access tokens.
 
         **Grant Types:**
         - `authorization_code`: Exchange auth code for tokens (user-based)
         - `client_credentials`: Get tokens for machine-to-machine auth
         - `refresh_token`: Get new access token using refresh token. The refresh token must have been issued to the presenting `client_id`; one issued to another client is rejected with `400 invalid_grant` and is left untouched (not rotated, not revoked).
+        - `urn:ietf:params:oauth:grant-type:token-exchange`: Service-account
+          delegation (RFC 8693). A service account exchanges its own token for
+          a five-minute token that acts as one named person from its
+          allow-list. **Enterprise edition.** The Community build answers this
+          grant with `unsupported_grant_type` and leaves it out of discovery,
+          so check `grant_types_supported` rather than assuming it is there. **This grant sends no `client_id` or `client_secret`** —
+          the `subject_token` is the authentication, since it already carries
+          a verified identity and the scopes that bound it. Refusals about the
+          person asked for all return `400 invalid_target` with one wording;
+          the cause is recorded in the delegation log, which only an
+          administrator can read.
 
         For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
 
@@ -18589,11 +19191,15 @@ paths:
                 scope: "openid profile email"
                 id_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
         '400':
-          description: Invalid request (missing parameters, invalid code, etc.)
+          description: |
+            Invalid request (missing parameters, invalid code, a refusal from
+            the token-exchange grant, etc.). The body is the flat OAuth shape
+            `{ error, error_description }` that the controller builds for every
+            grant, which is what the 401 below already documents.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/OAuthErrorResponse'
         '401':
           description: Client authentication failed
           content:
@@ -20889,13 +21495,23 @@ paths:
           in: query
           required: false
           description: |
-            `desktop` for a sign-in started by the PipesHub desktop app. Needs `state`
-            and `code_challenge`; without both it is ignored. The callback then sends
-            no cookies and redirects to `/auth/sign-in/samlSso/success` with `state`
-            and a single-use `code` (or `saml_error`), redeemed at `/saml/desktop/exchange`.
+            How the callback hands tokens back. The callback never sets cookies; it
+            redirects to `/auth/sign-in/samlSso/success` with a single-use `code`,
+            redeemed at `/saml/exchange`.
+
+            - `web`: a browser sign-in. Needs `code_challenge`.
+            - `desktop`: a sign-in started by the PipesHub desktop app. Needs `state`
+              and `code_challenge`; the success page also echoes `state` (and
+              `saml_error` on failure), and the code is redeemed at `/saml/desktop/exchange`.
+
+            A request to this `/signIn` route is always SP-initiated. Omitting
+            `client` or a valid `code_challenge` still completes at the IdP, but
+            the callback redirects to `{frontendUrl}/login?saml_error=sign_in_restart`.
+            An IdP-initiated sign-in (Okta app tile) never hits this route; that
+            callback issues a one-time `code` with no PKCE.
           schema:
             type: string
-            enum: [desktop]
+            enum: [web, desktop]
         - name: state
           in: query
           required: false
@@ -20905,7 +21521,7 @@ paths:
         - name: code_challenge
           in: query
           required: false
-          description: PKCE S256 challenge (43 base64url characters) for the desktop handoff code.
+          description: PKCE S256 challenge (43 base64url characters) for the handoff code.
           schema:
             type: string
       responses:
@@ -20970,8 +21586,10 @@ paths:
           description: |
             Redirect to the frontend. All outcomes use this status code.
 
-            **Success:** Redirects to `{frontendUrl}/auth/sign-in/samlSso/success`.
-            Access and refresh tokens are delivered as `Secure; SameSite=None` cookies.
+            **Success:** Redirects to `{frontendUrl}/auth/sign-in/samlSso/success?code=<code>`.
+            No cookies are set. The single-use `code` is redeemed at `/saml/exchange`.
+            A PipesHub-started sign-in also sends the PKCE verifier; an IdP-initiated
+            sign-in redeems the code alone.
 
             **Failure:** Redirects to `{frontendUrl}/login?saml_error=<code>`.
 
@@ -20980,6 +21598,7 @@ paths:
             | `auth_failed`       | Passport rejected the SAML assertion (invalid signature, expired, etc.) |
             | `saml_sso_disabled` | SAML SSO is not enabled for this organization                           |
             | `jit_disabled`      | User has no account and Just-In-Time provisioning is disabled           |
+            | `sign_in_restart`   | A `web`/`desktop` start was missing a valid PKCE challenge; start again from the login page |
             | `unknown`           | Unexpected server-side error during callback processing                 |
             | *(raw message)*     | Passport parse error surfaced before the custom callback fired          |
           headers:
@@ -20990,20 +21609,15 @@ paths:
                 type: string
               examples:
                 success:
-                  value: "https://app.example.com/auth/sign-in/samlSso/success"
+                  value: "https://app.example.com/auth/sign-in/samlSso/success?code=0123abcd"
                 error_sso_disabled:
                   value: "https://app.example.com/login?saml_error=saml_sso_disabled"
                 error_jit_disabled:
                   value: "https://app.example.com/login?saml_error=jit_disabled"
                 error_auth_failed:
                   value: "https://app.example.com/login?saml_error=auth_failed"
-            Set-Cookie:
-              description: |
-                Set on successful authentication only.
-                - `accessToken`: JWT access token, expires in 1 hour (`Secure; SameSite=None`)
-                - `refreshToken`: JWT refresh token, expires in 7 days (`Secure; SameSite=None`)
-              schema:
-                type: string
+                error_sign_in_restart:
+                  value: "https://app.example.com/login?saml_error=sign_in_restart"
 
         '400':
           description: Invalid or malformed SAML response
@@ -21033,15 +21647,61 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthError'
 
+  /saml/exchange:
+    post:
+      tags:
+        - SAML
+      summary: Redeem a SAML handoff code
+      description: |
+        Exchanges the single-use code from a browser SAML sign-in for PipesHub tokens.
+        The code expires after 2 minutes and is consumed by the first attempt.
+        `codeVerifier` is required when the sign-in started from PipesHub (`client=web`);
+        omit it for an IdP-initiated code.
+      operationId: exchangeSamlCode
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                code:
+                  type: string
+                  description: Handoff code from the success page redirect
+                codeVerifier:
+                  type: string
+                  description: PKCE verifier matching the `code_challenge` sent to `/saml/signIn`. Omit for IdP-initiated sign-in.
+              required:
+                - code
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  refreshToken:
+                    type: string
+        '401':
+          description: Unknown, expired, already used, or verifier mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /saml/desktop/exchange:
     post:
       tags:
         - SAML
       summary: Redeem a desktop SAML handoff code
       description: |
-        Exchanges the single-use code from a desktop SAML sign-in (see `client=desktop`
-        on `/saml/signIn`) for PipesHub tokens. The code expires after 2 minutes and is
-        consumed by the first attempt, whether or not the verifier matches.
+        Same as `/saml/exchange`, for the code from a desktop SAML sign-in (see
+        `client=desktop` on `/saml/signIn`).
       operationId: exchangeSamlDesktopCode
       security: []
       requestBody:
@@ -33132,6 +33792,55 @@ paths:
         '404':
           description: Conversation or message not found
 
+  /conversations/{conversationId}/message/{messageId}/fork:
+    post:
+      tags:
+        - Conversations
+      summary: Fork conversation from a message
+      description: |
+        Copy this conversation into a new private chat owned by the caller,
+        including every message up to and including `messageId`. The original
+        conversation is left unchanged.
+
+        Only the owner of the conversation can fork it. A shared recipient or a
+        project member gets 404, because their access to the original's
+        attachments and artifacts is revoked on unshare. The fork does not
+        inherit share settings. If the source is linked to a project the caller
+        can still see, the fork stays in that project but is private to the
+        caller; otherwise it is created outside the project.
+      operationId: forkConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: messageId
+          in: path
+          required: true
+          description: Inclusive last message to copy into the new chat
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '201':
+          description: Forked conversation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForkConversationResponse'
+        '400':
+          description: Invalid conversation or message id
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
+
   /conversations/{conversationId}/cancel:
     post:
       tags:
@@ -36248,6 +36957,56 @@ paths:
             with offset information.
         '401':
           description: Unauthorized
+
+  /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/fork:
+    post:
+      tags:
+        - Agents
+      summary: Fork agent conversation from a message
+      description: |
+        Copy this agent conversation into a new private chat owned by the
+        caller, including every message up to and including `messageId`. The
+        original conversation is left unchanged.
+
+        Only the owner of the conversation can fork it; anyone else gets 404.
+      operationId: forkAgentConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: messageId
+          in: path
+          required: true
+          description: Inclusive last message to copy into the new chat
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '201':
+          description: Forked conversation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForkConversationResponse'
+        '400':
+          description: Invalid conversation, message or agent id
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
 
   /agents/{agentKey}/conversations/{conversationId}/cancel:
     post:
@@ -40527,6 +41286,15 @@ paths:
           schema:
             type: string
             enum: [authenticated, not-authenticated]
+        - name: scope
+          in: query
+          required: false
+          description: >-
+            `org` lists the organization's instances only, leaving out the caller's own personal
+            ones (the admin catalog). Omitted, both are listed; each item's `scope` says which it is.
+          schema:
+            type: string
+            enum: [org]
         - name: search
           in: query
           required: false
@@ -40653,6 +41421,12 @@ paths:
                         createdBy:
                           type: string
                           description: User ID that created the instance. Absent on registry-only entries.
+                        scope:
+                          type: string
+                          enum: [org, personal]
+                          description: >-
+                            `org` for the organization's instances, `personal` for the caller's own. Absent on
+                            registry-only entries.
                         createdAtTimestamp:
                           type: integer
                           format: int64
@@ -41118,7 +41892,13 @@ paths:
       tags:
         - Toolset Instances
       summary: Create toolset instance
-      description: Create a new toolset instance (admin only).
+      description: >-
+        Create a toolset instance. An administrator's is the organization's unless `scope` is
+        `personal`; anyone else's is always personal: kept for its owner only, who alone sees it,
+        signs in to it, uses it and sets its tool approvals. A personal instance stores only its
+        toolset's setup fields (for OAuth, the owner's own client ID and secret), every address in
+        it must be public, and each user can have a limited number
+        (`TOOLSET_MAX_PERSONAL_INSTANCES`, 25 by default).
       operationId: createToolsetInstance
       security:
         - bearerAuth: []
@@ -41149,22 +41929,35 @@ paths:
                   type: string
                 oauthInstanceName:
                   type: string
+                scope:
+                  type: string
+                  enum: [org, personal]
+                  description: >-
+                    `personal` for the caller's own instance. Omitted, an administrator's instance
+                    is the organization's and anyone else's is personal.
       responses:
         '201':
           description: Instance created successfully
         '400':
-          description: Invalid request
+          description: >-
+            Invalid request, including a personal instance's undeclared setting, missing OAuth
+            client, or non-public address
         '401':
           description: Unauthorized
-        '403':
-          description: Forbidden
+        '409':
+          description: A name already in use, or the caller's limit of personal instances reached
+        '503':
+          description: The caller's role couldn't be confirmed, so nothing was created
 
   /toolsets/instances/{instanceId}:
     get:
       tags:
         - Toolset Instances
       summary: Get toolset instance
-      description: Retrieve a single toolset instance by its identifier.
+      description: >-
+        Retrieve a single toolset instance: an organization one, or the caller's own personal one
+        (anyone else's personal instance is not found, for administrators too). Its `scope` is
+        `org` or `personal`.
       operationId: getToolsetInstance
       security:
         - bearerAuth: []
@@ -41186,7 +41979,10 @@ paths:
       tags:
         - Toolset Instances
       summary: Update toolset instance
-      description: Update an existing toolset instance's configuration (admin only).
+      description: >-
+        Update a toolset instance: an organization one by an administrator, a personal one by its
+        owner only. A personal instance's new OAuth client signs its owner out of it; its scope
+        never changes.
       operationId: updateToolsetInstance
       security:
         - bearerAuth: []
@@ -41217,7 +42013,9 @@ paths:
       tags:
         - Toolset Instances
       summary: Delete toolset instance
-      description: Delete a toolset instance and its associated configuration (admin only).
+      description: >-
+        Delete a toolset instance, every sign-in to it and its tool approval rules: an organization
+        one by an administrator, a personal one by its owner only. Refused while an agent uses it.
       operationId: deleteToolsetInstance
       security:
         - bearerAuth: []
@@ -41417,10 +42215,13 @@ paths:
         - Toolset Instances
       summary: Get a toolset instance's tool approval rules
       description: >-
-        Which of the instance's tools run, ask for approval, or never run, for everyone in the
-        organization. Every member can read them; `canEdit` says whether the caller may change them.
-        Served only when organization tool rules are on (`organization_toolset_tool_rules` in the
-        edition config); otherwise 404, and each tool starts from what it does to data.
+        Which of the instance's tools run, ask for approval, or never run. An organization
+        instance's apply to everyone in the organization and every member can read them; a
+        personal instance's are its owner's, and nobody else finds them. `canEdit` says whether
+        the caller may change them. An organization instance's are served only when organization
+        tool rules are on (`organization_toolset_tool_rules` in the edition config); otherwise 404,
+        and each tool starts from what it does to data. A personal instance's are served in every
+        edition.
       operationId: getToolsetToolRules
       security:
         - bearerAuth: []
@@ -41446,10 +42247,13 @@ paths:
     put:
       tags:
         - Toolset Instances
-      summary: Set a toolset instance's tool approval rules (admin only)
+      summary: Set a toolset instance's tool approval rules
       description: >-
-        Replaces the instance's rules. They apply to everyone in the organization. Served only when
-        organization tool rules are on; otherwise 404 before any admin check, and nothing is saved.
+        Replaces the instance's rules: an organization instance's by administrators only (they
+        apply to everyone in the organization), a personal instance's by its owner. An
+        organization instance's are served only when organization tool rules are on; otherwise
+        404 before any admin check, and nothing is saved. A personal instance's are served in
+        every edition.
       operationId: updateToolsetToolRules
       security:
         - bearerAuth: []
@@ -41478,11 +42282,12 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Only administrators can change them
+          description: An organization instance's rules, and the caller isn't an administrator
         '404':
           description: >-
-            Instance not found, or organization tool rules are off: "Organization tool approvals
-            aren't available here. Each person answers the approval card in the chat."
+            Instance not found, someone else's personal instance, or an organization instance
+            while organization tool rules are off: "Organization tool approvals aren't available
+            here. Each person answers the approval card in the chat."
 
   /toolsets/oauth-configs/{toolsetType}:
     get:

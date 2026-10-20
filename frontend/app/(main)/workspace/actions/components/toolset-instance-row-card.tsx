@@ -5,11 +5,12 @@ import { useTranslation } from 'react-i18next';
 import { Avatar, Badge, Button, Flex, IconButton, Separator, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
-import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
+import { isPersonalToolset, type BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import { apiClient } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils/formatters';
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { ToolsetToolRulesDialog } from '@/config';
+import { ToolsetToolRulesDialog as OwnToolRulesDialog } from './toolset-tool-rules-dialog';
 
 export interface ToolsetInstanceRowCardProps {
   /** Team = admin catalog (org instances); personal = per-user credentials. */
@@ -48,6 +49,8 @@ export function ToolsetInstanceRowCard({
   const [enabledByName, setEnabledByName] = useState<string | null>(null);
   const [enabledByAvatar, setEnabledByAvatar] = useState<string | null>(null);
   const [toolRulesOpen, setToolRulesOpen] = useState(false);
+  // A personal action's rules are its owner's in every edition; an org action's editor is the edition's.
+  const RulesDialog = isPersonalToolset(instance) ? OwnToolRulesDialog : ToolsetToolRulesDialog;
 
   useEffect(() => {
     if (!instance.createdBy) return;
@@ -118,9 +121,16 @@ export function ToolsetInstanceRowCard({
           )}
         </Flex>
         <Flex direction="column" gap="1" style={{ flex: '1 1 10rem', minWidth: 0 }}>
-          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }} truncate>
-            {primaryTitle}
-          </Text>
+          <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }} truncate>
+              {primaryTitle}
+            </Text>
+            {isPersonalToolset(instance) ? (
+              <Badge size="1" color="gray" variant="soft" style={{ flexShrink: 0 }}>
+                {t('workspace.actions.personal.yours')}
+              </Badge>
+            ) : null}
+          </Flex>
           {integrationSubtitle && integrationSubtitle.toLowerCase() !== primaryTitle.toLowerCase() ? (
             <Text size="1" color="gray" truncate>
               {integrationSubtitle}
@@ -154,6 +164,12 @@ export function ToolsetInstanceRowCard({
               {t('workspace.actions.instanceCard.authenticateCta')}
             </Button>
           ) : null}
+          {/* On the team page Manage holds the sign-in too; a personal action keeps both. */}
+          {ok && (!onManage || scope === 'personal') ? (
+            <Button size="2" variant="soft" color="gray" onClick={onConfigure}>
+              {t('workspace.actions.instanceCard.configureCta')}
+            </Button>
+          ) : null}
           {onManage ? (
             <IconButton
               type="button"
@@ -165,10 +181,6 @@ export function ToolsetInstanceRowCard({
             >
               <MaterialIcon name="settings" size={18} color="var(--gray-11)" />
             </IconButton>
-          ) : ok ? (
-            <Button size="2" variant="soft" color="gray" onClick={onConfigure}>
-              {t('workspace.actions.instanceCard.configureCta')}
-            </Button>
           ) : null}
         </Flex>
       </Flex>
@@ -228,12 +240,13 @@ export function ToolsetInstanceRowCard({
       ) : null}
 
       {scope === 'personal' && instance.instanceId ? (
-        <ToolsetToolRulesDialog
+        <RulesDialog
           open={toolRulesOpen}
           onOpenChange={setToolRulesOpen}
           instanceId={instance.instanceId}
           instanceName={primaryTitle}
           toolsetType={instance.toolsetType || instance.name}
+          personal={isPersonalToolset(instance)}
         />
       ) : null}
     </Flex>
