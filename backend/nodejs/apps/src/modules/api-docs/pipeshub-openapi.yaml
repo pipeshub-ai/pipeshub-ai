@@ -42218,10 +42218,10 @@ paths:
         Which of the instance's tools run, ask for approval, or never run. An organization
         instance's apply to everyone in the organization and every member can read them; a
         personal instance's are its owner's, and nobody else finds them. `canEdit` says whether
-        the caller may change them. An organization instance's are served only when organization
-        tool rules are on (`organization_toolset_tool_rules` in the edition config); otherwise 404,
-        and each tool starts from what it does to data. A personal instance's are served in every
-        edition.
+        the caller may change them. An organization instance's rules are served only when
+        organization tool rules are on (`organization_toolset_tool_rules` in the edition config);
+        otherwise 404, and each tool starts from what it does to data. A personal instance's rules
+        are served in every edition.
       operationId: getToolsetToolRules
       security:
         - bearerAuth: []
@@ -42251,9 +42251,9 @@ paths:
       description: >-
         Replaces the instance's rules: an organization instance's by administrators only (they
         apply to everyone in the organization), a personal instance's by its owner. An
-        organization instance's are served only when organization tool rules are on; otherwise
-        404 before any admin check, and nothing is saved. A personal instance's are served in
-        every edition.
+        organization instance's rules can be set only when organization tool rules are on;
+        otherwise 404 before any admin check, and nothing is saved. A personal instance's rules
+        can be set in every edition.
       operationId: updateToolsetToolRules
       security:
         - bearerAuth: []
