@@ -1074,10 +1074,10 @@ def _require_auth_is_object(auth: object, *, allow_null: bool = False) -> None:
 
 
 def _require_filter_sections_are_objects(filters: object) -> None:
-    """400 when ``filters.sync`` / ``filters.indexing`` is present but not an object.
+    """400 when ``filters.sync`` / ``filters.indexing`` or its ``values`` is present but not an object.
 
-    The merge below stores the section verbatim, and a stored ``null`` later
-    breaks ``load_connector_filters`` (``.get`` on ``None``) at sync time.
+    The merge below stores the section verbatim, and a stored ``null`` section or
+    a non-object ``values`` later breaks ``load_connector_filters`` at sync time.
     """
     if not isinstance(filters, dict):
         return
@@ -1086,6 +1086,12 @@ def _require_filter_sections_are_objects(filters: object) -> None:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"filters.{key} must be an object",
+            )
+        values = filters.get(key, {}).get("values")
+        if values is not None and not isinstance(values, dict):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"filters.{key}.values must be an object",
             )
 
 

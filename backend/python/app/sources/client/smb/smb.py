@@ -6,6 +6,7 @@ import asyncio
 import ipaddress
 import stat
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, BinaryIO, TypeVar
 
@@ -28,12 +29,16 @@ from app.utils.url_fetcher import (
 if TYPE_CHECKING:
     from collections.abc import Callable
     from logging import Logger
+    from types import ModuleType
 
     from app.config.configuration_service import ConfigurationService
 
 REPARSE_POINT = 0x0400
 # smbclient waits 60 s by default, longer than a gateway holds a request open.
 CONNECTION_TIMEOUT_SECONDS = 15
+LOOKUP_TIMEOUT_SECONDS = 5
+# getaddrinfo has no timeout. A lookup left running here does not hold a client's lock.
+_lookups = ThreadPoolExecutor(max_workers=4, thread_name_prefix="smb-lookup")
 _T = TypeVar("_T")
 
 
@@ -75,7 +80,14 @@ def dial_address(server: str) -> str:
         NetworkShareAuthError: the name doesn't resolve or an address is refused.
     """
     literal = literal_ip(server)
-    addresses = [literal] if literal is not None else resolved_addresses(server)
+    try:
+        addresses = (
+            [literal]
+            if literal is not None
+            else _lookups.submit(resolved_addresses, server).result(timeout=LOOKUP_TIMEOUT_SECONDS)
+        )
+    except TimeoutError as exc:
+        raise NetworkShareAuthError(f'Looking up "{server}" timed out. Check the server name.') from exc
     if not addresses:
         raise NetworkShareAuthError(f'Could not find a server named "{server}". Check the server name.')
     plain = [
@@ -92,6 +104,24 @@ def dial_address(server: str) -> str:
     except HostCheckError as exc:
         raise NetworkShareAuthError(str(exc)) from exc
     return str(next((a for a in plain if a.version == 4), plain[0]))
+
+
+def _vet_every_session(pool: ModuleType) -> None:
+    """Send every session smbclient opens through ``dial_address``.
+
+    A DFS referral makes smbclient open a session to a server the user never typed
+    (``get_smb_tree`` and ``_resolve_dfs`` call ``_pool.register_session``).
+    smbprotocol is pinned, so the private name is stable.
+    """
+    original = pool.register_session
+    if getattr(original, "vetted", False) is True:
+        return
+
+    def register_session(server: str, *args: object, **kwargs: object) -> object:
+        return original(dial_address(server), *args, **kwargs)
+
+    register_session.vetted = True  # type: ignore[attr-defined]
+    pool.register_session = register_session
 
 
 def unc(server: str, share: str, rel: str = "") -> str:
@@ -138,10 +168,12 @@ class SmbClient(IClient):
     def _smbclient(self) -> object:
         try:
             import smbclient
+            from smbclient import _pool
         except ImportError as exc:
             raise NetworkShareAuthError(
                 "smbprotocol is not installed. Add smbprotocol to the Python environment."
             ) from exc
+        _vet_every_session(_pool)
         return smbclient
 
     def serialized(self, fn: Callable[..., _T], *args: object) -> _T:

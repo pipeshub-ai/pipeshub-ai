@@ -1,4 +1,6 @@
 import socket
+import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7,6 +9,7 @@ from app.connectors.sources.network_share.errors import NetworkShareAuthError
 from app.sources.client.smb.smb import (
     CONNECTION_TIMEOUT_SECONDS,
     SmbClient,
+    _vet_every_session,
     dial_address,
 )
 from app.utils.url_fetcher import PRIVATE_ADDRESS_SWITCH_ENV
@@ -151,3 +154,29 @@ def test_a_listing_keeps_the_servers_file_attributes() -> None:
     entry = SmbClient(server="files.example", username="u", password="p")._from_dir_entry(item)
 
     assert entry.attributes == 0x6
+
+
+def test_a_dfs_referral_to_a_refused_address_never_opens_a_session() -> None:
+    original = MagicMock()
+    pool = SimpleNamespace(register_session=original)
+    _vet_every_session(pool)
+    _vet_every_session(pool)
+
+    with _resolving_to("169.254.169.254"), pytest.raises(NetworkShareAuthError):
+        pool.register_session("dfs-target.example", username="u")
+    original.assert_not_called()
+
+    with _resolving_to("10.0.0.7"):
+        pool.register_session("dfs-target.example", username="u")
+    original.assert_called_once_with("10.0.0.7", username="u")
+
+
+def test_a_lookup_that_hangs_times_out() -> None:
+    release = threading.Event()
+    with (
+        patch("app.sources.client.smb.smb.resolved_addresses", side_effect=lambda _: release.wait(5) and []),
+        patch("app.sources.client.smb.smb.LOOKUP_TIMEOUT_SECONDS", 0.05),
+        pytest.raises(NetworkShareAuthError, match="timed out"),
+    ):
+        dial_address("slow.example")
+    release.set()
