@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
 from app.agents.actions.knowledge_graph.ops.timeline import (
     PERIOD_SEARCH_LIMIT,
+    auto_timeline_field,
     timeline_search_response,
     timeline_summaries_enabled,
 )
@@ -66,8 +67,10 @@ class SearchQuery(BaseModel):
     # bounds give (createdAfter/createdBefore for "created"), as the
     # assistant's timeline tool does, and returns the matches in date order,
     # each labelled with its period. ``limit`` is then the matches per period.
-    # Left out, a plain ranked search as before.
-    timeline: Literal["created", "modified"] | None = None
+    # Left out, bounds on one date over more than a month run as a timeline
+    # on that date, and a plain ranked search otherwise. "off" is always the
+    # plain ranked search.
+    timeline: Literal["created", "modified", "off"] | None = None
 
 
 # The parser names the assistant tool's parameters; this route receives the
@@ -211,6 +214,17 @@ async def _rewritten_queries(
     return _queries_for_search(query, rewritten_query, expanded_queries)
 
 
+def _timeline_choice(requested: str | None, time_range: dict[str, int] | None) -> tuple[str | None, bool]:
+    """The date the search runs as a timeline by, or None, and whether it
+    was chosen here rather than by the caller."""
+    if requested == "off" or not timeline_summaries_enabled():
+        return None, False
+    if requested:
+        return requested, False
+    date_field = auto_timeline_field(time_range)
+    return date_field, date_field is not None
+
+
 @dataclass(frozen=True)
 class _TimelineSpan:
     date_field: str
@@ -245,6 +259,8 @@ async def _timeline_search(
     period_limit: int,
     run_search: "Callable[[dict[str, int] | None, int | None], Awaitable[dict[str, Any]]]",
     logger: "Logger",
+    *,
+    automatic: bool,
 ) -> dict[str, Any]:
     """The timeline tool's period-by-period search, each search being
     ``run_search``: the plain search, with its permission check and filters."""
@@ -258,6 +274,7 @@ async def _timeline_search(
         end_ms=span.end_ms,
         date_field=span.date_field,
         period_limit=period_limit,
+        automatic=automatic,
         log=logger,
     )
     if results is None:
@@ -277,7 +294,7 @@ async def search(
     container = request.app.container
     logger = container.logger()
     time_range = _search_time_range(body)
-    timeline = body.timeline if timeline_summaries_enabled() else None
+    timeline, automatic = _timeline_choice(body.timeline, time_range)
     span = _timeline_span(timeline, time_range) if timeline else None
     timer = StageTimer()
     try:
@@ -301,14 +318,18 @@ async def search(
         if span is None:
             results = await run_search(time_range, body.limit)
         else:
-            # ``limit`` is the matches per period when the caller set it.
+            # ``limit`` is the matches per period when the caller set it. A
+            # caller who did not ask for a timeline meant it for the whole
+            # search, so it does not raise each period's above the default.
             period_limit = body.limit if "limit" in body.model_fields_set and body.limit else PERIOD_SEARCH_LIMIT
-            results = await _timeline_search(span, period_limit, run_search, logger)
+            if automatic:
+                period_limit = min(period_limit, PERIOD_SEARCH_LIMIT)
+            results = await _timeline_search(span, period_limit, run_search, logger, automatic=automatic)
         timer.mark("retrieval")
         timer.emit(
             logger, "search",
             rewrite="on" if body.rewriteQuery else "off", queries=len(queries),
-            timeline=timeline,
+            timeline=timeline, timeline_auto=automatic or None,
         )
         custom_status_code = results.get("status_code", 500)
         logger.info(f"Custom status code: {custom_status_code}")

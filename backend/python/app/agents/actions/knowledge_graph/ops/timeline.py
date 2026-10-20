@@ -27,6 +27,12 @@ running it once per period would multiply the slowest step of a search.
 The search API's ``timeline`` option runs the same search for API callers,
 such as an agent over MCP (``timeline_search_response``).
 
+A search bounded on one date over more than ``AUTO_TIMELINE_MIN_DAYS`` days
+runs as a timeline without being asked (``auto_timeline_field``): through the
+search API when the caller leaves ``timeline`` out, and through
+knowledgegraph__search. Agents seldom choose the timeline themselves, and a
+plain search over months answers a summary from one part of the span.
+
 The deployment switch ``TIMELINE_SUMMARIES`` offers the tool and the API
 option; it is on unless set to ``false``, and does not follow
 ``HIGH_ACCURACY_MODE``.
@@ -113,9 +119,14 @@ _DATE_FIELDS = {
 }
 # A span this short is cut into weeks rather than months.
 _WEEKLY_SPAN_DAYS = 31
+# A span longer than this runs as a timeline when the caller did not choose.
+# The same as the cut into weeks, so an automatic timeline is always split into
+# calendar months: a span within one month is usually a lookup bounded to it.
+AUTO_TIMELINE_MIN_DAYS = _WEEKLY_SPAN_DAYS
 # Without a start, how far back from the end a timeline reaches at least.
 DEFAULT_LOOKBACK_DAYS = 365
 _DAY_MS = 24 * 60 * 60 * 1000
+_AUTO_NOTE = f"This date range covers more than {AUTO_TIMELINE_MIN_DAYS} days, so it was searched period by period."
 
 
 def timeline_summaries_enabled() -> bool:
@@ -125,6 +136,28 @@ def timeline_summaries_enabled() -> bool:
     empty keeps the default.
     """
     return enabled_unless_off(TIMELINE_SUMMARIES_ENV_VAR)
+
+
+def auto_timeline_field(time_range: dict[str, int] | None) -> str | None:
+    """The date a search bounded by ``time_range`` runs as a timeline by when
+    the caller did not choose, or None for a ranked search.
+
+    That is the first of created and modified whose bounds have a start and
+    cover more than ``AUTO_TIMELINE_MIN_DAYS`` days, counted in whole days as
+    the periods are, with a missing or future end read as today. A range with
+    only an end is unbounded, so it stays ranked. None while the switch is off.
+    """
+    if not time_range or not timeline_summaries_enabled():
+        return None
+    now = _now_ms()
+    for date_field, (_, _, after_key, before_key, _) in _DATE_FIELDS.items():
+        start_ms = time_range.get(after_key)
+        if start_ms is None:
+            continue
+        end_ms = min(time_range.get(before_key, now), now)
+        if end_ms >= start_ms and (_utc(end_ms).date() - _utc(start_ms).date()).days + 1 > AUTO_TIMELINE_MIN_DAYS:
+            return date_field
+    return None
 
 
 def without_timeline_unless_enabled(tools: list[Tool]) -> list[Tool]:
@@ -484,6 +517,7 @@ async def execute_timeline_search(
     date_field: str | None = None,
     source_ids: list[str] | None = None,
     entity_ids: list[str] | None = None,
+    note: str | None = None,
 ) -> str | list[Part]:
     if not query or not query.strip():
         return _json("error", "No search query provided")
@@ -531,7 +565,7 @@ async def execute_timeline_search(
         collected = await _collect(
             searcher(scope.groups(with_entities=with_entities)), start_ms, end_ms, date_field, log,
         )
-        notes = list(scope.notes)
+        notes = [*([note] if note else []), *scope.notes]
         if with_entities and isinstance(collected, _Collected) and not any(h.results for h in collected.hits):
             # Entity filters are a hard AND at the graph layer; a missing edge
             # empties the scope although matching records exist.
@@ -569,6 +603,45 @@ async def execute_timeline_search(
         return _json("error", f"Timeline search error: {exc}")
 
 
+async def automatic_timeline_search(
+    state: ChatState | None,
+    query: str | None,
+    *,
+    created_after: str | None = None,
+    created_before: str | None = None,
+    modified_after: str | None = None,
+    modified_before: str | None = None,
+    source_ids: list[str] | None = None,
+    entity_ids: list[str] | None = None,
+) -> str | list[Part] | None:
+    """knowledgegraph__search as this tool's search when its dates are bounds
+    on one date over a span ``auto_timeline_field`` picks, or None for the
+    ranked search. Bad dates are None too; the ranked search reports them."""
+    time_range, error = parse_time_range(
+        created_after=created_after, created_before=created_before,
+        modified_after=modified_after, modified_before=modified_before,
+    )
+    date_field = None if error is not None else auto_timeline_field(time_range)
+    if date_field is None:
+        return None
+    other = "modified" if date_field == "created" else "created"
+    # This tool bounds only the date it places records by.
+    if any(key in (time_range or {}) for key in _DATE_FIELDS[other][2:4]):
+        return None
+    after_arg, before_arg = _DATE_FIELDS[date_field][:2]
+    bounds = {"created_after": created_after, "created_before": created_before,
+              "modified_after": modified_after, "modified_before": modified_before}
+    return await execute_timeline_search(
+        state, query,
+        start=bounds[after_arg], end=bounds[before_arg], date_field=date_field,
+        source_ids=source_ids, entity_ids=entity_ids,
+        note=(
+            f"Note: {_AUTO_NOTE} For one ranked search instead, keep the dates to "
+            f"{AUTO_TIMELINE_MIN_DAYS} days or less."
+        ),
+    )
+
+
 async def timeline_search_response(
     search: Callable[[dict[str, int] | None, int], Awaitable[dict[str, Any] | None]],
     *,
@@ -576,6 +649,7 @@ async def timeline_search_response(
     end_ms: int | None,
     date_field: str,
     period_limit: int = PERIOD_SEARCH_LIMIT,
+    automatic: bool = False,
     log: logging.Logger = logger,
 ) -> dict[str, Any] | None:
     """The search API's ``timeline`` option: this tool's period-by-period
@@ -595,7 +669,8 @@ async def timeline_search_response(
     preference to "no accessible records": the whole-span search's first,
     then any period's. Otherwise the whole-span search's own response, as a
     plain search would have returned it. None when every search raised and
-    none failed with a response.
+    none failed with a response. ``automatic`` is a timeline the caller did
+    not ask for, which ``timeline.automatic`` and a note say.
     """
     if end_ms is not None:
         end_ms = min(end_ms, _now_ms())
@@ -633,7 +708,7 @@ async def timeline_search_response(
     whole_partial = span_answer is None or _failed(span_answer, log) or bool(span_answer.get("searchIncomplete"))
     return _api_response(
         collected, responses, date_field,
-        start_given=start_ms is not None, whole_partial=whole_partial,
+        start_given=start_ms is not None, whole_partial=whole_partial, automatic=automatic,
     )
 
 
@@ -644,6 +719,7 @@ def _api_response(
     *,
     start_given: bool,
     whole_partial: bool = False,
+    automatic: bool = False,
 ) -> dict[str, Any]:
     search_results: list[dict[str, Any]] = []
     record_map: dict[str, Any] = {}
@@ -691,6 +767,8 @@ def _api_response(
         incomplete = incomplete or response.get("searchIncomplete") or None
 
     notes: list[str] = []
+    if automatic:
+        notes.append(f'{_AUTO_NOTE} Send timeline "off" for one ranked search of the whole range.')
     caveat = None
     if not search_results and (whole_partial or any(h.failed or h.incomplete for h in collected.hits)):
         caveat = (
@@ -715,6 +793,7 @@ def _api_response(
         "virtual_to_record_map": record_map,
         "timeline": {
             "dateField": date_field,
+            "automatic": automatic,
             "start": _day(collected.start_ms),
             "end": _day(collected.end_ms),
             "periods": periods,
@@ -999,10 +1078,13 @@ def timeline_result_summary(args: dict[str, Any], result: ToolResult) -> str | N
 
 
 __all__ = [
+    "AUTO_TIMELINE_MIN_DAYS",
     "MAX_PERIODS",
     "TIMELINE_SUMMARIES_ENV_VAR",
     "TIMELINE_TOOL_NAME",
     "Period",
+    "auto_timeline_field",
+    "automatic_timeline_search",
     "execute_timeline_search",
     "plan_periods",
     "record_date_ms",

@@ -7,14 +7,16 @@ import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
 import app.edition_config  # noqa: F401
+from app.agents.actions.knowledge_graph.ops import timeline
 from app.agents.actions.knowledge_graph.ops.timeline import (
+    AUTO_TIMELINE_MIN_DAYS,
     PERIOD_SEARCH_LIMIT,
     SPAN_SEARCH_LIMIT,
     TIMELINE_SUMMARIES_ENV_VAR,
@@ -131,8 +133,8 @@ class TestTheField:
     def test_left_out_by_default(self) -> None:
         assert SearchQuery(query="q").timeline is None
 
-    @pytest.mark.parametrize("value", ["created", "modified"])
-    def test_takes_the_date_to_place_records_by(self, value: str) -> None:
+    @pytest.mark.parametrize("value", ["created", "modified", "off"])
+    def test_takes_the_date_to_place_records_by_or_off(self, value: str) -> None:
         assert SearchQuery(query="q", timeline=value).timeline == value
 
     @pytest.mark.parametrize("value", ["true", "updated", ""])
@@ -141,13 +143,13 @@ class TestTheField:
             SearchQuery(query="q", timeline=value)
 
 
-class TestLeftOut:
+class TestOff:
     @pytest.mark.asyncio
     async def test_a_plain_search_runs_once_and_says_nothing_of_a_timeline(self) -> None:
         index = _Index(_QUARTER)
 
         status, body = await _search(
-            SearchQuery(query="rollout", rewriteQuery=False, limit=3,
+            SearchQuery(query="rollout", rewriteQuery=False, limit=3, timeline="off",
                         createdAfter="2025-03-01", createdBefore="2025-05-31"),
             index,
         )
@@ -165,6 +167,140 @@ class TestLeftOut:
         status, body = await _search(_quarter(limit=3), index)
 
         assert status == 200
+        assert len(index.calls) == 1
+        assert "timeline" not in body
+
+
+def _left_out(**fields: Any) -> SearchQuery:  # noqa: ANN401
+    return SearchQuery(query="rollout", rewriteQuery=False, **fields)
+
+
+class TestLeftOutOverAWideSpan:
+    """With ``timeline`` left out, bounds on one date over more than
+    ``AUTO_TIMELINE_MIN_DAYS`` days run as a timeline on that date."""
+
+    @pytest.mark.asyncio
+    async def test_a_quarter_runs_as_a_timeline_and_says_it_was_not_asked_for(self) -> None:
+        index = _Index(_QUARTER)
+
+        status, body = await _search(_left_out(createdAfter="2025-03-01", createdBefore="2025-05-31"), index)
+
+        assert status == 200
+        assert len(index.calls) == 4
+        assert body["timeline"]["automatic"] is True
+        assert body["timeline"]["dateField"] == "created"
+        assert [p["records"] for p in body["timeline"]["periods"]] == [3, 1, 2]
+        assert body["timeline"]["notes"] == [
+            f"This date range covers more than {AUTO_TIMELINE_MIN_DAYS} days, so it was searched "
+            'period by period. Send timeline "off" for one ranked search of the whole range.'
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("end", "timeline_on"), [
+        # 2025-03-01 to 2025-03-31 is 31 days; a day more crosses the line.
+        ("2025-03-31", False),
+        ("2025-04-01", True),
+    ])
+    async def test_the_line_is_more_than_a_months_whole_days(self, end: str, timeline_on: bool) -> None:
+        assert AUTO_TIMELINE_MIN_DAYS == 31
+        index = _Index(_QUARTER)
+
+        _, body = await _search(_left_out(createdAfter="2025-03-01", createdBefore=end), index)
+
+        assert ("timeline" in body) is timeline_on
+        assert (len(index.calls) > 1) is timeline_on
+
+    @pytest.mark.asyncio
+    async def test_the_modified_date_runs_a_modified_timeline(self) -> None:
+        index = _Index(_QUARTER)
+
+        _, body = await _search(_left_out(modifiedAfter="2025-03-01", modifiedBefore="2025-05-31"), index)
+
+        assert body["timeline"]["dateField"] == "modified"
+        assert body["timeline"]["automatic"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_narrow_range_on_the_other_date_stays_on_every_search(self) -> None:
+        index = _Index(_QUARTER)
+
+        _, body = await _search(
+            _left_out(modifiedAfter="2025-04-01", modifiedBefore="2025-04-20",
+                      createdAfter="2025-03-01", createdBefore="2025-05-31"),
+            index,
+        )
+
+        assert body["timeline"]["dateField"] == "created"
+        for call in index.calls:
+            assert call["time_range"]["source_updated_after_ms"] == _ms("2025-04-01")
+
+    @pytest.mark.asyncio
+    async def test_a_start_alone_runs_to_today(self) -> None:
+        index = _Index(_QUARTER)
+        today = _ms("2025-06-15")
+
+        with patch.object(timeline, "_now_ms", return_value=today):
+            _, recent = await _search(_left_out(createdAfter="2025-05-20"), index)
+            _, longer = await _search(_left_out(createdAfter="2025-05-01"), index)
+
+        assert "timeline" not in recent
+        assert longer["timeline"]["automatic"] is True
+        assert longer["timeline"]["end"] == "2025-06-15"
+
+    @pytest.mark.asyncio
+    async def test_an_end_alone_or_no_dates_stays_a_plain_search(self) -> None:
+        index = _Index(_QUARTER)
+
+        for body in (_left_out(createdBefore="2025-05-31"), _left_out()):
+            index.calls.clear()
+            _, response = await _search(body, index)
+
+            assert len(index.calls) == 1
+            assert "timeline" not in response
+
+    @pytest.mark.asyncio
+    async def test_a_limit_is_not_raised_past_the_default_per_period(self) -> None:
+        index = _Index(_QUARTER)
+
+        await _search(_left_out(limit=50, createdAfter="2025-03-01", createdBefore="2025-05-31"), index)
+        assert sorted(c["limit"] for c in index.calls) == [PERIOD_SEARCH_LIMIT] * 3 + [SPAN_SEARCH_LIMIT]
+
+        index.calls.clear()
+        await _search(_left_out(limit=2, createdAfter="2025-03-01", createdBefore="2025-05-31"), index)
+        assert sorted(c["limit"] for c in index.calls) == [2, 2, 2, SPAN_SEARCH_LIMIT]
+
+    @pytest.mark.asyncio
+    async def test_the_callers_own_choice_wins(self) -> None:
+        index = _Index(_QUARTER)
+
+        _, asked = await _search(_quarter(), index)
+        _, other_date = await _search(
+            _left_out(timeline="modified", createdAfter="2025-03-01", createdBefore="2025-05-31"), index,
+        )
+
+        assert asked["timeline"]["automatic"] is False
+        assert asked["timeline"]["notes"] == []
+        assert other_date["timeline"]["dateField"] == "modified"
+        assert other_date["timeline"]["automatic"] is False
+
+    @pytest.mark.asyncio
+    async def test_off_is_one_ranked_search(self) -> None:
+        index = _Index(_QUARTER)
+
+        _, body = await _search(
+            _left_out(timeline="off", limit=3, createdAfter="2025-03-01", createdBefore="2025-05-31"), index,
+        )
+
+        assert len(index.calls) == 1
+        assert "timeline" not in body
+        assert [h["virtual_record_id"] for h in body["searchResults"]] == ["m1", "m2", "m3"]
+
+    @pytest.mark.asyncio
+    async def test_switched_off_it_stays_a_plain_search(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "false")
+        index = _Index(_QUARTER)
+
+        _, body = await _search(_left_out(createdAfter="2025-03-01", createdBefore="2025-05-31"), index)
+
         assert len(index.calls) == 1
         assert "timeline" not in body
 

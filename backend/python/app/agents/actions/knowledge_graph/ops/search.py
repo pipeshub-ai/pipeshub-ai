@@ -453,7 +453,23 @@ async def execute_search(
     empty one searches nothing, and grep, which knows no such scope, stays off.
     ``preamble`` opens the result: the rendered text, where it counts toward
     the result size, or the ``entities`` field of a JSON result.
+
+    Without a scope, dates over a span longer than a month run the timeline
+    tool's search instead (``ops/timeline.automatic_timeline_search``).
     """
+    if scope_virtual_record_ids is None:
+        from app.agents.actions.knowledge_graph.ops.timeline import (
+            automatic_timeline_search,
+        )
+
+        timeline = await automatic_timeline_search(
+            state, query,
+            created_after=created_after, created_before=created_before,
+            modified_after=modified_after, modified_before=modified_before,
+            source_ids=source_ids, entity_ids=entity_ids,
+        )
+        if timeline is not None:
+            return timeline
     result = await _execute_search(
         state, query, source_ids,
         created_after=created_after, created_before=created_before,

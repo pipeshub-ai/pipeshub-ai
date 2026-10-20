@@ -11,6 +11,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.agents.actions.knowledge_graph.ops.search import execute_search
+from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_SUMMARIES_ENV_VAR
+
+
+@pytest.fixture(autouse=True)
+def _ranked_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A span over a month runs as a timeline while the switch is on (test_timeline.py).
+    monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "false")
 
 
 def _make_state(**overrides):

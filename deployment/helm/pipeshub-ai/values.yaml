@@ -371,7 +371,8 @@ config:
   # "false" through extraEnv. With it on, the agent has search_timeline, which
   # searches a span of time period by period and returns the matches in date
   # order, and questions about a span ("between March and May", "how did X
-  # evolve") are pointed to it.
+  # evolve") are pointed to it. A search bounded on one date over more than
+  # 31 days runs period by period too.
   # FETCH_SIZE_BY_CHARS is not part of this mode: it is on unless set to
   # "false" through extraEnv. With it on, fetch_record reads as much of each
   # record as fits a share of the context window instead of a block count.

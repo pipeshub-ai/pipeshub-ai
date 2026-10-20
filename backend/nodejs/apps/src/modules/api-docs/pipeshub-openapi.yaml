@@ -10288,7 +10288,7 @@ components:
           example: false
         timeline:
           type: string
-          enum: [created, modified]
+          enum: [created, modified, 'off']
           description: |
             Search a span of time period by period instead of ranking matches over the whole
             span, for questions such as "how did this evolve" or "what changed between March
@@ -10305,8 +10305,13 @@ components:
             number of matches each period's own search asks for (10 when left out); matches from
             the search of the whole span (up to 50) are added to the periods their records are
             dated in, so a period can hold more than `limit`. Each search applies the same permissions
-            and filters as a plain search. Left out, the search is a plain ranked search, as
-            before. A server whose `TIMELINE_SUMMARIES` setting is `false` ignores it.
+            and filters as a plain search.
+
+            Left out, a search whose bounds on one date have a start and cover more than 31
+            days (a missing end is today) runs as a timeline on that date, and
+            `timeline.automatic` is `true`; any other search is a plain ranked search. `off`
+            is always a plain ranked search. A server whose `TIMELINE_SUMMARIES` setting is
+            `false` ignores the field and never runs a timeline.
           example: created
 
     SemanticSearchBoundingBox:
@@ -10834,7 +10839,8 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Present only on a search with `timeline` set. `searchResults` then come period by period,
+        Present only on a search run as a timeline: one with `timeline` set, or one over a span
+        of more than 31 days with it left out. `searchResults` then come period by period,
         oldest first, and by record date within a period; each hit's `timelinePeriod` is its
         period's index in `periods`.
       required:
@@ -10847,6 +10853,11 @@ components:
         dateField:
           type: string
           enum: [created, modified]
+        automatic:
+          type: boolean
+          description: |
+            `true` when the caller left `timeline` out and the span was long enough to run as a
+            timeline; `false` when the caller asked for it.
         start:
           type: string
           format: date

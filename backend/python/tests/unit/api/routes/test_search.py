@@ -550,7 +550,7 @@ class TestSearchEndpoint:
         """The retrieval service already filters by date; the route used to drop it."""
         body = SearchQuery(
             query="q", modifiedAfter="2026-09-01", modifiedBefore="2026-09-30T12:00:00Z",
-            createdAfter="2026-01-01",
+            createdAfter="2026-01-01", timeline="off",
         )
 
         retrieval = await self._search_with(body)
@@ -969,7 +969,7 @@ class TestSearchWithoutQueryRewrite:
         retrieval = self._retrieval()
         body = SearchQuery(
             query="q", rewriteQuery=False, limit=7,
-            filters={"apps": ["c1"], "kb": []}, modifiedAfter="2026-09-01",
+            filters={"apps": ["c1"], "kb": []}, modifiedAfter="2026-09-01", timeline="off",
         )
 
         await self._search(body, retrieval)
