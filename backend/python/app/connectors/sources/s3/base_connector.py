@@ -48,6 +48,7 @@ from app.connectors.core.registry.folder_scope import (
     listed_record_ids,
     path_in_container,
     recorded_ids,
+    remove_container,
     remove_deselected_containers,
     remove_records_not_listed,
 )
@@ -253,6 +254,10 @@ def get_mimetype_for_s3(key: str, *, is_folder: bool = False) -> str:
         except ValueError:
             return MimeTypes.BIN.value
     return MimeTypes.BIN.value
+
+
+class _BucketGone(Exception):
+    """The store answered NoSuchBucket: the bucket was deleted at the source."""
 
 
 class S3CompatibleDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
@@ -698,7 +703,16 @@ class S3CompatibleBaseConnector(BaseConnector):
         unrecorded: list[dict] = []
         complete = True
         for prefix in scope.list_prefixes:
-            prefix_listed, prefix_complete = await self._sync_bucket_prefix(bucket_name, prefix, scope, recorded, unrecorded)
+            try:
+                prefix_listed, prefix_complete = await self._sync_bucket_prefix(
+                    bucket_name, prefix, scope, recorded, unrecorded
+                )
+            except _BucketGone:
+                await remove_container(
+                    self.data_entities_processor, self.connector_id, bucket_name,
+                    f"now that {bucket_name} no longer exists", self.logger,
+                )
+                return
             listed |= prefix_listed
             complete = complete and prefix_complete
         # One pass after every prefix: a rename into a folder listed later is
@@ -797,7 +811,7 @@ class S3CompatibleBaseConnector(BaseConnector):
         batch_records = []
         self._moved_record_ids = set()
         has_more = True
-        listing_failed = False
+        listing_failed = bucket_gone = False
         failed = FailedItems()
         max_timestamp = last_sync_time if last_sync_time else 0
         listed: set[str] = set()
@@ -815,6 +829,8 @@ class S3CompatibleBaseConnector(BaseConnector):
 
                     if not response.success:
                         error_msg = response.error or "Unknown error"
+                        # Only this code proves the bucket is gone; access and network errors prove nothing.
+                        bucket_gone = error_msg.startswith("NoSuchBucket")
                         if "AccessDenied" in error_msg or "not authorized" in error_msg:
                             self.logger.warning(
                                 f"Access denied when listing objects in bucket {bucket_name}: {error_msg}."
@@ -847,13 +863,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                         has_more = False
                         continue
 
-                    objects_data = response.data
-                    if not objects_data or "Contents" not in objects_data:
-                        self.logger.info(f"No objects found in bucket {bucket_name}")
-                        has_more = False
-                        continue
-
-                    objects = objects_data["Contents"]
+                    objects_data = response.data or {}
+                    # S3 leaves "Contents" out of an empty page, which can still be truncated.
+                    objects = objects_data.get("Contents") or []
                     self.logger.info(
                         f"Processing {len(objects)} objects from bucket {bucket_name}"
                     )
@@ -928,6 +940,11 @@ class S3CompatibleBaseConnector(BaseConnector):
 
                     has_more = objects_data.get("IsTruncated", False)
                     continuation_token = objects_data.get("NextContinuationToken")
+                    if has_more and not continuation_token:
+                        self.logger.error(f"Listing of bucket {bucket_name} is truncated but has no continuation token")
+                        listing_failed = True
+                        has_more = False
+                        continue
 
                     if continuation_token:
                         await self.record_sync_point.update_sync_point(
@@ -965,6 +982,8 @@ class S3CompatibleBaseConnector(BaseConnector):
             )
             # A saved resume token would skip the pages holding the failures.
             await self.record_sync_point.update_sync_point(sync_point_key, {"continuation_token": None})
+        if bucket_gone:
+            raise _BucketGone(bucket_name)
         if listing_failed:
             return listed, False
         checkpoint = failed.checkpoint(max_timestamp)

@@ -122,6 +122,8 @@ class FakeS3DataSource(_FakeDataSource):
     async def list_objects_v2(
         self, Bucket: str, MaxKeys: int = 1000, ContinuationToken: str | None = None, Prefix: str | None = None, **_: object,
     ) -> Response:
+        if Bucket not in self.stores:
+            return Response(False, error="NoSuchBucket: The specified bucket does not exist")
         start = int(ContinuationToken) if ContinuationToken else 0
         try:
             objects, following = self.stores[Bucket].page(Prefix, start, MaxKeys)
@@ -227,6 +229,8 @@ class FakeRecordsDb:
 
     def __init__(self, org_id: str = "org-1") -> None:
         self.org_id = org_id
+        # No config: the trash flag reads as off.
+        self.config_service = None
         self.records: dict[str, FileRecord] = {}
         self.record_groups: dict[str, Any] = {}
         self.deleted: list[str] = []
@@ -317,6 +321,13 @@ class FakeRecordsDb:
         self._check("on_record_deleted")
         if self.records.pop(record_id, None) is not None:
             self.deleted.append(record_id)
+
+    async def on_records_deleted_cascade(self, record_ids: list[str], connector_id: str, **_: object) -> dict:
+        """The hard delete path; ids not stored are reported as failed, as the graph stores do."""
+        self._check("on_records_deleted_cascade")
+        gone = [rid for rid in record_ids if self.records.pop(rid, None) is not None]
+        self.deleted.extend(gone)
+        return {"success": True, "successfully_deleted": len(gone), "failed_count": len(record_ids) - len(gone)}
 
     async def delete_parent_child_edge_to_record(self, record_id: str) -> None:
         return None

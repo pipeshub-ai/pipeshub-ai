@@ -18,6 +18,8 @@ from app.connectors.core.registry.folder_scope import (
 )
 from app.services.graph_db.common.record_visibility import RecordVisibility, matches_visibility
 
+DELETED = {"success": True, "successfully_deleted": 1, "failed_count": 0}
+
 
 def folders(values, operator=ListOperator.IN) -> FilterCollection:
     return FilterCollection(filters=[
@@ -105,7 +107,7 @@ class TestRemoveRecordsOutsideScope:
             self.record("drop-folder", "b1/legal", folder=True),
             self.record("other-bucket", "b2/legal/contract.pdf"),
         ])
-        processor.on_record_deleted = AsyncMock()
+        processor.on_records_deleted_cascade = AsyncMock(return_value=DELETED)
 
         removed = await remove_records_outside_scope(
             processor, "conn-1", "b1", FolderScope(("reports/2026/",)), logging.getLogger("t")
@@ -114,7 +116,7 @@ class TestRemoveRecordsOutsideScope:
         processor.get_records_in_record_group.assert_awaited_once_with(
             "conn-1", "b1", 500, None, visibility=RecordVisibility.ALL
         )
-        deleted = [c.args[0] for c in processor.on_record_deleted.await_args_list]
+        deleted = [c.args[0][0] for c in processor.on_records_deleted_cascade.await_args_list]
         assert sorted(deleted) == ["drop-file", "drop-folder"]
         assert removed == CleanupResult(removed=2, failed=0)
 
@@ -131,13 +133,13 @@ class TestRemoveRecordsOutsideScope:
                 r for r in (live, trashed) if matches_visibility(r, visibility)
             ]
         )
-        processor.on_record_deleted = AsyncMock()
+        processor.on_records_deleted_cascade = AsyncMock(return_value=DELETED)
 
         removed = await remove_records_outside_scope(
             processor, "conn-1", "b1", FolderScope(("reports/",)), logging.getLogger("t")
         )
 
-        deleted = [c.args[0] for c in processor.on_record_deleted.await_args_list]
+        deleted = [c.args[0][0] for c in processor.on_records_deleted_cascade.await_args_list]
         assert sorted(deleted) == ["live-file", "trashed-file"]
         assert removed == CleanupResult(removed=2, failed=0)
 
@@ -149,7 +151,7 @@ class TestRemoveRecordsOutsideScope:
             [self.record("r1", "b1/x/1.pdf"), self.record("r2", "b1/keep/2.pdf")],
             [self.record("r3", "b1/x/3.pdf")],
         ])
-        processor.on_record_deleted = AsyncMock()
+        processor.on_records_deleted_cascade = AsyncMock(return_value=DELETED)
 
         removed = await remove_records_outside_scope(
             processor, "c", "b1", FolderScope(("keep/",)), logging.getLogger("t")
@@ -173,14 +175,62 @@ class TestRemoveRecordsOutsideScope:
         processor.get_records_in_record_group = AsyncMock(return_value=[
             self.record("a", "b1/x/1.pdf"), self.record("b", "b1/x/2.pdf"),
         ])
-        processor.on_record_deleted = AsyncMock(side_effect=[Exception("db"), None])
+        processor.on_records_deleted_cascade = AsyncMock(side_effect=[Exception("db"), DELETED])
 
         removed = await remove_records_outside_scope(
             processor, "c", "b1", FolderScope(("keep/",)), logging.getLogger("t")
         )
 
-        assert processor.on_record_deleted.await_count == 2
+        assert processor.on_records_deleted_cascade.await_count == 2
         assert removed == CleanupResult(removed=1, failed=1)
+
+    @pytest.mark.asyncio
+    async def test_deletes_through_the_cascade_that_sweeps_type_nodes_and_edges(self):
+        processor = MagicMock()
+        processor.get_records_in_record_group = AsyncMock(return_value=[self.record("a", "b1/x/1.pdf")])
+        processor.on_records_deleted_cascade = AsyncMock(return_value=DELETED)
+
+        await remove_records_outside_scope(processor, "c", "b1", FolderScope(("keep/",)), logging.getLogger("t"))
+
+        processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["a"], "c", cascade_children=False, include_trashed_roots=True, soft_delete=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_delete_the_store_reports_as_failed_counts_as_failed(self):
+        processor = MagicMock()
+        processor.get_records_in_record_group = AsyncMock(return_value=[self.record("a", "b1/x/1.pdf")])
+        processor.on_records_deleted_cascade = AsyncMock(
+            return_value={"success": True, "successfully_deleted": 0, "failed_count": 1}
+        )
+
+        removed = await remove_records_outside_scope(
+            processor, "c", "b1", FolderScope(("keep/",)), logging.getLogger("t")
+        )
+
+        assert removed == CleanupResult(removed=0, failed=1)
+
+    @pytest.mark.asyncio
+    async def test_with_the_trash_on_a_trashed_record_is_left_for_the_purge(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.featureflag.platform_settings.is_soft_delete_enabled", AsyncMock(return_value=True)
+        )
+        trashed = self.record("trashed-file", "b1/legal/old.pdf")
+        trashed.is_deleted = True
+        live = self.record("live-file", "b1/legal/new.pdf")
+        live.is_deleted = False
+        processor = MagicMock()
+        processor.get_records_in_record_group = AsyncMock(return_value=[live, trashed])
+        processor.on_records_deleted_cascade = AsyncMock(return_value=DELETED)
+
+        removed = await remove_records_outside_scope(
+            processor, "c", "b1", FolderScope(("reports/",)), logging.getLogger("t")
+        )
+
+        processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["live-file"], "c", cascade_children=False, include_trashed_roots=True, soft_delete=True,
+        )
+        assert removed == CleanupResult(removed=1, failed=0)
 
 
 class TestCleanUpScope:
@@ -200,7 +250,7 @@ class TestCleanUpScope:
         processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a, **kw: [
             MagicMock(id="r1", external_record_id="b1/other/x.pdf", mime_type="application/pdf"),
         ])
-        processor.on_record_deleted = AsyncMock(side_effect=delete_side_effect)
+        processor.on_records_deleted_cascade = AsyncMock(side_effect=delete_side_effect, return_value=DELETED)
         return processor
 
     @pytest.mark.asyncio
@@ -218,14 +268,14 @@ class TestCleanUpScope:
     @pytest.mark.asyncio
     async def test_a_failed_delete_leaves_the_scope_unrecorded_so_it_retries(self):
         sync_points, saved = self.sync_points()
-        processor = self.processor(delete_side_effect=[Exception("db"), None])
+        processor = self.processor(delete_side_effect=[Exception("db"), DELETED])
         scope = FolderScope(("reports/",))
 
         await clean_up_scope(processor, sync_points, "c", "b1", scope, logging.getLogger("t"))
         assert saved == {}
         await clean_up_scope(processor, sync_points, "c", "b1", scope, logging.getLogger("t"))
 
-        assert processor.on_record_deleted.await_count == 2
+        assert processor.on_records_deleted_cascade.await_count == 2
         assert saved == {"FILE/folder_scope/b1": {"scope": scope.key()}}
 
     @staticmethod
@@ -254,7 +304,7 @@ class TestCleanUpScope:
         processor = DataSourceEntitiesProcessor(MagicMock(), store, AsyncMock())
         processor.org_id = "org-1"
         processor.messaging_producer = AsyncMock()
-        processor.on_record_deleted = AsyncMock()
+        processor.on_records_deleted_cascade = AsyncMock(return_value=DELETED)
         return processor
 
     @pytest.mark.asyncio
@@ -281,7 +331,7 @@ class TestCleanUpScope:
 
         assert saved == {}
         sync_points.update_sync_point.assert_not_awaited()
-        processor.on_record_deleted.assert_not_awaited()
+        processor.on_records_deleted_cascade.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_page_that_could_not_be_read_does_not_record_the_scope(self):
@@ -355,12 +405,12 @@ class TestRemoveRecordsNotListed:
             record("other-prefix", "b1/legal/contract.pdf"),
             record("other-folder", "b1/other/x.pdf"),
         ])
-        processor.on_record_deleted = AsyncMock()
+        processor.on_records_deleted_cascade = AsyncMock(return_value=DELETED)
         listed = listed_record_ids("b1", "reports/q1.pdf")
 
         result = await remove_records_not_listed(processor, "c", "b1", ["reports/"], listed, logging.getLogger("t"))
 
-        assert [c.args[0] for c in processor.on_record_deleted.await_args_list] == ["gone"]
+        assert [c.args[0][0] for c in processor.on_records_deleted_cascade.await_args_list] == ["gone"]
         assert result == CleanupResult(removed=1, failed=0)
 
 
