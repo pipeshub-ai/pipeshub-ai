@@ -35,7 +35,7 @@ pytestmark = pytest.mark.integration
 DRIVE = "drive-ana"
 
 
-async def test_an_organization_link_grants_only_the_people_who_redeemed_it(backend) -> None:
+async def test_an_organization_link_grants_no_one_and_a_link_grants_the_people_it_lists(backend) -> None:
     processor, _ = build_processor(backend.provider, ORG)
     connector_id = f"conn-{_suffix()}"
     await _seed_app(backend, connector_id, name="OneDrive", app_type=Connectors.ONEDRIVE.value, app_group="Microsoft")
@@ -47,11 +47,13 @@ async def test_an_organization_link_grants_only_the_people_who_redeemed_it(backe
 
     redeemer = SharePointIdentitySet(user=Identity(id="u-ana", additional_data={"email": redeemer_email}))
     grants = await connector._convert_to_permissions([
-        GraphPermission(id="p-org", roles=["write"], link=SharingLink(scope="organization", type="edit"),
+        # Graph's shape for an organization link: roles and scope, no grantees.
+        GraphPermission(id="p-org", roles=["write"], link=SharingLink(scope="organization", type="edit")),
+        GraphPermission(id="p-users", roles=["write"], link=SharingLink(scope="users", type="edit"),
                         granted_to_identities_v2=[redeemer]),
     ])
     assert [(g.entity_type, g.email) for g in grants] == [(EntityType.USER, redeemer_email)], \
-        "the link grants its redeemer and no organization-wide group"
+        "only the person a link lists is granted; the organization link adds no group"
     group = RecordGroup(org_id=ORG, name="Ana's OneDrive", external_group_id=DRIVE, connector_name=Connectors.ONEDRIVE,
                         connector_id=connector_id, group_type=RecordGroupType.DRIVE, inherit_permissions=False)
     await processor.on_new_record_groups([(group, [])])

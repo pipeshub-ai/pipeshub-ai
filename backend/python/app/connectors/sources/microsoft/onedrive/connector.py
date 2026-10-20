@@ -612,9 +612,9 @@ class OneDriveConnector(BaseConnector):
                                 entity_type=EntityType.USER
                             ))
 
-                # A link grants only the identities listed above. An organization or
-                # anonymous link alone is not a grant: OneDrive opens it only to people
-                # who redeem it, and they are listed in granted_to_identities_v2.
+                # A link grants only the identities Graph lists on it. An organization or
+                # anonymous link opens the item only to the people who redeem it, and Graph
+                # does not list them, so they get no grant here: under-shared, never over-shared.
 
             except Exception as e:
                 self.logger.error(f"❌ Error converting permission: {e}", exc_info=True)

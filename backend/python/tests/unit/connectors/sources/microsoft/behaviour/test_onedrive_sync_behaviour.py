@@ -634,8 +634,25 @@ class TestSharing:
         }, "a link grants only the people it lists: the anonymous and organization links list nobody"
         assert db.records["f1"].is_shared is True
 
-    async def test_an_organization_link_grants_only_the_people_who_redeemed_it(self, cloud, tenant, db, checkpoints) -> None:
-        """Creating an organization-wide link opens the file to nobody new; OneDrive lists who redeemed it."""
+    async def test_an_organization_link_as_graph_returns_it_grants_no_one(self, cloud, tenant, db, checkpoints) -> None:
+        """Graph's organization link carries roles and scope only: organization links track no grantees."""
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        tenant.add_user("u-ben", "ben@acme.com", "Ben")
+        feed.by_token[None] = page([drive_item("f1", "notes.loop", shared=True)], delta_link=delta_link("u-ana", "D1"))
+        tenant.share("f1", [
+            user_grant("u-ana", "ana@acme.com", "owner"),
+            {"id": "p-org", "roles": ["write"], "link": {"scope": "organization", "type": "edit"}},
+        ])
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert perms(db, "f1") == {(EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER)}, \
+            "the link opens the file to no colleague and to no organization-wide group"
+        assert "tenant-members" not in db.user_groups
+
+    async def test_people_graph_lists_on_an_organization_link_are_granted(self, cloud, tenant, db, checkpoints) -> None:
+        """Should Graph list identities on an organization link, those people, and only they, get its role."""
         feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
         tenant.add_user("u-ben", "ben@acme.com", "Ben")
         tenant.add_user("u-gus", "gus@partner.com", "Gus", user_type="Guest")
@@ -652,7 +669,7 @@ class TestSharing:
         assert perms(db, "f1") == {
             (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
             (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.WRITE),
-        }, "an edit link carries write access, for the person who redeemed it only"
+        }, "an edit link carries write access, for the person it lists only"
         assert "tenant-members" not in db.user_groups
 
     async def test_new_sharing_on_a_stored_file_replaces_its_access(self, cloud, tenant, db, checkpoints) -> None:
