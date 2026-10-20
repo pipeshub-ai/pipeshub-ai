@@ -61,7 +61,7 @@ class TestBudget:
     def test_current_claude_models_have_table_entries(self, model: str, window: int) -> None:
         assert ContextBudget.for_model(model).max_tokens == window - 8_000
 
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.5"])
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6", "gpt-5.5"])
     def test_current_openai_models_get_their_input_limit(self, model: str) -> None:
         assert ContextBudget.for_model(model).max_tokens == 922_000 - 8_000
 

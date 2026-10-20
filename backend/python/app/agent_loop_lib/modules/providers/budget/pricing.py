@@ -93,6 +93,8 @@ MODEL_CONTEXT_WINDOW: dict[str, int] = {
     "gpt-6-luna": 922_000,
     "gpt-6-astra": 922_000,
     "gpt-5.6-sol": 922_000,
+    # OpenAI's alias for gpt-5.6-sol.
+    "gpt-5.6": 922_000,
     "gpt-5.5": 922_000,
 }
 
