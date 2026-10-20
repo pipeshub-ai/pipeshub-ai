@@ -2582,6 +2582,14 @@ class TestDescriptiveLinkTextIsKept:
         assert out == f"See https://docs.vendor.com/pricing. Cap 15% [1]({self.U1})."
 
     @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_dead_web_ref_keeps_a_url_text_over_a_title_on_the_same_target(self, normalizer) -> None:
+        out = self._normalize(
+            normalizer,
+            "See [https://docs.vendor.com/pricing](https://ref99.xyz) [Pricing review](https://ref99.xyz). Cap 15% [source](ref1).",
+        )
+        assert out == f"See https://docs.vendor.com/pricing. Cap 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
     @pytest.mark.parametrize("label", ["ref99", "https://ref99.xyz", "444d5fad-0bf9-4daa-8c29-cc133ca4a3a6"])
     def test_dead_ref_drops_a_ref_or_id_written_as_its_text(self, normalizer, label) -> None:
         out = self._normalize(normalizer, f"It held [{label}](https://ref99.xyz). Cap 15% [source](ref1).")

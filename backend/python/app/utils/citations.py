@@ -359,7 +359,9 @@ def _clean_duplicate_citation_links(
         if resolved_first == resolved_second:
             second_link = m.group(4)
             # "[source](ref1) [Pricing review](ref1)": keep the link whose text names the source.
-            if _is_citation_label(_link_label(first_link)) and not _is_citation_label(_link_label(second_link)):
+            # A dead target gets no badge, so there a URL is text worth keeping.
+            disposable = _is_label_or_id if _REF_TOKEN_RE.fullmatch(resolved_first) else _is_citation_label
+            if disposable(_link_label(first_link)) and not disposable(_link_label(second_link)):
                 return second_link
             return first_link
 
