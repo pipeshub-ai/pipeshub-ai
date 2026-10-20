@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 from app.agent_loop_lib.agent.tool_loop import RESULT_PREVIEW_CHARS
 from app.agent_loop_lib.events.base import EventEmitter, EventType, ToolCallStatus
 from app.agents.agent_loop.protocol.result_views import ResultViewBudget
-from app.utils.citations import kept_citation_link_text
+from app.utils.citations import kept_citation_link_text, sub_in_order
 
 # Matches [text](url) where text is NOT purely digits (already-numbered
 # citations are left alone) and the target is a citation reference:
@@ -229,27 +229,26 @@ class TranscriptCollector(EventEmitter):
         """
         seen: dict[str, int] = {}
 
-        def _badge(m: re.Match, num: int, url: str) -> str:
-            kept = kept_citation_link_text(m.group(1), m.string[:m.start()])
+        def _badge(m: re.Match[str], written: str, num: int, url: str) -> str:
+            kept = kept_citation_link_text(m.group(1), written)
             return f"{kept} [{num}]({url})" if kept else f"[{num}]({url})"
 
-        def _ref_replacer(m: re.Match) -> str:
+        def _ref_replacer(m: re.Match[str], written: str) -> str:
             key = f"ref{m.group(3)}"
             url = m.group(2)
             if key not in seen:
                 seen[key] = len(seen) + 1
-            return _badge(m, seen[key], url)
+            return _badge(m, written, seen[key], url)
 
-        def _record_replacer(m: re.Match) -> str:
+        def _record_replacer(m: re.Match[str], written: str) -> str:
             record_id = m.group(3)
             url = m.group(2)
             if record_id not in seen:
                 seen[record_id] = len(seen) + 1
-            return _badge(m, seen[record_id], url)
+            return _badge(m, written, seen[record_id], url)
 
-        text = _NON_NUMBERED_TINY_REF_LINK_RE.sub(_ref_replacer, text)
-        text = _NON_NUMBERED_RECORD_LINK_RE.sub(_record_replacer, text)
-        return text
+        text = sub_in_order(_NON_NUMBERED_TINY_REF_LINK_RE, text, _ref_replacer)
+        return sub_in_order(_NON_NUMBERED_RECORD_LINK_RE, text, _record_replacer)
 
     def _detach_last_text(self, container: list[MessagePart], run_id: str) -> str:
         """Removes `run_id`'s last ended text part (a reply cut off at the

@@ -453,3 +453,14 @@ class TestNarrationCitations:
         assert collector.parts[0]["content"] == (
             "Per the Velora renewal [1](ref5), the cap is 15% [2](https://ref6.xyz)."
         )
+
+    async def test_repeated_link_text_is_written_once(self) -> None:
+        collector = TranscriptCollector()
+        text = "See the [pricing review](ref1) [pricing review](ref2)."
+
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": text}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_END, {}))
+
+        assert collector.parts[0]["content"] == "See the pricing review [1](ref1) [2](ref2)."
