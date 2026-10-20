@@ -362,7 +362,7 @@ def _clean_duplicate_citation_links(
             # A dead target gets no badge, so there a URL is text worth keeping.
             first_label, second_label = _link_label(first_link), _link_label(second_link)
             if _REF_TOKEN_RE.fullmatch(resolved_first):
-                if _is_url_text(second_label) and not _is_url_text(first_label):
+                if _is_real_url_text(second_label) and not _is_real_url_text(first_label):
                     return second_link
                 disposable = _is_label_or_id
             else:
@@ -471,6 +471,11 @@ def _is_label_or_id(link_text: str) -> bool:
 
 def _is_url_text(link_text: str) -> bool:
     return bool(_LINK_URL_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
+
+
+def _is_real_url_text(link_text: str) -> bool:
+    """A URL that is not itself a ref token: "https://ref99.xyz" is a dead reference, not an address."""
+    return _is_url_text(link_text) and not _is_label_or_id(link_text)
 
 
 def _is_citation_label(link_text: str) -> bool:
