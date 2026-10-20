@@ -754,10 +754,13 @@ class AzureBlobConnector(BaseConnector):
         try:
             await asyncio.gather(*(sync_one(name) for name in container_names if name))
             queued, self._queued_removals = self._queued_removals, None
-            # Only once every container is listed and every move is saved.
+            # Only once every container is listed and every move is saved. After a failed
+            # container nothing is removed: a blob moved into it was never claimed.
+            if failed:
+                self.logger.info(f"Not removing unlisted records: container(s) {sorted(failed)} failed to sync")
             for container_name, remove in queued:
                 try:
-                    await remove()
+                    await remove(keep_unlisted=bool(failed))
                 except Exception as e:
                     self.logger.error(f"Error removing unlisted records in {container_name}: {e}", exc_info=True)
                     failed.append(container_name)
@@ -1041,8 +1044,8 @@ class AzureBlobConnector(BaseConnector):
         unlisted = {ext: rid for ext, rid in recorded.items() if ext not in listed} if complete else {}
         del recorded, listed, unrecorded
 
-        async def remove() -> None:
-            if complete:
+        async def remove(*, keep_unlisted: bool = False) -> None:
+            if complete and not keep_unlisted:
                 await remove_recorded_not_listed(
                     self.data_entities_processor, container_name, scope.list_prefixes, unlisted, set(),
                     self._written_ids | self._moved_record_ids, self.logger,

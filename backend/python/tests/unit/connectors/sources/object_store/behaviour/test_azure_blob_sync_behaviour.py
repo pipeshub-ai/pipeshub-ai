@@ -364,6 +364,26 @@ class TestLessWork:
         assert path("old/a.txt") not in db.paths()
 
     @pytest.mark.asyncio
+    async def test_a_move_into_a_container_that_fails_keeps_its_record(
+        self, connector, store, other, db, config,
+    ) -> None:
+        choose_containers(connector, config, [BUCKET, OTHER])
+        store.put("old/a.txt", "moved content")
+        other.put("b.txt")
+        await connector.run_sync()
+        original = db.by_path()[path("old/a.txt")].id
+
+        other.put("new/a.txt", "moved content")
+        store.delete("old/a.txt")
+        other.fail_page = 0
+        with pytest.raises(RuntimeError, match=OTHER):
+            await connector.run_sync()
+        other.fail_page = None
+        await connector.run_sync()
+
+        assert db.by_path()[path("new/a.txt", OTHER)].id == original
+
+    @pytest.mark.asyncio
     async def test_each_folder_is_saved_once_per_sync(self, connector, store, db) -> None:
         for i in range(5):
             store.put(f"a/b/c/{i}.txt")
