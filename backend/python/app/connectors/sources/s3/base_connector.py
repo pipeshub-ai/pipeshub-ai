@@ -929,7 +929,11 @@ class S3CompatibleBaseConnector(BaseConnector):
                     if continuation_token:
                         await self.record_sync_point.update_sync_point(
                             sync_point_key,
-                            {"continuation_token": continuation_token, "listing_started_at": listing_started_at},
+                            {
+                                "continuation_token": continuation_token,
+                                "listing_started_at": listing_started_at,
+                                "no_such_bucket": None,
+                            },
                         )
 
             except Exception as e:
@@ -964,12 +968,15 @@ class S3CompatibleBaseConnector(BaseConnector):
             # A saved resume token would skip the pages holding the failures.
             await self.record_sync_point.update_sync_point(sync_point_key, {"continuation_token": None})
         if bucket_gone:
-            raise _BucketGone(bucket_name)
+            # One answer can come from a server restarted without its volume; remove only on a second run in a row.
+            if sync_point and sync_point.get("no_such_bucket"):
+                raise _BucketGone(bucket_name)
+            await self.record_sync_point.update_sync_point(sync_point_key, {"no_such_bucket": True})
         if listing_failed:
             return listed, False
         checkpoint = listing_checkpoint(failed.checkpoint(max_timestamp), listing_started_at)
         # The listing reached its end, so the saved token is spent even when no time was seen.
-        done: dict[str, Any] = {"continuation_token": None, "listing_started_at": None}
+        done: dict[str, Any] = {"continuation_token": None, "listing_started_at": None, "no_such_bucket": None}
         if checkpoint and checkpoint > 0:
             done["last_sync_time"] = checkpoint
         await self.record_sync_point.update_sync_point(sync_point_key, done)

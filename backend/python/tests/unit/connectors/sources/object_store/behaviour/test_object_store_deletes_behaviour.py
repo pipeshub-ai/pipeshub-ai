@@ -337,6 +337,7 @@ class TestBucketDeletedAtTheSource:
 
         del connector.data_source.stores[BUCKET]
         await connector.run_sync()
+        await connector.run_sync()
 
         assert db.paths() == set()
         assert BUCKET not in db.record_groups
@@ -347,6 +348,36 @@ class TestBucketDeletedAtTheSource:
         await connector.run_incremental_sync()
 
         assert db.paths() == {path("a.txt")}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    async def test_one_no_such_bucket_keeps_the_records(self, connector, store, db) -> None:
+        # A MinIO restarted without its volume answers NoSuchBucket once, then has the bucket again.
+        store.put("a.txt")
+        await connector.run_sync()
+
+        del connector.data_source.stores[BUCKET]
+        await connector.run_sync()
+
+        assert db.paths() == {path("a.txt")}
+        assert db.deleted == []
+        assert BUCKET in db.record_groups
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    async def test_a_listing_between_two_no_such_bucket_answers_keeps_the_records(self, connector, store, db) -> None:
+        store.put("a.txt")
+        await connector.run_sync()
+
+        del connector.data_source.stores[BUCKET]
+        await connector.run_sync()
+        connector.data_source.stores[BUCKET] = store
+        await connector.run_incremental_sync()
+        del connector.data_source.stores[BUCKET]
+        await connector.run_sync()
+
+        assert db.paths() == {path("a.txt")}
+        assert BUCKET in db.record_groups
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["s3", "minio"])
