@@ -11,7 +11,7 @@ dependencies = [
   "pytest-xdist>=3.5.0",
   "filelock>=3.13.0",
   "aiobotocore==3.9.2",
-  "aiohttp==3.14.3",
+  "aiohttp==3.14.4",
   "aiokafka==0.12.0",
   "aiolimiter==1.2.1",
   "azure-ai-formrecognizer==3.3.3",
