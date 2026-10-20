@@ -187,7 +187,6 @@ class TestAzureBlobRunSync:
                 await connector.run_sync()
         # The other container is still synced before the run fails.
         assert call_count == 2
-        assert call_count == 2
 
 
 # ---------------------------------------------------------------------------
