@@ -265,7 +265,7 @@ S3_METHOD_SIGNATURES = {
     },
     'list_buckets': {
         'required': [],
-        'optional': []
+        'optional': ['MaxBuckets', 'ContinuationToken', 'Prefix', 'BucketRegion']
     },
     'list_multipart_uploads': {
         'required': ['Bucket'],
@@ -520,6 +520,8 @@ PARAMETER_TYPES = {
     'OptionalObjectAttributes': 'List[str]',
     'Marker': 'str',
     'ContinuationToken': 'str',
+    'MaxBuckets': 'int',
+    'BucketRegion': 'str',
     'FetchOwner': 'bool',
     'StartAfter': 'str',
     'PartNumberMarker': 'int',

@@ -2706,14 +2706,31 @@ class S3DataSource:
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
-    async def list_buckets(self) -> S3Response:
+    async def list_buckets(self,
+        MaxBuckets: Optional[int] = None,
+        ContinuationToken: Optional[str] = None,
+        Prefix: Optional[str] = None,
+        BucketRegion: Optional[str] = None) -> S3Response:
         """S3 List Buckets operation.
 
+        Args:
+            MaxBuckets (Optional[int]): Optional parameter
+            ContinuationToken (Optional[str]): Optional parameter
+            Prefix (Optional[str]): Optional parameter
+            BucketRegion (Optional[str]): Optional parameter
 
         Returns:
             S3Response: Standardized response with success/data/error format
         """
         kwargs = {}
+        if MaxBuckets is not None:
+            kwargs['MaxBuckets'] = MaxBuckets
+        if ContinuationToken is not None:
+            kwargs['ContinuationToken'] = ContinuationToken
+        if Prefix is not None:
+            kwargs['Prefix'] = Prefix
+        if BucketRegion is not None:
+            kwargs['BucketRegion'] = BucketRegion
 
         try:
             async with self._client() as s3_client:

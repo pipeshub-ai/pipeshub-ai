@@ -138,7 +138,7 @@ class FakeS3DataSource(_FakeDataSource):
             data["NextContinuationToken"] = str(following)
         return Response(True, data)
 
-    async def list_buckets(self) -> Response:
+    async def list_buckets(self, **_: object) -> Response:
         return Response(True, {"Buckets": [{"Name": n, "CreationDate": self.store.clock} for n in self.bucket_names()]})
 
     async def get_bucket_location(self, Bucket: str, **_: object) -> Response:

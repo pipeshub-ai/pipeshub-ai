@@ -81,6 +81,7 @@ from app.connectors.core.base.error.stream_errors import (
     not_found_at_source,
     to_stream_error,
 )
+from app.sources.client.s3.s3 import S3Response
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 
@@ -449,7 +450,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
             else:
                 self.logger.info("Listing all buckets...")
-                buckets_response = await self.data_source.list_buckets()
+                buckets_response = await self._list_all_buckets()
                 if not buckets_response.success:
                     err = buckets_response.error or "unknown error"
                     self.logger.error(f"Failed to list buckets: {err}")
@@ -481,7 +482,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             # Single-bucket or filter mode: reuse ListBuckets to resolve CreationDate
             if not list_buckets_payload and target_names:
                 try:
-                    extra = await self.data_source.list_buckets()
+                    extra = await self._list_all_buckets()
                     if extra.success and extra.data:
                         bucket_creation_ms = _bucket_creation_dates_from_list_buckets(
                             extra.data.get("Buckets"), target_names
@@ -678,6 +679,27 @@ class S3CompatibleBaseConnector(BaseConnector):
             return False
 
         return True
+
+    async def _list_all_buckets(self) -> S3Response:
+        """Every bucket the key can list, a page at a time, keeping the region each page reports.
+
+        AWS refuses an unpaged ListBuckets for accounts allowed more than 10,000 buckets.
+        A server that ignores the paging arguments answers with the full list and no token.
+        """
+        buckets: list[dict] = []
+        token = None
+        while True:
+            response = await self.data_source.list_buckets(MaxBuckets=1000, ContinuationToken=token)
+            if not response.success:
+                return response
+            page = (response.data or {}).get("Buckets") or []
+            for bucket in page:
+                if bucket.get("Name") and bucket.get("BucketRegion"):
+                    self.bucket_regions[bucket["Name"]] = bucket["BucketRegion"]
+            buckets.extend(page)
+            token = (response.data or {}).get("ContinuationToken")
+            if not token:
+                return S3Response(success=True, data={"Buckets": buckets})
 
     async def _get_bucket_region(self, bucket_name: str) -> str:
         """Get the region for a bucket, using cache if available."""
@@ -1335,7 +1357,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             # A key scoped to named buckets may lack s3:ListAllMyBuckets; sync does not need it then.
             problems = await asyncio.gather(*(self._bucket_access_problem(b) for b in selected))
             return " ".join(p for p in problems if p) or None
-        response = await self.data_source.list_buckets()
+        response = await self._list_all_buckets()
         if not response.success:
             hint = (
                 " The key needs s3:ListAllMyBuckets, or name the buckets in the Bucket Names filter."
@@ -1502,7 +1524,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     message=f"{self.connector_name} connector is not initialized"
                 )
 
-            response = await self.data_source.list_buckets()
+            response = await self._list_all_buckets()
             if not response.success:
                 return FilterOptionsResponse(
                     success=False,
@@ -1527,10 +1549,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                 bucket.get("Name") for bucket in buckets_data["Buckets"]
                 if bucket.get("Name")
             ]
-
-            for bucket_name in all_buckets:
-                if bucket_name:
-                    await self._get_bucket_region(bucket_name)
 
             if search:
                 search_lower = search.lower()
@@ -1773,7 +1791,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 buckets_to_sync = selected_buckets
                 self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
             else:
-                buckets_response = await self.data_source.list_buckets()
+                buckets_response = await self._list_all_buckets()
                 if buckets_response.success and buckets_response.data:
                     buckets_data = buckets_response.data
                     if "Buckets" in buckets_data:

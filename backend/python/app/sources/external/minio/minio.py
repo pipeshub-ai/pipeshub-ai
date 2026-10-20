@@ -104,11 +104,26 @@ class MinIODataSource:
 
     # Core S3-compatible methods used by the connector
 
-    async def list_buckets(self) -> S3Response:
+    async def list_buckets(
+        self,
+        MaxBuckets: Optional[int] = None,
+        ContinuationToken: Optional[str] = None,
+        Prefix: Optional[str] = None,
+        BucketRegion: Optional[str] = None
+    ) -> S3Response:
         """MinIO List Buckets operation."""
+        kwargs: Dict[str, Any] = {}
+        if MaxBuckets is not None:
+            kwargs['MaxBuckets'] = MaxBuckets
+        if ContinuationToken is not None:
+            kwargs['ContinuationToken'] = ContinuationToken
+        if Prefix is not None:
+            kwargs['Prefix'] = Prefix
+        if BucketRegion is not None:
+            kwargs['BucketRegion'] = BucketRegion
         try:
             async with self._client() as s3_client:
-                response = await s3_client.list_buckets()
+                response = await s3_client.list_buckets(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')

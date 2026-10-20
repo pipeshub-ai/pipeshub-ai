@@ -1023,6 +1023,61 @@ class TestSyncBucket:
 # ===========================================================================
 # get_filter_options / _get_bucket_options
 # ===========================================================================
+class TestBucketListing:
+    """PP-119: bucket options do not look up regions; ListBuckets is paged and its regions are kept."""
+
+    @pytest.mark.asyncio
+    async def test_bucket_options_do_not_look_up_regions(self, s3_connector):
+        s3_connector.data_source = MagicMock()
+        s3_connector.data_source.list_buckets = AsyncMock(
+            return_value=_make_response(True, {"Buckets": [{"Name": "b1"}, {"Name": "b2"}, {"Name": "b3"}]})
+        )
+        s3_connector.data_source.get_bucket_location = AsyncMock()
+        result = await s3_connector.get_filter_options("buckets", limit=2)
+        assert [o.id for o in result.options] == ["b1", "b2"] and result.has_more
+        s3_connector.data_source.get_bucket_location.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_list_all_buckets_follows_the_continuation_token(self, s3_connector):
+        s3_connector.data_source = MagicMock()
+        s3_connector.data_source.list_buckets = AsyncMock(side_effect=[
+            _make_response(True, {"Buckets": [{"Name": "b1", "BucketRegion": "eu-west-1"}], "ContinuationToken": "t1"}),
+            _make_response(True, {"Buckets": [{"Name": "b2", "BucketRegion": "us-east-2"}]}),
+        ])
+        response = await s3_connector._list_all_buckets()
+        assert [b["Name"] for b in response.data["Buckets"]] == ["b1", "b2"]
+        assert s3_connector.bucket_regions == {"b1": "eu-west-1", "b2": "us-east-2"}
+        assert s3_connector.data_source.list_buckets.await_args_list[1].kwargs["ContinuationToken"] == "t1"
+
+    @pytest.mark.asyncio
+    async def test_list_all_buckets_takes_an_unpaged_answer_as_the_full_list(self, s3_connector):
+        """MinIO's shape: one page, no token, no BucketRegion."""
+        s3_connector.data_source = MagicMock()
+        s3_connector.data_source.list_buckets = AsyncMock(
+            return_value=_make_response(True, {"Buckets": [{"Name": "b1"}, {"Name": "b2"}]})
+        )
+        response = await s3_connector._list_all_buckets()
+        assert [b["Name"] for b in response.data["Buckets"]] == ["b1", "b2"]
+        assert s3_connector.data_source.list_buckets.await_count == 1
+        assert s3_connector.bucket_regions == {}
+
+    @pytest.mark.asyncio
+    async def test_full_sync_uses_listed_regions_instead_of_get_bucket_location(self, s3_connector):
+        s3_connector.data_source = MagicMock()
+        s3_connector.data_source.list_buckets = AsyncMock(
+            return_value=_make_response(True, {"Buckets": [{"Name": "b1", "BucketRegion": "eu-west-1"}]})
+        )
+        s3_connector.data_source.get_bucket_location = AsyncMock()
+        s3_connector._sync_bucket = AsyncMock()
+        s3_connector._create_record_groups_for_buckets = AsyncMock()
+        with patch("app.connectors.sources.s3.base_connector.load_connector_filters",
+                   AsyncMock(return_value=(FilterCollection(), FilterCollection()))), \
+             patch("app.connectors.sources.s3.base_connector.remove_deselected_containers", AsyncMock()):
+            await s3_connector.run_sync()
+        s3_connector.data_source.get_bucket_location.assert_not_awaited()
+        s3_connector._sync_bucket.assert_awaited_once_with("b1")
+
+
 class TestGetFilterOptions:
     @pytest.mark.asyncio
     async def test_buckets_filter(self, s3_connector):
