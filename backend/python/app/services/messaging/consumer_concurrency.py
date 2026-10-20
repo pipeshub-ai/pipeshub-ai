@@ -940,9 +940,9 @@ class ParseAdmissionTimeout(Exception):
 
 def parse_admission_wait_seconds() -> float:
     """How long a record may queue for a parse slot before it is handed back
-    to the broker. The processing budget, reused: long enough that a queue
-    behind a few Docling conversions drains, and one number fewer to tune."""
-    return messaging_env.record_processing_timeout
+    to the broker. Single source of truth, because
+    ``stale_recovery_after_seconds`` has to reserve the same wait."""
+    return messaging_env.parse_admission_wait_seconds
 
 
 _PARSE_WAIT_LOG_SECONDS = 5.0

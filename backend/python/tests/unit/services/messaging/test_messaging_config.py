@@ -17,6 +17,7 @@ from app.services.messaging.config import (
     get_message_broker_type,
     messaging_env,
 )
+from app.services.messaging.consumer_concurrency import parse_admission_wait_seconds
 
 
 class TestGetMessageBrokerType:
@@ -358,7 +359,24 @@ class TestRecordProcessingTimeoutFor:
 
     def test_stale_recovery_waits_out_the_longest_budget(self) -> None:
         """A cutoff under the PDF budget would republish a PDF still parsing."""
-        assert messaging_env.stale_recovery_after_seconds == 5400.0 + 120.0
+        assert messaging_env.stale_recovery_after_seconds == 5400.0 + 1800.0 + 120.0
+
+    def test_stale_recovery_also_waits_out_the_parse_admission_queue(self) -> None:
+        """`parse_admission_wait` pauses the processing budget while a record
+        queues for a parse slot, but `processingStartedAt` is stamped before
+        that wait. A record that queued and then used its whole budget is
+        therefore older than its budget, and a cutoff sized to the budget alone
+        would republish it while it was still parsing."""
+        assert (
+            messaging_env.stale_recovery_after_seconds
+            >= messaging_env.max_record_processing_timeout
+            + parse_admission_wait_seconds()
+        )
+
+    def test_the_admission_wait_has_one_definition(self) -> None:
+        # The consumers read the function, the cutoff reads the property; a
+        # second definition would let them disagree silently.
+        assert parse_admission_wait_seconds() == messaging_env.parse_admission_wait_seconds
 
 
 class TestStrandedRecordRepublishDefault:

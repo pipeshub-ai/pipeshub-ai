@@ -894,7 +894,7 @@ async def _sweep_queued_records_for_inactive_connectors(
 
     IN_PROGRESS rows are included past a short grace period. The main scan waits
     for `is_stale`'s cutoff — one lease interval with a concurrency manager,
-    else stale_recovery_after_seconds (~92 min) — which is right for a
+    else stale_recovery_after_seconds (~122 min) — which is right for a
     pipeline that might still finish and wrong here: the connector has already
     been popped from connectors_map, so nothing in flight can succeed. One lease
     interval is enough to be sure no worker still owns the row.
