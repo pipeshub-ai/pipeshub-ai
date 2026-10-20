@@ -36,7 +36,9 @@ from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.notion.connector import NotionConnector
 from app.connectors.sources.salesforce.connector import SalesforceConnector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
+from app.connectors.sources.slack.team.connector import SlackConnector
 from app.connectors.sources.zoom.connector import ZoomConnector
+from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.notion.notion import (
     NotionRESTClientViaOAuth,
     NotionRESTClientViaToken,
@@ -268,6 +270,68 @@ class TestGoogleWorkspace:
         await connector_cls._register_authenticated_identity(conn)
 
         conn.register_authenticated_source_user.assert_not_awaited()
+
+
+class TestSlackWorkspace:
+    def _conn(self, auth: dict | None = None, error: Exception | None = None, authenticator: str | None = None) -> MagicMock:
+        datasource = MagicMock()
+        datasource.auth_test = AsyncMock(return_value=SimpleNamespace(success=True, data=auth), side_effect=error)
+        return _connector(
+            SlackConnector,
+            _fresh_datasource=AsyncMock(return_value=datasource),
+            user_id_to_email_cache={"U0ALICE": "alice@corp.com"},
+            authenticator_email=AsyncMock(return_value=authenticator),
+            data_entities_processor=MagicMock(unlink_authenticator=AsyncMock()),
+        )
+
+    async def test_a_user_token_registers_the_account_it_belongs_to(self) -> None:
+        conn = self._conn({"user_id": "U0ALICE"})
+
+        await SlackConnector._register_authenticated_identity(conn)
+
+        assert _registered(conn) == ("alice@corp.com", "U0ALICE")
+        conn.data_entities_processor.unlink_authenticator.assert_not_awaited()
+
+    async def test_a_bot_token_links_nobody_and_drops_an_earlier_link(self) -> None:
+        conn = self._conn({"user_id": "U0BOTUSER", "bot_id": "B0BOT"})
+
+        await SlackConnector._register_authenticated_identity(conn)
+
+        conn.register_authenticated_source_user.assert_not_awaited()
+        conn.data_entities_processor.unlink_authenticator.assert_awaited_once_with("connector-1")
+
+    async def test_a_failed_auth_test_never_reaches_the_link(self) -> None:
+        conn = self._conn(error=RuntimeError("invalid_auth"))
+
+        await SlackConnector._register_authenticated_identity(conn)
+
+        conn.register_authenticated_source_user.assert_not_awaited()
+        conn.data_entities_processor.unlink_authenticator.assert_not_awaited()
+
+    async def test_the_authenticator_is_granted_read(self) -> None:
+        conn = self._conn(authenticator="admin@corp.com")
+
+        grant = await SlackConnector._authenticator_grant(conn)
+
+        assert (grant.email, grant.entity_type, grant.type) == ("admin@corp.com", EntityType.USER, PermissionType.READ)
+
+    async def test_no_authenticator_means_no_grant(self) -> None:
+        conn = self._conn(authenticator=None)
+
+        assert await SlackConnector._authenticator_grant(conn) is None
+        conn.logger.warning.assert_called_once()
+
+    def test_the_grant_joins_a_channel_once(self) -> None:
+        grant = Permission(email="admin@corp.com", entity_type=EntityType.USER, type=PermissionType.READ)
+        conn = self._conn()
+        conn._authenticator_permission = grant
+        member = Permission(email="bob@corp.com", entity_type=EntityType.USER, type=PermissionType.READ)
+        same = Permission(email="Admin@Corp.com", entity_type=EntityType.USER, type=PermissionType.READ)
+
+        assert SlackConnector._with_authenticator(conn, [member]) == [member, grant]
+        assert SlackConnector._with_authenticator(conn, [member, same]) == [member, same]
+        conn._authenticator_permission = None
+        assert SlackConnector._with_authenticator(conn, [member]) == [member]
 
 
 # ---------------------------------------------------------------------------

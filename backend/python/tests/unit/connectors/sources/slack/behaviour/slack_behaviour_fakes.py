@@ -274,8 +274,12 @@ class SlackWorkspace:
     # ── Web API methods ───────────────────────────────────────────────────
 
     def _api_auth_test(self, params: dict[str, str]) -> dict[str, Any]:
-        return {"ok": True, "url": f"https://{DOMAIN}.slack.com/", "team": "Acme", "team_id": TEAM_ID,
-                "user_id": self.auth_user_id or "UBOT"}
+        reply = {"ok": True, "url": f"https://{DOMAIN}.slack.com/", "team": "Acme", "team_id": TEAM_ID,
+                 "user_id": self.auth_user_id or "UBOT"}
+        # As Slack answers: a bot token also names its bot, a user token only the user
+        if "xoxb-" in (self.calls[-1].token or ""):
+            reply["bot_id"] = "B0APPBOT"
+        return reply
 
     def _api_team_info(self, params: dict[str, str]) -> dict[str, Any]:
         return {"ok": True, "team": {"id": TEAM_ID, "name": "Acme", "domain": DOMAIN}}
@@ -405,9 +409,16 @@ class FakeSlackStore:
     are implemented.
     """
 
-    def __init__(self, org_id: str = "org-1", creator_email: Optional[str] = None) -> None:
+    def __init__(
+        self, org_id: str = "org-1", creator_email: Optional[str] = None, authenticator_email: str | None = None,
+    ) -> None:
         self.org_id = org_id
         self.creator_email = creator_email
+        # Who authenticated the connector; None stands for a user the graph cannot name.
+        self.authenticator_email = authenticator_email
+        # (email, source user id) per link the connector asked for, and how often it unlinked.
+        self.links: list[tuple[str | None, str | None]] = []
+        self.unlinks = 0
         self.records: dict[str, Record] = {}
         self.record_groups: dict[str, Any] = {}
         self.group_access: dict[str, list[Any]] = {}
@@ -430,6 +441,17 @@ class FakeSlackStore:
 
     async def get_app_creator_user(self, connector_id: str) -> Optional[SimpleNamespace]:
         return SimpleNamespace(email=self.creator_email) if self.creator_email else None
+
+    async def get_app_authenticator_user(self, connector_id: str, created_by: str | None) -> dict[str, Any]:
+        return {"email": self.authenticator_email} if self.authenticator_email else {}
+
+    async def link_authenticator_to_source_user(
+        self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object,
+    ) -> None:
+        self.links.append((email, source_user_id))
+
+    async def unlink_authenticator(self, connector_id: str) -> None:
+        self.unlinks += 1
 
     async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
         for role, members in roles:
