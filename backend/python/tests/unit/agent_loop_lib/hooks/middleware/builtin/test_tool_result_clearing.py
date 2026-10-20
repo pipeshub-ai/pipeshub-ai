@@ -451,3 +451,28 @@ class TestTheCutHoldsBetweenSteps:
     async def test_protected_results_are_never_cleared_and_still_counted(self) -> None:
         views = await self._views(self._history(20), protected_tool_names=frozenset({"search"}))
         assert not any(_is_compacted(m) for view in views for m in view)
+
+    @pytest.mark.asyncio
+    async def test_protected_results_count_toward_the_trigger(self) -> None:
+        history: list = [UserMessage(content="Compare every quarterly report.")]
+        for turn in range(20):
+            name = "fetch_record" if turn % 2 == 0 else "search"
+            history.append(_assistant_call(f"c{turn}", name, {"q": f"report {turn}"}))
+            history.append(_tool_result(f"c{turn}", f"report {turn}: {self.RESULT}"))
+
+        views = await self._views(history, protected_tool_names=frozenset({"fetch_record"}))
+        plain = await self._views(self._history(20))
+
+        def first_step(run: list[list]) -> int:
+            return next(k for k, view in enumerate(run) if any(_is_compacted(m) for m in view))
+
+        # Counted, the protected half reaches the trigger as early as an
+        # all-clearable history does; ignored, it would take twice as long.
+        assert first_step(views) == first_step(plain)
+        assert not any(
+            _is_compacted(m) for view in views for m in view
+            if isinstance(m, ToolMessage) and int(m.tool_call_id[1:]) % 2 == 0
+        )
+        # Protected results keep growing, so steps come more often, but still
+        # not on every call the way re-cutting each time did.
+        assert len(self._breaks(views)) < len(views) - first_step(views) - 1
