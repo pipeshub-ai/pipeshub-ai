@@ -34,6 +34,10 @@ from app.agents.agent_loop.prompt_cache import (
     AnthropicCacheStrategy,
     OpenAICacheStrategy,
 )
+from tests.unit.agents.agent_loop.prompt_cache.conftest import (
+    chat_reply,
+    responses_reply,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
@@ -251,6 +255,30 @@ class TestUsage:
         # Pins langchain-aws reporting input without cached tokens; if it starts
         # including them, this transport would count them twice.
         assert (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens) == (1100, 900, 100)
+
+
+class TestGpt56Usage:
+    """GPT-5.6+ reports cache writes (1.25x) next to reads; both reach
+    TokenUsage, and input still counts them, through the real client."""
+
+    @pytest.mark.parametrize("responses", [False, True])
+    async def test_reads_and_writes(self, endpoint: Any, responses: bool) -> None:  # noqa: ANN401
+        from langchain_openai import ChatOpenAI
+
+        if responses:
+            reply = responses_reply(text="ok")
+            reply["usage"] = {"input_tokens": 3331, "output_tokens": 5, "total_tokens": 3336,
+                              "input_tokens_details": {"cached_tokens": 3265, "cache_write_tokens": 63},
+                              "output_tokens_details": {"reasoning_tokens": 0}}
+        else:
+            reply = chat_reply(text="ok")
+            reply["usage"] = {"prompt_tokens": 3331, "completion_tokens": 5, "total_tokens": 3336,
+                              "prompt_tokens_details": {"cached_tokens": 3265, "cache_write_tokens": 63}}
+        endpoint.replies = [reply]
+        llm = ChatOpenAI(model="gpt-6.1-sol", api_key="test", base_url=endpoint.url, max_retries=0,
+                         use_responses_api=responses)
+        usage = (await LangChainTransport(llm, model_name="gpt-6.1-sol").complete(_messages())).usage
+        assert (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens) == (3331, 3265, 63)
 
 
 class TestPrefixStaysTheSame:
