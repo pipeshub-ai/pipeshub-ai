@@ -139,8 +139,11 @@ class DockerClientProvider:
         this first.
         """
         try:
-            await self.run_blocking(self.client.ping)
-            return True
+            # docker-py's own `ping` is `self._result(...) == 'OK'`, so a 200
+            # with another body is a daemon that answered but is not one;
+            # discarding the result would send the caller back to blaming the
+            # image, which is the confusion this method exists to end.
+            return bool(await self.run_blocking(self.client.ping))
         except Exception:
             return False
 
