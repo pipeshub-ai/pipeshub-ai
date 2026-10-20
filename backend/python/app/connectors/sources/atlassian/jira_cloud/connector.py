@@ -2196,6 +2196,10 @@ class JiraConnector(BaseConnector):
         Jira treats any other account as anonymous, so its group, role and user grants never
         reach it. When the roles or a role group's members can't be read, every user is kept.
         """
+        if self._app_roles_unread:
+            # Some roles are missing from the mapping, so their members are unknown, not unlicensed.
+            self.logger.warning("⚠️ Not every application role could be read; keeping every Jira user")
+            return jira_users
         role_groups = {
             g["name"]: g["groupId"]
             for groups in app_roles_mapping.values() for g in groups if g.get("name")

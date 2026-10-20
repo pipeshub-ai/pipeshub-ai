@@ -1151,6 +1151,20 @@ class TestFetchUsersPhases:
         assert await connector._keep_licensed_users(users, mapping) == users
 
     @pytest.mark.asyncio
+    async def test_a_partly_read_role_list_keeps_every_user(self) -> None:
+        connector = _make_connector()
+        users = [
+            AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id=i, email=f"{i}@x.com", full_name=i)
+            for i in ("lic", "other")
+        ]
+        connector._fetch_group_members = AsyncMock(return_value=(["lic"], True))
+        connector._app_roles_unread = True
+        mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
+
+        assert await connector._keep_licensed_users(users, mapping) == users
+        connector._fetch_group_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_withdraws_stored_users_jira_reports_ineligible(self) -> None:
         connector = _make_connector()
         connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
