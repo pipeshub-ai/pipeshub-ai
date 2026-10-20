@@ -337,6 +337,8 @@ class S3CompatibleBaseConnector(BaseConnector):
         # "{bucket}/{segment}". Cleared at the start of every run_sync so a
         # folder removed between runs is still re-created.
         self._ensured_folders: set[str] = set()
+        # Personal scope's creator, looked up once per run; a failed lookup is never kept.
+        self._creator: User | None = None
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
@@ -390,6 +392,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             # Per-run, so folder edges are still rebuilt on every full sync —
             # the memo only removes repeats *within* one run.
             self._ensured_folders.clear()
+            self._creator = None
 
             # Reload sync and indexing filters to pick up configuration changes
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1209,13 +1212,15 @@ class S3CompatibleBaseConnector(BaseConnector):
 
     async def _load_creator(self) -> User:
         """The personal connector's creator. Raises if the lookup fails or finds no user with an email."""
-        user = (
-            await self.data_entities_processor.get_user_by_user_id(self.created_by, raise_on_error=True)
-            if self.created_by else None
-        )
-        if not user or not getattr(user, "email", None):
-            raise LookupError(f"Creator {self.created_by!r} of connector {self.connector_id} not found or has no email")
-        return user
+        if self._creator is None:
+            user = (
+                await self.data_entities_processor.get_user_by_user_id(self.created_by, raise_on_error=True)
+                if self.created_by else None
+            )
+            if not user or not getattr(user, "email", None):
+                raise LookupError(f"Creator {self.created_by!r} of connector {self.connector_id} not found or has no email")
+            self._creator = user
+        return self._creator
 
     async def _creator_or_notify(self) -> User | None:
         """The creator, or None after telling the user why the sync stopped before writing anything."""
@@ -1632,6 +1637,9 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             # Per run, as in run_sync: a folder removed between runs must be re-created.
             self._ensured_folders.clear()
+            self._creator = None
+            if self.scope != ConnectorScope.TEAM.value and await self._creator_or_notify() is None:
+                return
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, self.filter_key, self.connector_id, self.logger

@@ -99,3 +99,28 @@ class TestPersonalScopePermissions:
 
         assert db.record_permissions == granted
         assert all(p.entity_type != EntityType.ORG for p in all_permissions(db))
+
+
+class TestCreatorLookupPerRun:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("run", ["run_sync", "run_incremental_sync"])
+    async def test_the_creator_is_looked_up_once_per_run(self, connector, store, db, run) -> None:
+        db.users["creator-1"] = CREATOR
+        lookup = db.get_user_by_user_id = AsyncMock(wraps=db.get_user_by_user_id)
+        for name in ("one", "two", "three"):
+            store.put(f"a/b/{name}.txt")
+
+        await getattr(connector, run)()
+        assert lookup.await_count == 1
+        await getattr(connector, run)()
+        assert lookup.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_not_kept_for_the_next_run(self, connector, store, db) -> None:
+        store.put("a/b.txt")
+        await connector.run_sync()
+        assert db.records == {}
+
+        db.users["creator-1"] = CREATOR
+        await connector.run_sync()
+        assert "bucket-1/a/b.txt" in db.paths()
