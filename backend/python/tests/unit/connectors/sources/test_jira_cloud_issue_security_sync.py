@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import AccessRule
+from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
 from app.connectors.sources.atlassian.core.jira_issue_security import IssueSecurityContext, SchemeKnowledge
 from app.connectors.sources.atlassian.jira_cloud.connector import ISSUE_SEARCH_FIELDS, JiraConnector
 from app.models.entities import AppUser, TicketRecord
@@ -117,17 +118,17 @@ class TestSecuredIssues:
 
     @pytest.mark.asyncio
     async def test_unsecured_issue_in_a_project_without_a_scheme_is_unchanged(self):
-        """T4: no grants, no rewrite, the default rule."""
+        """T4/O2: a null level is project-open with the stored grants replaced by none."""
         ctx = IssueSecurityContext(knowledge=SchemeKnowledge.NONE)
         record, perms, _ = await _build(_connector(), _issue(None), ctx)
-        assert (record.access_rule, perms, record.rewrite_permissions) == (AccessRule.OPEN, [], False)
+        assert (record.access_rule, perms, record.rewrite_permissions) == (AccessRule.STRICT, [], True)
 
     @pytest.mark.asyncio
     async def test_unsecured_issue_when_the_scheme_could_not_be_read_is_unchanged(self):
         """A non-admin token (403 on the scheme) must not hide the issues that carry no level."""
         ctx = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, scheme_forbidden=True)
         record, perms, _ = await _build(_connector(), _issue(None), ctx)
-        assert (record.access_rule, perms, record.rewrite_permissions) == (AccessRule.OPEN, [], False)
+        assert (record.access_rule, perms, record.rewrite_permissions) == (AccessRule.STRICT, [], True)
         record, perms, _ = await _build(_connector(), _issue({"id": "10102"}), ctx)
         assert (record.access_rule, perms) == (AccessRule.RESTRICTED, [])
 
@@ -163,10 +164,22 @@ class TestLevelChangeOnIncrementalSync:
         assert record.access_rule == AccessRule.STRICT
 
     @pytest.mark.asyncio
+    async def test_a_cleared_level_replaces_grants_whatever_the_scheme_state(self):
+        """O2: with the scheme NONE or UNKNOWN, a null level still clears the old level grants."""
+        for knowledge in (SchemeKnowledge.NONE, SchemeKnowledge.UNKNOWN):
+            c = _connector()
+            existing = MagicMock(id="rid", version=2, source_updated_at=1, is_placeholder=False)
+            record, perms, changed = await _build(c, _issue(None), IssueSecurityContext(knowledge=knowledge), existing)
+            await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})
+            c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record, [])
+            assert record.access_rule == AccessRule.STRICT
+
+    @pytest.mark.asyncio
     async def test_a_record_with_nothing_to_rewrite_is_updated_without_grants(self):
         c = _connector()
         existing = MagicMock(id="rid", version=2, source_updated_at=1, is_placeholder=False)
         record, perms, changed = await _build(c, _issue(None), IssueSecurityContext(knowledge=SchemeKnowledge.NONE), existing)
+        record.rewrite_permissions = False
         await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})
         c.data_entities_processor.on_record_content_update.assert_awaited_once_with(record)
 
@@ -212,7 +225,7 @@ class TestLoadIssueSecurity:
 
 
 class TestMemberChangeRereadsOnlyTheAffectedLevels:
-    async def _sync(self, stored_levels):
+    async def _sync(self, stored_levels, ctx=None, fetch_fn=None):
         c = _connector()
         c.issues_sync_point = MagicMock()
         point = {"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000}
@@ -220,12 +233,14 @@ class TestMemberChangeRereadsOnlyTheAffectedLevels:
             point["security_levels"] = json.dumps(stored_levels)
         c.issues_sync_point.read_sync_point = AsyncMock(return_value=point)
         c.issues_sync_point.update_sync_point = AsyncMock()
-        ctx = _present()
+        ctx = ctx or _present()
         c._load_issue_security = AsyncMock(return_value=ctx)
         calls = []
 
-        async def fetch(key, pid, users, last_sync, resume, is_new_project=False, level_ids=None):
-            calls.append({"resume": resume, "is_new_project": is_new_project, "level_ids": level_ids})
+        async def fetch(key, pid, users, last_sync, resume, is_new_project=False, level_ids=None, leveled_only=False):
+            calls.append({"resume": resume, "is_new_project": is_new_project, "level_ids": level_ids, "leveled_only": leveled_only})
+            if fetch_fn:
+                await fetch_fn(c, calls)
             return
             yield
 
@@ -238,8 +253,8 @@ class TestMemberChangeRereadsOnlyTheAffectedLevels:
     async def test_a_changed_level_gets_a_second_pass_over_its_issues_only(self):
         _, ctx, calls, result = await self._sync(stored_levels={"10102": "old"})
         assert calls == [
-            {"resume": 1_700_000_000_000, "is_new_project": False, "level_ids": None},  # the normal incremental pass
-            {"resume": None, "is_new_project": True, "level_ids": ["10102"]},
+            {"resume": 1_700_000_000_000, "is_new_project": False, "level_ids": None, "leveled_only": False},  # the normal incremental pass
+            {"resume": None, "is_new_project": True, "level_ids": ["10102"], "leveled_only": False},
         ]
         assert result["is_new_project"] is False  # not a full sync: nothing is unlinked afterwards
 
@@ -252,13 +267,57 @@ class TestMemberChangeRereadsOnlyTheAffectedLevels:
     @pytest.mark.asyncio
     async def test_unchanged_levels_keep_the_incremental_window_alone(self):
         _, ctx, calls, _ = await self._sync(stored_levels=_present().level_fingerprints())
-        assert calls == [{"resume": 1_700_000_000_000, "is_new_project": False, "level_ids": None}]
+        assert calls == [{"resume": 1_700_000_000_000, "is_new_project": False, "level_ids": None, "leveled_only": False}]
 
     @pytest.mark.asyncio
-    async def test_a_level_with_other_members_unchanged_is_not_reread(self):
+    async def test_a_level_emptied_of_its_last_holder_is_reread(self):
+        """O1c: the level left the scheme's member list, so only the stored digest names it."""
         stored = {"10102": _present().level_fingerprints()["10102"], "10103": "gone-member"}
         _, _, calls, _ = await self._sync(stored_levels=stored)
+        assert [c["level_ids"] for c in calls] == [None, ["10103"]]
+
+    @pytest.mark.asyncio
+    async def test_the_first_sync_after_upgrade_rereads_every_leveled_issue(self):
+        """O1b: nothing stored -> `level is not EMPTY`, so holder-less levels are covered too."""
+        c, ctx, calls, _ = await self._sync(stored_levels=None)
+        assert calls[1] == {"resume": None, "is_new_project": True, "level_ids": None, "leveled_only": True}
+        saved = c.issues_sync_point.update_sync_point.await_args.args[1]
+        assert json.loads(saved["security_levels"]) == ctx.level_fingerprints()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_scheme_rereads_leveled_issues_to_close_them_and_warns_once(self, caplog):
+        """O1a: a 403 on the scheme closes the issues that carry a level, with an actionable warning."""
+        ctx = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, scheme_forbidden=True)
+        with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
+            c, _, calls, _ = await self._sync(stored_levels=None, ctx=ctx)
+        assert calls[1]["leveled_only"] is True
+        assert len([r for r in caplog.records if "Administer Jira" in r.getMessage()]) == 1
+        saved = c.issues_sync_point.update_sync_point.await_args.args[1]
+        assert json.loads(saved["security_levels"]) == {"*": "unreadable"}
+        # once recorded, a still-unreadable scheme does not repeat the walk
+        _, _, calls, _ = await self._sync(stored_levels={"*": "unreadable"}, ctx=ctx)
         assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_issue_keeps_the_old_digest_so_the_next_sync_retries(self):
+        """O3."""
+        async def fail(c, calls):
+            if len(calls) == 2:
+                c._issue_build_failures += 1
+
+        c, _, _, _ = await self._sync(stored_levels={"10102": "old"}, fetch_fn=fail)
+        assert not any("security_levels" in (call.args[1] or {}) and call.args[1]["security_levels"] != json.dumps({"10102": "old"})
+                       for call in c.issues_sync_point.update_sync_point.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_jql_400_on_level_in_falls_back_to_level_is_not_empty(self):
+        """O6."""
+        async def reject(c, calls):
+            if len(calls) == 2:
+                raise JiraReadError(400, "level 10102 does not exist")
+
+        _, _, calls, _ = await self._sync(stored_levels={"10102": "old"}, fetch_fn=reject)
+        assert [c["leveled_only"] for c in calls] == [False, False, True]
 
     @pytest.mark.asyncio
     async def test_the_narrowed_query_filters_by_level_and_not_by_date(self):
@@ -276,6 +335,23 @@ class TestMemberChangeRereadsOnlyTheAffectedLevels:
             pass
         assert seen["jql"].startswith('project = "PROJ" AND level in (10102, 10103) ORDER BY')
         assert "updated" not in seen["jql"].split("ORDER BY")[0]
+
+
+@pytest.mark.asyncio
+async def test_leveled_issue_jql_is_level_is_not_empty():
+    c = _connector()
+    c.sync_filters = None
+    c.data_source = MagicMock()
+    seen = {}
+
+    async def search(**kw):
+        seen.update(kw)
+        return _resp(200, {"issues": []})
+
+    c._search_issues_with_retry = search
+    async for _ in c._fetch_issues_batched("PROJ", PROJECT_ID, [], None, None, is_new_project=True, leveled_only=True):
+        pass
+    assert seen["jql"].startswith('project = "PROJ" AND level is not EMPTY ORDER BY')
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 
 Issue security is not the project permission scheme. A project browse grant
 does not show an issue that has a security level. Sub-tasks inherit their
-parent issue's level; a story under an epic does not.
+parent issue's level. A story under an epic inherits the epic and also has its own level.
 
 Documented responses this code trusts (Cloud REST v3, same paths on Data
 Center ``/rest/api/2`` where the server exposes them):
@@ -33,7 +33,6 @@ Center ``/rest/api/2`` where the server exposes them):
 from __future__ import annotations
 
 import hashlib
-
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -491,12 +490,12 @@ def apply_issue_access(
 ) -> tuple[list[Permission], list[str]]:
     """Set the issue's access rule and return the grants to write.
 
-    A sub-task takes its parent's level and inherits from the parent. Any other
-    child (a story under an epic) has its own level and inherits from the
-    project, so a secured parent does not hide it (Atlassian: sub-tasks inherit
-    the parent's security level, other issues are secured individually). A parent
-    in another project is handled by the processor, which keeps the child on its
-    own project. Attachments are handled separately and stay empty.
+    A child issue (a sub-task, or a story under an epic) in the same project
+    inherits its hierarchy parent. It is visible to a user who can open both the
+    parent and the child, so a story under a leveled epic needs the epic's level
+    too (an accepted under-share, never an over-share). A parent in another
+    project is handled by the processor, which keeps the child on its own
+    project. Attachments are handled separately and stay empty.
     """
     if not context.enforce:
         # A personal account has no issue security. A nested issue inherits its
@@ -506,10 +505,7 @@ def apply_issue_access(
         record.inherit_permissions_from_group = False
         return [], []
     record.inherit_permissions = True
-    # A sub-task has no level of its own and takes its parent's, so it keeps inheriting from
-    # the parent. Any other child has its own level (or none) and is visible by the project's
-    # Browse permission, so it inherits from the project, not from a secured parent.
-    record.inherit_permissions_from_group = not is_subtask
+    record.inherit_permissions_from_group = False
     users = user_by_account_id or {}
     present, level_id = read_security_level(fields)
     security = fields.get("security") if isinstance(fields, dict) else None
@@ -525,6 +521,10 @@ def apply_issue_access(
         record.access_rule = AccessRule.STRICT
         record.rewrite_permissions = True
         return [], []
+
+    if present and security is None:
+        # A null level is a positive "no level", whatever the scheme state: replace any stale grants.
+        return project_open()
 
     if context.knowledge == SchemeKnowledge.UNKNOWN:
         return close()
