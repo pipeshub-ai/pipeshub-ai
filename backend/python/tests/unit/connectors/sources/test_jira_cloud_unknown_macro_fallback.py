@@ -219,6 +219,28 @@ async def test_fallback_keeps_inlined_images() -> None:
     assert "/rest/api/3/attachment/content/700" not in desc.data
 
 
+@pytest.mark.asyncio
+async def test_fallback_keeps_name_of_image_that_could_not_be_inlined() -> None:
+    connector = _make_bare_connector()
+
+    async def failing_fetch(attachment: dict, cache: dict) -> None:
+        return None
+
+    connector._fetch_attachment_as_base64 = failing_fetch
+    html = '<p><img src="/rest/api/3/attachment/content/700" alt="shot.png" /></p>' + RENDERED_WITH_PLACEHOLDERS
+    raw = {**RAW_DESCRIPTION_ADF, "content": [
+        {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "m1", "type": "file", "alt": "shot.png"}}]},
+        *RAW_DESCRIPTION_ADF["content"],
+    ]}
+    attachments = [{"id": "700", "filename": "shot.png", "mimeType": "image/png", "size": 10}]
+    result = await _parse(connector, html, raw, attachments=attachments)
+
+    desc = result.block_groups[0]
+    assert desc.format == DataFormat.MARKDOWN
+    assert "shot.png" in desc.data
+    assert "/rest/api/3/attachment/content/700" not in desc.data
+
+
 # ---------------------------------------------------------------------------
 # Comments
 # ---------------------------------------------------------------------------
@@ -322,6 +344,15 @@ class TestAdfToMarkdown:
             _para(_text("next")),
         ]}
         assert adf_to_markdown(adf) == "https://example.com/spec\n\nnext"
+
+    def test_media_keeps_its_file_name(self) -> None:
+        adf = {"type": "doc", "content": [
+            {"type": "mediaSingle", "content": [
+                {"type": "media", "attrs": {"id": "opaque-media-id", "type": "file", "alt": "trace.png"}},
+            ]},
+            _para(_text("see "), {"type": "mediaInline", "attrs": {"id": "x", "alt": "log.txt"}}),
+        ]}
+        assert adf_to_markdown(adf) == "trace.png\n\nsee log.txt"
 
     def test_non_document_returns_empty(self) -> None:
         assert adf_to_markdown(None) == ""

@@ -5,7 +5,7 @@ connector (fallback when Jira's rendered HTML lost part of a description or comm
 
 The conversion is deliberately simple: it keeps every piece of text in the document,
 including code blocks, and applies basic inline marks. It does not try to reproduce the
-layout exactly (nested lists are flattened, media nodes are skipped).
+layout exactly: nested lists are flattened, and media nodes keep only their file name.
 """
 from datetime import datetime, timezone
 from typing import Any
@@ -57,6 +57,9 @@ def _inline_node_text(node_type: str, attrs: dict[str, Any]) -> str:
         return str(attrs.get("text") or attrs.get("shortName") or "")
     if node_type == "status":
         return str(attrs.get("text") or "")
+    if node_type in ("media", "mediaInline"):
+        # The file name; the media id is an opaque store id, not useful text.
+        return str(attrs.get("alt") or "").strip()
     if node_type == "inlineCard":
         return str(attrs.get("url") or "")
     if node_type == "date":
@@ -126,6 +129,11 @@ def adf_to_markdown(adf_content: object) -> str:
 
         elif node_type == "rule":
             return "---\n\n"
+
+        elif node_type in ("mediaSingle", "mediaGroup"):
+            names = [extract_text_recursive(child) for child in node.get("content", [])]
+            text = " ".join(name for name in names if name)
+            return f"{text}\n\n" if text else ""
 
         elif node_type in ("blockCard", "embedCard"):
             url = str((node.get("attrs") or {}).get("url") or "")
