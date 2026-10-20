@@ -222,7 +222,7 @@ class AzureBlobDataSource:
             pages = client.list_containers(
                 name_starts_with=prefix or None, results_per_page=results_per_page
             ).by_page(continuation_token=continuation_token)
-            names: List[str] = []
+            names: list[str] = []
             async for page in pages:
                 names = [c.name async for c in page if getattr(c, "name", None)]
                 break
@@ -2813,7 +2813,7 @@ class AzureBlobDataSource:
             blob_client = client.get_blob_client(container=container_name, blob=blob_name)
             blob_url, _, given_sas = blob_client.url.partition("?")
             account_key = getattr(client.credential, "account_key", None)
-            signing: Dict[str, Any] = {}
+            signing: dict[str, Any] = {}
             if account_key:
                 signing = {"account_key": account_key}
             elif hasattr(client.credential, "get_token"):

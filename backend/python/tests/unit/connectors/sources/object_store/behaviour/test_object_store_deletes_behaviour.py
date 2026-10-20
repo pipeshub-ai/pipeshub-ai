@@ -29,7 +29,7 @@ async def sync_with_failed_listing(connector: BaseConnector) -> None:
     from app.connectors.sources.azure_blob.connector import AzureBlobConnector
 
     if isinstance(connector, AzureBlobConnector):
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError, match="sync failed"):
             await connector.run_incremental_sync()
     else:
         await connector.run_incremental_sync()

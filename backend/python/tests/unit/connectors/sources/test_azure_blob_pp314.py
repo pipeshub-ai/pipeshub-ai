@@ -4,8 +4,8 @@ The SAS tests sign with the real SDK and an account key, which needs no network.
 """
 
 import base64
-from collections.abc import AsyncIterator
 import logging
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch

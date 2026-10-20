@@ -5,19 +5,18 @@ The listing, sync points and record store are fakes; the connector's sync code r
 
 import asyncio
 import hashlib
-from datetime import timedelta
 from collections.abc import AsyncIterator
+from contextlib import AbstractContextManager
+from datetime import timedelta
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from object_store_behaviour_fakes import (
     BUCKET,
     FakeAzureBlobDataSource,
-    FakeCheckpointStore,
     FakeConfigService,
     FakeObjectStore,
-    FakeRecordsDb,
     Response,
     make_connector,
 )
@@ -136,7 +135,7 @@ class TestOverwriteDuringALongRun:
     """PP-316: the checkpoint is never later than the run's start (minus a safety window)."""
 
     @staticmethod
-    def _clock(store: FakeObjectStore) -> Any:
+    def _clock(store: FakeObjectStore) -> AbstractContextManager[MagicMock]:
         return patch(
             "app.connectors.sources.azure_blob.connector.get_epoch_timestamp_in_ms",
             side_effect=lambda: int(store.clock.timestamp() * 1000),
