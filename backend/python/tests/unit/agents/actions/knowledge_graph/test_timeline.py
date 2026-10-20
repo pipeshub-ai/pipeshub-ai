@@ -656,7 +656,7 @@ class TestAutoTimelineField:
         assert timeline.auto_timeline_field(_range("2026-01-01", "2026-06-30")) is None
 
 
-async def _run_search(corpus: _Corpus, **kwargs: Any) -> Any:  # noqa: ANN401
+async def _run_search(corpus: _Corpus, state: dict[str, Any] | None = None, **kwargs: Any) -> Any:  # noqa: ANN401
     from app.agents.actions.knowledge_graph.ops import search as search_op
 
     ranked = AsyncMock(return_value="ranked")
@@ -670,7 +670,7 @@ async def _run_search(corpus: _Corpus, **kwargs: Any) -> Any:  # noqa: ANN401
             patch(f"{_BUILDER}.enrich_records_with_graph_context", new_callable=AsyncMock), \
             patch(f"{_BUILDER}.enrich_records_with_address_links", new_callable=AsyncMock), \
             patch("app.modules.transformers.blob_storage.BlobStorage"):
-        return await search_op.execute_search(_state(corpus), "slack bot problems", **kwargs), ranked
+        return await search_op.execute_search(state or _state(corpus), "slack bot problems", **kwargs), ranked
 
 
 class TestTheSearchToolOverAWideSpan:
@@ -740,3 +740,84 @@ class TestTheSearchToolOverAWideSpan:
         summary = tool.summarize_result({"query": "q"}, MagicMock(content=text, is_error=False))
 
         assert summary.startswith("Searched 2 periods")
+
+
+class TestEverySearchKeepsTheTurnsScope:
+    """A selection below app level and an agent's or project's allow-list
+    reach every search of a timeline, as they reach knowledgegraph__search."""
+
+    _SCOPES = [
+        pytest.param(
+            {"apps": [], "kb": ["kb-1"], "recordGroups": ["proj-a"], "allowedRecordGroups": ["proj-a"],
+             "strictScope": True},
+            {"kb": ["kb-1"], "recordGroups": ["proj-a"], "allowedRecordGroups": ["proj-a"], "strictScope": True},
+            id="record-group",
+        ),
+        pytest.param(
+            {"apps": ["whole-app", "beta"], "kb": [], "records": ["beta-root"], "allowedRecords": ["beta-root"]},
+            {"apps": ["whole-app", "beta"], "records": ["beta-root"], "allowedRecords": ["beta-root"]},
+            id="records",
+        ),
+        pytest.param(
+            {"apps": [], "kb": [], "records": ["folder-1"], "allowedRecordGroups": ["proj-a"], "strictScope": True},
+            {"records": ["folder-1"], "allowedRecordGroups": ["proj-a"], "strictScope": True},
+            id="folder",
+        ),
+    ]
+
+    @staticmethod
+    def _assert_kept(corpus: _Corpus, kept: dict[str, Any]) -> None:
+        assert len(corpus.calls) == 4
+        for call in corpus.calls:
+            for key, value in kept.items():
+                assert call["filter_groups"][key] == value, key
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("filters", "kept"), _SCOPES)
+    async def test_an_automatic_timeline(self, filters: dict[str, Any], kept: dict[str, Any]) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+
+        await _run_search(
+            corpus, _state(corpus, filters=filters), created_after="2026-03-01", created_before="2026-05-31",
+        )
+
+        self._assert_kept(corpus, kept)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("filters", "kept"), _SCOPES)
+    async def test_the_timeline_tool(self, filters: dict[str, Any], kept: dict[str, Any]) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+
+        await _run(corpus, _state(corpus, filters=filters), start="2026-03-01", end="2026-05-31")
+
+        self._assert_kept(corpus, kept)
+
+    @pytest.mark.asyncio
+    async def test_naming_a_source_does_not_drop_a_selection(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+        filters = {"apps": ["whole-app", "beta"], "kb": [], "records": ["beta-root"], "allowedRecords": ["beta-root"]}
+
+        await _run(corpus, _state(corpus, filters=filters), start="2026-03-01", end="2026-05-31", source_ids=["beta"])
+
+        for call in corpus.calls:
+            assert call["filter_groups"]["records"] == ["beta-root"]
+            assert call["filter_groups"]["allowedRecords"] == ["beta-root"]
+
+    @pytest.mark.asyncio
+    async def test_a_placeholder_agent_keeps_its_own_sources_only_without_a_selection(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+        bare = _state(corpus, is_placeholder_agent=True, apps=["drive-1"], kb=["kb-9"],
+                      filters={"apps": ["synthetic"], "kb": []})
+        await _run(corpus, bare, start="2026-03-01", end="2026-05-31")
+        assert {(tuple(c["filter_groups"]["apps"]), tuple(c["filter_groups"]["kb"])) for c in corpus.calls} == {
+            (("drive-1",), ("kb-9",)),
+        }
+
+        corpus.calls.clear()
+        selected = _state(corpus, is_placeholder_agent=True, apps=["drive-1"], kb=["kb-9"],
+                          filters={"apps": ["drive-1"], "kb": [], "recordGroups": ["folder-x"]})
+        await _run(corpus, selected, start="2026-03-01", end="2026-05-31")
+        for call in corpus.calls:
+            assert call["filter_groups"]["apps"] == ["drive-1"]
+            assert call["filter_groups"]["kb"] == []
+            assert call["filter_groups"]["recordGroups"] == ["folder-x"]

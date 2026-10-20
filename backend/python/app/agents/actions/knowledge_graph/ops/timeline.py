@@ -64,7 +64,7 @@ from app.agents.actions.knowledge_graph.ops.results import (
     search_result_summary,
     tool_output,
 )
-from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
+from app.agents.actions.knowledge_graph.ops.scope import search_scope
 from app.agents.actions.knowledge_graph.ops.search import (
     ENTITY_SCOPE_INCOMPLETE_MESSAGE,
     UNKNOWN_ENTITY_IDS_MESSAGE,
@@ -304,14 +304,9 @@ async def _resolve_scope(
     no per-source fan-out.
     """
     agent_filters = state.get("filters", {}) or {}
-    if state.get("is_placeholder_agent"):
-        raw_apps: list[str] = list(state.get("apps") or [])
-        raw_kbs: list[str] = list(state.get("kb") or [])
-    else:
-        raw_apps = list(agent_filters.get("apps") or [])
-        raw_kbs = list(agent_filters.get("kb") or [])
-    scope = KnowledgeScope(app_ids=tuple(raw_apps), kb_ids=_clean_kb(raw_kbs))
-    scope = scope.narrow_to(normalize_source_ids(source_ids))
+    # search_scope carries the turn's selection and the agent's or project's
+    # allow-list, which the retrieval service turns into its access check.
+    scope = search_scope(state).narrow_to(normalize_source_ids(source_ids))
 
     requested = [e for e in dict.fromkeys(entity_ids or []) if e]
     unknown = unresolved_entity_ids(state, requested)
