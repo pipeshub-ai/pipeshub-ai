@@ -2427,7 +2427,64 @@ class TestFetchGroupMembers:
         emails, account_ids = await c._fetch_group_members("g1", "Group 1")
         assert emails == ["a@t.com", "n@t.com"]
         assert account_ids == []
-        assert c._inactive_account_ids == {"acc-d", "acc-x"}
+        assert c._pending_inactive_ids == {"acc-d", "acc-x"}
+        assert c._inactive_account_ids == set()
+
+    @staticmethod
+    def _group_sync_conn(member_pages):
+        c = _conn()
+        dep = c.data_entities_processor
+        dep.on_new_app_users = AsyncMock()
+        dep.on_new_user_groups = AsyncMock()
+        dep.migrate_group_to_user_by_external_id = AsyncMock()
+        dep.get_all_app_users = AsyncMock(return_value=[])
+        dep.withdraw_app_user_access = AsyncMock()
+        ds = MagicMock()
+        ds.search_users = AsyncMock(return_value=_resp(200, {"results": [
+            {"user": {"accountId": "acc-d", "email": "d@t.com", "displayName": "D"}},
+        ]}))
+        ds.get_groups = AsyncMock(return_value=_resp(200, {"results": [{"id": "g1", "name": "Group 1"}]}))
+        ds.get_group_members = AsyncMock(side_effect=member_pages)
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        c._resolve_group_app_users = AsyncMock(return_value=[])
+        return c
+
+    @pytest.mark.asyncio
+    async def test_a_reactivated_account_is_saved_again_in_the_same_sync(self):
+        c = self._group_sync_conn([_resp(200, {"results": [
+            {"accountId": "acc-d", "email": "d@t.com", "accountStatus": "active"},
+        ]})])
+        c._inactive_account_ids = {"acc-d"}
+
+        await c._sync_users()
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+        await c._sync_user_groups()
+        await c._reconcile_inactive_app_users()
+
+        saved = c.data_entities_processor.on_new_app_users.await_args.args[0]
+        assert [u.source_user_id for u in saved] == ["acc-d"]
+        assert c._inactive_account_ids == set()
+
+    @pytest.mark.asyncio
+    async def test_a_member_list_failing_on_page_two_withdraws_nothing(self):
+        c = self._group_sync_conn([
+            _resp(200, {
+                "results": [{"accountId": "acc-n", "email": "n@t.com", "accountStatus": "inactive"}],
+                "_links": {"next": "/rest/api/group/g1/member?start=1"},
+            }),
+            _resp(500),
+        ])
+        c._inactive_account_ids = {"acc-d"}
+
+        await c._sync_users()
+        await c._sync_user_groups()
+        await c._reconcile_inactive_app_users()
+
+        assert c._group_read_complete is False
+        assert c._inactive_account_ids == {"acc-d"}
+        c.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+        c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_withdraws_stored_users_reported_inactive(self):

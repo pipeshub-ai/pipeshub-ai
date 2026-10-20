@@ -491,9 +491,15 @@ class ConfluenceConnector(BaseConnector):
 
         # Lazy cache: lowercased Confluence group name -> external group id (UUID)
         self._group_name_to_external_id: dict[str, str] | None = None
-        # Filled by each group sync from the members' accountStatus.
+        # From the members' accountStatus in the last group sync that read every member list.
         self._inactive_account_ids: set[str] = set()
         self._active_member_emails: set[str] = set()
+        # This sync's group read, kept only once it has read every member list.
+        self._pending_inactive_ids: set[str] = set()
+        self._pending_active_emails: set[str] = set()
+        self._group_read_complete = False
+        # Users _sync_users held back as inactive; restored if this sync's group read finds them active.
+        self._held_back_users: list[AppUser] = []
         self._space_listing_complete = False
 
     async def _build_confluence_client(self):
@@ -672,7 +678,7 @@ class ConfluenceConnector(BaseConnector):
 
             # Step 2: Sync groups and memberships
             await self._sync_user_groups()
-            await self._withdraw_inactive_app_users()
+            await self._reconcile_inactive_app_users()
 
             # Step 3: Sync spaces
             spaces = await self._sync_spaces()
@@ -854,6 +860,7 @@ class ConfluenceConnector(BaseConnector):
         """
         try:
             self.logger.info("Starting user synchronization...")
+            self._held_back_users = []
 
             # Pagination variables
             batch_size = 100
@@ -894,35 +901,21 @@ class ConfluenceConnector(BaseConnector):
                         total_skipped += 1
                         continue
 
-                    # search/user carries no account status: use what the last group sync saw.
-                    if user_data.get("accountId") in self._inactive_account_ids:
-                        continue
                     app_user = self._transform_to_app_user(user_data)
-                    if app_user:
-                        app_users.append(app_user)
+                    if not app_user:
+                        continue
+                    # search/user carries no account status: hold back what the last complete
+                    # group read saw inactive until this sync's group read says otherwise.
+                    if app_user.source_user_id in self._inactive_account_ids:
+                        self._held_back_users.append(app_user)
+                        continue
+                    app_users.append(app_user)
 
                 # Save batch to database
                 if app_users:
-                    await self.data_entities_processor.on_new_app_users(app_users)
+                    await self._save_app_users(app_users)
                     total_synced += len(app_users)
                     self.logger.info(f"Synced {len(app_users)} users (batch starting at {start})")
-
-                    # For each user with email, migrate pseudo-group permissions (Confluence-specific)
-                    for user in app_users:
-                        if user.email and "@" in user.email and user.source_user_id:
-                            try:
-                                await self.data_entities_processor.migrate_group_to_user_by_external_id(
-                                    group_external_id=user.source_user_id,
-                                    user_email=user.email,
-                                    connector_id=self.connector_id
-                                )
-                            except Exception as e:
-                                # Log error but continue with other users
-                                self.logger.warning(
-                                    f"Failed to migrate pseudo-group permissions for user {user.email}: {e}",
-                                    exc_info=True
-                                )
-                                continue
 
                 # Move to next page
                 start += batch_size
@@ -1147,6 +1140,24 @@ class ConfluenceConnector(BaseConnector):
                 "deployment, this is expected (Jira fallback only works with Cloud instances)."
             )
 
+    async def _save_app_users(self, app_users: list[AppUser]) -> None:
+        await self.data_entities_processor.on_new_app_users(app_users)
+        # For each user with email, migrate pseudo-group permissions (Confluence-specific)
+        for user in app_users:
+            if user.email and "@" in user.email and user.source_user_id:
+                try:
+                    await self.data_entities_processor.migrate_group_to_user_by_external_id(
+                        group_external_id=user.source_user_id,
+                        user_email=user.email,
+                        connector_id=self.connector_id
+                    )
+                except Exception as e:
+                    # Log error but continue with other users
+                    self.logger.warning(
+                        f"Failed to migrate pseudo-group permissions for user {user.email}: {e}",
+                        exc_info=True
+                    )
+
     async def _sync_user_groups(self) -> None:
         """
         Sync user groups and their memberships from Confluence.
@@ -1161,8 +1172,10 @@ class ConfluenceConnector(BaseConnector):
 
             # Groups may change between sync runs on a long-lived connector instance.
             self._group_name_to_external_id = None
-            self._inactive_account_ids = set()
-            self._active_member_emails = set()
+            self._group_read_complete = False
+            self._pending_inactive_ids = set()
+            self._pending_active_emails = set()
+            every_member_list_read = True
 
             # Pagination variables for groups
             batch_size = 50
@@ -1181,6 +1194,7 @@ class ConfluenceConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch groups: {response.status if response else 'No response'}")
+                    every_member_list_read = False
                     break
 
                 response_data = response.json()
@@ -1207,6 +1221,7 @@ class ConfluenceConnector(BaseConnector):
                             self.logger.warning(
                                 f"Keeping the stored members of group {group_name}: its member list could not be read"
                             )
+                            every_member_list_read = False
                             continue
                         member_emails, member_account_ids = members
 
@@ -1236,6 +1251,7 @@ class ConfluenceConnector(BaseConnector):
 
                     except Exception as group_error:
                         self.logger.error(f"❌ Failed to process group {group_data.get('name')}: {group_error}")
+                        every_member_list_read = False
                         continue
 
                 try:
@@ -1243,11 +1259,16 @@ class ConfluenceConnector(BaseConnector):
                 except ValueError as e:
                     # Groups are saved one by one, so the ones not reached keep what is stored.
                     self.logger.error(f"❌ Stopping the group list: {e}")
+                    every_member_list_read = False
                     break
                 if next_start is None:
                     break
                 start = next_start
 
+            if every_member_list_read:
+                self._inactive_account_ids = self._pending_inactive_ids
+                self._active_member_emails = self._pending_active_emails
+                self._group_read_complete = True
             self.logger.info(f"✅ Group sync complete. Groups: {total_groups_synced}, Memberships: {total_memberships_synced}")
 
         except Exception as e:
@@ -4045,10 +4066,10 @@ class ConfluenceConnector(BaseConnector):
                     # API reports the status only here (search/user leaves it out).
                     if member_data.get("accountStatus", "active") != "active":
                         if account_id:
-                            self._inactive_account_ids.add(account_id)
+                            self._pending_inactive_ids.add(account_id)
                         continue
                     if email:
-                        self._active_member_emails.add(email.lower())
+                        self._pending_active_emails.add(email.lower())
                         member_emails.append(email)
                     elif account_id:
                         member_account_ids.append(account_id)
@@ -4068,6 +4089,21 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
             return None
+
+    async def _reconcile_inactive_app_users(self) -> None:
+        """After the group sync: save the held-back users that are active again, then withdraw
+        the stored ones now inactive. Statuses from a partial group read are not trusted."""
+        held_back, self._held_back_users = self._held_back_users, []
+        if not self._group_read_complete:
+            self.logger.warning(
+                "Not every group member list was read: account statuses stay as last read in full"
+            )
+            return
+        reactivated = [u for u in held_back if u.source_user_id not in self._inactive_account_ids]
+        if reactivated:
+            await self._save_app_users(reactivated)
+            self.logger.info(f"Restored {len(reactivated)} Confluence user(s) active again at the source")
+        await self._withdraw_inactive_app_users()
 
     async def _withdraw_inactive_app_users(self) -> None:
         """Take the connector away from stored users whose account a group listing reported
