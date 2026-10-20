@@ -446,6 +446,27 @@ class TestB3FileIdAcrossShares:
         await _sync(conn)
         assert "s/miss/a.txt" not in proc.records
 
+    async def test_renamed_folder_keeps_its_files_records_beside_a_failed_listing(self) -> None:
+        ds = FakeDataSource({})
+        ds.add("s", "dir", is_dir=True, file_id="d1")
+        ds.add("s", "dir/a.txt", file_id="f1")
+        ds.add("s", "dir/sub", is_dir=True, file_id="d2")
+        ds.add("s", "dir/sub/b.txt", file_id="f2")
+        ds.add("s", "other", is_dir=True, file_id="d3")
+        proc = FakeProcessor()
+        conn = _connector(ds, proc, shares=["s"])
+        await _sync(conn)
+        before = {k: proc.records[k].id for k in ("s/dir", "s/dir/a.txt", "s/dir/sub", "s/dir/sub/b.txt")}
+        for old_path in ["dir", "dir/a.txt", "dir/sub", "dir/sub/b.txt"]:
+            item = ds.shares["s"].pop(old_path)
+            new_path = "dir2" + old_path[3:]
+            ds.shares["s"][new_path] = {**item, "path": new_path, "name": new_path.rsplit("/", 1)[-1]}
+        ds.fail_dirs.add(("s", "other"))
+        await _sync(conn)
+        for old_id, new_path in zip(before.values(), ("s/dir2", "s/dir2/a.txt", "s/dir2/sub", "s/dir2/sub/b.txt")):
+            assert proc.records[new_path].id == old_id, new_path
+        assert not [k for k in proc.records if k.startswith("s/dir/")]
+
     async def test_copy_keeping_file_id_in_same_share_is_not_a_move(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt", file_id="7")

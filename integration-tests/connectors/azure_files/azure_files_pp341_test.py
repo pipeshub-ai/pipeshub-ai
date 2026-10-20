@@ -20,6 +20,8 @@ shared test share.
                          when the service hands out the same FileId (PP-344)
   TC-SAS               — a Read+List SAS connection string syncs and downloads; a
                          List-only one is refused by the connection test (PP-349, PP-356)
+  TC-FOLDER-RENAME     — renaming a folder moves it and everything below it, keeping
+                         every record id (PP-359)
 """
 
 import hashlib
@@ -286,3 +288,29 @@ class TestAzureFilesPP341:
 
         with pytest.raises(PipeshubClientError, match="Connection test failed"):
             make_connector([share], connection_string=_sas_connection_string("l"))
+
+    async def test_tc_folder_rename(self, scratch, azure_files_storage, pipeshub_client, graph_provider) -> None:
+        make_share, make_connector = scratch
+        share = make_share("rename")
+        azure_files_storage.upload_file(share, "dir/a.txt", b"a")
+        azure_files_storage.upload_file(share, "dir/sub/b.txt", b"b")
+        connector_id = make_connector([share])
+        old = (f"{share}/dir", f"{share}/dir/a.txt", f"{share}/dir/sub", f"{share}/dir/sub/b.txt")
+        new = tuple(p.replace(f"{share}/dir", f"{share}/dir2", 1) for p in old)
+
+        async def synced() -> bool:
+            return await _has(graph_provider, connector_id, *old)
+
+        await _wait(connector_id, synced, "first sync")
+        ids = [(await graph_provider.get_record_by_external_id(connector_id, p)).id for p in old]
+
+        azure_files_storage.rename_directory(share, "dir", "dir2")
+        _resync(pipeshub_client, connector_id)
+
+        async def moved() -> bool:
+            return await _has(graph_provider, connector_id, *new)
+
+        await _wait(connector_id, moved, "sync after the folder rename")
+        assert [(await graph_provider.get_record_by_external_id(connector_id, p)).id for p in new] == ids
+        for p in old:
+            assert await graph_provider.get_record_by_external_id(connector_id, p) is None

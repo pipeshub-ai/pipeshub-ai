@@ -1272,16 +1272,22 @@ class AzureFilesConnector(BaseConnector):
         """Write the items found under a stored record's FileId at a new path.
 
         Only once the share is listed is it known which stored paths are gone: a
-        path is gone when the directory above it was listed and did not hold it (a
-        directory whose listing failed proves nothing). Each new path takes one of
+        path is gone when the directory above it was listed and did not hold it, or
+        is gone itself (a directory whose listing failed proves nothing). Each new path takes one of
         those with its revision (the record moves, keeping its index when the
         content did not change); a new path left with none is a copy that kept its
         FileId (AzCopy, robocopy) and gets a record of its own.
         """
 
         def is_gone(external_id: str) -> bool:
+            # Also gone: anything under a directory that is itself gone (a renamed folder's files).
+            if external_id in seen:
+                return False
             parent = get_parent_path(external_id[len(share_name) + 1:])
-            return external_id not in seen and (f"{share_name}/{parent}" if parent else share_name) in listed
+            parent_id = f"{share_name}/{parent}" if parent else share_name
+            if parent_id in listed:
+                return True
+            return parent_id != share_name and is_gone(parent_id)
 
         moves: list[tuple[str, FileRecord, list[Permission]]] = []
         copies: list[tuple[FileRecord, list[Permission]]] = []
