@@ -1484,7 +1484,7 @@ class AzureBlobConnector(BaseConnector):
             else:
                 self.logger.debug(f"New document: {normalized_name} (no revision available)")
 
-            record_type = RecordType.FILE
+            # Prepare record data
             extension = get_file_extension(normalized_name) if is_file else None
             # A folder marker's own content type is not a folder mimeType.
             mime_type = (MimeTypes.FOLDER.value if is_folder
@@ -1619,15 +1619,19 @@ class AzureBlobConnector(BaseConnector):
             names = self._extract_container_names(response.data)
         if not names:
             return None
-        container_name = names[0]
-        response = await self.data_source.list_blobs(container_name=container_name, maxresults=1)
-        if not response.success:
-            return f"Cannot list blobs in {container_name}: {response.error}"
-        try:
-            async for _ in response.data.by_page():
-                break
-        except Exception as e:
-            return f"Cannot list blobs in {container_name}: {e}"
+        for container_name in names:
+            response = await self.data_source.list_blobs(container_name=container_name, maxresults=1)
+            if not response.success:
+                return f"Cannot list blobs in {container_name}: {response.error}"
+            try:
+                async for _ in response.data.by_page():
+                    break
+            except Exception as e:
+                # A deleted container is not a credential problem; the next sync removes it.
+                if getattr(e, "error_code", None) in _CONTAINER_GONE_CODES:
+                    continue
+                return f"Cannot list blobs in {container_name}: {e}"
+            break
         # Signing never fetches the blob, so any name will do.
         signed = await self.data_source.generate_blob_sas_url(
             container_name=container_name, blob_name="pipeshub-connection-test", permission="r",

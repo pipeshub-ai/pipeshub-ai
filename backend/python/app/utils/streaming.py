@@ -29,7 +29,10 @@ from app.agents.agent_loop.prompt_cache import (
     without_cache_markers,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.error.stream_errors import map_source_status, not_downloadable
+from app.connectors.core.base.error.stream_errors import (
+    map_source_status,
+    not_downloadable,
+)
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.excel.prompt_template import RowDescriptions
 from app.utils.aimodels import coerce_message_content_to_text

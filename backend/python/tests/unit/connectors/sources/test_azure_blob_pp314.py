@@ -4,6 +4,7 @@ The SAS tests sign with the real SDK and an account key, which needs no network.
 """
 
 import base64
+from collections.abc import AsyncIterator
 import logging
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -251,8 +252,8 @@ class TestConnectionTest:
         ds.list_containers = AsyncMock(return_value=SimpleNamespace(success=True, data=[{"name": n} for n in containers]))
 
         class Pages:
-            def by_page(self):
-                async def pages():
+            def by_page(self) -> AsyncIterator[list]:
+                async def pages() -> AsyncIterator[list]:
                     yield []
                 return pages()
         ds.list_blobs = AsyncMock(return_value=SimpleNamespace(success=list_ok, data=Pages(), error="AuthorizationPermissionMismatch"))
@@ -273,6 +274,34 @@ class TestConnectionTest:
     @pytest.mark.asyncio
     async def test_it_fails_when_blobs_cannot_be_listed(self) -> None:
         assert not await self.wired(list_ok=False).test_connection_and_access()
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_named_container_does_not_fail_it(self) -> None:
+        from app.connectors.core.registry.filters import FilterCollection
+
+        class Gone(Exception):
+            error_code = "ContainerNotFound"
+
+        class Pages:
+            def __init__(self, gone: bool) -> None:
+                self.gone = gone
+
+            def by_page(self) -> AsyncIterator[list]:
+                async def pages() -> AsyncIterator[list]:
+                    if self.gone:
+                        raise Gone("The specified container does not exist.")
+                    yield []
+                return pages()
+        c = self.wired()
+        c.data_source.list_blobs = AsyncMock(side_effect=lambda container_name, **_: SimpleNamespace(
+            success=True, data=Pages(container_name == "old"),
+        ))
+        c.sync_filters = FilterCollection.from_dict(
+            {"containers": {"operator": "in", "value": ["old", "docs"], "type": "multiselect"}}, logging.getLogger("t"),
+        )
+
+        assert await c.test_connection_and_access()
+        assert c.data_source.list_blobs.await_count == 2
 
     @pytest.mark.asyncio
     async def test_named_containers_need_no_container_list(self) -> None:
@@ -310,11 +339,11 @@ class TestStreaming:
     """PP-329 / PP-325 / PP-338."""
 
     @staticmethod
-    def session(status: int, headers: dict | None = None):
+    def session(status: int, headers: dict | None = None) -> MagicMock:
         response = MagicMock(status=status, headers=headers or {})
         response.text = AsyncMock(return_value="")
 
-        async def chunks(_size):
+        async def chunks(_size: int) -> AsyncIterator[bytes]:
             yield b"data"
         response.content.iter_chunked = chunks
         get_cm = MagicMock()
@@ -356,7 +385,7 @@ class TestRenameKeepsIndexing:
     """PP-337: a move that keeps its record id and content is not indexed again."""
 
     @staticmethod
-    def tx(stored: dict):
+    def tx(stored: dict) -> AsyncMock:
         tx = AsyncMock()
         tx.get_record_by_external_id = AsyncMock(return_value=None)
         tx.get_record_by_key = AsyncMock(return_value=stored)

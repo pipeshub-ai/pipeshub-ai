@@ -6,6 +6,7 @@ The listing, sync points and record store are fakes; the connector's sync code r
 import asyncio
 import hashlib
 from datetime import timedelta
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -47,13 +48,13 @@ class _AzureStore(FakeAzureBlobDataSource):
         self.list_calls.append(container_name)
         if container_name in self.deleted:
             # The SDK pager fails only when it is iterated.
-            async def gone():
+            async def gone() -> AsyncIterator[dict[str, Any]]:
                 raise ConnectionError("ContainerNotFound")
                 yield  # pragma: no cover
             return Response(True, gone())
         inner = (await super().list_blobs(container_name, prefix, **kw)).data
 
-        async def blobs():
+        async def blobs() -> AsyncIterator[dict[str, Any]]:
             n = 0
             async for blob in inner:
                 blob["metadata"] = self.metadata.get(blob["name"], {})
@@ -135,7 +136,7 @@ class TestOverwriteDuringALongRun:
     """PP-316: the checkpoint is never later than the run's start (minus a safety window)."""
 
     @staticmethod
-    def _clock(store: FakeObjectStore):
+    def _clock(store: FakeObjectStore) -> Any:
         return patch(
             "app.connectors.sources.azure_blob.connector.get_epoch_timestamp_in_ms",
             side_effect=lambda: int(store.clock.timestamp() * 1000),
@@ -238,7 +239,7 @@ class TestFailuresAreReported:
         store.put("b.txt")
         real = connector._process_azure_blob
 
-        async def fail_b(blob, *args, **kwargs):
+        async def fail_b(blob: dict, *args: object, **kwargs: object) -> tuple:
             if blob["name"] == "b.txt":
                 return None, []
             return await real(blob, *args, **kwargs)
