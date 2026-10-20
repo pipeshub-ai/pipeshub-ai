@@ -240,6 +240,10 @@ class TestXAI:
         assert (set(plan.kwargs), plan.breakpoint, plan.last_message) == ({"prompt_cache_key"}, False, False)
         assert _plan(model, "https://api.x.ai/v1/", refused=frozenset({"prompt_cache_key"})) is None
 
+    @pytest.mark.parametrize("base_url", ["https://api.x.ai.example.com/v1", "https://proxy.example/api.x.ai/v1"])
+    def test_only_xais_own_host(self, base_url: str) -> None:
+        assert _plan("grok-4.7", base_url) is None
+
 
 class TestRejectedCacheParams:
     @pytest.fixture(autouse=True)
