@@ -37,6 +37,7 @@ from app.models.blocks import (
     GroupType,
     wire_block_group_parent_children,
 )
+from app.utils.time_conversion import datetime_to_epoch_ms
 from app.models.entities import (
     PullRequestRecord,
     Record,
@@ -270,6 +271,9 @@ class PullRequestsSync:
                 review_name=reviewer_logins,
                 review_email=reviewer_emails,
                 last_commit_sha=getattr(pr.head, "sha", None) if getattr(pr, "head", None) else None,
+                # Both are on the listing payload, unlike `merged_by`.
+                merged_at=datetime_to_epoch_ms(getattr(pr, "merged_at", None)),
+                closed_at=datetime_to_epoch_ms(getattr(pr, "closed_at", None)),
                 inherit_permissions=True,
                 # Jira keys and addresses in the title and description join the PR
                 # to those records, in whichever connector holds them.

@@ -51,6 +51,7 @@ from app.agents.agent_loop.hooks import (
     CitationCollector,
     ensure_fetch_full_record_available,
 )
+from app.agents.agent_loop.period_summary import timeline_replaces_prefetch
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
 from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
@@ -77,7 +78,6 @@ from app.agents.chat_modes.prefetch import (
     search_failure_constraint,
     search_incomplete_constraint,
 )
-from app.config.constants.service import config_node_constants
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
     exclude_from_query,
@@ -85,11 +85,19 @@ from app.modules.demo_data.chat import (
     note_org_real_data,
 )
 from app.modules.retrieval.provenance import note_retrieved_by
+from app.modules.retrieval.selection_scope import (
+    SelectionNotReadyError,
+    SelectionTooLargeError,
+    prepare_turn_scope,
+    selection_error,
+    unreadable_scope_error,
+)
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.image_admission import admission_from_state
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
+from app.web.config import resolve_web_search
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -161,37 +169,6 @@ def _apply_mode_instructions(chat_state: dict[str, Any], policy: ChatModePolicy)
     chat_state[READ_RECORDS_IN_FULL_STATE_KEY] = thorough
 
 
-async def _resolve_web_search_config(config_service: Any, logger: logging.Logger) -> dict[str, Any] | None:
-    """Mirrors `_generate_web_search_stream()`'s provider lookup: the org's
-    default web-search provider, falling back to DuckDuckGo when none is
-    explicitly configured.
-
-    The Node.js config API (`cm_controller.ts::getWebSearchProviders`) never
-    persists a DuckDuckGo entry into the stored config -- it treats
-    DuckDuckGo as the implicit default whenever no stored provider carries
-    `isDefault: true` (including a brand-new org with an empty/absent
-    `providers` list). Reading the raw stored config here without the same
-    fallback would silently disable `web_search`/`fetch_url` for every org
-    that hasn't explicitly configured a paid provider, even though the UI
-    tells the user DuckDuckGo is already active (see the identical fallback
-    in `agent.py::_resolve_default_web_search_config`)."""
-    try:
-        web_search_config = await config_service.get_config(
-            config_node_constants.WEB_SEARCH.value, default={}, use_cache=True,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("run_chat_stream: failed to load web search config: %s", exc)
-        return None
-    providers = (web_search_config or {}).get("providers") or []
-    default_provider = next((p for p in providers if p.get("isDefault")), None)
-    if not default_provider:
-        return {"provider": "duckduckgo", "configuration": {}}
-    return {
-        "provider": default_provider.get("provider"),
-        "configuration": default_provider.get("configuration", {}),
-    }
-
-
 async def _none() -> None:
     """Placeholder awaitable so a conditional lookup can still take a slot in
     the `asyncio.gather` below without branching the result unpacking."""
@@ -257,6 +234,7 @@ def _apply_policy_to_chat_state(
     )
     chat_state["has_slack_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_slack_connector"))
     chat_state["web_search_config"] = web_search_config if policy.include_web_search else None
+    chat_state["deep_research"] = policy.deep_research and chat_state["web_search_config"] is not None
     chat_state["chat_mode"] = policy.name
 
 
@@ -331,6 +309,8 @@ async def _run_no_tools_degradation(
             filters=query_info.get("filters"), limit=query_info.get("limit"),
             is_multimodal_llm=is_multimodal_llm, previous_conversations=query_info.get("previous_conversations"),
             logger=log, force=True,
+            # A turn with no tools cannot read a record, so no note asks it to.
+            can_fetch=False,
         )
     finally:
         reset_llm_time_zone(zone_token)
@@ -449,7 +429,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 fetch_user_connector_instances(
                     graph_provider, user_info["userId"], user_info["orgId"], log,
                 ),
-                _resolve_web_search_config(config_service, log) if policy.include_web_search else _none(),
+                resolve_web_search(config_service, log, use_cache=True) if policy.include_web_search else _none(),
                 resolve_attachments(
                     query_info.get("attachments"), blob_store=blob_store,
                     org_id=user_info.get("orgId", ""), ref_mapper=ref_mapper, logger=log,
@@ -472,7 +452,28 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         )
         has_sql_connector = connector_instances_have_sql(connector_instances)
         has_slack_connector = connector_instances_have_slack(connector_instances)
-        filters = dict(query_info.get("filters") or {})
+        project_sources = query_info.get("allowedFilters")
+        filters = await prepare_turn_scope(
+            graph_provider, user_info.get("userId", ""), user_info.get("orgId", ""),
+            query_info.get("filters"),
+            project_sources=project_sources if isinstance(project_sources, dict) else None,
+        )
+        # A turn that can only search, over sources the user cannot read, would
+        # otherwise retry its search tools until the run's time budget is spent.
+        unreadable = None
+        if policy.has_knowledge and not policy.include_web_search and not resolved_attachments.virtual_record_ids:
+            try:
+                unreadable = await unreadable_scope_error(
+                    graph_provider, user_info.get("userId", ""), user_info.get("orgId", ""), filters,
+                )
+            except Exception as exc:
+                log.warning("run_chat_stream: readable-scope check failed, running the turn: %s", exc)
+        if unreadable is not None:
+            error_code, user_message = unreadable
+            if cancellation_registry is not None:
+                await cancellation_registry.unregister(run_id)
+            yield _pre_stream_error_frame(protocol, user_message, error_code)
+            return
         if resolved_attachments.virtual_record_ids:
             # Widened, never narrowed: an attachment scoped search must not
             # accidentally EXCLUDE the rest of the org's knowledge the user
@@ -502,6 +503,12 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             chat_state["available_connectors"] = available_connectors
         exclude_from_state(chat_state, demo_excluded)
         await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
+    except (SelectionTooLargeError, SelectionNotReadyError) as exc:
+        error_code, user_message = selection_error(exc)
+        if cancellation_registry is not None:
+            await cancellation_registry.unregister(run_id)
+        yield _pre_stream_error_frame(protocol, user_message, error_code)
+        return
     except Exception as exc:
         log.error("run_chat_stream: failed to build initial state: %s", exc, exc_info=True)
         error_code, user_message = classify_exception(exc)
@@ -552,9 +559,13 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                         ref_mapper=ref_mapper,
                         image_budget=image_budget,
                         image_admission=admission_from_state(context.tool_state),
+                        # Set by `_apply_mode_instructions` before this runs: under the
+                        # full-read policy the fetch tool takes no `query`.
+                        read_in_full=bool(context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY)),
                     )
                 )
-                if policy.prefetch_retrieval else None
+                if policy.prefetch_retrieval and not timeline_replaces_prefetch(query_info.get("query"))
+                else None
             )
 
             agent, _runtime, goal, clarifying_questions = await factory.create(

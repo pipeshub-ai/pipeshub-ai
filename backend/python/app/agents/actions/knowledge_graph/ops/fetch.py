@@ -13,6 +13,8 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
+from app.agents.actions.knowledge_graph.ops.scope import ids_outside_scope
+
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.base import ToolOutput
     from app.agents.agent_loop.context import AgentContext
@@ -191,6 +193,29 @@ def _not_read_note(
     )
 
 
+async def _ids_outside_scope(context: "AgentContext", record_ids: list[str]) -> list[str]:
+    return await ids_outside_scope(
+        context.tool_state or {}, context.graph_provider, context.user_id, context.org_id, record_ids,
+    )
+
+
+# The longest query a focused-read note repeats back; a model's query is a
+# phrase, and the note must not grow with a pasted paragraph.
+_FOCUS_ECHO_CHARS = 200
+
+
+def _focused_read_note(query: str) -> str:
+    """What a focused read says after its records: it read a part, not the whole."""
+    echo = " ".join(query.split())
+    if len(echo) > _FOCUS_ECHO_CHARS:
+        echo = echo[: _FOCUS_ECHO_CHARS - 1] + "…"
+    return (
+        f'\n[Focused read for "{echo}": a record too long to read whole shows its '
+        "blocks most relevant to that query, with the gaps marked. For another part, "
+        "call again with a different query; for the whole record, call without one.]\n"
+    )
+
+
 async def execute_fetch_record(
     *,
     context: "AgentContext",
@@ -201,6 +226,7 @@ async def execute_fetch_record(
     start_block: int = 0,
     max_blocks: int | None = None,
     start_block_sent: bool = False,
+    query: str | None = None,
 ) -> tuple["ToolOutput", Any]:
     """Fetch one or more records end-to-end.
 
@@ -210,11 +236,22 @@ async def execute_fetch_record(
 
     ``start_block_sent`` says the model named ``start_block`` itself, which is
     how an explicit 0 after a relevance selection is told from the default.
+
+    ``query`` (``TARGETED_RETRIEVAL`` only) asks for part of each record: its
+    blocks most relevant to the query, within ``FOCUSED_READ_MAX_CHARS`` per
+    record, rather than the whole record. A record that fits that size is read
+    whole; a continuation (``start_block`` > 0) reads in order from there,
+    within the same size. Ignored under THOROUGH_RETRIEVAL's full-read policy.
     """
     from app.agent_loop_lib.tools.base import ToolOutput
     from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
+    from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
     from app.agents.agent_loop.tool_adapter import _to_tool_output
     from app.modules.agents.qna.chat_state import remember_record_ids
+    from app.modules.retrieval.context.targeted import (
+        focused_read_chars,
+        targeted_retrieval_enabled,
+    )
     from app.utils.chat_helpers import (
         ImageBudget,
         _renderable_block_indices,
@@ -274,6 +311,18 @@ async def execute_fetch_record(
     # records must not each get a full window's worth. Sized from the model
     # actually answering.
     budget = resolve_render_budget(context.context_length, max_blocks=block_cap)
+    # Under THOROUGH_RETRIEVAL's full-read policy the records are read whole.
+    focus = (
+        (query or "").strip()
+        if targeted_retrieval_enabled()
+        and not context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY)
+        else ""
+    )
+    focused_limit = focused_read_chars() if focus else None
+    if focused_limit is not None:
+        # A focused read asks for a part: each record gets the focused size,
+        # never more than the read it replaces.
+        budget.max_chars = min(budget.max_chars, focused_limit * max(len(record_ids), 1))
 
     structured_tool = create_fetch_full_record_tool(
         virtual_records,
@@ -282,7 +331,16 @@ async def execute_fetch_record(
         user_id=context.user_id,
     )
     try:
-        result = await structured_tool.coroutine(record_ids=record_ids, reason=reason)
+        # A record outside what the turn is limited to is answered like one
+        # that does not exist.
+        outside = await _ids_outside_scope(context, record_ids)
+        readable = [record_id for record_id in record_ids if record_id not in outside]
+        result = (
+            await structured_tool.coroutine(record_ids=readable, reason=reason)
+            if readable else {"ok": False, "not_available_ids": []}
+        )
+        if outside and isinstance(result, dict):
+            result["not_available_ids"] = [*(result.get("not_available_ids") or []), *outside]
     except Exception as exc:
         return ToolOutput(success=False, error=str(exc)), citation_ref_mapper
 
@@ -310,7 +368,9 @@ async def execute_fetch_record(
         image_budget: ImageBudget = context.tool_state.setdefault("image_budget", ImageBudget())
         admission = admission_from_state(context.tool_state)
         collected_images: list[dict[str, Any]] = []
-        selection_query = build_selection_query(context.query, reason)
+        # The model's query names the part it needs; the question would pull
+        # the ranking back toward the passages search already showed.
+        selection_query = focus or build_selection_query(context.query, reason)
         selected_before: set[str] = context.tool_state.setdefault(FETCH_SELECTED_RECORDS_KEY, set())
         # A summary, an overview, "what are the risks", "does it mention X
         # anywhere" — the answer is a property of the whole document, and
@@ -318,7 +378,8 @@ async def execute_fetch_record(
         # changes the answer. Read it in order instead and let the model
         # continue; the router already classified the request
         # (`needs_whole_document`, set in `router.py`).
-        wants_everything = bool(
+        # A focused read is the model asking for one part, whatever the question.
+        wants_everything = not focus and bool(
             getattr(context, "needs_whole_document", False)
             or context.tool_state.get("needs_whole_document")
         )
@@ -328,6 +389,8 @@ async def execute_fetch_record(
         # notes are measured with full ids, which shortening only shrinks.
         entity_note = await _named_entity_note(context, records)
         budget.charge_framing(entity_note)
+        focus_note = _focused_read_note(focus) if focus else ""
+        budget.charge_framing(focus_note)
         budget.charge_framing_chars(
             len(_CITATION_RULE)
             + len(_unavailable_note(
@@ -338,6 +401,7 @@ async def execute_fetch_record(
         )
 
         estimates = [estimate_render_chars(record, start_block) for record in records]
+        selected_now = False
         unread: set[str] = set()
         for position, record in enumerate(records):
             record_key = str(record.get("id") or record.get("virtual_record_id") or "")
@@ -359,6 +423,10 @@ async def execute_fetch_record(
                 parts.append(note)
                 continue
             limit = remaining - sum(shares[1:])
+            if focused_limit is not None:
+                # Room a smaller record left is not passed on: each record of a
+                # focused read keeps to the focused size.
+                limit = min(limit, focused_limit)
             budget.allot(record_key, limit)
             fits = estimates[position] <= limit
             # A continuation follows the pointer the model was handed, and an
@@ -422,6 +490,8 @@ async def execute_fetch_record(
             outcome = budget.outcome(record_key)
             if include_blocks is not None and outcome.stop_reason == "selection":
                 selected_before.add(record_key)
+            if include_blocks is not None:
+                selected_now = True
             if start_block > 0 and outcome.blocks_rendered == 0:
                 indices = _renderable_block_indices(record)
                 if not any(index >= start_block for index in indices):
@@ -435,6 +505,8 @@ async def execute_fetch_record(
             parts.append(rendered)
 
         text = "\n".join(parts)
+        if focus and selected_now:
+            text += focus_note
         text += entity_note
         # TEMPORARY token-savings experiment: shorten every "Record ID:"
         # this fetch prints back down to the same "R<n>" label the model

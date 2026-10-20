@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { Flex, Box, Text, IconButton, Popover, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -15,7 +16,9 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { ChatMessageExtras } from '@/config';
 import { toast } from '@/lib/store/toast-store';
 import { useChatSpeechSynthesis } from '@/lib/hooks/use-chat-speech-synthesis';
+import { AgentsApi } from '@/app/(main)/agents/api';
 import { ChatApi, type FeedbackPayload } from '../../api';
+import { buildChatHref } from '../../build-chat-url';
 import { useChatStore } from '../../store';
 
 // ========================================
@@ -128,7 +131,12 @@ export function MessageActions({
   const [copiedMessage, setCopiedMessage] = useState('');
   const copiedTooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [readAloudHovered, setReadAloudHovered] = useState(false);
+  const [isForking, setIsForking] = useState(false);
   const { t, i18n } = useTranslation();
+  const router = useRouter();
+  const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
+  const forkLabel = isLastMessage ? t('chat.fork') : t('chat.forkFromHere');
+  const canFork = useChatStore((s) => (s.activeSlotId ? s.slots?.[s.activeSlotId]?.isOwner : undefined) !== false);
 
   // ── Like popover state ──
   const [likeOpen, setLikeOpen] = useState(false);
@@ -282,6 +290,35 @@ export function MessageActions({
     if (!messageId) return;
     useCommandStore.getState().dispatch('showRegenBar', { messageId, text: question, appliedFilters });
   }, [messageId, question, appliedFilters]);
+
+  const handleFork = useCallback(async () => {
+    if (!messageId || isForking) return;
+    const state = useChatStore.getState();
+    const slot = state.activeSlotId ? state.slots[state.activeSlotId] : null;
+    const convId = slot?.convId;
+    if (!convId) return;
+
+    setIsForking(true);
+    try {
+      const agentId = slot.threadAgentId;
+      const result = agentId
+        ? await AgentsApi.forkAgentConversation(agentId, convId, messageId)
+        : await ChatApi.forkConversation(convId, messageId);
+      bumpConversationsVersion();
+      router.push(
+        buildChatHref({
+          agentId,
+          conversationId: result.id,
+          projectId: result.projectId,
+        }),
+      );
+      toast.success(t('chat.toasts.forkSuccess'));
+    } catch {
+      toast.error(t('chat.toasts.forkError'));
+    } finally {
+      setIsForking(false);
+    }
+  }, [messageId, isForking, bumpConversationsVersion, router, t]);
 
   const copyToClipboard = useCallback(
     async (text: string, message: string) => {
@@ -696,6 +733,31 @@ export function MessageActions({
             </Popover.Root>
           </Box>
         </Tooltip>
+
+        {messageId && canFork && (
+          <Tooltip content={forkLabel} side="top">
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size="2"
+              disabled={isForking}
+              onClick={handleFork}
+              aria-label={forkLabel}
+              style={{
+                margin: 0,
+                cursor: isForking ? 'default' : 'pointer',
+                color: 'var(--slate-9)',
+                borderRadius: 'var(--radius-1)',
+              }}
+            >
+              <MaterialIcon
+                name="call_split"
+                size={ICON_SIZES.PRIMARY}
+                color="var(--slate-11)"
+              />
+            </IconButton>
+          </Tooltip>
+        )}
 
         {/* Regenerate - only show for the last message */}
         {isLastMessage && messageId && canRegenerate && (

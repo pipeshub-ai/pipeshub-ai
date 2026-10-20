@@ -140,7 +140,6 @@ from app.models.entities import (
     RecordType,
     RelatedExternalRecord,
 )
-from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 from app.utils.streaming import create_stream_record_response
@@ -152,6 +151,7 @@ if TYPE_CHECKING:
 
     from app.config.configuration_service import ConfigurationService
     from app.connectors.core.base.data_store.data_store import DataStoreProvider
+    from app.models.permission import Permission
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BURST_WINDOW_SECONDS        = 300           # 5-minute conversational burst window
@@ -1214,23 +1214,14 @@ class SlackIndividualConnector(BaseConnector):
         channel_data: dict[str, Any],
     ) -> list[Permission]:
         """
-        Return HAS_PERMISSION list for the authenticated user only.
-
-        In the individual connector every visible channel (public, private,
-        IM, MPIM) gets a single direct USER edge for the authenticated user.
-        No AppRole indirection is needed.
+        Return no grant: every visible channel inherits the app, and only the
+        authenticated user is linked to the app.
         """
         if not self.authenticated_user_email:
             self.logger.warning(
-                "⚠️  authenticated_user_email not set — cannot create permission"
+                "authenticated_user_email not set — channel will inherit the app with no grant"
             )
-            return []
-
-        return [Permission(
-            email=self.authenticated_user_email,
-            entity_type=EntityType.USER,
-            type=PermissionType.READ,
-        )]
+        return []
 
     async def _fetch_channel_members(self, channel_id: str) -> list[str]:
         """
@@ -2780,15 +2771,15 @@ class SlackIndividualConnector(BaseConnector):
     ) -> Optional[LinkRecord]:
         try:
             unfurl       = self._unfurl_data(url, msg)
-            rg_id        = ctx.channel_groups_map.get(ctx.channel_id)
 
             return LinkRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=unfurl.get("title") or url[:100],
                 record_type=RecordType.LINK,
                 external_record_id=hashlib.md5(url.encode()).hexdigest(),
-                external_record_group_id=ctx.channel_id,
-                record_group_id=rg_id,
+                # A link in a thread reply sits in the thread group with its message.
+                external_record_group_id=parent.external_record_group_id or ctx.channel_id,
+                record_group_id=parent.record_group_id or ctx.channel_groups_map.get(ctx.channel_id),
                 root_record_group_id=self._root_rg_id(ctx),
                 parent_external_record_id=parent.external_record_id,
                 parent_record_type=RecordType.MESSAGE,

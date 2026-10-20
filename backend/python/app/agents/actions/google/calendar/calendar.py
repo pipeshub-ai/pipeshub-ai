@@ -402,7 +402,7 @@ class GoogleCalendar:
             ToolParameter(name="event_timezone", type=ParameterType.STRING, description="The timezone for the event", required=False, default="UTC"),
             ToolParameter(name="event_all_day", type=ParameterType.BOOLEAN, description="Whether the event is an all-day event", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
         args_summary=lambda args: (
             f'Creating calendar event "{args["event_title"]}"' if args.get("event_title") else "Creating calendar event"
         ),
@@ -510,7 +510,7 @@ class GoogleCalendar:
             ToolParameter(name="event_timezone", type=ParameterType.STRING, description="The new timezone for the event", required=False, default="UTC"),
             ToolParameter(name="event_all_day", type=ParameterType.BOOLEAN, description="Whether the event should be an all-day event", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
     )
     async def update_calendar_event(
         self,
@@ -624,7 +624,7 @@ class GoogleCalendar:
             ToolParameter(name="event_attendees_emails", type=ParameterType.LIST, description="List of email addresses for event attendees", required=False),
             ToolParameter(name="event_timezone", type=ParameterType.STRING, description="The timezone for the event", required=False, default="UTC"),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
     )
     async def create_meet_link(
         self,

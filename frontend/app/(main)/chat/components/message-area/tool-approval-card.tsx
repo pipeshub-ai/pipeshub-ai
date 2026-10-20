@@ -99,7 +99,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
             <Badge size="1" variant="soft" color="gray">{server}</Badge>
             {approval.kind === 'destructive' && (
               <Badge size="1" variant="soft" color="red">
-                {t('chat.toolApproval.deletesData')}
+                {t('chat.toolApproval.cantBeUndone')}
               </Badge>
             )}
           </Flex>

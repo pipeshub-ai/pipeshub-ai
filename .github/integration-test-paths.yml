@@ -88,6 +88,9 @@ web:
 zammad:
   - 'backend/python/app/connectors/sources/zammad/**'
   - 'integration-tests/connectors/zammad/**'
+zendesk:
+  - 'backend/python/app/connectors/sources/zendesk/**'
+  - 'integration-tests/connectors/zendesk/**'
 
 # Not a marker: the UI only matters to the Playwright tests, which run in core.
 frontend:

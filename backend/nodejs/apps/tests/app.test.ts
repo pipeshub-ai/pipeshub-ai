@@ -19,6 +19,7 @@ import * as cmConfigModule from '../src/modules/configuration_manager/config/con
 import * as messageBrokerModule from '../src/libs/services/message-broker.factory';
 import * as kvMigrationModule from '../src/libs/keyValueStore/migration/kvStoreMigration.service';
 import * as oauthProviderModule from '../src/libs/services/oauth-token-service.provider';
+import * as rateLimitModule from '../src/libs/middlewares/rate-limit.middleware';
 import { RedisConnectionProviderFactory } from '../src/libs/services/redis/connectionProviderFactory';
 import * as redisConnectionProviderFactoryModule from '../src/libs/services/redis/connectionProviderFactory';
 import { TokenManagerContainer } from '../src/modules/tokens_manager/container/token-manager.container';
@@ -65,6 +66,7 @@ import * as toolsetsRoutes from '../src/modules/toolsets/routes/toolsets_routes'
 import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes';
 import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
+import * as delegationRoutes from '../src/modules/oauth_provider/routes/delegation.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
 import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
@@ -191,6 +193,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
   sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
   sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
+  sandbox.stub(delegationRoutes, 'createDelegationRouter').returns(dummyRouter);
 }
 
 /**
@@ -251,7 +254,9 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
   } as any);
   containers.oauth!.bind('ServiceTokenService').toConstantValue({
     revokeAllForServiceAccount: sandbox.stub().resolves(),
+    revokeDelegatedTokensForServiceAccount: sandbox.stub().resolves(),
   } as any);
+
 
   // NotificationService mock — needed for initialize() to call .initialize(server)
   const mockNotificationService = {
@@ -708,6 +713,50 @@ describe('Application', () => {
       } finally {
         restoreEnv('STRICT_MODE', original);
       }
+    });
+
+    it('runs the operator-key guard after the global rate limiter, so rejected requests still count', async () => {
+      const globalRateLimiter: express.RequestHandler = (_req, _res, next) => next();
+      sandbox.stub(rateLimitModule, 'createGlobalRateLimiter').returns(globalRateLimiter);
+      const orderedApp = new Application();
+      await orderedApp.initialize();
+
+      const expressApp = (orderedApp as any).app as express.Express;
+      const layerNames: string[] = (expressApp as any)._router.stack.map((layer: any) => layer.name);
+      const limiterAt = layerNames.indexOf('globalRateLimiter');
+      const guardAt = layerNames.indexOf('operatorKeyGuardMiddleware');
+      expect(limiterAt).to.be.greaterThan(-1);
+      expect(guardAt).to.be.greaterThan(limiterAt);
+    });
+
+    it('writes an access-log line for API requests in any letter case, and none for pages', async () => {
+      const expressApp = (app as any).app as express.Express;
+      const server = http.createServer(expressApp);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      const get = (path: string) =>
+        new Promise<void>((resolve, reject) => {
+          http
+            .get({ host: '127.0.0.1', port, path }, (res) => {
+              res.resume();
+              res.on('end', resolve);
+            })
+            .on('error', reject);
+        });
+      try {
+        for (const path of ['/api/v1/access-log-probe', '/API/v1/access-log-probe-upper', '/access-log-probe-page']) {
+          await get(path);
+        }
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+
+      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((line) => line.includes('access-log-probe'));
+      expect(accessLines.some((line) => line.includes('GET /api/v1/access-log-probe '))).to.equal(true);
+      expect(accessLines.some((line) => line.includes('GET /API/v1/access-log-probe-upper '))).to.equal(true);
+      expect(accessLines.some((line) => line.includes('/access-log-probe-page'))).to.equal(false);
     });
   });
 

@@ -37,6 +37,7 @@ import pytest
 from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
+    BreadcrumbItem,
     KnowledgeHubNodesResponse,
     NodeItem,
     PaginationInfo as KHPaginationInfo,
@@ -102,7 +103,7 @@ class SeededGraphProvider:
         self._org_id = org_id
         self._nodes: dict[str, dict[str, Any]] = {}
         self._edges: list[tuple[str, str, str]] = []
-        # id → list of ancestor dicts (breadcrumbs)
+        # id → list of ancestor dicts, root first
         self._breadcrumbs: dict[str, list[dict]] = {}
 
     def add_node(self, node: dict) -> "SeededGraphProvider":
@@ -116,6 +117,18 @@ class SeededGraphProvider:
     def set_breadcrumbs(self, node_id: str, crumbs: list[dict]) -> "SeededGraphProvider":
         self._breadcrumbs[node_id] = crumbs
         return self
+
+    def placement_trail(self, node_id: str) -> list[dict]:
+        """The trail the listing returns for a node: its ancestors, then the node.
+
+        Seeded trails are all visible to the seeded user; choosing a trail around
+        an ancestor the user cannot open is covered by the kh_breadcrumbs tests.
+        """
+        node = self._nodes.get(node_id)
+        if node is None or not node.get("_accessible", True):
+            return []
+        own = {field: node.get(field) for field in ("id", "name", "nodeType", "subType")}
+        return [*self._breadcrumbs.get(node_id, []), own]
 
     # --- IGraphDBProvider methods used by navigator / resolver ---
 
@@ -171,14 +184,6 @@ class SeededGraphProvider:
             if len(linked) >= limit:
                 break
         return linked
-
-    async def get_knowledge_hub_breadcrumbs(
-        self, node_id: str, user_key: str, org_id: str,
-        transaction: str | None = None
-    ) -> list[dict] | None:
-        # Seeded trails are all visible to the seeded user; the ACL filter itself is
-        # covered by the provider unit tests, not by this navigation walk.
-        return self._breadcrumbs.get(node_id, [])
 
     async def get_record_by_weburl(
         self,
@@ -459,10 +464,17 @@ def _patch_kh_service():
             hasNext=has_next,
             hasPrev=(page > 1),
         )
+        breadcrumbs = None
+        if parent_id and "breadcrumbs" in (include or []):
+            breadcrumbs = [
+                BreadcrumbItem(**crumb)
+                for crumb in self_svc.graph_provider.placement_trail(parent_id)
+            ]
         return KnowledgeHubNodesResponse(
             success=True,
             items=items,
             pagination=pagination,
+            breadcrumbs=breadcrumbs,
         )
 
     return patch(

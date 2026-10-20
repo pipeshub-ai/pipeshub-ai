@@ -29,6 +29,7 @@ import { processMarkdownContent } from '../../utils/process-markdown-content';
 import {
   extractToolsetLabel,
   isMcpTool,
+  isWebTool,
   isSkillTool,
   toolActivityLabel as toolActivityLabelUtil,
 } from '../../utils/tool-display';
@@ -937,9 +938,14 @@ const TOOL_TEXT_STYLE: React.CSSProperties = {
   wordBreak: 'break-word',
 };
 
-/** A built-in or toolset tool: the server's summary, or the raw text when there is none. */
+/** A built-in or toolset tool: the server's summary, or the raw text when there is none. Web tools
+ * also list what they found (every search result, the page read), each linked. */
 function ToolDetails({ part, status }: { part: MessagePart; status: NonNullable<MessagePart['status']> }) {
   const { t } = useTranslation();
+  const view = useMemo(
+    () => (status === 'completed' && isWebTool(part.toolName) ? toolResultView(part.resultView) : null),
+    [status, part.toolName, part.resultView],
+  );
   return (
     <>
       {(part.argsSummary || part.args) && (
@@ -960,6 +966,7 @@ function ToolDetails({ part, status }: { part: MessagePart; status: NonNullable<
           ) : (
             <Box style={TOOL_TEXT_STYLE}>{part.resultPreview}</Box>
           )}
+          {view && <ToolResultViewBlock view={view} />}
         </Box>
       )}
     </>

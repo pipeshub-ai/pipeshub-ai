@@ -775,6 +775,21 @@ describe('ConfigurationManager Controller', () => {
       expect(userContextFlag.defaultEnabled).to.equal(true)
     })
 
+    it('should include ENABLE_KH_SCOPE_LISTING in Labs, defaulting to disabled', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const scopeFlag = flags.find((f: any) => f.key === 'ENABLE_KH_SCOPE_LISTING')
+      expect(scopeFlag).to.exist
+      expect(scopeFlag.defaultEnabled).to.equal(false)
+      expect(scopeFlag.hidden).to.not.equal(true)
+    })
+
     it('should not include hidden flags (e.g. ENABLE_BETA_CONNECTORS)', async () => {
       const handler = getAvailablePlatformFeatureFlags()
       const req = createMockRequest()
@@ -799,7 +814,6 @@ describe('ConfigurationManager Controller', () => {
       const advancedKeys = flags.filter((f: any) => f.advanced).map((f: any) => f.key)
       expect(advancedKeys).to.include.members([
         'ENABLE_VECTOR_STORE_REBUILD',
-        'ENABLE_CONTAINER_PERMISSION_FILTER',
         'ENABLE_SOFT_DELETE',
         'ENABLE_NAMED_ENTITY_EXTRACTION',
         'ENABLE_USER_CONTEXT',
@@ -834,6 +848,19 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0].featureFlags.ENABLE_USER_CONTEXT).to.equal(true)
+    })
+
+    it('should default ENABLE_KH_SCOPE_LISTING to false when the store has no entry', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getEffectivePlatformFeatureFlags(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].featureFlags.ENABLE_KH_SCOPE_LISTING).to.equal(false)
     })
 
     it('should let a stored false win over the default', async () => {
@@ -1447,6 +1474,20 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('fills buckets a config saved before a model type existed does not have', async () => {
+      mockEncService.decrypt.returns(JSON.stringify({ llm: [{ provider: 'openai' }] }))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:ai-config'),
+      })
+      const res = createMockResponse()
+
+      await getAIModelsConfig(kvs)(createMockRequest(), res, createMockNext())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.decision).to.deep.equal([])
+      expect(body.llm).to.have.length(1)
     })
   })
 

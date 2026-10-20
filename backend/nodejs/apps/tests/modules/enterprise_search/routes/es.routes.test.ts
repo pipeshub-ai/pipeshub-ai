@@ -926,6 +926,7 @@ describe('Enterprise Search Routes - handler coverage', () => {
         .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
 
       expect(routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/message/:messageId/regenerate' && r.methods.post)).to.exist
+      expect(routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/message/:messageId/fork' && r.methods.post)).to.exist
     })
 
     it('should register agent archive, rename, and archives listing routes', () => {
@@ -977,6 +978,15 @@ describe('Enterprise Search Routes - handler coverage', () => {
         .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
 
       expect(routes.find((r: any) => r.path === '/internal/:conversationId/messages/stream' && r.methods.post)).to.exist
+    })
+
+    it('should register fork route', () => {
+      const router = createConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
+
+      expect(routes.find((r: any) => r.path === '/:conversationId/message/:messageId/fork' && r.methods.post)).to.exist
     })
 
     it('should register share route', () => {

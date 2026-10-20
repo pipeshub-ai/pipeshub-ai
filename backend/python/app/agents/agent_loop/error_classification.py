@@ -33,6 +33,8 @@ import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 
+from app.utils.log_redaction import redact_secrets_in_text
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -268,14 +270,14 @@ def classify_error(error_msg: str) -> tuple[str, str]:
 
 
 def redact_error_for_log(error_msg: str, max_len: int = 1000) -> str:
-    """The raw error with URLs and account ids masked, capped at `max_len`.
+    """The raw error with URLs, account ids and credentials masked, capped at `max_len`.
 
     A provider's error can echo the request URL, whose query string may carry
-    a credential (Google's REST endpoints accept `?key=`).
+    a credential (Google's REST endpoints accept `?key=`), or a request header.
     """
     text = _URL_RE.sub("[url]", error_msg)
     text = _PROVIDER_ACCOUNT_ID_RE.sub("[redacted]", text)
-    return text[:max_len]
+    return redact_secrets_in_text(text)[:max_len]
 
 
 def _status_phrase(status_code: int) -> str | None:

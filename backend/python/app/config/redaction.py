@@ -4,10 +4,9 @@ import os
 
 from starlette.requests import Request
 
-REDACTED_PLACEHOLDER = "••••••••"
+from app.utils.sensitive_names import OAUTH_CLIENT_SECRET_FIELDS  # noqa: F401
 
-# OAuth app secret fields, in each spelling the save paths accept.
-OAUTH_CLIENT_SECRET_FIELDS = frozenset({"clientSecret", "client_secret", "clientsecret"})
+REDACTED_PLACEHOLDER = "••••••••"
 
 
 def hide_secrets_by_default() -> bool:

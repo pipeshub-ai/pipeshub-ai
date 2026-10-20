@@ -13,9 +13,9 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolDefinition,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.evernote.evernote import EvernoteClient, EvernoteResponse
 from app.sources.external.evernote.evernote import EvernoteDataSource
@@ -102,7 +102,7 @@ tools: List[ToolDefinition] = [
 @ToolsetBuilder("Evernote")\
     .in_group("Productivity")\
     .with_description("Evernote integration for note-taking and organization")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Evernote",

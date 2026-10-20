@@ -114,7 +114,11 @@ describe('tokens_manager/controllers connector stop + busy guard', () => {
       };
     });
 
-    const run = async (status: string, isLocked = false) => {
+    const run = async (
+      status: string,
+      isLocked = false,
+      owner: Record<string, string> = {},
+    ) => {
       const exec = sinon
         .stub(connectorUtils, 'executeConnectorCommand')
         .callsFake(async (uri: string) => {
@@ -126,7 +130,7 @@ describe('tokens_manager/controllers connector stop + busy guard', () => {
           }
           return {
             statusCode: 200,
-            data: { connector: { status, isLocked, isActive: true } },
+            data: { connector: { status, isLocked, isActive: true, ...owner } },
           } as any;
         });
       await resyncConnectorRecords(recordRelationService, appConfig)(
@@ -170,6 +174,26 @@ describe('tokens_manager/controllers connector stop + busy guard', () => {
 
     it('refuses one while the connector is locked', async () => {
       await refuses('IDLE', true);
+    });
+
+    it("refuses someone else's personal connector", async () => {
+      // A share recipient can read the connector; syncing it stays the owner's.
+      await run('IDLE', false, { scope: 'personal', createdBy: 'u-2' });
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0]?.statusCode).to.equal(403);
+      expect(recordRelationService.resyncConnectorRecords.called).to.be.false;
+    });
+
+    it('lets the owner resync their personal connector', async () => {
+      await run('IDLE', false, { scope: 'personal', createdBy: 'u-1' });
+      expect(next.called).to.be.false;
+      expect(recordRelationService.resyncConnectorRecords.calledOnce).to.be.true;
+    });
+
+    it('leaves team connectors to the existing checks', async () => {
+      await run('IDLE', false, { scope: 'team', createdBy: 'u-2' });
+      expect(next.called).to.be.false;
+      expect(recordRelationService.resyncConnectorRecords.calledOnce).to.be.true;
     });
 
     it('lets an idle connector through to the resync', async () => {

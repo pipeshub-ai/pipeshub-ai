@@ -279,3 +279,65 @@ describe('OAuth Provider Routes', () => {
     })
   })
 })
+
+describe('POST /token validation errors', () => {
+  let server: Server | undefined
+  let token: sinon.SinonStub
+
+  afterEach(async () => {
+    if (server) {
+      await new Promise<void>((resolve, reject) => {
+        server!.close((err) => (err ? reject(err) : resolve()))
+      })
+      server = undefined
+    }
+    sinon.restore()
+  })
+
+  async function postToken(body: Record<string, unknown>): Promise<Response> {
+    token = sinon.stub().callsFake((_req: any, res: any) => res.status(200).json({ access_token: 'at' }))
+    const app = express()
+    app.use(express.json())
+    app.use('/api/v1/oauth2', createOAuthProviderRouter(buildContainer({ OAuthProviderController: { token } }) as any))
+    // Stands in for the app's generic handler, whose body is not the OAuth shape.
+    app.use((err: any, _req: any, res: any, _next: any) => {
+      res.status(err.statusCode || 500).json({ code: 'VALIDATION_ERROR', message: err.message })
+    })
+    const port = await new Promise<number>((resolve, reject) => {
+      server = app.listen(0, () => {
+        const addr = server!.address()
+        if (addr && typeof addr === 'object') resolve(addr.port)
+        else reject(new Error('no port'))
+      })
+    })
+    return fetch(`http://127.0.0.1:${port}/api/v1/oauth2/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  it('answers an unknown grant_type with the RFC 6749 unsupported_grant_type body', async () => {
+    const res = await postToken({ grant_type: 'unsupported_grant', client_id: 'c1', client_secret: 's' })
+    expect(res.status).to.equal(400)
+    const body = await res.json()
+    expect(Object.keys(body).sort()).to.deep.equal(['error', 'error_description'])
+    expect(body.error).to.equal('unsupported_grant_type')
+    expect(body.error_description).to.be.a('string').and.not.empty
+    expect(token.called).to.be.false
+  })
+
+  for (const [label, body] of [
+    ['a missing grant_type', { client_id: 'c1' }],
+    ['an empty grant_type', { grant_type: '', client_id: 'c1' }],
+  ] as const) {
+    it(`answers ${label} with the RFC 6749 invalid_request body`, async () => {
+      const res = await postToken(body)
+      expect(res.status).to.equal(400)
+      const json = await res.json()
+      expect(json.error).to.equal('invalid_request')
+      expect(json).to.not.have.property('code')
+      expect(token.called).to.be.false
+    })
+  }
+})

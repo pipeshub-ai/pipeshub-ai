@@ -21,16 +21,15 @@ class CONFIG:
     # packages) and whether agents can load skill tools. Defaults to
     # enabled (Beta) — like ENABLE_ACTIONS, admins may opt out from Labs.
     ENABLE_SKILLS = "ENABLE_SKILLS"
-    # Scopes a search by the containers a user can reach (connector, record
-    # group, root record group) instead of sending every accessible record id
-    # to the vector DB. Defaults to enabled; admins may opt out from Labs to
-    # fall back to the record-id path.
-    ENABLE_CONTAINER_PERMISSION_FILTER = "ENABLE_CONTAINER_PERMISSION_FILTER"
     # Controls whether the default assistant / Universal Agent Mode injects
     # the current user's name, email, and organization into the system prompt.
     # Defaults to enabled; admins may opt out from Labs. Agent Builder agents
     # use their own per-agent `sendUserContext` field instead of this flag.
     ENABLE_USER_CONTEXT = "ENABLE_USER_CONTEXT"
+    # Serves the knowledge hub's global listing (All records) from per-connector
+    # scopes precomputed at each sync, instead of walking every connector's tree
+    # on each request. Defaults to disabled; admins opt in from Labs.
+    ENABLE_KH_SCOPE_LISTING = "ENABLE_KH_SCOPE_LISTING"
     # Deleting a record moves it to the trash (kept, hidden, vectors removed)
     # instead of removing it; a scheduled purge removes it later. Defaults to
     # disabled; admins opt in from Labs.

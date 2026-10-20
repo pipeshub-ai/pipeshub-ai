@@ -20,6 +20,14 @@ from app.exceptions.fastapi_responses import Status
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
 from app.modules.retrieval.context.ordering import relevance_ordered_context
 from app.modules.retrieval.context.renderer import render_knowledge
+from app.modules.retrieval.context.targeted import (
+    cap_passages_per_record,
+    more_passages_list,
+    more_passages_note,
+    passages_per_record,
+    search_max_chars,
+    targeted_retrieval_enabled,
+)
 from app.modules.retrieval.context.units import unit_children
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, is_base64_image
 
@@ -115,6 +123,8 @@ async def prefetch_retrieval(
     ref_mapper: CitationRefMapper | None = None,
     image_budget: ImageBudget | None = None,
     image_admission: ImageAdmission | None = None,
+    read_in_full: bool = False,
+    can_fetch: bool = True,
 ) -> PrefetchResult | None:
     """Runs upfront retrieval for the current query.
 
@@ -137,6 +147,11 @@ async def prefetch_retrieval(
     `image_admission`, when given, is the request's arbiter: images prefetch
     attaches count against the model's cap, and a later search sees them as
     already sent.
+
+    Under TARGETED_RETRIEVAL the context names records that had more matching
+    passages and how to read them. `read_in_full` (THOROUGH_RETRIEVAL's
+    full-read policy, where the fetch tool takes no `query`) asks for a whole
+    read instead; `can_fetch=False` (a turn with no tools) leaves the note out.
     """
     if not force and _is_followup(previous_conversations):
         return None
@@ -221,6 +236,23 @@ async def prefetch_retrieval(
             failure_notice=incomplete_notice,
         )
 
+    # TARGETED_RETRIEVAL: the first-turn context is held to what one search
+    # result may hold, a few passages per record, like the search tool's.
+    targeted = targeted_retrieval_enabled()
+    per_record = passages_per_record(limit) if targeted else 0
+    omitted: dict[str, int] = {}
+    if targeted:
+        capped = cap_passages_per_record(knowledge.ranked, per_record)
+        knowledge.ranked = capped.units
+        omitted = capped.omitted
+
+    max_chars: int | None = None
+    if targeted:
+        max_chars = (
+            _room_for_records(omitted, per_record, virtual_record_id_to_result, focused_reads=not read_in_full)
+            if can_fetch else search_max_chars()
+        )
+
     if image_admission is not None and is_multimodal_llm:
         await image_admission.warm([
             content
@@ -236,11 +268,21 @@ async def prefetch_retrieval(
         by_relevance=relevance_ordered_context(),
         image_budget=image_budget if image_budget is not None else ImageBudget(),
         image_admission=image_admission,
+        max_chars=max_chars,
     )
     flat_parts = [item for sublist in rendered.parts for item in sublist]
     formatted_context = "\n".join(
         part["text"] for part in flat_parts if part.get("type") == "text" and part.get("text")
     )
+    if targeted and can_fetch and formatted_context.strip():
+        shown = {unit.get("virtual_record_id") for unit in rendered.units}
+        shown_omitted = {vrid: count for vrid, count in omitted.items() if vrid in shown}
+        more = more_passages_list(shown_omitted, virtual_record_id_to_result, focused_reads=not read_in_full)
+        if more:
+            formatted_context = (
+                more_passages_note(per_record, len(shown_omitted), 0, focused_reads=not read_in_full)
+                + formatted_context + more
+            )
 
     return PrefetchResult(
         formatted_context=formatted_context,
@@ -254,6 +296,18 @@ async def prefetch_retrieval(
         incomplete_notice=incomplete_notice,
         failure_notice=None if formatted_context.strip() else incomplete_notice,
     )
+
+
+def _room_for_records(
+    omitted: dict[str, int], per_record: int, records: dict[str, Any], *, focused_reads: bool,
+) -> int:
+    """What the records may take of a targeted first-turn context: the
+    search result's size less the note and list about trimmed records, sized
+    as if every trimmed record were shown, which the real ones never exceed."""
+    suffix = more_passages_note(per_record, len(omitted), 0, focused_reads=focused_reads) + (
+        more_passages_list(omitted, records, focused_reads=focused_reads)
+    )
+    return max(search_max_chars() - len(suffix), 0)
 
 
 def filter_notice_constraint(notice: str) -> str:

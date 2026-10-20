@@ -683,7 +683,10 @@ class Processor:
             processor = self.docling_processor
 
             # Phase 1: Parse document with Docling (no LLM calls)
-            conv_res = await processor.parse_document(recordName, docx_binary)
+            # Docling falls back to the extension when it cannot tell the format from
+            # the bytes, so the name must say DOCX, as it does for PPTX below.
+            doc_name = recordName if recordName.lower().endswith(".docx") else f"{recordName}.docx"
+            conv_res = await processor.parse_document(doc_name, docx_binary)
 
             # Signal parsing complete after Docling parsing
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))

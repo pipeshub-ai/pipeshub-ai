@@ -2865,6 +2865,70 @@ describe('Enterprise Search Controller', () => {
       expect(sent[1]).to.not.have.any.keys('createdAfter', 'createdBefore', 'modifiedAfter', 'modifiedBefore')
     })
 
+    it('forwards rewriteQuery only when the caller set it', async () => {
+      const handler = search(createMockAppConfig())
+      const sent: any[] = []
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        sent.push(JSON.parse(this.body))
+        return Promise.resolve({ statusCode: 200, data: { searchResults: [], records: [] } } as any)
+      })
+      sinon.stub(Citation, 'insertMany').resolves([] as any)
+      const saved = { _id: new mongoose.Types.ObjectId() }
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves(saved as any)
+
+      for (const body of [
+        { query: 'q', limit: 10, rewriteQuery: false },
+        { query: 'q', limit: 10, rewriteQuery: true },
+        { query: 'q', limit: 10 },
+      ]) {
+        const req = createMockRequest({ body, user: { userId: VALID_OID, orgId: VALID_OID2 } })
+        await handler(req, createMockResponse(), createMockNext())
+      }
+
+      expect(sent[0]).to.deep.include({ query: 'q', rewriteQuery: false })
+      expect(sent[1]).to.deep.include({ query: 'q', rewriteQuery: true })
+      expect(sent[2]).to.not.have.property('rewriteQuery')
+    })
+
+    it('forwards timeline only when the caller set it, and returns its periods as sent', async () => {
+      const handler = search(createMockAppConfig())
+      const sent: any[] = []
+      const timeline = {
+        dateField: 'created',
+        start: '2026-03-01',
+        end: '2026-05-31',
+        periods: [{ label: 'March 2026 (2026-03-01 to 2026-03-31)', start: '2026-03-01', end: '2026-03-31', records: 1, matches: 1 }],
+        notes: [],
+      }
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        sent.push(JSON.parse(this.body))
+        return Promise.resolve({
+          statusCode: 200,
+          data: { searchResults: [{ content: 'c', timelinePeriod: 0, metadata: {} }], records: [], timeline },
+        } as any)
+      })
+      sinon.stub(Citation, 'insertMany').resolves([{ _id: new mongoose.Types.ObjectId() }] as any)
+      const saved = { _id: new mongoose.Types.ObjectId() }
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves(saved as any)
+
+      const responses: any[] = []
+      for (const body of [
+        { query: 'q', limit: 10, timeline: 'created', createdAfter: '2026-03-01' },
+        { query: 'q', limit: 10 },
+      ]) {
+        const req = createMockRequest({ body, user: { userId: VALID_OID, orgId: VALID_OID2 } })
+        const res = createMockResponse()
+        await handler(req, res, createMockNext())
+        responses.push(res)
+      }
+
+      expect(sent[0]).to.deep.include({ query: 'q', timeline: 'created', createdAfter: '2026-03-01' })
+      expect(sent[1]).to.not.have.property('timeline')
+      const body = responses[0].json.firstCall.args[0]
+      expect(body.searchResponse.timeline).to.deep.equal(timeline)
+      expect(body.searchResponse.searchResults[0].timelinePeriod).to.equal(0)
+    })
+
     it('passes the AI service\'s reason for refusing a date back as a 400', async () => {
       const handler = search(createMockAppConfig())
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
@@ -4744,6 +4808,40 @@ describe('Enterprise Search Controller', () => {
   })
 
   describe('search (deep paths)', () => {
+    it('saves a record without the linked records read for this user, and returns them to this user', async () => {
+      // A saved search can be shared, and its records are returned as stored;
+      // linkedRecords were filtered for the user who ran it.
+      const handler = search(createMockAppConfig())
+      const linked = [{ relation: 'linksTo', recordId: 'pr-1', recordName: 'Fix', recordType: 'PULL_REQUEST', connector: 'GITHUB' }]
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          searchResults: [],
+          records: [{ _key: 'rec1', recordName: 'Thread', statusSummary: 'Open', linkedRecords: linked }],
+        },
+      } as any)
+      let savedSearch: any
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').callsFake(async function (this: any) {
+        savedSearch = this
+        return this
+      })
+
+      const req = createMockRequest({
+        body: { query: 'test search', limit: 10 },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0])).to.be.false
+      const stored = JSON.parse(savedSearch.records.get('rec1'))
+      expect(stored).to.deep.equal({ _key: 'rec1', recordName: 'Thread', statusSummary: 'Open' })
+      const body = res.json.firstCall.args[0]
+      expect(body.searchResponse.records[0].linkedRecords).to.deep.equal(linked)
+    })
+
     it('should handle search with records array in response', async () => {
       const handler = search(createMockAppConfig())
 

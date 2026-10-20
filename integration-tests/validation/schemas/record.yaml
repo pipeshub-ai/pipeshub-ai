@@ -1,6 +1,13 @@
 name: graph_record
 description: Base Record from graph (matches Record.model_dump mode=json).
 fields:
+  access_rule:
+    required: false
+    type: string
+    enum:
+      - OPEN
+      - STRICT
+      - RESTRICTED
   block_containers:
     type: object
     required: false
@@ -54,6 +61,17 @@ fields:
     required: false
     type: integer
   inherit_permissions:
+    required: false
+    type: boolean
+  # Write-time instructions to the processor (inherit from the group, replace the stored
+  # grants, the source listed every group it shares the record with); never stored.
+  inherit_permissions_from_group:
+    required: false
+    type: boolean
+  rewrite_permissions:
+    required: false
+    type: boolean
+  shared_groups_complete:
     required: false
     type: boolean
   is_dependent_node:

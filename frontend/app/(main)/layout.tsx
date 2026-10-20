@@ -3,11 +3,11 @@
 import React, { Suspense, useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import "../globals.css"
-import 'react-pdf-highlighter/dist/esm/style/PdfHighlighter.css';
-import 'react-pdf-highlighter/dist/esm/style/Highlight.css';
-import 'react-pdf-highlighter/dist/esm/style/AreaHighlight.css';
-import 'react-pdf-highlighter/dist/esm/style/Tip.css';
-import 'react-pdf-highlighter/dist/esm/style/MouseSelection.css';
+import 'react-pdf-highlighter/dist/style/PdfHighlighter.css';
+import 'react-pdf-highlighter/dist/style/Highlight.css';
+import 'react-pdf-highlighter/dist/style/AreaHighlight.css';
+import 'react-pdf-highlighter/dist/style/Tip.css';
+import 'react-pdf-highlighter/dist/style/MouseSelection.css';
 import { Flex, Box, Text, IconButton } from "@radix-ui/themes"
 import { MaterialIcon } from "../components/ui/MaterialIcon"
 import { ThemeProvider, ThemeScript } from "../components/theme-provider"
@@ -86,6 +86,10 @@ export default function RootLayout({
         <ThemeScript />
         <link
           href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined|Material+Icons"
+          rel="stylesheet"
+        />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block"
           rel="stylesheet"
         />
       </head>

@@ -1644,6 +1644,111 @@ class TestVectorDbHealthCheck:
         assert response.status_code == 200
 
 
+class TestVectorDbMemoryCheck:
+    """/health/vector-db/memory: advisory, authenticated, never fails the probe."""
+
+    def test_route_requires_authentication(self) -> None:
+        from app.connectors_main import EXCLUDE_PATHS
+
+        assert "/health/vector-db/memory" not in EXCLUDE_PATHS
+
+    @pytest.mark.asyncio
+    async def test_returns_the_report(self) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+        from app.services.vector_db.models import VectorDBMemoryReport
+
+        request = MagicMock()
+        request.app.state = SimpleNamespace()
+        request.state = SimpleNamespace(user={"role": "admin"})
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=VectorDBMemoryReport(
+            status="insufficient",
+            needed_bytes=12 * 1024**3,
+            index_bytes=10 * 1024**3,
+            base_bytes=2 * 1024**3,
+            available_bytes=4 * 1024**3,
+            available_source="configured",
+            points=5_000_000,
+            nodes=1,
+        ))
+        request.app.state._vector_db_health_provider = provider
+
+        response = await vector_db_memory_check(request)
+
+        assert response.status_code == 200
+        body = json.loads(response.body)
+        assert body["status"] == "insufficient"
+        assert body["neededBytes"] == 12 * 1024**3
+        assert body["availableBytes"] == 4 * 1024**3
+        assert body["availableSource"] == "configured"
+
+    @pytest.mark.asyncio
+    async def test_creates_and_caches_the_provider(self) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+
+        request = MagicMock()
+        request.app.container = _make_container()
+        request.app.state = SimpleNamespace()
+        request.state = SimpleNamespace(user={"role": "admin"})
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=None)
+
+        with patch(
+            "app.services.vector_db.vector_db_provider_factory.VectorDBProviderFactory.create_provider",
+            new_callable=AsyncMock,
+            return_value=provider,
+        ):
+            response = await vector_db_memory_check(request)
+
+        assert response.status_code == 200
+        assert json.loads(response.body) == {"status": "unsupported"}
+        assert request.app.state._vector_db_health_provider is provider
+
+    @pytest.mark.asyncio
+    async def test_failure_is_503_and_keeps_the_provider(self) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+
+        request = MagicMock()
+        request.app.container = _make_container()
+        request.app.state = SimpleNamespace()
+        request.state = SimpleNamespace(user={"role": "admin"})
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(side_effect=RuntimeError("qdrant down"))
+        request.app.state._vector_db_health_provider = provider
+
+        response = await vector_db_memory_check(request)
+
+        assert response.status_code == 503
+        assert json.loads(response.body)["status"] == "unknown"
+        assert request.app.state._vector_db_health_provider is provider
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user", [None, {}, {"role": "member"}, {"role": "Member"}])
+    async def test_non_admins_are_refused_before_the_report(self, user: dict | None) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+
+        request = MagicMock()
+        request.app.state = SimpleNamespace()
+        request.state = SimpleNamespace(user=user)
+        provider = MagicMock()
+        provider.memory_report = AsyncMock()
+        request.app.state._vector_db_health_provider = provider
+
+        response = await vector_db_memory_check(request)
+
+        assert response.status_code == 403
+        assert json.loads(response.body) == {"detail": "Admin access required"}
+        provider.memory_report.assert_not_awaited()
+
+
 class TestGraphDbHealthNeo4jUnhealthy:
     @pytest.mark.asyncio
     async def test_neo4j_connectivity_failure(self):
@@ -1820,13 +1925,22 @@ class TestRefreshConnectorMetrics:
     async def test_refresh_connector_metrics_updates_gauge(self):
         """Metrics refresh counts only active connector apps by type."""
         from app.connectors_main import refresh_connector_metrics
+        from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-        gp = AsyncMock()
-        gp.get_all_documents = AsyncMock(return_value=[
+        apps = [
             {"isActive": True, "type": "KB"},
             {"isActive": False, "type": "KB"},
             {"isActive": True, "type": "DRIVE"},
-        ])
+        ]
+
+        async def nodes_by_filters(collection, filters, return_fields=None) -> list[dict]:
+            return [a for a in apps if all(a.get(k) == v for k, v in filters.items())]
+
+        # The count is the provider's: this one counts the way a backend without
+        # a query of its own does.
+        gp = AsyncMock()
+        gp.get_nodes_by_filters = AsyncMock(side_effect=nodes_by_filters)
+        gp.count_active_apps_by_type = lambda: IGraphDBProvider.count_active_apps_by_type(gp)
         logger = MagicMock()
 
         with patch("app.connectors_main.set_connector_active") as mock_set, \
@@ -1835,21 +1949,23 @@ class TestRefreshConnectorMetrics:
                 await refresh_connector_metrics(gp, logger, interval_s=60)
 
         mock_set.assert_called_once_with({"KB": 1, "DRIVE": 1})
+        gp.get_all_documents.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_logs_warning_when_gauge_refresh_fails(self):
         from app.connectors_main import refresh_connector_metrics
 
         gp = AsyncMock()
-        gp.get_all_documents = AsyncMock(side_effect=RuntimeError("graph down"))
+        gp.count_active_apps_by_type = AsyncMock(side_effect=RuntimeError("graph down"))
         logger = MagicMock()
 
-        with patch("app.connectors_main.set_connector_active"), \
+        with patch("app.connectors_main.set_connector_active") as mock_set, \
              patch("app.connectors_main.asyncio.sleep", new_callable=AsyncMock, side_effect=asyncio.CancelledError):
             with pytest.raises(asyncio.CancelledError):
                 await refresh_connector_metrics(gp, logger, interval_s=60)
 
         logger.warning.assert_called()
+        mock_set.assert_not_called()
 
 
 class TestCorsPolicy:

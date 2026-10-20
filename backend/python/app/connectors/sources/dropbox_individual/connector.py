@@ -67,6 +67,7 @@ from app.connectors.core.constants import (
 )
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox_individual.common.apps import DropboxIndividualApp
+from app.connectors.sources.dropbox.deletes import apply_deleted_entry, item_still_exists
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 
 # Model imports
@@ -78,7 +79,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.dropbox.dropbox_ import (
     DropboxClient,
     DropboxTokenConfig,
@@ -423,6 +424,14 @@ class DropboxIndividualConnector(BaseConnector):
             RecordUpdate object or None if entry should be skipped
         """
         try:
+            # A delete has no id, dates or extension to filter on.
+            if isinstance(entry, DeletedMetadata):
+                await apply_deleted_entry(
+                    self.data_entities_processor, self.connector_id, entry.path_lower,
+                    self._item_still_exists, self.logger,
+                )
+                return None
+
             # 0. Apply date filters
             if not self._pass_date_filters(
                 entry, modified_after, modified_before, created_after, created_before
@@ -432,35 +441,6 @@ class DropboxIndividualConnector(BaseConnector):
             if not self._pass_extension_filter(entry):
                 self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
                 return None
-
-            # 1. Handle Deleted Items (Deletion from db not implemented yet)
-            if isinstance(entry, DeletedMetadata):
-                # return None
-                # self.logger.info(f"Item at path '{entry.path_lower}' has been deleted.")
-
-
-                # async with self.data_store_provider.transaction() as tx_store:
-                #     record = await tx_store.get_record_by_path(
-                #         connector_name=self.connector_name,
-                #         path=entry.path_lower,
-                #     )
-
-                # await self.data_entities_processor.on_record_deleted(
-                #     record_id=record["_key"]
-                # )
-
-
-                # return RecordUpdate(
-                #     record=None,
-                #     external_record_id=entry.id,
-                #     is_new=False,
-                #     is_updated=False,
-                #     is_deleted=True,
-                #     metadata_changed=False,
-                #     content_changed=False,
-                #     permissions_changed=False
-                # )
-                pass
 
             # 2. Get existing record from the database
             existing_record = await self.data_entities_processor.get_record_by_external_id(
@@ -472,7 +452,6 @@ class DropboxIndividualConnector(BaseConnector):
             is_updated = False
             metadata_changed = False
             content_changed = False
-            permissions_changed = False
             is_file = isinstance(entry, FileMetadata)
 
             if existing_record:
@@ -611,6 +590,7 @@ class DropboxIndividualConnector(BaseConnector):
                 weburl=preview_url, # Calculated in step 5.5
                 signed_url=signed_url, # Calculated in step 5
                 parent_external_record_id=parent_external_record_id,
+                parent_record_type=RecordType.FILE if parent_external_record_id else None,
                 size_in_bytes=entry.size if is_file else 0,
                 is_file=is_file,
                 preview_renderable=is_file,
@@ -620,33 +600,8 @@ class DropboxIndividualConnector(BaseConnector):
                 sha256_hash=entry.content_hash if is_file and hasattr(entry, 'content_hash') else None,
             )
 
-            # 8. Handle Permissions
-            new_permissions = []
-
-            try:
-                new_permissions.append(
-                    Permission(
-                        external_id=user_id,
-                        email=user_email,
-                        type=PermissionType.WRITE,
-                        entity_type=EntityType.USER
-                    )
-                )
-
-            except Exception as perm_ex:
-                self.logger.warning(f"Could not fetch permissions for {entry.name}: {perm_ex}")
-                # Safe Fallback to owner permission to prevent data invisibility
-                new_permissions = [
-                    Permission(
-                        external_id=user_id,
-                        email=user_email,
-                        type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    )
-                ]
-
-            # 9. Compare permissions
-            old_permissions = []
+            file_record.rewrite_permissions = True
+            file_record.inherit_permissions = True
 
             return RecordUpdate(
                 record=file_record,
@@ -655,15 +610,19 @@ class DropboxIndividualConnector(BaseConnector):
                 is_deleted=False,
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
-                permissions_changed=permissions_changed,
-                old_permissions=old_permissions,
-                new_permissions=new_permissions,
+                permissions_changed=True,
+                old_permissions=[],
+                new_permissions=[],
                 external_record_id=entry.id
             )
 
         except Exception as ex:
             self.logger.error(f"Error processing Dropbox entry {getattr(entry, 'id', entry.path_lower)}: {ex}", exc_info=True)
             return None
+
+    async def _item_still_exists(self, record: Record) -> bool | None:
+        """Whether a deleted path's record still resolves by id (a move also reports a delete at the old path)."""
+        return item_still_exists(await self.data_source.files_get_metadata(path=record.external_record_id))
 
     async def _process_dropbox_items_generator(
         self,
@@ -1028,6 +987,9 @@ class DropboxIndividualConnector(BaseConnector):
 
             app_user = self._get_current_user_as_app_user(response.data)
             await self.data_entities_processor.on_new_app_users([app_user])
+            await self.register_authenticated_source_user(
+                response.data.email, response.data.account_id
+            )
             self.logger.info(f"Synced user: {app_user.email} ({app_user.source_user_id})")
 
             # 2. Identify the User (for backward compatibility with existing code)
@@ -1066,11 +1028,9 @@ class DropboxIndividualConnector(BaseConnector):
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             external_group_id=user_id,
+            inherit_permissions=True,
         )
-        # Permissions: Owner
-        permissions = [Permission(external_id=user_id, email=user_email, type=PermissionType.OWNER, entity_type=EntityType.USER)]
-
-        await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
+        await self.data_entities_processor.on_new_record_groups([(record_group, [])])
         return record_group
 
     async def run_incremental_sync(self) -> None:

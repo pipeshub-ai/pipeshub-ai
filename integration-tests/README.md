@@ -310,8 +310,7 @@ changed file that no filter names (shared backend code, the stack, this workflow
 runs every shard; docs and unit tests alone run none; frontend changes run
 `core`.
 
-Adding a connector means adding its marker to the last shard line (`CONN_SHARD_9`
-today), where new connector suites go. Connector
+Adding a connector means adding its marker to one of those shard lines. Connector
 tests are also marked `integration`, so a marker in none of them is not skipped —
 it falls into `core`, which makes that shard longer and undoes the balance. A
 `CONN_SHARD_N` with no matching `connectors-N` job in the matrix is the case that

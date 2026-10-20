@@ -12,16 +12,26 @@ import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/s
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useToastStore } from '@/lib/store/toast-store';
 import { WebSearchApi } from './api';
-import { WebSearchProviderRow, ConfigurePanel, SendImagesRow } from './components';
+import { WebSearchProviderRow, ConfigurePanel } from './components';
 import {
   DUCKDUCKGO_PROVIDER_ID,
   WEB_SEARCH_PROVIDER_META,
+  defaultProviderLabel,
   type ConfigurableProvider,
   type ConfiguredWebSearchProvider,
   type WebSearchProviderAgentUsage,
   type WebSearchProviderType,
-  type WebSearchSettings,
 } from './types';
+
+/** After the default is deleted the server promotes the next search provider; name whichever it chose. */
+async function newDefaultNotice(): Promise<string> {
+  try {
+    return `${defaultProviderLabel(await WebSearchApi.getProviders())} is now the default web search provider.`;
+  } catch {
+    // Unknown is better than wrong: an unread setting must not be reported as DuckDuckGo.
+    return 'The next search provider you added is now the default, or DuckDuckGo if there is none.';
+  }
+}
 
 // ============================================================
 // Page
@@ -42,15 +52,10 @@ export default function WebSearchPage() {
 
   // ── State ─────────────────────────────────────────────────
   const [configuredProviders, setConfiguredProviders] = useState<ConfiguredWebSearchProvider[]>([]);
-  const [settings, setSettings] = useState<WebSearchSettings>({
-    includeImages: false,
-    maxImages: 3,
-  });
   const [inherited, setInherited] = useState(false);
 
   const [isLoading, setIsLoading] = useState(true);
   const [settingDefaultType, setSettingDefaultType] = useState<WebSearchProviderType | null>(null);
-  const [isSettingsSaving, setIsSettingsSaving] = useState(false);
 
   // Configure panel
   const [panelOpen, setPanelOpen] = useState(false);
@@ -84,7 +89,6 @@ export default function WebSearchPage() {
       try {
         const config = await WebSearchApi.getConfig();
         setConfiguredProviders(config.providers);
-        setSettings(config.settings);
         setInherited(config?.inherited ?? false);
 
       } catch (err) {
@@ -138,29 +142,13 @@ export default function WebSearchPage() {
     async ({ provider, wasDefault }: { provider: ConfigurableProvider; wasDefault: boolean }) => {
       const meta = WEB_SEARCH_PROVIDER_META.find((m) => m.type === provider);
       const label = meta?.label ?? provider;
-      try {
-        if (wasDefault) {
-          await WebSearchApi.setDefaultProvider(DUCKDUCKGO_PROVIDER_ID);
-        }
-        addToast({
-          variant: 'success',
-          title: `${label} removed`,
-          description: wasDefault
-            ? 'DuckDuckGo is now the default web search provider.'
-            : 'Configuration deleted successfully.',
-          duration: 4000,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Please try again.';
-        addToast({
-          variant: 'error',
-          title: 'Failed to reset default provider',
-          description: message,
-          duration: 5000,
-        });
-      } finally {
-        loadData(false);
-      }
+      addToast({
+        variant: 'success',
+        title: `${label} removed`,
+        description: wasDefault ? await newDefaultNotice() : 'Configuration deleted successfully.',
+        duration: 4000,
+      });
+      loadData(false);
     },
     [addToast, loadData],
   );
@@ -229,15 +217,10 @@ export default function WebSearchPage() {
     setIsDeleting(true);
     try {
       await WebSearchApi.deleteProvider(deleteTarget.providerKey);
-      if (wasDefault) {
-        await WebSearchApi.setDefaultProvider(DUCKDUCKGO_PROVIDER_ID);
-      }
       addToast({
         variant: 'success',
         title: `${label} removed`,
-        description: wasDefault
-          ? 'DuckDuckGo is now the default web search provider.'
-          : 'Configuration deleted successfully.',
+        description: wasDefault ? await newDefaultNotice() : 'Configuration deleted successfully.',
         duration: 4000,
       });
       setDeleteTarget(null);
@@ -255,53 +238,6 @@ export default function WebSearchPage() {
       setIsDeleting(false);
     }
   }, [deleteTarget, addToast, loadData]);
-
-  // ── Handlers: settings (send images) ──────────────────────
-  const saveSettings = useCallback(
-    async (next: WebSearchSettings, successMessage: string) => {
-      setIsSettingsSaving(true);
-      const previous = settings;
-      setSettings(next);
-      try {
-        const updated = await WebSearchApi.updateSettings(next);
-        setSettings(updated);
-        addToast({
-          variant: 'success',
-          title: successMessage,
-          duration: 3000,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Please try again.';
-        setSettings(previous);
-        addToast({
-          variant: 'error',
-          title: 'Failed to update image settings',
-          description: message,
-          duration: 5000,
-        });
-      } finally {
-        setIsSettingsSaving(false);
-      }
-    },
-    [settings, addToast],
-  );
-
-  const handleSendImagesToggle = useCallback(
-    (enabled: boolean) => {
-      const next = { ...settings, includeImages: enabled };
-      const message = enabled ? 'Images will be sent to LLM' : 'Images will not be sent to LLM';
-      saveSettings(next, message);
-    },
-    [settings, saveSettings],
-  );
-
-  const handleMaxImagesCommit = useCallback(
-    (maxImages: number) => {
-      const next = { ...settings, maxImages };
-      saveSettings(next, `Max images updated to ${maxImages}`);
-    },
-    [settings, saveSettings],
-  );
 
   // ── Panel data ────────────────────────────────────────────
   const panelMeta = panelProvider
@@ -416,44 +352,6 @@ export default function WebSearchPage() {
           )}
         </Flex>
 
-        {/* ── Image Settings section ── */}
-        <Flex
-          direction="column"
-          style={{
-            border: '1px solid var(--slate-5)',
-            borderRadius: 'var(--radius-2)',
-            backgroundColor: 'var(--slate-2)',
-            marginBottom: 20,
-          }}
-        >
-          <Flex
-            align="center"
-            justify="between"
-            style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}
-          >
-            <Box>
-              <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-                Image Settings
-              </Text>
-              <Text
-                size="1"
-                style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
-              >
-                Control whether images are sent to the LLM during web search
-              </Text>
-            </Box>
-          </Flex>
-
-          <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
-            <SendImagesRow
-              enabled={settings.includeImages}
-              maxImages={settings.maxImages}
-              onToggle={handleSendImagesToggle}
-              onMaxImagesCommit={handleMaxImagesCommit}
-              disabled={isLoading || isSettingsSaving}
-            />
-          </Flex>
-        </Flex>
       </Box>
 
       {/* ── Configure side panel ── */}
@@ -532,7 +430,7 @@ export default function WebSearchPage() {
             {!isCheckingUsage && deleteUsageAgents.length === 0 && (
               <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
                 {deleteTarget?.isDefault
-                  ? 'This provider is currently the default. Deleting it will reset the default to DuckDuckGo.'
+                  ? 'This provider is currently the default. Deleting it makes the next search provider you added the default, or DuckDuckGo if there is none.'
                   : 'This will permanently remove the provider configuration. You can reconfigure it later.'}
               </Text>
             )}

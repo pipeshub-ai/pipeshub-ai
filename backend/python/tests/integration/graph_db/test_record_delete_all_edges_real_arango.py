@@ -87,7 +87,7 @@ async def _seed(provider, org_id: str, connector: str, type_collection: str) -> 
     await _edge(provider, CollectionNames.PERMISSION.value, f"{USERS}/{user}", r, type="USER", role="OWNER")
     await _edge(provider, CollectionNames.BELONGS_TO.value, r, f"{GROUPS}/{group}")
     await _edge(provider, CollectionNames.INHERIT_PERMISSIONS.value, r, f"{GROUPS}/{group}")
-    await _edge(provider, CollectionNames.RECORD_RELATIONS.value, f"{RECORDS}/{parent}", r, relationshipType="PARENT_CHILD")
+    await _edge(provider, CollectionNames.NODE_RELATIONS.value, f"{RECORDS}/{parent}", r, relationshipType="PARENT_CHILD")
     await _edge(provider, CollectionNames.ENTITY_RELATIONS.value, r, f"{USERS}/{user}", edgeType="CREATED_BY")
     await _edge(provider, CollectionNames.BELONGS_TO_TOPIC.value, r, f"{TOPICS}/{topic}")
     record = await provider.http_client.get_document(collection=RECORDS, key=rec)

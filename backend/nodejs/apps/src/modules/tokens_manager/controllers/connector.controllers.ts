@@ -12,6 +12,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
   ConflictError,
+  ForbiddenError,
   InternalServerError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
@@ -2107,6 +2108,13 @@ export const resyncConnectorRecords =
         appConfig,
         headers,
       );
+      // The read above can be wider than who may sync: a personal connector is
+      // its creator's to sync.
+      if (instance.scope === 'personal' && instance.createdBy !== userId) {
+        throw new ForbiddenError(
+          'Only the person who created this connector can sync it',
+        );
+      }
       // Lock first: "already running" must win over "desktop offline".
       assertConnectorNotLocked(instance);
       const refusal = localFsSyncRefusal(orgId, instance, {

@@ -5,6 +5,7 @@ const SAML_ERROR_DESCRIPTIONS: Record<string, string> = {
   Saml_sso_disabled: 'SAML SSO is not enabled for your organisation',
   saml_sso_disabled: 'SAML SSO is not enabled for your organisation',
   auth_failed: 'SAML authentication failed. Please try again',
+  sign_in_restart: 'Sign-in could not be completed. Please start again from the login page',
   unknown: 'An unexpected error occurred during sign-in. Please try again',
 };
 

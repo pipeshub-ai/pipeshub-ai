@@ -49,7 +49,9 @@ from app.connectors.core.base.data_store.graph_data_store import (
 from app.modules.agents.capability_summary import fetch_connector_configs
 from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
+    UnreadableSourceLimitError,
     admit_caller_project_collections,
+    read_source_limit,
     resolve_agent_filters,
 )
 from app.modules.agents.qna.router import (
@@ -61,14 +63,26 @@ from app.modules.agents.qna.router import (
 from app.modules.agents.qna.router import (
     build_prior_routing_messages as _build_prior_routing_messages,  # noqa: F401
 )
+from app.modules.retrieval.selection_scope import (
+    SelectionNotReadyError,
+    SelectionTooLargeError,
+    has_selection,
+    max_selection_nodes,
+    prepare_turn_scope,
+    selection_error,
+)
 from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
 )
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.interface.graph_db_provider import (
+    SELECTION_APPS_FILTER_KEY,
+    IGraphDBProvider,
+)
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import model_default_reasoning_effort
 from app.utils.attachment_utils import (
+    keep_accessible_attachments,
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
 from app.utils.llm import LLM_MISSING_FOR_CHAT
@@ -76,6 +90,8 @@ from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import get_org_or_503, get_user_or_503
 from app.utils.user_messages import action_failed
+from app.web.config import resolve_web_search
+from app.web.search import PROVIDERS as WEB_SEARCH_PROVIDERS
 
 if TYPE_CHECKING:
     from app.connectors.core.base.data_store.data_store import TransactionStore
@@ -190,6 +206,10 @@ class ChatQuery(BaseModel):
     strictScope: bool = False
     # The person's answer to an approval card (`tool_approvals`): `{approvalId, decision, remember}`.
     toolApproval: dict[str, Any] | None = None
+    # Set by Node for a project-scoped chat whose turn selects below app level:
+    # the project's own sources (`{"apps": [...]}`), which the selected record
+    # groups, folders and records must lie in. Never taken from a client.
+    allowedFilters: dict[str, Any] | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
     _validate_run_id = field_validator("runId")(validate_run_id)
@@ -566,7 +586,7 @@ def _parse_default_reasoning_effort(raw_value: Any) -> str | None:
     return value
 
 
-_SUPPORTED_WEB_SEARCH_PROVIDERS = {"duckduckgo", "serper", "tavily", "exa"}
+_SUPPORTED_WEB_SEARCH_PROVIDERS = frozenset(WEB_SEARCH_PROVIDERS)
 
 
 def _parse_web_search(raw_web_search: Any) -> str | None:
@@ -609,13 +629,17 @@ def _format_web_search_for_response(raw_web_search: Any) -> dict[str, Any] | Non
     return formatted
 
 
-def _is_web_search_enabled(selected_tools: list[str] | None) -> bool:
+def _is_web_search_enabled(selected_tools: list[str] | None, *, is_universal_agent: bool = False) -> bool:
     """Whether web_search should remain enabled for this request.
 
     `selected_tools is None` means "all actions", so web_search stays enabled.
     When an explicit tools list is provided, require a web_search entry.
+
+    The universal agent's tool pickers (composer and project) never list web search; its
+    Web Search switch (`agentCapabilities.webSearch`) is the control. A narrowed or
+    project-scoped tool list there must not switch web search off behind that switch.
     """
-    if selected_tools is None:
+    if selected_tools is None or is_universal_agent:
         return True
 
     for tool in selected_tools:
@@ -623,110 +647,6 @@ def _is_web_search_enabled(selected_tools: list[str] | None) -> bool:
         if tool_name == "web_search" or tool_name.startswith("web_search."):
             return True
     return False
-
-
-async def _resolve_default_web_search_config(
-    config_service: ConfigurationService,
-    logger: Logger,
-) -> dict[str, Any] | None:
-    """Auto-detect the default web search provider from org-level config.
-
-    Used by the assistant agent (agentIdPlaceholder) which doesn't have an
-    explicit webSearch attachment but should still offer the tool when the
-    org has a provider configured.
-    """
-    try:
-        web_search_config = await config_service.get_config(
-            config_node_constants.WEB_SEARCH.value,
-            default={},
-            use_cache=False,
-        )
-    except Exception as e:
-        logger.warning("Failed to load web search configuration for auto-detect: %s", e)
-        return None
-
-    providers = (
-        web_search_config.get("providers", [])
-        if isinstance(web_search_config, dict)
-        else []
-    )
-    if not isinstance(providers, list):
-        providers = []
-
-    default_provider = next(
-        (p for p in providers if isinstance(p, dict) and p.get("isDefault")),
-        None,
-    )
-
-    # Whenever no provider carries isDefault=true -- whether the org has never
-    # configured any provider (empty/absent `providers`) or has configured one
-    # without marking it default -- the Node.js layer treats DuckDuckGo as the
-    # active default (it clears all isDefault flags rather than inserting a
-    # DuckDuckGo entry into the array; see `cm_controller.ts::getWebSearchProviders`).
-    if not default_provider:
-        logger.debug("No explicit default web search provider; falling back to duckduckgo")
-        return {"provider": "duckduckgo", "configuration": {}}
-
-    provider = str(default_provider.get("provider", "")).strip().lower()
-    if not provider or provider not in _SUPPORTED_WEB_SEARCH_PROVIDERS:
-        return None
-
-    configuration = default_provider.get("configuration", {})
-    if not isinstance(configuration, dict):
-        configuration = {}
-
-    return {"provider": provider, "configuration": configuration}
-
-
-async def _resolve_web_search_tool_config(
-    provider: str | None,
-    config_service: ConfigurationService,
-    logger: Logger,
-) -> dict[str, Any] | None:
-    """Resolve provider-specific config for the web_search tool at runtime."""
-    if not provider:
-        return None
-
-    try:
-        web_search_config = await config_service.get_config(
-            config_node_constants.WEB_SEARCH.value,
-            default={},
-            use_cache=False,
-        )
-    except Exception as e:
-        logger.warning(
-            "Failed to load web search configuration for provider '%s': %s",
-            provider,
-            str(e),
-        )
-        return {"provider": provider, "configuration": {}}
-
-    providers = (
-        web_search_config.get("providers", [])
-        if isinstance(web_search_config, dict)
-        else []
-    )
-    if not isinstance(providers, list):
-        providers = []
-
-    selected_provider = next(
-        (
-            entry
-            for entry in providers
-            if isinstance(entry, dict)
-            and str(entry.get("provider", "")).strip().lower() == provider
-        ),
-        None,
-    )
-
-    if not selected_provider:
-        return {"provider": provider, "configuration": {}}
-
-    configuration = selected_provider.get("configuration", {})
-    if not isinstance(configuration, dict):
-        configuration = {}
-
-    return {"provider": provider, "configuration": configuration}
 
 
 def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
@@ -781,6 +701,35 @@ def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
     return toolsets_with_tools
 
 
+async def _refuse_limit_over_the_cap(
+    knowledge_sources: dict[str, dict[str, Any]],
+    graph_provider: IGraphDBProvider,
+    org_id: str,
+    logger: Logger,
+) -> None:
+    """Refuse to save sources limited to more nodes than one turn may search:
+    every turn of such an agent would end in "too many records"."""
+    limits = [read_source_limit(source.get("filters")) for source in knowledge_sources.values()]
+    group_ids = [i for limit in limits for i in limit["recordGroups"]]
+    record_ids = [i for limit in limits for i in limit["records"]]
+    if not (group_ids or record_ids):
+        return
+    cap = max_selection_nodes()
+    try:
+        nodes = await graph_provider.get_selection_nodes(
+            org_id, group_ids=group_ids, record_ids=record_ids, exact_record_ids=[], limit=cap,
+        )
+    except Exception:
+        # The same cap is applied on every turn; a failed count must not block a save.
+        logger.warning("Could not size the knowledge limit of an agent in org %s", org_id, exc_info=True)
+        return
+    if len(nodes["groups"]) + len(nodes["records"]) > cap:
+        raise InvalidRequestError(
+            f"The folders and items this agent is limited to hold more than {cap:,} records, "
+            "too many to search at once. Limit it to fewer items, or use the whole source."
+        )
+
+
 def _parse_knowledge_sources(raw_knowledge: list[Any]) -> dict[str, dict[str, Any]]:
     """Parse knowledge sources"""
     knowledge_sources = {}
@@ -797,11 +746,20 @@ def _parse_knowledge_sources(raw_knowledge: list[Any]) -> dict[str, dict[str, An
             continue
 
         filters = knowledge_data.get("filters", {})
+        try:
+            # A limit that cannot be read is refused: saved as "no filters" it
+            # would let the agent search the whole source.
+            read_source_limit(filters)
+        except UnreadableSourceLimitError as exc:
+            raise InvalidRequestError(
+                f"The filters of knowledge source '{connector_id}' cannot be read. "
+                "Give recordGroups and records as lists of ids, or leave them out "
+                "to use the whole source."
+            ) from exc
         if isinstance(filters, str):
-            try:
-                filters = json.loads(filters)
-            except json.JSONDecodeError:
-                filters = {}
+            filters = json.loads(filters) if filters.strip() else {}
+        if not isinstance(filters, dict):
+            filters = {}
 
         knowledge_sources[connector_id] = {
             "connectorId": connector_id,
@@ -809,6 +767,18 @@ def _parse_knowledge_sources(raw_knowledge: list[Any]) -> dict[str, dict[str, An
         }
 
     return knowledge_sources
+
+
+def _project_sources(allowed_filters: dict[str, Any] | None) -> dict[str, list[str]] | None:
+    """The project's sources, which Node sends with a turn that selects below
+    app level; None for a turn outside a project."""
+    if not isinstance(allowed_filters, dict):
+        return None
+    return {
+        key: [i for i in allowed_filters.get(key) or [] if isinstance(i, str)]
+        if isinstance(allowed_filters.get(key), list) else []
+        for key in ("apps", "recordGroups", "records")
+    }
 
 
 async def _resolve_turn_filters(
@@ -820,16 +790,26 @@ async def _resolve_turn_filters(
     caller_user_id: str,
     org_id: str,
     logger: Logger,
+    project_sources: dict[str, list[str]] | None = None,
+    retrieval_user_id: str | None = None,
+    searches_knowledge: bool = True,
 ) -> dict[str, Any]:
     """This turn's source filters, never wider than the agent's knowledge.
 
     Ids outside it are dropped, except the caller's own project collection
-    (see ``admit_caller_project_collections``).
+    (see ``admit_caller_project_collections``). A selection below app level
+    is resolved once here, as the identity the search runs as, and bounded by
+    a saved agent's sources and by the project's.
+
+    Raises:
+        SelectionTooLargeError, SelectionNotReadyError: the selection cannot
+            be searched as asked.
     """
+    is_universal_agent = agent_id == "agentIdPlaceholder"
     scope = resolve_agent_filters(
         agent_knowledge,
         requested_filters,
-        is_universal_agent=agent_id == "agentIdPlaceholder",
+        is_universal_agent=is_universal_agent,
     )
     filters = scope.filters
     dropped_kbs = list(scope.dropped_kb_ids)
@@ -843,6 +823,12 @@ async def _resolve_turn_filters(
         )
         filters["kb"] = [*filters["kb"], *admitted]
         dropped_kbs = [k for k in dropped_kbs if k not in admitted]
+    if scope.unreadable_source_ids:
+        logger.warning(
+            "Knowledge sources of agent %s (org %s) have a stored limit that cannot be read "
+            "and are not searched: %s",
+            agent_id, org_id, list(scope.unreadable_source_ids),
+        )
     # Info, not warning: a project chat on a saved agent routinely sends the
     # project's other sources, so a drop is normal traffic, not an attack signal.
     if scope.dropped_app_ids or dropped_kbs:
@@ -850,6 +836,18 @@ async def _resolve_turn_filters(
             "Dropped sources outside the agent's knowledge: agent=%s org=%s caller=%s "
             "apps=%s kb=%s",
             agent_id, org_id, caller_user_id, list(scope.dropped_app_ids), dropped_kbs,
+        )
+    # A turn with internal search switched off never uses the selection, so
+    # one that cannot be searched must not fail it. A saved agent is bound to
+    # its sources even without a selection.
+    if searches_knowledge and (has_selection(filters) or not is_universal_agent):
+        agent_sources = None
+        if not is_universal_agent:
+            # The caller's project collection was admitted above.
+            agent_sources = {**scope.sources, "apps": [*scope.sources["apps"], *filters["kb"]]}
+        filters = await prepare_turn_scope(
+            graph_provider, retrieval_user_id or caller_user_id, org_id, filters,
+            agent_sources=agent_sources, project_sources=project_sources,
         )
     return filters
 
@@ -880,11 +878,14 @@ def _filter_knowledge_by_enabled_sources(
     if not apps_present and not kb_present:
         return agent_knowledge
 
-    enabled_apps = set(filters.get("apps") or [])
+    # A selection below app level keeps the sources it touches enabled: the
+    # tools that work per app (the source catalog, browsing) read this list.
+    touched = set(filters.get(SELECTION_APPS_FILTER_KEY) or [])
+    enabled_apps = set(filters.get("apps") or []) | touched
     enabled_kb = {
         cid for cid in (filters.get("kb") or [])
         if cid and cid != NO_KB_SELECTED_FILTER
-    }
+    } | touched
 
     result: list[dict[str, Any]] = []
     for k in agent_knowledge:
@@ -1321,6 +1322,72 @@ def _assert_no_personal_mcp_servers(
     if personal:
         raise InvalidRequestError(
             f"Personal MCP servers ({', '.join(personal)}) can't be attached to an agent that is shared "
+            "with the organization or runs as a service account."
+        )
+
+
+async def _assert_toolsets_visible(
+    toolsets_with_tools: dict[str, dict[str, Any]],
+    config_service: ConfigurationService,
+    org_id: str,
+    user_id: str,
+) -> dict[str, dict[str, Any]]:
+    """An agent may only attach toolset instances the editor can see — the org's, or their own
+    personal ones; anything else would save fine and then fail every chat. Attachments without an
+    instance (saved before instances existed) are left as they are. Returns the instances by id."""
+    from app.agents.toolset_store import is_personal
+    from app.edition_config import get_toolset_by_id
+
+    attached = {ts["instanceId"]: ts for ts in toolsets_with_tools.values() if ts.get("instanceId")}
+    found = await asyncio.gather(*[get_toolset_by_id(instance_id, config_service, org_id) for instance_id in attached])
+    visible = {
+        instance_id: instance
+        for instance_id, instance in zip(attached, found)
+        if instance and (not is_personal(instance) or instance.get("createdBy") == user_id)
+    }
+    missing = [ts.get("instanceName") or ts.get("displayName") or instance_id for instance_id, ts in attached.items() if instance_id not in visible]
+    if missing:
+        raise InvalidRequestError(f"Action(s) not found: {', '.join(missing)}.")
+    return visible
+
+
+def _names_an_instance(toolsets_with_tools: dict[str, dict[str, Any]]) -> bool:
+    return any(ts.get("instanceId") for ts in toolsets_with_tools.values())
+
+
+async def _attached_personal_toolsets(
+    instance_ids: set[str], config_service: ConfigurationService, org_id: str,
+) -> dict[str, dict[str, Any]]:
+    """The personal toolset instances among `instance_ids`, whoever owns them (as for MCP servers,
+    a co-editor can't resolve the owner's, and dropping what it can't see would let sharing past)."""
+    from app.agents.toolset_store import find_personal_instance
+
+    found = await asyncio.gather(*[
+        find_personal_instance(config_service, org_id, instance_id, raise_on_error=True) for instance_id in instance_ids
+    ])
+    return {instance["_id"]: instance for instance in found if instance}
+
+
+def _toolset_attachments_unreadable() -> AgentError:
+    return AgentError(
+        "This agent's actions couldn't be checked, so it can't be shared right now. Please try again in a moment.",
+        status_code=503,
+    )
+
+
+def _assert_no_personal_toolsets(
+    instances: dict[str, dict[str, Any]], *, shared_with_org: bool, service_account: bool,
+) -> None:
+    """A personal action holds one user's sign-in and is visible to that user only; an agent other
+    people run could never use it."""
+    if not (shared_with_org or service_account):
+        return
+    from app.agents.toolset_store import is_personal
+
+    personal = [instance.get("instanceName") or instance_id for instance_id, instance in instances.items() if is_personal(instance)]
+    if personal:
+        raise InvalidRequestError(
+            f"Personal actions ({', '.join(personal)}) can't be attached to an agent that is shared "
             "with the organization or runs as a service account."
         )
 
@@ -2045,6 +2112,16 @@ async def _enrich_agent_models(agent: dict[str, Any], config_service: Configurat
         logger.warning(f"Failed to enrich models: {e}")
 
 
+
+# The base implementations, under names nothing rebinds. An edition may replace
+# get_services, _enrich_agent_models and sa_forces_org_sharing when it loads
+# (handlers look them up as module globals at call time); tests of the base
+# behaviour pin these back.
+_base_get_services = get_services
+_base_enrich_agent_models = _enrich_agent_models
+_base_sa_forces_org_sharing = sa_forces_org_sharing
+
+
 def _parse_request_body(body: bytes) -> dict[str, Any]:
     """Parse and validate JSON request body"""
     if not body:
@@ -2347,6 +2424,10 @@ async def create_agent(request: Request) -> JSONResponse:
 
         # Parse toolsets, knowledge, skills, and MCP servers BEFORE starting transaction
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+        attached_toolsets = (
+            await _assert_toolsets_visible(toolsets_with_tools, services["config_service"], org_key, user_context["userId"])
+            if _names_an_instance(toolsets_with_tools) else {}
+        )
         mcp_servers_with_tools = _parse_mcp_servers(body.get("mcpServers", []))
         attached_mcp_instances = (
             await _assert_mcp_servers_exist(
@@ -2356,6 +2437,7 @@ async def create_agent(request: Request) -> JSONResponse:
         )
         mcp_servers_with_tools = _bind_mcp_attachments_to_instances(mcp_servers_with_tools, attached_mcp_instances)
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
+        await _refuse_limit_over_the_cap(knowledge_sources, services["graph_provider"], org_key, logger)
         skill_names = _parse_skills(body.get("skills", []))
         web_search_attachment = _parse_web_search(body.get("webSearch"))
 
@@ -2368,6 +2450,7 @@ async def create_agent(request: Request) -> JSONResponse:
         _assert_no_personal_mcp_servers(
             attached_mcp_instances, shared_with_org=share_with_org, service_account=is_service_account,
         )
+        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org, service_account=is_service_account)
 
         # Create agent document
         agent_key = str(uuid.uuid4())
@@ -3010,6 +3093,11 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             if mcp_servers_with_tools else {}
         )
         mcp_servers_with_tools = _bind_mcp_attachments_to_instances(mcp_servers_with_tools, attached_mcp_instances)
+        toolsets_in_body = _parse_toolsets(body.get("toolsets", [])) if "toolsets" in body else {}
+        attached_toolsets = (
+            await _assert_toolsets_visible(toolsets_in_body, services["config_service"], org_key, user_context["userId"])
+            if _names_an_instance(toolsets_in_body) else {}
+        )
 
         # Check permissions first, then fetch full agent data
         perm = await services["graph_provider"].check_agent_permission(agent_id, user_key, org_key)
@@ -3059,6 +3147,16 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         _assert_no_personal_mcp_servers(
             attached_mcp_instances, shared_with_org=final_shared, service_account=final_service_account,
         )
+        if sharing_turned_on and "toolsets" not in body:
+            existing_toolset_ids = {ts["instanceId"] for ts in agent.get("toolsets") or [] if ts.get("instanceId")}
+            try:
+                attached_toolsets = await _attached_personal_toolsets(
+                    existing_toolset_ids, services["config_service"], org_key,
+                ) if existing_toolset_ids else {}
+            except Exception as e:
+                logger.error(f"Could not check the actions of agent {agent_id} before sharing it: {e}")
+                raise _toolset_attachments_unreadable() from e
+        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared, service_account=final_service_account)
 
         # Handle shareWithOrg flag changes
         if "shareWithOrg" in body:
@@ -3116,8 +3214,8 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
         # Update toolsets if provided in request (even if empty array - means delete all)
         if "toolsets" in body:
-            # Parse toolsets first to validate before anything is written
-            toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+            # Parsed and checked before the update above
+            toolsets_with_tools = toolsets_in_body
 
             graph_provider = services["graph_provider"]
             transaction_id = None
@@ -3351,6 +3449,9 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         if "knowledge" in body:
             # Parse knowledge sources first to validate before deletion
             knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
+            await _refuse_limit_over_the_cap(
+                knowledge_sources, services["graph_provider"], user_context["orgId"], logger,
+            )
 
             graph_provider = services["graph_provider"]
             transaction_id = None
@@ -4202,15 +4303,27 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 timer.mark("mcp_cfg")
 
                 agent_knowledge = agent.get("knowledge", [])
-                filters = await _resolve_turn_filters(
-                    agent_id=agent_id,
-                    agent_knowledge=agent_knowledge,
-                    requested_filters=chat_query.filters,
-                    graph_provider=graph_provider,
-                    caller_user_id=user_context.get("userId", ""),
-                    org_id=org_key,
-                    logger=logger,
-                )
+                caps = _parse_agent_capabilities(chat_query.agentCapabilities)
+                try:
+                    filters = await _resolve_turn_filters(
+                        agent_id=agent_id,
+                        agent_knowledge=agent_knowledge,
+                        requested_filters=chat_query.filters,
+                        graph_provider=graph_provider,
+                        caller_user_id=user_context.get("userId", ""),
+                        org_id=org_key,
+                        logger=logger,
+                        project_sources=_project_sources(chat_query.allowedFilters),
+                        retrieval_user_id=enriched_user_info.get("userId"),
+                        searches_knowledge=caps.internal_search,
+                    )
+                except (SelectionTooLargeError, SelectionNotReadyError) as exc:
+                    code, message = selection_error(
+                        exc,
+                        agent_limit=agent_id != "agentIdPlaceholder" and not has_selection(chat_query.filters),
+                    )
+                    yield _stream_error_frame(protocol, message, code=code)
+                    return
 
                 # Apply NO_KB sentinel BEFORE filtering agent_knowledge. When kb is
                 # explicitly [] (user deselected all KB sources at runtime), the sentinel
@@ -4237,16 +4350,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 ]
                 web_search_provider = _parse_web_search(agent.get("webSearch"))
                 if web_search_provider:
-                    web_search_coro = _resolve_web_search_tool_config(
-                        web_search_provider,
-                        config_service,
-                        logger,
+                    web_search_coro = resolve_web_search(
+                        config_service, logger, provider=web_search_provider,
                     )
                 elif agent_id == "agentIdPlaceholder":
-                    web_search_coro = _resolve_default_web_search_config(
-                        config_service,
-                        logger,
-                    )
+                    web_search_coro = resolve_web_search(config_service, logger)
                 else:
                     web_search_coro = None
 
@@ -4258,16 +4366,27 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 web_search_tool_config = await web_search_coro if web_search_coro is not None else None
                 connector_configs = await connector_task
                 timer.mark("connector_cfg")
-                if not _is_web_search_enabled(chat_query.tools):
+                # Capabilities can only narrow, never expand beyond what the agent is configured with.
+                if web_search_tool_config is None:
+                    web_search_off = "not_configured"
+                elif not _is_web_search_enabled(
+                    chat_query.tools, is_universal_agent=agent_id == UNIVERSAL_AGENT_ID,
+                ):
+                    web_search_off = "tools_filter"
+                elif not caps.web_search:
+                    web_search_off = "capability_off"
+                else:
+                    web_search_off = None
+                if web_search_off:
                     web_search_provider = None
                     web_search_tool_config = None
-
-                # Apply user-requested capability overrides (capabilities can only narrow,
-                # never expand beyond what the agent is configured with).
-                caps = _parse_agent_capabilities(chat_query.agentCapabilities)
-                if not caps.web_search:
-                    web_search_provider = None
-                    web_search_tool_config = None
+                # Without this line a turn that silently lost web search looks like any other.
+                logger.info(
+                    "chat_stream: web search %s (agent_id=%s)",
+                    f"off, reason={web_search_off}" if web_search_off
+                    else f"on, provider={web_search_tool_config.get('provider')}",
+                    agent_id,
+                )
                 if not caps.internal_search:
                     filters = {"apps": [], "kb": [NO_KB_SELECTED_FILTER]}
                     agent_knowledge = []
@@ -4282,12 +4401,23 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     else None
                 )
 
+                attachments, previous_conversations = await keep_accessible_attachments(
+                    graph_provider,
+                    org_id=user_context["orgId"],
+                    user_id=user_context["userId"],
+                    is_service_account=bool(
+                        (getattr(request.state, "user", None) or {}).get("isServiceAccount"),
+                    ),
+                    attachments=chat_query.attachments,
+                    previous_conversations=chat_query.previousConversations,
+                    logger=logger,
+                )
                 # Build query info
                 query_info = {
                     "query": chat_query.query,
                     "limit": chat_query.limit,
                     "messages": [],
-                    "previous_conversations": chat_query.previousConversations,
+                    "previous_conversations": previous_conversations,
                     "quickMode": chat_query.quickMode,
                     "chatMode": chat_query.chatMode,
                     "retrievalMode": chat_query.retrievalMode,
@@ -4312,7 +4442,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "modelKey": model_key,
                     "webSearch": web_search_provider,
                     "webSearchConfig": web_search_tool_config,
-                    "attachments": chat_query.attachments,
+                    "deepResearch": caps.deep_search,
+                    "attachments": attachments,
                     "enableRecordIdShortening": chat_query.enableRecordIdShortening,
                     "includeRetrievalContext": chat_query.includeRetrievalContext,
                     "keywordSearchBudget": chat_query.keywordSearchBudget,

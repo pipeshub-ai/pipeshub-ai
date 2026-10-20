@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     COMPOSITE_SITE_ID_COMMA_COUNT,
     COMPOSITE_SITE_ID_PARTS_COUNT,
@@ -559,6 +559,7 @@ def _make_mock_deps_fullcov():
     data_entities_processor.on_user_group_member_removed = AsyncMock(return_value=True)
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.reindex_existing_records = AsyncMock()
+    data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
 
     data_store_provider = MagicMock()
     config_service = MagicMock()
@@ -1231,6 +1232,11 @@ class TestCheckAndFetchUpdatedPageRecord:
         result = await connector._check_and_fetch_updated_page_record(record)
         assert result is not None
         assert result[0].id == record.id
+        # The page scope is unreadable here, so the stored page's inherit edge (none) decides.
+        assert result[0].inherit_permissions is False
+        connector.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, record.id
+        )
 
     @pytest.mark.asyncio
     async def test_page_access_denied(self):
@@ -2717,8 +2723,8 @@ class TestConvertToPermissions:
 
         with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ANYONE_WITH_LINK
+        # An anonymous link names no grantee, so it yields no permission.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_organization_link(self):
@@ -2793,7 +2799,9 @@ class TestConvertToPermissions:
 
         with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm_bad, perm_good])
-        assert len(result) == 1
+        # The bad permission must not abort the batch. Neither input yields a
+        # permission: one raises, and an anonymous link names no grantee.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_empty_permissions(self):

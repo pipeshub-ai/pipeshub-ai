@@ -75,6 +75,61 @@ describe('projects/validators/project.validators', () => {
       expect(result.success).to.equal(true)
     })
 
+    it('accepts record groups, folders and records in the scope and in its display mirror', () => {
+      const result = createProjectSchema.safeParse({
+        body: {
+          name: 'Granular',
+          knowledgeScope: { apps: [], kb: [], recordGroups: ['group-1'], records: ['folder-1', 'file-1'] },
+          appliedFilters: {
+            recordGroups: [{ id: 'group-1', name: 'PT', nodeType: 'recordGroup', connector: 'Jira' }],
+            records: [{ id: 'folder-1', name: 'A', nodeType: 'folder', connector: 'KB' }],
+          },
+        },
+      })
+      expect(result.success).to.equal(true)
+      if (result.success) {
+        expect(result.data.body.knowledgeScope).to.deep.equal({
+          apps: [], kb: [], recordGroups: ['group-1'], records: ['folder-1', 'file-1'],
+        })
+        expect(result.data.body.appliedFilters?.records?.[0]?.name).to.equal('A')
+      }
+    })
+
+    it('rejects an empty id, name or node type in the display mirror, naming the field', () => {
+      const node = { id: 'folder-1', name: 'A', nodeType: 'folder', connector: 'KB' }
+      for (const [field, message] of [
+        ['id', 'Id is required.'],
+        ['name', 'Name is required.'],
+        ['nodeType', 'Node type is required.'],
+      ] as const) {
+        const result = createProjectSchema.safeParse({
+          body: { name: 'X', appliedFilters: { records: [{ ...node, [field]: '' }] } },
+        })
+        expect(result.success, field).to.equal(false)
+        if (!result.success) {
+          expect(result.error.issues.map((issue) => issue.message)).to.include(message)
+        }
+      }
+    })
+
+    it('accepts a display entry whose connector name is not known', () => {
+      const result = createProjectSchema.safeParse({
+        body: {
+          name: 'X',
+          appliedFilters: { records: [{ id: 'folder-1', name: 'A', nodeType: 'folder', connector: '' }] },
+        },
+      })
+      expect(result.success).to.equal(true)
+    })
+
+    it('rejects a scope listing more sources than one request may carry', () => {
+      const ids = Array.from({ length: 201 }, (_, i) => `record-${i}`)
+      const result = createProjectSchema.safeParse({
+        body: { name: 'Too many', knowledgeScope: { records: ids } },
+      })
+      expect(result.success).to.equal(false)
+    })
+
     it('rejects a malformed knowledgeScope entry (non-string id)', () => {
       const result = createProjectSchema.safeParse({
         body: { name: 'X', knowledgeScope: { apps: [123] } },

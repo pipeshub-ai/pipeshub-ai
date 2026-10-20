@@ -5,6 +5,7 @@ import {
   findToolApproval,
   hasApprovedCall,
   isToolApprovalResumeQuery,
+  settledToolApprovals,
   toolApprovalDetails,
   toolApprovalResumeQuery,
 } from '../tool-approval';
@@ -115,5 +116,22 @@ describe('approvalArgumentLines', () => {
 
   it('shows every value in full when asked', () => {
     expect(approvalArgumentLines({ body: 'x'.repeat(400) }, { full: true })).toEqual([{ name: 'body', value: 'x'.repeat(400), cut: false }]);
+  });
+});
+
+describe('a card the fork settled as expired', () => {
+  const forked = (): MessagePart[] => [
+    { type: 'sub_agent', runId: 'child', parts: [waiting(WIRE, { status: 'blocked', approvalAnswer: 'expired', resultPreview: 'The approval request expired.' })] },
+  ];
+
+  it('is no longer a card to answer, and counts as answered', () => {
+    expect(findToolApproval(forked())).toBeNull();
+    expect(answeredToolApproval(forked())).toBe(true);
+  });
+
+  it('shows up as an expired receipt for its tool', () => {
+    expect(settledToolApprovals(forked())).toEqual([
+      { key: 'c', tool: 'Create an issue', server: 'Jira', answer: 'expired' },
+    ]);
   });
 });

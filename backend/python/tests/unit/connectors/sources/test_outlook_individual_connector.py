@@ -294,7 +294,9 @@ class TestReindexRecords:
 
         await connector.reindex_records([updated_record, unchanged_record])
 
-        connector.data_entities_processor.on_new_records.assert_awaited_once_with(updated_with_permissions)
+        connector.data_entities_processor.on_new_records.assert_awaited_once_with(
+            updated_with_permissions, replace_permissions=True
+        )
         connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with([unchanged_record])
 
     @pytest.mark.asyncio

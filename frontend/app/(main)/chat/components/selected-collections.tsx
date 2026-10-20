@@ -3,16 +3,22 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { Flex, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { KnowledgeItemIcon } from '@/app/components/ui/knowledge-item-icon';
-import type { ConnectorType } from '@/app/components/ui/ConnectorIcon';
+import { KbNodeNameIcon } from '@/app/(main)/knowledge-base/utils/kb-node-name-icon';
+import type { NodeType } from '@/app/(main)/knowledge-base/types';
+import type { SelectedNodeKind } from '@/chat/utils/tree-selection';
 
 export interface SelectedItem {
   id: string;
   name: string;
-  /** 'connector' for hub apps/connectors, 'collection' for KB record groups */
-  kind?: 'collection' | 'connector';
+  /** 'connector' for hub apps, 'collection' for collections, 'folder' / 'file' for what is selected inside one */
+  kind?: SelectedNodeKind;
   /** Resolved connector type key — used to render the right connector icon */
   connectorType?: string;
+  nodeType?: string;
+  /** Raw connector name, for the corner mark on a folder or file. */
+  connector?: string;
+  extension?: string;
+  mimeType?: string;
 }
 
 interface CollectionPillProps {
@@ -30,22 +36,26 @@ function CollectionPill({ item, removable = false, onRemove }: CollectionPillPro
   return (
     <Flex
       align="center"
-      gap="1"
       style={{
         backgroundColor: 'var(--olive-a2)',
-        border: '1px solid var(--slate-4)',
-        borderRadius: 'var(--radius-full)',
-        padding: removable
-          ? '0 var(--space-2) 0 var(--space-3)'
-          : '0 var(--space-3)',
-        minWidth: "80px",
+        border: '1px solid var(--olive-3)',
+        borderRadius: 'var(--radius-2)',
+        height: 28,
+        padding: '0 6px',
+        gap: 6,
+        boxSizing: 'border-box',
+        minWidth: '80px',
         maxWidth: '200px',
         flexShrink: 0,
       }}
     >
-      <KnowledgeItemIcon
-        kind={item.kind ?? 'collection'}
-        connectorType={item.connectorType as ConnectorType | undefined}
+      <KbNodeNameIcon
+        isKnowledgeHub
+        nodeType={(item.nodeType as NodeType) || (item.kind === 'connector' ? 'app' : item.kind === 'file' ? 'record' : 'folder')}
+        connector={item.connector || item.connectorType}
+        extension={item.extension}
+        mimeType={item.mimeType}
+        name={item.name}
         size={16}
       />
       <Text
@@ -55,8 +65,8 @@ function CollectionPill({ item, removable = false, onRemove }: CollectionPillPro
           whiteSpace: 'nowrap',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
-          padding: "var(--space-1)",
-          flex: 1,
+          lineHeight: '20px',
+          minWidth: 0,
         }}
       >
         {item.name}
@@ -67,15 +77,15 @@ function CollectionPill({ item, removable = false, onRemove }: CollectionPillPro
           size="1"
           onClick={() => onRemove(item.id)}
           style={{
-            width: '16px',
-            height: '16px',
-            minWidth: '16px',
-            padding: "var(--space-1)",
+            width: 16,
+            height: 16,
+            minWidth: 16,
+            padding: 0,
             cursor: 'pointer',
             flexShrink: 0,
           }}
         >
-          <MaterialIcon name="close" size={20} color="var(--slate-9)" />
+          <MaterialIcon name="close" size={14} color="var(--slate-9)" />
         </IconButton>
       )}
     </Flex>
@@ -161,7 +171,7 @@ export function SelectedCollections({
         align="center"
         gap="2"
         className="no-scrollbar"
-        style={{ overflowX: 'auto', minWidth: 0, flex: 1, width: '100%' }}
+        style={{ overflowX: 'auto', minWidth: 0, flex: 1, width: '100%', padding: 2 }}
       >
         {collections.map((col) => (
           <CollectionPill

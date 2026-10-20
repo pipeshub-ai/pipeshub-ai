@@ -2620,21 +2620,23 @@ class TestGetToolsetTools:
 
 class TestCreateToolsetInstance:
     @pytest.mark.asyncio
-    async def test_non_admin_rejected(self) -> None:
+    async def test_unconfirmed_role_creates_nothing(self) -> None:
+        """Read as "member", an administrator's new instance would become personal for good."""
+        from app.api.middlewares.caller_role import CallerRoleStatus
         from app.api.routes.toolsets import create_toolset_instance
 
-        request = MagicMock()
-        request.state.user = {"userId": "u1", "orgId": "o1"}
-        request.headers = {}
-
+        request = _make_request(body_dict={"instanceName": "x", "toolsetType": "jira", "authType": "NONE"})
+        request.app.state.toolset_registry = _make_registry("jira")
         config_service = AsyncMock()
 
-        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=False):
+        with patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=False), \
+             patch("app.api.routes.toolsets.fetch_caller_role", new_callable=AsyncMock,
+                   return_value=MagicMock(status=CallerRoleStatus.UNKNOWN)):
 
             with pytest.raises(HTTPException) as exc:
                 await create_toolset_instance(request, config_service=config_service)
-            assert exc.value.status_code == 403
+            assert exc.value.status_code == 503
+        config_service.set_config.assert_not_called()
 
 
 class TestGetToolsetInstances:
@@ -5529,13 +5531,20 @@ class TestCreateToolsetInstanceRoute:
 
     @pytest.mark.asyncio
     async def test_create_instance_not_admin(self) -> None:
+        """A member's new instance is their own, under their key, never in the org list."""
+        from app.api.middlewares.caller_role import CallerRoleStatus
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
+        cs.list_keys_in_directory = AsyncMock(return_value=[])
         req = _make_request(body_dict={"instanceName": "x", "toolsetType": "jira", "authType": "NONE"})
-        with patch("app.api.routes.toolsets._check_user_is_admin", return_value=False):
-            with pytest.raises(HTTPException) as exc:
-                await create_toolset_instance(req, cs)
-            assert exc.value.status_code == 403
+        req.app.state.toolset_registry = _make_registry("jira")
+        with patch("app.api.routes.toolsets._check_user_is_admin", return_value=False), \
+             patch("app.api.routes.toolsets.fetch_caller_role", new_callable=AsyncMock,
+                   return_value=MagicMock(status=CallerRoleStatus.VALID)):
+            result = await create_toolset_instance(req, cs)
+        assert result["instance"]["scope"] == "personal"
+        (path, _record), _ = cs.set_config.call_args
+        assert path == f"/services/toolset-user-instances/o1/u1/{result['instance']['_id']}"
 
 
 class TestUpdateToolsetInstanceRoute:

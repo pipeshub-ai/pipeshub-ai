@@ -21,6 +21,7 @@ from app.edition_config import (
 )
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.modules.demo_data.router import demo_data_router
+from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
@@ -761,12 +762,9 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
     """Periodically refresh the connector_active gauge; best-effort, never fatal."""
     while True:
         try:
-            docs = await graph_provider.get_all_documents(CollectionNames.APPS.value)
-            counts: dict = {}
-            for doc in docs or []:
-                if doc.get("isActive"):
-                    connector_type = doc.get("type") or "unknown"
-                    counts[connector_type] = counts.get(connector_type, 0) + 1
+            # Counted in the database: a tenant can have thousands of collection
+            # Apps, and reading every App here stalled the event loop for seconds.
+            counts = await graph_provider.count_active_apps_by_type()
             set_connector_active(counts)
         except asyncio.CancelledError:
             raise
@@ -779,6 +777,7 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
     mark_process_non_dumpable()
+    install_log_redaction()
     # Initialize container
     app_container = await get_initialized_container()
     app.container = app_container  # type: ignore
@@ -1362,6 +1361,49 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
                 "error": f"Vector DB ({vector_db_type}) health check failed",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
+        )
+
+
+@app.get("/health/vector-db/memory")
+async def vector_db_memory_check(request: Request) -> JSONResponse:
+    """Whether the vector database has the memory to keep search fast.
+
+    Advisory only: it never changes the health status. It reports the index's
+    total size and Qdrant's memory (the host's RAM when no limit is set), so it
+    is not in EXCLUDE_PATHS and it refuses non-admins itself: the Node.js route
+    checks too, but this port can be reachable directly. Reuses the provider
+    cached by ``/health/vector-db``.
+    """
+    from app.api.middlewares.auth import is_request_admin
+    from app.services.vector_db.vector_db_provider_factory import (
+        VectorDBProviderFactory,
+    )
+    from app.utils.logger import create_logger
+
+    if not is_request_admin(request):
+        return JSONResponse(status_code=403, content={"detail": "Admin access required"})
+
+    try:
+        provider = getattr(request.app.state, "_vector_db_health_provider", None)
+        if provider is None:
+            container = request.app.container  # type: ignore[attr-defined]
+            provider = await VectorDBProviderFactory.create_provider(
+                logger=create_logger("vector_db_health"),
+                config_service=container.config_service(),
+            )
+            request.app.state._vector_db_health_provider = provider
+
+        report = await provider.memory_report()
+        if report is None:
+            return JSONResponse(status_code=200, content={"status": "unsupported"})
+        return JSONResponse(status_code=200, content=report.to_dict())
+    except Exception:
+        request.app.container.logger().warning(
+            "Vector DB memory report failed", exc_info=True
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unknown", "error": "Vector DB memory report failed"},
         )
 
 

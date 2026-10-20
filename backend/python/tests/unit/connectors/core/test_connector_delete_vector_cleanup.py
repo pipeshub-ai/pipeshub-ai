@@ -1,14 +1,15 @@
 """Connector deletes publish the vector cleanup for the record they remove.
 
+The provider's delete builds the cleanup event from the stored record and
+returns it; the processor publishes it once the transaction has committed.
 ``GraphTransactionStore.get_record_by_key`` returns the stored document, the
-way both providers' ``get_document`` does, not a ``Record``. Reading Record
-attributes off it found no ``virtualRecordId``, so a connector's per-record
-delete never asked indexing to remove the record's vectors. The fakes here
-return the document, as the real store does.
+way both providers' ``get_document`` does, not a ``Record``, and the fakes
+here return the document, as the real store does.
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -31,37 +32,46 @@ def _published(proc: DataSourceEntitiesProcessor) -> list[dict]:
     return [c.args[1] for c in proc.messaging_producer.send_message.await_args_list]
 
 
+def _deleted(*payloads: dict) -> dict:
+    """What both providers' deletes answer: the cleanup event only for records that have vectors."""
+    event = {"eventType": "deleteRecord", "topic": "record-events", "payloads": list(payloads)} if payloads else None
+    return {"success": True, "successfully_deleted": 1, "eventData": event}
+
+
 async def test_a_per_record_delete_publishes_the_cleanup_for_its_vectors() -> None:
+    payload = {"orgId": "org-1", "recordId": "rec-1", "version": 2, "virtualRecordId": "vr-1", "connectorId": "c1"}
     store = AsyncMock()
     store.get_record_by_key = AsyncMock(return_value={
         "_key": "rec-1", "orgId": "org-1", "version": 2, "virtualRecordId": "vr-1", "connectorId": "c1",
     })
+    store.delete_single_record = AsyncMock(return_value=_deleted(payload))
     proc = _processor(store)
 
     await proc.on_record_deleted("rec-1")
 
-    store.delete_record_by_key.assert_awaited_once_with("rec-1")
+    store.delete_single_record.assert_awaited_once_with("rec-1")
     (event,) = _published(proc)
     assert event["eventType"] == "deleteRecord"
-    assert event["payload"] == {
-        "orgId": "org-1", "recordId": "rec-1", "version": 2, "virtualRecordId": "vr-1", "connectorId": "c1",
-    }
+    assert event["payload"] == payload
 
 
 async def test_a_record_that_never_indexed_publishes_nothing() -> None:
     store = AsyncMock()
     store.get_record_by_key = AsyncMock(return_value={"_key": "rec-1", "orgId": "org-1"})
+    store.delete_single_record = AsyncMock(return_value=_deleted())
     proc = _processor(store)
     await proc.on_record_deleted("rec-1")
+    store.delete_single_record.assert_awaited_once_with("rec-1")
     assert _published(proc) == []
 
 
 async def test_a_record_already_gone_is_still_removed_quietly() -> None:
     store = AsyncMock()
     store.get_record_by_key = AsyncMock(return_value=None)
+    store.delete_single_record = AsyncMock(return_value=_deleted())
     proc = _processor(store)
     await proc.on_record_deleted("rec-1")
-    store.delete_record_by_key.assert_awaited_once_with("rec-1")
+    store.delete_single_record.assert_awaited_once_with("rec-1")
     assert _published(proc) == []
 
 
@@ -69,23 +79,25 @@ async def test_a_delete_by_external_id_publishes_the_providers_cleanup_event() -
     """Outlook deletes go this way; the provider's event used to be dropped."""
     payload = {"orgId": "org-1", "recordId": "rec-1", "virtualRecordId": "vr-1", "connectorId": "c1"}
     store = AsyncMock()
-    store.delete_record_by_external_id = AsyncMock(return_value={
-        "success": True,
-        "eventData": {"eventType": "deleteRecord", "topic": "record-events", "payload": payload},
-    })
+    store.get_record_by_external_id = AsyncMock(return_value=SimpleNamespace(id="rec-1"))
+    store.delete_records_recursive = AsyncMock(return_value=_deleted(payload))
     proc = _processor(store)
 
     await proc.delete_record_by_external_id("c1", "ext-1", "u1")
 
+    store.delete_records_recursive.assert_awaited_once_with(
+        ["rec-1"], "c1", cascade_children=False, within_folder_id=None, include_trashed_roots=True,
+    )
     (event,) = _published(proc)
     assert (event["eventType"], event["payload"]) == ("deleteRecord", payload)
 
 
 async def test_a_delete_by_external_id_of_nothing_publishes_nothing() -> None:
     store = AsyncMock()
-    store.delete_record_by_external_id = AsyncMock(return_value=None)
+    store.get_record_by_external_id = AsyncMock(return_value=None)
     proc = _processor(store)
     await proc.delete_record_by_external_id("c1", "missing", "u1")
+    store.delete_records_recursive.assert_not_awaited()
     assert _published(proc) == []
 
 

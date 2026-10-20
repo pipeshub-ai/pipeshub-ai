@@ -32,6 +32,15 @@ import {
   isValidDesktopState,
 } from '../services/samlDesktopHandoff.service';
 
+export interface SamlRelayState {
+  orgId?: string;
+  sessionToken?: string;
+  client?: string;
+  state?: string;
+  codeChallenge?: string;
+  spInitiated?: boolean;
+}
+
 const orgIdToSamlEmailKey: Record<string, string> = {};
 export const SAML_LOGOUT_UNSUPPORTED_MESSAGE =
   "Signing out through your identity provider isn't supported. To sign out, use Sign out in PipesHub.";
@@ -183,14 +192,24 @@ export class SamlController {
       }
 
       const { state, code_challenge: codeChallenge } = req.query;
-      // Both or neither: a desktop flow without either cannot be completed safely.
-      const desktop =
-        req.query.client === 'desktop' &&
-        isValidDesktopState(state) &&
-        isValidCodeChallenge(codeChallenge);
-      const relayStateObj = desktop
-        ? { orgId: orgAuthConfig.orgId, sessionToken, client: 'desktop', state, codeChallenge }
-        : { orgId: orgAuthConfig.orgId, sessionToken };
+      const claimedClient = req.query.client;
+      const hasChallenge = isValidCodeChallenge(codeChallenge);
+      const relayStateObj: Record<string, unknown> = {
+        orgId: orgAuthConfig.orgId,
+        sessionToken,
+        spInitiated: true,
+      };
+      // Keep a claimed web/desktop client even without a valid challenge.
+      // Dropping it would look like IdP-initiated and issue a code with no PKCE.
+      if (claimedClient === 'web' || claimedClient === 'desktop') {
+        relayStateObj.client = claimedClient;
+        if (hasChallenge) {
+          relayStateObj.codeChallenge = codeChallenge;
+        }
+        if (claimedClient === 'desktop' && isValidDesktopState(state)) {
+          relayStateObj.state = state;
+        }
+      }
       const relayStateEncoded = Buffer.from(
         JSON.stringify(relayStateObj),
       ).toString('base64');
@@ -207,11 +226,11 @@ export class SamlController {
   }
 
 
-  parseRelayState = (req: Request) => {
+  parseRelayState = (req: Request): SamlRelayState => {
     const raw = (req.body?.RelayState || req.query?.RelayState) as string;
     if (!raw) return {};
     try {
-      return JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
+      return JSON.parse(Buffer.from(raw, 'base64').toString('utf8')) as SamlRelayState;
     } catch (error) {
       this.logger.warn('Failed to parse RelayState', { error: error instanceof Error ? error.message : String(error) });
       return {};

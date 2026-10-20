@@ -31,6 +31,7 @@ on:
             - sharepoint
             - confluence
             - jira
+            - zendesk
             - linear
             - github_teams
             - github
@@ -130,7 +131,7 @@ env:
   # it has shard 2 alone and sets the run's wall clock; no split can shorten
   # either. Shard 5 keeps nextcloud and bookstack (selfhosted-sources), 7 zammad
   # (zammad-source), 9 smb (smb-source): the test step starts those containers
-  # only where their suite runs. New connector suites go on the last shard.
+  # only where their suite runs.
   # Rebalance with scripts/shard_balance.py when a suite grows.
   CONN_SHARD_1: "notion"
   CONN_SHARD_2: "google_drive_workspace"
@@ -140,7 +141,7 @@ env:
   CONN_SHARD_6: "gitlab or google_drive_individual"
   CONN_SHARD_7: "jira or linear or zammad"
   CONN_SHARD_8: "s3 or minio or gcs or github"
-  CONN_SHARD_9: "azure_blob or azure_files or postgres or smb"
+  CONN_SHARD_9: "azure_blob or azure_files or postgres or smb or zendesk"
 
 jobs:
   # Which parts the run tests on besides the graph databases (always both).
@@ -458,7 +459,7 @@ jobs:
             connectors-7) MARKERS="$CONN_SHARD_7" ;;
             connectors-8) MARKERS="$CONN_SHARD_8" ;;
             connectors-9) MARKERS="$CONN_SHARD_9" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not ($CONN_SHARD_6) and not ($CONN_SHARD_7) and not ($CONN_SHARD_8) and not ($CONN_SHARD_9) and not zendesk and not storage and not cifs and not demo and not ai_agents" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not ($CONN_SHARD_6) and not ($CONN_SHARD_7) and not ($CONN_SHARD_8) and not ($CONN_SHARD_9) and not storage and not cifs and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -557,8 +558,9 @@ jobs:
           uv pip install -e .
 
       # client_credentials grant: a fresh token every run, nothing rotates or is written back.
+      # Must cover every job whose markers select zendesk, or that job runs the suite without a token.
       - name: Mint Zendesk test token
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.connectors == 'zendesk' }}
+        if: ${{ contains(env.MARKERS, 'zendesk') }}
         working-directory: integration-tests
         env:
           ZENDESK_TEST_CLIENT_ID: ${{ secrets.ZENDESK_TEST_CLIENT_ID }}

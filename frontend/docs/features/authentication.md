@@ -272,7 +272,7 @@ GET /api/v1/configurationManager/frontendPublicUrl
 
 The redirect URI is built as `{frontendUrl}/auth/{method}/callback`.
 
-The desktop app uses the same redirect URIs: sign-in opens in the user's browser and the callback page hands the result back over a `pipeshub://` link. For generic OAuth, a custom `redirectUri` must still be `{frontendUrl}/auth/oauth/callback`, since that page is what completes the handoff. SAML needs no IdP change; its desktop result goes through `{frontendUrl}/auth/sign-in/samlSso/success`.
+The desktop app uses the same redirect URIs: sign-in opens in the user's browser and the callback page hands the result back over a `pipeshub://` link. For generic OAuth, a custom `redirectUri` must still be `{frontendUrl}/auth/oauth/callback`, since that page is what completes the handoff. SAML needs no IdP change; its result goes through `{frontendUrl}/auth/sign-in/samlSso/success`, which carries a single-use `code` rather than tokens or cookies. A sign-in started from PipesHub (`/saml/signIn`, including the login page) redeems that code with the PKCE verifier from the same tab. Hitting `/saml/signIn` without a challenge is sent back with `saml_error=sign_in_restart`. An IdP-initiated sign-in (for example the Okta app tile) never hits `/saml/signIn` and has no verifier; the success page redeems the code alone.
 
 ---
 

@@ -342,7 +342,7 @@ class Gmail:
             ToolParameter(name="thread_id", type=ParameterType.STRING, description="The thread ID to maintain conversation context", required=False),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
     )
     async def reply(
         self,
@@ -460,7 +460,7 @@ class Gmail:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="The message ID for threading", required=False),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
         args_summary=lambda args: f"Sending email to {', '.join(args.get('mail_to') or []) or '?'}",
         result_summary=confirmation("Email sent"),
     )

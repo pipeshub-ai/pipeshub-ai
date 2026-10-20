@@ -11,6 +11,17 @@ import {
   InvalidTokenError,
   ExpiredTokenError,
 } from '../../../../src/libs/errors/oauth.errors'
+import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { ServiceAccountDelegation } from '../../../../src/modules/oauth_provider/schema/service-account-delegation.schema'
+
+/** A Mongoose chain that ends in `value`. */
+function mockQuery(value: unknown): any {
+  return {
+    select: sinon.stub().returnsThis(),
+    lean: sinon.stub().returnsThis(),
+    exec: sinon.stub().resolves(value),
+  }
+}
 
 describe('OAuthAuthMiddleware', () => {
   let middleware: OAuthAuthMiddleware
@@ -114,6 +125,129 @@ describe('OAuthAuthMiddleware', () => {
       await middleware.authenticate(req, mockRes, mockNext)
       expect(mockRes.status.calledWith(401)).to.be.true
       expect(mockLogger.error.calledOnce).to.be.true
+    })
+  })
+
+  /**
+   * The OIDC endpoints go through this middleware rather than AuthMiddleware,
+   * so the rules behind a delegated token have to be re-checked here too.
+   * Without it, `/oauth2/userinfo` keeps answering with the person's name and
+   * email for the rest of the five minutes after the permission behind the
+   * token was withdrawn.
+   */
+  describe('authenticate - delegated token', () => {
+    const delegated = {
+      client_id: 'cid',
+      userId: 'the-person',
+      orgId: 'org-1',
+      scope: 'openid profile email',
+      act: { sub: 'the-service-account' },
+    }
+
+    it('lets a delegated token through while the allow-list row is there', async () => {
+      mockOAuthTokenService.verifyAccessToken.resolves(delegated)
+      const users = sinon.stub(Users, 'findOne')
+      users.onFirstCall().returns(mockQuery({ role: 'member', kind: 'human', isDisabled: false }))
+      users.onSecondCall().returns(mockQuery({ isDisabled: false }))
+      sinon.stub(ServiceAccountDelegation, 'findOne').returns(mockQuery({ _id: 'row-1' }))
+
+      const req = { headers: { authorization: 'Bearer delegated' } } as any
+      await middleware.authenticate(req, mockRes, mockNext)
+
+      expect(mockNext.calledOnce).to.be.true
+      expect(req.oauth.userId).to.equal('the-person')
+    })
+
+    it('refuses it once the allow-list row is gone', async () => {
+      mockOAuthTokenService.verifyAccessToken.resolves(delegated)
+      const users = sinon.stub(Users, 'findOne')
+      users.onFirstCall().returns(mockQuery({ role: 'member', kind: 'human', isDisabled: false }))
+      users.onSecondCall().returns(mockQuery({ isDisabled: false }))
+      sinon.stub(ServiceAccountDelegation, 'findOne').returns(mockQuery(null))
+
+      const req = { headers: { authorization: 'Bearer delegated' } } as any
+      await middleware.authenticate(req, mockRes, mockNext)
+
+      expect(mockNext.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
+      expect(mockRes.json.firstCall.args[0].error_description)
+        .to.contain('may no longer act as this person')
+    })
+
+    it('refuses it once the person has been promoted to administrator', async () => {
+      mockOAuthTokenService.verifyAccessToken.resolves(delegated)
+      sinon.stub(Users, 'findOne').returns(
+        mockQuery({ role: 'admin', kind: 'human', isDisabled: false }),
+      )
+
+      const req = { headers: { authorization: 'Bearer delegated' } } as any
+      await middleware.authenticate(req, mockRes, mockNext)
+
+      expect(mockNext.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
+      expect(mockRes.json.firstCall.args[0].error_description)
+        .to.contain('now an administrator')
+    })
+
+    it('refuses it once the service account behind it is switched off', async () => {
+      mockOAuthTokenService.verifyAccessToken.resolves(delegated)
+      const users = sinon.stub(Users, 'findOne')
+      users.onFirstCall().returns(mockQuery({ role: 'member', kind: 'human', isDisabled: false }))
+      // The disable race the issuing path cannot close: the token exists, the
+      // actor does not pass any more.
+      users.onSecondCall().returns(mockQuery({ isDisabled: true }))
+
+      const req = { headers: { authorization: 'Bearer delegated' } } as any
+      await middleware.authenticate(req, mockRes, mockNext)
+
+      expect(mockNext.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
+      expect(mockRes.json.firstCall.args[0].error_description)
+        .to.contain('no longer active')
+    })
+
+    it('does not dress a failed read up as a withdrawn permission', async () => {
+      mockOAuthTokenService.verifyAccessToken.resolves(delegated)
+      const users = sinon.stub(Users, 'findOne')
+      users.onFirstCall().returns(mockQuery({ role: 'member', kind: 'human', isDisabled: false }))
+      users.onSecondCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().rejects(new Error('connection 7 to mongo timed out')),
+      } as any)
+
+      const req = { headers: { authorization: 'Bearer delegated' } } as any
+      await middleware.authenticate(req, mockRes, mockNext)
+
+      // Still refused, because failing open on an unreadable allow-list would
+      // be worse than any wording.
+      expect(mockNext.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
+
+      // But not with the driver's text, and not silently: an outage must not
+      // read like an administrator having withdrawn a permission.
+      const description = mockRes.json.firstCall.args[0].error_description
+      expect(description).to.equal('Token validation failed')
+      expect(description).to.not.contain('mongo')
+      expect(mockLogger.error.called).to.be.true
+    })
+
+    it('leaves an ordinary token alone, with no extra reads', async () => {
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        client_id: 'cid',
+        userId: 'user-1',
+        orgId: 'org-1',
+        scope: 'openid',
+      })
+      const users = sinon.stub(Users, 'findOne')
+
+      const req = { headers: { authorization: 'Bearer ordinary' } } as any
+      await middleware.authenticate(req, mockRes, mockNext)
+
+      expect(mockNext.calledOnce).to.be.true
+      // No `act` claim, so the delegation rules never run and this costs an
+      // ordinary OAuth request nothing.
+      expect(users.called).to.be.false
     })
   })
 

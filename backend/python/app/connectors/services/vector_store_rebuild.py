@@ -8,7 +8,7 @@ from logging import Logger
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import EventTypes, MimeTypes, ProgressStatus
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, EventTypes, ProgressStatus
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -153,10 +153,7 @@ def _is_folder_record(record: Any) -> bool:
     Mirrors the folder test in RecordEventHandler so both agree on what a folder
     is.
     """
-    return getattr(record, "mime_type", None) in (
-        MimeTypes.FOLDER.value,
-        MimeTypes.GOOGLE_DRIVE_FOLDER.value,
-    )
+    return getattr(record, "mime_type", None) in FOLDER_MIME_TYPES
 
 
 async def find_busy_connectors(

@@ -543,6 +543,8 @@
     "noCollectionsAvailable": "Keine Sammlungen verfügbar",
     "noCollectionsCreatePrompt": "Keine Sammlungen verfügbar. Bitte erstellen Sie eine neue.",
     "seeMoreConnectors": "Weitere Konnektoren anzeigen",
+    "connectMoreApps": "Weitere Apps verbinden",
+    "connectMoreAppsHint": "Mehr Quellen, bessere Antworten.",
     "suggestedInWorkspace": "Vorgeschlagen im Arbeitsbereich",
     "createSubFolder": "Unterordner erstellen",
     "more": "Mehr",
@@ -592,7 +594,12 @@
     "searchEmptyHint": "Keine passenden Ergebnisse gefunden. Versuchen Sie einen anderen Suchbegriff.",
     "adjustFiltersHint": "Wählen Sie eine andere Quelle oder passen Sie Ihre Filter an",
     "addFromCollectionsHint": "Sie können Unternehmensdateien oder -ordner über die Sammlungen hinzufügen",
-    "addFilesHint": "Fügen Sie Ihre Dateien oder Ordner hinzu"
+    "addFilesHint": "Fügen Sie Ihre Dateien oder Ordner hinzu",
+    "chatWithSelection": "Chat",
+    "chatSelectionLimit": "Der Chat kann bis zu {{max}} ausgewählte Elemente übernehmen. Wählen Sie einige ab und versuchen Sie es erneut.",
+    "chatTooManyCollections": "Der Chat kann höchstens {{max}} Sammlungen auf einmal durchsuchen, und Sie haben mehr. Öffnen Sie eine Sammlung oder wählen Sie die gewünschten aus.",
+    "chatCollectionsLoadFailed": "Ihre Sammlungen konnten für den Chat nicht geladen werden. Versuchen Sie es erneut.",
+    "chatNoCollections": "Sie haben noch keine Sammlungen, zu denen Sie fragen können."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -671,7 +678,8 @@
       "noMcpMatches": "Keine MCP-Server entsprechen Ihrer Suche.",
       "notConnected": "Nicht verbunden",
       "connect": "Verbinden",
-      "actionConnected": "{{name}} ist verbunden"
+      "actionConnected": "{{name}} ist verbunden",
+      "limitedToCount": "· {{count}} ausgewählt"
     },
     "projectResources": {
       "noConnectors": "Für dieses Projekt sind keine Konnektoren aktiviert.",
@@ -699,6 +707,12 @@
     "searchCollections": "Konnektoren und Sammlungen suchen",
     "loadingCollections": "Sammlungen werden geladen…",
     "failedToLoadCollections": "Sammlungen konnten nicht geladen werden",
+    "treeEmpty": "Hier ist nichts",
+    "treeLoadFailed": "Diese Elemente konnten nicht geladen werden",
+    "treeRetry": "Erneut versuchen",
+    "treeIncludedWith": "In {{name}} enthalten",
+    "treeExpand": "Inhalt von {{name}} anzeigen",
+    "treeCollapse": "Inhalt von {{name}} ausblenden",
     "noCollectionsAvailable": "Keine Sammlungen verfügbar",
     "comingSoon": "Demnächst verfügbar",
     "answer": "Antwort",
@@ -724,6 +738,8 @@
     "like": "Hilfreich",
     "dislike": "Nicht hilfreich",
     "copy": "Kopieren",
+    "fork": "Chat abzweigen",
+    "forkFromHere": "Ab hier abzweigen",
     "regenerate": "Neu generieren",
     "readAloud": "Vorlesen",
     "stopReading": "Vorlesen beenden",
@@ -820,7 +836,9 @@
       "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt",
       "deprecatedTools": "Dieser Agent hat Tools, die nicht mehr verfügbar sind. Öffnen Sie den Agent Builder, um sie zu entfernen.",
       "openAgentBuilder": "Agent Builder öffnen",
-      "loadConversationFailed": "Diese Unterhaltung konnte nicht geöffnet werden. Laden Sie die Seite neu, um es erneut zu versuchen."
+      "loadConversationFailed": "Diese Unterhaltung konnte nicht geöffnet werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+      "forkSuccess": "Neuer Chat ab diesem Punkt gestartet",
+      "forkError": "Der Chat konnte nicht abgezweigt werden. Bitte erneut versuchen."
     },
     "queryModes": {
       "chat": {
@@ -1155,9 +1173,9 @@
     "configuredModels": "Konfigurierte Modelle",
     "reasoningEffort": {
       "label": "Reasoning-Aufwand",
-      "modelDefaultOption": "Modellstandard",
-      "modelDefaultOptionWithLevel": "Modellstandard ({{level}})",
-      "agentDefaultOption": "Agent-Standard ({{level}})",
+      "overrideHint": "Klicken Sie erneut, um den Standardwert zu verwenden.",
+      "defaultHintWithLevel": "Ohne Auswahl wird {{level}} verwendet.",
+      "modelDefaultHint": "Ohne Auswahl wird {{level}} verwendet, der eigene Standardwert dieses Modells.",
       "modelDefaultLabel": "Standard ({{level}})",
       "low": "Niedrig",
       "medium": "Mittel",
@@ -1178,7 +1196,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Für diesen Agenten nicht konfiguriert",
       "internalSearch": "Interne Suche",
-      "webSearch": "Websuche"
+      "webSearch": "Websuche",
+      "deepResearch": "Tiefenrecherche",
+      "deepResearchNeedsWebSearch": "Für die Tiefenrecherche die Websuche einschalten"
     },
     "resizePanels": "Größe der Chat- und Vorschau-Panels ändern",
     "mobileProfileComingSoon": "Die Profilseite ist bald auch auf Mobilgeräten verfügbar.",
@@ -1231,7 +1251,7 @@
       "showAll": "Alles anzeigen",
       "showLess": "Weniger anzeigen",
       "partial": "Nur der Anfang der Details wird angezeigt: Der vollständige Aufruf ist länger.",
-      "deletesData": "Löscht Daten",
+      "cantBeUndone": "Nicht rückgängig zu machen",
       "allow": "Zulassen",
       "dontAskAgain": "Für dieses Tool nicht mehr fragen",
       "answerFailed": "Ihre Antwort konnte nicht gesendet werden. Versuchen Sie es erneut.",
@@ -1251,6 +1271,23 @@
         "allowedNotRun": "Sie haben {{tool}} zugelassen, es wurde aber nicht ausgeführt"
       }
     },
+    "selectedAlone": "{{name}} (nur dieses Element)",
+    "noConnectorsFound": "Keine Konnektoren gefunden",
+    "treeSearching": "Suche läuft…",
+    "treeSearchFailed": "Suche fehlgeschlagen. Bitte erneut versuchen.",
+    "treeSearchMatches": "Ordner und Elemente",
+    "nodeSearchTooShort": "Mindestens 2 Zeichen eingeben",
+    "mentionNodes": "Elemente",
+    "mentionNodesLabel": "Passende Elemente",
+    "mentionTypeToSearch": "Namen zum Suchen eingeben",
+    "mentionSearching": "Suche läuft…",
+    "mentionNone": "Keine passenden Elemente",
+    "mentionYourApps": "Ihre Apps",
+    "mentionCollections": "Sammlungen",
+    "sourceUnavailable": "Eine Quelle, die du nicht öffnen kannst",
+    "sourceLoading": "Wird geladen…",
+    "mentionBack": "Zurück",
+    "mentionRemove": "{{name}} entfernen",
     "artifactsPanel": {
       "generated_one": "{{count}} Artefakt erstellt",
       "generated_other": "{{count}} Artefakte erstellt",
@@ -1860,6 +1897,11 @@
         "video": {
           "label": "Video",
           "badge": "Multimodal"
+        },
+        "decision": {
+          "label": "Entscheidung",
+          "badge": "Entscheidung",
+          "sectionTab": "Für Entscheidungen"
         }
       },
       "fetchingModels": "Modelle werden geladen…",
@@ -1972,7 +2014,7 @@
       "title": "Aktionen",
       "subtitle": "Konfigurieren Sie automatisierte Aktionen wie das Erstellen von Datensätzen, Aktualisieren von Feldern oder Auslösen von Workflows. Jede App bietet eine Aktion, die auf ihre unterstützten Funktionen zugeschnitten ist.",
       "yourActionsTitle": "Ihre Aktionen",
-      "yourActionsSubtitle": "Authentifizieren und verwalten Sie Aktionen, die Ihr Administrator für Ihr Konto bereitgestellt hat.",
+      "yourActionsSubtitle": "Melden Sie sich bei den Aktionen an, die Ihr Administrator bereitgestellt hat, oder fügen Sie eigene hinzu.",
       "tabs": {
         "all": "Alle",
         "configured": "Konfiguriert",
@@ -1992,7 +2034,7 @@
         "unavailable": "Nicht verfügbar",
         "notConfigured": "Nicht konfiguriert",
         "manage": "Verwalten",
-        "adminSetupRequired": "Einrichtung durch einen Administrator erforderlich"
+        "add": "Hinzufügen"
       },
       "trailingYourActions": "Ihre Aktionen",
       "loading": "Aktionen werden geladen…",
@@ -2052,7 +2094,7 @@
         "refreshingList": "Liste wird aktualisiert…",
         "searchInstances": "Instanzen suchen…",
         "teamInstanceInfo": "Authentifizieren Sie sich gegen die Aktionsinstanzen Ihrer Organisation. Authentifizierte Aktionen können Ihren Agenten hinzugefügt werden.",
-        "personalInstanceInfo": "Authentifizieren Sie sich gegen die Aktionsinstanzen Ihrer Organisation. Nach der Authentifizierung können Sie diese Aktionen in Ihren Agenten verwenden.",
+        "personalInstanceInfo": "Melden Sie sich bei den Aktionen Ihrer Organisation an oder fügen Sie eigene hinzu. Nach der Anmeldung können Sie sie in Ihren Agenten verwenden.",
         "instanceTabs": {
           "all": "Alle ({{count}})",
           "authenticated": "Authentifiziert ({{count}})",
@@ -2116,14 +2158,30 @@
         "numberMin": "Geben Sie eine ganze Zahl ab {{min, number}} ein.",
         "numberMax": "Geben Sie eine ganze Zahl bis {{max, number}} ein."
       },
-      "adminRequiredToast": "Nur Administratoren können neue Aktionen hinzufügen. Bitten Sie Ihren Administrator, diese Aktion zuerst zu konfigurieren.",
-      "personalNonAdminHint": "Als „Nicht konfiguriert“ markierte Aktionen müssen zunächst von einem Administrator eingerichtet werden, bevor Sie sie verwenden können.",
       "toolRules": {
         "open": "Tool-Freigaben",
         "title": "Tool-Freigaben: {{name}}",
         "description": "Was passiert, wenn ein Assistent oder Agent eines dieser Tools verwenden möchte. Dieselben Regeln gelten für alle in Ihrer Organisation.",
         "readOnly": "Nur ein Administrator kann diese ändern.",
-        "toolsError": "Die Tools dieses Toolsets konnten nicht geladen werden."
+        "toolsError": "Die Tools dieses Toolsets konnten nicht geladen werden.",
+        "defaults": "Tools, die Daten lesen oder ändern, werden ausgeführt. Ein Tool, das Daten löscht, eine Tabelle leert oder E-Mails sendet, fragt zuerst im Chat in der PipesHub-App nach und wird nicht ausgeführt, wo niemand antworten kann, etwa im Slack-Bot oder über die API.",
+        "enterpriseTitle": "Tool-Freigaben der Organisation",
+        "enterpriseDescription": "Legen Sie fest, welche Tools dieses Toolsets ausgeführt werden, zuerst nachfragen oder nie ausgeführt werden – für alle in Ihrer Organisation."
+      },
+      "personal": {
+        "setupCallout": "Nur Sie können diese Aktion sehen und verwenden, und sie kann nicht zu Agenten hinzugefügt werden, die mit Ihrer Organisation geteilt sind. Melden Sie sich nach dem Hinzufügen bei ihr an.",
+        "yours": "Ihre",
+        "addOwn": "Eigene hinzufügen",
+        "added": "Aktion hinzugefügt.",
+        "delete": "Aktion löschen",
+        "deleteTitle": "{{name}} löschen?",
+        "deleteBody": "Ihre Anmeldung und die Tool-Freigaben dafür werden ebenfalls gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        "deleted": "Aktion gelöscht.",
+        "adminOnly": "Nur ein Administrator kann {{name}} hinzufügen: Die Aktion verbindet sich über den Hostnamen mit einem Server. Bitten Sie Ihren Administrator, sie für Ihre Organisation hinzuzufügen."
+      },
+      "enterprise": {
+        "userActionsTitle": "Eigene Aktionen der Mitglieder",
+        "userActionsDescription": "Prüfen und entfernen Sie die Aktionen, die Mitglieder Ihrer Organisation für sich selbst hinzufügen."
       }
     },
     "rightPanel": {
@@ -3119,7 +3177,7 @@
           "none": "Der Server gibt nicht an, was dieses Tool tut, daher gilt es als datenändernd."
         },
         "group": {
-          "destructive": "Löscht Daten",
+          "destructive": "Nicht rückgängig zu machen",
           "write": "Ändert Daten",
           "read": "Nur lesend",
           "notOffered": "Derzeit nicht angeboten",
@@ -3575,6 +3633,12 @@
           "label": "Extraktionsdienst",
           "description": "LLM-basierte Dokumentklassifizierung und Metadatenextraktion"
         }
+      },
+      "vectorDbMemory": {
+        "title": "Der Suchindex passt nicht in den Arbeitsspeicher der Vektordatenbank",
+        "message": "Der Suchindex braucht etwa {{needed}} GB Arbeitsspeicher, um schnell zu bleiben; die Vektordatenbank hat etwa {{available}} GB. Suchen lesen deshalb von der Festplatte und werden noch langsamer, wenn mehrere gleichzeitig laufen.",
+        "messageHost": "Der Suchindex braucht etwa {{needed}} GB Arbeitsspeicher, um schnell zu bleiben; der Server der Vektordatenbank hat insgesamt nur etwa {{available}} GB. Suchen lesen deshalb von der Festplatte und werden noch langsamer, wenn mehrere gleichzeitig laufen.",
+        "guide": "Leitfaden zur Größe der Vektordatenbank"
       }
     },
     "tenants": {
@@ -4046,7 +4110,43 @@
       "disableTitle": "Dieses Dienstkonto deaktivieren?",
       "disableDescription": "{{name}} funktioniert sofort nicht mehr – einschließlich aller bereits vorhandenen Tokens, nicht erst bei der nächsten Anmeldung. Alles, was eines dieser Tokens verwendet, schlägt fehl, bis Sie das Konto wieder aktivieren.",
       "disableConfirm": "Deaktivieren",
-      "memberBadge": "Dienstkonto"
+      "memberBadge": "Dienstkonto",
+      "manageDelegations": "Für wen es handeln darf",
+      "delegations": {
+        "title": "Im Namen einer Person handeln",
+        "explainer": "Dieses Dienstkonto kann die Erlaubnis erhalten, für namentlich genannte Personen zu handeln. Dabei liest es genau das, was diese Person lesen darf, und das ausgestellte Token gilt fünf Minuten. Administratoren können hier nicht genannt werden.",
+        "unavailableTitle": "Das Handeln im Namen einer Person ist eine Enterprise-Funktion",
+        "unavailableBody": "Diesem Dienstkonto zu erlauben, als benannte Kollegin oder benannter Kollege zu handeln — die Freigabeliste, das fünf Minuten gültige Token im Namen dieser Person und die Aufzeichnung jedes Versuchs — gehört zur Enterprise-Edition und ist in dieser Edition nicht enthalten.",
+        "unavailableAvailableHere": "Was diese Edition enthält: das Dienstkonto selbst, seinen eigenen Zugriff auf die von Ihnen freigegebenen Wissensdatenbanken sowie Token, die Sie ausstellen und widerrufen können. Das deckt jede Integration ab, die mit eigenen Berechtigungen arbeitet statt mit denen einer anderen Person.",
+        "addTitle": "Erlauben, für jemanden zu handeln",
+        "subjectLabel": "Person",
+        "subjectPlaceholder": "name@beispiel.de",
+        "subjectHelp": "Geben Sie die E-Mail-Adresse der Person ein, für die dieses Dienstkonto handeln darf.",
+        "reasonLabel": "Grund",
+        "reasonPlaceholder": "Warum das nötig ist",
+        "reasonHelp": "Wird angezeigt, wer diese Liste später prüft.",
+        "addConfirm": "Erlauben",
+        "listTitle": "Darf handeln für",
+        "none": "Dieses Dienstkonto kann für niemanden handeln. Es liest nur mit eigenen Berechtigungen.",
+        "loading": "Wird geladen…",
+        "inactive": "Nicht mehr verfügbar",
+        "revoke": "Entfernen",
+        "revokeTitle": "Diese Berechtigung entfernen?",
+        "revokeDescription": "Dieses Dienstkonto kann dann nicht mehr für {{subject}} handeln.",
+        "revokeSuccessTitle": "Berechtigung entfernt",
+        "revokeErrorTitle": "Berechtigung konnte nicht entfernt werden",
+        "grantSuccessTitle": "Berechtigung erteilt",
+        "grantErrorTitle": "Berechtigung konnte nicht erteilt werden",
+        "loadErrorTitle": "Delegationseinstellungen konnten nicht geladen werden",
+        "logTitle": "Letzte Aktivität",
+        "logHelp": "Jede Änderung an dieser Liste und jedes Mal, wenn das Dienstkonto für jemanden handeln wollte – einschließlich der abgelehnten Versuche.",
+        "logNone": "Noch nichts aufgezeichnet.",
+        "outcomeIssued": "Erlaubt",
+        "outcomeRefused": "Abgelehnt",
+        "outcomeGranted": "Berechtigung hinzugefügt",
+        "outcomeRevoked": "Berechtigung entfernt",
+        "byAdmin": "von {{admin}}"
+      }
     }
   },
   "filePreview": {
@@ -4405,7 +4505,11 @@
     "mcpServerNeedsToolsBanner": "Wählen Sie mindestens ein Tool für {{names}} aus oder aktivieren Sie „Alle Tools“.",
     "mcpPersonalOnSharedAgentNotify": "{{name}} ist Ihr persönlicher MCP-Server. Er kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft.",
     "mcpAgentApprovalsEnterprise": "Tool-Freigaben pro Agent sind Teil der Enterprise Edition. Hier gelten die eigenen Tool-Freigaben jeder Person.",
-    "mcpAgentApprovals": "Tool-Freigaben pro Agent"
+    "mcpAgentApprovals": "Tool-Freigaben pro Agent",
+    "limitSource": "Auswählen, was {{name}} durchsucht",
+    "limitSourceHint": "Lassen Sie die gesamte Quelle angehakt, oder entfernen Sie den Haken und wählen Sie die Ordner und Elemente, die der Agent durchsuchen darf.",
+    "limitSourceCount": "Auf {{count}} ausgewählte Elemente begrenzt",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} ist Ihre persönliche Aktion. Sie kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft."
   },
   "recordView": {
     "sections": {
@@ -4819,7 +4923,8 @@
     "isAnyOf": "ist einer von",
     "loadingOptions": "Optionen werden geladen…",
     "refreshingOptions": "Optionen werden aktualisiert…",
-    "loadingMore": "Weitere werden geladen…"
+    "loadingMore": "Weitere werden geladen…",
+    "clear": "Filter {{label}} löschen"
   },
   "moveFolder": {
     "moving": "Wird verschoben...",

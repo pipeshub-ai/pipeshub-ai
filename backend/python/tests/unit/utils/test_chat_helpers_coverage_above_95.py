@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 import base64
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -29,6 +29,10 @@ from app.utils.chat_helpers import (
     is_base64_image,
     record_to_message_content,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def _all_live(record_ids: list[str], org_id: str, visibility: object = None) -> list[dict]:
@@ -199,6 +203,13 @@ class TestRecursiveBlockHelpers:
 
 
 class TestEnrichFkChildrenDeep:
+    @pytest.fixture(autouse=True)
+    def _access_unfiltered(self) -> Iterator[None]:
+        """These cover blob and DDL handling; the access filter has its own tests,
+        so every asked table is admitted."""
+        with patch("app.utils.chat_helpers.accessible_node_ids", AsyncMock(side_effect=lambda _provider, ids, *_args, **_kwargs: set(ids))):
+            yield
+
     @pytest.mark.asyncio
     async def test_fetches_related_blob_and_appends_table_ddl(self):
         graph = MagicMock()
@@ -661,6 +672,13 @@ class TestBuildFkInfoOnlyChild:
 
 
 class TestEnrichFkChildrenEdgeBranches:
+    @pytest.fixture(autouse=True)
+    def _access_unfiltered(self) -> Iterator[None]:
+        """These cover blob and DDL handling; the access filter has its own tests,
+        so every asked table is admitted."""
+        with patch("app.utils.chat_helpers.accessible_node_ids", AsyncMock(side_effect=lambda _provider, ids, *_args, **_kwargs: set(ids))):
+            yield
+
     @pytest.mark.asyncio
     async def test_related_vrid_skipped_when_already_flattened(self):
         graph = MagicMock()

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from app.agent_loop_lib.transport.provider_conflicts import is_api_shape_conflict
 from app.agents.agent_loop.langchain_transport import responses_api_copy
 from app.api.middlewares.auth import deny_service_tokens
+from app.services.ai_models.decision import PredicateQuestion, get_decision_model
 from app.services.vector_db.collections import CollectionType
 from app.utils.aimodels import (
     ImageGenerationProvider,
@@ -40,6 +41,19 @@ from app.utils.aimodels import (
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import provider_error_code
+from app.web.deadline import Deadline
+from app.web.errors import (
+    AuthFailed,
+    Blocked,
+    NotConfigured,
+    QuotaExceeded,
+    RateLimited,
+    TimedOut,
+    UnknownProvider,
+    UpstreamError,
+    WebError,
+)
+from app.web.health import check_provider, provider_name
 
 router = APIRouter(dependencies=[Depends(deny_service_tokens)])
 
@@ -52,9 +66,9 @@ _OUTBOUND_PROBE_TIMEOUT_S = 5.0
 # is rejected rather than reported healthy -- Node's model-type validator is
 # wider than this set (`ocr`, `slm`, `reasoning`, `multiModal`), and a type
 # that falls through would register a model nothing had checked.
-SUPPORTED_HEALTH_CHECK_TYPES = frozenset({"llm", "embedding", "imageGeneration", "tts", "stt"})
+SUPPORTED_HEALTH_CHECK_TYPES = frozenset({"llm", "embedding", "imageGeneration", "tts", "stt", "decision"})
 
-# Outer cap vs I/O timeouts in web_search_tool / fetch_url (DDG 15s, httpx 30s).
+# Deadline for one test search per provider.
 _WEB_SEARCH_HEALTH_TIMEOUTS_S = {
     "duckduckgo": 20.0,
     "serper": 33.0,
@@ -227,13 +241,6 @@ def _provider_display_name(provider: str | None) -> str:
 
     meta = ai_model_registry.get_provider(provider) if provider else None
     return (meta or {}).get("name") or provider or "the provider"
-
-
-_WEB_SEARCH_NAMES = {"duckduckgo": "DuckDuckGo", "serper": "Serper", "tavily": "Tavily", "exa": "Exa"}
-
-
-def _web_search_name(provider: str | None) -> str:
-    return _WEB_SEARCH_NAMES.get(provider or "", provider or "The web search provider")
 
 
 # Failure messages are fixed text: exception and provider text go to the log only, never
@@ -483,99 +490,72 @@ def _get_test_image() -> str:
     return _TEST_IMAGE
 
 
+def _web_search_unhealthy(status_code: int, error: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": "not healthy", "error": error, "timestamp": get_epoch_timestamp_in_ms()},
+    )
+
+
+_NOT_CONFIGURED_HINTS = {
+    "api_key": "{name} needs an API key. Add it in the web search settings, then try again.",
+    "base_url": "{name} needs the http(s) address of its server.",
+    "searxng_json": "SearXNG refused to answer in JSON: add json to search.formats in its settings.yml.",
+    "server_version": "{name} 0.9.4 or later is required; older versions are unsafe to expose.",
+}
+
+
+def _web_search_failure(provider: str, error: WebError) -> JSONResponse:
+    name = provider_name(provider)
+    if isinstance(error, TimedOut):
+        return _web_search_unhealthy(408, f"{name} didn't answer in time. Check your network, then try again.")
+    if isinstance(error, UnknownProvider):
+        return _web_search_unhealthy(400, f"{name} isn't a web search provider this server knows.")
+    if isinstance(error, NotConfigured):
+        # Fixed wording per reason: the error's own message can quote what a remote server said.
+        hint = _NOT_CONFIGURED_HINTS.get(error.reason, _NOT_CONFIGURED_HINTS["api_key"])
+        return _web_search_unhealthy(400, hint.format(name=name))
+    if isinstance(error, AuthFailed):
+        return _web_search_unhealthy(400, f"{name} didn't accept the API key. Check the key in the web search settings, then try again.")
+    if isinstance(error, RateLimited):
+        return _web_search_unhealthy(400, f"{name} is limiting requests right now. Wait a minute, then try again.")
+    if isinstance(error, QuotaExceeded):
+        return _web_search_unhealthy(400, f"{name} says this account's search credits are used up. Check the plan, then try again.")
+    if isinstance(error, Blocked):
+        return _web_search_unhealthy(
+            400, f"{name} blocked the test search as automated traffic. Try again later, or add a provider that uses an API key.",
+        )
+    if isinstance(error, UpstreamError) and error.status:
+        return _web_search_unhealthy(
+            400, f"{name} returned an error ({error.status}). Try again in a minute; if it keeps failing, check the web search settings.",
+        )
+    return _web_search_unhealthy(
+        500, f"Couldn't reach {name} for web search. Check its API key in the web search settings, then try again.",
+    )
+
+
 @router.post("/web-search-health-check")
 async def web_search_health_check(request: Request, provider_config: dict = Body(...)) -> JSONResponse:
-    """Health check endpoint to validate a web search provider configuration."""
+    """Health check endpoint to validate a web search or page-reading provider configuration."""
     provider = provider_config.get("provider", "duckduckgo")
+    configuration = provider_config.get("configuration") or {}
+    deadline = Deadline.after(_WEB_SEARCH_HEALTH_TIMEOUTS_S.get(provider, 33.0))
     try:
-        configuration = provider_config.get("configuration", {})
-
-        from app.utils.web_search_tool import (
-            _search_with_duckduckgo,
-            _search_with_exa,
-            _search_with_serper,
-            _search_with_tavily,
-        )
-
-        provider_map = {
-            "duckduckgo": _search_with_duckduckgo,
-            "serper": _search_with_serper,
-            "tavily": _search_with_tavily,
-            "exa": _search_with_exa,
-        }
-
-        search_func = provider_map.get(provider)
-        if not search_func:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "status": "not healthy",
-                    "error": f"Unknown web search provider: {provider}",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                },
-            )
-
-        budget_s = _WEB_SEARCH_HEALTH_TIMEOUTS_S.get(provider, 33.0)
-        await asyncio.wait_for(
-            search_func("health check test", configuration),
-            timeout=budget_s,
-        )
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "healthy",
-                "message": f"Web search provider '{provider}' is responding",
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
-    except asyncio.TimeoutError:
-        return JSONResponse(
-            status_code=408,
-            content={
-                "status": "not healthy",
-                "error": f"{_web_search_name(provider)} didn't answer in time. Check your network, then try again.",
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
-    except ValueError as e:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "not healthy",
-                "error": str(e),
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
-    except httpx.HTTPStatusError as e:
-        status = e.response.status_code
-        if status in (401, 403):
-            error_msg = f"{_web_search_name(provider)} didn't accept the API key. Check the key in the web search settings, then try again."
-        elif status == 429:
-            error_msg = f"{_web_search_name(provider)} is limiting requests right now. Wait a minute, then try again."
-        else:
-            error_msg = f"{_web_search_name(provider)} returned an error ({status}). Try again in a minute; if it keeps failing, check the web search settings."
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "not healthy",
-                "error": error_msg,
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+        await check_provider(provider, configuration, deadline)
+    except WebError as e:
+        request.app.container.logger().warning(f"Web search health check failed for {provider}: {e.error_type}")
+        return _web_search_failure(provider, e)
     except Exception as e:
         request.app.container.logger().error(f"Web search health check failed for {provider}: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "not healthy",
-                "error": (
-                    f"Couldn't reach {_web_search_name(provider)} for web search. Check its API key in the web search "
-                    "settings, then try again."
-                ),
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+        return _web_search_failure(provider, WebError(str(e)))
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "healthy",
+            "message": f"Web search provider '{provider}' is responding",
+            "timestamp": get_epoch_timestamp_in_ms(),
+        },
+    )
 
 
 @router.post("/model-endpoint-check")
@@ -2073,6 +2053,56 @@ async def perform_stt_health_check(
     return checked
 
 
+async def perform_decision_health_check(model_config: dict, logger: Logger) -> JSONResponse:
+    """Ask each configured decision model one yes/no question.
+
+    A real call proves the key, the model and that the endpoint speaks the decision API.
+    """
+    provider = model_config.get("provider")
+    configuration = model_config.get("configuration") or {}
+    model_names = iter_model_names(configuration)
+    if not model_names:
+        return _config_error(
+            "Enter the decision model's name, then try again.",
+            model_config, "", error_code="invalid_request",
+        )
+
+    checked: JSONResponse | None = None
+    for model_name in model_names:
+        try:
+            model = get_decision_model(provider=provider, config=model_config, model_name=model_name)
+        except Exception as e:
+            logger.error(f"Decision health check failed to build {provider}/{model_name}: {e}", exc_info=True)
+            return await _model_setup_failed_response("decision model", model_config, model_name, e)
+        try:
+            # One attempt: the client's own timeout then decides, not a retry loop
+            # that would outlast the admin's wait.
+            result = await model.decide(
+                "Hello, can you help me?",
+                [PredicateQuestion(name="is_greeting", instructions="Is this message a greeting?")],
+                max_attempts=1,
+            )
+            answer = result.answers["is_greeting"]
+            if answer.refused or answer.missing or answer.probability is None:
+                return _config_error(
+                    f"{_provider_display_name(provider)} answered, but not with a usable decision. "
+                    "Check that the model and endpoint serve the decision API, then try again.",
+                    model_config, model_name, error_code="invalid_response",
+                )
+            checked = JSONResponse(
+                status_code=200,
+                content={
+                    "status": "healthy",
+                    "message": "Decision model is reachable",
+                    "details": {"provider": provider, "model": model_name},
+                },
+            )
+        except Exception as e:
+            logger.error(f"Decision health check failed for {provider}/{model_name}: {e}", exc_info=True)
+            return await _model_setup_failed_response("decision model", model_config, model_name, e)
+    return checked
+
+
 async def _check_embedding(request: Request, model_config: dict, logger: Logger) -> JSONResponse:
     return await perform_embedding_health_check(request, model_config, logger)
 
@@ -2093,12 +2123,17 @@ async def _check_stt(_request: Request, model_config: dict, logger: Logger) -> J
     return await perform_stt_health_check(model_config, logger)
 
 
+async def _check_decision(_request: Request, model_config: dict, logger: Logger) -> JSONResponse:
+    return await perform_decision_health_check(model_config, logger)
+
+
 _HEALTH_CHECKERS = {
     "embedding": _check_embedding,
     "llm": _check_llm,
     "imageGeneration": _check_image,
     "tts": _check_tts,
     "stt": _check_stt,
+    "decision": _check_decision,
 }
 
 

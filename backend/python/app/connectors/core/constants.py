@@ -5,8 +5,8 @@ from enum import Enum
 
 class ConfigPaths:
     """Configuration path templates for etcd / configuration service."""
-    CONNECTOR_CONFIG = "/services/connectors/{connector_id}/config"
-    OAUTH_CONFIG = "/services/oauth/{connector_type}"
+    CONNECTOR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
+    OAUTH_CONFIG_PATH = "/services/oauth/{connector_type}"
 
 
 class OAuthConfigKeys:

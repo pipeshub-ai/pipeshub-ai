@@ -2,12 +2,18 @@
 
 import itertools
 import re
+import time
 from collections.abc import Iterator
 from urllib.parse import quote, unquote
 
 import pytest
 
-from app.utils.url_redaction import REDACTED, redact_sensitive_query_params, redact_url
+from app.utils.url_redaction import (
+    REDACTED,
+    is_sensitive_query_key,
+    redact_sensitive_query_params,
+    redact_url,
+)
 
 
 class TestRedactUrl:
@@ -475,3 +481,98 @@ def test_the_secret_is_never_readable_at_any_decoding_depth() -> None:
                 assert marker not in out, f"{url} -> {out}"
             checked += 1
     assert checked > 20000
+
+
+# Each of these took seconds before (ReDoS); linear code takes a few ms. The
+# bound is loose so a loaded CI runner cannot fail it.
+_BOUND_MS = 200
+_N = 50_000
+_CAP = 8 * 1024
+_TRUNCATED = "[Truncated]"
+_FAKE_CODE = "4/0FAKE-auth-code-not-real"
+
+
+def _elapsed_ms(run) -> float:
+    started = time.perf_counter()
+    run()
+    return (time.perf_counter() - started) * 1000
+
+
+# `^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$` in is_sensitive_query_key.
+_TRIM_SHAPE = "a" + "/" * _N + "a"
+# Joining the rest of a pair for every name of a long run of `=`.
+_EQUALS_SHAPE = "a=b=c=d=e=token" + "=" * _N
+# Many `//user:` heads, each followed by a port: the password-URL regex re-ran
+# its port check to the end of the text for every head. The text stays under
+# the logging cap, so it is redacted ten times over to keep the gap wide.
+_PASSWORD_SHAPE = ",//a:1" * 1300 + "?=@"
+
+
+def _ten_times(url: str) -> None:
+    for _ in range(10):
+        redact_sensitive_query_params(url)
+
+
+class TestAdversarialInput:
+    @pytest.mark.parametrize(
+        "run",
+        [
+            pytest.param(lambda: is_sensitive_query_key(_TRIM_SHAPE), id="key-trim"),
+            pytest.param(lambda: redact_sensitive_query_params(f"/x?{_TRIM_SHAPE}=1"), id="url-trim"),
+            pytest.param(lambda: redact_sensitive_query_params(f"/x?{_EQUALS_SHAPE}"), id="url-equals"),
+            pytest.param(lambda: redact_sensitive_query_params(f"/x?a{'=' * (_CAP - 8)}"), id="url-equals-under-cap"),
+            pytest.param(lambda: _ten_times(f"/x?a={_PASSWORD_SHAPE}"), id="url-password"),
+            pytest.param(lambda: _ten_times(f"https://h.example/x?a={_PASSWORD_SHAPE}"), id="referer-password"),
+        ],
+    )
+    def test_finishes_in_linear_time(self, run) -> None:
+        assert _elapsed_ms(run) < _BOUND_MS
+
+    @pytest.mark.parametrize("key", ["..code..", "%00code", "__token__", "code\u212a"])
+    def test_stray_characters_around_a_sensitive_name_are_trimmed(self, key: str) -> None:
+        assert is_sensitive_query_key(key)
+
+    @pytest.mark.parametrize("key", ["\u017ftate", "\u212aey"])
+    def test_only_ascii_letters_make_a_sensitive_name(self, key: str) -> None:
+        # `ſ` and the Kelvin sign case-fold to `s` and `k` under Unicode rules.
+        assert not is_sensitive_query_key(key)
+
+    def test_a_user_password_url_after_many_port_like_heads_is_still_read(self) -> None:
+        out = redact_sensitive_query_params("/x?a=" + ",//a:1" * 200 + ",//u:hunter2@h")
+        assert "hunter2" not in out
+
+    def test_a_marker_followed_by_any_run_of_equals_counts_as_redacted(self) -> None:
+        assert redact_sensitive_query_params("/cb?x=[REDACTED]===") == "/cb?x=[REDACTED]==="
+
+
+class TestLoggingCap:
+    def test_a_url_up_to_the_cap_is_logged_as_it_is(self) -> None:
+        url = "/api/v1/x?q=" + "a" * (_CAP - 12)
+        assert len(url) == _CAP
+        assert redact_sensitive_query_params(url) == url
+
+    def test_a_longer_url_is_cut_back_to_a_separator_and_marked(self) -> None:
+        out = redact_sensitive_query_params("/api/v1/x?page=1&q=" + "a" * _CAP)
+        assert out == f"/api/v1/x?page=1&q={_TRUNCATED}"
+
+    def test_no_part_of_a_secret_the_cut_falls_inside_is_kept(self) -> None:
+        out = redact_sensitive_query_params("/x?pad=" + "a" * (_CAP - 20) + "&code=" + "S" * 200)
+        assert "SSS" not in out
+        assert f"code={REDACTED}" in out
+        assert out.endswith(_TRUNCATED)
+
+    def test_a_secret_past_the_cut_is_dropped(self) -> None:
+        out = redact_sensitive_query_params("/x?q=" + "a" * _CAP + "&code=" + _FAKE_CODE)
+        assert "FAKE-auth-code" not in out
+
+    @pytest.mark.parametrize("tail", ["@host/x", "%40host/x", "%2540host/x"])
+    @pytest.mark.parametrize(
+        "head",
+        [
+            pytest.param("https://user:p?x=1&" + "y" * _CAP, id="password-with-query"),
+            pytest.param("https://user:" + "p" * _CAP, id="long-password"),
+            pytest.param("/cb?next=https://u:p%3Fx%3D1%26y/" + "z" * _CAP, id="nested"),
+        ],
+    )
+    def test_nothing_is_logged_of_a_url_whose_dropped_part_holds_an_at_sign(self, head: str, tail: str) -> None:
+        assert redact_sensitive_query_params(head + tail) == f"{REDACTED}{_TRUNCATED}"

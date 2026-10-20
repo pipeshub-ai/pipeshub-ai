@@ -22,7 +22,13 @@ from app.config.constants.service import config_node_constants
 from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import (
     is_jira_ticket_record,
 )
-from app.models.blocks import BlockType, GroupType, SemanticMetadata
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.models.blocks import (
+    BlockType,
+    GroupType,
+    SemanticMetadata,
+    summary_with_captions,
+)
 from app.models.entities import (
     CodeFileRecord,
     Connectors,
@@ -218,13 +224,25 @@ def build_record_page_web_url(frontend_url: str, record_id: str) -> str:
     return f"{base}/record/{record_id}"
 
 
-def table_summary_text(group_data: object) -> str:
-    """A table's summary as the model reads it, led by its DDL for a SQL table."""
+def table_summary_text(group_data: object, captions: list[str] | None = None) -> str:
+    """A table's summary as the model reads it: led by its DDL for a SQL table,
+    and by any of *captions* the summary lacks."""
     if not isinstance(group_data, dict):
-        return ""
-    summary = group_data.get("table_summary", "") or ""
+        return summary_with_captions("", captions)
+    summary = summary_with_captions(group_data.get("table_summary", "") or "", captions)
     ddl = group_data.get("ddl", "") or ""
     return f"DDL:\n{ddl}\n\n{summary}" if ddl else summary
+
+
+def table_group_summary_text(group: dict[str, Any]) -> str:
+    """``table_summary_text`` for a stored table group, with its captions.
+
+    The captions are read from ``table_metadata``, not the summary, so a table
+    indexed before enrichment kept them still shows which table a row is from.
+    """
+    metadata = group.get("table_metadata") or {}
+    captions = metadata.get("captions") if isinstance(metadata, dict) else None
+    return table_summary_text(group.get("data"), captions)
 
 
 def flattened_result_sort_key(result: dict[str, Any]) -> tuple[str, int]:
@@ -849,7 +867,7 @@ GRAPH_CONTEXT_ENRICHMENT_CONNECTORS: frozenset[Connectors] = frozenset({
     Connectors.CONFLUENCE,
 })
 
-RECORD_RELATION_ENRICHMENT_TYPES: frozenset[RecordRelations] = frozenset({
+NODE_RELATION_ENRICHMENT_TYPES: frozenset[RecordRelations] = frozenset({
     RecordRelations.ATTACHMENT,
     RecordRelations.PARENT_CHILD,
 })
@@ -976,6 +994,8 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "creator_name": graph_doc.get("creatorName"),
                 "creator_email": graph_doc.get("creatorEmail"),
                 "labels": graph_doc.get("labels"),
+                "resolved_at": graph_doc.get("resolvedAtTimestamp"),
+                "due_date": graph_doc.get("dueDateTimestamp"),
             }
             return TicketRecord(**base_args, **specific_args)
 
@@ -1085,6 +1105,8 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "review_email": graph_doc.get("reviewEmail"),
                 "labels": graph_doc.get("labels"),
                 "last_commit_sha": graph_doc.get("lastCommitSha"),
+                "merged_at": graph_doc.get("mergedAtTimestamp"),
+                "closed_at": graph_doc.get("closedAtTimestamp"),
             }
             return PullRequestRecord(**base_args, **specific_args)
         else:
@@ -1410,7 +1432,7 @@ async def _relations_per_record(
     record_ids: list[str],
     relation_types: list[str],
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
-    """Per-record equivalent of `get_record_relations_batch`, used when the
+    """Per-record equivalent of `get_node_relations_batch`, used when the
     batch fails. Concurrent, and a failing pair costs only itself."""
     async def one(record_id: str, relation_type: str, *, outgoing: bool) -> list[dict[str, Any]]:
         fetch = (
@@ -1463,9 +1485,9 @@ async def _fetch_edges_for_records(
     """
     if not record_ids:
         return {}
-    by_value = {rel.value: rel for rel in RECORD_RELATION_ENRICHMENT_TYPES}
+    by_value = {rel.value: rel for rel in NODE_RELATION_ENRICHMENT_TYPES}
     try:
-        relations = await graph_provider.get_record_relations_batch(
+        relations = await graph_provider.get_node_relations_batch(
             record_ids, list(by_value),
         )
     except Exception as e:
@@ -1754,7 +1776,7 @@ def _annotate_dependent_parents(
     )
 
 
-def _annotate_record_relations(
+def _annotate_node_relations(
     relation_buckets: list[tuple[str, dict[str, Any], dict[str, dict[str, Any]]]],
     doc_index: dict[str, dict[str, Any]],
     in_context_ids: set[str],
@@ -1762,7 +1784,7 @@ def _annotate_record_relations(
     full_metadata_by_hit: dict[str, set[str]] | None = None,
     truncated_record_ids: set[str] | None = None,
 ) -> None:
-    """Attach record_relations to hit records from relation buckets.
+    """Attach node_relations to hit records from relation buckets.
 
     ``full_metadata_by_hit`` caps which relations of each hit carry
     context_metadata; None lets every resolved one through.
@@ -1788,12 +1810,50 @@ def _annotate_record_relations(
                 rel["context_metadata"] = context_map[rid]
             relations.append(rel)
         if relations:
-            record["record_relations"] = relations
+            record["node_relations"] = relations
             if truncated_record_ids and record.get("id") in truncated_record_ids:
-                record["record_relations_truncated"] = True
+                record["node_relations_truncated"] = True
             enriched_count += 1
 
     logger.info("Record relation enrichment: %d records enriched", enriched_count)
+
+
+async def accessible_node_ids(
+    graph_provider: IGraphDBProvider,
+    node_ids: set[str],
+    user_id: str,
+    org_id: str,
+) -> set[str]:
+    """The subset of ``node_ids`` (records, record groups, apps) the user may
+    access. No identity means nothing is accessible; a user lookup that fails
+    raises PermissionVerificationUnavailableError, as the check itself does."""
+    if not node_ids or not user_id or not org_id:
+        return set()
+    try:
+        user = await graph_provider.get_user_by_user_id(user_id, raise_on_error=True)
+    except Exception as exc:
+        raise PermissionVerificationUnavailableError(str(exc)) from exc
+    user_key = (user or {}).get("id") or (user or {}).get("_key")
+    if not user_key:
+        return set()
+    return set((await graph_provider.check_access(
+        user_key, org_id, node_ids=node_ids,
+    )).node_ids)
+
+
+async def accessible_node_ids_for_enrichment(
+    graph_provider: IGraphDBProvider,
+    node_ids: set[str],
+    user_id: str,
+    org_id: str,
+) -> set[str]:
+    """``accessible_node_ids`` for context enrichment, which is optional: when the
+    check cannot answer, no neighbour is named and the turn goes on."""
+    try:
+        return await accessible_node_ids(graph_provider, node_ids, user_id, org_id)
+    except PermissionVerificationUnavailableError as exc:
+        logger.warning("Enrichment access check unavailable; naming no neighbours: %s", exc)
+        return set()
 
 
 async def enrich_records_with_graph_context(
@@ -1811,7 +1871,7 @@ async def enrich_records_with_graph_context(
     """
     Unified graph context enrichment for search results. Performs both:
       1. Dependent parent annotation (isDependentNode -> parent metadata on flattened_results)
-      2. Record relation enrichment (graph edges -> record_relations on hit records)
+      2. Record relation enrichment (graph edges -> node_relations on hit records)
 
     Only records ``user_id`` may read are shown: hits were adjudicated by the
     search, and everything reached from them is adjudicated here. If that check
@@ -1862,23 +1922,12 @@ async def enrich_records_with_graph_context(
     to_check = (all_related_ids | set(dependent_vrid_to_parent_id.values())) - in_context_ids
     readable_ids = set(in_context_ids)
     if to_check:
-        ids = list(to_check)
-        verdicts = await asyncio.gather(
-            *[
-                graph_provider.filter_accessible_record_ids(
-                    ids[start:start + GRAPH_BATCH_CHUNK_SIZE], user_id, org_id,
-                )
-                for start in range(0, len(ids), GRAPH_BATCH_CHUNK_SIZE)
-            ],
-            return_exceptions=True,
-        )
-        failed = next((v for v in verdicts if not isinstance(v, set)), None)
-        if failed is not None:
+        try:
+            readable_ids |= await graph_provider.filter_accessible_record_ids(list(to_check), user_id, org_id)
+        except Exception as exc:
             # Fail closed: without a verdict a related record may be one the user cannot open.
-            logger.warning("Graph context enrichment skipped: access check unavailable: %s", failed)
+            logger.warning("Graph context enrichment skipped: access check unavailable: %s", exc)
             return
-        for granted in verdicts:
-            readable_ids |= granted
 
     # Keep each hit's first MAX_RELATED_RECORDS_PER_HIT readable relations (parents
     # come first), and full metadata for the first MAX_FULL_METADATA_RELATED_PER_HIT.
@@ -1920,7 +1969,7 @@ async def enrich_records_with_graph_context(
             in_context_ids, doc_index, context_map,
         )
     if relation_buckets:
-        _annotate_record_relations(
+        _annotate_node_relations(
             relation_buckets, doc_index, in_context_ids, context_map,
             full_metadata_by_hit, truncated_record_ids,
         )
@@ -1950,6 +1999,60 @@ MAX_ADDRESS_LINKS_PER_HIT = 10
 _MAX_LINKED_NAME_CHARS = 200
 _ADDRESS_LINK_SECTIONS = (("mentioned_in", "Mentioned in"), ("links_to", "Links to"))
 
+# The record types that carry a state of their own: open or done, merged or
+# closed, and when. Every other type (a page, a message, a file) has none, so
+# its type-specific document is never read for a status.
+_STATUS_RECORD_TYPES = frozenset({
+    RecordType.TICKET.value,
+    RecordType.PULL_REQUEST.value,
+    RecordType.PROJECT.value,
+})
+# A status phrase is one line of data, like a linked record's name.
+_MAX_STATUS_CHARS = 160
+
+
+def status_summary_from_graph(
+    base_doc: dict[str, Any], type_doc: dict[str, Any] | None,
+) -> str | None:
+    """``Record.status_summary`` of a record read from the graph: its base
+    document (``records``) and its type-specific one (``tickets``, ``prs``)."""
+    if not type_doc or base_doc.get("recordType") not in _STATUS_RECORD_TYPES:
+        return None
+    record = create_record_instance_from_dict(_build_record_dict_from_graph_base(base_doc), type_doc)
+    summary = record.status_summary() if record else None
+    if not summary:
+        return None
+    return " ".join(summary.split())[:_MAX_STATUS_CHARS]
+
+
+async def status_summaries_by_id(
+    graph_provider: IGraphDBProvider,
+    base_docs: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    """Each record's status phrase, by id, for those that have one.
+
+    One query per type collection, for the records whose type has a state.
+    A status is never what decides whether a record is shown, so a read that
+    fails leaves those records without one rather than failing the caller.
+    """
+    wanted = [
+        rid for rid, doc in base_docs.items()
+        if isinstance(doc, dict) and doc.get("recordType") in _STATUS_RECORD_TYPES
+    ]
+    if not wanted:
+        return {}
+    try:
+        type_docs = await _fetch_type_specific_docs_batched(graph_provider, wanted, base_docs)
+    except Exception as e:
+        logger.warning("Record status read skipped: %s", e)
+        return {}
+    summaries: dict[str, str] = {}
+    for rid in wanted:
+        summary = status_summary_from_graph(base_docs[rid], type_docs.get(rid))
+        if summary:
+            summaries[rid] = summary
+    return summaries
+
 
 async def enrich_records_with_address_links(
     virtual_record_id_to_result: dict[str, dict[str, Any]],
@@ -1967,7 +2070,9 @@ async def enrich_records_with_address_links(
     records ``user_id`` may read are shown; if that check cannot run, nothing
     is added. Sets ``record["address_links"]`` to
     ``{"mentioned_in": [...], "links_to": [...]}``, each item
-    ``{"record_id", "record_name", "connector_name"}``.
+    ``{"record_id", "record_name", "connector_name", "record_type"}`` and,
+    for a ticket, pull request or project, ``"status"``: "the pull request
+    this thread links was merged on X" needs no second search.
     """
     if not graph_provider or not user_id or not org_id:
         return
@@ -2035,18 +2140,27 @@ async def enrich_records_with_address_links(
     by_id = {
         (doc.get("id") or doc.get("_key")): doc for doc in docs or [] if isinstance(doc, dict)
     }
+    statuses = await status_summaries_by_id(graph_provider, by_id)
+
+    def _row(rid: str) -> dict[str, Any]:
+        row = {
+            "record_id": rid,
+            "record_name": " ".join(_record_name_from_graph_doc(by_id[rid]).split())[
+                :_MAX_LINKED_NAME_CHARS
+            ],
+            "connector_name": by_id[rid].get("connectorName") or "",
+            "record_type": by_id[rid].get("recordType") or "",
+        }
+        if rid in statuses:
+            row["status"] = statuses[rid]
+        return row
+
     for record_id, record in hits.items():
         found = (links or {}).get(record_id) or {}
         attached: dict[str, list[dict[str, Any]]] = {}
         for direction, _title in _ADDRESS_LINK_SECTIONS:
             rows = [
-                {
-                    "record_id": rid,
-                    "record_name": " ".join(_record_name_from_graph_doc(by_id[rid]).split())[
-                        :_MAX_LINKED_NAME_CHARS
-                    ],
-                    "connector_name": by_id[rid].get("connectorName") or "",
-                }
+                _row(rid)
                 for rid in found.get(direction) or []
                 if rid in by_id and rid != record_id
             ][:MAX_ADDRESS_LINKS_PER_HIT]
@@ -2054,6 +2168,79 @@ async def enrich_records_with_address_links(
                 attached[direction] = rows
         if attached:
             record["address_links"] = attached
+
+
+async def enrich_read_records_with_address_links(
+    records: list[dict[str, Any]],
+    graph_provider: IGraphDBProvider | None,
+    org_id: str | None,
+    *,
+    user_id: str | None,
+) -> None:
+    """``enrich_records_with_address_links`` for records read by id (a fetch,
+    the record-content API), which do not pass through the search pipeline:
+    the pull request a thread links, with whether and when it merged."""
+    if not records:
+        return
+    await enrich_records_with_address_links(
+        {str(i): record for i, record in enumerate(records) if isinstance(record, dict)},
+        graph_provider,
+        org_id or "",
+        user_id=user_id or "",
+    )
+
+
+# How a linked record's direction is named in the search API's JSON.
+_SEARCH_LINK_RELATIONS = {"mentioned_in": "mentionedIn", "links_to": "linksTo"}
+
+
+async def describe_search_records(
+    records: list[dict[str, Any]],
+    graph_provider: IGraphDBProvider | None,
+    org_id: str,
+    *,
+    user_id: str,
+) -> None:
+    """Add to each record document the search API returns where it stands
+    and what it links to, so an API caller sees what the assistant sees.
+
+    Sets ``statusSummary`` on a ticket, pull request or project ("Merged
+    2026-09-25 by alice"), and ``linkedRecords`` on a record that names, or
+    is named by, records the user may read: each ``{relation, recordId,
+    recordName, recordType, connector, status?}``. Both keys are left out
+    when there is nothing to say.
+    """
+    docs: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        record.pop("statusSummary", None)
+        record.pop("linkedRecords", None)
+        rid = record.get("_key") or record.get("id")
+        if rid:
+            docs[rid] = record
+    if not docs or not graph_provider:
+        return
+    for rid, summary in (await status_summaries_by_id(graph_provider, docs)).items():
+        docs[rid]["statusSummary"] = summary
+    holders = {rid: {"id": rid} for rid in docs}
+    await enrich_records_with_address_links(holders, graph_provider, org_id, user_id=user_id)
+    for rid, holder in holders.items():
+        links = holder.get("address_links") or {}
+        linked = [
+            {
+                "relation": relation,
+                "recordId": row["record_id"],
+                "recordName": row["record_name"],
+                "recordType": row.get("record_type") or "",
+                "connector": row.get("connector_name") or "",
+                **({"status": row["status"]} if row.get("status") else {}),
+            }
+            for direction, relation in _SEARCH_LINK_RELATIONS.items()
+            for row in links.get(direction) or []
+        ]
+        if linked:
+            docs[rid]["linkedRecords"] = linked
 
 
 def build_address_links_info(record: dict[str, Any]) -> str:
@@ -2074,21 +2261,38 @@ def build_address_links_info(record: dict[str, Any]) -> str:
             record_id = html.escape(str(row.get("record_id", "")), quote=True)
             source = html.escape(str(row.get("connector_name") or ""), quote=True)
             name = html.escape(str(row.get("record_name") or "Unknown"), quote=False)
+            # Type and status only when known, so a row from an older
+            # enrichment renders exactly as it did.
+            extra = ""
+            if row.get("record_type"):
+                extra += f' type="{html.escape(str(row["record_type"]), quote=True)}"'
+            if row.get("status"):
+                extra += f' status="{html.escape(str(row["status"]), quote=True)}"'
             lines.append(
-                f'  <linked_record record_id="{record_id}" source="{source}">'
+                f'  <linked_record record_id="{record_id}" source="{source}"{extra}>'
                 f"<record_name>{name}</record_name></linked_record>"
             )
     return "\n".join(lines) + "\n" if lines else ""
 
 
-def build_record_relations_info(record: dict[str, Any]) -> str:
+def record_header_metadata(record: dict[str, Any]) -> str:
+    """A read record's metadata as its header shows it: its own fields, then
+    the records that name it and that it names, when those were attached."""
+    metadata = record.get("context_metadata")
+    if not isinstance(metadata, str):
+        metadata = ""
+    links = build_address_links_info(record)
+    return f"{metadata}{links.rstrip()}" if links else metadata
+
+
+def build_node_relations_info(record: dict[str, Any]) -> str:
     """Build related records grouped by relation label (ATTACHMENT/CHILD/PARENT).
 
     Each label is rendered once as a heading with all its records listed
     underneath, so a label never repeats per row. A record reached via more than
     one relation type appears under each of its labels.
     """
-    relations = record.get("record_relations")
+    relations = record.get("node_relations")
     if not relations:
         return ""
 
@@ -2117,7 +2321,7 @@ def build_record_relations_info(record: dict[str, Any]) -> str:
                 record_id = rel.get("record_id", "")
                 record_name = rel.get("record_name", "Unknown")
                 lines.append(f"    - Record ID: {record_id} | Name: {record_name}")
-    if record.get("record_relations_truncated"):
+    if record.get("node_relations_truncated"):
         # No count: it would reveal how many linked records the user cannot see.
         lines.append("  (more related records exist; not shown)")
     return "\n".join(lines) + "\n"
@@ -2154,6 +2358,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     org_id: str,
     graph_provider: IGraphDBProvider | None = None,
     flattened_results: list[dict[str, Any]] | None = None,
+    user_id: str = "",
 ) -> None:
     """
     For each SQL_TABLE record in virtual_record_id_to_result that has child_record_ids
@@ -2164,6 +2369,8 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     Additionally, enriches flattened_results with fk_parent_relations and fk_child_relations
     (each containing record_id, table name, source column, and target column metadata)
     so the agent knows which related tables it can fetch via tools.
+
+    Only tables the user may access are fetched or named.
 
     Field naming conventions:
     - Graph DB (ArangoDB) returns camelCase: recordName, recordType, webUrl, hideWeburl, etc.
@@ -2177,9 +2384,28 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
 
     from app.config.constants.arangodb import RecordRelations
 
-    related_record_ids = set()
     sql_table_record_ids = []
     record_id_to_fk_relations: dict[str, dict[str, list[dict[str, Any]]]] = {}
+
+    async def fk_relations(record_id: str) -> dict[str, list[dict[str, Any]]]:
+        relations: dict[str, list[dict[str, Any]]] = {"children": [], "parents": []}
+        for key, fetch in (
+            ("children", graph_provider.get_child_record_ids_by_relation_type),
+            ("parents", graph_provider.get_parent_record_ids_by_relation_type),
+        ):
+            try:
+                relations[key] = list(await fetch(record_id, RecordRelations.FOREIGN_KEY.value))
+            except Exception as e:
+                logger.warning("Could not fetch FK %s of %s: %s", key, record_id, str(e))
+        return relations
+
+    def named_ids() -> set[str]:
+        return {
+            rel["record_id"]
+            for relations in record_id_to_fk_relations.values()
+            for rel in relations["children"] + relations["parents"]
+            if rel.get("record_id")
+        }
 
     flattened_len_before = len(flattened_results) if flattened_results is not None else 0
     logger.debug(
@@ -2209,50 +2435,21 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
 
     # Query both child and parent tables via FK edges
     for record_id in sql_table_record_ids:
-        child_relations = []
-        parent_relations = []
+        record_id_to_fk_relations[record_id] = await fk_relations(record_id)
+    related_record_ids = named_ids()
+    # A related table is shown with its own relations, so those are named too.
+    for record_id in related_record_ids - record_id_to_fk_relations.keys():
+        record_id_to_fk_relations[record_id] = await fk_relations(record_id)
 
-        try:
-            child_relations = await graph_provider.get_child_record_ids_by_relation_type(
-                record_id, RecordRelations.FOREIGN_KEY.value
-            )
-            logger.debug("FK enrichment: record %s has %d child tables", record_id, len(child_relations))
-            for rel in child_relations:
-                if rel.get("record_id"):
-                    related_record_ids.add(rel["record_id"])
-        except Exception as e:
-            logger.warning("Could not fetch child record IDs for %s: %s", record_id, str(e))
-
-        try:
-            parent_relations = await graph_provider.get_parent_record_ids_by_relation_type(
-                record_id, RecordRelations.FOREIGN_KEY.value
-            )
-            logger.debug("FK enrichment: record %s has %d parent tables", record_id, len(parent_relations))
-            for rel in parent_relations:
-                if rel.get("record_id"):
-                    related_record_ids.add(rel["record_id"])
-        except Exception as e:
-            logger.warning("Could not fetch parent record IDs for %s: %s", record_id, str(e))
-
-        record_id_to_fk_relations[record_id] = {
-            "children": list(child_relations) if not isinstance(child_relations, list) else child_relations,
-            "parents": list(parent_relations) if not isinstance(parent_relations, list) else parent_relations,
-        }
-
-    checked_ids = set(related_record_ids)
-    live_ids = await live_record_ids(graph_provider, checked_ids, org_id)
-    related_record_ids &= live_ids
-
-    async def live_relations_only(relations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        unchecked = {rel.get("record_id") for rel in relations if rel.get("record_id")} - checked_ids
-        if unchecked:
-            live_ids.update(await live_record_ids(graph_provider, unchecked, org_id))
-            checked_ids.update(unchecked)
-        return [rel for rel in relations if rel.get("record_id") in live_ids]
-
-    for fk_relations in record_id_to_fk_relations.values():
-        fk_relations["children"] = await live_relations_only(fk_relations["children"])
-        fk_relations["parents"] = await live_relations_only(fk_relations["parents"])
+    # The related tables' DDL and sample rows go into the context, and their
+    # names into the relation lists: only live tables the user may access. The
+    # trash keeps a dropped table's node and FK edges until the purge.
+    allowed = await accessible_node_ids_for_enrichment(graph_provider, related_record_ids | named_ids(), user_id, org_id)
+    allowed &= await live_record_ids(graph_provider, allowed, org_id)
+    related_record_ids &= allowed
+    for relations in record_id_to_fk_relations.values():
+        for key in ("children", "parents"):
+            relations[key] = [rel for rel in relations[key] if rel.get("record_id") in allowed]
 
     logger.debug("FK enrichment: total %d related records to fetch", len(related_record_ids))
 
@@ -2365,34 +2562,9 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                 if sample_rows:
                     table_summary = f"{table_summary}\n\nSample Rows:\n" + "\n".join(sample_rows)
 
-                # Get FK relations for this record if available, otherwise fetch them
-                fk_parent_relations = []
-                fk_child_relations = []
-                if record_id in record_id_to_fk_relations:
-                    fk_parent_relations = record_id_to_fk_relations[record_id]["parents"]
-                    fk_child_relations = record_id_to_fk_relations[record_id]["children"]
-                else:
-                    try:
-                        fk_child_relations = await graph_provider.get_child_record_ids_by_relation_type(
-                            record_id, RecordRelations.FOREIGN_KEY.value
-                        )
-                        fk_child_relations = list(fk_child_relations) if not isinstance(fk_child_relations, list) else fk_child_relations
-                    except Exception as e:
-                        logger.debug("Could not fetch child record IDs for %s: %s", record_id, str(e))
-                    try:
-                        fk_parent_relations = await graph_provider.get_parent_record_ids_by_relation_type(
-                            record_id, RecordRelations.FOREIGN_KEY.value
-                        )
-                        fk_parent_relations = list(fk_parent_relations) if not isinstance(fk_parent_relations, list) else fk_parent_relations
-                    except Exception as e:
-                        logger.debug("Could not fetch parent record IDs for %s: %s", record_id, str(e))
-                    fk_child_relations = await live_relations_only(fk_child_relations)
-                    fk_parent_relations = await live_relations_only(fk_parent_relations)
-                    record_id_to_fk_relations[record_id] = {
-                        "children": fk_child_relations,
-                        "parents": fk_parent_relations,
-                    }
-
+                fk_relations = record_id_to_fk_relations.get(record_id, {"children": [], "parents": []})
+                fk_parent_relations = fk_relations["parents"]
+                fk_child_relations = fk_relations["children"]
 
                 # Build flattened result entry
                 # rec keys are snake_case; metadata dict uses camelCase for frontend
@@ -2919,7 +3091,6 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             on_repeat_hit[chunk_id] = functools.partial(_raise_pending_row, chunk_id)
             continue
         elif block_type == GroupType.TABLE.value:
-            table_data = block.get("data",{})
             table_metadata = block.get("table_metadata", {})
             children = block.get("children")
 
@@ -2951,10 +3122,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                     is_large_table = True
                 else:
                     is_large_table = num_of_cells > MAX_CELLS_IN_TABLE_THRESHOLD
-                table_summary = table_data.get("table_summary","")
-                ddl = table_data.get("ddl", "") or ""
-                if ddl:
-                    table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
+                table_summary = table_group_summary_text(block)
 
                 if not is_large_table:
                     child_results=[]
@@ -3114,11 +3282,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             )
             continue
         block_group = block_groups[block_group_index]
-        data = block_group.get("data", {})
-        table_summary = data.get("table_summary","")
-        ddl = data.get("ddl", "") or ""
-        if ddl:
-            table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
+        table_summary = table_group_summary_text(block_group)
         child_results = []
         for row_index, row_score, qdrant_content in sorted_rows_tuple:
             if row_index < len(blocks):
@@ -4492,7 +4656,7 @@ def record_to_message_content(
 
     try:
         content = []
-        context_metadata = record.get("context_metadata", "") or ""
+        context_metadata = record_header_metadata(record)
         fk_text = _fk_lines_text(record)
         trailer_reserve = record_trailer_reserve(
             record, selection=include_blocks is not None, hints=hints,
@@ -4771,7 +4935,7 @@ def record_to_message_content(
                         # `[index|ref]` prefix are part of what the model reads,
                         # so they are charged with the rows, along with room for
                         # the "rest did not fit" line should the rows run out.
-                        summary = _TABLE_CONTINUED if continuing else table_summary_text(data)
+                        summary = _TABLE_CONTINUED if continuing else table_group_summary_text(corresponding_block_group)
                         framing = _TableFraming(block_group_index, summary)
                         image_table_header = f"[Table #{block_group_index}: {summary}]\n"
                         truncation_reserve = framing.row(
@@ -5119,7 +5283,7 @@ def record_to_text(record: dict[str, Any]) -> str:
     """
     try:
         content: list[str] = []
-        context_metadata = record.get("context_metadata", "")
+        context_metadata = record_header_metadata(record)
         content.append(f"""<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n""")
 
         block_containers = record.get("block_containers", {})
@@ -5447,7 +5611,7 @@ def build_message_content_array(
             parent_info = build_parent_info(result)
             if parent_info:
                 record_header_text = f"{record_header_text}{parent_info}"
-            relations_info = build_record_relations_info(record)
+            relations_info = build_node_relations_info(record)
             if relations_info:
                 record_header_text = f"{record_header_text}{relations_info}"
             address_links_info = build_address_links_info(record)

@@ -23,7 +23,7 @@ import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import httplib2
@@ -45,7 +45,7 @@ TOKEN_HOST = "oauth2.googleapis.com"
 GOOGLE_API_HOSTS = frozenset({"www.googleapis.com", "admin.googleapis.com", "gmail.googleapis.com", TOKEN_HOST})
 
 
-def google_error(status: int, reason: Optional[str | list[str]], message: str = "") -> tuple[int, dict]:
+def google_error(status: int, reason: str | list[str] | None, message: str = "") -> tuple[int, dict]:
     """A Google API error body in the shape googleapiclient parses into ``HttpError``.
 
     ``reason=None`` sends only a message, as some Google errors do; googleapiclient then
@@ -67,7 +67,7 @@ class ApiRequest:
     query: dict[str, str]
     headers: dict[str, str]
     body: bytes
-    identity: Optional[str]
+    identity: str | None
 
     def json(self) -> object:
         return json.loads(self.body or b"{}")
@@ -79,8 +79,8 @@ class _Fault:
     pattern: re.Pattern[str]
     status: int
     body: Any
-    remaining: Optional[int]
-    when: Optional[Callable[[ApiRequest], bool]] = None
+    remaining: int | None
+    when: Callable[[ApiRequest], bool] | None = None
 
 
 @dataclass
@@ -125,10 +125,10 @@ class FakeGoogleHttp:
         method: str,
         path_regex: str,
         status: int,
-        reason: Optional[str | list[str]],
+        reason: str | list[str] | None,
         *,
-        times: Optional[int] = None,
-        when: Optional[Callable[[ApiRequest], bool]] = None,
+        times: int | None = None,
+        when: Callable[[ApiRequest], bool] | None = None,
     ) -> None:
         """Answer matching calls with a Google error, ``times`` times (``None`` = always)."""
         _, body = google_error(status, reason)
@@ -165,7 +165,7 @@ class FakeGoogleHttp:
             uri: str,
             method: str = "GET",
             body: object = None,
-            headers: Optional[dict[str, str]] = None,
+            headers: dict[str, str] | None = None,
             redirections: int = 5,
             connection_type: object = None,
         ) -> tuple[httplib2.Response, bytes]:
@@ -311,12 +311,17 @@ class FakeEntitiesProcessor:
         self.linked_authenticators: list[tuple[str, str, str, str]] = []
         self.deleted_groups: list[str] = []
 
-    def _check_write(self, external_id: Optional[str]) -> None:
+    def _check_write(self, external_id: str | None) -> None:
         if external_id in self.fail_writes_for:
             raise RuntimeError(f"database unavailable while writing {external_id}")
 
-    def by_id(self, record_id: str) -> Optional[Record]:
+    def by_id(self, record_id: str) -> Record | None:
         return next((r for r in self.records.values() if r.id == record_id), None)
+
+    async def inheritance_when_unreadable(self, collection: str, stored_id: str | None) -> bool:
+        """Whether the stored record inherits. The fake keeps that as the flag it was saved with."""
+        stored = self.by_id(stored_id) if stored_id else None
+        return bool(stored is not None and stored.inherit_permissions)
 
     def perm_emails(self, external_id: str) -> set[str]:
         return {p.email for p in self.permissions.get(external_id, []) if p.email}
@@ -327,11 +332,11 @@ class FakeEntitiesProcessor:
         """Both graph stores answer these lookups with a plain Record, never a FileRecord."""
         return Record.model_validate(record.model_dump(include=set(Record.model_fields)))
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         stored = self.records.get(external_record_id)
         return self._plain(stored) if stored is not None else None
 
-    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None) -> list[Any]:
+    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: str | None = None) -> list[Any]:
         return [
             self._plain(r) for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id
@@ -386,7 +391,7 @@ class FakeEntitiesProcessor:
             None,
         )
 
-    async def get_record_group_by_external_id(self, connector_id: str, external_group_id: str) -> Optional[Any]:
+    async def get_record_group_by_external_id(self, connector_id: str, external_group_id: str) -> Any | None:
         group = self.record_groups.get(external_group_id)
         if group is not None and getattr(group, "connector_id", None) not in (None, connector_id):
             return None
@@ -411,7 +416,7 @@ class FakeEntitiesProcessor:
     async def get_all_active_users(self) -> list[Any]:
         return list(self.active_users)
 
-    async def get_user_by_user_id(self, user_id: str) -> Optional[object]:
+    async def get_user_by_user_id(self, user_id: str) -> object | None:
         return next((u for u in self.active_users if getattr(u, "id", None) == user_id), None)
 
     async def get_users_with_permission_to_node(
@@ -446,7 +451,13 @@ class FakeEntitiesProcessor:
         return [group for key, (group, _) in self.user_groups.items() if key in granted]
 
     # writes
-    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
+    async def on_new_records(
+        self,
+        records_with_permissions: list[tuple[Any, list[Any]]],
+        *,
+        replace_permissions: bool = False,
+    ) -> None:
+        del replace_permissions
         for record, _ in records_with_permissions:
             self._check_write(record.external_record_id)
         self.new_record_batches.append([r.external_record_id for r, _ in records_with_permissions])
@@ -521,14 +532,17 @@ class FakeEntitiesProcessor:
         self.deleted.append(record_id)
 
     async def on_records_deleted_cascade(
-        self, record_ids: list[str], connector_id: str, cascade_children: bool = True
+        self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+        *, include_trashed_roots: bool = False, **_: object,
     ) -> dict[str, Any]:
+        """Like the real processor, a root in the trash is left alone unless ``include_trashed_roots``."""
         deleted: list[str] = []
         for record_id in record_ids:
             record = self.by_id(record_id)
             if record is not None:
                 self._check_write(record.external_record_id)
-        pending = list(record_ids)
+        roots = [self.by_id(record_id) for record_id in record_ids]
+        pending = [r.id for r in roots if r is not None and (include_trashed_roots or is_live_record(r))]
         while pending:
             record = self.by_id(pending.pop())
             if record is None:
@@ -580,7 +594,7 @@ class FakeSyncPointStore:
         self.sync_points: dict[str, dict[str, Any]] = {}
         self.writes: list[tuple[str, dict[str, Any]]] = []
 
-    async def get_sync_point(self, key: str, raise_on_error: bool = False) -> Optional[dict[str, Any]]:
+    async def get_sync_point(self, key: str, raise_on_error: bool = False) -> dict[str, Any] | None:
         return self.sync_points.get(key)
 
     async def update_sync_point(self, key: str, data: dict[str, Any]) -> None:
@@ -592,13 +606,13 @@ class FakeSyncPointStore:
     async def delete_sync_point(self, key: str) -> None:
         self.sync_points.pop(key, None)
 
-    def value(self, key_suffix: str) -> Optional[dict[str, Any]]:
+    def value(self, key_suffix: str) -> dict[str, Any] | None:
         matches = [v for k, v in self.sync_points.items() if k.endswith(key_suffix)]
         assert len(matches) <= 1, f"ambiguous sync point suffix {key_suffix}: {list(self.sync_points)}"
         return matches[0] if matches else None
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeSyncPointStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeSyncPointStore"]:
         yield self
 
 
@@ -610,7 +624,7 @@ class FakeConfigService:
     the app to this method, it would flag each place the app logs config.
     """
 
-    def __init__(self, connector_id: str, config: dict[str, Any], shared_apps: Optional[dict[str, list[dict[str, Any]]]] = None) -> None:
+    def __init__(self, connector_id: str, config: dict[str, Any], shared_apps: dict[str, list[dict[str, Any]]] | None = None) -> None:
         self.connector_id = connector_id
         self.config = config
         self.shared_apps = shared_apps or {}

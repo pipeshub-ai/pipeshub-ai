@@ -416,18 +416,18 @@ class TestPermissions:
 
     def _graph(self) -> MagicMock:
         from app.modules.named_entities.keys import named_entity_key
-        from tests.unit.modules.retrieval.entity_access_fakes import permitted_records
+        from tests.unit.modules.retrieval.entity_access_fakes import entity_graph
 
         node_id = named_entity_key(self.ORG, "organization", "name:organization:contoso")
         nodes = {node_id: {"id": node_id, "kind": "organization", "name": "Contoso", "normKey": "name:organization:contoso"}}
-        graph = MagicMock()
+        graph = entity_graph(
+            lambda refs, org_id, **kwargs: {ref["id"]: [dict(self.RECORD)] for ref in refs if ref["id"] in nodes},
+            app_level=("kb-1",),
+        )
         graph.get_named_entities_by_ids = AsyncMock(
             side_effect=lambda org, ids: [nodes[i] for i in ids if i in nodes and org == self.ORG],
         )
         graph.find_named_entities_by_key_prefix = AsyncMock(return_value=[])
-        graph.get_permitted_entity_records = AsyncMock(side_effect=permitted_records(
-            lambda refs, org_id, **kwargs: {ref["id"]: [dict(self.RECORD)] for ref in refs if ref["id"] in nodes},
-        ))
         graph.get_named_entity_mentions_in_records = AsyncMock(side_effect=lambda org, entity_ids, record_ids: [
             {"recordId": r, "entityId": e, "extractedNames": ["Contoso"], "blockIndexes": [0], "mentionCount": 1}
             for e in entity_ids for r in record_ids if e in nodes and r == self.RECORD["_key"]

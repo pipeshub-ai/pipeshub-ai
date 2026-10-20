@@ -17,6 +17,7 @@ from app.agents.actions.knowledge_graph.models import LookupMatch
 from app.agents.actions.knowledge_graph.navigator import GraphNavigator
 from app.agents.actions.knowledge_graph.resolver import RecordResolver
 from app.connectors.api import router as connector_router
+from app.connectors.sources.localKB.handlers.kh_search import SearchPage
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
@@ -75,37 +76,59 @@ async def test_an_unreadable_setting_does_not_break_search() -> None:
 
 # --- Browsing ----------------------------------------------------------------
 
+_GATE = {"grantee_ids": ["user-key-1"], "gated_app_ids": ["jira-1", "demo-1"]}
+_GRANTS = {"jira-1": ["j-1"], "demo-1": ["d-1"]}
+
+
 def _hub(documents: dict[str, dict] | None = None) -> KnowledgeHubService:
+    """The demo App is in the person's gate and holds a grant, so only the
+    exclusion keeps it out. The listings are faked as they behave: each admits
+    only the Apps of the gate it is handed."""
+    documents = documents or {}
+
+    def root_listing(**kw: object) -> dict:
+        # Source names for the filter dropdown; the main listing stays empty.
+        rows = [{"id": a, "name": a} for a in kw["user_app_ids"]] if kw.get("names_only") else []
+        return {"partitions": [{"rows": rows, "hasMore": False, "total": len(rows), "ids": []}]}
+
+    def scoped_page(**kw: object) -> dict:
+        admitted = documents.get(kw["start_id"], {}).get("connectorId") in kw["gated_app_ids"]
+        return {"rows": [], "hasMore": False, "total": 0, "scope": {"admitted": admitted}}
+
     graph = MagicMock()
     graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
-    graph.get_user_app_ids = AsyncMock(return_value=["jira-1", "demo-1"])
-    graph.get_user_permission_app_ids = AsyncMock(return_value=[])
-    graph.get_knowledge_hub_root_nodes = AsyncMock(return_value={"nodes": [], "total": 0})
-    graph.get_knowledge_hub_children = AsyncMock(return_value={"nodes": [], "total": 0})
-    graph.get_knowledge_hub_search = AsyncMock(return_value={"nodes": [], "total": 0})
-    graph.get_document = AsyncMock(side_effect=lambda key, collection: (documents or {}).get(key))
+    graph.get_knowledge_hub_access_context_v2 = AsyncMock(return_value=_GATE)
+    graph.get_knowledge_hub_access_v3 = AsyncMock(return_value={**_GATE, "by_connector": _GRANTS})
+    graph.get_knowledge_hub_root_nodes_v2 = AsyncMock(side_effect=root_listing)
+    graph.get_knowledge_hub_connector_page_v3 = AsyncMock(side_effect=scoped_page)
+    graph.get_document = AsyncMock(side_effect=lambda key, collection: documents.get(key))
     return KnowledgeHubService(logger=MagicMock(), graph_provider=graph, excluded_app_ids=OFF)
 
 
 @pytest.mark.asyncio
 async def test_the_record_listing_search_leaves_the_demo_out() -> None:
     hub = _hub()
-    await hub.get_nodes(user_id="u1", org_id="org", q="pricing", flattened=True)
-    assert hub.graph_provider.get_knowledge_hub_search.await_args.kwargs["exclude_app_ids"] == OFF
+    empty = SearchPage(
+        rows=[], total=0, counts_by_type=None, start_index=0, end_index=0, next_cursor=None, prev_cursor=None,
+    )
+    with patch(
+        "app.connectors.sources.localKB.handlers.knowledge_hub_service.search_page",
+        AsyncMock(return_value=empty),
+    ) as search:
+        response = await hub.get_nodes(user_id="u1", org_id="org", q="pricing", flattened=True)
+    assert response.success is True
+    access = search.await_args.kwargs["access"]
+    assert access["gated_app_ids"] == ["jira-1"]
+    assert access["by_connector"] == {"jira-1": ["j-1"]}
 
 
 @pytest.mark.asyncio
 async def test_opening_a_demo_folder_by_id_shows_nothing() -> None:
     hub = _hub({"rg-1": {"connectorId": "demo-1"}})
-    hub._validate_node_existence_and_type = AsyncMock()
-    items, total, _ = await hub._get_children_nodes(
-        user_key="user-key-1", org_id="org", parent_id="rg-1", parent_type="recordGroup",
-        skip=0, limit=10, sort_by="name", sort_order="asc", q=None, node_types=None,
-        record_types=None, origins=None, connector_ids=None, indexing_status=None,
-        created_at=None, updated_at=None, size=None, only_containers=False, excluded_app_ids=OFF,
-    )
-    assert (items, total) == ([], 0)
-    hub.graph_provider.get_knowledge_hub_children.assert_not_called()
+    response = await hub.get_nodes(user_id="u1", org_id="org", parent_id="rg-1", parent_type="recordGroup")
+    page = hub.graph_provider.get_knowledge_hub_connector_page_v3.await_args.kwargs
+    assert page["gated_app_ids"] == ["jira-1"]
+    assert response.success is False and response.items == []
 
 
 @pytest.mark.asyncio
@@ -113,6 +136,8 @@ async def test_a_real_folder_still_opens() -> None:
     hub = _hub({"rg-2": {"connectorId": "jira-1"}})
     assert await hub._belongs_to("rg-2", "recordGroup", OFF) is False
     assert await hub._belongs_to("demo-1", "app", OFF) is True
+    response = await hub.get_nodes(user_id="u1", org_id="org", parent_id="rg-2", parent_type="recordGroup")
+    assert response.success is True
 
 
 # --- Tools that open records by id --------------------------------------------
@@ -235,23 +260,20 @@ async def test_the_file_stream_hides_a_switched_off_demo_record(excluded, expect
 @pytest.mark.parametrize("flattened", [False, True], ids=["browse", "search"])
 async def test_a_deep_link_to_a_demo_folder_answers_like_a_missing_one(flattened) -> None:
     hub = _hub({"rg-1": {"connectorId": "demo-1"}})
-    hub._get_current_node_info = AsyncMock(return_value={"name": "Pricing"})
     response = await hub.get_nodes(
         user_id="u1", org_id="org", parent_id="rg-1", parent_type="recordGroup", flattened=flattened,
     )
     assert response.success is False and response.errorCode == 404
     assert response.currentNode is None and response.items == []
-    hub._get_current_node_info.assert_not_called()
+    # The same answer as for a node that is not there, so nothing confirms the folder.
+    assert response.error == "Node not found"
 
 
 @pytest.mark.asyncio
 async def test_the_source_filter_does_not_offer_switched_off_demo_data() -> None:
     hub = _hub()
-    hub.graph_provider.get_knowledge_hub_filter_options = AsyncMock(
-        return_value={"apps": [{"id": "demo-1", "name": "Acme"}, {"id": "jira-1", "name": "Jira"}]}
-    )
-    filters = await hub._get_available_filters("user-key-1", "org", OFF)
-    assert [a.id for a in filters.connectors] == ["jira-1"]
+    response = await hub.get_nodes(user_id="u1", org_id="org", include=["availableFilters"])
+    assert [a.id for a in response.filters.available.connectors] == ["jira-1"]
 
 
 # --- Concurrent record reads ---------------------------------------------------

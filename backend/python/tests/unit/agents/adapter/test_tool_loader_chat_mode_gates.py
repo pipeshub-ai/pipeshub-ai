@@ -132,11 +132,11 @@ class TestBuildDynamicToolsWebSearchGate:
         fake_fetch_tool = MagicMock(name="fu_tool")
         with (
             patch(
-                "app.utils.web_search_tool.create_web_search_tool",
+                "app.web.tools.web_search.create_web_search_tool",
                 return_value=fake_web_tool,
             ),
             patch(
-                "app.utils.fetch_url_tool.create_fetch_url_tool",
+                "app.web.tools.fetch_url.create_fetch_url_tool",
                 return_value=fake_fetch_tool,
             ),
             patch(
@@ -241,8 +241,8 @@ class TestModePolicyEndToEndGating:
         with registry_patch, factory_patch:
             if web_search_config:
                 with (
-                    patch("app.utils.web_search_tool.create_web_search_tool", return_value=MagicMock()),
-                    patch("app.utils.fetch_url_tool.create_fetch_url_tool", return_value=MagicMock()),
+                    patch("app.web.tools.web_search.create_web_search_tool", return_value=MagicMock()),
+                    patch("app.web.tools.fetch_url.create_fetch_url_tool", return_value=MagicMock()),
                     patch(
                         "app.agents.agent_loop.tool_loader.split_original_tool_name",
                         side_effect=[("web_search", "search"), ("fetch_url", "fetch")],

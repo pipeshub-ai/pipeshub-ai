@@ -94,10 +94,13 @@ def _for_capability(result: DiscoveryResult, capability: str | None) -> Discover
         wanted = CAPABILITY_TO_MODEL_TYPE.get(capability, capability)
         if wanted == "reasoning":
             wanted = "llm"
+        # An unclassified model may be a chat or embedding model, but nothing says
+        # it speaks a decision API.
+        keep_other = wanted != "decision"
         models = [
             model
             for model in models
-            if wanted in model.capabilities or "other" in model.capabilities
+            if wanted in model.capabilities or (keep_other and "other" in model.capabilities)
         ]
     warnings = list(result.warnings)
     if len(models) > MAX_MODELS:

@@ -13,6 +13,7 @@ from app.utils.chat_helpers import (
 )
 from app.utils.logger import create_logger
 from app.utils.text_fragments import SourceFormat, split_fragment_directive
+from app.web.url import display_domain
 
 # Initialize logger
 logger = create_logger(__name__)
@@ -277,11 +278,25 @@ def normalize_malformed_citations(text: str) -> str:
     * Bare refN token            ``ref5``                   →  ``[source](ref5)``
     * Bare tiny web-ref URL      ``https://ref5.xyz``       →  ``[source](https://ref5.xyz)``
     """
+    text = _normalize_context_label_refs(text)
     text = _unwrap_ref_link_targets(text)
     text = _expand_multi_ref_links(text)
     text = _normalize_bracket_refs(text)
     text = _wrap_bare_refs(text)
     return text
+
+
+# A context block is shown to the model as ``[12|ref5] text``. A model that cites
+# by copying that label leaves ``[12|`` and ``]`` around the link once the ref is
+# wrapped, so the whole label (or a comma list of them) becomes the links.
+_CONTEXT_LABEL_REFS_RE = re.compile(r'\[(\d+\|ref\d+(?:\s*,\s*\d+\|ref\d+)*)\]')
+
+
+def _normalize_context_label_refs(text: str) -> str:
+    return _CONTEXT_LABEL_REFS_RE.sub(
+        lambda m: " ".join(f"[source]({label.split('|', 1)[1].strip()})" for label in m.group(1).split(",")),
+        text,
+    )
 
 
 def display_url_for_llm(url: str, ref_mapper: "object | None") -> str:
@@ -415,6 +430,11 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
 # (``_MD_LINK_PATTERN``), and those that did were already rewritten to
 # ``[N](url)`` by the time this runs, so whatever still matches is dead.
 _UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _ANY_REF_TARGET + r'\)')
+# A ``[text](https://refN.xyz)`` web-citation alias that matched no read page, usually one the
+# model made up. The link goes; descriptive text ("India – Wikipedia") stays in the sentence, a
+# bare citation label ("source", "3") goes with it.
+_UNRESOLVED_WEB_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(https?://ref\d+\.xyz/?\)')
+_CITATION_LABEL_RE = re.compile(r'^\s*(?:sources?|refs?|links?|citations?|\d+)?\s*$', re.IGNORECASE)
 
 
 def _renumber_citation_links(
@@ -453,6 +473,9 @@ def _strip_unresolved_ref_citations(text: str) -> str:
     which no mapper ever mints.  Leaving them renders as broken
     ``[source](ref209)`` links in the UI.
     """
+    text = _UNRESOLVED_WEB_REF_LINK_RE.sub(
+        lambda m: '' if _CITATION_LABEL_RE.match(m.group(1)) else m.group(1), text,
+    )
     return _UNRESOLVED_REF_LINK_RE.sub('', text)
 
 
@@ -621,13 +644,15 @@ def _try_append_web_citation(
     web_content = web_rec.get("content", "")
     if not web_content:
         return True, citation_num
+    page = _page_of(url)
     new_citations.append({
         "content": _safe_stringify_content(value=web_content),
         "chunkIndex": citation_num,
         "metadata": {
-            "recordId": _page_of(url),
+            "recordId": page,
             "mimeType": "text/html",
-            "recordName": _page_of(url),
+            # The page's title, else its site: the URL itself is what the UI showed before.
+            "recordName": web_rec.get("title") or display_domain(page) or page,
             "webUrl": url,
             "origin": "WEB_SEARCH",
             "orgId": web_rec.get("org_id", ""),

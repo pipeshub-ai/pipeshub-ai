@@ -52,9 +52,19 @@ _MCP_INSTANCES = {
 }
 
 
+# The toolset instances they attach: org-1's `inst-1`, and a personal one of alice's.
+_TOOLSET_INSTANCES = {
+    "/services/toolset-instances": [{"_id": "inst-1", "orgId": "org-1", "instanceName": "Slack", "toolsetType": "slack"}],
+    "/services/toolset-user-instances/org-1/u-alice/alice-slack": {
+        "_id": "alice-slack", "orgId": "org-1", "createdBy": "u-alice", "scope": "personal",
+        "instanceName": "My Slack", "toolsetType": "slack",
+    },
+}
+
+
 @pytest.fixture
 def client(graph: InMemoryGraph) -> TestClient:
-    c, _ = make_client(graph, FakeConfigService(dict(_MCP_INSTANCES)))
+    c, _ = make_client(graph, FakeConfigService({**_MCP_INSTANCES, **_TOOLSET_INSTANCES}))
     return c
 
 
@@ -325,6 +335,21 @@ class TestUpdateAttachments:
         assert toolset["name"] == "slack" and toolset["instanceId"] == "inst-1"
         (tool,) = graph.nodes["agentTools"].values()
         assert tool["fullName"] == "slack.send"
+
+    def test_a_toolset_instance_that_doesnt_exist_is_refused(self, client, graph) -> None:
+        self._seed_toolset(graph)
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [
+            {"name": "Slack", "instanceId": "never-existed", "tools": [{"name": "send"}]},
+        ]})
+        assert response.status_code == 400
+        assert "ts-old" in graph.nodes["agentToolsets"]
+
+    def test_a_personal_toolset_stays_off_an_agent_shared_with_the_org(self, client, graph) -> None:
+        personal = {"name": "Slack", "instanceId": "alice-slack", "tools": [{"name": "send"}]}
+        response = client.put("/api/v1/agent/shared", headers=as_user("alice"), json={"toolsets": [personal]})
+        assert response.status_code == 400
+        assert "Personal actions" in response.json()["detail"]
+        assert client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [personal]}).status_code == 200
 
     def test_replacing_with_several_toolsets_files_each_tool_correctly(self, client, graph) -> None:
         response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [
@@ -970,7 +995,7 @@ class TestCreateAgent:
             "webSearch": {"provider": "Tavily", "providerLabel": "Tavily"},
             "toolsets": [{"name": "jira", "tools": [{"name": "search"}]}, "junk", {"name": ""}],
             "mcpServers": [{"instanceId": "i1", "name": "github", "tools": [{"name": "t"}]}],
-            "knowledge": [{"connectorId": "c1", "filters": "not json"}],
+            "knowledge": [{"connectorId": "c1", "filters": "{}"}],
             "skills": ["mine"],
         })
         assert response.status_code == 200
@@ -992,6 +1017,18 @@ class TestCreateAgent:
             "name": "Bad", "mcpServers": [{"instanceId": "never-existed", "name": "github", "tools": []}],
         })
         assert response.status_code == 400
+        assert not graph.calls_to("begin_transaction")
+
+    @pytest.mark.parametrize("filters", ["not json", {"records": "x"}, {"records": [123]}, [1, 2]])
+    def test_a_knowledge_limit_that_cannot_be_read_is_refused_before_anything_is_written(
+        self, client, graph, filters,
+    ) -> None:
+        """Saved as "no filters" it would let the agent search the whole source."""
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Limited", "knowledge": [{"connectorId": "c1", "filters": filters}],
+        })
+        assert response.status_code == 400
+        assert "cannot be read" in response.json()["detail"]
         assert not graph.calls_to("begin_transaction")
 
     def test_each_tool_is_filed_under_its_own_toolset(self, client, graph) -> None:

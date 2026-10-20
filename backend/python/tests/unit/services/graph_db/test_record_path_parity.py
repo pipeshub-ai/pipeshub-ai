@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.config.constants.arangodb import CollectionNames
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -92,13 +93,15 @@ async def test_record_path_segments_parity(rows, expected, reverse):
 
 
 @pytest.mark.asyncio
-async def test_arango_record_query_walks_only_record_relations_with_prune():
+async def test_arango_record_query_walks_only_the_hierarchy_collection_with_prune():
     provider = _arango([])
     await provider.get_record_path_segments("f", transaction="tx-1")
     call = provider.http_client.execute_aql.await_args
     query = call.args[0]
     assert "GRAPH" not in query
-    assert "INBOUND start_record recordRelations" in query
+    # The hierarchy alone: links between records live in their own collection.
+    assert f"INBOUND start_record {CollectionNames.NODE_RELATIONS.value}\n" in query
+    assert CollectionNames.RECORD_LINKS.value not in query
     assert "PRUNE" in query
     assert 'uniqueVertices: "path"' in query
     # AQL grammar: PRUNE must precede OPTIONS or the query fails to parse.
@@ -122,7 +125,8 @@ async def test_neo4j_record_query_prunes_inside_the_quantified_pattern():
     call = provider.client.execute_query.await_args
     query = call.args[0]
     assert "){0,100}" in query
-    assert "RECORD_RELATION*" not in query
+    assert "NODE_RELATION*" not in query
+    assert "RECORD_LINK" not in query
     assert "ORDER BY size(path_nodes) DESC, [n IN path_nodes | n.id] ASC" in query
     assert call.kwargs["parameters"] == {
         "record_id": "f",

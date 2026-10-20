@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-pytest.importorskip("aioboto3")
+pytest.importorskip("aiobotocore")
 
 from app.connectors.sources.s3.connector import S3Connector
 
