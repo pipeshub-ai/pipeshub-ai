@@ -1037,10 +1037,14 @@ class AzureBlobConnector(BaseConnector):
             self._sync_incomplete = True
             self.logger.info(f"Not removing records in container {container_name}: a listing did not cover every blob")
 
+        # Only the unlisted records wait for the other containers, not the whole listing.
+        unlisted = {ext: rid for ext, rid in recorded.items() if ext not in listed} if complete else {}
+        del recorded, listed, unrecorded
+
         async def remove() -> None:
             if complete:
                 await remove_recorded_not_listed(
-                    self.data_entities_processor, container_name, scope.list_prefixes, recorded, listed,
+                    self.data_entities_processor, container_name, scope.list_prefixes, unlisted, set(),
                     self._written_ids | self._moved_record_ids, self.logger,
                 )
             await clean_up_scope(
