@@ -13,17 +13,18 @@ from __future__ import annotations
 
 import json
 import re
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.agent_loop_lib.context.base import ContextBudget
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall, ToolMessage
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     DEFAULT_MAX_RESULT_CHARS,
     shape_budget_reduction,
 )
+from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
 from app.utils.render_budget import (
     FETCH_MAX_CHARS,
@@ -192,7 +193,7 @@ class TestRecordsComeBackWhole:
 class TestTheSharedCapDoesNotCutFetch:
     @staticmethod
     async def _shape(messages: list, tool_caps: dict[str, int] | None) -> list:
-        ctx = SimpleNamespace(messages=messages, budget=None)
+        ctx = ModelCallContext(messages=messages, budget=ContextBudget(max_tokens=1_000_000))
 
         async def _next() -> None:
             return None
