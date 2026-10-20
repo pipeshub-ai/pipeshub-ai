@@ -185,3 +185,42 @@ def _listing_without(source, hidden_from_prefix_listing: str):
         return response
 
     return list_objects_v2
+
+
+class TestAMoveIsSavedInPlace:
+    """S3 and MinIO hand a move to ``on_records_moved``, which keeps the indexed content; a new record is indexed again."""
+
+    @pytest.fixture(params=["s3", "minio"])
+    def connector(self, request, store, db, checkpoints, config) -> BaseConnector:
+        return make_connector(request.param, store, db, checkpoints, config)
+
+    @pytest.mark.asyncio
+    async def test_a_renamed_folder_moves_each_object(self, connector, store, db) -> None:
+        store.put("a/x.txt")
+        store.put("a/y.txt")
+        await connector.run_sync()
+        ids = {k: db.by_path()[path(f"a/{k}")].id for k in ("x.txt", "y.txt")}
+        db.written.clear()
+
+        store.rename("a/x.txt", "b/x.txt")
+        store.rename("a/y.txt", "b/y.txt")
+        await connector.run_incremental_sync()
+
+        assert sorted(db.moved) == [(path("a/x.txt"), path("b/x.txt")), (path("a/y.txt"), path("b/y.txt"))]
+        assert path("b/x.txt") not in db.written and path("b/y.txt") not in db.written
+        assert {k: db.by_path()[path(f"b/{k}")].id for k in ("x.txt", "y.txt")} == ids
+
+    @pytest.mark.asyncio
+    async def test_a_copy_that_takes_a_gone_original_is_a_move(self, connector, store, db) -> None:
+        store.put("a.txt", SAME)
+        store.put("b.txt", SAME)
+        await connector.run_sync()
+        original = db.by_path()[path("a.txt")].id
+        # As an older sync left it: the copy without a record of its own.
+        del db.records[db.by_path()[path("b.txt")].id]
+        store.delete("a.txt")
+
+        await connector.run_incremental_sync()
+
+        assert db.moved == [(path("a.txt"), path("b.txt"))]
+        assert db.by_path()[path("b.txt")].id == original

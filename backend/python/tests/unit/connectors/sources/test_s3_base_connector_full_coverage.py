@@ -1074,7 +1074,9 @@ class TestProcessS3ObjectAdvanced:
         record, perms = await connector._process_s3_object(obj, "mybucket")
         assert record is not None
         assert record.id == "moved-id"
-        connector.data_entities_processor.delete_parent_child_edge_to_record.assert_awaited()
+        # The batch saves the move with on_records_moved, which re-points the parent edge itself.
+        assert connector._moved_record_ids == {"moved-id": "mybucket/old/path/file.txt"}
+        connector.data_entities_processor.delete_parent_child_edge_to_record.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_last_modified(self, connector):

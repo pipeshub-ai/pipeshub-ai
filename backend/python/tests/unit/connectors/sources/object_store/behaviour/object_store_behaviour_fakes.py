@@ -257,6 +257,7 @@ class FakeRecordsDb:
         self.record_groups: dict[str, Any] = {}
         self.deleted: list[str] = []
         self.written: list[str] = []
+        self.moved: list[tuple[str, str]] = []
         self.failing: set[str] = set()
         # Groups whose delete answers False, as the processor does when the delete fails.
         self.refused_group_deletes: set[str] = set()
@@ -324,6 +325,17 @@ class FakeRecordsDb:
             if same_path and same_path.id != record.id:
                 record.id = same_path.id
             self.records[record.id] = record
+
+    async def on_records_moved(self, moves: list[tuple[str, Any, list[Any]]]) -> None:
+        """In place: the stored record at the old external id takes the new path and keeps its id."""
+        self._check("on_records_moved")
+        for old_external_id, record, permissions in moves:
+            self.moved.append((old_external_id, record.external_record_id))
+            stored = self.by_path().get(old_external_id)
+            if stored:
+                record.id = stored.id
+            self.records[record.id] = record
+            self.record_permissions.setdefault(record.external_record_id, []).extend(permissions)
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, permissions in groups:
