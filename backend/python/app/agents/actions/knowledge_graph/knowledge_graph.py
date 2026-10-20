@@ -272,12 +272,13 @@ class KnowledgeGraph:
             "  Path: breadcrumb trail with node IDs\n"
             "  Record ID / Node ID: stable id, pass back to navigate() or to fetch_record()\n"
             "  Children listing with record_id= or node_id= for each item, with a created: date "
-            "when known\n"
+            "when known (uploaded: for a knowledge-base file — an upload time, not a document date)\n"
             "  Related: cross-references (page 1 only, record nodes only)\n"
             "  Next: exactly what to call next\n\n"
             "Time-scoped browsing: pass created_after/created_before or modified_after/modified_before "
             "to filter children by source timestamp (see parameter descriptions for date format) — "
             "use this instead of fetching all children when the question specifies a date range. "
+            "Inside a knowledge base these filter by when each file was uploaded. "
             "Use conservative ranges (pad by a day on each side) since source timestamps may differ "
             "from the user's timezone. If time-filtered results are empty or too few, widen the "
             "range or retry without time filters and filter manually from the listing."
@@ -765,8 +766,11 @@ class KnowledgeGraph:
             "asked to search just those sources.\n\n"
             "Time filtering: use created_after/created_before to scope by source creation date, "
             "and modified_after/modified_before to scope by source last-modified date. "
-            "All dates use the source system's timestamp (when the file was created in Drive, "
-            "when the Jira ticket was filed), not when it was indexed by PipesHub.\n\n"
+            "For connected apps these are the source system's timestamps (when the file was "
+            "created in Drive, when the Jira ticket was filed), not when PipesHub indexed it. "
+            "A knowledge-base upload has only what the upload gave it — the file's last-modified "
+            "time, or else the upload time — so these filters match uploads by that, not by a "
+            "date the document states; its record header says which it has.\n\n"
             "Time-filter guidance:\n"
             "  - Prefer conservative (wider) date ranges. 'This quarter' means the full "
             "quarter boundaries, not today's date as the end.\n"
@@ -807,8 +811,9 @@ class KnowledgeGraph:
                     "Only include records created at the source on or after this date. "
                     "ISO 8601 format: 'YYYY-MM-DD' (e.g. '2026-01-15') or full datetime "
                     "with timezone (e.g. '2026-01-15T00:00:00Z'). "
-                    "This filters by the document's original creation date at the source "
-                    "(Google Drive, Jira, Confluence, etc.), not when it was indexed. "
+                    "For connected apps this is the creation date at the source "
+                    "(Google Drive, Jira, Confluence, etc.), not when it was indexed; for a "
+                    "knowledge-base upload it is the date the upload gave it. "
                     "Use for questions like 'files created this quarter' or 'tickets opened "
                     "after January'. YYYY-MM-DD is interpreted as the start of that day in UTC."
                 ),
@@ -1317,7 +1322,11 @@ class KnowledgeGraph:
             ToolParameter(
                 name="sort_by",
                 type=ParameterType.STRING,
-                description="Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'.",
+                description=(
+                    "Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'. For "
+                    "knowledge-base files createdAt and updatedAt are upload times, not "
+                    "document dates."
+                ),
                 required=False,
                 default="updatedAt",
             ),

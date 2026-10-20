@@ -409,3 +409,22 @@ class TestWithoutEntitySearch:
     async def test_queries_are_not_taken(self, patched) -> None:
         ok, _ = await execute_search_entities(_state(), None, queries=["Acme"])
         assert ok is False
+
+
+class TestUploadDates:
+    @pytest.mark.asyncio
+    async def test_a_previewed_upload_shows_its_upload_date_not_a_modified_date(self, patched) -> None:
+        uploaded = 1_792_090_099_000  # 2026-10-15
+        upload = {
+            **_row("r1", "kb-1"), "connectorName": "KB", "origin": "UPLOAD",
+            "createdAtTimestamp": uploaded, "sourceCreatedAtTimestamp": uploaded - 30,
+            "sourceLastModifiedTimestamp": uploaded - 30,
+        }
+        patched[1].return_value = [_hit("t1", "topic", records=[upload])]
+
+        ok, text = await execute_search_entities(_state(), "legal")
+
+        assert ok is True
+        preview = json.loads(text)["results"][0]["records"][0]
+        assert preview["uploaded"] == "2026-10-15"
+        assert "modified" not in preview
