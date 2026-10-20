@@ -2598,6 +2598,17 @@ class TestDescriptiveLinkTextIsKept:
         out = self._normalize(normalizer, f"See [Q2 forecast]({first}) [Q2 forecast]({second}). Cap 15% [source](ref1).")
         assert out == f"See Q2 forecast . Cap 15% [1]({self.U1})."
 
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    @pytest.mark.parametrize("dead", ["ref99", "https://ref99.xyz", "ref444d5fad-0bf9-4daa-8c29-cc133ca4a3a6"])
+    def test_a_dead_link_before_a_live_one_with_the_same_text_writes_it_once(self, normalizer, dead) -> None:
+        out = self._normalize(normalizer, f"See [Q2 forecast]({dead}) [Q2 forecast](ref1).")
+        assert out == f"See Q2 forecast [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_text_of_a_plain_link_just_before_is_not_repeated(self, normalizer) -> None:
+        out = self._normalize(normalizer, "See the [Q2 forecast](https://example.com/q2) [Q2 forecast](ref1).")
+        assert out == f"See the [Q2 forecast](https://example.com/q2) [1]({self.U1})."
+
     def test_streamed_prefixes_only_ever_grow(self) -> None:
         """The streaming path emits ``normalized[prev_len:]`` per chunk, so the
         normalized text of a prefix must be a prefix of the next one."""

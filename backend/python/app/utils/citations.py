@@ -460,8 +460,9 @@ def _is_citation_label(link_text: str) -> bool:
 
 
 def _already_written(kept: str, preceding: str) -> bool:
-    """True when ``preceding`` ends with ``kept``, optionally followed by badges."""
-    echo = re.compile(rf'(?<!\w){re.escape(kept)}\s*(?:{_CITATION_BADGE}\s*)*$', re.IGNORECASE)
+    """True when ``preceding`` ends with ``kept``, as plain text or another link's
+    text, optionally followed by badges."""
+    echo = re.compile(rf'(?<!\w){re.escape(kept)}(?:\]\([^)]*\))?\s*(?:{_CITATION_BADGE}\s*)*$', re.IGNORECASE)
     return bool(echo.search(preceding[-(len(kept) + _LINK_TEXT_ECHO_WINDOW):]))
 
 
@@ -514,7 +515,10 @@ def _renumber_citation_links(
         if new_num is None:
             out += match.group(0)
         else:
-            kept = kept_citation_link_text(match.group(1), out)
+            # Dead links before this one are stripped only after the walk; strip them in
+            # the window the echo check reads, so their kept text counts as written.
+            written = _strip_unresolved_ref_citations(out[-(len(match.group(1)) + _LINK_TEXT_ECHO_WINDOW):])
+            kept = kept_citation_link_text(match.group(1), written)
             out += f"{kept} [{new_num}]({full_url})" if kept else f"[{new_num}]({full_url})"
         pos = match.end()
     out += text[pos:]
