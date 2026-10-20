@@ -54,7 +54,8 @@ logger = logging.getLogger("gitlab-test-utils")
 # 429 is a secondary rate limit; 5xx are transient. 403 is NOT retried — GitLab uses
 # it for genuine permission denials and retrying only burns budget.
 _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
-_MAX_ATTEMPTS = 3
+# Six attempts ride out a GitLab instance that answers 502 for half a minute.
+_MAX_ATTEMPTS = 6
 _BASE_DELAY_SEC = 1.0
 _GITLAB_MAX_PER_PAGE = 100
 

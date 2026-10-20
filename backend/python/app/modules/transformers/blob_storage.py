@@ -7,7 +7,7 @@ import random
 import threading
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, Dict, TypedDict
+from typing import TYPE_CHECKING, Any, Dict, NamedTuple, TypedDict
 
 import aiohttp
 import msgspec
@@ -21,6 +21,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.cache.interface import ISignedUrlCache, NoopSignedUrlCache
 from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
@@ -77,6 +78,92 @@ def _json_utf8_bytes(obj: Any) -> bytes:  # noqa: ANN401 - stored records are fr
         return json.dumps(obj, ensure_ascii=False).encode("utf-8")
     except UnicodeEncodeError:
         return json.dumps(obj).encode("utf-8")
+
+
+class _RecordJson(NamedTuple):
+    """A record JSON-encoded once, for both the compression decision and the upload.
+
+    The stdlib encoder holds the GIL for the whole call, so a thread would not
+    keep it off the event loop; on a large record each extra pass costs as
+    much as the upload's own encode.
+    """
+
+    body: bytes  # as _json_utf8_bytes would write the record
+    is_utf8: bool  # False when a lone surrogate forced ASCII escapes
+    ascii_size: int  # len(json.dumps(record).encode("utf-8")), what the threshold measures
+
+
+_BELOW_0X80 = bytes(range(0x80))
+_CONTINUATION_BYTES = bytes(range(0x80, 0xC0))
+_TWO_AND_THREE_BYTE_LEADS = bytes(range(0xC0, 0xF0))
+
+
+def _ascii_json_size(utf8_json: bytes) -> int:
+    """The length *utf8_json* would have had with ``ensure_ascii=True``.
+
+    ensure_ascii changes only how DEL and non-ASCII characters are written: a
+    6-byte ``\\uXXXX`` for DEL and every BMP character (1-3 bytes in UTF-8),
+    and a 12-byte surrogate pair for a 4-byte character above the BMP.
+    """
+    size = len(utf8_json) + 5 * utf8_json.count(0x7F)
+    if utf8_json.isascii():
+        return size
+    non_ascii = utf8_json.translate(None, _BELOW_0X80)
+    leads = non_ascii.translate(None, _CONTINUATION_BYTES)
+    astral = len(leads.translate(None, _TWO_AND_THREE_BYTE_LEADS))
+    return size - len(non_ascii) + 6 * (len(leads) - astral) + 12 * astral
+
+
+def _encode_record_json(record: Any) -> _RecordJson | None:  # noqa: ANN401 - stored records are free-form
+    """None when the record is not JSON-serializable."""
+    try:
+        text = json.dumps(record, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+    try:
+        body = text.encode("utf-8")
+    except UnicodeEncodeError:
+        body = json.dumps(record).encode("utf-8")
+        return _RecordJson(body, False, len(body))
+    return _RecordJson(body, True, _ascii_json_size(body))
+
+
+def _plain_envelope_bytes(
+    record: Any,  # noqa: ANN401 - stored records are free-form
+    encoded: _RecordJson | None,
+    virtual_record_id: str | None,
+) -> bytes:
+    """``_json_utf8_bytes`` of the uncompressed envelope, reusing *encoded*."""
+    if encoded is not None:
+        try:
+            vrid = json.dumps(
+                virtual_record_id, ensure_ascii=not encoded.is_utf8
+            ).encode("utf-8")
+        except UnicodeEncodeError:
+            vrid = None
+        if vrid is not None:
+            return b"".join((
+                b'{"isCompressed": false, "record": ',
+                encoded.body,
+                b', "virtualRecordId": ',
+                vrid,
+                b"}",
+            ))
+    return _json_utf8_bytes(
+        {"isCompressed": False, "record": record, "virtualRecordId": virtual_record_id}
+    )
+
+
+def _cloud_envelope_size(encoded: _RecordJson, virtual_record_id: str | None) -> int:
+    """``len(json.dumps(envelope).encode())`` for the uncompressed cloud upload.
+
+    aiohttp's ``json=`` writes ASCII escapes, so this is the size it sends.
+    """
+    return (
+        len('{"record": , "isCompressed": false, "virtualRecordId": }')
+        + encoded.ascii_size
+        + len(json.dumps(virtual_record_id))
+    )
 
 
 def compression_threshold_bytes() -> int:
@@ -151,12 +238,38 @@ class StorageDocumentNotFoundError(aiohttp.ClientError):
     """
 
 
-def _storage_status_error(status: int, message: str) -> aiohttp.ClientError:
+# Statuses meaning the storage service refused the request's content (too large,
+# unsupported, malformed): every retry gets the same answer.
+_REJECTED_STORAGE_STATUSES = frozenset({400, 413, 415, 422})
+
+
+def _storage_status_error(
+    status: int, message: str, detail: str | None = None
+) -> aiohttp.ClientError:
     if status in _TRANSIENT_STORAGE_STATUSES:
         return TransientStorageError(message)
     if status == HttpStatusCode.NOT_FOUND.value:
         return StorageDocumentNotFoundError(message)
+    if status in _REJECTED_STORAGE_STATUSES:
+        reason = f"{message}: the storage service refused it (HTTP {status})"
+        too_large = status == HttpStatusCode.PAYLOAD_TOO_LARGE.value or "larger than" in (detail or "").lower()
+        return StorageRequestRejectedError(
+            f"{reason}: {detail}" if detail else reason, status, too_large=too_large
+        )
     return aiohttp.ClientError(message)
+
+
+def _storage_error_detail(body: object) -> str | None:
+    """The human-readable reason in a storage error response, when it has one."""
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            return error["message"]
+        if isinstance(body.get("message"), str):
+            return body["message"]
+    if isinstance(body, str) and body.strip():
+        return body.strip()[:300]
+    return None
 
 
 # Failures that can be retried only when the request is idempotent: the
@@ -600,10 +713,13 @@ class BlobStorage(Transformer):
             or DefaultEndpoints.FRONTEND_ENDPOINT.value
         )
 
-    def _maybe_compress_record(self, record: dict, *, label: str = "record") -> tuple[str | None, bool]:
+    def _maybe_compress_record(
+        self, record: dict, *, label: str = "record", encoded: _RecordJson | None = None,
+    ) -> tuple[str | None, bool]:
         """Decide whether a record is worth compressing, and compress it if so.
 
-        Returns ``(compressed_base64_or_None, is_compressed)``.
+        Returns ``(compressed_base64_or_None, is_compressed)``. Pass *encoded*
+        (from ``_encode_record_json``) to size the record without encoding it again.
 
         Compression is not free on the read side: the blob is base64'd into a
         JSON envelope, so every reader parses megabytes of base64 before it can
@@ -612,7 +728,10 @@ class BlobStorage(Transformer):
         a shape ``_process_downloaded_record`` already accepts.
         """
         try:
-            serialized_size = len(json.dumps(record).encode("utf-8"))
+            serialized_size = (
+                encoded.ascii_size if encoded is not None
+                else len(json.dumps(record).encode("utf-8"))
+            )
         except (TypeError, ValueError) as e:
             # Not JSON-serializable, so the uncompressed envelope would fail to
             # build. msgpack accepts more types — compress regardless of size.
@@ -948,14 +1067,19 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
 
-            compressed_record, use_compression = self._maybe_compress_record(record_dict)
+            encoded = _encode_record_json(record_dict)
+            compressed_record, use_compression = self._maybe_compress_record(
+                record_dict, encoded=encoded
+            )
 
-            upload_data = {
-                "isCompressed": use_compression,
-                "record": compressed_record if use_compression else record_dict,
-                "virtualRecordId": virtual_record_id,
-            }
-            json_bytes = _json_utf8_bytes(upload_data)
+            if use_compression:
+                json_bytes = _json_utf8_bytes({
+                    "isCompressed": True,
+                    "record": compressed_record,
+                    "virtualRecordId": virtual_record_id,
+                })
+            else:
+                json_bytes = _plain_envelope_bytes(record_dict, encoded, virtual_record_id)
             file_size_bytes = len(json_bytes)
 
             buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
@@ -1403,15 +1527,20 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            compressed_record, use_compression = self._maybe_compress_record(record)
+            encoded = _encode_record_json(record)
+            compressed_record, use_compression = self._maybe_compress_record(
+                record, encoded=encoded
+            )
 
             if storage_type == "local":
-                upload_data = {
-                    "isCompressed": use_compression,
-                    "record": compressed_record if use_compression else record,
-                    "virtualRecordId": virtual_record_id
-                }
-                json_data = _json_utf8_bytes(upload_data)
+                if use_compression:
+                    json_data = _json_utf8_bytes({
+                        "isCompressed": True,
+                        "record": compressed_record,
+                        "virtualRecordId": virtual_record_id,
+                    })
+                else:
+                    json_data = _plain_envelope_bytes(record, encoded, virtual_record_id)
                 file_size_bytes = len(json_data)
                 upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
                 create_headers = _with_idempotency_key(headers)
@@ -1432,14 +1561,16 @@ class BlobStorage(Transformer):
                             raise TransientStorageError("Record upload still in progress")
                         if response.status != HttpStatusCode.SUCCESS.value:
                             try:
-                                error_response = await response.json()
+                                error_body: object = await response.json()
                                 self.logger.error("❌ Failed to upload record. Status: %d, Error: %s",
-                                                response.status, error_response)
+                                                response.status, error_body)
                             except aiohttp.ContentTypeError:
-                                error_text = await response.text()
+                                error_body = await response.text()
                                 self.logger.error("❌ Failed to upload record. Status: %d, Response: %s",
-                                                response.status, error_text[:200])
-                            raise _storage_status_error(response.status, "Failed to upload record")
+                                                response.status, error_body[:200])
+                            raise _storage_status_error(
+                                response.status, "Failed to upload record", _storage_error_detail(error_body)
+                            )
 
                         response_data = await response.json()
                         document_id = response_data.get('_id')
@@ -1514,7 +1645,11 @@ class BlobStorage(Transformer):
                                 "virtualRecordId": virtual_record_id,
                             }
 
-                        file_size_bytes = len(json.dumps(upload_data).encode('utf-8'))
+                        file_size_bytes = (
+                            _cloud_envelope_size(encoded, virtual_record_id)
+                            if encoded is not None and not compressed_record
+                            else len(json.dumps(upload_data).encode('utf-8'))
+                        )
 
                         await self._upload_to_signed_url(session, signed_url, upload_data)
 
@@ -1626,23 +1761,29 @@ class BlobStorage(Transformer):
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 
+            # The mapping is keyed by the vrid. Older releases keyed it
+            # f"{vrid}_{documentId}", one node per upload, reachable only by the
+            # field; a metadata write since may have left a keyed node with no
+            # document id beside them.
+            doc = await self.graph_provider.get_document(
+                virtual_record_id,
+                collection_name
+            )
+            if doc and self._mapped_document_id(doc):
+                return self._shape_document_lookup(doc)
             nodes = await self.graph_provider.get_nodes_by_filters(
                 collection_name,
                 {"virtualRecordId": virtual_record_id}
-            )
-            if not nodes:
-                doc = await self.graph_provider.get_document(
-                    virtual_record_id,
-                    collection_name
-                )
-                if doc:
-                    nodes = [doc]
-
-            if nodes:
-                return self._shape_document_lookup(nodes[0])
-            else:
-                self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
-                return None
+            ) or []
+            mapped = [node for node in nodes if self._mapped_document_id(node)]
+            if mapped:
+                newest = max(mapped, key=lambda node: node.get("updatedAt") or node.get("createdAt") or 0)
+                return self._shape_document_lookup(newest)
+            fallback = doc or (nodes[0] if nodes else None)
+            if fallback:
+                return self._shape_document_lookup(fallback)
+            self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
+            return None
         except Exception as e:
             self.logger.exception(
                 "❌ Error getting document ID by virtual record ID: %s",
@@ -1651,10 +1792,14 @@ class BlobStorage(Transformer):
             raise e
 
     @staticmethod
+    def _mapped_document_id(doc: dict) -> str | None:
+        return doc.get("record_doc_id") or doc.get("documentId")
+
+    @staticmethod
     def _shape_document_lookup(doc: dict) -> dict:
         """Project a virtual-record mapping node onto the lookup result shape."""
         result = {
-            "record_doc_id": doc.get("record_doc_id") or doc.get("documentId"),
+            "record_doc_id": BlobStorage._mapped_document_id(doc),
             "fileSizeBytes": doc.get("fileSizeBytes"),
         }
         record_metadata_doc_id = doc.get("record_metadata_doc_id")
@@ -1820,7 +1965,7 @@ class BlobStorage(Transformer):
     VIRTUAL_RECORD_LOOKUP_CHUNK_SIZE = 500
 
     async def get_document_ids_by_virtual_record_ids(
-        self, virtual_record_ids: list[str]
+        self, virtual_record_ids: list[str], *, raise_on_error: bool = False
     ) -> dict[str, dict]:
         """Resolve many virtual-record → document mappings with one query per chunk.
 
@@ -1836,6 +1981,10 @@ class BlobStorage(Transformer):
         with no mapping at all are absent from the result rather than
         present-and-empty, so callers can tell the difference between "not
         found" and "not looked up".
+
+        A failed read is logged and its ids left out, so a chat turn still
+        answers. ``raise_on_error`` raises it instead, for callers that act on
+        an id being absent.
         """
         if not self.graph_provider:
             self.logger.error("❌ GraphProvider not initialized, cannot resolve virtual record IDs.")
@@ -1847,15 +1996,19 @@ class BlobStorage(Transformer):
 
         collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
         resolved: dict[str, dict] = {}
+        # Only when set: the chat path's provider calls stay exactly as they were.
+        strict = {"raise_on_error": True} if raise_on_error else {}
 
         chunk_size = self.VIRTUAL_RECORD_LOOKUP_CHUNK_SIZE
         for start in range(0, len(unique_ids), chunk_size):
             chunk = unique_ids[start:start + chunk_size]
             try:
                 nodes = await self.graph_provider.get_nodes_by_field_in(
-                    collection_name, "id", chunk
+                    collection_name, "id", chunk, **strict
                 )
             except Exception as e:
+                if raise_on_error:
+                    raise
                 # Degrade to the per-id path for this chunk rather than failing the turn.
                 self.logger.warning("Batch virtual-record lookup failed, falling back: %s", str(e))
                 nodes = []
@@ -1865,12 +2018,11 @@ class BlobStorage(Transformer):
                 if vrid and vrid not in resolved:
                     resolved[vrid] = self._shape_document_lookup(node)
 
-        # Opt-in only. Nothing in this repo writes a `virtualRecordId` field --
-        # the mapping node's key IS the virtual record id -- and that field is
-        # not indexed, so this query never matches on our data and costs a full
-        # label scan for every id the keyed batch missed (a deleted or missing
-        # mapping is normal). Left available for deployments that dual-write the
-        # field; otherwise ids fall straight through to the per-id path below.
+        # Opt-in only. The mapping node's key IS the virtual record id, so the
+        # keyed batch above finds every mapping this release writes; the field
+        # only adds nodes older releases keyed f"{vrid}_{documentId}". Each id
+        # the batch missed (a deleted or missing mapping is normal) costs one
+        # more query here, so it stays off unless a deployment still holds them.
         missing = [vrid for vrid in unique_ids if vrid not in resolved]
         if missing and os.getenv("PIPESHUB_VRID_FIELD_LOOKUP", "").lower() in ("1", "true", "yes"):
             for start in range(0, len(missing), chunk_size):
@@ -1893,13 +2045,15 @@ class BlobStorage(Transformer):
         if missing:
             fallbacks = await asyncio.gather(
                 *[
-                    self.graph_provider.get_document(vrid, collection_name)
+                    self.graph_provider.get_document(vrid, collection_name, **strict)
                     for vrid in missing
                 ],
                 return_exceptions=True,
             )
             for vrid, doc in zip(missing, fallbacks):
                 if isinstance(doc, Exception):
+                    if raise_on_error:
+                        raise doc
                     self.logger.warning(
                         "Virtual-record mapping fallback failed for %s: %s", vrid, str(doc)
                     )
@@ -2306,8 +2460,9 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
+            encoded = _encode_record_json(metadata_dict)
             compressed_metadata, use_compression = self._maybe_compress_record(
-                metadata_dict, label="metadata"
+                metadata_dict, label="metadata", encoded=encoded
             )
 
             effective_path = document_path or f"records/{virtual_record_id}"
@@ -2316,9 +2471,13 @@ class BlobStorage(Transformer):
                 "record": compressed_metadata if use_compression else metadata_dict,
                 "virtualRecordId": virtual_record_id,
             }
-            json_data = _json_utf8_bytes(upload_data)
 
             if storage_type == "local":
+                json_data = (
+                    _json_utf8_bytes(upload_data)
+                    if use_compression
+                    else _plain_envelope_bytes(metadata_dict, encoded, virtual_record_id)
+                )
                 upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
                 create_headers = _with_idempotency_key(headers)
 

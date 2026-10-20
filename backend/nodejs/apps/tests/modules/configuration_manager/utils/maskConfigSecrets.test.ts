@@ -15,6 +15,7 @@ import {
   maskOAuthConfig,
   maskGithubAuthConfig,
   maskWebSearchProvider,
+  maskWebSearchProviderForMember,
   mergeWebSearchProviderPlaceholders,
   maskSlackBotConfig,
   mergeSlackBotConfigPlaceholders,
@@ -48,6 +49,9 @@ describe('maskConfigSecrets', () => {
       expect(strip(entry).provider).to.equal('azureOpenAI')
       expect(strip(entry).modelKey).to.equal('mk-1')
       expect(strip(entry).isDefault).to.equal(true)
+      expect(strip(entry).configuredFields).to.include('apiKey')
+      expect(strip(entry).configuredFields).to.include('endpoint')
+      expect(JSON.stringify(strip(entry).configuredFields)).to.not.include('sk-secret')
     })
 
     it('should omit an allowlist key that was never stored', () => {
@@ -220,6 +224,19 @@ describe('maskConfigSecrets', () => {
     })
     it('should not mask empty apiKey', () => { expect(maskWebSearchProvider({ apiKey: '' }).apiKey).to.equal('') })
     it('should return null as-is', () => { expect(maskWebSearchProvider(null as any)).to.be.null })
+    it('should leave the server address for admins', () => {
+      expect(maskWebSearchProvider({ baseUrl: 'http://crawl4ai:11235' }).baseUrl).to.equal('http://crawl4ai:11235')
+    })
+  })
+
+  describe('maskWebSearchProviderForMember', () => {
+    it('should mask the API key and the server address', () => {
+      const result = maskWebSearchProviderForMember({ apiKey: 'k', baseUrl: 'http://crawl4ai:11235', other: 'x' })
+      expect(result).to.deep.equal({ apiKey: CONFIG_SECRET_PLACEHOLDER, baseUrl: CONFIG_SECRET_PLACEHOLDER, other: 'x' })
+    })
+    it('should leave an unset address unset', () => {
+      expect(maskWebSearchProviderForMember({ apiKey: 'k' })).to.not.have.property('baseUrl')
+    })
   })
 
   describe('mergeWebSearchProviderPlaceholders', () => {

@@ -1,8 +1,10 @@
+import { editionBoot } from '../src/config';
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import express from 'express';
 import http from 'http';
+import net, { AddressInfo } from 'net';
 import { Container } from 'inversify';
 import { Application } from '../src/app';
 import { createMockLogger, MockLogger } from './helpers/mock-logger';
@@ -17,6 +19,7 @@ import * as cmConfigModule from '../src/modules/configuration_manager/config/con
 import * as messageBrokerModule from '../src/libs/services/message-broker.factory';
 import * as kvMigrationModule from '../src/libs/keyValueStore/migration/kvStoreMigration.service';
 import * as oauthProviderModule from '../src/libs/services/oauth-token-service.provider';
+import * as rateLimitModule from '../src/libs/middlewares/rate-limit.middleware';
 import { RedisConnectionProviderFactory } from '../src/libs/services/redis/connectionProviderFactory';
 import * as redisConnectionProviderFactoryModule from '../src/libs/services/redis/connectionProviderFactory';
 import { TokenManagerContainer } from '../src/modules/tokens_manager/container/token-manager.container';
@@ -50,6 +53,7 @@ import * as kbRoutes from '../src/modules/knowledge_base/routes/kb.routes';
 import * as artifactsRoutes from '../src/modules/artifacts/routes/artifacts.routes';
 import * as notificationRoutes from '../src/modules/notification/routes/notification.routes';
 import * as cmRoutes from '../src/modules/configuration_manager/routes/cm_routes';
+import * as openaiModelsRoutes from '../src/modules/configuration_manager/routes/openai_models.routes';
 import * as mailRoutes from '../src/modules/mail/routes/mail.routes';
 import * as crawlingRoutes from '../src/modules/crawling_manager/routes/cm_routes';
 import * as oauthProviderRoutes from '../src/modules/oauth_provider/routes/oauth.provider.routes';
@@ -62,7 +66,9 @@ import * as toolsetsRoutes from '../src/modules/toolsets/routes/toolsets_routes'
 import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes';
 import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
+import * as delegationRoutes from '../src/modules/oauth_provider/routes/delegation.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
+import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
 
 // ---------------------------------------------------------------------------
@@ -173,6 +179,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(artifactsRoutes, 'createArtifactsRouter').returns(dummyRouter);
   sandbox.stub(notificationRoutes, 'createNotificationRouter').returns(dummyRouter);
   sandbox.stub(cmRoutes, 'createConfigurationManagerRouter').returns(dummyRouter);
+  sandbox.stub(openaiModelsRoutes, 'createOpenAIModelsRouter').returns(dummyRouter);
   sandbox.stub(mailRoutes, 'createMailServiceRouter').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'default').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'createCrawlingManagerRouter').returns(dummyRouter);
@@ -186,6 +193,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
   sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
   sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
+  sandbox.stub(delegationRoutes, 'createDelegationRouter').returns(dummyRouter);
 }
 
 /**
@@ -246,7 +254,9 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
   } as any);
   containers.oauth!.bind('ServiceTokenService').toConstantValue({
     revokeAllForServiceAccount: sandbox.stub().resolves(),
+    revokeDelegatedTokensForServiceAccount: sandbox.stub().resolves(),
   } as any);
+
 
   // NotificationService mock — needed for initialize() to call .initialize(server)
   const mockNotificationService = {
@@ -363,6 +373,24 @@ describe('Application', () => {
       sandbox.stub(appConfigModule, 'loadAppConfig').resolves(mockAppConfig);
       sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(mockCmConfig);
       sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
+    });
+
+    it('runs the edition boot hooks while initializing', async () => {
+      const app = new Application();
+      stubAllContainers(sandbox);
+      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+      const initialize = sandbox.stub(editionBoot, 'initialize').resolves();
+      const mountRawRoutes = sandbox.stub(editionBoot, 'mountRawRoutes');
+      const mountRoutes = sandbox.stub(editionBoot, 'mountRoutes');
+      const startWorkers = sandbox.stub(editionBoot, 'startWorkers');
+
+      await app.initialize();
+
+      expect(initialize.calledOnce).to.be.true;
+      expect(mountRawRoutes.calledOnce).to.be.true;
+      expect(mountRawRoutes.calledBefore(mountRoutes)).to.be.true;
+      expect(mountRoutes.calledOnce).to.be.true;
+      expect(startWorkers.calledOnce).to.be.true;
     });
 
     it('should initialize all containers and configure the app', async () => {
@@ -505,6 +533,27 @@ describe('Application', () => {
         (metricsRefreshModule.startOrgMetricsRefresh as sinon.SinonStub).calledOnce,
         'startOrgMetricsRefresh should be called once during initialize',
       ).to.be.true;
+    });
+
+    it('should not start telemetry when TELEMETRY_COLLECTION_FLAG is off', async () => {
+      const previous = process.env.TELEMETRY_COLLECTION_FLAG;
+      process.env.TELEMETRY_COLLECTION_FLAG = 'false';
+      try {
+        const app = new Application();
+        stubAllContainers(sandbox);
+        sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+
+        await app.initialize();
+
+        expect((telemetryModule.startTelemetry as sinon.SinonStub).called).to.be
+          .false;
+        expect(
+          (metricsRefreshModule.startOrgMetricsRefresh as sinon.SinonStub).called,
+        ).to.be.false;
+      } finally {
+        if (previous === undefined) delete process.env.TELEMETRY_COLLECTION_FLAG;
+        else process.env.TELEMETRY_COLLECTION_FLAG = previous;
+      }
     });
 
     it('should bind MigrationService to configuration manager container', async () => {
@@ -665,6 +714,50 @@ describe('Application', () => {
         restoreEnv('STRICT_MODE', original);
       }
     });
+
+    it('runs the operator-key guard after the global rate limiter, so rejected requests still count', async () => {
+      const globalRateLimiter: express.RequestHandler = (_req, _res, next) => next();
+      sandbox.stub(rateLimitModule, 'createGlobalRateLimiter').returns(globalRateLimiter);
+      const orderedApp = new Application();
+      await orderedApp.initialize();
+
+      const expressApp = (orderedApp as any).app as express.Express;
+      const layerNames: string[] = (expressApp as any)._router.stack.map((layer: any) => layer.name);
+      const limiterAt = layerNames.indexOf('globalRateLimiter');
+      const guardAt = layerNames.indexOf('operatorKeyGuardMiddleware');
+      expect(limiterAt).to.be.greaterThan(-1);
+      expect(guardAt).to.be.greaterThan(limiterAt);
+    });
+
+    it('writes an access-log line for API requests in any letter case, and none for pages', async () => {
+      const expressApp = (app as any).app as express.Express;
+      const server = http.createServer(expressApp);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      const get = (path: string) =>
+        new Promise<void>((resolve, reject) => {
+          http
+            .get({ host: '127.0.0.1', port, path }, (res) => {
+              res.resume();
+              res.on('end', resolve);
+            })
+            .on('error', reject);
+        });
+      try {
+        for (const path of ['/api/v1/access-log-probe', '/API/v1/access-log-probe-upper', '/access-log-probe-page']) {
+          await get(path);
+        }
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+
+      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((line) => line.includes('access-log-probe'));
+      expect(accessLines.some((line) => line.includes('GET /api/v1/access-log-probe '))).to.equal(true);
+      expect(accessLines.some((line) => line.includes('GET /API/v1/access-log-probe-upper '))).to.equal(true);
+      expect(accessLines.some((line) => line.includes('/access-log-probe-page'))).to.equal(false);
+    });
   });
 
   // =========================================================================
@@ -703,6 +796,7 @@ describe('Application', () => {
       '/api/v1/knowledgeBase',
       '/api/v1/artifacts',
       '/api/v1/configurationManager',
+      '/v1',
       '/api/v1/toolsets',
       '/api/v1/mail',
       '/api/v1/crawlingManager',
@@ -860,6 +954,16 @@ describe('Application', () => {
       expect((OAuthProviderContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
     });
 
+    it('still disposes every container when the edition fails to stop', async () => {
+      (app as any).notificationContainer = new Container();
+      sandbox.stub(editionBoot, 'stop').rejects(new Error('worker did not stop'));
+
+      await app.stop();
+
+      expect((TokenManagerContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
+      expect((OAuthProviderContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
+    });
+
     it('should call NotificationService.shutdown()', async () => {
       const mockNotifService = { shutdown: sandbox.stub() };
       const notifContainer = new Container();
@@ -878,6 +982,72 @@ describe('Application', () => {
 
       // Should NOT throw — stop() has a try/catch for notification shutdown
       await app.stop();
+    });
+
+    it('should finish in-flight requests before disposing containers', async () => {
+      (app as any).notificationContainer = new Container();
+      const order: string[] = [];
+      const mailContainer = new Container();
+      mailContainer.bind<any>(MailSenderService).toConstantValue({ close: () => { order.push('mail sender closed'); } });
+      (app as any).mailServiceContainer = mailContainer;
+      (TokenManagerContainer.dispose as sinon.SinonStub).callsFake(async () => { order.push('dispose'); });
+      let handlerStarted!: () => void;
+      const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
+      const server = http.createServer((_req, res) => {
+        handlerStarted();
+        res.on('finish', () => { order.push('response'); });
+        setTimeout(() => { res.end('ok'); }, 50);
+      });
+      (app as any).server = server;
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const { port } = server.address() as AddressInfo;
+      const inFlight = new Promise<string>((resolve, reject) => {
+        http.get(`http://127.0.0.1:${port}/`, (res) => {
+          let body = '';
+          res.on('data', (c) => { body += c; });
+          res.on('end', () => resolve(body));
+        }).on('error', reject);
+      });
+      await requestReceived;
+
+      await app.stop();
+
+      expect(await inFlight).to.equal('ok');
+      expect(order).to.deep.equal(['response', 'mail sender closed', 'dispose']);
+      expect(server.listening).to.be.false;
+    });
+
+    it('should not let an idle keep-alive socket hold the drain open', async () => {
+      (app as any).notificationContainer = new Container();
+      let respondedAt = 0;
+      let handlerStarted!: () => void;
+      const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
+      const server = http.createServer((_req, res) => {
+        handlerStarted();
+        setTimeout(() => { respondedAt = Date.now(); res.end('ok'); }, 50);
+      });
+      server.keepAliveTimeout = 65_000;
+      (app as any).server = server;
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const { port } = server.address() as AddressInfo;
+      // A raw socket, because nock (loaded by other specs) rewrites http.get
+      // requests to Connection: close and would hide the keep-alive case.
+      const socket = net.connect(port, '127.0.0.1');
+      let received = '';
+      socket.on('data', (c) => { received += c; });
+      const socketClosed = new Promise<void>((resolve) => socket.on('close', () => resolve()));
+      socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n');
+      await requestReceived;
+
+      try {
+        await Promise.all([app.stop(), socketClosed]);
+      } finally {
+        socket.destroy();
+      }
+
+      expect(received).to.match(/^HTTP\/1\.1 200[\s\S]*Connection: keep-alive[\s\S]*\r\n\r\nok$/);
+      expect(Date.now() - respondedAt).to.be.below(1000);
+      expect(server.listening).to.be.false;
     });
 
     it('should throw if a container dispose fails', async () => {

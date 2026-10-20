@@ -82,6 +82,9 @@ export function DeleteChatDialog({
               </Text>{' '}
               {t('chat.deleteChatWarning')}
             </Text>
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
+              {t('chat.deleteChatArtifactsNote')}
+            </Text>
           </Flex>
 
           <Flex direction="column" gap="2">

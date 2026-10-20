@@ -8,15 +8,12 @@ import pytest
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.sources.rss.connector import RSSApp, RSSConnector
 from app.models.entities import (
-    AppUser,
     RecordGroupType,
     RecordType,
     User,
 )
-from app.models.permission import EntityType, PermissionType
 import asyncio
 import hashlib
-from io import BytesIO
 from fastapi import HTTPException
 from app.connectors.sources.web.fetch_strategy import FetchResponse
 from app.models.entities import FileRecord
@@ -325,8 +322,8 @@ class TestRSSConnectorRecordGroup:
         rg, perms = call_args[0]
         assert rg.group_type == RecordGroupType.RSS_FEED
         assert rg.external_group_id == "https://blog.example.com/rss"
-        assert perms[0].entity_type == EntityType.ORG
-        assert perms[0].type == PermissionType.READ
+        assert rg.inherit_permissions is True
+        assert perms == []
 
 
 # ===================================================================
@@ -351,8 +348,7 @@ class TestRSSConnectorEntryProcessing:
         assert file_record.mime_type == MimeTypes.PLAIN_TEXT.value
         assert file_record.extension == "txt"
         assert file_record.connector_name == Connectors.RSS
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions == []
 
     @pytest.mark.asyncio
     async def test_process_entry_no_link(self):

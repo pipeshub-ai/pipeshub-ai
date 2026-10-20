@@ -8,6 +8,8 @@ import {
   conversationIdParamsSchema,
   conversationTitleParamsSchema,
   conversationShareParamsSchema,
+  forkConversationParamsSchema,
+  forkAgentConversationParamsSchema,
   messageIdParamsSchema,
   enterpriseSearchSearchSchema,
   searchIdParamsSchema,
@@ -173,6 +175,111 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+  describe('includeRetrievalContext', () => {
+    // Zod strips unknown keys, so an undeclared field never reaches the
+    // controller — the flag has to survive parsing to do anything at all.
+    it('survives parsing on the universal stream route', () => {
+      const result = enterpriseSearchStreamCreateSchema.safeParse({
+        body: {
+          query: 'hello',
+          chatMode: UNIVERSAL_STREAM_CHAT_MODES[0],
+          includeRetrievalContext: true,
+        },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.includeRetrievalContext).to.equal(true)
+      }
+    })
+
+    it('is optional, and absent means absent', () => {
+      const result = enterpriseSearchStreamCreateSchema.safeParse({
+        body: { query: 'hello', chatMode: UNIVERSAL_STREAM_CHAT_MODES[0] },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.includeRetrievalContext).to.equal(undefined)
+      }
+    })
+
+    it('rejects a non-boolean', () => {
+      const result = enterpriseSearchStreamCreateSchema.safeParse({
+        body: {
+          query: 'hello',
+          chatMode: UNIVERSAL_STREAM_CHAT_MODES[0],
+          includeRetrievalContext: 'yes',
+        },
+      })
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('keywordSearchBudget', () => {
+    // Undeclared, Zod strips it and the short wait an MCP caller asked for
+    // never reaches Python. All four stream routes an MCP chat uses take it.
+    const valid = '507f1f77bcf86cd799439011'
+    const routes = [
+      ['new conversation', () => enterpriseSearchStreamCreateSchema, { chatMode: 'agent' }, {}],
+      ['follow-up', () => addMessageStreamParamsSchema, { chatMode: 'agent' }, { conversationId: valid }],
+      ['new agent conversation', () => agentStreamCreateSchema, { chatMode: 'quick' }, { agentKey: 'a1' }],
+      ['agent follow-up', () => agentAddMessageParamsSchema, { chatMode: 'quick' }, { agentKey: 'a1', conversationId: valid }],
+    ] as const
+
+    for (const [name, schema, body, params] of routes) {
+      it(`survives parsing on the ${name} route`, () => {
+        const result = (schema() as z.ZodTypeAny).safeParse({
+          params,
+          body: { query: 'hello', ...body, keywordSearchBudget: 'short' },
+        })
+        expect(result.success, JSON.stringify(result.error?.issues)).to.be.true
+        expect(result.data.body.keywordSearchBudget).to.equal('short')
+      })
+    }
+
+    it('is optional, and rejects anything but short or full', () => {
+      const parse = (extra: object) => enterpriseSearchStreamCreateSchema.safeParse({
+        body: { query: 'hello', chatMode: 'agent', ...extra },
+      })
+      const absent = parse({})
+      expect(absent.success).to.be.true
+      if (absent.success) expect(absent.data.body.keywordSearchBudget).to.equal(undefined)
+      expect(parse({ keywordSearchBudget: 'full' }).success).to.be.true
+      expect(parse({ keywordSearchBudget: 'off' }).success).to.be.false
+    })
+  })
+
+  describe('forkConversationParamsSchema', () => {
+    it('should accept valid conversation and message ids', () => {
+      const result = forkConversationParamsSchema.safeParse({
+        params: {
+          conversationId: '507f1f77bcf86cd799439011',
+          messageId: '507f1f77bcf86cd799439012',
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject a missing message id', () => {
+      const result = forkConversationParamsSchema.safeParse({
+        params: { conversationId: '507f1f77bcf86cd799439011' },
+      })
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('forkAgentConversationParamsSchema', () => {
+    it('should accept valid agent, conversation, and message ids', () => {
+      const result = forkAgentConversationParamsSchema.safeParse({
+        params: {
+          agentKey: 'agent-1',
+          conversationId: '507f1f77bcf86cd799439011',
+          messageId: '507f1f77bcf86cd799439012',
+        },
+      })
+      expect(result.success).to.be.true
+    })
+  })
+
   describe('enterpriseSearchStreamCreateSchema — chatMode', () => {
     for (const chatMode of UNIVERSAL_STREAM_CHAT_MODES) {
       it(`should accept required universal stream chatMode ${chatMode}`, () => {
@@ -197,6 +304,32 @@ describe('enterprise_search/validators/es_validators', () => {
         body: { query: 'hello' },
       })
       expect(result.success).to.be.false
+    })
+
+    it('keeps the answer to a tool approval card', () => {
+      const toolApproval = { approvalId: 'ap-1', decision: 'allow', remember: true }
+      const result = enterpriseSearchStreamCreateSchema.safeParse({
+        body: { query: 'Tool approval: allow', chatMode: 'agent', toolApproval },
+      })
+      expect(result.success).to.be.true
+      expect((result as any).data.body.toolApproval).to.deep.equal(toolApproval)
+
+      const agent = agentStreamCreateSchema.safeParse({
+        params: { agentKey: 'a1' },
+        body: { query: 'Tool approval: deny', chatMode: AGENT_CHAT_MODES[0], toolApproval: { approvalId: 'ap-2', decision: 'deny' } },
+      })
+      expect(agent.success).to.be.true
+      expect((agent as any).data.body.toolApproval).to.deep.equal({ approvalId: 'ap-2', decision: 'deny' })
+    })
+
+    it('refuses a decision a card doesn\'t offer', () => {
+      for (const decision of ['run_anything', 'allow_once', 'allow_chat', 'always']) {
+        const result = agentStreamCreateSchema.safeParse({
+          params: { agentKey: 'a1' },
+          body: { query: 'x', chatMode: AGENT_CHAT_MODES[0], toolApproval: { approvalId: 'ap-1', decision } },
+        })
+        expect(result.success, decision).to.be.false
+      }
     })
 
     it('should leave the non-stream create schema backward compatible', () => {
@@ -472,6 +605,84 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
+    it('should reject a query over 100000 characters, like a chat question', () => {
+      const data = { body: { query: 'a'.repeat(100001) } }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.false
+      expect(result.error!.issues.map((i) => i.message)).to.include(
+        'Search query exceeds maximum length of 100000 characters',
+      )
+    })
+
+    it('should accept a query of exactly 100000 characters', () => {
+      const data = { body: { query: 'a'.repeat(100000) } }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('keeps optional created and updated date bounds', () => {
+      const data = {
+        body: {
+          query: 'q',
+          createdAfter: '2026-01-01',
+          createdBefore: '2026-03-31T23:59:59Z',
+          modifiedAfter: ' 2026-09-01 ',
+          modifiedBefore: '2026-09-30T12:00:00+05:30',
+        },
+      }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.true
+      expect(result.data!.body).to.include({
+        createdAfter: '2026-01-01',
+        createdBefore: '2026-03-31T23:59:59Z',
+        modifiedAfter: '2026-09-01',
+        modifiedBefore: '2026-09-30T12:00:00+05:30',
+      })
+    })
+
+    it('keeps rewriteQuery when the caller sets it, and leaves it out otherwise', () => {
+      for (const rewriteQuery of [true, false]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', rewriteQuery } })
+        expect(result.success).to.be.true
+        expect(result.data!.body.rewriteQuery).to.equal(rewriteQuery)
+      }
+      const omitted = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q' } })
+      expect(omitted.success).to.be.true
+      expect(omitted.data!.body).to.not.have.property('rewriteQuery')
+    })
+
+    it('rejects a rewriteQuery that is not a boolean', () => {
+      for (const rewriteQuery of ['false', 0, null]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', rewriteQuery } })
+        expect(result.success, JSON.stringify(rewriteQuery)).to.be.false
+      }
+    })
+
+    it('keeps timeline when the caller sets it, and leaves it out otherwise', () => {
+      for (const timeline of ['created', 'modified']) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', timeline } })
+        expect(result.success).to.be.true
+        expect(result.data!.body.timeline).to.equal(timeline)
+      }
+      const omitted = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q' } })
+      expect(omitted.success).to.be.true
+      expect(omitted.data!.body).to.not.have.property('timeline')
+    })
+
+    it('rejects a timeline that is not created or modified', () => {
+      for (const timeline of ['updated', '', true, null, 1]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', timeline } })
+        expect(result.success, JSON.stringify(timeline)).to.be.false
+      }
+    })
+
+    it('rejects an empty or overlong date bound', () => {
+      for (const modifiedAfter of ['', '   ', '2'.repeat(65)]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', modifiedAfter } })
+        expect(result.success, JSON.stringify(modifiedAfter)).to.be.false
+      }
+    })
+
     it('should strip model fields from body (semantic search schema is query-centric)', () => {
       const data = {
         body: {
@@ -486,6 +697,120 @@ describe('enterprise_search/validators/es_validators', () => {
         expect(result.data.body).to.not.have.property('modelKey')
         expect(result.data.body).to.not.have.property('modelName')
       }
+    })
+
+    it('should accept entityFilters', () => {
+      const data = {
+        body: {
+          query: 'invoices',
+          filters: {
+            entityFilters: {
+              kinds: ['currency'],
+              mentionedDate: { from: 1, to: 2 },
+              amount: { min: 10, max: 20, currency: 'USD' },
+            },
+          },
+        },
+      }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should normalise kinds and currency and accept ISO dates', () => {
+      const data = {
+        body: {
+          query: 'invoices',
+          filters: {
+            entityFilters: {
+              kinds: [' Person ', 'CURRENCY'],
+              mentionedDate: { from: '2026-03-01', to: '2026-04-01T00:00:00Z' },
+              amount: { min: 10, currency: 'usd' },
+              percent: { min: 0.1, max: 0.2 },
+            },
+          },
+        },
+      }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.true
+      const filters = result.success ? result.data.body.filters?.entityFilters : undefined
+      expect(filters?.kinds).to.deep.equal(['person', 'currency'])
+      expect(filters?.amount?.currency).to.equal('USD')
+      expect(filters?.mentionedDate).to.deep.equal({ from: 1772323200000, to: 1775001600000 })
+    })
+
+    for (const [label, entityFilters] of [
+      ['an unknown kind', { kinds: ['spaceship'] }],
+      ['a blank name', { name: '   ' }],
+      ['a currency that is not an ISO code', { amount: { min: 1, currency: 'dollars' } }],
+      ['a date that is neither epoch nor ISO', { mentionedDate: { from: 'last tuesday' } }],
+      ['an entity id that is not a uuid', { entityIds: ['not-a-uuid'] }],
+      ['an infinite amount', { amount: { min: Infinity } }],
+    ] as const) {
+      it(`should reject ${label}`, () => {
+        const data = { body: { query: 'invoices', filters: { entityFilters } } }
+        expect(enterpriseSearchSearchSchema.safeParse(data).success).to.be.false
+      })
+    }
+
+    it('should reserve filters.where', () => {
+      const data = { body: { query: 'invoices', filters: { where: { and: [] } } } }
+      expect(enterpriseSearchSearchSchema.safeParse(data).success).to.be.false
+    })
+
+    it('should reject a date range whose start is after its end', () => {
+      const data = {
+        body: {
+          query: 'invoices',
+          filters: { entityFilters: { mentionedDate: { from: 5, to: 1 } } },
+        },
+      }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
+
+    const nodeId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+
+    it('should keep a selection below app level', () => {
+      const filters = {
+        apps: [nodeId(1)],
+        recordGroups: [nodeId(2)],
+        records: [nodeId(3)],
+        recordsExact: [nodeId(4)],
+      }
+      const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', filters } })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.filters).to.deep.equal(filters)
+      }
+    })
+
+    it('should reject a selected id that is not a UUID', () => {
+      const result = enterpriseSearchSearchSchema.safeParse({
+        body: { query: 'q', filters: { records: ['not-a-uuid'] } },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should drop filter keys it does not know, such as server-set ones', () => {
+      const result = enterpriseSearchSearchSchema.safeParse({
+        body: { query: 'q', filters: { records: [nodeId(1)], allowedApps: [nodeId(2)] } },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.filters).to.deep.equal({ records: [nodeId(1)] })
+      }
+    })
+
+    it('should accept 200 selected ids and reject 201, counted across keys', () => {
+      const ids = Array.from({ length: 200 }, (_, i) => nodeId(i))
+      const atLimit = { apps: ids.slice(0, 50), records: ids.slice(50) }
+      expect(
+        enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', filters: atLimit } }).success,
+      ).to.be.true
+      const overLimit = { ...atLimit, recordsExact: [nodeId(999)] }
+      expect(
+        enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', filters: overLimit } }).success,
+      ).to.be.false
     })
   })
 
@@ -1618,6 +1943,71 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    describe('knowledge source filters', () => {
+      const GROUP = '29b6f606-2223-4c7a-add6-139061177d00'
+      const FOLDER = 'c75f567a-3f77-41f2-9457-151db868bfde'
+      const withFilters = (filters: unknown) =>
+        createAgentSchema.safeParse({
+          body: { name: 'Limited', knowledge: [{ connectorId: 'conn-1', filters }] },
+        })
+      const savedFilters = (filters: unknown) => {
+        const result = withFilters(filters)
+        return result.success ? result.data.body.knowledge?.[0]?.filters : undefined
+      }
+
+      it('keeps a limit and the names saved beside it', () => {
+        const filters = {
+          recordGroups: [GROUP],
+          records: [FOLDER],
+          nodes: [{ id: FOLDER, name: 'Specs', nodeType: 'folder' }],
+        }
+        expect(savedFilters(filters)).to.deep.equal(filters)
+      })
+
+      it('reads a limit sent as JSON text', () => {
+        expect(savedFilters(JSON.stringify({ records: [FOLDER] }))).to.deep.equal({ records: [FOLDER] })
+      })
+
+      it('reads every older spelling of "no filters" as a whole source', () => {
+        for (const filters of [{}, [], '', '  ', '{}']) {
+          expect(savedFilters(filters), JSON.stringify(filters)).to.deep.equal({})
+        }
+        expect(withFilters(undefined).success).to.be.true
+      })
+
+      it('refuses a limit it cannot read instead of saving it as no limit', () => {
+        const unreadable = [
+          '{bad',
+          '[1,2]',
+          [1, 2],
+          7,
+          null,
+          { records: 'x' },
+          { records: [123, null] },
+          { recordGroups: ['not-a-uuid'] },
+          { records: [FOLDER, ''] },
+        ]
+        for (const filters of unreadable) {
+          expect(withFilters(filters).success, JSON.stringify(filters)).to.be.false
+        }
+      })
+
+      it('refuses a limit of more than 200 ids across both lists', () => {
+        const ids = (n: number) =>
+          Array.from({ length: n }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`)
+        expect(withFilters({ recordGroups: ids(100), records: ids(100) }).success).to.be.true
+        expect(withFilters({ recordGroups: ids(100), records: ids(101) }).success).to.be.false
+      })
+
+      it('checks an update the same way', () => {
+        const result = updateAgentSchema.safeParse({
+          params: { agentKey: 'agent-1' },
+          body: { knowledge: [{ connectorId: 'conn-1', filters: { records: 'x' } }] },
+        })
+        expect(result.success).to.be.false
+      })
+    })
+
     it('should preserve canonical skill assignments', () => {
       const result = createAgentSchema.safeParse({
         body: {
@@ -1941,6 +2331,47 @@ describe('enterprise_search/validators/es_validators', () => {
       if (result.success) {
         expect(result.data.body.mcpServers?.[0]).to.not.have.property('extraMcpField')
       }
+    })
+
+    it('keeps allTools on an mcpServers entry, so "All tools" survives the save', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          mcpServers: [{ instanceId: 'inst-1', name: 'GitHub', typeId: 'github', allTools: true, tools: [] }],
+        },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.mcpServers?.[0]?.allTools).to.equal(true)
+      }
+    })
+
+    it('keeps allTools on an agent update too', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'agent-1' },
+        body: { mcpServers: [{ instanceId: 'inst-1', name: 'GitHub', allTools: false, tools: [{ name: 'search' }] }] },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.mcpServers?.[0]?.allTools).to.equal(false)
+      }
+    })
+
+    it('accepts more tools than Python keeps for an all-tools server, leaving the limit to Python', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          mcpServers: [{
+            instanceId: 'inst-1',
+            name: 'Big MCP',
+            allTools: true,
+            tools: Array.from({ length: 600 }, (_, i) => ({ name: `tool_${i}` })),
+          }],
+        },
+      })
+      expect(result.success).to.be.true
     })
 
     it('should reject mcpServers entries missing instanceId', () => {

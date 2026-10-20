@@ -7,6 +7,7 @@ from tenacity import (  # type: ignore
 )
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.services.base_client import parse_retry_after
 from app.utils.request_context import inject_request_headers
 
 # 4xx responses that *are* worth retrying — caller may be rate-limited
@@ -16,6 +17,9 @@ from app.utils.request_context import inject_request_headers
 # for a result that cannot change.
 _RETRYABLE_4XX_STATUSES = {408, HttpStatusCode.TOO_MANY_REQUESTS.value}
 
+_MAX_ATTEMPTS = 3
+_MAX_RETRY_WAIT_SECONDS = 15
+
 
 class ApiCallError(Exception):
     """Raised when an upstream HTTP call fails.
@@ -23,12 +27,19 @@ class ApiCallError(Exception):
     Distinct from generic ``Exception`` so callers (and tenacity) can
     distinguish application-level failures from transport-level retryables.
     Carries ``status_code`` (when known) so callers can branch on the
-    upstream HTTP status without parsing the message.
+    upstream HTTP status without parsing the message, and
+    ``retry_after_seconds`` when the response said how long to wait.
     """
 
-    def __init__(self, message: str, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        retry_after_seconds: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
 
 
 def _should_retry(exc: BaseException) -> bool:
@@ -44,6 +55,15 @@ def _should_retry(exc: BaseException) -> bool:
             return True
         if 400 <= status < 500 and status not in _RETRYABLE_4XX_STATUSES:
             return False
+        # Retries seconds apart cannot outlast a longer Retry-After; they only
+        # delay the caller, which can wait it out properly (indexing defers the
+        # record until then).
+        if (
+            status == HttpStatusCode.TOO_MANY_REQUESTS.value
+            and exc.retry_after_seconds is not None
+            and exc.retry_after_seconds > _MAX_RETRY_WAIT_SECONDS
+        ):
+            return False
         return True
     # Unknown exception type — let tenacity's default policy decide
     # (here: do not retry, since we only wrap our own errors).
@@ -51,8 +71,8 @@ def _should_retry(exc: BaseException) -> bool:
 
 
 @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=15),
+    stop=stop_after_attempt(_MAX_ATTEMPTS),
+    wait=wait_exponential(multiplier=1, min=4, max=_MAX_RETRY_WAIT_SECONDS),
     retry=retry_if_exception(_should_retry),
 )
 async def make_api_call(route: str, token: str) -> dict:
@@ -83,6 +103,7 @@ async def make_api_call(route: str, token: str) -> dict:
                     raise ApiCallError(
                         f"API call to {url} failed with status {response.status}: {error_text}",
                         status_code=response.status,
+                        retry_after_seconds=parse_retry_after(response.headers.get("Retry-After")),
                     )
 
                 content_type = response.headers.get("Content-Type", "").lower()

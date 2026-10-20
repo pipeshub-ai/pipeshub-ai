@@ -45,6 +45,7 @@ __all__ = [
     "ToolMessageMeta",
     "ToolMessage",
     "Message",
+    "add_loop_note",
 ]
 
 
@@ -241,3 +242,18 @@ Message = Annotated[
     SystemMessage | UserMessage | AssistantMessage | ToolMessage,
     Field(discriminator="role"),
 ]
+
+
+def add_loop_note(messages: list[Message], note: str) -> str:
+    """Put `note` on the latest tool result's loop footer, replacing that
+    entry of `messages` with a copy so stored history keeps the plain footer.
+    An instruction posing as the user right after tool output reads as a
+    prompt attack to provider content filters (Azure OpenAI rejects the whole
+    request), so a user message is the fallback only when no tool result
+    ends the list. Returns the channel used."""
+    if messages and isinstance(messages[-1], ToolMessage):
+        last = messages[-1]
+        messages[-1] = last.model_copy(update={"step_footer": last.step_footer + "\n" + note})
+        return "step_footer"
+    messages.append(UserMessage(content=note, injected=True))
+    return "user_message"

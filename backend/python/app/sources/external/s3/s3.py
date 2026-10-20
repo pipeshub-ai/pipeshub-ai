@@ -5,24 +5,22 @@ from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
-try:
-    import aioboto3  # type: ignore
-    from botocore.config import Config  # type: ignore
-    from botocore.exceptions import ClientError  # type: ignore
-except ImportError:
-    raise ImportError("aioboto3 is not installed. Please install it with `pip install aioboto3`")
+import aiobotocore
+from aiobotocore.session import AioSession
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from app.sources.client.s3.s3 import S3Client, S3Response
 
 
 class S3DataSource:
     """
-    Complete Amazon S3 API client wrapper with EXPLICIT METHOD SIGNATURES using aioboto3.
-    All 102 S3 methods with proper parameter signatures:
+    Complete Amazon S3 API client wrapper with EXPLICIT METHOD SIGNATURES using aiobotocore.
+    All 98 S3 methods with proper parameter signatures:
     - Required parameters are explicitly typed (e.g., Bucket: str, Key: str)
     - Optional parameters use Optional[Type] = None
     - No **kwargs - every parameter is explicitly defined
-    - Matches aioboto3 S3 client signatures exactly
+    - Matches the botocore S3 client signatures exactly
     - Each parameter on separate line for better readability
     """
 
@@ -33,19 +31,10 @@ class S3DataSource:
         # Per task tree: a call from a request outside shared_client() must not get a client that scope may close.
         self._shared_client: ContextVar[Any] = ContextVar(f"s3_shared_client_{id(self)}", default=None)
 
-    async def _get_aioboto3_session(self) -> aioboto3.Session:  # type: ignore[valid-type]
-        """Get or create the aioboto3 session."""
+    async def _get_session(self) -> AioSession:
+        """Get or create the aiobotocore session."""
         if self._session is None:
-            # Option 1: Get the existing session directly from S3Client (recommended)
             self._session = self._s3_client.get_session()
-
-            # Option 2: Create new session from credentials (if needed)
-            # credentials = self._s3_client.get_credentials()
-            # self._session = aioboto3.Session(
-            #     aws_access_key_id=credentials['aws_access_key_id'],
-            #     aws_secret_access_key=credentials['aws_secret_access_key'],
-            #     region_name=credentials['region_name']
-            # )
         return self._session
 
     @asynccontextmanager
@@ -54,8 +43,8 @@ class S3DataSource:
         if self._shared_client.get() is not None:
             yield
             return
-        session = await self._get_aioboto3_session()
-        async with session.client('s3') as s3_client:
+        session = await self._get_session()
+        async with session.create_client('s3') as s3_client:
             token = self._shared_client.set(s3_client)
             try:
                 yield
@@ -69,8 +58,8 @@ class S3DataSource:
         if shared is not None:
             yield shared
             return
-        session = await self._get_aioboto3_session()
-        async with session.client('s3') as s3_client:
+        session = await self._get_session()
+        async with session.create_client('s3') as s3_client:
             yield s3_client
 
     def _handle_s3_response(self, response: object) -> S3Response:
@@ -1146,92 +1135,6 @@ class S3DataSource:
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
-    async def download_file(self,
-        Bucket: str,
-        Key: str,
-        Filename: str,
-        ExtraArgs: Optional[Dict[str, Any]] = None,
-        Callback: Optional[object] = None,
-        Config: Optional[object] = None) -> S3Response:
-        """S3 Download File operation.
-
-        Args:
-            Bucket (str): Required parameter
-            Key (str): Required parameter
-            Filename (str): Required parameter
-            ExtraArgs (Optional[Optional[Dict[str, Any]]]): Optional parameter
-            Callback (Optional[object]): Optional parameter
-            Config (Optional[object]): Optional parameter
-
-        Returns:
-            S3Response: Standardized response with success/data/error format
-        """
-        kwargs = {'Bucket': Bucket, 'Key': Key, 'Filename': Filename}
-        if ExtraArgs is not None:
-            kwargs['ExtraArgs'] = ExtraArgs
-        if Callback is not None:
-            kwargs['Callback'] = Callback
-        if Config is not None:
-            kwargs['Config'] = Config
-
-        try:
-            async with self._client() as s3_client:
-                response = await getattr(s3_client, 'download_file')(**kwargs)
-                return self._handle_s3_response(response)
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(
-                success=False,
-                error=f"{error_code}: {error_message}",
-                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
-            )
-        except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
-
-    async def download_fileobj(self,
-        Bucket: str,
-        Key: str,
-        Fileobj: object,
-        ExtraArgs: Optional[Dict[str, Any]] = None,
-        Callback: Optional[object] = None,
-        Config: Optional[object] = None) -> S3Response:
-        """S3 Download Fileobj operation.
-
-        Args:
-            Bucket (str): Required parameter
-            Key (str): Required parameter
-            Fileobj (object): Required parameter
-            ExtraArgs (Optional[Optional[Dict[str, Any]]]): Optional parameter
-            Callback (Optional[object]): Optional parameter
-            Config (Optional[object]): Optional parameter
-
-        Returns:
-            S3Response: Standardized response with success/data/error format
-        """
-        kwargs = {'Bucket': Bucket, 'Key': Key, 'Fileobj': Fileobj}
-        if ExtraArgs is not None:
-            kwargs['ExtraArgs'] = ExtraArgs
-        if Callback is not None:
-            kwargs['Callback'] = Callback
-        if Config is not None:
-            kwargs['Config'] = Config
-
-        try:
-            async with self._client() as s3_client:
-                response = await getattr(s3_client, 'download_fileobj')(**kwargs)
-                return self._handle_s3_response(response)
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(
-                success=False,
-                error=f"{error_code}: {error_message}",
-                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
-            )
-        except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
-
     async def generate_presigned_post(self,
         Bucket: str,
         Key: str,
@@ -1300,7 +1203,7 @@ class S3DataSource:
             kwargs['HttpMethod'] = HttpMethod
 
         try:
-            session = await self._get_aioboto3_session()
+            session = await self._get_session()
             # Use provided region_name if available, otherwise fall back to configured region
             if region_name is None:
                 region_name = self._s3_client.get_region_name()
@@ -1308,10 +1211,10 @@ class S3DataSource:
             # This ensures compatibility with all S3 buckets, including those that require SigV4
             # Explicitly pass region_name to ensure presigned URLs use the correct region
             s3_config = Config(signature_version='s3v4')
-            async with session.client('s3', config=s3_config, region_name=region_name) as s3_client:
+            async with session.create_client('s3', config=s3_config, region_name=region_name) as s3_client:
                 # generate_presigned_url is a synchronous method in boto3 that just generates a URL string
                 # It doesn't perform I/O, so we can call it directly
-                # Check if it's a coroutine (aioboto3 might wrap it) and await if needed
+                # aiobotocore makes it a coroutine; await it when it is one
                 url_result = s3_client.generate_presigned_url(**kwargs)
                 if asyncio.iscoroutine(url_result):
                     response = await url_result
@@ -4411,92 +4314,6 @@ class S3DataSource:
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
-    async def upload_file(self,
-        Filename: str,
-        Bucket: str,
-        Key: str,
-        ExtraArgs: Optional[Dict[str, Any]] = None,
-        Callback: Optional[object] = None,
-        Config: Optional[object] = None) -> S3Response:
-        """S3 Upload File operation.
-
-        Args:
-            Filename (str): Required parameter
-            Bucket (str): Required parameter
-            Key (str): Required parameter
-            ExtraArgs (Optional[Optional[Dict[str, Any]]]): Optional parameter
-            Callback (Optional[object]): Optional parameter
-            Config (Optional[object]): Optional parameter
-
-        Returns:
-            S3Response: Standardized response with success/data/error format
-        """
-        kwargs = {'Filename': Filename, 'Bucket': Bucket, 'Key': Key}
-        if ExtraArgs is not None:
-            kwargs['ExtraArgs'] = ExtraArgs
-        if Callback is not None:
-            kwargs['Callback'] = Callback
-        if Config is not None:
-            kwargs['Config'] = Config
-
-        try:
-            async with self._client() as s3_client:
-                response = await getattr(s3_client, 'upload_file')(**kwargs)
-                return self._handle_s3_response(response)
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(
-                success=False,
-                error=f"{error_code}: {error_message}",
-                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
-            )
-        except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
-
-    async def upload_fileobj(self,
-        Fileobj: object,
-        Bucket: str,
-        Key: str,
-        ExtraArgs: Optional[Dict[str, Any]] = None,
-        Callback: Optional[object] = None,
-        Config: Optional[object] = None) -> S3Response:
-        """S3 Upload Fileobj operation.
-
-        Args:
-            Fileobj (object): Required parameter
-            Bucket (str): Required parameter
-            Key (str): Required parameter
-            ExtraArgs (Optional[Optional[Dict[str, Any]]]): Optional parameter
-            Callback (Optional[object]): Optional parameter
-            Config (Optional[object]): Optional parameter
-
-        Returns:
-            S3Response: Standardized response with success/data/error format
-        """
-        kwargs = {'Fileobj': Fileobj, 'Bucket': Bucket, 'Key': Key}
-        if ExtraArgs is not None:
-            kwargs['ExtraArgs'] = ExtraArgs
-        if Callback is not None:
-            kwargs['Callback'] = Callback
-        if Config is not None:
-            kwargs['Config'] = Config
-
-        try:
-            async with self._client() as s3_client:
-                response = await getattr(s3_client, 'upload_fileobj')(**kwargs)
-                return self._handle_s3_response(response)
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(
-                success=False,
-                error=f"{error_code}: {error_message}",
-                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
-            )
-        except Exception as e:
-            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
-
     async def upload_part(self,
         Bucket: str,
         Key: str,
@@ -4674,9 +4491,9 @@ class S3DataSource:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
     # Utility Methods
-    async def get_aioboto3_session(self) -> aioboto3.Session:
-        """Get the underlying aioboto3 session."""
-        return await self._get_aioboto3_session()
+    async def get_session(self) -> AioSession:
+        """Get the underlying aiobotocore session."""
+        return await self._get_session()
 
     def get_s3_client(self) -> S3Client:
         """Get the S3Client wrapper."""
@@ -4685,8 +4502,8 @@ class S3DataSource:
     async def get_sdk_info(self) -> S3Response:
         """Get information about the wrapped SDK methods."""
         info = {
-            'total_methods': 102,
-            'sdk_version': aioboto3.__version__,
+            'total_methods': 98,
+            'sdk_version': aiobotocore.__version__,
             'service': 's3'
         }
         return S3Response(success=True, data=info)

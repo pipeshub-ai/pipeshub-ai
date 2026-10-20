@@ -5,6 +5,8 @@ The browser is the fake from web_behaviour_fakes; ``Crawl4AIFetcher`` and the
 connector's batching run for real.
 """
 
+import json
+
 import pytest
 from web_behaviour_fakes import (
     HEAD_HANGS_UP,
@@ -16,6 +18,7 @@ from web_behaviour_fakes import (
     Page,
     RecordingNotifications,
     VirtualClock,
+    assert_crash_left_no_checkpoint,
     html_page,
 )
 
@@ -75,10 +78,24 @@ async def test_a_script_rendered_site_is_detected_and_crawled_with_the_browser(
     browser.add("http://site.test/inside", Page(body=SHELL, rendered=html_page("Inside", text=LONG_TEXT)))
 
     connector = await make_connector()
-    assert connector.use_headless_browser is True
     await connector.run_sync()
 
+    assert connector.use_headless_browser is True
     assert db.pages()["http://site.test/inside"].record_name == "Inside"
+
+
+@pytest.mark.parametrize("robust", [False, True])
+async def test_turning_a_connector_on_neither_loads_the_site_nor_starts_the_browser(
+    browser: FakeWeb, make_connector: MakeConnector, robust: bool
+) -> None:
+    # Setup runs inside the request that turns the connector on; the site and the browser wait for the sync.
+    browser.add(START_URL, Page(body=SHELL, rendered=html_page("App", text=LONG_TEXT), pre_render_text_len=0))
+
+    connector = await make_connector(use_headless_browser=robust)
+
+    assert browser.fetched_urls() == set()
+    assert browser.browser_starts == 0 and browser.browser_visits == []
+    assert connector.crawl4ai_fetcher is None
 
 
 async def test_a_server_rendered_site_is_crawled_without_the_browser(
@@ -123,13 +140,13 @@ async def test_the_script_rendering_check_does_not_follow_the_start_page_to_a_di
     assert browser.browser_visits == []
 
 
-async def test_a_robots_txt_that_cant_be_read_at_setup_puts_the_script_rendering_check_off_to_the_sync(
+async def test_a_robots_txt_that_cant_be_read_puts_the_script_rendering_check_off_to_the_next_sync(
     browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
-    # RFC 9309: an unreadable robots.txt allows nothing, so the browser waits; the check runs only
-    # at setup otherwise, so it is tried again when the sync can read robots.txt.
+    # RFC 9309: an unreadable robots.txt allows nothing, so the browser waits; once a decision is
+    # made it holds, so an undecided check is tried again when a sync can read robots.txt.
     browser.add("http://site.test/robots.txt", [
-        Page(status=503, body=b""),
+        *[Page(status=503, body=b"")] * 3,  # every attempt the first sync makes
         Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"),
     ])
     browser.add(START_URL, Page(body=SHELL, rendered=html_page("App", "/inside", text=LONG_TEXT),
@@ -137,7 +154,10 @@ async def test_a_robots_txt_that_cant_be_read_at_setup_puts_the_script_rendering
     browser.add("http://site.test/inside", Page(body=SHELL, rendered=html_page("Inside", text=LONG_TEXT)))
 
     connector = await make_connector()
+    await connector.run_sync()
     assert browser.browser_visits == []
+    assert connector._script_check_pending is True
+
     await connector.run_sync()
 
     assert connector.use_headless_browser is True
@@ -163,8 +183,7 @@ async def test_a_start_page_redirect_onto_a_site_whose_robots_txt_cant_be_read_k
     landing = "http://www.site.test/"
     browser.add("http://site.test/robots.txt", Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"))
     browser.add("http://www.site.test/robots.txt", [
-        Page(status=503, body=b""),
-        Page(status=503, body=b""),
+        *[Page(status=503, body=b"")] * 3,  # every attempt of the first sync
         Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"),
     ])
     browser.add(START_URL, Page(status=301, location=landing, content_type=None))
@@ -194,13 +213,20 @@ async def test_without_a_working_browser_a_plain_site_still_syncs(
     assert set(db.pages()) == {START_URL, "http://site.test/next"}
 
 
-async def test_robust_mode_without_a_working_browser_fails_to_start(
-    browser: FakeWeb, make_connector: MakeConnector
+async def test_robust_mode_without_a_working_browser_fails_the_sync(
+    browser: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
 ) -> None:
     browser.browser_broken = True
     browser.html(START_URL, "Home")
 
-    await make_connector(use_headless_browser=True, expect_init=False)
+    connector = await make_connector(use_headless_browser=True)
+    with pytest.raises(BrowserUnavailableError):
+        await connector.run_sync()
+
+    (saved,) = checkpoints.sync_points.values()
+    run = json.loads(saved["lastRun"])
+    assert (run["outcome"], run["error"]) == ("failed", "browser_unavailable")
+    assert db.pages() == {}
 
 
 async def test_the_shared_browser_is_closed_when_the_last_connector_is_cleaned_up(
@@ -209,7 +235,9 @@ async def test_the_shared_browser_is_closed_when_the_last_connector_is_cleaned_u
     browser.html(START_URL, "Home")
     first = await make_connector(use_headless_browser=True)
     second = await make_connector(use_headless_browser=True)
-    assert first.crawl4ai_fetcher is second.crawl4ai_fetcher
+    await first.run_sync()
+    await second.run_sync()
+    assert first.crawl4ai_fetcher is not None and first.crawl4ai_fetcher is second.crawl4ai_fetcher
 
     await first.cleanup()
     assert crawl4ai_fetcher._shared_instance is second.crawl4ai_fetcher
@@ -244,30 +272,31 @@ async def test_robust_mode_does_not_store_a_redirect_that_leaves_the_site(
     assert set(db.pages()) == {START_URL, "http://site.test/stay"}
 
 
-BROWSER_RETRY_LAST_WAIT = 240.0  # the fifth wait of Robust Mode's 15s-doubling retry of blocked pages
+# The first wait of the crawl's per-site retry, which a blocked page in Robust Mode goes through.
+BROWSER_RETRY_LAST_WAIT = 15.0
 
 
 @pytest.mark.parametrize(
-    ("link", "pages", "browser_retried"),
+    ("link", "pages"),
     [
         pytest.param("/handbook", {
             "http://site.test/handbook": Page(status=302, location="/handbook.pdf", content_type=None),
             "http://site.test/handbook.pdf": Page(status=403, rendered_status=200, body=b"no", content_type="application/pdf"),
-        }, False, id="redirect-onto-blocked-pdf"),
+        }, id="redirect-onto-blocked-pdf"),
         pytest.param("/handbook", {
             "http://site.test/handbook": Page(status=302, location="/handbook.pdf", content_type=None),
             "http://site.test/handbook.pdf": Page(status=403, body=b"no", content_type="application/pdf"),
-        }, False, id="redirect-onto-pdf-the-browser-is-refused"),
+        }, id="redirect-onto-pdf-the-browser-is-refused"),
         pytest.param("/manual.pdf", {
             "http://site.test/manual.pdf": Page(status=403, body=b"no", content_type="application/pdf"),
-        }, False, id="blocked-pdf"),
+        }, id="blocked-pdf"),
         pytest.param("/blocked", {
             "http://site.test/blocked": Page(status=403, body=b"<html><body>Access denied</body></html>"),
-        }, True, id="blocked-html-page"),
+        }, id="blocked-html-page"),
     ],
 )
-async def test_robust_mode_retries_blocked_pages_but_not_blocked_documents(
-    link: str, pages: dict, browser_retried: bool,
+async def test_robust_mode_retries_blocked_pages_and_documents_through_the_per_site_retry(
+    link: str, pages: dict,
     browser: FakeWeb, db: FakeRecordsDb, clock: VirtualClock, make_connector: MakeConnector,
 ) -> None:
     browser.html(START_URL, "Home", link)
@@ -276,7 +305,7 @@ async def test_robust_mode_retries_blocked_pages_but_not_blocked_documents(
 
     await (await make_connector(use_headless_browser=True)).run_sync()
 
-    assert (BROWSER_RETRY_LAST_WAIT in clock.sleeps) is browser_retried
+    assert BROWSER_RETRY_LAST_WAIT in clock.sleeps
     assert db.pages()[f"http://site.test{link}"].indexing_status == ProgressStatus.FAILED.value
     assert set(db.pages()) == {START_URL, f"http://site.test{link}"}
 
@@ -324,7 +353,6 @@ async def test_robust_mode_keeps_the_real_error_for_an_aborted_redirect_onto_a_b
 
     await (await make_connector(use_headless_browser=True)).run_sync()
 
-    assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
     assert set(db.pages()) == {START_URL, "http://site.test/handbook"}
     assert "403 Forbidden" in (db.pages()["http://site.test/handbook"].reason or "")
 
@@ -423,12 +451,14 @@ async def test_robust_mode_takes_the_probe_s_error_for_a_page_instead_of_retryin
     browser.html(START_URL, "Home", "/gone")
     browser.add(gone, Page(status=404, body=b"<html><body>Not here</body></html>", browser_aborts=True))
 
-    await (await make_connector(use_headless_browser=True)).run_sync()
+    connector = await make_connector(use_headless_browser=True)
+    await connector.run_sync()
 
     assert browser.gets(gone) == 0
     assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
-    # The probe's real status, not the browser's silence, is what the failed page reports.
-    assert (db.pages()[gone].reason or "").startswith("The page wasn't found (404 Not Found)")
+    # The probe's real status, not the browser's silence, is what the page is filed under.
+    assert connector.retry_urls[gone].status_code == 404
+    assert gone not in db.pages()
 
 
 @pytest.mark.parametrize(
@@ -543,6 +573,5 @@ async def test_robust_mode_fails_the_sync_when_the_browser_cannot_be_restarted(
 
     assert clock.sleeps == []
     assert all(r.indexing_status != ProgressStatus.FAILED.value for r in db.pages().values())
-    assert checkpoints.sync_points == {}
+    assert_crash_left_no_checkpoint(checkpoints)
     assert (await notifications.delivered())[-1]["title"] == "Web crawl stopped"
-

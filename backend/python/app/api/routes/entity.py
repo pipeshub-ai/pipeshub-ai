@@ -1,19 +1,44 @@
 import json
+import re
 import uuid
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import require_scopes, require_service_token
 from app.config.constants.arangodb import CollectionNames
-from app.config.constants.service import OAuthScopes
+from app.config.constants.service import OAuthScopes, TokenScopes
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.services.cache.invalidation_hooks import notify_connector_sync_completed
+from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import get_user_or_503
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
+
+if TYPE_CHECKING:
+    from app.connectors.core.base.data_store.data_store import TransactionStore
 
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
 
 MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
+
+
+_GRAPH_EMAIL = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+
+
+class UserEmailUpdateRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=320)
+
+    @field_validator("email")
+    @classmethod
+    def require_mailbox_shape(cls, value: str) -> str:
+        email = value.lower().strip()
+        if not _GRAPH_EMAIL.fullmatch(email):
+            raise ValueError("Invalid email")
+        return email
+
 
 async def get_services(request: Request) -> Dict[str, Any]:
     """Get all required services from the container"""
@@ -147,7 +172,7 @@ async def create_team(request: Request) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     # Generate a unique key for the team
@@ -222,35 +247,53 @@ async def create_team(request: Request) -> JSONResponse:
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         })
     logger.info(f"User team edges: {user_team_edges}")
-    transaction_id = None
+
+    async def write_team(tx_store: "TransactionStore") -> None:
+        if not await tx_store.batch_upsert_nodes([team_body], CollectionNames.TEAMS.value):
+            raise RuntimeError("Failed to create team")
+        if not await tx_store.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value):
+            raise RuntimeError("Failed to create creator permissions")
+
+    # The edges lock the creator's and every member's user node, so two creates can
+    # collide. explicit: a failure leaves no team behind on Neo4j either. Every write
+    # is keyed by team_key, so the re-run also completes the same team where the node
+    # committed on its own (NEO4J_CREATE_TRANSACTIONS=false).
     try:
-        transaction_id = await graph_provider.begin_transaction(
-            read=[],
-            write=[
-                CollectionNames.TEAMS.value,
-                CollectionNames.PERMISSION.value,
-            ]
-        )
-
-        # Create the team first
-        result = await graph_provider.batch_upsert_nodes([team_body], CollectionNames.TEAMS.value, transaction=transaction_id)
-        if not result:
-            raise HTTPException(status_code=500, detail="Failed to create team")
-        result = await graph_provider.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value, transaction=transaction_id)
-        if not result:
-            raise HTTPException(status_code=500, detail="Failed to create creator permissions")
-
-        await graph_provider.commit_transaction(transaction_id)
-        logger.info(f"Team created successfully: {team_body}")
-
-        # Fetch the created team with users and permissions
-        team_with_users = await graph_provider.get_team_with_users(team_id=team_key, user_key=user['_key'])
-
+        await GraphDataStore(logger, graph_provider).execute_idempotent_in_transaction(write_team, explicit=True)
     except Exception as e:
         logger.error(f"Error in create_team: {str(e)}", exc_info=True)
-        if transaction_id:
-            await graph_provider.rollback_transaction(transaction_id)
-        raise HTTPException(status_code=500, detail=action_failed("create this team"))
+        raise HTTPException(status_code=500, detail=action_failed("create this team")) from e
+    logger.info(f"Team created successfully: {team_body}")
+
+    # The team is committed by now. The providers answer None to a failed read, and
+    # any error response makes the dashboard say "try again", which would create
+    # the team a second time; so a failed read-back answers with the team as written.
+    try:
+        team_with_users = await graph_provider.get_team_with_users(team_id=team_key, org_id=user_info.get("orgId"), user_key=user['_key'])
+    except Exception as e:
+        logger.error(f"Team {team_key} was created but could not be read back: {str(e)}", exc_info=True)
+        team_with_users = None
+    if not team_with_users:
+        logger.warning(f"Team {team_key} was created but could not be read back; answering with what was written")
+        members = [
+            {"id": edge["from_id"], "role": edge["role"], "joinedAt": edge["createdAtTimestamp"],
+             "isOwner": edge["role"] == "OWNER"}
+            for edge in user_team_edges
+        ]
+        team_with_users = {
+            "id": team_key,
+            "name": team_body["name"],
+            "description": team_body["description"],
+            "createdBy": team_body["createdBy"],
+            "orgId": team_body["orgId"],
+            "createdAtTimestamp": team_body["createdAtTimestamp"],
+            "updatedAtTimestamp": team_body["updatedAtTimestamp"],
+            "members": members,
+            "memberCount": len(members),
+            "canEdit": True,
+            "canDelete": True,
+            "canManageMembers": True,
+        }
 
     return JSONResponse(
         status_code=200,
@@ -272,12 +315,12 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     try:
         # Use interface method to get team with users
-        result = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
+        result = await graph_provider.get_team_with_users(team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'])
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
@@ -306,7 +349,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -445,7 +488,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                     logger.info(f"Added {len(user_team_edges)} users to team {team_id}")
 
         # Return updated team with users
-        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'])
 
         return JSONResponse(
             status_code=200,
@@ -472,7 +515,7 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -546,14 +589,14 @@ async def get_user_teams(
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
         graph_created_by = created_by
         if created_by:
-            creator_user = await graph_provider.get_user_by_user_id(created_by)
+            creator_user = await get_user_or_503(graph_provider, created_by)
             org_id = user_info.get("orgId")
             creator_org = creator_user.get("orgId") if creator_user else None
             if (
@@ -700,7 +743,7 @@ async def get_team_users(
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -742,3 +785,54 @@ async def get_team_users(
     except Exception as e:
         logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team users")
+
+
+@router.patch(
+    "/user/email",
+    dependencies=[Depends(require_service_token(TokenScopes.ENTITY_USER_WRITE))],
+)
+async def update_user_email(
+    request: Request,
+    body: UserEmailUpdateRequest,
+) -> JSONResponse:
+    """Set the graph user's email after Mongo has already accepted a verified change."""
+    services = await get_services(request)
+    graph_provider = services["graph_provider"]
+    logger = services["logger"]
+
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    email = body.email
+    if not user_id or not org_id:
+        raise HTTPException(status_code=400, detail="userId and orgId are required")
+
+    try:
+        result = await graph_provider.apply_verified_user_email(user_id, org_id, email)
+        if not result:
+            raise HTTPException(status_code=404, detail="User not found")
+        logger.info("Updated graph email for userId %s", user_id)
+        for connector_id in result.get("connectorIds", []):
+            await notify_connector_sync_completed(connector_id, org_id)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "email": result.get("email", email),
+                "mergedStubKeys": result.get("mergedStubKeys", []),
+            },
+        )
+    except HTTPException:
+        raise
+    except GraphUserEmailConflictError as e:
+        logger.warning(
+            "Graph email conflict for userId %s: %s",
+            user_id,
+            e,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="Email already belongs to another login user in the graph",
+        ) from e
+    except Exception as e:
+        logger.error(f"Error updating graph user email: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update user email")

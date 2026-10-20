@@ -362,7 +362,7 @@ class TestProcessGmailMessage:
         )
         assert result is not None
         # Sender gets OWNER permission
-        assert any(p.type == PermissionType.OWNER for p in result.new_permissions)
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_message_without_id(self, connector):
@@ -409,7 +409,7 @@ class TestProcessGmailMessage:
             "user@test.com", msg, "thread-1", None
         )
         assert result is not None
-        assert any(p.type == PermissionType.READ for p in result.new_permissions)
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_no_subject_defaults(self, connector):
@@ -448,10 +448,11 @@ class TestExtractAttachmentInfos:
                 }],
             },
         }
-        infos = connector._extract_attachment_infos(msg)
+        infos = connector._extract_attachment_infos(msg, "user@test.com", google_user_id="g-1")
         assert len(infos) == 1
         assert infos[0]["isDriveFile"] is True
         assert infos[0]["driveFileId"] == "drive-file-1"
+        assert infos[0]["stableAttachmentId"] == "gdrive:g-1:drive-file-1"
 
     def test_no_attachments(self, connector):
         msg = {
@@ -476,8 +477,12 @@ class TestExtractAttachmentInfos:
                 }],
             },
         }
-        infos = connector._extract_attachment_infos(msg)
-        assert any(info.get("driveFileId") == "FILEID123" for info in infos)
+        infos = connector._extract_attachment_infos(msg, "user@test.com", google_user_id="g-1")
+        assert any(
+            info.get("driveFileId") == "FILEID123"
+            and info["stableAttachmentId"] == "gdrive:g-1:FILEID123"
+            for info in infos
+        )
 
 
 # ===========================================================================

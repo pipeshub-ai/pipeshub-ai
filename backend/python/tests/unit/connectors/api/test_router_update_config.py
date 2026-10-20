@@ -402,10 +402,12 @@ class TestUpdateConfigRedirectUri:
     @patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1234567890)
     @patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock)
     async def test_redirect_uri_with_base_url(self, mock_get_inst, mock_ts):
-        """When baseUrl is provided in the request body, use it for redirect URI."""
+        """A baseUrl matching the configured frontend is used for the redirect URI."""
         mock_get_inst.return_value = _instance(auth_type="OAUTH")
 
-        config_service = _build_config_service()
+        config_service = _build_config_service(
+            endpoints={"frontend": {"publicEndpoint": "https://custom.example.com"}},
+        )
         registry = _build_connector_registry()
         container = _build_container(config_service)
 
@@ -506,7 +508,9 @@ class TestUpdateConfigOAuthAdminConsent:
     async def test_admin_consent_merges_metadata(self, mock_get_inst, mock_ts):
         mock_get_inst.return_value = _instance(auth_type="OAUTH_ADMIN_CONSENT")
 
-        config_service = _build_config_service()
+        config_service = _build_config_service(
+            endpoints={"frontend": {"publicEndpoint": "https://admin.example.com"}},
+        )
         registry = _build_connector_registry()
         container = _build_container(config_service)
 
@@ -1139,7 +1143,7 @@ class TestStreamRecordInternalGoogleDrivePaths:
             "isActive": True,
         }
 
-        async def _get_doc(doc_id, collection):
+        async def _get_doc(doc_id, collection, *, raise_on_error=False):
             if collection == CollectionNames.ORGS.value:
                 return org_doc
             return connector_instance
@@ -1269,7 +1273,7 @@ class TestDownloadFileErrorPaths:
             "isActive": True,
         }
 
-        async def _get_doc(doc_id, collection):
+        async def _get_doc(doc_id, collection, *, raise_on_error=False):
             if collection == CollectionNames.ORGS.value:
                 return org_doc
             return connector_instance_doc
@@ -1389,7 +1393,7 @@ class TestDownloadFileErrorPaths:
 
         call_count = 0
 
-        async def _get_doc(doc_id, collection):
+        async def _get_doc(doc_id, collection, *, raise_on_error=False):
             nonlocal call_count
             call_count += 1
             if collection == "orgs":

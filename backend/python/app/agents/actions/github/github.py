@@ -89,21 +89,14 @@ def _github_file_change_label(entry: dict) -> str:
 # GitHub's list-commits-on-a-pull-request endpoint stops at this many.
 _PR_COMMIT_LIST_CAP = 250
 
-_RECONNECT_STEP = "Reconnect the GitHub toolset in Settings > Toolsets and try again."
-
-
-def _is_rate_limited(response: GitHubResponse) -> bool:
-    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS or response.exception_type == "RateLimitExceededException":
-        return True
-    message = (response.api_message or "").lower()
-    return response.status_code == HTTPStatus.FORBIDDEN and "rate limit" in message
+_RECONNECT_STEP = "Reconnect GitHub under Your actions, then try again."
 
 
 def _github_error_message(response: GitHubResponse, action: str) -> str:
     """Plain-language failure the agent can relay, with what to do next."""
     status = response.status_code
     said = f" GitHub said: {response.api_message}." if response.api_message else ""
-    if _is_rate_limited(response):
+    if response.is_rate_limited:
         seconds = response.retry_after_seconds
         wait = f"Wait {seconds} seconds" if seconds is not None else "Wait a minute"
         return f"GitHub's rate limit has been reached, so it could not {action}. {wait} and try again."
@@ -162,7 +155,7 @@ def _unexpected_failure(doing: str, error: Exception) -> tuple[bool, str]:
     return False, json.dumps({
         "error": (
             f"Something unexpected went wrong while {doing}. Try again, and if it keeps failing, "
-            "reconnect the GitHub toolset in Settings > Toolsets."
+            "reconnect GitHub under Your actions."
         )
     })
 

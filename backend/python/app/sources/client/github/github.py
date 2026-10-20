@@ -1,9 +1,13 @@
 import logging
-from typing import Any
+import time
+from collections.abc import Mapping
+from typing import Any, cast
 
 from github import Auth, Github
 from pydantic import BaseModel, Field  # type: ignore
 from urllib3.util.retry import Retry
+
+from app.config.constants.http_status_code import HttpStatusCode
 
 # PyGithub's default retry (GithubRetry) silently sleeps INSIDE the SDK until
 # the rate-limit window resets — observed parking worker threads for 30+ min.
@@ -18,6 +22,49 @@ _TRANSIENT_RETRY = Retry(
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
+
+
+def _lowered_headers(headers: object) -> dict[str, str]:
+    if not isinstance(headers, Mapping):
+        return {}
+    items = cast("Mapping[object, object]", headers).items()
+    return {str(k).lower(): str(v).strip() for k, v in items}
+
+
+def github_retry_after_seconds(headers: object, *, now: float | None = None) -> int | None:
+    """Seconds GitHub asked us to wait: ``Retry-After``, else until ``X-RateLimit-Reset``.
+
+    The reset is honoured only when ``X-RateLimit-Remaining`` is 0: GitHub
+    sends both headers on every response, and a reset an hour away means
+    nothing while budget is left.
+    """
+    lowered = _lowered_headers(headers)
+    retry_after = lowered.get("retry-after", "")
+    if retry_after.isdigit():
+        return int(retry_after)
+    reset = lowered.get("x-ratelimit-reset", "")
+    if reset.isdigit() and lowered.get("x-ratelimit-remaining") == "0":
+        current = time.time() if now is None else now
+        return max(0, int(reset) - int(current))
+    return None
+
+
+def is_github_rate_limit(status: int | None, headers: object, message: str | None) -> bool:
+    """True when a GitHub error response is a rate limit rather than a refusal.
+
+    GitHub answers both an exhausted primary limit and a secondary (abuse)
+    limit with 403 as well as 429, so the status alone cannot say "permission
+    denied". Its documented markers are ``X-RateLimit-Remaining: 0``, a
+    ``Retry-After`` header, or a body naming the rate limit.
+    """
+    if status == HttpStatusCode.TOO_MANY_REQUESTS.value:
+        return True
+    if status != HttpStatusCode.FORBIDDEN.value:
+        return False
+    lowered = _lowered_headers(headers)
+    if lowered.get("x-ratelimit-remaining") == "0" or "retry-after" in lowered:
+        return True
+    return "rate limit" in (message or "").lower()
 
 
 # Standardized Github API response wrapper
@@ -38,6 +85,17 @@ class GitHubResponse(BaseModel):
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()
+
+    @property
+    def is_rate_limited(self) -> bool:
+        if self.success:
+            return False
+        if self.exception_type == "RateLimitExceededException":
+            return True
+        # retry_after_seconds is only ever read off rate-limit headers.
+        if self.status_code == HttpStatusCode.FORBIDDEN.value and self.retry_after_seconds is not None:
+            return True
+        return is_github_rate_limit(self.status_code, None, self.api_message or self.error)
 
 
 # Auth holder clients

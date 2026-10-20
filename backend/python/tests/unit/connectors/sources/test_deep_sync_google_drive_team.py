@@ -817,7 +817,9 @@ class TestFetchPermissionsDeep:
             "file-1", is_drive=False, user_email="user@t.com"
         )
         assert is_fallback is False  # Not fallback since user has explicit permission
-        assert len(perms) == 2
+        # A link permission names no grantee and is not returned. Only the user
+        # grant is.
+        assert len(perms) == 1
 
     async def test_drive_403_raises(self, connector):
         """403 error on drive raises exception."""
@@ -839,7 +841,7 @@ class TestFetchPermissionsDeep:
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
         perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
-        assert is_fallback is False
+        assert is_fallback is True, "a failed read keeps the stored grants"
 
     async def test_generic_exception_on_drive_raises(self, connector):
         """Generic exception on drive raises."""

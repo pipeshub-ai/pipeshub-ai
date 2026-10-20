@@ -33,7 +33,6 @@ async function runFetchAppDirectChildren(appId: string): Promise<void> {
   try {
     const response = await KnowledgeHubApi.getNodeChildren('app', appId, {
       onlyContainers: true,
-      page: 1,
       limit: SIDEBAR_PAGINATION_PAGE_SIZE,
       sortBy: 'name',
       sortOrder: 'asc',
@@ -45,12 +44,9 @@ async function runFetchAppDirectChildren(appId: string): Promise<void> {
     const pag = response.pagination;
     setAppChildPagination(
       appId,
-      pag
-        ? {
-            hasNext: pag.hasNext,
-            nextPage: pag.hasNext ? pag.page + 1 : pag.page,
-          }
-        : { hasNext: false, nextPage: 1 }
+      pag?.nextCursor
+        ? { hasNext: pag.hasNext, nextCursor: pag.nextCursor }
+        : { hasNext: false, nextCursor: null }
     );
 
     // Build a hierarchical tree from the fetched children for BOTH KB and

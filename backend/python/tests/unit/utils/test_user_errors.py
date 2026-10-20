@@ -400,3 +400,44 @@ class TestRepositoryFileReasons:
             raise DocumentProcessingError("Failed to process document") from RuntimeError(message)
         except DocumentProcessingError as wrapped:
             assert ue.to_user_reason(wrapped) == message
+
+
+class TestRateLimitedSource:
+    # 2026-01-15 10:00:00 UTC
+    NOW = 1_768_471_200_000
+
+    def test_a_wait_names_the_source_and_the_time_it_ends(self) -> None:
+        reason = ue.rate_limited_will_retry("Engineering GitHub", self.NOW + 35 * 60_000, self.NOW)
+        assert reason == (
+            "Engineering GitHub is limiting how often PipesHub can read from it, so indexing "
+            "this file is paused. It will retry automatically after 10:35 UTC."
+        )
+
+    def test_a_wait_into_another_day_says_which(self) -> None:
+        reason = ue.rate_limited_will_retry(None, self.NOW + 15 * 3600 * 1000, self.NOW)
+        assert reason.startswith("The source is limiting")
+        assert reason.endswith("after 01:00 UTC on 16 Jan.")
+
+    def test_giving_up_says_why_and_when_to_try_again(self) -> None:
+        reason = ue.rate_limited_gave_up("Engineering GitHub", self.NOW + 30 * 60_000, self.NOW, 24)
+        assert "kept limiting" in reason
+        assert "more than 24 hours" in reason
+        assert reason.endswith("Reindex it after 10:30 UTC.")
+
+
+
+class TestStorageRefusal:
+    """A record the storage service refuses is reported for what it is, not as a temporary problem."""
+
+    def test_a_record_refused_as_too_large_says_the_file_is_too_large(self) -> None:
+        from app.exceptions.storage_exceptions import StorageRequestRejectedError
+        from app.utils.user_errors import FILE_TOO_LARGE, to_user_reason
+
+        error = StorageRequestRejectedError("refused (HTTP 400): larger than the 30 MB limit", 400, too_large=True)
+        assert to_user_reason(error) == FILE_TOO_LARGE
+
+    def test_another_refusal_is_a_plain_failure_not_a_temporary_one(self) -> None:
+        from app.exceptions.storage_exceptions import StorageRequestRejectedError
+        from app.utils.user_errors import GENERIC_FAILURE, to_user_reason
+
+        assert to_user_reason(StorageRequestRejectedError("refused (HTTP 415)", 415)) == GENERIC_FAILURE

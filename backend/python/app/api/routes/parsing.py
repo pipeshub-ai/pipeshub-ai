@@ -215,20 +215,22 @@ async def parse_file(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={"success": False, "error": exc.to_dict()},
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             parse_ms = (time.monotonic() - parse_start) * 1000
             logger.exception(
                 "Unexpected error parsing '%s' (provider=%s, parse_ms=%.0f)",
                 record_name, provider_enum.value, parse_ms,
             )
+            # The exception and its type stay in the log above: the text can quote the
+            # document or a path, and the caller only needs to correlate.
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={
                     "success": False,
                     "error": {
                         "code": ParseErrorCode.PARSE_FAILED.value,
-                        "message": str(exc),
-                        "details": {},
+                        "message": "Unexpected error while parsing the document",
+                        "details": {"requestId": message_id},
                     },
                 },
             )

@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 
 import {
+  entityUserWriteJwtGenerator,
   iamJwtGenerator,
   iamUserLookupJwtGenerator,
   jwtGeneratorForForgotPasswordLink,
@@ -16,6 +17,7 @@ import { isDuplicateKeyError } from '../../../libs/utils/mongo.utils';
 import { generateOtp } from '../utils/generateOtp';
 
 import { passwordValidator } from '../utils/passwordValidator';
+import { getBrandConfig } from '../../../libs/branding';
 
 import {
   AuthMethodType,
@@ -52,6 +54,7 @@ import { MailService } from '../services/mail.service';
 
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   HttpError,
   InternalServerError,
@@ -92,6 +95,11 @@ import {
   assertMethodAllowedAtStep,
   IOrgAuthConfigLike,
 } from '../utils/authMethodGuard';
+import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import {
+  executeConnectorCommand,
+  handleBackendError,
+} from '../../tokens_manager/utils/connector.utils';
 
 const {
   LOGIN,
@@ -620,7 +628,7 @@ export class UserAccountController {
         emailTemplateType: 'resetPassword',
         initiator: { jwtAuthToken: mailAuthToken, orgId: user.orgId?.toString() },
         usersMails: [user.email],
-        subject: 'PipesHub | Reset your password!',
+        subject: `${getBrandConfig().productName} | Reset your password!`,
         templateData: {
           orgName: org?.shortName || org?.registeredName,
           name: user.fullName,
@@ -982,7 +990,7 @@ export class UserAccountController {
    * only one proceeds. The PASSWORD_CHANGED check in scopedTokenValidator stops
    * a later reuse, but that activity is written only when a reset finishes.
    */
-  private async claimResetLink(
+  protected async claimResetLink(
     req: AuthenticatedServiceRequest,
   ): Promise<string> {
     // The token the middleware verified, not a re-parse of the header: two
@@ -1033,7 +1041,7 @@ export class UserAccountController {
     return linkHash;
   }
 
-  private async releaseResetLink(linkHash: string): Promise<void> {
+  protected async releaseResetLink(linkHash: string): Promise<void> {
     try {
       await UsedPasswordResetLink.deleteOne({ linkHash });
     } catch (error) {
@@ -1313,10 +1321,12 @@ export class UserAccountController {
 
       if (await this.ensureBlockStatus(userCredential as IUserCredentials)) {
         const blockedUntil = this.getBlockedUntilIso(userCredential as IUserCredentials);
+        const brand = getBrandConfig();
+        const disabled = `Your account has been disabled. If it is a mistake, Please reach out to ${brand.accountContactEmail ?? brand.supportEmail} to get it restored.`;
         throw new BadRequestError(
           blockedUntil
-            ? `Your account has been disabled. If it is a mistake, Please reach out to contact@pipeshub.com to get it restored. [blockedUntil:${blockedUntil}]`
-            : 'Your account has been disabled. If it is a mistake, Please reach out to contact@pipeshub.com to get it restored.',
+            ? `${disabled} [blockedUntil:${blockedUntil}]`
+            : disabled,
         );
       }
 
@@ -1336,7 +1346,7 @@ export class UserAccountController {
    * Refuses a refresh token issued before a sign-out, password change, role
    * change, lock or deletion (the same rule as the access-token middleware).
    */
-  private async refuseIfSessionEnded(
+  protected async refuseIfSessionEnded(
     userId: string | undefined,
     orgId: string | undefined,
     issuedAtSeconds: number | undefined,
@@ -1376,7 +1386,7 @@ export class UserAccountController {
    * or disabled. The IAM lookup answers a deleted account with an HTTP 404,
    * which arrives here as an axios error rather than as one of ours.
    */
-  private async activeAccountForRefresh(
+  protected async activeAccountForRefresh(
     userId: string,
     orgId: string,
   ): Promise<Record<string, unknown>> {
@@ -2215,8 +2225,8 @@ export class UserAccountController {
         { email },
         { new: true },
       );
-      if (user) {
-        await this.publishEmailChanged(user);
+      if (!user) {
+        throw new NotFoundError('User not found');
       }
 
       await UserActivities.create({
@@ -2225,6 +2235,32 @@ export class UserAccountController {
         activityType: PASSWORD_CHANGED,
         ipAddress: req.ip || '',
       });
+
+      // A conflict means another login owns the address in the graph, so the
+      // event must not write it onto this one. Any other graph failure still
+      // publishes, so the event can carry the address, and then fails the
+      // request so the link can be opened again.
+      let graphFailure: Error | undefined;
+      if (userId && orgId) {
+        try {
+          await this.syncVerifiedEmailToGraph(
+            String(userId),
+            String(orgId),
+            email,
+          );
+        } catch (syncError) {
+          if (syncError instanceof ConflictError) {
+            throw syncError;
+          }
+          graphFailure =
+            syncError instanceof Error ? syncError : new Error(String(syncError));
+        }
+      }
+
+      await this.publishEmailChanged(user);
+      if (graphFailure) {
+        throw graphFailure;
+      }
 
       res.status(200).json({ message: 'Email updated successfully' });
 
@@ -2240,7 +2276,9 @@ export class UserAccountController {
    * address stays there. A failed write throws, so the request fails and the
    * link can be opened again.
    */
-  private async publishEmailChanged(user: InstanceType<typeof Users>): Promise<void> {
+  protected async publishEmailChanged(
+    user: InstanceType<typeof Users>,
+  ): Promise<void> {
     const event: Event = {
       eventType: EventType.UpdateUserEvent,
       timestamp: Date.now(),
@@ -2259,6 +2297,32 @@ export class UserAccountController {
     await this.eventService.stop();
   }
 
-
+  protected async syncVerifiedEmailToGraph(
+    userId: string,
+    orgId: string,
+    email: string,
+  ): Promise<void> {
+    const token = entityUserWriteJwtGenerator(
+      userId,
+      orgId,
+      this.config.scopedJwtSecret,
+    );
+    const response = await executeConnectorCommand(
+      `${this.config.connectorBackend}/api/v1/entity/user/email`,
+      HttpMethod.PATCH,
+      { Authorization: `Bearer ${token}` },
+      { email },
+    );
+    if (response?.statusCode === 404) {
+      this.logger.warn('Graph user not found while syncing verified email', {
+        userId,
+      });
+      return;
+    }
+    const statusCode = response?.statusCode;
+    if (!statusCode || statusCode < 200 || statusCode >= 300) {
+      throw handleBackendError(response, 'sync verified email to graph');
+    }
+  }
 
 }

@@ -40,7 +40,7 @@ _LITELLM_ENDPOINT = AIModelField(
     .with_color("#0EA5E9") \
     .add_field(_LITELLM_ENDPOINT, ModelCapability.TEXT_GENERATION) \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
-    .add_field(model_field("e.g. gpt-4o, claude-opus-4-5, gemini-2.5-flash"), ModelCapability.TEXT_GENERATION) \
+    .add_field(model_field("e.g. gpt-6-luna, claude-opus-5-5, gemini-3.8-flash"), ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[0], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \

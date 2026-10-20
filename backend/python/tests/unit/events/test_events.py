@@ -694,6 +694,32 @@ class TestOnEventEdgeCases:
         assert len(events) == 3
 
     @pytest.mark.asyncio
+    async def test_a_reprocessed_record_loses_its_previous_failure_reason(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE", "reason": "parse failed"}
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)),              patch.object(ep, "update_record_fields", new_callable=AsyncMock) as update:
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
+
+        assert any(c.args[1] == {"reason": None} for c in update.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reason_clear_fails_the_attempt(self) -> None:
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE", "reason": "parse failed"}
+        gp.update_node = AsyncMock(return_value=False)
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             pytest.raises(IndexingError, match="reason"):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
+
+    @pytest.mark.asyncio
     async def test_virtual_record_id_from_record_when_not_in_payload(self):
         """If virtualRecordId not in payload, it's taken from the DB record."""
         ep, _, processor, gp = _make_event_processor()
@@ -2451,6 +2477,55 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
             await ep._check_duplicate_by_md5(b"payload", doc)
 
     @pytest.mark.asyncio
+    async def test_failed_mention_copy_raises_before_the_record_is_completed(self):
+        """A same-collection duplicate is never indexed, so a mention copy lost
+        here would never be retried once the record is COMPLETED."""
+        ep, gp = _make_multi_collection_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+        }]
+        gp.copy_named_entity_mentions = AsyncMock(side_effect=RuntimeError("graph down"))
+        doc = {
+            "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
+            "recordType": "FILE", "sizeInBytes": 10,
+        }
+
+        with patch(
+            "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+            AsyncMock(return_value=True),
+        ), pytest.raises(IndexingError, match="mentions"):
+            await ep._check_duplicate_by_md5(b"payload", doc)
+        written = [c.args[2] for c in gp.update_node.await_args_list]
+        assert not any(w.get("indexingStatus") == ProgressStatus.COMPLETED.value for w in written)
+
+    @pytest.mark.asyncio
+    async def test_with_the_flag_off_no_mention_copy_can_fail_a_duplicate(self):
+        ep, gp = _make_multi_collection_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+        }]
+        gp.copy_named_entity_mentions = AsyncMock(side_effect=RuntimeError("graph down"))
+        doc = {
+            "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
+            "recordType": "FILE", "sizeInBytes": 10,
+        }
+
+        with patch(
+            "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+            AsyncMock(return_value=False),
+        ):
+            await ep._check_duplicate_by_md5(b"payload", doc)
+        gp.copy_named_entity_mentions.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_failed_queued_write_raises(self):
         """The in-flight branch: QUEUED is the only handle the sweeper has, so
         losing that write is what strands the record for good."""
@@ -2605,6 +2680,7 @@ class TestProcessedTwinAttachOrdering:
         assert fields_of[("status", "r1")] == {
             "isDirty": False,
             "indexingStatus": ProgressStatus.COMPLETED.value,
+            "hasIndexedCopy": True,
             "processingStartedAt": None,
             "lastIndexTimestamp": 100,
             "extractionStatus": ProgressStatus.COMPLETED.value,

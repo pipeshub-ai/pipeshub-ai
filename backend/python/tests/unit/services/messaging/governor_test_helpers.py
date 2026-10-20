@@ -7,9 +7,13 @@ constructors in one place.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from app.services.resource_governor import DownstreamFeedback, ResourceGovernor
 from app.services.resource_governor.models import ResourceSnapshot
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def make_test_governor(
@@ -18,6 +22,9 @@ def make_test_governor(
     env_index: int | None = 24,
     logger_name: str = "test.governor",
     feedback: DownstreamFeedback | None = None,
+    worker_count: int = 1,
+    cpu_quota: float = 4.0,
+    heavy_parse_slots_dir: Path | None = None,
 ) -> ResourceGovernor:
     """A governor with deterministic ceilings: the fixed 4-CPU probe below
     derives heavy=4, and ``env_index`` caps the index total at 24, which
@@ -27,7 +34,7 @@ def make_test_governor(
     enough that light keeps more than its reserve, so the heavy/light
     distinction most of these tests exist to check survives."""
     snapshot = ResourceSnapshot(
-        cpu_quota=4.0,
+        cpu_quota=cpu_quota,
         cpu_utilisation=0.1,
         cpu_throttled_ratio=0.0,
         cpu_pressure=0.0,
@@ -44,6 +51,8 @@ def make_test_governor(
         logger=logging.getLogger(logger_name),
         env_parse=env_parse,
         env_index=env_index,
+        worker_count=worker_count,
+        heavy_parse_slots_dir=heavy_parse_slots_dir,
         probe=_FixedProbe(),
         feedback=feedback,
     )

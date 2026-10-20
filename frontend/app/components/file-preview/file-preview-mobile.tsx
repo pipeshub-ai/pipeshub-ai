@@ -34,6 +34,7 @@ export function FilePreviewMobile({
   initialCitationId,
   hideFileDetails,
   showDownload,
+  onDownload,
   latestVersion,
   onVersionChange,
   isSwitchingVersion,
@@ -210,6 +211,7 @@ export function FilePreviewMobile({
                   name: file.name,
                   url: file.url,
                   blob: file.blob,
+                  onDownload,
                 })
               }
               title={t('action.download')}

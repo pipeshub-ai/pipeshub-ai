@@ -402,8 +402,8 @@ class GraphConnectorOffFilter:
         """The written records whose connector is still off once written.
 
         A connector turned back on between the state read and the write would
-        otherwise have its event settled as not indexed, and turning a
-        connector on does not re-queue such records. So its state is read
+        otherwise have its event settled as not indexed, after the turn-on's
+        re-queue of such records may already have run. So its state is read
         again after the write: the records of one that is now on (or can no
         longer be read) get their fields back, conditionally on still holding
         what was just written, and their events take the normal path, where

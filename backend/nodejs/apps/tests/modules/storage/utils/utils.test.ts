@@ -395,6 +395,46 @@ describe('storage/utils/utils', () => {
     })
   })
 
+  describe('getDocumentInfo - a missing document', () => {
+    it('is a 404 marked to be logged at warn, not error', async () => {
+      sinon.stub(DocumentModel, 'findOne').resolves(null)
+      const next = sinon.stub()
+      const req = {
+        params: { documentId: '507f1f77bcf86cd799439011' },
+        tokenPayload: { orgId: '507f1f77bcf86cd799439012' },
+      } as any
+
+      try {
+        await getDocumentInfo(req, next)
+      } catch {
+        // expected
+      }
+
+      const error = next.firstCall.args[0]
+      expect(error.statusCode).to.equal(404)
+      expect(error.metadata).to.deep.equal({ logLevel: 'warn' })
+    })
+
+    it('leaves a failed lookup unmarked, so it is still logged at error', async () => {
+      sinon.stub(DocumentModel, 'findOne').rejects(new Error('mongo down'))
+      const next = sinon.stub()
+      const req = {
+        params: { documentId: '507f1f77bcf86cd799439011' },
+        tokenPayload: { orgId: '507f1f77bcf86cd799439012' },
+      } as any
+
+      try {
+        await getDocumentInfo(req, next)
+      } catch {
+        // expected
+      }
+
+      const error = next.firstCall.args[0]
+      expect(error.statusCode).to.equal(500)
+      expect(error.metadata).to.equal(undefined)
+    })
+  })
+
   // -------------------------------------------------------------------------
   // generatePresignedUrlForDirectUpload
   // -------------------------------------------------------------------------

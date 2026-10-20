@@ -23,6 +23,7 @@ from app.api.routes.parsing import router as parsing_router
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import OCRProvider
 from app.containers.parsing import ParsingAppContainer, initialize_container
+from app.edition_services import configure_app
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
@@ -68,6 +69,7 @@ from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 
 logger = logging.getLogger("parsing_main")
@@ -232,6 +234,7 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mark_process_non_dumpable()
+    install_log_redaction()
     app_container = await _get_initialized_container()
     app.container = app_container  # type: ignore[attr-defined]
 
@@ -323,6 +326,7 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+configure_app(app, "parsing")
 
 # Trace context — outermost, so log lines correlate with the caller's request.
 app.add_middleware(RequestContextMiddleware)

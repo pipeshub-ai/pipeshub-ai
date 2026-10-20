@@ -48,6 +48,7 @@ from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.services.parsing.interface import ParseError
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.image_utils import get_extension_from_mimetype
@@ -682,7 +683,10 @@ class Processor:
             processor = self.docling_processor
 
             # Phase 1: Parse document with Docling (no LLM calls)
-            conv_res = await processor.parse_document(recordName, docx_binary)
+            # Docling falls back to the extension when it cannot tell the format from
+            # the bytes, so the name must say DOCX, as it does for PPTX below.
+            doc_name = recordName if recordName.lower().endswith(".docx") else f"{recordName}.docx"
+            conv_res = await processor.parse_document(doc_name, docx_binary)
 
             # Signal parsing complete after Docling parsing
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1502,6 +1506,7 @@ class Processor:
         timestamp = get_epoch_timestamp_in_ms()
         status_update: dict[str, Any] = {
             "indexingStatus": indexing_status.value,
+            **indexed_copy_fields(indexing_status),
             "processingStartedAt": None,
             "isDirty": False,
             "lastIndexTimestamp": timestamp,

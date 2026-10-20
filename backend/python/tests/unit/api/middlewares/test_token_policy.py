@@ -30,6 +30,7 @@ class TestAcceptedServiceScopes:
                 "fetch:config",
                 "document:parse",
                 "document:classify",
+                "entity:user:write",
             }
         )
 

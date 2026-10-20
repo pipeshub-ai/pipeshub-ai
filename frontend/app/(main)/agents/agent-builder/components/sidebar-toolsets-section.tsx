@@ -4,8 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { CHAT_ITEM_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
-import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
+import { isPersonalToolset, type BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import {
   buildToolDragPayload,
   buildToolsetDragPayload,
@@ -17,6 +16,7 @@ import {
 } from '../sidebar-toolset-utils';
 import { normalizePaletteLabel } from '../display-utils';
 import { SidebarCategoryRow } from './sidebar-category-row';
+import { SidebarToolDragRow } from './sidebar-draggable-row';
 import { UserToolsetConfigDialog } from './user-toolset-config-dialog';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
@@ -29,13 +29,6 @@ const DEFAULT_TOOLSET_TYPE_EXPANDED = true;
 /** Toolset instance row: collapsed by default; user expands to see tools (Knowledge stops at instance rows). */
 const DEFAULT_TOOLSET_INSTANCE_EXPANDED = false;
 const TOOLSET_SHOW_MORE_LIMIT = 5;
-
-function applyToolDrag(e: React.DragEvent, data: Record<string, string>) {
-  e.dataTransfer.effectAllowed = 'move';
-  Object.entries(data).forEach(([k, v]) => {
-    if (v != null) e.dataTransfer.setData(k, v);
-  });
-}
 
 /** Row-level drag/configure flags for one toolset instance (shared by single-type and grouped UI). */
 function getToolsetPaletteRowState(
@@ -102,57 +95,15 @@ function ToolDragRow(props: {
     duplicateTypeDragBlocked,
     onDragBlocked,
   } = props;
-  const payload = buildToolDragPayload(tool, toolset);
   const blocked = needsConfiguration || structureLocked || duplicateTypeDragBlocked;
   return (
-    <Box
-      draggable={!blocked}
-      onDragStart={(e) => {
-        if (blocked) {
-          e.preventDefault();
-          onDragBlocked?.();
-          return;
-        }
-        applyToolDrag(e, payload);
-      }}
+    <SidebarToolDragRow
+      name={tool.name}
+      data={buildToolDragPayload(tool, toolset)}
+      disabled={blocked}
+      onBlocked={onDragBlocked}
       mb="1"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        width: '100%',
-        minWidth: 0,
-        minHeight: CHAT_ITEM_HEIGHT,
-        padding: '0 12px',
-        boxSizing: 'border-box',
-        gap: 8,
-        cursor: blocked ? 'not-allowed' : 'grab',
-        opacity: blocked ? 0.55 : 1,
-        borderRadius: 'var(--radius-1)',
-        border: '1px solid transparent',
-        backgroundColor: 'transparent',
-      }}
-      className={
-        blocked
-          ? 'agent-builder-draggable-row agent-builder-draggable-row--disabled'
-          : 'agent-builder-draggable-row'
-      }
-    >
-      <MaterialIcon name="build" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" style={{ flexShrink: 0, lineHeight: 0 }} />
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          fontSize: 14,
-          color: 'var(--slate-11)',
-          whiteSpace: 'normal',
-          overflowWrap: 'anywhere',
-          wordBreak: 'break-word',
-          textAlign: 'left',
-        }}
-      >
-        {normalizePaletteLabel(tool.name)}
-      </span>
-    </Box>
+    />
   );
 }
 
@@ -179,6 +130,8 @@ export function AgentBuilderToolsetsSection(props: {
   onPaletteStructureDragBlocked?: () => void;
   /** Web-search provider currently attached to the agent (null if none). */
   webSearchAttached: AgentWebSearchAttachment | null;
+  /** Shared with the org or a service account: personal actions can't go on it. */
+  agentShared?: boolean;
 }) {
   const {
     toolsets,
@@ -194,6 +147,7 @@ export function AgentBuilderToolsetsSection(props: {
     orgCredentialUiLocked = false,
     onPaletteStructureDragBlocked,
     webSearchAttached,
+    agentShared = false,
   } = props;
 
   const { t } = useTranslation();
@@ -349,6 +303,17 @@ export function AgentBuilderToolsetsSection(props: {
     else onNotify(t('agentBuilder.viewerPaletteDragBlocked'));
   }, [onPaletteStructureDragBlocked, onNotify, t]);
 
+  const notifyPersonalOnSharedAgent = useCallback(
+    (ts: BuilderSidebarToolset) => {
+      onNotify(
+        t('agentBuilder.toolsetPersonalOnSharedAgentNotify', {
+          name: ts.instanceName?.trim() || ts.displayName || ts.name || '',
+        })
+      );
+    },
+    [onNotify, t]
+  );
+
   const orgCredentialLockedTooltip = t('agentBuilder.paletteActionBlockedViewOnly');
 
   return (
@@ -423,6 +388,12 @@ export function AgentBuilderToolsetsSection(props: {
                         const isInstanceExpanded =
                           expandedApps[instKey] ?? DEFAULT_TOOLSET_INSTANCE_EXPANDED;
                         const ui = buildUiState(ts);
+                        // A personal action holds one user's sign-in: others running the agent couldn't use it.
+                        const personalBlocked = agentShared && isPersonalToolset(ts);
+                        const rowLocked = structureLocked || personalBlocked;
+                        const notifyRowLocked = personalBlocked
+                          ? () => notifyPersonalOnSharedAgent(ts)
+                          : notifyStructureDragBlocked;
                         const {
                           needsConfiguration,
                           dragPayload,
@@ -436,10 +407,10 @@ export function AgentBuilderToolsetsSection(props: {
                           ts,
                           ui,
                           activeToolsetTypeKeys,
-                          structureLocked,
+                          rowLocked,
                           orgCredentialUiLocked,
                           isServiceAccount,
-                          notifyStructureDragBlocked,
+                          notifyRowLocked,
                           () => handleDuplicateDrag(ts),
                           () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
                         );
@@ -484,10 +455,10 @@ export function AgentBuilderToolsetsSection(props: {
                                 tool={tool}
                                 toolset={ts}
                                 needsConfiguration={needsConfiguration}
-                                structureLocked={structureLocked}
+                                structureLocked={rowLocked}
                                 duplicateTypeDragBlocked={duplicateTypeDragBlocked}
                                 onDragBlocked={() => {
-                                  if (structureLocked) notifyStructureDragBlocked();
+                                  if (rowLocked) notifyRowLocked();
                                   else if (needsConfiguration) handleUnconfiguredDrag(ts, ui.isFromRegistry);
                                   else if (duplicateTypeDragBlocked) handleDuplicateDrag(ts);
                                 }}

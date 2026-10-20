@@ -9,16 +9,25 @@ exception hierarchy.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 # Emitted when reasoning + bound function tools cannot both go through the API
 # shape the request used.
 # - "please use /v1/responses instead": Chat Completions rejected the
 #   combination.
+# - "to use function tools, use /v1/responses": the same refusal as Azure
+#   OpenAI words it for gpt-6 models ("Function tools with reasoning_effort
+#   are not supported for this model in /v1/chat/completions. To use function
+#   tools, use /v1/responses or set reasoning_effort to 'none'."). It comes
+#   back even when the request carried no reasoning setting, because those
+#   models reason by default.
 # - "please use /v1/chat/completions instead": the inverse -- a Responses-API
 #   attempt landed on a backend that only supports this on Chat Completions.
 # - "tool_choice.function": Chat-Completions-shaped tool_choice sent to a
 #   Responses-only model/deployment.
 API_SHAPE_CONFLICT_MARKERS = (
     "please use /v1/responses instead",
+    "to use function tools, use /v1/responses",
     "please use /v1/chat/completions instead",
     "tool_choice.function",
 )
@@ -33,7 +42,7 @@ REASONING_MANDATORY_CONFLICT_MARKERS = ("reasoning is mandatory",)
 # Completions: "Invalid 'messages[5]'. Image URLs are only allowed for messages
 # with role 'user', but this message with role 'tool' contains an image URL."
 # Recovering means moving those images into a user message, not changing the
-# model's configuration -- see `LangChainTransport._tool_image_fallback`.
+# model's configuration -- see `LangChainTransport._relocates_tool_images`.
 TOOL_RESULT_IMAGE_MARKERS = (
     "only allowed for messages with role 'user'",
     'only allowed for messages with role "user"',
@@ -62,4 +71,41 @@ def wants_responses_api(exc: Exception) -> bool:
     transport can pick a shape from the error rather than blindly toggling.
     """
     message = str(exc).lower()
-    return "please use /v1/responses instead" in message or "tool_choice.function" in message
+    return any(
+        marker in message
+        for marker in (
+            "please use /v1/responses instead",
+            "to use function tools, use /v1/responses",
+            "tool_choice.function",
+        )
+    )
+
+
+def is_prompt_cache_param_conflict(exc: Exception, sent: Iterable[str]) -> bool:
+    """True when the provider refused the request over a prompt-cache parameter
+    this request actually carried (a 400 naming it: "Unrecognized request
+    argument supplied: prompt_cache_retention", "cache_control: Extra inputs are
+    not permitted", ...). Recovering means resending without the cache
+    parameters, never changing the model's configuration."""
+    names = {name.lower() for name in sent if name}
+    if not names:
+        return False
+    status = _http_status(exc)
+    message = str(exc).lower()
+    if status is not None and status != 400:
+        return False
+    if status is None and not any(hint in message for hint in ("400", "bad request", "invalid", "validation")):
+        return False
+    return any(name in message for name in names)
+
+
+def _http_status(exc: Exception) -> int | None:
+    """The HTTP status of an SDK error: ``status_code`` (OpenAI, Anthropic,
+    httpx) or botocore's ``response["ResponseMetadata"]["HTTPStatusCode"]``."""
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        return status
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        return (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+    return getattr(response, "status_code", None)

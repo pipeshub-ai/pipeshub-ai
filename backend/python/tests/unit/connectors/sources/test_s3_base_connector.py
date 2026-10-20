@@ -521,23 +521,21 @@ class TestCreateS3Permissions:
     async def test_team_scope(self, s3_connector):
         s3_connector.scope = ConnectorScope.TEAM.value
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = "user-1"
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].email == "user@test.com"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, s3_connector):
         s3_connector.scope = ConnectorScope.PERSONAL.value
         s3_connector.created_by = None
-        with pytest.raises(Exception):
-            perms = await s3_connector._create_s3_permissions("bucket", "key")
+        perms = await s3_connector._create_s3_permissions("bucket", "key")
+        assert perms == []
 
 
 # ===========================================================================
@@ -1480,15 +1478,15 @@ class TestCreateS3PermissionsEdgeCases:
         s3_connector.data_entities_processor.get_user_by_user_id = AsyncMock(
             side_effect=Exception("user not found")
         )
-        with pytest.raises(Exception):
-            perms = await s3_connector._create_s3_permissions("bucket", "key")
+        perms = await s3_connector._create_s3_permissions("bucket", "key")
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_unknown_scope_never_grants_the_org(self, s3_connector):
         s3_connector.scope = "INVALID"
         s3_connector.created_by = "user-1"
         perms = await s3_connector._create_s3_permissions("bucket", "key")
-        assert [p.entity_type.value for p in perms] == ["USER"]
+        assert perms == []
 
 # =============================================================================
 # Merged from test_s3_base_connector_full_coverage.py
@@ -1684,23 +1682,21 @@ class TestCreateS3PermissionsFullCoverage:
     async def test_team_scope(self, connector):
         connector.scope = ConnectorScope.TEAM.value
         perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, connector, mock_dsp):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         perms = await connector._create_s3_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].email == "user@test.com"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = None
-        with pytest.raises(Exception):
-            perms = await connector._create_s3_permissions("bucket", "key")
+        perms = await connector._create_s3_permissions("bucket", "key")
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_creator_lookup_fails(self, connector, mock_dsp):
@@ -1709,8 +1705,8 @@ class TestCreateS3PermissionsFullCoverage:
         connector.data_entities_processor.get_user_by_user_id = AsyncMock(
             side_effect=Exception("DB error")
         )
-        with pytest.raises(Exception):
-            perms = await connector._create_s3_permissions("bucket", "key")
+        perms = await connector._create_s3_permissions("bucket", "key")
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_no_email(self, connector, mock_dsp):
@@ -1721,8 +1717,8 @@ class TestCreateS3PermissionsFullCoverage:
         connector.data_entities_processor.get_user_by_user_id = AsyncMock(
             return_value=user_no_email
         )
-        with pytest.raises(Exception):
-            perms = await connector._create_s3_permissions("bucket", "key")
+        perms = await connector._create_s3_permissions("bucket", "key")
+        assert perms == []
 
 
 class TestTestConnectionAndAccessFullCoverage:

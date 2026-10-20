@@ -21,6 +21,7 @@ from app.edition_config import (
 )
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.modules.demo_data.router import demo_data_router
+from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
@@ -29,12 +30,13 @@ from app.agents.registry.toolset_registry import get_toolset_registry
 from app.api.routes.entity import router as entity_router
 from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType, AppStatus, CollectionNames
 from app.config.constants.service import config_node_constants
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
-from app.connectors.core.constants import ConnectorStateKeys
+from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.sync_dispatcher import (
     SyncSpec,
@@ -47,7 +49,11 @@ from app.connectors.core.sync.sync_coordinator import (
     process_identity,
     set_coordinator,
 )
-from app.connectors.core.sync.sync_runner import drain_queued_syncs, join_cleanup_tasks
+from app.connectors.core.sync.sync_runner import (
+    drain_queued_syncs,
+    join_cleanup_tasks,
+    resumes_interrupted_full_sync,
+)
 from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
@@ -60,6 +66,7 @@ from app.containers.connector import initialize_container
 from app.edition_containers import ConnectorAppContainer
 from app.edition_services import (
     build_sync_dispatcher,
+    configure_app,
     create_coordinator,
     get_connector_registry_cls,
     get_data_entities_processor_cls,
@@ -73,10 +80,12 @@ from app.edition_services import (
     stop_sync_reaper,
     sync_executor_enabled,
 )
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.telemetry.flag import telemetry_enabled  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
 from app.utils.process_hardening import mark_process_non_dumpable
@@ -170,6 +179,16 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
     second one begin.
 
     Never touches DELETING — that doc is mid-deletion, not mid-sync.
+
+    A stale FULL_SYNCING also gets pendingFullSync. That sync's prep deleted the
+    connector's sync points before it was cut off, and what the source no longer
+    has is only unlinked once a full sync runs to the end. Reset to a bare IDLE,
+    the connector looked healthy and its next sync was incremental, which never
+    does that cleanup. With the flag, the boot resume below runs it again in full.
+
+    It also gets pendingResync: nothing finished that run, so the request it
+    was serving is still owed, and that is what lets the boot resume restart it
+    on a MANUAL connector too (see ``resumes_interrupted_full_sync``).
     """
     try:
         # Both lookups go through get_nodes_by_field_in: it is the one that
@@ -179,7 +198,7 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
             CollectionNames.APPS.value,
             "status",
             [AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value],
-            ["id"],
+            ["id", "status"],
         )
         locked = await graph_provider.get_nodes_by_field_in(
             CollectionNames.APPS.value,
@@ -189,6 +208,11 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
         )
 
         stuck_keys = {doc["id"] for doc in (stuck or []) if doc.get("id")}
+        full_sync_keys = {
+            doc["id"]
+            for doc in (stuck or [])
+            if doc.get("id") and doc.get("status") == AppStatus.FULL_SYNCING.value
+        }
         # A locked doc mid-deletion keeps its DELETING status; only the stuck
         # lock is released for it.
         locked_only = {
@@ -239,6 +263,20 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
                 "status": AppStatus.IDLE.value,
                 "isLocked": False,
                 "updatedAtTimestamp": now,
+                # The run this process was doing when it died never finished.
+                ConnectorStateKeys.LAST_SYNC_FINISHED_AT: now,
+                ConnectorStateKeys.LAST_SYNC_OUTCOME: SyncRunOutcome.FAILED.value,
+                # The summary there is the run before it; left next to this
+                # outcome, the two read as one run.
+                ConnectorStateKeys.LAST_SYNC_SUMMARY: None,
+                **(
+                    {
+                        ConnectorStateKeys.PENDING_FULL_SYNC: True,
+                        ConnectorStateKeys.PENDING_RESYNC: True,
+                    }
+                    if key in full_sync_keys
+                    else {}
+                ),
             }
             for key in stuck_keys
         ]
@@ -253,6 +291,12 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
         logger.warning(
             f"Startup sweep reset stale sync state on {len(reset_keys)} connector(s): {reset_keys}"
         )
+        owed = sorted(stuck_keys & full_sync_keys)
+        if owed:
+            logger.warning(
+                f"Startup sweep: full sync did not finish on {len(owed)} connector(s); "
+                f"they resume in full: {owed}"
+            )
     except Exception as e:
         logger.error(f"Startup sweep for stale sync state failed: {e}", exc_info=True)
 
@@ -363,6 +407,8 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                         connector_name=connector_name,
                         connector_id=connector_id,
                         org_id=org_id,
+                        app=app,
+                        graph_provider=graph_provider,
                     )
                 return connector_name, connector_id, connector
 
@@ -383,6 +429,38 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
         logger.error("❌ Detailed error traceback:\n%s", traceback.format_exc())
         return False
 
+
+async def _current_app(
+    graph_provider: IGraphDBProvider | None, logger: logging.Logger, connector_id: str, snapshot: dict | None
+) -> dict | None:
+    """The app doc as it is now, not as the boot traversal read it.
+
+    That read came before the connector's init (OAuth, a live connection test),
+    which can take seconds while the API already serves requests, and a stop in
+    that window clears pendingResync in the database, not in the snapshot.
+
+    If the read fails, the snapshot is used. Not resuming would leave the marks
+    set with nothing published until the next boot. Publishing is safe: the
+    event is marked bootResume, and the start handler reads the doc again
+    before it queues or deletes anything (``event_service._handle_start_sync``).
+    """
+    if graph_provider is None:
+        return snapshot
+    try:
+        # raise_on_error: by default a failed read answers None, which reads as
+        # "no such connector" and would skip a resume that is owed. None from
+        # here means the doc is gone, and nothing is resumed.
+        return await graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value, raise_on_error=True
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not re-read {connector_id} before resuming it; publishing the "
+            f"resume anyway, the start handler checks it again: {e}"
+        )
+        return snapshot
+
+
 async def _publish_startup_resync(
     app_container: ConnectorAppContainer,
     config_service,
@@ -391,23 +469,34 @@ async def _publish_startup_resync(
     connector_name: str,
     connector_id: str,
     org_id: str,
+    app: dict | None = None,
+    graph_provider: IGraphDBProvider | None = None,
 ) -> None:
     """Hand a startup sync to whichever process consumes sync events.
 
     Respects the MANUAL strategy, which the event handler deliberately does not:
     that path also carries the user's resync button, and MANUAL means "not on a
-    schedule", not "never".
+    schedule", not "never". The one exception is a full sync a restart cut
+    short, which resumes (``resumes_interrupted_full_sync``).
 
     Publishing rather than sharding by hash keeps this a single pass with no
     shard-count to get wrong, and the consumer's capacity gate meters the
     arrivals so a large fleet does not stampede one of them.
     """
     try:
-        if await ConnectorFactory.is_manual_sync_strategy(config_service, connector_id):
+        manual = await ConnectorFactory.is_manual_sync_strategy(config_service, connector_id)
+        if manual:
+            if not resumes_interrupted_full_sync(app) or not resumes_interrupted_full_sync(
+                await _current_app(graph_provider, logger, connector_id, app)
+            ):
+                logger.info(
+                    f"Not resuming {connector_name} {connector_id}: sync strategy is MANUAL"
+                )
+                return
             logger.info(
-                f"Not resuming {connector_name} {connector_id}: sync strategy is MANUAL"
+                f"Resuming {connector_name} {connector_id}: sync strategy is MANUAL, "
+                "but a restart cut its full sync short"
             )
-            return
         dispatcher = get_dispatcher()
         if dispatcher is None:
             logger.warning(
@@ -419,6 +508,7 @@ async def _publish_startup_resync(
                 connector_id=connector_id,
                 connector_name=connector_name,
                 org_id=org_id,
+                boot_resume=manual,
             )
         )
         logger.info(f"Startup resync for {connector_id}: {result.value}")
@@ -672,12 +762,9 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
     """Periodically refresh the connector_active gauge; best-effort, never fatal."""
     while True:
         try:
-            docs = await graph_provider.get_all_documents(CollectionNames.APPS.value)
-            counts: dict = {}
-            for doc in docs or []:
-                if doc.get("isActive"):
-                    connector_type = doc.get("type") or "unknown"
-                    counts[connector_type] = counts.get(connector_type, 0) + 1
+            # Counted in the database: a tenant can have thousands of collection
+            # Apps, and reading every App here stalled the event loop for seconds.
+            counts = await graph_provider.count_active_apps_by_type()
             set_connector_active(counts)
         except asyncio.CancelledError:
             raise
@@ -690,6 +777,7 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
     mark_process_non_dumpable()
+    install_log_redaction()
     # Initialize container
     app_container = await get_initialized_container()
     app.container = app_container  # type: ignore
@@ -725,9 +813,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"❌ Failed to start telemetry pusher: {e}")
 
-    app.state.connector_metrics_task = asyncio.create_task(
-        refresh_connector_metrics(graph_provider, logger, interval_s=60*5), name="connector_metrics_refresh"
-    )
+    if telemetry_enabled():
+        app.state.connector_metrics_task = asyncio.create_task(
+            refresh_connector_metrics(graph_provider, logger, interval_s=60*5), name="connector_metrics_refresh"
+        )
 
     # Every connector's blocking vendor-SDK calls run here, each through a capped
     # lease. Created before _post_startup so resume_sync_services and the event
@@ -799,10 +888,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
         await run_s3_created_date_filter_migration(
-            app_container.config_service(), data_store.graph_provider, logger
+            app_container.config_service(), graph_provider, logger
         )
     except Exception as e:
         logger.error(f"❌ S3 created date filter migration failed: {e}", exc_info=True)
+
+    # Before any connector reads its settings, so none crawls with a value the form doesn't show.
+    try:
+        from app.migrations.web_browser_identity_migration import (
+            run_web_browser_identity_backfill,
+        )
+
+        backfill_result = await run_web_browser_identity_backfill(app_container, graph_provider, logger)
+        if not backfill_result.get("skipped"):
+            logger.info(
+                "Web connector identity backfill: %s connector(s) updated, %s failure(s)",
+                backfill_result.get("connectors_updated", 0),
+                backfill_result.get("failures", 0),
+            )
+    except Exception as e:
+        logger.error(f"❌ Web connector identity backfill failed: {e}", exc_info=True)
 
     logger.debug("🚀 Starting application")
 
@@ -883,6 +988,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.trash_purge_task = asyncio.create_task(
         run_trash_purge_loop(app_container, graph_provider), name="trash_purge"
     )
+    # Retries the storage release of connector/KB deletes that did not finish it.
+    from app.connectors.services.storage_release import run_storage_release_loop
+    async def _org_config_service(org_id: str) -> ConfigurationService:
+        # The store connectors read their credentials from, so a release deletes them there.
+        config_service, _ = await scope_org_resources(app_container, data_store, org_id)
+        return config_service
+
+    app.state.storage_release_task = asyncio.create_task(
+        run_storage_release_loop(app_container, graph_provider, config_service_for=_org_config_service),
+        name="storage_release",
+    )
+
+    # Here, not in indexing: it publishes re-index events on this service's producer.
+    from app.connectors.services.stored_content_heal import run_stored_content_heal_loop
+    app.state.stored_content_heal_task = asyncio.create_task(
+        run_stored_content_heal_loop(app_container, graph_provider), name="stored_content_heal"
+    )
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
@@ -897,7 +1019,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
-    for task_name in ("connector_metrics_task", "trash_purge_task"):
+    for task_name in ("connector_metrics_task", "trash_purge_task", "storage_release_task", "stored_content_heal_task"):
         task = getattr(app.state, task_name, None)
         if task is not None and not task.done():
             task.cancel()
@@ -933,6 +1055,7 @@ app = FastAPI(
     lifespan=lifespan,
     dependencies=_app_dependencies,
 )
+configure_app(app, "connectors")
 
 # List of paths to exclude from authentication (public endpoints)
 # All other paths will require authentication by default
@@ -1077,21 +1200,67 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
             )
 
     # ── Neo4j ─────────────────────────────────────────────────────────────────
+    # One RETURN 1 on the driver already open. execute_query can connect and
+    # rebuild that driver; a 3s wait_for cancelled mid-handshake would leave
+    # the new driver installed. A fresh Bolt handshake can also take longer
+    # than Node's 5s budget while Neo4j is still up.
     if data_store == "neo4j":
-        from neo4j import AsyncGraphDatabase
         from neo4j.exceptions import AuthError, ServiceUnavailable
 
-        uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        username = os.getenv("NEO4J_USERNAME", "neo4j")
-        password = os.getenv("NEO4J_PASSWORD", "")
+        # Under Node's 5s graph timeout, which is also the Helm probe budget.
+        # Acquisition is shorter than the wait so an idle-connection RESET
+        # fails inside the driver and releases the pool slot. wait_for
+        # cancelling that RESET would leave the slot checked out.
+        neo4j_probe_timeout_sec = 3.0
+        neo4j_acquire_timeout_sec = 2.0
 
-        driver = None
         try:
-            driver = AsyncGraphDatabase.driver(uri, auth=(username, password))
-            await driver.verify_connectivity()
+            graph_provider = getattr(request.app.state, "graph_provider", None)
+            if graph_provider is None:
+                container = request.app.container  # type: ignore[attr-defined]
+                graph_provider = await container.graph_provider()
+
+            client = getattr(graph_provider, "client", None)
+            driver = getattr(client, "driver", None) if client is not None else None
+            if driver is None:
+                request.app.container.logger().error(  # type: ignore[attr-defined]
+                    "Neo4j health check failed: provider has no driver"
+                )
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "unhealthy",
+                        "error": "Neo4j unavailable",
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+
+            database = getattr(client, "database", None)
+
+            async def _ping() -> None:
+                async with driver.session(
+                    database=database,
+                    connection_acquisition_timeout=neo4j_acquire_timeout_sec,
+                ) as session:
+                    result = await session.run("RETURN 1 AS n")
+                    await result.consume()
+
+            await asyncio.wait_for(_ping(), timeout=neo4j_probe_timeout_sec)
             return JSONResponse(
                 status_code=200,
                 content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
+            )
+        except TimeoutError:
+            request.app.container.logger().error(  # type: ignore[attr-defined]
+                "Neo4j health check timed out after %.1fs", neo4j_probe_timeout_sec
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "error": "Neo4j health check timed out",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
             )
         except AuthError as e:
             request.app.container.logger().error("Neo4j auth failed: %s", e)
@@ -1123,9 +1292,6 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-        finally:
-            if driver:
-                await driver.close()
 
     # Unknown DATA_STORE value — treat as healthy so we don't block deployments.
     return JSONResponse(
@@ -1207,6 +1373,49 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
                 "error": f"Vector DB ({vector_db_type}) health check failed",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
+        )
+
+
+@app.get("/health/vector-db/memory")
+async def vector_db_memory_check(request: Request) -> JSONResponse:
+    """Whether the vector database has the memory to keep search fast.
+
+    Advisory only: it never changes the health status. It reports the index's
+    total size and Qdrant's memory (the host's RAM when no limit is set), so it
+    is not in EXCLUDE_PATHS and it refuses non-admins itself: the Node.js route
+    checks too, but this port can be reachable directly. Reuses the provider
+    cached by ``/health/vector-db``.
+    """
+    from app.api.middlewares.auth import is_request_admin
+    from app.services.vector_db.vector_db_provider_factory import (
+        VectorDBProviderFactory,
+    )
+    from app.utils.logger import create_logger
+
+    if not is_request_admin(request):
+        return JSONResponse(status_code=403, content={"detail": "Admin access required"})
+
+    try:
+        provider = getattr(request.app.state, "_vector_db_health_provider", None)
+        if provider is None:
+            container = request.app.container  # type: ignore[attr-defined]
+            provider = await VectorDBProviderFactory.create_provider(
+                logger=create_logger("vector_db_health"),
+                config_service=container.config_service(),
+            )
+            request.app.state._vector_db_health_provider = provider
+
+        report = await provider.memory_report()
+        if report is None:
+            return JSONResponse(status_code=200, content={"status": "unsupported"})
+        return JSONResponse(status_code=200, content=report.to_dict())
+    except Exception:
+        request.app.container.logger().warning(
+            "Vector DB memory report failed", exc_info=True
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unknown", "error": "Vector DB memory report failed"},
         )
 
 

@@ -5,8 +5,10 @@
 # Rebuild :python-deps when backend/python/pyproject.toml or bundled models change.
 # Rebuild :runtime when APT stack, Node major, Neo4j repo, or OCR/LibreOffice needs change.
 #
-# CI: integration tests pull pipeshubai/pipeshub-ai-base:{python-deps,runtime} before
-# building the app image; avoid unconditional Dockerfile.base builds in CI (slow).
+# CI: test workflows pull ghcr.io/pipeshub-ai/pipeshub-ai-base:{python-deps,runtime}
+# (falling back to Docker Hub) before building the app image; avoid unconditional
+# Dockerfile.base builds in CI (slow). .github/workflows/base-images.yml copies these
+# Docker Hub tags to GHCR daily; run it (mode=mirror) to sync sooner after publishing.
 #
 # Incremental rebuild (when only a few packages change in pyproject.toml):
 #   Pass the currently-published image as PYTHON_DEPS_BASE so uv skips already-satisfied
@@ -62,7 +64,8 @@
 ARG BUNDLE_BGE_EMBEDDING=1
 
 # CPU torch pins (resolved from pytorch.org/whl/cpu; wheels report +cpu local version).
-# Verified against pyproject.toml ML stack (sentence-transformers==3.4.1, docling, etc.).
+# Verified against the ML stack pinned in backend/python/pyproject.toml (transformers,
+# sentence-transformers, docling).
 # Bump both together when upgrading ML deps in backend/python/pyproject.toml.
 ARG TORCH_VERSION=2.12.0
 ARG TORCHVISION_VERSION=0.27.0
@@ -130,6 +133,8 @@ COPY ./backend/python/pyproject.toml ./
 # env var is re-exported in the runtime stage so `FastEmbedSparse(...)` at
 # runtime finds the pre-downloaded model without any code change.
 ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
+# The model pre-download below imports onnxruntime outside the `app` package, which opts services out.
+ENV ORT_DISABLE_TELEMETRY=1
 
 # Pre-install pinned CPU-only PyTorch wheels so the resolver in the next step never
 # pulls the CUDA variant (~1.5-2 GB of nvidia-* libs). Override via --build-arg when
@@ -155,7 +160,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     if [ "${BUNDLE_BGE_EMBEDDING}" != "0" ]; then \
         # Default dense embedding model (app/config/constants/ai_models.py).
         # Skip with --build-arg BUNDLE_BGE_EMBEDDING=0 for slim images (~1.3 GB saved).
-        python -c "from langchain_huggingface import HuggingFaceEmbeddings; HuggingFaceEmbeddings(model_name='BAAI/bge-large-en-v1.5', model_kwargs={'device': 'cpu'}, encode_kwargs={'normalize_embeddings': True})"; \
+        python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-large-en-v1.5', device='cpu')"; \
     else \
         mkdir -p /root/.cache/huggingface; \
     fi && \

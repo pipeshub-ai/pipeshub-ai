@@ -5,21 +5,27 @@ Covers:
 - _prepare_content (via DocumentExtraction instance)
 """
 
+from __future__ import annotations
+
 import base64
-import io
 import logging
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.models.blocks import Block, BlockType, DataFormat
 
+if TYPE_CHECKING:
+    from app.modules.transformers.document_extraction import DocumentExtraction
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_text_block(text, index=0):
+def _make_text_block(text, index=0) -> Block:
     return Block(
         type=BlockType.TEXT,
         format=DataFormat.TXT,
@@ -28,7 +34,7 @@ def _make_text_block(text, index=0):
     )
 
 
-def _make_image_block(uri, fmt=DataFormat.BASE64, index=0):
+def _make_image_block(uri, fmt=DataFormat.BASE64, index=0) -> Block:
     return Block(
         type=BlockType.IMAGE,
         format=fmt,
@@ -37,7 +43,7 @@ def _make_image_block(uri, fmt=DataFormat.BASE64, index=0):
     )
 
 
-def _make_table_row_block(data, index=0):
+def _make_table_row_block(data, index=0) -> Block:
     return Block(
         type=BlockType.TABLE_ROW,
         format=DataFormat.TXT,
@@ -46,7 +52,7 @@ def _make_table_row_block(data, index=0):
     )
 
 
-def _build_extractor():
+def _build_extractor() -> DocumentExtraction:
     """Build a DocumentExtraction instance with mocked dependencies."""
     from app.modules.transformers.document_extraction import DocumentExtraction
 
@@ -56,7 +62,7 @@ def _build_extractor():
     return DocumentExtraction(logger, graph_provider, config_service)
 
 
-def _call_downscale(data_uri, max_dim=2000):
+def _call_downscale(data_uri, max_dim=2000) -> str | None:
     from app.modules.transformers.document_extraction import (
         _downscale_base64_image,
     )
@@ -69,12 +75,12 @@ def _call_downscale(data_uri, max_dim=2000):
 class TestDownscaleBase64Image:
     """Tests for the module-level _downscale_base64_image function."""
 
-    def test_pillow_not_installed_returns_none(self):
+    def test_pillow_not_installed_returns_none(self) -> None:
         """When PIL cannot be imported, the function returns None."""
         import builtins
         real_import = builtins.__import__
 
-        def _blocked_import(name, *args, **kwargs):
+        def _blocked_import(name, *args, **kwargs) -> object:
             if name == "PIL" or name.startswith("PIL."):
                 raise ImportError("mocked: no PIL")
             return real_import(name, *args, **kwargs)
@@ -84,7 +90,7 @@ class TestDownscaleBase64Image:
 
         assert result is None
 
-    def test_small_image_returned_unchanged(self):
+    def test_small_image_returned_unchanged(self) -> None:
         """An image that fits within max_dim is returned as-is."""
         fake_img = MagicMock()
         fake_img.size = (100, 200)
@@ -98,7 +104,7 @@ class TestDownscaleBase64Image:
 
         assert result == uri
 
-    def test_large_image_gets_resized(self):
+    def test_large_image_gets_resized(self) -> None:
         """An image exceeding max_dim is downscaled."""
         fake_img = MagicMock()
         fake_img.size = (4000, 3000)
@@ -107,7 +113,7 @@ class TestDownscaleBase64Image:
         resized_img = MagicMock()
         fake_img.resize.return_value = resized_img
 
-        def mock_save(buffer, format, **kwargs):
+        def mock_save(buffer, *args, **kwargs) -> None:
             buffer.write(b"resized-data")
 
         resized_img.save = mock_save
@@ -124,7 +130,7 @@ class TestDownscaleBase64Image:
         assert result.startswith("data:image/png;base64,")
         assert result != uri
 
-    def test_jpeg_rgba_converted_to_rgb(self):
+    def test_jpeg_rgba_converted_to_rgb(self) -> None:
         """JPEG images with RGBA mode must be converted to RGB before save."""
         fake_img = MagicMock()
         fake_img.size = (5000, 3000)
@@ -137,8 +143,8 @@ class TestDownscaleBase64Image:
         resized_img = MagicMock()
         converted_img.resize.return_value = resized_img
 
-        def mock_save(buffer, format, **kwargs):
-            assert format == "JPEG"
+        def mock_save(buffer, *args, **kwargs) -> None:
+            assert kwargs.get("format") == "JPEG"
             assert kwargs.get("quality") == 85
             buffer.write(b"jpeg-data")
 
@@ -156,7 +162,7 @@ class TestDownscaleBase64Image:
         assert result is not None
         assert result.startswith("data:image/jpeg;base64,")
 
-    def test_jpeg_palette_mode_converted(self):
+    def test_jpeg_palette_mode_converted(self) -> None:
         """JPEG images with P (palette) mode must be converted to RGB."""
         fake_img = MagicMock()
         fake_img.size = (3000, 3000)
@@ -167,7 +173,7 @@ class TestDownscaleBase64Image:
         resized_img = MagicMock()
         converted_img.resize.return_value = resized_img
 
-        def mock_save(buffer, format, **kwargs):
+        def mock_save(buffer, *args, **kwargs) -> None:
             buffer.write(b"data")
 
         resized_img.save = mock_save
@@ -183,7 +189,7 @@ class TestDownscaleBase64Image:
         fake_img.convert.assert_called_once_with("RGB")
         assert result is not None
 
-    def test_jpeg_la_mode_converted(self):
+    def test_jpeg_la_mode_converted(self) -> None:
         """JPEG images with LA mode must be converted to RGB."""
         fake_img = MagicMock()
         fake_img.size = (3000, 3000)
@@ -194,7 +200,7 @@ class TestDownscaleBase64Image:
         resized_img = MagicMock()
         converted_img.resize.return_value = resized_img
 
-        def mock_save(buffer, format, **kwargs):
+        def mock_save(buffer, *args, **kwargs) -> None:
             buffer.write(b"data")
 
         resized_img.save = mock_save
@@ -205,11 +211,11 @@ class TestDownscaleBase64Image:
             b64 = base64.b64encode(raw).decode()
             uri = f"data:image/jpeg;base64,{b64}"
 
-            result = _call_downscale(uri, max_dim=2000)
+            _call_downscale(uri, max_dim=2000)
 
         fake_img.convert.assert_called_once_with("RGB")
 
-    def test_png_no_quality_kwarg(self):
+    def test_png_no_quality_kwarg(self) -> None:
         """PNG saves should not pass quality kwarg."""
         fake_img = MagicMock()
         fake_img.size = (4000, 3000)
@@ -220,7 +226,7 @@ class TestDownscaleBase64Image:
 
         saved_kwargs = {}
 
-        def mock_save(buffer, format, **kwargs):
+        def mock_save(buffer, *args, **kwargs) -> None:
             saved_kwargs.update(kwargs)
             buffer.write(b"png-data")
 
@@ -236,7 +242,7 @@ class TestDownscaleBase64Image:
 
         assert "quality" not in saved_kwargs
 
-    def test_unsupported_mime_returns_none(self):
+    def test_unsupported_mime_returns_none(self) -> None:
         """Unsupported MIME types return None."""
         raw = b"\x00" * 20
         b64 = base64.b64encode(raw).decode()
@@ -246,7 +252,7 @@ class TestDownscaleBase64Image:
 
         assert result is None
 
-    def test_corrupt_base64_returns_none(self):
+    def test_corrupt_base64_returns_none(self) -> None:
         """Corrupted base64 data returns None instead of raising."""
         uri = "data:image/png;base64,NOT_VALID_BASE64!!!"
 
@@ -254,7 +260,7 @@ class TestDownscaleBase64Image:
 
         assert result is None
 
-    def test_missing_comma_in_data_uri_returns_none(self):
+    def test_missing_comma_in_data_uri_returns_none(self) -> None:
         """A data URI without a comma separator returns None."""
         uri = "data:image/png;base64AAAA"
 
@@ -269,7 +275,7 @@ class TestDownscaleBase64Image:
 class TestPrepareContent:
     """Tests for DocumentExtraction._prepare_content."""
 
-    def test_text_blocks_added(self):
+    def test_text_blocks_added(self) -> None:
         ext = _build_extractor()
         blocks = [_make_text_block("Hello world", index=0)]
 
@@ -279,7 +285,7 @@ class TestPrepareContent:
         assert result[0]["type"] == "text"
         assert result[0]["text"] == "Hello world"
 
-    def test_empty_text_data_skipped(self):
+    def test_empty_text_data_skipped(self) -> None:
         ext = _build_extractor()
         blocks = [Block(type=BlockType.TEXT, format=DataFormat.TXT, data=None, index=0)]
 
@@ -287,7 +293,7 @@ class TestPrepareContent:
 
         assert len(result) == 0
 
-    def test_image_blocks_skipped_when_not_multimodal(self):
+    def test_image_blocks_skipped_when_not_multimodal(self) -> None:
         ext = _build_extractor()
         blocks = [
             _make_image_block("data:image/png;base64,AAAA", index=0),
@@ -297,7 +303,7 @@ class TestPrepareContent:
 
         assert len(result) == 0
 
-    def test_image_blocks_added_when_multimodal(self):
+    def test_image_blocks_added_when_multimodal(self) -> None:
         ext = _build_extractor()
 
         raw = b"\x89PNG" + b"\x00" * 20
@@ -315,7 +321,7 @@ class TestPrepareContent:
         assert result[0]["type"] == "image_url"
         assert result[0]["image_url"]["url"] == uri
 
-    def test_image_cap_at_50(self):
+    def test_image_cap_at_50(self) -> None:
         ext = _build_extractor()
 
         raw = b"\x89PNG" + b"\x00" * 20
@@ -333,7 +339,7 @@ class TestPrepareContent:
         image_items = [r for r in result if r["type"] == "image_url"]
         assert len(image_items) == 50
 
-    def test_token_budget_truncates(self):
+    def test_token_budget_truncates(self) -> None:
         """Content is truncated once the token budget is exceeded."""
         ext = _build_extractor()
 
@@ -354,7 +360,7 @@ class TestPrepareContent:
         # The first three should fit; the fourth should be truncated away
         assert len(result) == 3
 
-    def test_http_url_image_passed_through(self):
+    def test_http_url_image_passed_through(self) -> None:
         ext = _build_extractor()
         blocks = [_make_image_block("https://example.com/image.png", index=0)]
 
@@ -363,7 +369,7 @@ class TestPrepareContent:
         assert len(result) == 1
         assert result[0]["image_url"]["url"] == "https://example.com/image.png"
 
-    def test_http_url_image_no_downscale(self):
+    def test_http_url_image_no_downscale(self) -> None:
         """Remote URLs should not go through _downscale_base64_image."""
         ext = _build_extractor()
         blocks = [_make_image_block("http://example.com/img.jpg", index=0)]
@@ -376,7 +382,7 @@ class TestPrepareContent:
         mock_ds.assert_not_called()
         assert len(result) == 1
 
-    def test_unsupported_image_format_skipped(self):
+    def test_unsupported_image_format_skipped(self) -> None:
         ext = _build_extractor()
         blocks = [_make_image_block("data:image/tiff;base64,AAAA", index=0)]
 
@@ -384,7 +390,7 @@ class TestPrepareContent:
 
         assert len(result) == 0
 
-    def test_downscale_failure_skips_image(self):
+    def test_downscale_failure_skips_image(self) -> None:
         ext = _build_extractor()
 
         raw = b"\x89PNG" + b"\x00" * 20
@@ -400,7 +406,7 @@ class TestPrepareContent:
 
         assert len(result) == 0
 
-    def test_table_row_block_dict_data(self):
+    def test_table_row_block_dict_data(self) -> None:
         ext = _build_extractor()
         blocks = [
             _make_table_row_block(
@@ -414,7 +420,7 @@ class TestPrepareContent:
         assert result[0]["type"] == "text"
         assert result[0]["text"] == "Row 1 data"
 
-    def test_table_row_block_non_dict_data(self):
+    def test_table_row_block_non_dict_data(self) -> None:
         ext = _build_extractor()
         blocks = [_make_table_row_block("plain text row", index=0)]
 
@@ -423,7 +429,7 @@ class TestPrepareContent:
         assert len(result) == 1
         assert result[0]["text"] == "plain text row"
 
-    def test_image_without_uri_skipped(self):
+    def test_image_without_uri_skipped(self) -> None:
         ext = _build_extractor()
         blocks = [
             Block(
@@ -438,7 +444,7 @@ class TestPrepareContent:
 
         assert len(result) == 0
 
-    def test_image_with_no_data_skipped(self):
+    def test_image_with_no_data_skipped(self) -> None:
         ext = _build_extractor()
         blocks = [
             Block(
@@ -453,7 +459,7 @@ class TestPrepareContent:
 
         assert len(result) == 0
 
-    def test_image_non_base64_format_skipped(self):
+    def test_image_non_base64_format_skipped(self) -> None:
         ext = _build_extractor()
         blocks = [
             Block(
@@ -468,7 +474,7 @@ class TestPrepareContent:
 
         assert len(result) == 0
 
-    def test_invalid_image_url_format_skipped(self):
+    def test_invalid_image_url_format_skipped(self) -> None:
         ext = _build_extractor()
         blocks = [_make_image_block("ftp://invalid/image.png", index=0)]
 
@@ -476,7 +482,7 @@ class TestPrepareContent:
 
         assert len(result) == 0
 
-    def test_mixed_blocks(self):
+    def test_mixed_blocks(self) -> None:
         ext = _build_extractor()
 
         raw = b"\x89PNG" + b"\x00" * 20
@@ -500,14 +506,14 @@ class TestPrepareContent:
         types = [r["type"] for r in result]
         assert types == ["text", "image_url", "text", "text"]
 
-    def test_empty_blocks_list(self):
+    def test_empty_blocks_list(self) -> None:
         ext = _build_extractor()
 
         result = ext._prepare_content([], is_multimodal_llm=True, context_length=128000)
 
         assert result == []
 
-    def test_table_row_with_none_data_skipped(self):
+    def test_table_row_with_none_data_skipped(self) -> None:
         ext = _build_extractor()
         blocks = [_make_table_row_block(None, index=0)]
 
@@ -523,11 +529,10 @@ class TestExtractMetadata:
     """Tests for DocumentExtraction.extract_metadata."""
 
     @pytest.mark.asyncio
-    async def test_extract_metadata_success_with_structured_output(self):
+    async def test_extract_metadata_success_with_structured_output(self) -> None:
         """When structured LLM output succeeds, return the classification."""
         from app.modules.transformers.document_extraction import (
             DocumentClassification,
-            DocumentExtraction,
             SubCategories,
         )
 
@@ -565,13 +570,12 @@ class TestExtractMetadata:
         assert result.summary == "A document about microservices."
 
     @pytest.mark.asyncio
-    async def test_extract_metadata_structured_fails_falls_back(self):
+    async def test_extract_metadata_structured_fails_falls_back(self) -> None:
         """When structured output returns None, falls back to _fallback_summary."""
         from unittest.mock import AsyncMock
 
         from app.modules.transformers.document_extraction import (
             DocumentClassification,
-            DocumentExtraction,
             SubCategories,
         )
 
@@ -609,9 +613,13 @@ class TestExtractMetadata:
         assert result is not None
         assert result.summary == "Fallback summary text"
         mock_fallback.assert_awaited_once()
+        # The fallback summary follows the same summary rules as structured extraction.
+        sent = mock_fallback.await_args.args[0]
+        assert "**Summary**" in sent[0]["text"]
+        assert sent[-1]["text"] == "Some content"
 
     @pytest.mark.asyncio
-    async def test_extract_metadata_empty_content_returns_none(self):
+    async def test_extract_metadata_empty_content_returns_none(self) -> None:
         """When no blocks produce content, returns None."""
         from unittest.mock import AsyncMock
 
@@ -642,7 +650,7 @@ class TestFallbackSummary:
     """Tests for DocumentExtraction._fallback_summary."""
 
     @pytest.mark.asyncio
-    async def test_fallback_success(self):
+    async def test_fallback_success(self) -> None:
         from unittest.mock import AsyncMock
 
         ext = _build_extractor()
@@ -664,7 +672,7 @@ class TestFallbackSummary:
         assert result.summary == "This is a summary of the doc."
 
     @pytest.mark.asyncio
-    async def test_fallback_empty_response_returns_none(self):
+    async def test_fallback_empty_response_returns_none(self) -> None:
         from unittest.mock import AsyncMock
 
         ext = _build_extractor()
@@ -680,7 +688,7 @@ class TestFallbackSummary:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_fallback_exception_returns_none(self):
+    async def test_fallback_exception_returns_none(self) -> None:
         from unittest.mock import AsyncMock
 
         ext = _build_extractor()
@@ -693,7 +701,7 @@ class TestFallbackSummary:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_fallback_list_content_blocks_coerced(self):
+    async def test_fallback_list_content_blocks_coerced(self) -> None:
         """Gemini returns content as a list of blocks; must not crash on .strip()."""
         from unittest.mock import AsyncMock
 
@@ -714,7 +722,7 @@ class TestFallbackSummary:
         assert result.summary == "Summary of the doc."
 
     @pytest.mark.asyncio
-    async def test_fallback_list_content_ignores_image_blocks(self):
+    async def test_fallback_list_content_ignores_image_blocks(self) -> None:
         """Non-text blocks in list content are ignored before .strip()."""
         from unittest.mock import AsyncMock
 
@@ -735,7 +743,7 @@ class TestFallbackSummary:
         assert result.summary == "Text-only summary."
 
     @pytest.mark.asyncio
-    async def test_fallback_string_response(self):
+    async def test_fallback_string_response(self) -> None:
         from unittest.mock import AsyncMock
 
         ext = _build_extractor()
@@ -756,7 +764,7 @@ class TestDocumentExtractionApply:
     """Tests for DocumentExtraction.apply."""
 
     @pytest.mark.asyncio
-    async def test_apply_success_sets_semantic_metadata(self):
+    async def test_apply_success_sets_semantic_metadata(self) -> None:
         from unittest.mock import AsyncMock
 
         from app.modules.transformers.document_extraction import (
@@ -792,7 +800,7 @@ class TestDocumentExtractionApply:
         assert record.semantic_metadata.summary == "A benefits policy document."
 
     @pytest.mark.asyncio
-    async def test_apply_extraction_returns_none(self):
+    async def test_apply_extraction_returns_none(self) -> None:
         from unittest.mock import AsyncMock
 
         ext = _build_extractor()
@@ -816,7 +824,7 @@ class TestDocumentExtractionApply:
 class TestPrepareContentDeeper:
     """Deeper tests for _prepare_content covering remaining branches."""
 
-    def test_image_downscale_called_for_base64(self):
+    def test_image_downscale_called_for_base64(self) -> None:
         """Downscale function is called for base64 images."""
         ext = _build_extractor()
 
@@ -832,7 +840,7 @@ class TestPrepareContentDeeper:
             ext._prepare_content(blocks, is_multimodal_llm=True, context_length=128000)
             mock_ds.assert_called_once()
 
-    def test_token_budget_exhaustion_stops_processing(self):
+    def test_token_budget_exhaustion_stops_processing(self) -> None:
         """When token budget is exceeded, remaining blocks are skipped."""
         ext = _build_extractor()
 
@@ -849,7 +857,7 @@ class TestPrepareContentDeeper:
         # Only first block should fit
         assert len(result) == 1
 
-    def test_table_row_dict_with_missing_key(self):
+    def test_table_row_dict_with_missing_key(self) -> None:
         """TABLE_ROW with dict data missing row_natural_language_text yields empty text."""
         ext = _build_extractor()
         blocks = [_make_table_row_block({"other_key": "value"}, index=0)]
@@ -861,7 +869,7 @@ class TestPrepareContentDeeper:
         assert len(result) == 1
         assert result[0]["text"] == ""
 
-    def test_multiple_images_at_cap(self):
+    def test_multiple_images_at_cap(self) -> None:
         """Exactly 50 images are allowed."""
         ext = _build_extractor()
 
@@ -880,7 +888,7 @@ class TestPrepareContentDeeper:
         image_items = [r for r in result if r["type"] == "image_url"]
         assert len(image_items) == 50
 
-    def test_image_jpeg_format_accepted(self):
+    def test_image_jpeg_format_accepted(self) -> None:
         """JPEG images are accepted."""
         ext = _build_extractor()
         raw = b"\xff\xd8\xff" + b"\x00" * 20
@@ -897,7 +905,7 @@ class TestPrepareContentDeeper:
         assert len(result) == 1
         assert result[0]["type"] == "image_url"
 
-    def test_mixed_text_table_row_image(self):
+    def test_mixed_text_table_row_image(self) -> None:
         """Mixed text, table_row, and image blocks are all processed."""
         ext = _build_extractor()
 
@@ -930,7 +938,7 @@ class TestExtractMetadataDeeper:
     """Deeper tests for extract_metadata."""
 
     @pytest.mark.asyncio
-    async def test_extract_metadata_with_multimodal_llm(self):
+    async def test_extract_metadata_with_multimodal_llm(self) -> None:
         """When LLM config has isMultimodal=True, images are included."""
         from unittest.mock import AsyncMock
 
@@ -981,7 +989,7 @@ class TestExtractMetadataDeeper:
         assert result.summary == "API documentation with images."
 
     @pytest.mark.asyncio
-    async def test_extract_metadata_small_context_length(self):
+    async def test_extract_metadata_small_context_length(self) -> None:
         """When context length is small, content is truncated."""
         from unittest.mock import AsyncMock
 
@@ -1025,7 +1033,7 @@ class TestExtractMetadataDeeper:
         assert result.summary == "Short summary."
 
     @pytest.mark.asyncio
-    async def test_extract_metadata_llm_exception_propagates(self):
+    async def test_extract_metadata_llm_exception_propagates(self) -> None:
         """When get_llm raises, exception propagates (called before try block)."""
         ext = _build_extractor()
 
@@ -1046,7 +1054,7 @@ class TestRecordMetadataSubstitution:
     on braces that occur naturally in connector-sourced file names."""
 
     @pytest.mark.asyncio
-    async def test_extract_metadata_substitutes_record_name_and_type(self):
+    async def test_extract_metadata_substitutes_record_name_and_type(self) -> None:
         from app.modules.transformers.document_extraction import (
             DocumentClassification,
             SubCategories,
@@ -1082,14 +1090,14 @@ class TestRecordMetadataSubstitution:
             )
 
         messages = mock_invoke.call_args[0][1]
-        filled_prompt = messages[0].content[0]["text"]
+        filled_prompt = messages[1].content[0]["text"]
         assert "Q3 Board Deck.pdf" in filled_prompt
         assert "FILE" in filled_prompt
         assert "{record_name}" not in filled_prompt
         assert "{record_type}" not in filled_prompt
 
     @pytest.mark.asyncio
-    async def test_extract_metadata_defaults_when_record_metadata_missing(self):
+    async def test_extract_metadata_defaults_when_record_metadata_missing(self) -> None:
         from app.modules.transformers.document_extraction import (
             DocumentClassification,
             SubCategories,
@@ -1123,11 +1131,11 @@ class TestRecordMetadataSubstitution:
             await ext.extract_metadata(blocks, "org-1")
 
         messages = mock_invoke.call_args[0][1]
-        filled_prompt = messages[0].content[0]["text"]
+        filled_prompt = messages[1].content[0]["text"]
         assert "(unknown)" in filled_prompt
 
     @pytest.mark.asyncio
-    async def test_classify_record_name_with_braces_does_not_raise(self):
+    async def test_classify_record_name_with_braces_does_not_raise(self) -> None:
         """A record name from a connector can legitimately contain braces
         (e.g. "report_{final}.pdf"); `.format()` would raise on that, which
         is why substitution uses `.replace()` instead."""
@@ -1167,7 +1175,7 @@ class TestRecordMetadataSubstitution:
 
         assert result is not None
         messages = mock_invoke.call_args[0][1]
-        filled_prompt = messages[0].content[0]["text"]
+        filled_prompt = messages[1].content[0]["text"]
         assert "report_{final}.pdf" in filled_prompt
 
 
@@ -1177,7 +1185,7 @@ class TestRecordMetadataSubstitution:
 class TestDownscaleDeeper:
     """Additional edge cases for _downscale_base64_image."""
 
-    def test_exact_max_dim_returned_unchanged(self):
+    def test_exact_max_dim_returned_unchanged(self) -> None:
         """Image exactly at max_dim is returned unchanged."""
         fake_img = MagicMock()
         fake_img.size = (2000, 2000)
@@ -1191,7 +1199,7 @@ class TestDownscaleDeeper:
 
         assert result == uri
 
-    def test_gif_format_returns_none(self):
+    def test_gif_format_returns_none(self) -> None:
         """GIF format is not supported."""
         raw = b"GIF89a" + b"\x00" * 20
         b64 = base64.b64encode(raw).decode()
@@ -1199,3 +1207,161 @@ class TestDownscaleDeeper:
 
         result = _call_downscale(uri)
         assert result is None
+
+
+# =========================================================================
+# Prompt caching — the instructions are a prefix shared by every record
+# =========================================================================
+class TestCacheablePrefix:
+    """Providers cache a request's prefix only when it is byte-identical, so
+    nothing that varies per record may appear before the document."""
+
+    @staticmethod
+    async def _messages(
+        ext: object, llm: object, *, record_name: str, record_type: str, text: str, org_id: str = "org-1",
+    ) -> tuple[list, dict | None]:
+        from app.modules.transformers.document_extraction import (
+            DocumentClassification,
+            SubCategories,
+        )
+
+        fake = DocumentClassification(
+            departments=[], category="General",
+            subcategories=SubCategories(level1="", level2="", level3=""),
+            languages=["English"], topics=[], summary="Summary.",
+        )
+        config = {"isMultimodal": False, "contextLength": 128000, "configuration": {"model": "gpt-5.4"}}
+        with patch(
+            "app.modules.transformers.document_extraction.get_llm_for_role",
+            return_value=(llm, config),
+        ), patch(
+            "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=fake,
+        ) as mock_invoke:
+            await ext.classify(
+                [_make_text_block(text)], org_id, departments=["Engineering", "Sales"],
+                record_name=record_name, record_type=record_type,
+            )
+        cache = mock_invoke.call_args.kwargs.get("prompt_cache")
+        return cache.finalize(mock_invoke.call_args[0][1]) if cache else (mock_invoke.call_args[0][1], None)
+
+    @pytest.mark.asyncio
+    async def test_prefix_is_byte_identical_across_records(self) -> None:
+        ext = _build_extractor()
+        first, _ = await self._messages(
+            ext, MagicMock(), record_name="Q3 Board Deck.pdf", record_type="FILE", text="Revenue grew 12%.",
+        )
+        second, _ = await self._messages(
+            ext, MagicMock(), record_name="ENG-42 outage.md", record_type="TICKET", text="The API returned 502s.",
+        )
+        assert type(first[0]).__name__ == "SystemMessage"
+        assert first[0].content == second[0].content
+        assert "Q3 Board Deck.pdf" not in first[0].content
+        assert "Engineering" in first[0].content
+        assert "Q3 Board Deck.pdf" in first[1].content[0]["text"]
+        assert first[1].content[-1]["text"] == "Revenue grew 12%."
+
+    @pytest.mark.asyncio
+    async def test_azure_requests_name_the_extraction_cache(self) -> None:
+        from langchain_openai import AzureChatOpenAI
+
+        llm = AzureChatOpenAI(
+            azure_endpoint="https://acme.openai.azure.com", azure_deployment="gpt-5.4",
+            api_version="2025-04-01-preview", api_key="test",
+        )
+        ext = _build_extractor()
+        _, kwargs_a = await self._messages(ext, llm, record_name="a.pdf", record_type="FILE", text="x")
+        _, kwargs_b = await self._messages(ext, llm, record_name="a.pdf", record_type="FILE", text="y")
+        _, other_org = await self._messages(ext, llm, record_name="a.pdf", record_type="FILE", text="x", org_id="org-2")
+        assert kwargs_a["prompt_cache_key"].startswith("pipeshub:")
+        assert ":document-extraction:" in kwargs_a["prompt_cache_key"]
+        assert kwargs_a == kwargs_b
+        assert other_org["prompt_cache_key"] != kwargs_a["prompt_cache_key"]
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_is_remembered_under_the_configured_model(self) -> None:
+        """The deployment name differs from the configured model: the refusal must be
+        recorded under the name the strategy is chosen with, or every record resends it."""
+        from langchain_openai import AzureChatOpenAI
+
+        from app.agent_loop_lib.transport.prompt_cache import REJECTED_CACHE_PARAMS
+
+        llm = AzureChatOpenAI(
+            azure_endpoint="https://acme.openai.azure.com", azure_deployment="prod-54",
+            api_version="2025-04-01-preview", api_key="test",
+        )
+        ext = _build_extractor()
+        REJECTED_CACHE_PARAMS.clear()
+        try:
+            with patch(
+                "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+                new_callable=AsyncMock, return_value=None,
+            ) as mock_invoke, patch.object(ext, "_fallback_summary", AsyncMock(return_value=None)), patch(
+                "app.modules.transformers.document_extraction.get_llm_for_role",
+                return_value=(llm, {"contextLength": 128000, "configuration": {"model": "gpt-5.4"}}),
+            ):
+                await ext.classify([_make_text_block("x")], "org-1", departments=["Sales"], record_name="a", record_type="FILE")
+                assert mock_invoke.call_args.kwargs["prompt_cache"].finalize([])[1]
+                mock_invoke.call_args.kwargs["on_cache_rejected"]()
+                await ext.classify([_make_text_block("y")], "org-1", departments=["Sales"], record_name="b", record_type="FILE")
+            assert mock_invoke.call_args.kwargs["prompt_cache"].finalize([])[1] == {}
+        finally:
+            REJECTED_CACHE_PARAMS.clear()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_cache_point_is_stripped_and_not_sent_again(self) -> None:
+        """Bedrock's cache points live in the messages, not the kwargs. A refusal
+        resends the request without them, and the next record sends none."""
+        import json
+
+        from langchain_core.messages import AIMessage
+
+        from app.agent_loop_lib.transport.prompt_cache import REJECTED_CACHE_PARAMS
+        from app.modules.transformers.document_extraction import DocumentClassification
+
+        class _Refused(Exception):
+            status_code = 400
+
+        reply = DocumentClassification(
+            departments=["Sales"], category="General",
+            subcategories={"level1": "", "level2": "", "level3": ""},
+            languages=["English"], topics=[], summary="Summary.",
+        ).model_dump_json()
+
+        class ChatBedrockConverse:  # cache_target recognises the provider by class name
+            base_model_id = "anthropic.claude-sonnet-4-20250514-v1:0"
+            endpoint_url = None
+            region_name = "us-east-1"
+            callbacks = None
+
+            def __init__(self) -> None:
+                self.requests: list[str] = []
+
+            async def ainvoke(self, messages: list, **kwargs: object) -> AIMessage:
+                sent = json.dumps([message.content for message in messages])
+                self.requests.append(sent)
+                if "cachePoint" in sent:
+                    raise _Refused("ValidationException: 400 extraneous key [cachePoint] is not permitted")
+                return AIMessage(content=reply)
+
+        llm = ChatBedrockConverse()
+        ext = _build_extractor()
+        config = {"contextLength": 128000, "configuration": {"model": llm.base_model_id}}
+        REJECTED_CACHE_PARAMS.clear()
+        try:
+            with patch(
+                "app.modules.transformers.document_extraction.get_llm_for_role", return_value=(llm, config),
+            ), patch("app.utils.streaming._apply_structured_output", side_effect=lambda model, schema: model):
+                first = await ext.classify([_make_text_block("x")], "org-1", departments=["Sales"], record_name="a", record_type="FILE")
+                second = await ext.classify([_make_text_block("y")], "org-1", departments=["Sales"], record_name="b", record_type="FILE")
+        finally:
+            REJECTED_CACHE_PARAMS.clear()
+        assert first.departments == ["Sales"] and second.departments == ["Sales"]
+        assert ["cachePoint" in sent for sent in llm.requests] == [True, False, False]
+
+    @pytest.mark.asyncio
+    async def test_unknown_providers_get_no_cache_parameters(self) -> None:
+        ext = _build_extractor()
+        _, kwargs = await self._messages(ext, MagicMock(), record_name="a.pdf", record_type="FILE", text="x")
+        assert kwargs == {}

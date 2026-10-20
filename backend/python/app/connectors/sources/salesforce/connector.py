@@ -100,6 +100,7 @@ from app.sources.client.salesforce.salesforce import (
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.utils.html_utils import embed_html_images_as_base64
 from app.sources.external.salesforce.salesforce_data_source import SalesforceDataSource
+from app.services.cache.invalidation_hooks import notify_connector_permissions_changed
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import epoch_ms_to_iso, get_epoch_timestamp_in_ms, parse_timestamp
 
@@ -5983,70 +5984,71 @@ class SalesforceConnector(BaseConnector):
         #    Deleting by target record/group (not by user) is O(records + groups) instead
         #    of O(users × records).  SALESFORCE_ORG record groups carry no ORG-level
         #    permission edges, so wiping all PERMISSION edges to them is safe.
-        all_record_internal_ids = list(ext_id_to_record_id.values())
-        all_rg_internal_ids = list(ext_id_to_rg_id.values())
+        delete_targets = [
+            (rid, CollectionNames.RECORDS.value) for rid in ext_id_to_record_id.values()
+        ] + [
+            (rgid, CollectionNames.RECORD_GROUPS.value) for rgid in ext_id_to_rg_id.values()
+        ]
+        org_by_node_id: dict[str, str | None] = {
+            (n.get("id") or n.get("_key")): n.get("orgId")
+            for n in salesforce_records + salesforce_record_groups
+        }
+        narrowed_orgs: set[str | None] = set()
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                for node_id, collection in delete_targets:
+                    if await tx_store.delete_edges_to(
+                        node_id, collection, CollectionNames.PERMISSION.value
+                    ):
+                        narrowed_orgs.add(org_by_node_id.get(node_id))
 
-        async with self.data_store_provider.transaction() as tx_store:
-            delete_tasks = [
-                tx_store.delete_edges_to(
-                    rid,
-                    CollectionNames.RECORDS.value,
-                    CollectionNames.PERMISSION.value,
-                )
-                for rid in all_record_internal_ids
-            ] + [
-                tx_store.delete_edges_to(
-                    rgid,
-                    CollectionNames.RECORD_GROUPS.value,
-                    CollectionNames.PERMISSION.value,
-                )
-                for rgid in all_rg_internal_ids
-            ]
-            if delete_tasks:
-                for _del in delete_tasks:
-                    await _del
-
-            record_edges: List[Dict] = []
-            rg_edges: List[Dict] = []
-            for email, ext_id, access_level, is_group in all_permission_tuples:
-                user_internal_id = email_to_user_id.get(email)
-                if not user_internal_id:
-                    self.logger.debug("Skipping permission: no DB user for email %s", email)
-                    continue
-                try:
-                    perm_type = PermissionType(access_level)
-                except ValueError:
-                    self.logger.warning(
-                        "Unknown access level %r for user %s, skipping", access_level, email
-                    )
-                    continue
-
-                permission = Permission(email=email, type=perm_type, entity_type=EntityType.USER)
-                if is_group:
-                    target_id = ext_id_to_rg_id.get(ext_id)
-                    if not target_id:
+                record_edges: List[Dict] = []
+                rg_edges: List[Dict] = []
+                for email, ext_id, access_level, is_group in all_permission_tuples:
+                    user_internal_id = email_to_user_id.get(email)
+                    if not user_internal_id:
+                        self.logger.debug("Skipping permission: no DB user for email %s", email)
                         continue
-                    rg_edges.append(permission.to_arango_permission(
-                        from_id=user_internal_id,
-                        from_collection=CollectionNames.USERS.value,
-                        to_id=target_id,
-                        to_collection=CollectionNames.RECORD_GROUPS.value,
-                    ))
-                else:
-                    target_id = ext_id_to_record_id.get(ext_id)
-                    if not target_id:
+                    try:
+                        perm_type = PermissionType(access_level)
+                    except ValueError:
+                        self.logger.warning(
+                            "Unknown access level %r for user %s, skipping", access_level, email
+                        )
                         continue
-                    record_edges.append(permission.to_arango_permission(
-                        from_id=user_internal_id,
-                        from_collection=CollectionNames.USERS.value,
-                        to_id=target_id,
-                        to_collection=CollectionNames.RECORDS.value,
-                    ))
 
-            if record_edges:
-                await tx_store.batch_create_edges(record_edges, collection=CollectionNames.PERMISSION.value)
-            if rg_edges:
-                await tx_store.batch_create_edges(rg_edges, collection=CollectionNames.PERMISSION.value)
+                    permission = Permission(email=email, type=perm_type, entity_type=EntityType.USER)
+                    if is_group:
+                        target_id = ext_id_to_rg_id.get(ext_id)
+                        if not target_id:
+                            continue
+                        rg_edges.append(permission.to_arango_permission(
+                            from_id=user_internal_id,
+                            from_collection=CollectionNames.USERS.value,
+                            to_id=target_id,
+                            to_collection=CollectionNames.RECORD_GROUPS.value,
+                        ))
+                    else:
+                        target_id = ext_id_to_record_id.get(ext_id)
+                        if not target_id:
+                            continue
+                        record_edges.append(permission.to_arango_permission(
+                            from_id=user_internal_id,
+                            from_collection=CollectionNames.USERS.value,
+                            to_id=target_id,
+                            to_collection=CollectionNames.RECORDS.value,
+                        ))
+
+                if record_edges:
+                    await tx_store.batch_create_edges(record_edges, collection=CollectionNames.PERMISSION.value)
+                if rg_edges:
+                    await tx_store.batch_create_edges(rg_edges, collection=CollectionNames.PERMISSION.value)
+        finally:
+            # Even when the write raised: on Neo4j without explicit transactions each
+            # delete commits on its own, and a rerun finds nothing left to delete.
+            fallback_org = self.data_entities_processor.org_id or None
+            for org_id in {org or fallback_org for org in narrowed_orgs}:
+                await notify_connector_permissions_changed(self.connector_id, org_id)
 
         self.logger.info(
             "Permission sync complete: %d record edges and %d record group edges written.",

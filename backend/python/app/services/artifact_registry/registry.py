@@ -11,16 +11,20 @@ artifact IDs/names are always untrusted input (see `models.Actor`).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any
 
-from app.config.constants.arangodb import CollectionNames, Connectors
+import aiohttp
+
+from app.config.constants.arangodb import CollectionNames, Connectors, RecordTypes
 from app.models.entities import ArtifactType, ArtifactVisibility, deserialize_artifact_versions
 
-from .access import AccessPolicy
+from .access import AccessDeniedError, AccessPolicy, ArtifactNotFoundError
 from .lineage import LineageTracker
-from .models import Actor, ArtifactMetadata, ArtifactVersion, UploadGrant
+from .models import Actor, ArtifactCopy, ArtifactMetadata, ArtifactVersion, UploadGrant
 from .signed_urls import GrantVerificationError, SignedUrlBroker
 from .versioning import (
     VersionConflictError,
@@ -33,7 +37,19 @@ from .versioning import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ArtifactRegistryService", "MAX_ARTIFACT_BYTES"]
+__all__ = ["ArtifactRegistryService", "ArtifactStorageError", "ConversationArtifactsDeletion", "MAX_ARTIFACT_BYTES"]
+
+
+@dataclass
+class ConversationArtifactsDeletion:
+    deleted: int = 0
+    # Artifacts of the conversation someone else owns, left in place.
+    kept: int = 0
+
+
+class ArtifactStorageError(RuntimeError):
+    """Storage could not remove an artifact's file. Nothing in the graph was
+    changed, so the delete can simply be retried."""
 
 # Same cap the legacy sandbox pipeline enforces (`app/sandbox/artifact_upload.py`)
 # — kept in sync there via a re-export so there is exactly one number.
@@ -282,6 +298,73 @@ class ArtifactRegistryService:
             actor=actor, artifact_id=artifact_id, content=content, mime_type=mime_type,
             expected_version=expected_version,
         )
+
+    async def copy_to_conversation(
+        self, *, actor: Actor, artifact_id: str, up_to_version: int, conversation_id: str,
+    ) -> ArtifactCopy:
+        """Copy versions 1..`up_to_version` of `artifact_id` into a NEW
+        artifact owned by `conversation_id`.
+
+        Used when a chat is forked: an artifact is reachable by anyone with
+        a permission edge to its record, so a fork that kept pointing at the
+        original's record would see the original's later versions and write
+        its own edits into the original. The copy shares no record and no
+        blob with the source. Versions after `up_to_version` are left behind
+        on purpose — the fork must not see work that happened after it
+        branched.
+
+        An older version whose bytes can no longer be read is skipped; the
+        requested last version must be readable or the whole copy fails and
+        the half-built record is discarded."""
+        source = await self.resolve(actor=actor, ref=artifact_id)
+        last = max(1, min(up_to_version, source.version))
+        copy: ArtifactMetadata | None = None
+        versions: dict[int, int] = {}
+        try:
+            for version in range(1, last + 1):
+                try:
+                    content = await self.get_content(actor=actor, artifact_id=artifact_id, version=version)
+                except ArtifactNotFoundError:
+                    if version == last:
+                        raise
+                    continue
+                if copy is None:
+                    copy = await self.register(
+                        actor=actor, name=source.name, artifact_type=source.artifact_type,
+                        mime_type=source.mime_type, content=content, conversation_id=conversation_id,
+                        description=source.description, source_tool=source.source_tool,
+                        is_temporary=source.is_temporary, visibility=source.visibility,
+                        result_schema=source.result_schema,
+                    )
+                    versions[version] = copy.version
+                else:
+                    added, copy = await self.add_version(
+                        actor=actor, artifact_id=copy.artifact_id, content=content,
+                        mime_type=source.mime_type, expected_version=copy.version,
+                    )
+                    versions[version] = added.version
+        except Exception:
+            if copy is not None:
+                await self._discard_copy(copy.artifact_id)
+            raise
+
+        if copy is None:
+            raise ArtifactNotFoundError(f"Artifact {artifact_id} has no readable version to copy")
+        return ArtifactCopy(
+            source_artifact_id=artifact_id, source_document_id=source.document_id,
+            artifact_id=copy.artifact_id, document_id=copy.document_id, versions=versions,
+        )
+
+    async def _discard_copy(self, artifact_id: str) -> None:
+        try:
+            await self._graph_provider.update_node(
+                artifact_id, CollectionNames.RECORDS.value,
+                {"isDeleted": True, "reason": "ARTIFACT_COPY_FAILED"},
+            )
+        except Exception:
+            logger.warning(
+                "copy_to_conversation: could not mark partial copy %s deleted", artifact_id, exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Two-phase upload (large content the caller can't pass inline)
@@ -548,6 +631,77 @@ class ArtifactRegistryService:
         artifact_doc = {**artifact_doc, "visibility": ArtifactVisibility.VISIBLE.value}
         logger.info("Artifact %s promoted from STAGING to VISIBLE by user=%s", artifact_id, actor.user_id)
         return await self._with_lineage(to_metadata_from_docs(record, artifact_doc))
+
+    # ------------------------------------------------------------------
+    # Delete
+    # ------------------------------------------------------------------
+
+    async def delete(self, *, actor: Actor, artifact_id: str) -> None:
+        """Permanently delete an artifact, every version of it, and every edge
+        touching it. Owner only.
+
+        The stored file goes first: if storage refuses, the graph is untouched
+        and the artifact still lists, so the user can retry. The record and its
+        edges go next, while the metadata node still lets the gallery find the
+        artifact for a retry; a metadata node left by a failure after that has
+        no record or edges, exposes nothing, and goes with its conversation."""
+        record = await self._access.authorize_write(actor, artifact_id)
+        # The owner check accepts any record the user owns; only artifacts are deleted here.
+        if record.get("recordType") != RecordTypes.ARTIFACT.value:
+            raise ArtifactNotFoundError(f"Artifact not found: {artifact_id}")
+        document_id = record.get("externalRecordId")
+        if document_id:
+            try:
+                await self._blob_store.purge_document(actor.org_id, document_id)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                raise ArtifactStorageError(f"Could not delete the stored file of artifact {artifact_id}") from e
+        await self._graph_provider.delete_nodes_and_edges([artifact_id], CollectionNames.RECORDS.value)
+        await self._graph_provider.delete_nodes([artifact_id], CollectionNames.ARTIFACTS.value)
+        logger.info("Artifact %s deleted by user=%s", artifact_id, actor.user_id)
+
+    async def delete_for_conversation(self, *, actor: Actor, conversation_id: str) -> ConversationArtifactsDeletion:
+        """Delete every artifact `actor` owns in a conversation, hidden ones
+        included, when the conversation itself is deleted. Artifacts owned by
+        someone else are left alone and counted as kept."""
+        # Fail before touching anything: without a user record every owner check
+        # below would answer "not found", which reads as "nothing left to keep".
+        await self._access.resolve_user_key(actor)
+        result = ConversationArtifactsDeletion()
+        handled: set[str] = set()
+        # Scan again after each round: the agent may still be saving into the
+        # conversation, and once it is gone nothing would delete what it wrote.
+        while new_ids := [i for i in await self._conversation_artifact_ids(actor, conversation_id) if i not in handled]:
+            for artifact_id in new_ids:
+                handled.add(artifact_id)
+                try:
+                    await self.delete(actor=actor, artifact_id=artifact_id)
+                except AccessDeniedError:
+                    result.kept += 1
+                    continue
+                except ArtifactNotFoundError:
+                    if await self._graph_provider.get_document(artifact_id, CollectionNames.RECORDS.value):
+                        result.kept += 1
+                    else:
+                        # Metadata a failed delete left behind: no record, no edges.
+                        await self._graph_provider.delete_nodes([artifact_id], CollectionNames.ARTIFACTS.value)
+                    continue
+                result.deleted += 1
+        return result
+
+    async def _conversation_artifact_ids(self, actor: Actor, conversation_id: str) -> list[str]:
+        page_size = 100
+        artifact_ids: list[str] = []
+        while True:
+            # Keyset paging stays stable while the set changes; a failed read must
+            # raise, not come back empty and look like a conversation with nothing left.
+            docs = await self._graph_provider.get_documents_paginated(
+                CollectionNames.ARTIFACTS.value, limit=page_size, sort_field="_key",
+                after_key=artifact_ids[-1] if artifact_ids else None,
+                filters={"orgId": actor.org_id, "conversationId": conversation_id}, raise_on_error=True,
+            )
+            artifact_ids.extend(key for key in (doc.get("_key") or doc.get("id") for doc in docs) if key)
+            if len(docs) < page_size:
+                return artifact_ids
 
     # ------------------------------------------------------------------
     # Lineage

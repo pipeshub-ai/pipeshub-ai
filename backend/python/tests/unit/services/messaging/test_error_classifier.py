@@ -441,6 +441,32 @@ class TestServiceAuthRefusedClassification:
         assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL
 
 
+class TestEntityLookupUnavailableClassification:
+    """A resolver lookup that could not run is retried whatever the store
+    answered: the record's content is fine."""
+
+    @pytest.mark.parametrize("status_code", [400, 404, 503])
+    def test_deferred_lookup_is_transient_whatever_the_root(self, status_code) -> None:
+        from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
+
+        class _StoreError(Exception):
+            def __init__(self) -> None:
+                super().__init__("vector store refused the search")
+                self.status_code = status_code
+
+        exc = EntityLookupUnavailableError("lookup could not run")
+        exc.__cause__ = _StoreError()
+        assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TRANSIENT
+
+    def test_a_deliberate_stop_still_wins(self) -> None:
+        from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
+        from app.exceptions.non_retryable import NonRetryableError
+
+        exc = NonRetryableError("stop")
+        exc.__cause__ = EntityLookupUnavailableError("lookup could not run")
+        assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL
+
+
 class TestOpenAIErrors:
     """Test classification of OpenAI API errors."""
 
@@ -1183,3 +1209,37 @@ class TestClassifyAiohttpTransportError:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_a_final_error_is_terminal() -> None:
+    from app.exceptions.non_retryable import NonRetryableError
+    from app.services.messaging.error_classifier import (
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
+
+    class Final(NonRetryableError):
+        pass
+
+    assert MessageErrorClassifier.classify_by_exception(Final("stop")) == MessageErrorType.TERMINAL
+
+
+def test_a_final_error_raised_from_a_connection_error_is_terminal() -> None:
+    import aiohttp
+
+    from app.exceptions.non_retryable import NonRetryableError
+    from app.services.messaging.error_classifier import (
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
+
+    class Final(NonRetryableError):
+        pass
+
+    try:
+        try:
+            raise aiohttp.ClientConnectionError("refused")
+        except aiohttp.ClientConnectionError as cause:
+            raise Final("stop") from cause
+    except Final as exc:
+        assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL

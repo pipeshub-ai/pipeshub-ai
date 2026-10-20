@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.core.types import Message, MessageRole, UserMessage
+from app.agent_loop_lib.core.usage_source import llm_usage_source
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 Summarizer = Callable[[list[Message]], Awaitable[str]]
@@ -148,13 +149,14 @@ def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summar
         joined = _SEPARATOR.join(parts)
 
         try:
-            response = await transport.complete(
-                messages=[UserMessage(
-                    content=f"{_SUMMARIZER_PROMPT}\n{joined}",
-                )],
-                system=_SUMMARIZER_SYSTEM,
-                model=model,
-            )
+            with llm_usage_source("auto_compact"):
+                response = await transport.complete(
+                    messages=[UserMessage(
+                        content=f"{_SUMMARIZER_PROMPT}\n{joined}",
+                    )],
+                    system=_SUMMARIZER_SYSTEM,
+                    model=model,
+                )
             text = response.message.text
             if not text or not text.strip():
                 return _naive_summary(messages)
@@ -231,7 +233,7 @@ def shape_auto_compact(
 ):
     """PRE_MODEL middleware: budget-aware context compaction.
 
-    Fires when total tokens exceed ``trigger_ratio × budget``.  Splits
+    Fires when total tokens exceed ``budget.trigger_tokens(trigger_ratio)``.  Splits
     messages into three regions:
 
     1. **Head** (pinned, never compacted) — first ``pin_first_n`` messages.
@@ -253,7 +255,7 @@ def shape_auto_compact(
         Async callable that produces a summary string from a message
         list.  Defaults to a naive local join (no model call).
     trigger_ratio:
-        Only fires when context exceeds this fraction of effective budget.
+        Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``.
     max_tail_ratio:
         Maximum fraction of the budget the tail may consume.
     pin_first_n:
@@ -265,7 +267,7 @@ def shape_auto_compact(
         budget = ctx.budget.effective_max_tokens
         total = count_tokens(messages)
 
-        if total <= budget * trigger_ratio:
+        if total <= ctx.budget.trigger_tokens(trigger_ratio):
             await next_fn()
             return
 
@@ -312,12 +314,12 @@ def shape_auto_compact(
 
         ctx.messages = [*head, summary_msg, *tail]
         logger.info(
-            "auto_compact: summarized %d middle messages (%d groups), "
-            "tail=%d messages, budget_used=%.0f%%",
+            "auto_compact: summarized %d middle messages (%d groups, tail=%d messages), "
+            "%d→%d tokens (turn=%d, budget=%d)",
             len(middle),
             tail_start_group - _first_non_pinned_group(groups, pin_first_n),
             len(tail),
-            count_tokens(ctx.messages) / budget * 100,
+            total, count_tokens(ctx.messages), ctx.turn_index, budget,
         )
         await next_fn()
 

@@ -61,8 +61,8 @@ export function clearToasts() {
 }
 
 /**
- * The schema form's labels are plain text beside the input rather than `<label for>`,
- * so a field is found by its visible label and then the input inside the same field.
+ * Finds the input inside the field whose label reads exactly `label` (the
+ * required "*" and "(optional)" suffixes make `getByLabelText` need a regex).
  */
 export function inputByLabel(label: string): HTMLInputElement {
   const field = screen.getByText(label).closest('[data-ph-field]');

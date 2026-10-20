@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Flex,
   Text,
@@ -981,6 +981,7 @@ function ManualIndexingSection({
   readOnly?: boolean;
 }) {
   const { t } = useTranslation();
+  const toggleId = useId();
   const { formData, setFilterFormValue } = useConnectorsStore();
   const raw = formData.filters.indexing[field.name];
 
@@ -1023,7 +1024,7 @@ function ManualIndexingSection({
               <MaterialIcon name="tune" size={16} color="var(--green-11)" />
             </Box>
             <Flex align="center" gap="1" wrap="wrap" style={{ minWidth: 0 }}>
-              <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              <Text id={`${toggleId}-label`} size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {field.displayName}
               </Text>
               <HelpTooltip content={t('workspace.connectors.filters.manualIndexingTooltip')}>
@@ -1041,7 +1042,7 @@ function ManualIndexingSection({
             </Flex>
           </Flex>
           {field.description ? (
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            <Text id={`${toggleId}-help`} size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
               {field.description}
             </Text>
           ) : null}
@@ -1049,6 +1050,8 @@ function ManualIndexingSection({
         <Switch
           color="jade"
           size="2"
+          aria-labelledby={`${toggleId}-label`}
+          aria-describedby={field.description ? `${toggleId}-help` : undefined}
           checked={checked}
           disabled={readOnly}
           onCheckedChange={(next) => {
@@ -1269,6 +1272,15 @@ function FilterCategoryBlock({
     ? fields.filter((f) => !f.required && !activeFieldNames.includes(f.name))
     : [];
 
+  /**
+   * Filters that are not set but still limit the sync: the connector applies the
+   * schema's `fallbackOperator` instead. Without this line, clearing such a filter
+   * would remove its card and help text, and the limit would be invisible.
+   */
+  const unsetFallbackFields = fields.filter(
+    (f) => Boolean(f.fallbackOperator?.trim()) && !activeFieldNames.includes(f.name)
+  );
+
   const addField = (fieldName: string) => {
     if (readOnly) return;
     const field = fields.find((f) => f.name === fieldName);
@@ -1430,11 +1442,50 @@ function FilterCategoryBlock({
           <Text size="1" color="gray" style={{ marginBottom: 14 }}>
             {t('workspace.connectors.filters.incomplete')}
           </Text>
+        ) : unsetFallbackFields.length > 0 ? (
+          // "No filters yet" reads as "no limit"; the fallback line below says
+          // what the connector syncs instead.
+          null
         ) : (
           <Text size="1" color="gray" style={{ marginBottom: 14 }}>
             {t('workspace.connectors.filters.empty')}
           </Text>
         )
+      ) : null}
+
+      {unsetFallbackFields.length > 0 ? (
+        <Flex direction="column" gap="3" style={{ marginBottom: 14 }}>
+          {unsetFallbackFields.map((field) => (
+            <Flex key={field.name} direction="column" gap="1">
+              <Badge
+                size="1"
+                color="gray"
+                variant="soft"
+                radius="full"
+                style={{
+                  width: 'fit-content',
+                  maxWidth: '100%',
+                  whiteSpace: 'normal',
+                  wordBreak: 'break-word',
+                  height: 'auto',
+                  textAlign: 'left',
+                  lineHeight: 1.35,
+                  padding: '6px 10px',
+                }}
+              >
+                {t('workspace.connectors.filters.unsetFallback', {
+                  field: field.displayName,
+                  value: formatOperatorLabel(field.fallbackOperator ?? '', t),
+                })}
+              </Badge>
+              {field.description ? (
+                <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+                  {field.description}
+                </Text>
+              ) : null}
+            </Flex>
+          ))}
+        </Flex>
       ) : null}
 
       <Flex direction="column" gap="4">
@@ -1485,6 +1536,7 @@ function FilterFieldRow({
   allSyncValues?: Record<string, unknown>;
 }) {
   const { t } = useTranslation();
+  const toggleId = useId();
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const operators = useMemo(() => {
     const fromSchema = field.operators?.filter((o) => o && o.trim()) ?? [];
@@ -1587,14 +1639,16 @@ function FilterFieldRow({
                 value: v === true,
               })
             }
+            aria-labelledby={`${toggleId}-label`}
+            aria-describedby={field.description ? `${toggleId}-help` : undefined}
             style={{ flexShrink: 0, cursor: 'pointer', marginTop: 2 }}
           />
           <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
-            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+            <Text id={`${toggleId}-label`} size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
               {field.displayName}
             </Text>
             {field.description ? (
-              <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+              <Text id={`${toggleId}-help`} size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
                 {field.description}
               </Text>
             ) : null}

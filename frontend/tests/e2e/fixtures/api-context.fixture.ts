@@ -1,6 +1,11 @@
 import { request, type APIRequestContext } from '@playwright/test';
 import { test as base } from './base.fixture';
 import * as fs from 'fs';
+import * as path from 'path';
+
+// Resolved from this file, not the working directory, so the fixture also
+// works when Playwright is started from outside `frontend/`.
+const AUTH_FILE = path.resolve(__dirname, '../../../.auth/user.json');
 
 /**
  * Extracts the access token from the saved auth storage state.
@@ -8,7 +13,7 @@ import * as fs from 'fs';
  * localStorage key "jwt_access_token" / "jwt_refresh_token".
  */
 export function getAccessToken(): string {
-  const raw = fs.readFileSync('.auth/user.json', 'utf-8');
+  const raw = fs.readFileSync(AUTH_FILE, 'utf-8');
   const storageState = JSON.parse(raw);
 
   const tokenEntry = storageState.origins

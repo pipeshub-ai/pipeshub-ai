@@ -322,7 +322,7 @@ class TestExtractPropertyValueEdgeCases:
         parser = _p()
         prop = {"type": "files", "files": [{"name": "", "external": {"url": "https://ext.com/f.txt"}}]}
         result = parser._extract_property_value(prop)
-        assert "ext.com" in result
+        assert result == "https://ext.com/f.txt"
 
     def test_multi_select_empty(self):
         parser = _p()

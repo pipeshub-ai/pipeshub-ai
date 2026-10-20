@@ -191,6 +191,7 @@ class TestHandleOAuthCallbackDeep:
         mock_startup.get_token_refresh_service.return_value = mock_refresh_service
 
         with patch(_SETTINGS_PATH_PATCH, new_callable=AsyncMock, return_value="/settings/connectors"), \
+             patch("app.connectors.api.router.resolve_oauth_base_url", new_callable=AsyncMock, return_value="https://app.example.com"), \
              patch(_BETA_PATCH, new_callable=AsyncMock), \
              patch(_BUILD_FLOW_PATCH, new_callable=AsyncMock, return_value={"clientId": "cid"}), \
              patch(_OAUTH_CONFIG_PATCH, return_value=MagicMock()), \
@@ -245,6 +246,7 @@ class TestHandleOAuthCallbackDeep:
         mock_startup.get_token_refresh_service.return_value = mock_refresh_service
 
         with patch(_SETTINGS_PATH_PATCH, new_callable=AsyncMock, return_value="/settings/connectors"), \
+             patch("app.connectors.api.router.resolve_oauth_base_url", new_callable=AsyncMock, return_value="https://app.example.com"), \
              patch(_BETA_PATCH, new_callable=AsyncMock), \
              patch(_BUILD_FLOW_PATCH, new_callable=AsyncMock, return_value={"clientId": "cid"}), \
              patch(_OAUTH_CONFIG_PATCH, return_value=MagicMock()), \
@@ -1254,8 +1256,7 @@ class TestToggleConnectorInstanceDeep:
 
         assert result["success"] is True
 
-    async def test_generic_exception_raises_500(self):
-        """Lines 5385-5387: generic exception in toggle raises 500."""
+    async def test_a_failed_org_read_is_503(self):
         from app.connectors.api.router import toggle_connector_instance
 
         req = _make_request(is_admin=True, body={"type": "sync"})
@@ -1266,7 +1267,7 @@ class TestToggleConnectorInstanceDeep:
 
         with pytest.raises(HTTPException) as exc_info:
             await toggle_connector_instance("c1", req, graph_provider=graph_provider)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 503
 
 
 # ===========================================================================

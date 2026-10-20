@@ -375,7 +375,9 @@ class TestFetchPermissionsExtended:
             "file-1", is_drive=False, user_email="user@example.com"
         )
         assert is_fallback is False
-        assert len(perms) == 2
+        # A link permission names no grantee and is not returned. Only the real
+        # user grant is.
+        assert len(perms) == 1
 
     async def test_drive_permissions_with_domain_admin(self, connector):
         """Drive permissions use domain admin access."""
@@ -409,7 +411,7 @@ class TestFetchPermissionsExtended:
         perms, is_fallback, _ = await connector._fetch_permissions(
             "file-1", is_drive=False, user_email="user@example.com"
         )
-        assert is_fallback is False
+        assert is_fallback is True, "a failed read keeps the stored grants"
         assert len(perms) == 0
 
     async def test_non_403_http_error_for_file(self, connector):
@@ -449,15 +451,22 @@ class TestFetchPermissionsExtended:
         assert perms[0].entity_type == EntityType.GROUP
         assert perms[0].external_id == "group@example.com"
 
-    async def test_domain_permission_entity_type(self, connector):
-        """Domain permission type."""
+    @pytest.mark.parametrize("is_drive", [False, True], ids=["file", "shared drive"])
+    @pytest.mark.parametrize("share", [
+        {"id": "p2", "role": "reader", "type": "domain", "domain": "partner.com"},
+        {"id": "p2", "role": "writer", "type": "domain", "domain": "example.com", "allowFileDiscovery": False},
+    ], ids=["domain", "domain with link"])
+    async def test_a_domain_share_is_not_a_grant(self, connector, share, is_drive):
+        """A share with a whole domain names no grantee; stored as an org grant it would open the file to everyone."""
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": [
-                {"id": "p1", "role": "reader", "type": "domain", "domain": "example.com"},
+                {"id": "p1", "role": "owner", "type": "user", "emailAddress": "owner@example.com"},
+                share,
             ],
         })
-        perms, _, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert perms[0].entity_type == EntityType.DOMAIN
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=is_drive)
+        assert [(p.email, p.entity_type) for p in perms] == [("owner@example.com", EntityType.USER)]
+        assert is_fallback is False
 
     async def test_custom_drive_data_source(self, connector):
         """Custom drive data source is used if provided."""
@@ -775,9 +784,8 @@ class TestTeamProcessDriveItemExtended:
             drive_id="drive-1", is_shared_drive=True,
         )
         assert result is not None
-        # _fetch_permissions returns ([], False, []) for non-drive generic errors (doesn't raise),
-        # so permissions_changed is True (non-fallback)
-        assert result.permissions_changed is True
+        assert result.permissions_changed is False, "a failed read must not replace the stored grants"
+        assert result.new_permissions == []
 
     async def test_fallback_permissions_adds_to_existing_record(self, connector):
         """Fallback permissions are added to existing record."""

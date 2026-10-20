@@ -13,7 +13,7 @@ import tempfile
 import time
 from collections.abc import AsyncGenerator, Mapping
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, NamedTuple
 from urllib.parse import parse_qs, urlencode, urlparse
 from uuid import uuid4
 
@@ -48,6 +48,7 @@ from app.api.middlewares.auth import is_request_admin, require_scopes, require_s
 from app.api.middlewares.token_policy import has_service_scope
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
     AppStatus,
     CollectionNames,
     Connectors,
@@ -69,13 +70,12 @@ from app.edition_config import (
     annotate_oauth_inheritance,
     authorize_connector_stats,
     build_graph_data_store,
+    can_reveal_secrets,
     default_connector_scope,
     ensure_oauth_default,
     forbid_inherited_oauth_mutation,
-    lookup_user_for_records,
     mask_oauth_config_for_response,
     oauth_create_extra_fields,
-    records_user_id_arg,
     resolve_config_service,
     resolve_oauth_config,
     resolve_oauth_configs,
@@ -85,8 +85,13 @@ from app.edition_config import (
     vector_store_rebuild_available,
 )
 from app.edition_services import get_data_entities_processor_cls
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectionCheckResult,
+    ConnectorInitError,
+)
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.connector.stream_purpose import streaming_for_indexing
 from app.connectors.core.base.error.stream_errors import to_internal_service_error, to_stream_error
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
@@ -105,8 +110,8 @@ from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.filters import sync_filter_selection_problems
+from app.connectors.core.registry.sync_field_validation import sync_custom_field_problems
 from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_jira_scope
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.core.sync.sync_coordinator import get_coordinator
 from app.edition_services import max_connector_workers, sync_executor_enabled
 from app.connectors.core.sync.sync_dispatcher import get_dispatcher
@@ -141,7 +146,9 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
 from app.utils.chat_helpers import record_to_text
+from app.utils.egress_ips import get_egress_ips
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
+from app.utils.not_indexed import not_indexed_note
 from app.utils.user_messages import (
     EPUB_PREVIEW_UNAVAILABLE,
     action_failed,
@@ -153,14 +160,20 @@ from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import (
     SALESFORCE_LOGIN_URL_ERROR,
+    check_oauth_url_settings,
     check_salesforce_login_url_setting,
     extract_oauth_error_message,
     get_oauth_config,
+    pin_oauth_urls,
 )
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
+from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
+from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
+from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import get_org_or_503, get_user_or_503
 
 logger = create_logger("connector_service")
 
@@ -1103,6 +1116,25 @@ async def _validate_sync_filter_selections(
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
 
 
+async def _validate_sync_custom_fields(
+    connector_registry: ConnectorRegistry,
+    connector_type: str,
+    submitted: object,
+    config: dict[str, Any],
+) -> None:
+    """400 listing every submitted sync setting outside its schema's rules (range, options, required)."""
+    if not isinstance(submitted, dict):
+        return
+    metadata = await connector_registry.get_connector_metadata(connector_type)
+    if not isinstance(metadata, dict):
+        return
+    fields = metadata.get("config", {}).get("sync", {}).get("customFields", [])
+    current = config.get("sync") if isinstance(config.get("sync"), dict) else {}
+    problems = sync_custom_field_problems([f for f in fields if isinstance(f, dict)], submitted, current)
+    if problems:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=" ".join(problems))
+
+
 def _caller_org_and_user(request: Request) -> tuple[str, str, bool]:
     """Return (org_id, user_id, is_indexing_service) for the signed-URL routes.
 
@@ -1233,7 +1265,7 @@ async def stream_record_internal(
             )
 
         record_task = graph_provider.get_record_by_id(record_id)
-        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        org_task = get_org_or_503(graph_provider, org_id)
         record, org = await asyncio.gather(record_task, org_task)
 
         if not record:
@@ -1306,9 +1338,10 @@ async def stream_record_internal(
             logger=logger,
         )
 
-        return await _invoke_connector_stream(
-            connector_obj, record, token_user_id
-        )
+        with streaming_for_indexing():
+            return await _invoke_connector_stream(
+                connector_obj, record, token_user_id
+            )
 
     except HTTPException:
         raise
@@ -1383,7 +1416,7 @@ async def download_file(
             )
 
         # Get org details to determine account type
-        org = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        org = await get_org_or_503(graph_provider, org_id)
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
@@ -1469,7 +1502,7 @@ async def stream_record(
         org_id = user.get("orgId")
         user_id = user.get("userId")
 
-        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        org_task = get_org_or_503(graph_provider, org_id)
         record_task = graph_provider.get_record_by_id(
             record_id
         )
@@ -1588,57 +1621,12 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                         await asyncio.to_thread(f.write, chunk)
 
                 # A per-request profile stops concurrent conversions from colliding on
-                # the shared default profile (the second process would hand off or exit
-                # with no output). It lives in tmpdir, so it is removed with it.
-                libreoffice_profile_uri = Path(
-                    os.path.join(tmpdir, ".libreoffice-profile")
-                ).as_uri()
-                conversion_cmd = [
-                    "libreoffice",
-                    f"-env:UserInstallation={libreoffice_profile_uri}",
-                    "--headless",
-                    "--convert-to",
-                    "pdf",
-                    "--outdir",
-                    tmpdir,
-                    ppt_path,
-                ]
-                process = await asyncio.create_subprocess_exec(
-                    *conversion_cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                # the shared default profile. libreoffice_to_pdf owns that profile.
+                pdf_path = await libreoffice_to_pdf(
+                    ppt_path, tmpdir, timeout=CONVERT_PDF_TIMEOUT_SECONDS
                 )
 
-                try:
-                    conversion_output, conversion_error = await asyncio.wait_for(
-                        process.communicate(), timeout=CONVERT_PDF_TIMEOUT_SECONDS
-                    )
-                except asyncio.TimeoutError as te:
-                    process.terminate()
-                    try:
-                        await asyncio.wait_for(process.wait(), timeout=5.0)
-                    except asyncio.TimeoutError:
-                        process.kill()
-                    logger.error(
-                        f"LibreOffice conversion timed out after {CONVERT_PDF_TIMEOUT_SECONDS} seconds"
-                    )
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out"
-                    ) from te
-
                 pdf_filename = f"{file.filename.rpartition('.')[0]}.pdf"
-
-                if process.returncode != 0:
-                    error_msg = f"LibreOffice conversion failed: {conversion_error.decode('utf-8', errors='replace')}"
-                    logger.error(error_msg)
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to convert file to PDF"
-                    )
-
-                if not os.path.exists(pdf_path):
-                    raise FileNotFoundError(
-                        "PDF conversion failed - output file not found"
-                    )
 
                 # Stream the converted PDF from disk in bounded chunks so the whole
                 # file is never held in memory, and drop tmpdir once the last chunk
@@ -1674,92 +1662,10 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
     raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid conversion request")
 
 async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
-    """
-    Convert a file to PDF using LibreOffice.
-
-    Args:
-        file_path: Path to the input file to convert
-        temp_dir: Temporary directory where the PDF will be created
-
-    Returns:
-        Path to the converted PDF file
-
-    Raises:
-        HTTPException: If conversion fails or output file is not found
-    """
-    pdf_path = os.path.join(temp_dir, f"{Path(file_path).stem}.pdf")
-    libreoffice_profile_uri = Path(
-        os.path.join(temp_dir, ".libreoffice-profile")
-    ).as_uri()
-
-    conversion_cmd = [
-        "soffice",
-        f"-env:UserInstallation={libreoffice_profile_uri}",
-        "--headless",
-        "--convert-to",
-        "pdf",
-        "--outdir",
-        temp_dir,
-        file_path,
-    ]
-
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *conversion_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        try:
-            conversion_output, conversion_error = await asyncio.wait_for(
-                process.communicate(), timeout=CONVERT_PDF_TIMEOUT_SECONDS
-            )
-        except asyncio.TimeoutError as te:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                process.kill()
-            logger.error("PDF conversion timed out")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="PDF conversion timed out"
-            ) from te
-
-        if process.returncode != 0:
-            error_msg = conversion_error.decode('utf-8', errors='replace')
-            logger.error(f"PDF conversion failed: {error_msg}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Failed to convert file to PDF"
-            )
-
-        if not os.path.exists(pdf_path):
-            # LibreOffice may normalize or rename the output basename (for
-            # example, names containing unsupported characters). Accept the
-            # generated PDF instead of failing solely on the expected name.
-            pdf_files = sorted(
-                entry
-                for entry in os.listdir(temp_dir)
-                if entry.lower().endswith(".pdf")
-            )
-            if not pdf_files:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="PDF conversion failed - output file not found"
-                )
-            pdf_path = os.path.join(temp_dir, pdf_files[0])
-
-        return pdf_path
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error during PDF conversion: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Error converting file to PDF"
-        ) from e
+    """Convert a file to PDF using LibreOffice."""
+    return await libreoffice_to_pdf(
+        file_path, temp_dir, timeout=CONVERT_PDF_TIMEOUT_SECONDS
+    )
 
 
 async def convert_buffer_to_pdf_stream(
@@ -1861,112 +1767,6 @@ async def convert_buffer_to_pdf_stream(
             fallback_filename="converted_file.pdf"
         )
 
-@router.get("/api/v1/records", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
-@inject
-async def get_records(
-    request:Request,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    page: int = Query(1, ge=1, description="Page number (1-based)"),
-    limit: int = Query(20, ge=1, le=100, description="Number of items per page"),
-    search: str | None = None,
-    record_types: str | None = Query(None, description="Comma-separated list of record types"),
-    origins: str | None = Query(None, description="Comma-separated list of origins"),
-    connectors: str | None = Query(None, description="Comma-separated list of connectors"),
-    indexing_status: str | None = Query(None, description="Comma-separated list of indexing statuses"),
-    permissions: str | None = Query(None, description="Comma-separated list of permissions"),
-    date_from: int | None = None,
-    date_to: int | None = None,
-    sort_by: str = "createdAtTimestamp",
-    sort_order: str = "desc",
-    source: str = "all",
-) -> dict | None:
-    """
-    List all records the user can access (from all KBs, folders, and direct connector permissions), with filters.
-    """
-    try:
-        container = request.app.container
-        logger = container.logger()
-
-        user_id = request.state.user.get("userId")
-        org_id = request.state.user.get("orgId")
-
-        logger.info(f"Looking up user by user_id: {user_id}")
-        user = await lookup_user_for_records(graph_provider, user_id, org_id)
-
-        if not user:
-            logger.warning(f"⚠️ User not found for user_id: {user_id}")
-            return {
-                "success": False,
-                "code": 404,
-                "reason": f"User not found for user_id: {user_id}"
-            }
-        records_user_id = records_user_id_arg(user, user_id)
-
-        skip = (page - 1) * limit
-        sort_order = sort_order.lower() if sort_order.lower() in ["asc", "desc"] else "desc"
-        sort_by = sort_by if sort_by in [
-            "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus"
-        ] else "createdAtTimestamp"
-
-        # Parse comma-separated strings into lists
-        parsed_record_types = _parse_comma_separated_str(record_types)
-        parsed_origins = _parse_comma_separated_str(origins)
-        parsed_connectors = _parse_comma_separated_str(connectors)
-        parsed_indexing_status = _parse_comma_separated_str(indexing_status)
-        parsed_permissions = _parse_comma_separated_str(permissions)
-
-        records, total_count, available_filters = await graph_provider.get_records(
-            user_id=records_user_id,
-            org_id=org_id,
-            skip=skip,
-            limit=limit,
-            search=search,
-            record_types=parsed_record_types,
-            origins=parsed_origins,
-            connectors=parsed_connectors,
-            indexing_status=parsed_indexing_status,
-            permissions=parsed_permissions,
-            date_from=date_from,
-            date_to=date_to,
-            sort_by=sort_by,
-            sort_order=sort_order,
-            source=source,
-        )
-
-        total_pages = (total_count + limit - 1) // limit
-
-        applied_filters = {
-            k: v for k, v in {
-                "search": search,
-                "recordTypes": parsed_record_types,
-                "origins": parsed_origins,
-                "connectors": parsed_connectors,
-                "indexingStatus": parsed_indexing_status,
-                "source": source if source != "all" else None,
-                "dateRange": {"from": date_from, "to": date_to} if date_from or date_to else None,
-            }.items() if v
-        }
-
-        return {
-            "records": records,
-            "pagination": {
-                "page": page,
-                "limit": limit,
-                "totalCount": total_count,
-                "totalPages": total_pages,
-            },
-            "filters": {
-                "applied": applied_filters,
-                "available": available_filters,
-            }
-        }
-    except Exception as e:
-        logger.error(f"❌ Failed to list all records: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Failed to retrieve records",
-        ) from e
-
 @router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def get_record_by_id(
@@ -2057,6 +1857,12 @@ async def get_record_content(
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to fetch record content") from e
 
     if not result.get("ok") or not result.get("records"):
+        # The caller passed the access check above, so a record that exists
+        # but has no indexed content is described rather than reported as
+        # missing: "No record found" reads as "does not exist".
+        unindexed = (result.get("not_indexed_records") or {}).get(record_id)
+        if unindexed:
+            return {"content": f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'])}"}
         return {"content": "No record found"}
 
     try:
@@ -2082,14 +1888,7 @@ async def _knowledge_graph_context(
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
 
-    try:
-        user = await graph_provider.get_user_by_user_id(user_id=user_id)
-    except Exception as e:
-        request.app.container.logger().error(f"Error resolving user {user_id}: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Failed to resolve user",
-        ) from e
+    user = await get_user_or_503(graph_provider, user_id)
 
     user_key = (user.get("_key") or user.get("id")) if user else None
     if not user_key:
@@ -2326,9 +2125,14 @@ async def delete_record(
                 detail="You do not have access to this record",
             )
 
+        record = has_access.get("record") or {}
+        # The provider's delete refuses another org's record, but only after the
+        # file removal below is published; a record known to be foreign stops here.
+        if record.get("orgId") not in (None, org_id):
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
         # Only uploads are role-checked by the providers, and a synced record deleted here
         # would return on the next sync, so those are removed at the source instead.
-        record = has_access.get("record") or {}
         if (
             record.get("origin") != OriginTypes.UPLOAD.value
             and record.get("connectorName") != Connectors.KNOWLEDGE_BASE.value
@@ -2399,12 +2203,14 @@ async def delete_record(
             # the request — that would misreport an already-completed deletion.
             # Retry transient broker hiccups, then flag (rather than silently
             # swallow) a failure so the caller knows vector cleanup is pending.
-            vector_cleanup_pending = False
-            failed_record_ids: list[str] = []
+            unpublished_record_ids: list[str] = []
             event_data = result.get("eventData")
+            payloads = []
+            if isinstance(event_data, dict):
+                payloads = event_data.get("payloads") or [event_data.get("payload")]
+                payloads = [p for p in payloads if p]
             has_valid_event_data = (
-                isinstance(event_data, dict)
-                and event_data.get("payload")
+                bool(payloads)
                 and event_data.get("eventType")
                 and event_data.get("topic")
             )
@@ -2412,17 +2218,17 @@ async def delete_record(
                 logger.error(
                     f"❌ Malformed eventData for record {record_id}, skipping publish: {event_data!r}"
                 )
-                vector_cleanup_pending = True
-                failed_record_ids.append(record_id)
+                unpublished_record_ids.append(record_id)
             elif has_valid_event_data:
                 timestamp = get_epoch_timestamp_in_ms()
-                # An email's attachments have vectors of their own.
-                for payload in event_data.get("payloads") or [event_data["payload"]]:
+                # A folder's contents and an email's attachments have vectors of their own.
+                for payload in payloads:
                     event = {
                         "eventType": event_data["eventType"],
                         "timestamp": timestamp,
                         "payload": payload,
                     }
+                    deleted_id = payload.get("recordId") or record_id
                     async def publish(event: dict = event) -> None:
                         if await kafka_service.publish_event(event_data["topic"], event) is False:
                             raise RuntimeError("the message broker did not accept the event")
@@ -2431,17 +2237,15 @@ async def delete_record(
                         await retry_async(
                             publish,
                             logger=logger,
-                            description=f"publish {event_data['eventType']} event for record {record_id}",
+                            description=f"publish {event_data['eventType']} event for record {deleted_id}",
                         )
-                        logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                        logger.info(f"✅ Published {event_data['eventType']} event for record {deleted_id}")
                     except Exception as e:
                         logger.error(
-                            f"❌ Giving up publishing deletion event for record "
-                            f"{payload.get('recordId') or record_id} after retries; embeddings "
-                            f"are orphaned until reconciliation: {str(e)}"
+                            f"❌ Giving up publishing deletion event for record {deleted_id} "
+                            f"after retries; embeddings are orphaned until reconciliation: {str(e)}"
                         )
-                        vector_cleanup_pending = True
-                        failed_record_ids.append(payload.get("recordId") or record_id)
+                        unpublished_record_ids.append(deleted_id)
 
             # This route deletes directly, bypassing the processor's cascade
             # path, so it owns its own cache invalidation.
@@ -2456,9 +2260,9 @@ async def delete_record(
                 "connector": result.get("connector"),
                 "timestamp": result.get("timestamp")
             }
-            if vector_cleanup_pending:
+            if unpublished_record_ids:
                 response["vectorCleanupPending"] = True
-                response["vectorCleanupFailedRecordIds"] = failed_record_ids or [record_id]
+                response["vectorCleanupFailedRecordIds"] = unpublished_record_ids
             return response
         else:
             logger.error("❌ Failed to delete record %s: %s", record_id, result.get("reason"))
@@ -2587,7 +2391,7 @@ def _build_reindex_event(
     return {"eventType": event_type, "topic": "sync-events", "payload": payload}
 
 
-@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record)])
+@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE))])
 @inject
 async def reindex_single_record(
     record_id: str,
@@ -2631,8 +2435,12 @@ async def reindex_single_record(
         )
 
         if result["success"]:
-            # Publish event in router
+            # Only after the provider's access and disabled checks, so a caller
+            # without access cannot learn from a 409 that the record exists.
+            await require_connector_not_locked_for_record(record_id, graph_provider)
+
             event_data = result.get("eventData")
+            event_published = False
             if event_data:
                 try:
                     timestamp = get_epoch_timestamp_in_ms()
@@ -2642,6 +2450,7 @@ async def reindex_single_record(
                         "payload": event_data["payload"]
                     }
                     await kafka_service.publish_event(event_data["topic"], event)
+                    event_published = True
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
                     # Only the single-record path owns this record's status; the
                     # sync-events paths hand off to the reindex handler instead.
@@ -2661,7 +2470,7 @@ async def reindex_single_record(
                 "recordId": result.get("recordId"),
                 "recordName": result.get("recordName"),
                 "connector": result.get("connector"),
-                "eventPublished": event_data is not None,
+                "eventPublished": event_published,
                 "userRole": result.get("userRole"),
                 "depth": depth
             }
@@ -2706,7 +2515,7 @@ async def get_connector_stats_endpoint(
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("load connector activity")) from e
 
-@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record_group)])
+@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE))])
 @inject
 async def reindex_record_group(
     record_group_id: str,
@@ -2747,6 +2556,8 @@ async def reindex_record_group(
             logger.error("❌ Failed to reindex record group %s: %s", record_group_id, result.get("reason"))
             status_code, detail = provider_failure(result, "reindex these files")
             raise HTTPException(status_code=status_code, detail=detail)
+
+        await require_connector_not_locked_for_record_group(record_group_id, graph_provider)
 
         # Publish reindex event (router is responsible for event publishing)
         connector_id = result.get("connectorId")
@@ -3009,7 +2820,7 @@ async def reindex_connector(
             
             if app_doc and app_doc.get("type") == Connectors.KNOWLEDGE_BASE.value:
                 # This is a KB collection, check KB permissions
-                user = await graph_provider.get_user_by_user_id(user_id=user_id)
+                user = await get_user_or_503(graph_provider, user_id)
                 if not user:
                     raise HTTPException(
                         status_code=404,
@@ -3422,6 +3233,48 @@ async def _fetch_connector_sync_block(
     return sync
 
 
+_MAX_LISTED_CONNECTOR_IDS = 200
+
+
+async def _connector_schedule_state(
+    connector_id: str,
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
+    organisation_id: str,
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    """What decides one connector's schedule, for a caller that must not read a gap as "sync is off".
+
+    ``missing``: no such connector. ``unreadable``: its settings could not be read, so the caller
+    keeps the schedule it has and asks again later.
+    """
+    try:
+        # Raising: a read that failed must not look like a connector that is gone.
+        doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+    except Exception as e:
+        logger.warning("Failed to read connector %s: %s", connector_id, e)
+        return {"connectorId": connector_id, "unreadable": True}
+    if not doc:
+        return {"connectorId": connector_id, "missing": True}
+    item: dict[str, Any] = {
+        "connectorId": connector_id,
+        "type": doc.get("type"),
+        "orgId": organisation_id,
+        "ownerUserId": doc.get("createdBy"),
+        "isActive": bool(doc.get("isActive")),
+    }
+    try:
+        # Raising, and uncached: a store error otherwise reads as no settings, which removes the schedule.
+        config = await config_service.get_config(
+            _get_config_path_for_instance(connector_id), use_cache=False, raise_on_error=True,
+        )
+    except Exception as e:
+        logger.warning("Failed to read config for connector %s: %s", connector_id, e)
+        return {**item, "sync": None, "unreadable": True}
+    sync = (config or {}).get("sync") if isinstance(config, dict) else None
+    return {**item, "sync": sync if isinstance(sync, dict) else {}}
+
+
 @router.get(
     "/api/v1/connectors/internal/all-scheduled",
     dependencies=[Depends(require_service_token(TokenScopes.FETCH_CONFIG))],
@@ -3430,6 +3283,11 @@ async def get_all_scheduled_connector_instances_internal(
     request: Request,
     page: int = Query(1, ge=1, description="1-based page number"),
     limit: int = Query(50, ge=1, le=200, description="Maximum candidates to process per call"),
+    connector_ids: str | None = Query(
+        None,
+        alias="connectorIds",
+        description="Comma-separated ids: return exactly these connectors, active or not, in one page",
+    ),
 ) -> dict[str, Any]:
     """
     Internal cross-org enumeration of connector instances configured for
@@ -3478,6 +3336,17 @@ async def get_all_scheduled_connector_instances_internal(
                 detail="No organisations found",
             )
         organisation_id = organisation[0].get("_key") or organisation[0].get("id")
+
+        if isinstance(connector_ids, str):
+            ids = list(dict.fromkeys(i.strip() for i in connector_ids.split(",") if i.strip()))[:_MAX_LISTED_CONNECTOR_IDS]
+            return {
+                "success": True,
+                "items": [
+                    await _connector_schedule_state(cid, graph_provider, config_service, organisation_id, logger)
+                    for cid in ids
+                ],
+                "hasMore": False,
+            }
 
         # Convert 1-based page to 0-based DB offset.
         skip = (page - 1) * limit
@@ -3803,6 +3672,37 @@ async def get_configured_connector_instances(
 # Instance Configuration Endpoints
 # ============================================================================
 
+def _has_oauth_credentials(auth_config: dict[str, Any], connector_type: str) -> bool:
+    """Whether ``auth_config`` carries a value for any of the connector type's OAuth app fields."""
+    return any(
+        auth_config.get(field_name) or
+        auth_config.get(field_name.replace("Id", "_id").replace("Secret", "_secret"))
+        for field_name in _get_oauth_field_names_from_registry(connector_type)
+    )
+
+
+def _oauth_field_value(auth_config: dict[str, Any], field_name: str) -> object:
+    """An OAuth field's value under its camelCase or snake_case name; None when empty or blank."""
+    for name in (field_name, field_name.replace("Id", "_id").replace("Secret", "_secret")):
+        value = auth_config.get(name)
+        if isinstance(value, str):
+            value = value.strip()
+        if value:
+            return value
+    return None
+
+
+def _has_required_oauth_credentials(auth_config: dict[str, Any], connector_type: str) -> bool:
+    """Whether ``auth_config`` has a value for every OAuth app field the registry marks required.
+
+    An app built from fewer would be linked half-filled, and the connector could still not start.
+    """
+    return all(
+        _oauth_field_value(auth_config, field_name) is not None
+        for field_name in _get_required_oauth_field_names_from_registry(connector_type)
+    )
+
+
 async def _handle_oauth_config_creation(
     connector_type: str,
     auth_config: dict[str, Any],
@@ -3847,21 +3747,12 @@ async def _handle_oauth_config_creation(
     # Get OAuth app ID (from auth config or parameter)
     oauth_app_id = auth_config.get("oauthConfigId") or oauth_config_id
 
-    # Check if OAuth credential fields are present
-    oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
-    has_oauth_credentials = any(
-        auth_config.get(field_name) or
-        auth_config.get(field_name.replace("Id", "_id").replace("Secret", "_secret"))
-        for field_name in oauth_field_names
-    )
-
-    if not has_oauth_credentials:
+    if not _has_oauth_credentials(auth_config, connector_type):
         if oauth_app_id:
             logger.info(f"No OAuth credentials provided, using existing OAuth config for {connector_type}")
             return oauth_app_id
         else:
             logger.info(f"No OAuth credentials provided and no oauthConfigId specified for {connector_type} - skipping OAuth config creation")
-            logger.debug(f"Expected OAuth fields for {connector_type}: {oauth_field_names}")
             logger.debug(f"Received auth config keys: {list(auth_config.keys())}")
             return None
 
@@ -3964,13 +3855,41 @@ def _mirror_shared_instance_url(auth: dict[str, Any], shared_oauth_config: dict[
         auth.pop(AuthFieldKeys.INSTANCE_URL, None)
 
 
-def _check_salesforce_login_url(connector_type: str, settings: dict[str, Any] | None) -> None:
-    """Refuse a Salesforce login URL off salesforce.com before it is saved: the token request
+def _mirror_shared_client_fields(
+    auth: dict[str, Any],
+    shared_oauth_config: dict[str, Any],
+    connector_type: str,
+    secret_fields: set[str],
+) -> None:
+    """Give a linked connector its app's non-secret OAuth values (its client ID).
+
+    URLs and ``instanceUrl`` are set from the app elsewhere; secrets are never copied.
+    """
+    app_values = shared_oauth_config.get(OAuthConfigKeys.CONFIG) or {}
+    skip = {AuthFieldKeys.AUTHORIZE_URL, AuthFieldKeys.TOKEN_URL, AuthFieldKeys.INSTANCE_URL} | secret_fields
+    for field_name in _get_oauth_field_names_from_registry(connector_type):
+        if field_name in skip:
+            continue
+        value = _oauth_field_value(app_values, field_name)
+        if value is None:
+            continue
+        auth[field_name] = value
+        alias = field_name.replace("Id", "_id").replace("Secret", "_secret")
+        if alias != field_name:
+            auth.pop(alias, None)
+
+
+def _check_oauth_app_urls(connector_type: str, settings: dict[str, Any] | None) -> None:
+    """Refuse an OAuth host off the provider's domain before it is saved: the token request
     sends the client secret there from the server."""
     try:
         check_salesforce_login_url_setting(connector_type, settings)
     except ValueError as e:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=SALESFORCE_LOGIN_URL_ERROR) from e
+    try:
+        check_oauth_url_settings(connector_type, settings)
+    except ValueError as e:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e  # user-written message
 
 
 async def _link_to_shared_oauth_app(
@@ -4006,6 +3925,189 @@ async def _link_to_shared_oauth_app(
             detail=f"OAuth config {oauth_config_id} not found or access denied"
         )
     return shared_oauth_config
+
+
+class _OAuthAppWrite(NamedTuple):
+    """What a full settings save wrote to an OAuth app."""
+
+    app_id: str
+    created: bool
+    # The app as it was before this save updated it; None when the save created it.
+    before_update: dict[str, Any] | None
+    # Whether the app now holds a different client from the one the connector signed in with.
+    client_changed: bool
+
+
+async def _full_save_oauth_app(
+    *,
+    incoming_auth: dict[str, Any],
+    stored_auth: dict[str, Any],
+    connector_type: str,
+    instance: dict[str, Any],
+    user_id: str,
+    org_id: str,
+    config_service: ConfigurationService,
+    container: object,
+    base_url: str,
+    logger: logging.Logger,
+) -> _OAuthAppWrite | None:
+    """The OAuth app an admin's full settings save links, written as ``PUT /config/auth`` writes it.
+
+    Returns what was written, or None when the save writes no OAuth app.
+
+    A sent value changes nothing when it repeats what the connector already holds: the
+    linked app's value, or an older copy still stored on the connector. So a GET-then-PUT
+    round trip, with the secret sent back as the mask or in full, writes no app.
+
+    Changed values update the app only when the request names it in ``auth.oauthConfigId``,
+    and only the fields that changed. Otherwise a new app is created and linked, because an
+    app the request did not name may be shared by other connectors, which would all switch
+    credentials while only this one is signed out. A new app takes every value the request
+    did not change from the linked app, never from an older copy on the connector.
+    """
+    auth_type = instance.get("authType", "").upper()
+    secret_fields = _get_secret_oauth_field_names_from_registry(connector_type)
+    placeholders = _placeholder_oauth_urls(connector_type)
+
+    def _values(auth: dict[str, Any]) -> dict[str, Any]:
+        """Each OAuth field once, under its registry name; a placeholder URL counts as absent."""
+        values = {}
+        for field_name in _get_oauth_field_names_from_registry(connector_type):
+            value = _oauth_field_value(auth, field_name)
+            if value is not None and placeholders.get(field_name) != value:
+                values[field_name] = value
+        return values
+
+    sent = _values(incoming_auth)
+    stored = _values(stored_auth)
+    named_app_id = incoming_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+    current_app_id = named_app_id or stored_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+
+    current_app: dict[str, Any] | None = None
+    if current_app_id:
+        # A copy: the write below may change the stored entry in place.
+        current_app = copy.deepcopy(await resolve_oauth_config(
+            container, _get_oauth_config_path(connector_type), org_id, current_app_id, config_service
+        ))
+        if named_app_id and not current_app:
+            # The link step answers a named app that does not resolve with a 404.
+            return None
+        app_values = _values((current_app or {}).get(OAuthConfigKeys.CONFIG) or {})
+        changed = {
+            name: value for name, value in sent.items()
+            if value != app_values.get(name) and value != stored.get(name)
+        }
+        if not changed:
+            return None
+        if AuthFieldKeys.CLIENT_ID in changed and not any(name in sent for name in secret_fields):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="A new client ID must be sent together with its client secret.",
+            )
+        # Values the request did not change come from the linked app, when it still exists.
+        unchanged = app_values if current_app else stored
+    else:
+        if not sent:
+            return None
+        changed = sent
+        unchanged = stored
+    # The client the connector's tokens were issued to: its app's, or its own inline one.
+    signed_in_with = unchanged
+
+    if named_app_id:
+        # Only what changed, so a value echoed from an older copy cannot reach a shared app.
+        app_auth: dict[str, Any] = {**changed, OAuthConfigKeys.OAUTH_CONFIG_ID: named_app_id}
+    else:
+        app_auth = {**unchanged, **changed}
+    if incoming_auth.get(OAUTH_INSTANCE_NAME):
+        app_auth[OAUTH_INSTANCE_NAME] = incoming_auth[OAUTH_INSTANCE_NAME]
+    if not named_app_id and not _has_required_oauth_credentials(app_auth, connector_type):
+        if not current_app_id:
+            # Part of a new app's values: they wait on the connector for the rest.
+            return None
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=(
+                "To replace this connector's OAuth app, send every required OAuth field "
+                "together, or name the app to change in auth.oauthConfigId."
+            ),
+        )
+
+    app_id = await _handle_oauth_config_creation(
+        connector_type=connector_type,
+        auth_config=app_auth,
+        instance_name=instance.get("name", f"{connector_type} Connector"),
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=True,
+        config_service=config_service,
+        oauth_config_id=None,
+        auth_type=auth_type,
+        base_url=base_url,
+        logger=logger,
+        connector_scope=instance.get("scope"),
+    )
+    if not app_id:
+        logger.error("Failed to create or update the OAuth app from the connector's client credentials")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to create/update OAuth configuration"
+        )
+    created = app_id != named_app_id
+    now_holds = {**unchanged, **changed}
+    client_changed = any(
+        now_holds.get(name) != signed_in_with.get(name) for name in {*now_holds, *signed_in_with}
+    )
+    return _OAuthAppWrite(app_id, created, None if created else current_app, client_changed)
+
+
+async def _remove_oauth_app(
+    app_id: str,
+    connector_type: str,
+    config_service: ConfigurationService,
+    logger: logging.Logger,
+) -> None:
+    """Take back an OAuth app this request created, when the connector it was for could not be saved."""
+    try:
+        oauth_config_path = _get_oauth_config_path(connector_type)
+        apps = await config_service.get_config(oauth_config_path, default=[], use_cache=False)
+        if isinstance(apps, list) and any(app.get("_id") == app_id for app in apps):
+            await config_service.set_config(oauth_config_path, [app for app in apps if app.get("_id") != app_id])
+    except Exception as e:
+        logger.error(f"Could not remove OAuth app {app_id} after the connector save failed: {e}")
+
+
+async def _undo_oauth_app_write(
+    created_app_id: str | None,
+    app_before_update: dict[str, Any] | None,
+    connector_type: str,
+    config_service: ConfigurationService,
+    logger: logging.Logger,
+) -> None:
+    """Undo this request's OAuth app write when the connector's settings were not stored."""
+    if created_app_id:
+        await _remove_oauth_app(created_app_id, connector_type, config_service, logger)
+    elif app_before_update:
+        await _restore_oauth_app(app_before_update, connector_type, config_service, logger)
+
+
+async def _restore_oauth_app(
+    previous_app: dict[str, Any],
+    connector_type: str,
+    config_service: ConfigurationService,
+    logger: logging.Logger,
+) -> None:
+    """Put back an OAuth app this request updated, when the connector it was for could not be saved."""
+    app_id = previous_app.get("_id")
+    try:
+        oauth_config_path = _get_oauth_config_path(connector_type)
+        apps = await config_service.get_config(oauth_config_path, default=[], use_cache=False)
+        if isinstance(apps, list) and any(app.get("_id") == app_id for app in apps):
+            await config_service.set_config(
+                oauth_config_path, [previous_app if app.get("_id") == app_id else app for app in apps]
+            )
+    except Exception as e:
+        logger.error(f"Could not restore OAuth app {app_id} after the connector save failed: {e}")
 
 
 async def _prepare_connector_config(
@@ -4136,12 +4238,8 @@ async def _prepare_connector_config(
 
         redirect_uri = selected_auth_schema.get(AuthFieldKeys.REDIRECT_URI, "")
         if redirect_uri:
-            if base_url:
-                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-            else:
-                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-                fallback_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                redirect_uri = f"{fallback_url.rstrip('/')}/{redirect_uri}"
+            oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+            redirect_uri = f"{oauth_base_url}/{redirect_uri}"
 
         prepared_config[OAuthConfigKeys.AUTH].update({
             AuthFieldKeys.AUTHORIZE_URL: authorize_url,
@@ -4487,7 +4585,7 @@ async def get_connector_instance(
                 detail="User not authenticated"
             )
 
-        connector = await connector_registry.get_connector_instance(
+        connector = await connector_registry.get_connector_instance_for_view(
             connector_id=connector_id,
             user_id=user_id,
             org_id=org_id,
@@ -4851,7 +4949,10 @@ async def stop_connector_sync(
 
         repair_status = AppStatus.IDLE.value
         repaired = await write_app_status(
-            graph_provider, logger, connector_id, repair_status, is_locked=False
+            graph_provider, logger, connector_id, repair_status, is_locked=False,
+            # A full sync that died this way never finished: its prep had already
+            # removed the permission edges it was going to rebuild.
+            full_sync_owed=app_doc.get("status") == AppStatus.FULL_SYNCING.value,
         )
         logger.warning(
             f"Repaired stale sync status for connector {connector_id} via stop request"
@@ -5135,15 +5236,8 @@ async def update_connector_instance_auth_config(
             selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_schemas else {}
             redirect_uri = selected_auth_schema.get(AuthFieldKeys.REDIRECT_URI, "")
             if redirect_uri:
-                if base_url:
-                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-                else:
-                    endpoints = await config_service.get_config(
-                        "/services/endpoints",
-                        use_cache=False
-                    )
-                    base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+                redirect_uri = f"{oauth_base_url}/{redirect_uri}"
 
             # Only use registry defaults if user hasn't provided these values
             oauth_updates = {
@@ -5318,6 +5412,7 @@ async def update_connector_instance_filters_sync_config(
                 if key in body["filters"]:
                     new_config["filters"][key] = body["filters"][key]
 
+        await _validate_sync_custom_fields(connector_registry, instance.get("type", ""), body.get("sync"), new_config)
         if isinstance((body.get("filters") or {}).get("sync"), dict):
             await _validate_sync_filter_selections(
                 connector_registry, instance.get("type", ""), new_config, "saving"
@@ -5389,7 +5484,9 @@ async def update_connector_instance_config(
     Update configuration for a connector instance.
 
     Request body can contain:
-    - auth: Authentication configuration
+    - auth: Authentication configuration. When an admin sends OAuth client credentials
+      for an OAUTH connector not yet linked to an OAuth app, an app is created from them
+      and linked (``auth.oauthConfigId``), as the create and auth-only saves do.
     - sync: Sync settings
     - filters: Filter configuration
     - base_url: Optional base URL for OAuth redirects
@@ -5407,6 +5504,12 @@ async def update_connector_instance_config(
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
+    # An OAuth app this save creates is taken back if the connector's settings are not
+    # stored, so it is neither left unlinked nor met by a retry as a name conflict; an app
+    # it updates is put back as it was.
+    created_oauth_app_id: str | None = None
+    oauth_app_before_update: dict[str, Any] | None = None
+    config_saved = False
 
     try:
         # Use dependency to validate and retrieve connector instance
@@ -5463,8 +5566,25 @@ async def update_connector_instance_config(
         # connector on every save.
         _incoming_auth = body.get("auth")
         _stored_auth = (existing_config or {}).get("auth") or {}
+        # A linked connector keeps no copy of its app's secrets, so a secret sent back in
+        # full has nothing here to differ from; one that changes the app is caught when
+        # the app is written below. A secret still stored on the connector does count.
+        _secrets_kept_on_app = (
+            {
+                spelling
+                for name in _get_secret_oauth_field_names_from_registry(connector_type)
+                for spelling in (name, name.replace("Secret", "_secret"))
+                if spelling not in _stored_auth
+            }
+            if _stored_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+            else set()
+        )
         auth_credentials_changed = isinstance(_incoming_auth, dict) and (
-            any(_stored_auth.get(k) != v for k, v in _incoming_auth.items())
+            any(
+                _stored_auth.get(k) != v
+                for k, v in _incoming_auth.items()
+                if k not in _secrets_kept_on_app
+            )
             or bool(oauth_config_id and oauth_config_id != _stored_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID))
         )
 
@@ -5490,16 +5610,12 @@ async def update_connector_instance_config(
                     # Section doesn't exist, add it
                     new_config[section] = body[section]
 
+        await _validate_sync_custom_fields(connector_registry, instance.get("type", ""), body.get("sync"), new_config)
         if isinstance((body.get("filters") or {}).get("sync"), dict):
             await _validate_sync_filter_selections(
                 connector_registry, instance.get("type", ""), new_config, "saving"
             )
 
-        # Tokens go only with the credentials that issued them: sending ``auth`` back
-        # unchanged (secrets as the mask) keeps the connector signed in.
-        if auth_credentials_changed:
-            new_config[OAuthConfigKeys.CREDENTIALS] = None
-            new_config["oauth"] = None
         if auth_updated and connector_type and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
             new_config[OAuthConfigKeys.AUTH]["connectorType"] = connector_type
 
@@ -5527,6 +5643,44 @@ async def update_connector_instance_config(
             # Use existing auth type from instance (cannot be changed)
             auth_type = instance.get("authType", "").upper()
             if auth_type in [AuthType.OAUTH, AuthType.OAUTH_ADMIN_CONSENT]:
+                # An OAUTH connector reads its client ID and secret from its linked app, so
+                # without one it can sign in but never start. An admin's client credentials
+                # therefore go into an OAuth app, as on creating the connector and on the
+                # auth-only save: a new app is created and linked once every required field
+                # is there, and changed credentials update the app only when the request
+                # names it (see _full_save_oauth_app).
+                linked_inline_credentials = False
+                if (
+                    is_admin
+                    and auth_type == AuthType.OAUTH
+                    and not oauth_config_id
+                    and isinstance(_incoming_auth, dict)
+                    and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict)
+                ):
+                    oauth_app = await _full_save_oauth_app(
+                        incoming_auth=_incoming_auth,
+                        stored_auth=_stored_auth,
+                        connector_type=connector_type,
+                        instance=instance,
+                        user_id=user_id,
+                        org_id=org_id,
+                        config_service=config_service,
+                        container=container,
+                        base_url=base_url,
+                        logger=logger,
+                    )
+                    if oauth_app:
+                        oauth_app_id = oauth_app.app_id
+                        new_config[OAuthConfigKeys.AUTH][OAuthConfigKeys.OAUTH_CONFIG_ID] = oauth_app_id
+                        if oauth_app.created:
+                            created_oauth_app_id = oauth_app_id
+                        oauth_app_before_update = oauth_app.before_update
+                        if oauth_app.client_changed:
+                            # Tokens issued to the old client no longer apply.
+                            auth_credentials_changed = True
+                        linked_inline_credentials = True
+                        logger.info(f"Linked connector {connector_id} to OAuth app {oauth_app_id}")
+
                 # If oauth_config_id is provided, fetch and merge OAuth config from etcd
                 shared_oauth_config = None
                 if oauth_config_id:
@@ -5567,7 +5721,9 @@ async def update_connector_instance_config(
                         new_config[OAuthConfigKeys.AUTH],
                         connector_type,
                         org_id,
-                        named_in_request=isinstance(_incoming_auth, dict) and bool(_incoming_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)),
+                        named_in_request=linked_inline_credentials or (
+                            isinstance(_incoming_auth, dict) and bool(_incoming_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID))
+                        ),
                         container=container,
                         config_service=config_service,
                         logger=logger,
@@ -5580,13 +5736,36 @@ async def update_connector_instance_config(
                 if OAuthConfigKeys.AUTH not in new_config:
                     new_config[OAuthConfigKeys.AUTH] = {}
 
-                # Only authorizeUrl and tokenUrl: use etcd when present, else registry
+                # Only authorizeUrl and tokenUrl: use etcd when present, else registry. A
+                # connector with no app keeps URLs already saved on it (a ServiceNow
+                # instance's own endpoints), as the auth-only save does.
+                saved_auth = new_config.get(OAuthConfigKeys.AUTH) or {}
                 if shared_oauth_config:
-                    authorize_url = shared_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "") or registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
-                    token_url = shared_oauth_config.get(AuthFieldKeys.TOKEN_URL, "") or registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
+                    # The app's own values first, as sign-in and token refresh read them.
+                    app_config = shared_oauth_config.get(OAuthConfigKeys.CONFIG) or {}
+                    authorize_url = (
+                        app_config.get(AuthFieldKeys.AUTHORIZE_URL)
+                        or shared_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
+                        or registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
+                    )
+                    token_url = (
+                        app_config.get(AuthFieldKeys.TOKEN_URL)
+                        or shared_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
+                        or registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
+                    )
+                elif auth_type == AuthType.OAUTH and not saved_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID):
+                    authorize_url = saved_auth.get(AuthFieldKeys.AUTHORIZE_URL) or registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
+                    token_url = saved_auth.get(AuthFieldKeys.TOKEN_URL) or registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
                 else:
                     authorize_url = registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
                     token_url = registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
+                # A placeholder host (ServiceNow's registry default) is never stored: with no
+                # app, sign-in sends the connector's client secret to the token URL saved here.
+                placeholders = _placeholder_oauth_urls(connector_type)
+                if placeholders.get(AuthFieldKeys.AUTHORIZE_URL) == authorize_url:
+                    authorize_url = ""
+                if placeholders.get(AuthFieldKeys.TOKEN_URL) == token_url:
+                    token_url = ""
 
                 scopes = _apply_confluence_optional_jira_scope(
                     connector_type,
@@ -5598,15 +5777,8 @@ async def update_connector_instance_config(
                 selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_schemas else {}
                 redirect_uri = selected_auth_schema.get(AuthFieldKeys.REDIRECT_URI, "")
                 if redirect_uri:
-                    if base_url:
-                        redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-                    else:
-                        endpoints = await config_service.get_config(
-                            "/services/endpoints",
-                            use_cache=False
-                        )
-                        base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                        redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                    oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+                    redirect_uri = f"{oauth_base_url}/{redirect_uri}"
 
                 new_config[OAuthConfigKeys.AUTH].update({
                     AuthFieldKeys.AUTHORIZE_URL: authorize_url,
@@ -5619,8 +5791,54 @@ async def update_connector_instance_config(
                 if shared_oauth_config:
                     _mirror_shared_instance_url(new_config[OAuthConfigKeys.AUTH], shared_oauth_config)
 
+                linked_auth = new_config[OAuthConfigKeys.AUTH]
+                secret_oauth_fields = _get_secret_oauth_field_names_from_registry(connector_type)
+                if auth_type == AuthType.OAUTH and shared_oauth_config:
+                    # The rest of the app's own values (its client ID) replace any older copy
+                    # here, so the connector shows the client it signs in with.
+                    _mirror_shared_client_fields(
+                        linked_auth, shared_oauth_config, connector_type, secret_oauth_fields
+                    )
+                if auth_type == AuthType.OAUTH and linked_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID):
+                    # A linked connector keeps no copy of its app's secrets, as on the other
+                    # saves: the app holds them, and a stale copy here would win in readers
+                    # that prefer inline values (GoogleClient.get_individual_token).
+                    for secret_field in secret_oauth_fields:
+                        linked_auth.pop(secret_field, None)
+                        linked_auth.pop(secret_field.replace("Secret", "_secret"), None)
+                elif auth_type == AuthType.OAUTH and isinstance(_incoming_auth, dict):
+                    # With no app, sign-in sends this connector's secret to its own token URL.
+                    # A secret sent before that URL is the provider's own is refused, and
+                    # nothing is stored.
+                    sends_secret = any(
+                        _oauth_field_value(_incoming_auth, name) is not None for name in secret_oauth_fields
+                    )
+                    missing_urls = [
+                        name for name in placeholders if not linked_auth.get(name)
+                    ]
+                    if sends_secret and missing_urls:
+                        raise HTTPException(
+                            status_code=HttpStatusCode.BAD_REQUEST.value,
+                            detail=(
+                                "Send this connector's own authorize and token URLs "
+                                "together with its client secret."
+                            ),
+                        )
+
+        # Tokens go only with the credentials that issued them: sending ``auth`` back
+        # unchanged (secrets as the mask) keeps the connector signed in.
+        if auth_credentials_changed:
+            new_config[OAuthConfigKeys.CREDENTIALS] = None
+            new_config["oauth"] = None
+
         # Save configuration
-        await config_service.set_config(config_path, new_config)
+        config_saved = await config_service.set_config(config_path, new_config)
+        if not config_saved:
+            logger.error(f"Failed to save config for instance {connector_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=action_failed("save this connector's settings")
+            )
         logger.info(f"Updated config for instance {connector_id}")
 
         # Only cleanup and disable connector if the credentials actually changed.
@@ -5677,9 +5895,17 @@ async def update_connector_instance_config(
         }
 
     except HTTPException:
+        if not config_saved and (created_oauth_app_id or oauth_app_before_update):
+            await _undo_oauth_app_write(
+                created_oauth_app_id, oauth_app_before_update, connector_type, config_service, logger
+            )
         raise
     except Exception as e:
         logger.error(f"Error updating config for instance {connector_id}: {e}")
+        if not config_saved and (created_oauth_app_id or oauth_app_before_update):
+            await _undo_oauth_app_write(
+                created_oauth_app_id, oauth_app_before_update, connector_type, config_service, logger
+            )
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=action_failed("save this connector's settings")
@@ -6039,12 +6265,8 @@ async def _update_oauth_infrastructure_fields(
     if AuthFieldKeys.REDIRECT_URI not in oauth_config:
         redirect_uri_path = oauth_registry_config.redirect_uri
         if redirect_uri_path:
-            if base_url:
-                oauth_config[AuthFieldKeys.REDIRECT_URI] = f"{base_url.rstrip('/')}/{redirect_uri_path}"
-            else:
-                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-                fallback_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                oauth_config[AuthFieldKeys.REDIRECT_URI] = f"{fallback_url.rstrip('/')}/{redirect_uri_path}"
+            oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+            oauth_config[AuthFieldKeys.REDIRECT_URI] = f"{oauth_base_url}/{redirect_uri_path}"
         else:
             oauth_config[AuthFieldKeys.REDIRECT_URI] = ""
 
@@ -6225,6 +6447,11 @@ async def _build_oauth_flow_config(
         connector_type, {**oauth_flow_config, **connector_settings}, raw_scopes
     )
 
+    try:
+        pin_oauth_urls(connector_type, oauth_flow_config)
+    except ValueError as e:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e  # user-written message
+
     return oauth_flow_config
 
 
@@ -6233,6 +6460,8 @@ async def get_oauth_authorization_url(
     connector_id: str,
     request: Request,
     base_url: str | None = Query(None),
+    *,
+    desktop: Annotated[bool, Query()] = False,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> dict[str, Any]:
     """
@@ -6380,7 +6609,9 @@ async def get_oauth_authorization_url(
             if not original_state:
                 raise ValueError("No state parameter in authorization URL")
 
-            encoded_state = _encode_state_with_instance(original_state, connector_id)
+            encoded_state = mark_desktop_state(
+                _encode_state_with_instance(original_state, connector_id), desktop=desktop
+            )
             query_params["state"] = [encoded_state]
 
             final_auth_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{urlencode(query_params, doseq=True)}"
@@ -6436,6 +6667,10 @@ async def handle_oauth_callback(
 
     settings_base_path = await _get_settings_base_path(graph_provider)
     connector_id = None  # For error handling
+    base_url = await resolve_oauth_base_url(
+        resolve_config_service(container, request.state.user.get("orgId")), base_url
+    )
+    state = strip_desktop_state(state)
 
     try:
         # ============================================================
@@ -6450,7 +6685,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": error,
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error={error}"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error={error}"
             }
 
         if not code or not state:
@@ -6458,7 +6693,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "missing_parameters",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=missing_parameters"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=missing_parameters"
             }
 
         # ============================================================
@@ -6485,7 +6720,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "invalid_state",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=invalid_state"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=invalid_state"
             }
 
         # ============================================================
@@ -6503,7 +6738,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "instance_not_found",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=instance_not_found"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=instance_not_found"
             }
 
         connector_type = instance.get("type", "").replace(" ", "")
@@ -6533,7 +6768,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "config_not_found",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=config_not_found"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=config_not_found"
             }
 
         auth_config = config[OAuthConfigKeys.AUTH]
@@ -6555,7 +6790,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "oauth_config_fetch_error",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=oauth_config_fetch_error"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=oauth_config_fetch_error"
             }
 
         logger.info(f"Callback redirect URI: {oauth_flow_config.get(AuthFieldKeys.REDIRECT_URI, '')}")
@@ -6686,7 +6921,7 @@ async def handle_oauth_callback(
             "success": False,
             "error": "server_error",
             "error_message": error_message,
-            "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=server_error"
+            "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=server_error"
         }
 
 
@@ -7274,7 +7509,7 @@ def _find_filter_field_config(
     return None
 
 
-@router.post("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
+@router.post("/api/v1/connectors/{connector_id}/filters", deprecated=True, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def save_connector_instance_filters(
     connector_id: str,
     request: Request,
@@ -7282,6 +7517,11 @@ async def save_connector_instance_filters(
 ) -> dict[str, Any]:
     """
     Save filter selections for a connector instance.
+
+    Deprecated: the app saves filters through
+    ``PUT /api/v1/connectors/{connector_id}/config/filters-sync``, which takes
+    ``{sync?, filters?: {sync, indexing}}`` and refuses while the connector is active.
+    What this route saves lands in ``filters.values``, which sync doesn't read. Removed in a later release.
 
     Args:
         connector_id: Unique instance key
@@ -7297,6 +7537,13 @@ async def save_connector_instance_filters(
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
+    logger.warning(
+        "Deprecated POST /api/v1/connectors/%s/filters was called; use PUT "
+        "/api/v1/connectors/%s/config/filters-sync with {sync?, filters?: {sync, indexing}} "
+        "while the connector is disabled",
+        connector_id,
+        connector_id,
+    )
 
     try:
         # Get and validate user context
@@ -7767,10 +8014,7 @@ async def toggle_connector_instance(
 
 
         # Get organization
-        org = await graph_provider.get_document(
-            user_info["orgId"],
-            CollectionNames.ORGS.value
-        )
+        org = await get_org_or_503(graph_provider, user_info["orgId"])
         if not org:
             logger.error("Organization not found")
             raise HTTPException(
@@ -7914,12 +8158,19 @@ async def toggle_connector_instance(
                 )
 
         # Update connector status
+        now = get_epoch_timestamp_in_ms()
         updates = {
             status_field: target_status,
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": now,
             "updatedBy": user_id,
             **owner_updates,
         }
+        if toggle_type == "sync" and target_status:
+            # The stranded-record sweep waits this long past it before sending
+            # records parked while the connector was off, so it does not send
+            # them beside the appEnabled re-queue. updatedAtTimestamp would do
+            # too, but every app write moves it.
+            updates["enabledAtTimestamp"] = now
 
         success = await connector_registry.update_connector_instance(
             connector_id=connector_id,
@@ -8286,6 +8537,8 @@ async def get_connector_schema(
             if promoted_key in metadata:
                 cleaned_schema[promoted_key] = metadata[promoted_key]
 
+        cleaned_schema["supportsConnectionCheck"] = _connection_check_class(connector_type) is not None
+
         return {
             "success": True,
             "schema": cleaned_schema
@@ -8299,6 +8552,94 @@ async def get_connector_schema(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=action_failed("load this connector's setup form")
         ) from e
+
+
+def _connection_check_class(connector_type: str) -> type[BaseConnector] | None:
+    connector_cls = ConnectorFactory.get_connector_class(connector_type.replace(" ", ""))
+    if connector_cls is None or not connector_cls.supports_connection_check():
+        return None
+    return connector_cls
+
+
+@router.post(
+    "/api/v1/connectors/registry/{connector_type}/test-connection",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))],
+)
+async def check_connector_connection(connector_type: str, request: Request) -> dict[str, Any]:
+    """Try the auth settings on the setup form before they are saved.
+
+    With ``connectorId`` (editing an instance) the settings are laid over the saved ones,
+    as saving them does, so the check sees what the save will store: a secret sent back
+    as the mask keeps the saved value. A failed check is a
+    200 with ``success: false``; its ``message`` is meant for the user.
+    """
+    container = request.app.container
+    logger = container.logger()
+    connector_registry = request.app.state.connector_registry
+
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    if not user_id or not org_id:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail="User not authenticated"
+        )
+
+    await check_beta_connector_access(connector_type, request)
+    if not await connector_registry.get_connector_metadata(connector_type):
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail=f"Connector type '{connector_type}' not found in registry"
+        )
+    connector_cls = _connection_check_class(connector_type)
+    if connector_cls is None:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=f"{connector_type} has no connection check"
+        )
+
+    body = _trim_connector_config(await request.json())
+    auth = body.get(OAuthConfigKeys.AUTH) if isinstance(body, dict) else None
+    if not isinstance(auth, dict):
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="auth must be an object"
+        )
+    auth = _without_masked_secrets(
+        _without_server_set_auth_fields(auth),
+        await _secret_auth_field_names(connector_registry, connector_type),
+    )
+
+    connector_id = body.get("connectorId")
+    if connector_id:
+        instance = await get_validated_connector_instance(connector_id, request)
+        if instance.get("type", "").replace(" ", "").lower() != connector_type.replace(" ", "").lower():
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="connectorId is not a connector of this type"
+            )
+        config_service = resolve_config_service(container, org_id)
+        saved = await config_service.get_config(_get_config_path_for_instance(connector_id)) or {}
+        auth = {**(saved.get(OAuthConfigKeys.AUTH) or {}), **auth}
+
+    try:
+        result = await connector_cls.check_connection(auth, logger)
+    except Exception:
+        logger.error("Connection check for %s failed", connector_type, exc_info=True)
+        result = ConnectionCheckResult(
+            success=False,
+            message="The connection could not be tested. Please try again.",
+        )
+    return result.model_dump()
+
+
+@router.get(
+    "/api/v1/connectors/network/egress-ips",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
+)
+async def get_connector_egress_ips() -> dict[str, Any]:
+    """Public IPs connectors connect from, for users to allow in their firewalls."""
+    return {"success": True, "egressIps": await get_egress_ips()}
 
 @router.get("/api/v1/connectors/agents/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_active_agent_instances(
@@ -8714,6 +9055,45 @@ def _get_oauth_field_names_from_registry(connector_type: str) -> list[str]:
         return [AuthFieldKeys.CLIENT_ID, AuthFieldKeys.CLIENT_SECRET]
 
 
+def _get_required_oauth_field_names_from_registry(connector_type: str) -> list[str]:
+    """OAuth auth-field names the registry marks ``required`` (client ID and secret if unknown)."""
+    try:
+        from app.connectors.core.registry.oauth_config_registry import (
+            get_oauth_config_registry,
+        )
+
+        oauth_config = get_oauth_config_registry().get_config(connector_type)
+        if not oauth_config or not oauth_config.auth_fields:
+            return [AuthFieldKeys.CLIENT_ID, AuthFieldKeys.CLIENT_SECRET]
+        return [field.name for field in oauth_config.auth_fields if field.required]
+    except Exception:
+        return [AuthFieldKeys.CLIENT_ID, AuthFieldKeys.CLIENT_SECRET]
+
+
+def _placeholder_oauth_urls(connector_type: str) -> dict[str, str]:
+    """Registry default authorize and token URLs that stand in for the admin's own.
+
+    Only a connector that asks the admin for these URLs (ServiceNow) has them, and its
+    defaults point at a placeholder host. A client secret must never be sent there.
+    """
+    try:
+        from app.connectors.core.registry.oauth_config_registry import (
+            get_oauth_config_registry,
+        )
+
+        oauth_config = get_oauth_config_registry().get_config(connector_type)
+    except Exception:
+        return {}
+    if not oauth_config or not oauth_config.auth_fields:
+        return {}
+    asked_for = {field.name for field in oauth_config.auth_fields}
+    defaults = {
+        AuthFieldKeys.AUTHORIZE_URL: oauth_config.authorize_url,
+        AuthFieldKeys.TOKEN_URL: oauth_config.token_url,
+    }
+    return {name: url for name, url in defaults.items() if name in asked_for and url}
+
+
 def _get_secret_oauth_field_names_from_registry(connector_type: str) -> set[str]:
     """OAuth auth-field names marked ``is_secret=True`` in the registry.
 
@@ -8778,7 +9158,7 @@ async def _create_or_update_oauth_config(
         logger = logging.getLogger(__name__)
 
     # Raised before the try below, which turns every failure into a None return.
-    _check_salesforce_login_url(connector_type, auth_config)
+    _check_oauth_app_urls(connector_type, auth_config)
 
     try:
         # Get OAuth field names from registry (dynamic, no hardcoding)
@@ -8815,6 +9195,10 @@ async def _create_or_update_oauth_config(
                             # Update field if value is provided (including empty strings for clearing)
                             if value is not None:
                                 oauth_cfg[OAuthConfigKeys.CONFIG][field_name] = value
+                                # The app's top-level provider URLs, which some readers use,
+                                # follow a new value; the fill-in below keeps an existing one.
+                                if value and field_name in (AuthFieldKeys.AUTHORIZE_URL, AuthFieldKeys.TOKEN_URL):
+                                    oauth_cfg[field_name] = value
                             # If value is None and field exists, keep existing value
 
                         # Ensure OAuth infrastructure fields (prefer config URLs, then registry)
@@ -8873,8 +9257,10 @@ async def _create_or_update_oauth_config(
             oauth_app_id = new_oauth_config["_id"]
             logger.info(f"Created new OAuth config for connector {connector_type}")
 
-        # Save OAuth configs
-        await config_service.set_config(oauth_config_path, oauth_configs)
+        # Save OAuth configs. The store reports a failed write by returning False.
+        if not await config_service.set_config(oauth_config_path, oauth_configs):
+            logger.error(f"Failed to save OAuth config for connector {connector_type}")
+            return None
         logger.info(f"Successfully saved OAuth config for connector {connector_type}")
         return oauth_app_id
 
@@ -8978,7 +9364,7 @@ async def _validate_admin_oauth_config_before_creation(
     Raises:
         HTTPException: If OAuth name conflicts are detected
     """
-    _check_salesforce_login_url(connector_type, config.get(OAuthConfigKeys.AUTH))
+    _check_oauth_app_urls(connector_type, config.get(OAuthConfigKeys.AUTH))
 
     oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
     has_oauth_credentials = any(
@@ -9163,7 +9549,7 @@ async def create_oauth_config(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="config is required"
             )
-        _check_salesforce_login_url(connector_type, config)
+        _check_oauth_app_urls(connector_type, config)
 
         # Get OAuth config from registry (completely independent)
         # OAuth configs are self-contained and don't depend on connector/toolset registries
@@ -9315,10 +9701,26 @@ async def list_oauth_configs(
             is_admin=user_context["is_admin"]  # Server-side authorization check
         )
 
+        # Rows can be the stored documents themselves, so build copies rather than edit them.
+        oauth_configs_out = result.get("oauthConfigs", [])
+        if user_context["is_admin"]:
+            reveal = can_reveal_secrets(request)
+            oauth_configs_out = [
+                {
+                    **row,
+                    OAuthConfigKeys.CONFIG: mask_oauth_config_for_response(
+                        row, user_context["org_id"], is_admin=True, reveal=reveal
+                    )["config"],
+                }
+                if isinstance(row.get(OAuthConfigKeys.CONFIG), dict)
+                else row
+                for row in oauth_configs_out
+            ]
+
         # Return camelCase for frontend consistency
         return {
             "success": True,
-            "oauthConfigs": result.get("oauthConfigs", []),
+            "oauthConfigs": oauth_configs_out,
             "pagination": result.get("pagination", {})
         }
 
@@ -9387,6 +9789,7 @@ async def get_oauth_config_by_id(
             oauth_config,
             user_context["org_id"],
             is_admin=user_context["is_admin"],
+            reveal=can_reveal_secrets(request),
         )
 
         # For admins: return full config (edition may redact inherited secrets)
@@ -9501,7 +9904,7 @@ async def update_oauth_config(
             existing_cfg = oauth_config.get(OAuthConfigKeys.CONFIG, {}) or {}
             cleaned = strip_redacted_fields(new_config)
             merged = {**existing_cfg, **cleaned}
-            _check_salesforce_login_url(connector_type, merged)
+            _check_oauth_app_urls(connector_type, merged)
             oauth_config[OAuthConfigKeys.CONFIG] = merged
 
         # Ensure OAuth infrastructure fields are present (if missing, add from registry)

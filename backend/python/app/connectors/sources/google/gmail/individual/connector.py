@@ -26,10 +26,16 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+    oauth_app_not_linked_error,
+)
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     map_source_status,
+    not_downloadable,
+    not_found_at_source,
     to_stream_error,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -71,6 +77,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
 )
+from app.connectors.sources.google.common.gmail_message_parts import find_message_part
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
@@ -86,7 +93,7 @@ from app.models.entities import (
     RecordType,
     USER_EMAIL_PLACEHOLDER,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
@@ -252,12 +259,15 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.config = {"credentials": config}
 
             # Extract auth configuration
-            auth_config = config.get("auth")
+            auth_config = config.get("auth") or {}
             oauth_config_id = auth_config.get("oauthConfigId")
 
             if not oauth_config_id:
-                self.logger.error("Gmail oauthConfigId not found in auth configuration.")
-                return False
+                self.logger.error(
+                    "Gmail has no oauthConfigId in its auth config; it reads its "
+                    "client ID and secret only from a linked OAuth app."
+                )
+                raise oauth_app_not_linked_error()
 
             oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
@@ -323,6 +333,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.logger.info("✅ Google Gmail connector initialized successfully")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as ex:
             self.logger.error(f"❌ Error initializing Google Gmail connector: {ex}", exc_info=True)
             raise
@@ -535,6 +547,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_updated_at=source_created_at,
                 mime_type=MimeTypes.GMAIL.value,
                 weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
+                inherit_permissions=True,
                 preview_renderable=False,
                 subject=subject,
                 from_email=from_email,
@@ -544,30 +557,9 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 internet_message_id=internet_message_id,
             )
 
-            # Extract sender email from "from" header (may contain name)
-            sender_email = self._extract_email_from_header(from_email)
-
-            # Create permission based on whether user_email is the sender
-            permissions = []
-            if user_email:
-                # Normalize emails for comparison (case-insensitive)
-                user_email_lower = user_email.lower()
-                sender_email_lower = sender_email.lower() if sender_email else ""
-
-                if sender_email_lower and user_email_lower == sender_email_lower:
-                    # User is the sender - create owner permission
-                    permissions.append(Permission(
-                        email=user_email,
-                        type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    ))
-                else:
-                    # User is not the sender - create read permission
-                    permissions.append(Permission(
-                        email=user_email,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.USER
-                    ))
+            # App-level: the creator passes the gate. A message inherits from its
+            # label, and the label inherits from the app.
+            permissions: list[Permission] = []
 
             self.logger.debug(
                 f"Processed message {message_id} in thread {thread_id}: "
@@ -901,6 +893,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_updated_at=get_epoch_timestamp_in_ms(),
                 mime_type=mime_type,
                 weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
+                inherit_permissions=True,
                 size_in_bytes=size,
                 extension=extension,
                 is_file=True,
@@ -911,8 +904,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
             if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
                 file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-            # Inherit parent mail permissions
-            attachment_permissions = parent_mail_permissions
+            del parent_mail_permissions
+            attachment_permissions: list[Permission] = []
 
             attachment_identifier = drive_file_id if is_drive_file else attachment_id
             self.logger.debug(
@@ -1402,7 +1395,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
         convertTo: Optional[str] = None
     ) -> StreamingResponse:
         """
-        Stream attachment content from Gmail with Drive fallback.
+        Stream attachment content from Gmail, or from Drive for a Drive-hosted attachment.
 
         Args:
             gmail_service: Raw Gmail API service client
@@ -1444,52 +1437,49 @@ class GoogleGmailIndividualConnector(BaseConnector):
         # Check if file_id is a combined ID (messageId~partId format)
         actual_attachment_id = file_id
         if "~" in file_id:
+            file_message_id, part_id = file_id.split("~", 1)
+
+            # Use the message_id from parent record, but validate it matches
+            if file_message_id != message_id:
+                self.logger.warning(
+                    f"Message ID mismatch: file_id has {file_message_id}, parent has {message_id}. Using parent message_id."
+                )
+
+            # Fetch the message to get the actual attachment ID
             try:
-                file_message_id, part_id = file_id.split("~", 1)
+                request = (
+                    gmail_service.users()
+                    .messages()
+                    .get(userId="me", id=message_id, format="full")
+                )
+                message = await self.gmail_data_source.execute(request.execute)
+            except HttpError as access_error:
+                self.logger.error(f"Failed to fetch message {message_id}: {str(access_error)}")
+                raise map_source_status(
+                    access_error.resp.status, connector=self.display_name
+                ) from access_error
+            except Exception as access_error:
+                self.logger.error(f"Failed to fetch message {message_id}: {str(access_error)}")
+                raise to_stream_error(
+                    access_error, connector=self.display_name
+                ) from access_error
 
-                # Use the message_id from parent record, but validate it matches
-                if file_message_id != message_id:
-                    self.logger.warning(
-                        f"Message ID mismatch: file_id has {file_message_id}, parent has {message_id}. Using parent message_id."
-                    )
+            if not message or "payload" not in message:
+                self.logger.error(f"Message or payload not found for message ID {message_id}")
+                raise not_found_at_source(self.display_name)
 
-                # Fetch the message to get the actual attachment ID
-                try:
-                    request = (
-                        gmail_service.users()
-                        .messages()
-                        .get(userId="me", id=message_id, format="full")
-                    )
-                    message = await self.gmail_data_source.execute(request.execute)
-                except HttpError as access_error:
-                    self.logger.error(f"Failed to fetch message {message_id}: {str(access_error)}")
-                    raise map_source_status(
-                        access_error.resp.status, connector=self.display_name
-                    ) from access_error
-
-                if not message or "payload" not in message:
-                    raise Exception(f"Message or payload not found for message ID {message_id}")
-
-                # Search for the part with matching partId
-                parts = message["payload"].get("parts", [])
-                for part in parts:
-                    if part.get("partId") == part_id:
-                        actual_attachment_id = part.get("body", {}).get("attachmentId")
-                        if not actual_attachment_id:
-                            raise Exception("Attachment ID not found in part body")
-                        self.logger.info(f"Found attachment ID: {actual_attachment_id}")
-                        break
-                else:
-                    raise Exception("Part ID not found in message")
-
-            except HTTPException:
-                # Gmail already gave a verdict on this message. Falling through to
-                # Drive would re-look-up a `messageId~partId` Drive cannot resolve
-                # and report a deleted message as a server error.
-                raise
-            except Exception as e:
-                self.logger.error(f"Error extracting attachment ID: {str(e)}")
-                return await self._stream_from_drive(file_id, record, file_name, mime_type, convertTo)
+            # A `messageId~partId` id names a Gmail part only; Drive cannot resolve it.
+            part = find_message_part(message["payload"].get("parts"), part_id)
+            if part is None:
+                self.logger.error(f"Part {part_id} not found in message {message_id}")
+                raise not_found_at_source(self.display_name)
+            actual_attachment_id = part.get("body", {}).get("attachmentId")
+            if not actual_attachment_id:
+                raise not_downloadable(
+                    "This attachment has no downloadable content in Gmail.",
+                    connector=self.display_name,
+                )
+            self.logger.info(f"Found attachment ID: {actual_attachment_id}")
 
         # Try to get the attachment from Gmail
         try:
@@ -1645,18 +1635,13 @@ class GoogleGmailIndividualConnector(BaseConnector):
                         connector_name=self.connector_name,
                         connector_id=self.connector_id,
                         group_type=RecordGroupType.MAILBOX,
+                        inherit_permissions=True,
                     )
 
-                    # Create owner permission from user to record group
-                    owner_permission = Permission(
-                        email=user_email,
-                        type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    )
-
-                    # Submit to processor
+                    # The creator passes the app gate. An empty list clears an
+                    # owner grant an older sync stored on the label.
                     await self.data_entities_processor.on_new_record_groups(
-                        [(record_group, [owner_permission])]
+                        [(record_group, [])]
                     )
 
                     total_record_groups_processed += 1
@@ -1817,7 +1802,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                                     # Process batch when it reaches the size limit
                                     if batch_count >= self.batch_size:
-                                        await self.data_entities_processor.on_new_records(batch_records)
+                                        await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                                         self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
                                         batch_records = []
                                         batch_count = 0
@@ -1856,7 +1841,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Process remaining records in batch
             if batch_records:
-                await self.data_entities_processor.on_new_records(batch_records)
+                await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                 self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
 
             # Update sync point with final state (clear pageToken, keep historyId)
@@ -2309,7 +2294,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                         # Process batch when it reaches the size limit
                         if batch_count >= self.batch_size:
-                            await self.data_entities_processor.on_new_records(batch_records)
+                            await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                             self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
                             batch_records = []
                             batch_count = 0
@@ -2328,7 +2313,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             # Process remaining records in batch
             if batch_records:
                 try:
-                    await self.data_entities_processor.on_new_records(batch_records)
+                    await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                     self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
                 except Exception as batch_error:
                     self.logger.error(f"Error processing final batch: {batch_error}")
@@ -2469,7 +2454,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Update DB only for records that changed at source
             if updated_records:
-                await self.data_entities_processor.on_new_records(updated_records)
+                await self.data_entities_processor.on_new_records(updated_records, replace_permissions=True)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 
             # Publish reindex events for non updated records

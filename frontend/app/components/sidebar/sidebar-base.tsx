@@ -26,8 +26,67 @@ import type { SidebarBaseProps } from './types';
  * secondary panel render side-by-side in a horizontal flex container.
  * This is used for "More Chats", "More items", etc.
  */
-export function SidebarBase({ header, children, footer, secondaryPanel, onDismissSecondaryPanel, isMobile, mobileOpen, onMobileClose }: SidebarBaseProps) {
+export function SidebarBase({ header, children, footer, footerHeight = FOOTER_HEIGHT, secondaryPanel, onDismissSecondaryPanel, isMobile, mobileOpen, onMobileClose }: SidebarBaseProps) {
   const { t } = useTranslation();
+  // Every hook runs before the mobile branch returns: isMobile flips after mount
+  // and on resize, and a render with fewer hooks than the last one crashes React.
+  const sidebarWidth = useSidebarWidthStore((s) => s.sidebarWidth);
+  const setSidebarWidth = useSidebarWidthStore((s) => s.setSidebarWidth);
+
+  const primaryRef = useRef<HTMLDivElement>(null);
+  const outerRef = useRef<HTMLDivElement>(null);
+  const secondaryRef = useRef<HTMLDivElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const widthRef = useRef(sidebarWidth);
+  const isDragging = useRef(false);
+
+  // Sync ref when store value changes (e.g. on hydration from localStorage)
+  useEffect(() => {
+    widthRef.current = sidebarWidth;
+  }, [sidebarWidth]);
+
+  const [dragHandleHovered, setDragHandleHovered] = useState(false);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const clamped = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, ev.clientX));
+      widthRef.current = clamped;
+      const hasSecondary = !!secondaryRef.current;
+      const clusterW = hasSecondary ? clamped + SIDEBAR_WIDTH : clamped;
+
+      if (primaryRef.current) {
+        primaryRef.current.style.width = `${clamped}px`;
+      }
+      if (outerRef.current) {
+        outerRef.current.style.width = `${clusterW}px`;
+        outerRef.current.style.minWidth = `${clusterW}px`;
+      }
+      if (secondaryRef.current) {
+        secondaryRef.current.style.left = `${clamped}px`;
+      }
+      if (backdropRef.current) {
+        backdropRef.current.style.left = `${clusterW}px`;
+      }
+    };
+
+    const onMouseUp = () => {
+      isDragging.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      setSidebarWidth(widthRef.current);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [setSidebarWidth]);
+
   // ── Mobile full-screen drawer ─────────────────────────────────
   // On mobile, render nothing when closed; a fixed full-width panel when open.
   if (isMobile) {
@@ -113,7 +172,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
         {footer && (
           <Box
             style={{
-              height: `${FOOTER_HEIGHT}px`,
+              height: footerHeight === 'auto' ? undefined : `${footerHeight}px`,
               flexShrink: 0,
             }}
           >
@@ -123,63 +182,6 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
       </Flex>
     );
   }
-
-  const sidebarWidth = useSidebarWidthStore((s) => s.sidebarWidth);
-  const setSidebarWidth = useSidebarWidthStore((s) => s.setSidebarWidth);
-
-  const primaryRef = useRef<HTMLDivElement>(null);
-  const outerRef = useRef<HTMLDivElement>(null);
-  const secondaryRef = useRef<HTMLDivElement>(null);
-  const backdropRef = useRef<HTMLDivElement>(null);
-  const widthRef = useRef(sidebarWidth);
-  const isDragging = useRef(false);
-
-  // Sync ref when store value changes (e.g. on hydration from localStorage)
-  useEffect(() => {
-    widthRef.current = sidebarWidth;
-  }, [sidebarWidth]);
-
-  const [dragHandleHovered, setDragHandleHovered] = useState(false);
-
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    isDragging.current = true;
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-
-    const onMouseMove = (ev: MouseEvent) => {
-      const clamped = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, ev.clientX));
-      widthRef.current = clamped;
-      const hasSecondary = !!secondaryRef.current;
-      const clusterW = hasSecondary ? clamped + SIDEBAR_WIDTH : clamped;
-
-      if (primaryRef.current) {
-        primaryRef.current.style.width = `${clamped}px`;
-      }
-      if (outerRef.current) {
-        outerRef.current.style.width = `${clusterW}px`;
-        outerRef.current.style.minWidth = `${clusterW}px`;
-      }
-      if (secondaryRef.current) {
-        secondaryRef.current.style.left = `${clamped}px`;
-      }
-      if (backdropRef.current) {
-        backdropRef.current.style.left = `${clusterW}px`;
-      }
-    };
-
-    const onMouseUp = () => {
-      isDragging.current = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      setSidebarWidth(widthRef.current);
-    };
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  }, [setSidebarWidth]);
 
   const primarySidebar = (
     <Flex
@@ -223,7 +225,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
       {footer && (
         <Box
           style={{
-            height: `${FOOTER_HEIGHT}px`,
+            height: footerHeight === 'auto' ? undefined : `${footerHeight}px`,
             flexShrink: 0,
           }}
         >

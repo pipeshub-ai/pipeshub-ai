@@ -1925,7 +1925,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return BookStackResponse(success=True, data=response.json(), status_code=response.status)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2018,7 +2018,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return BookStackResponse(success=True, data=response.json(), status_code=response.status)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2162,7 +2162,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return BookStackResponse(success=True, data=response.json(), status_code=response.status)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2251,9 +2251,9 @@ class BookStackDataSource:
 
             if 'error' in response_data:
                 error_message = response_data.get('error', {}).get('message', 'Unknown API error')
-                return BookStackResponse(success=False, error=error_message)
+                return BookStackResponse(success=False, error=error_message, status_code=response.status)
 
-            return BookStackResponse(success=True, data=response_data)
+            return BookStackResponse(success=True, data=response_data, status_code=response.status)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 

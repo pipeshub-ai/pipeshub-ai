@@ -965,7 +965,7 @@ class TestStreamRecordInternalEdgeCases:
             "isActive": True if has_connector_obj else False,
         }
 
-        async def _get_doc(doc_id, collection):
+        async def _get_doc(doc_id, collection, *, raise_on_error=False):
             if collection == CollectionNames.ORGS.value:
                 return {"_key": "org-1"}
             return connector_instance_doc
@@ -1088,7 +1088,7 @@ class TestStreamRecordInternalEdgeCases:
         """Connector instance deleted -> 404."""
         record = _mock_record(org_id="org-1")
 
-        async def get_doc_side_effect(doc_id, collection):
+        async def get_doc_side_effect(doc_id, collection, *, raise_on_error=False):
             if collection == CollectionNames.ORGS.value:
                 return {"_key": "org-1"}
             return None  # connector not found
@@ -1258,7 +1258,7 @@ class TestDownloadFileDeepPaths:
         req, handler, gp, record = self._setup()
 
         call_count = [0]
-        async def get_doc(doc_id, collection):
+        async def get_doc(doc_id, collection, *, raise_on_error=False):
             call_count[0] += 1
             if collection == CollectionNames.ORGS.value:
                 return {"_key": "org-1"}
@@ -1319,7 +1319,7 @@ class TestStreamRecordDeepPaths:
             "isActive": True if has_connector_obj else False,
         }
 
-        async def _get_doc(doc_id, collection):
+        async def _get_doc(doc_id, collection, *, raise_on_error=False):
             if collection == CollectionNames.ORGS.value:
                 return {"_key": "org-1"}
             return connector_instance_doc
@@ -1513,7 +1513,7 @@ class TestStreamRecordDeepPaths:
         req, record, gp, cs, conn_obj = self._setup()
 
         call_count = [0]
-        async def get_doc(doc_id, collection):
+        async def get_doc(doc_id, collection, *, raise_on_error=False):
             call_count[0] += 1
             if collection == CollectionNames.ORGS.value:
                 return {"_key": "org-1"}

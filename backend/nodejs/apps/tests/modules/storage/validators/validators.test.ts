@@ -10,13 +10,38 @@ import {
   DirectUploadSchema,
   RollBackToPreviousVersionSchema,
   DocumentIdParamsWithVersion,
+  MissingDocumentsSchema,
 } from '../../../../src/modules/storage/validators/validators'
+
+import { MAX_MISSING_DOCUMENT_IDS } from '../../../../src/modules/storage/constants/constants'
 
 const DOCUMENT_ID = '64d000000000000000000b01'
 
 describe('storage/validators/validators', () => {
   afterEach(() => {
     sinon.restore()
+  })
+
+  describe('MissingDocumentsSchema', () => {
+    const request = (documentIds: unknown) => ({
+      body: { documentIds },
+      headers: { authorization: 'Bearer token' },
+    })
+
+    it('accepts a batch up to the cap', () => {
+      const ids = Array.from({ length: MAX_MISSING_DOCUMENT_IDS }, () => DOCUMENT_ID)
+      expect(MissingDocumentsSchema.safeParse(request(ids)).success).to.be.true
+    })
+
+    it('refuses a batch over the cap', () => {
+      const ids = Array.from({ length: MAX_MISSING_DOCUMENT_IDS + 1 }, () => DOCUMENT_ID)
+      expect(MissingDocumentsSchema.safeParse(request(ids)).success).to.be.false
+    })
+
+    it('refuses an empty batch and a non-list', () => {
+      expect(MissingDocumentsSchema.safeParse(request([])).success).to.be.false
+      expect(MissingDocumentsSchema.safeParse(request(DOCUMENT_ID)).success).to.be.false
+    })
   })
 
   describe('UploadNewSchema', () => {

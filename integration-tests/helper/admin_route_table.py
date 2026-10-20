@@ -104,6 +104,7 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("POST", f"{_CM}/platform/settings", admin="invalid"),
     AdminRoute("GET", f"{_CM}/platform/settings"),
     AdminRoute("GET", f"{_CM}/platform/feature-flags/available"),
+    AdminRoute("GET", f"{_CM}/secretReveal"),
     AdminRoute("GET", f"{_CM}/slack-bot"),
     AdminRoute("POST", f"{_CM}/slack-bot", admin="invalid"),
     AdminRoute("PUT", f"{_CM}/slack-bot/:configId", admin="invalid"),
@@ -128,6 +129,9 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("GET", f"{_CM}/ai-models/download-progress"),
     AdminRoute("GET", f"{_CM}/ai-models/:modelType", admin="invalid"),
     AdminRoute("POST", f"{_CM}/ai-models/providers", admin="invalid"),
+    AdminRoute("POST", f"{_CM}/ai-models/discover", admin="invalid"),
+    AdminRoute("POST", f"{_CM}/ai-models/providers/batch", admin="invalid"),
+    AdminRoute("PUT", f"{_CM}/ai-models/connections/:connectionId/credentials", admin="invalid"),
     _no_admin("POST", f"{_CM}/ai-models/prepare-model",
               "starts preparing a local model; no validator follows the check"),
     AdminRoute("PUT", f"{_CM}/ai-models/providers/:modelType/:modelKey", admin="invalid"),
@@ -156,6 +160,12 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("POST", "/api/v1/service-tokens", admin="invalid"),
     AdminRoute("GET", "/api/v1/service-tokens/scopes"),
     AdminRoute("DELETE", "/api/v1/service-tokens/:tokenId", admin="invalid"),
+    # No rows for /api/v1/service-account-delegations, deliberately. Letting a
+    # service account act as a named person is an Enterprise capability; this
+    # build mounts a stub that answers the capability probe and 501s the rest
+    # (oauth_provider/routes/delegation.routes.ts), with no admin check to
+    # test. The Enterprise overlay carries the admin-gated router, so the rows
+    # belong in whatever inventory covers that build, not this one.
     # tokens_manager/routes/connectors.routes.ts
     _no_admin("POST", "/api/v1/connectors/vector-store/cleanup",
               "drops and recreates the org's vector collection"),
@@ -163,6 +173,8 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
               "re-embeds every connector in the org"),
     _no_admin("POST", "/api/v1/connectors/getTokenFromCode",
               "exchanges an OAuth code and stores the result; no validator follows the check"),
+    # tokens_manager/routes/health.routes.ts (read-only: estimates index memory)
+    AdminRoute("GET", "/api/v1/health/vector-db/memory"),
     # user_management/routes/org.routes.ts
     AdminRoute("PUT", "/api/v1/org", admin="invalid"),
     _no_admin("DELETE", "/api/v1/org", "deletes the test org"),
@@ -206,9 +218,6 @@ def _py(method: str, path: str, handler: str, **kw: Any) -> AdminRoute:
 
 _MCP = "/api/v1/mcp-servers"
 _TOOLSETS = "/api/v1/toolsets"
-_MCP_BODY = {"name": "it-admin-probe", "transport": "stdio", "authMode": "none"}
-_TOOLSET_BODY = {"instanceName": "it-admin-probe", "toolsetType": "it-no-such-toolset",
-                 "authType": "NONE"}
 _OAUTH_BODY = {"oauthInstanceName": "it-admin-probe", "config": {"clientId": "x"},
                "baseUrl": "http://localhost"}
 
@@ -229,27 +238,6 @@ PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
         member_body={"enabled": False}, refusal_words="Only admins",
         admin=None, why_no_admin="turns the sample workspace on or off for the whole org"),
     _py("GET", f"{_MCP}/instances", "api/routes/mcp_servers.py::list_instances"),
-    _py("POST", f"{_MCP}/instances", "api/routes/mcp_servers.py::create_instance",
-        member_body=_MCP_BODY, admin="admin_body"),
-    _py("GET", f"{_MCP}/instances/:instanceId", "api/routes/mcp_servers.py::get_instance"),
-    _py("PUT", f"{_MCP}/instances/:instanceId", "api/routes/mcp_servers.py::update_instance",
-        member_body=_MCP_BODY),
-    _py("DELETE", f"{_MCP}/instances/:instanceId", "api/routes/mcp_servers.py::delete_instance"),
-    _py("POST", f"{_MCP}/oauth/discover",
-        "api/routes/mcp_servers.py::discover_oauth_metadata_endpoint",
-        member_body={"url": "http://127.0.0.1:1/"}, admin="admin_body"),
-    _py("GET", f"{_MCP}/instances/:instanceId/oauth-config",
-        "api/routes/mcp_servers.py::get_oauth_config"),
-    _py("PUT", f"{_MCP}/instances/:instanceId/oauth-config",
-        "api/routes/mcp_servers.py::update_oauth_config",
-        member_body={"clientId": "x", "clientSecret": "y"}),
-    _py("POST", f"{_TOOLSETS}/instances", "api/routes/toolsets.py::create_toolset_instance",
-        member_body=_TOOLSET_BODY, admin="admin_body"),
-    _py("PUT", f"{_TOOLSETS}/instances/:instanceId",
-        "api/routes/toolsets.py::update_toolset_instance",
-        member_body={"instanceName": "it-admin-probe"}),
-    _py("DELETE", f"{_TOOLSETS}/instances/:instanceId",
-        "api/routes/toolsets.py::delete_toolset_instance"),
     _py("PUT", f"{_TOOLSETS}/oauth-configs/:toolsetType/:oauthConfigId",
         "api/routes/toolsets.py::update_toolset_oauth_config",
         member_body={"clientId": "x"}),
@@ -263,10 +251,6 @@ ADMIN_BODIES: dict[tuple[str, str], Any] = {
     ("POST", "/api/v1/oauth/:connectorType"): {
         "oauthInstanceName": "it-admin-probe", "config": {}, "baseUrl": "http://localhost",
     },
-    ("POST", f"{_MCP}/instances"): {**_MCP_BODY, "typeId": "it-no-such-type"},
-    # A loopback address the discovery guard refuses, and a closed port if it did not.
-    ("POST", f"{_MCP}/oauth/discover"): {"url": "http://127.0.0.1:1/"},
-    ("POST", f"{_TOOLSETS}/instances"): _TOOLSET_BODY,
 }
 
 # Python handlers that reach an admin check but sit behind Node's
@@ -274,6 +258,7 @@ ADMIN_BODIES: dict[tuple[str, str], Any] = {
 PYTHON_BEHIND_NODE_ADMIN = frozenset({
     "connectors/api/router.py::cleanup_vector_store",
     "connectors/api/router.py::reindex_vector_store",
+    "connectors_main.py::vector_db_memory_check",
 })
 
 # Python handlers that ask whether the caller is an admin but let members
@@ -290,6 +275,8 @@ PYTHON_CONDITIONAL_ADMIN = {
     "connectors/api/router.py::save_connector_instance_filters": "team connectors need admin",
     "connectors/api/router.py::toggle_connector_instance": "team connectors need admin",
     "connectors/api/router.py::update_connector_instance_auth_config": "team connectors need admin",
+    # Only when the check is for an instance being edited; a new connector's has no admin check.
+    "connectors/api/router.py::check_connector_connection": "team connectors need admin",
     "connectors/api/router.py::update_connector_instance_config": "team connectors need admin",
     "connectors/api/router.py::update_connector_instance_filters_sync_config": "team connectors need admin",
     "connectors/api/router.py::update_connector_instance_name": "team connectors need admin",
@@ -308,6 +295,20 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/toolsets.py::get_toolset_instances": "secrets are masked for members",
     "api/routes/toolsets.py::get_toolset_instance": "secrets are masked for members",
     "api/routes/toolsets.py::list_toolset_oauth_configs": "secrets are masked for members",
+    # Everyone reads an org toolset's tool approvals; the admin flag says who may change them.
+    # A personal toolset's are its owner's alone.
+    "api/routes/toolsets.py::get_toolset_tool_rules": "members read, admins edit",
+    # The listing is the same for an admin; the flag only labels the root `permissions` block.
+    "connectors/sources/localKB/api/knowledge_hub_router.py::get_knowledge_hub_root_nodes":
+        "admin flag fills the root permissions block",
+    "connectors/sources/localKB/api/knowledge_hub_router.py::get_knowledge_hub_children_nodes":
+        "admin flag is read but unused below a parent",
+    # Members add toolsets of their own: an org toolset is the admins', a personal one its
+    # owner's, and nobody else (the admin included) finds a personal one.
+    "api/routes/toolsets.py::create_toolset_instance": "a member's new toolset is personal",
+    "api/routes/toolsets.py::update_toolset_instance": "a personal toolset is its owner's",
+    "api/routes/toolsets.py::delete_toolset_instance": "a personal toolset is its owner's",
+    "api/routes/toolsets.py::update_toolset_tool_rules": "a personal toolset's rules are its owner's",
     # Record reads: the caller's own access to the record decides, admin or not.
     # The admin flag only reaches the connector loader, which refuses nobody on it.
     "connectors/api/router.py::download_file": "signed link and record permission",
@@ -322,4 +323,27 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/mcp_servers.py::authenticate_instance": "shared admin credential needs admin",
     "api/routes/mcp_servers.py::update_credentials": "shared admin credential needs admin",
     "api/routes/mcp_servers.py::remove_credentials": "shared admin credential needs admin",
+    "api/routes/mcp_servers.py::reauthenticate_instance": "shared admin credential needs admin",
+    # Members add MCP servers of their own: an org server is the admins', a personal one
+    # its owner's. The server is looked up before anyone is asked, so a missing id is a 404.
+    "api/routes/mcp_servers.py::create_instance": "a member's new server is personal",
+    "api/routes/mcp_servers.py::get_instance": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::update_instance": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::get_oauth_config": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::update_oauth_config": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::delete_instance": "a personal server is its owner's",
+    # A member checks the URL of a server they could add: a personal one, public only.
+    "api/routes/mcp_servers.py::discover_oauth_metadata_endpoint": "a member's URL must be public",
+    # Everyone gets the listing; only admins see how an org server is reached.
+    "api/routes/mcp_servers.py::get_my_mcp_servers": "connection details for admins",
+    "api/routes/mcp_servers.py::get_agent_mcp_servers": "connection details for admins",
 }
+
+
+# A toolset's tool-rules routes answer 404 with this when the edition has no organization tool
+# rules (`edition_config.organization_toolset_tool_rules`); their admin check is never reached.
+ORG_TOOL_RULES_OFF = "Organization tool approvals aren't available here"
+TOOL_RULES_HANDLERS = frozenset({
+    "api/routes/toolsets.py::get_toolset_tool_rules",
+    "api/routes/toolsets.py::update_toolset_tool_rules",
+})

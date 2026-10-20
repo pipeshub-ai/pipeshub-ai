@@ -10,7 +10,7 @@
  *  - NEW chats: a backend-provided `displayName` always wins outright.
  */
 import { describe, it, expect } from 'vitest';
-import { isSkillTool, toolActivityLabel, toolStatusLabel, humanizeToolName } from '../tool-display';
+import { extractToolsetLabel, isSkillTool, isWebTool, toolActivityLabel, toolStatusLabel, humanizeToolName } from '../tool-display';
 
 describe('isSkillTool', () => {
   it('is true for exactly the five built-in skill tools', () => {
@@ -77,5 +77,39 @@ describe('humanizeToolName — regression guard for the pre-map behavior', () =>
   it('title-cases a skill tool name the old way, confirming the map is what changed', () => {
     expect(humanizeToolName('load_skill')).toBe('Load Skill');
     expect(humanizeToolName('skill_search')).toBe('Skill Search');
+  });
+});
+
+describe('extractToolsetLabel', () => {
+  it('labels connector tools from their `{app}__` prefix', () => {
+    expect(extractToolsetLabel('jira__search_issues')).toBe('Jira');
+  });
+
+  it('gives MCP tools a generic MCP chip', () => {
+    expect(extractToolsetLabel('mcp_pangea_get_audit_logs')).toBe('MCP');
+  });
+
+  it('returns undefined for plain built-in tool names', () => {
+    expect(extractToolsetLabel('run_code')).toBeUndefined();
+    expect(extractToolsetLabel(undefined)).toBeUndefined();
+  });
+
+  it('gives the built-in web tools no toolset badge', () => {
+    expect(extractToolsetLabel('dynamic__web_search')).toBeUndefined();
+    expect(extractToolsetLabel('dynamic__fetch_url')).toBeUndefined();
+  });
+});
+
+describe('isWebTool', () => {
+  it('knows the web tools, with or without their prefix', () => {
+    expect(isWebTool('dynamic__web_search')).toBe(true);
+    expect(isWebTool('fetch_url')).toBe(true);
+    expect(isWebTool('dynamic__fetch_url')).toBe(true);
+  });
+
+  it('is false for anything else', () => {
+    expect(isWebTool('mcp_web_search')).toBe(false);
+    expect(isWebTool('knowledgegraph__search')).toBe(false);
+    expect(isWebTool(undefined)).toBe(false);
   });
 });

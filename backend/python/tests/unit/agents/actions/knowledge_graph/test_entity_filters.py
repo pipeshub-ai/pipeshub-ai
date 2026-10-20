@@ -55,6 +55,11 @@ class TestMergeFilterGroups:
         assert merged == {"topics": ["a", "b"], "departments": ["d"]}
         assert base == {"topics": ["a"]}
 
-    def test_none_extra_returns_base(self) -> None:
+    def test_none_extra_returns_a_copy(self) -> None:
+        # Callers add control keys (strictScope) to the result; returning base
+        # itself wrote them into the scope other tasks were still reading.
         base = {"topics": ["a"]}
-        assert merge_filter_groups(base, None) is base
+        merged = merge_filter_groups(base, None)
+        merged["strictScope"] = True
+        assert merged == {"topics": ["a"], "strictScope": True}
+        assert base == {"topics": ["a"]}

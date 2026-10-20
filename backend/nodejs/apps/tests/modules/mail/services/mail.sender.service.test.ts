@@ -39,15 +39,15 @@ describe('MailSenderService', () => {
 
   afterEach(() => sinon.restore());
 
-  it('reads SMTP config through the provider so a rebind is picked up', () => {
+  it('reads SMTP config through the provider so a rebind is picked up', async () => {
     // AppConfig is rebound on an SMTP update; a captured config would go stale.
     let current: any = { smtp: { host: 'old-host', port: 25, fromEmail: 'a@b.c' } };
     const sender = new MailSenderService(() => current, mockLogger);
 
-    expect(sender.getSmtpConfig()?.host).to.equal('old-host');
+    expect((await sender.getSmtpConfig())?.host).to.equal('old-host');
 
     current = { smtp: { host: 'new-host', port: 587, fromEmail: 'a@b.c' } };
-    expect(sender.getSmtpConfig()?.host).to.equal('new-host');
+    expect((await sender.getSmtpConfig())?.host).to.equal('new-host');
   });
 
   it('returns null when SMTP has not been configured', () => {
@@ -61,6 +61,15 @@ describe('MailSenderService', () => {
 
     expect(result.status).to.equal('sent');
     expect(sendMailStub.calledOnce).to.be.true;
+  });
+
+  it('passes Reply-To through to the transport, and leaves it unset when none is given', async () => {
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+    await sender.send({ ...body, replyTo: 'person@example.com' }, smtp);
+    await sender.send(body, smtp);
+
+    expect(sendMailStub.firstCall.args[0].replyTo).to.equal('person@example.com');
+    expect(sendMailStub.secondCall.args[0].replyTo).to.equal(undefined);
   });
 
   it('still reports sent when only the audit record fails to save', async () => {

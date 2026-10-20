@@ -38,6 +38,10 @@ describe('HTTP_STATUS', () => {
       expect(HTTP_STATUS.UNAUTHORIZED).to.equal(401);
     });
 
+    it('should have PAYMENT_REQUIRED as 402', () => {
+      expect(HTTP_STATUS.PAYMENT_REQUIRED).to.equal(402);
+    });
+
     it('should have FORBIDDEN as 403', () => {
       expect(HTTP_STATUS.FORBIDDEN).to.equal(403);
     });
@@ -100,8 +104,8 @@ describe('HTTP_STATUS', () => {
 
   // Structural tests
   describe('structural checks', () => {
-    it('should have exactly 21 status codes', () => {
-      expect(Object.keys(HTTP_STATUS)).to.have.lengthOf(21);
+    it('should have exactly 22 status codes', () => {
+      expect(Object.keys(HTTP_STATUS)).to.have.lengthOf(22);
     });
 
     it('should contain only the expected keys', () => {
@@ -113,6 +117,7 @@ describe('HTTP_STATUS', () => {
         'PERMANENT_REDIRECT',
         'BAD_REQUEST',
         'UNAUTHORIZED',
+        'PAYMENT_REQUIRED',
         'FORBIDDEN',
         'NOT_FOUND',
         'METHOD_NOT_ALLOWED',

@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type { SmtpConfig } from './types';
 
 // ============================================================
@@ -26,6 +27,12 @@ export const SmtpApi = {
     } catch {
       return null;
     }
+  },
+
+  /** Stored SMTP config with real values instead of placeholders. Only where the deployment allows it. */
+  async revealSmtpConfig(): Promise<SmtpConfig | null> {
+    const { data } = await apiClient.get<SmtpConfig>(SMTP_URL, { params: REVEAL_PARAMS });
+    return data?.host ? data : null;
   },
 
   /**

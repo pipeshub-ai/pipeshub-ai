@@ -13,6 +13,11 @@ interface ChatItemMenuProps {
   onRename: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  /** Saves the whole chat as a Markdown file. Omit to hide the option. */
+  onExport?: () => void;
+  /** Pins the chat, or unpins it when `isPinned`. Omit to hide the option. */
+  onTogglePin?: () => void;
+  isPinned?: boolean;
   /** Agent-scoped sidebar: only delete is supported by the API */
   showRename?: boolean;
   showArchive?: boolean;
@@ -25,7 +30,7 @@ interface ChatItemMenuProps {
 /**
  * Meatball (three-dot) dropdown menu for a chat sidebar item.
  *
- * Shows on hover of the parent row. Options: Rename, Archive, Delete.
+ * Shows on hover of the parent row. Options: Rename, Pin, Export, Archive, Delete.
  * Matches Figma spec (node 2496:29091).
  */
 export function ChatItemMenu({
@@ -34,6 +39,9 @@ export function ChatItemMenu({
   onRename,
   onArchive,
   onDelete,
+  onExport,
+  onTogglePin,
+  isPinned = false,
   showRename = true,
   showArchive = true,
   onMoveToProject,
@@ -93,6 +101,34 @@ export function ChatItemMenu({
             <Flex align="center" gap="1">
               <MaterialIcon name="drive_file_rename_outline" size={16} color="var(--slate-11)" />
               <Text size="2" style={{ color: 'var(--slate-11)' }}>{t('chat.rename')}</Text>
+            </Flex>
+          </DropdownMenu.Item>
+        )}
+        {onTogglePin && (
+          <DropdownMenu.Item
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePin();
+            }}
+          >
+            <Flex align="center" gap="1">
+              <MaterialIcon name={isPinned ? 'keep_off' : 'keep'} size={16} color="var(--slate-11)" />
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                {isPinned ? t('chat.unpin') : t('chat.pin')}
+              </Text>
+            </Flex>
+          </DropdownMenu.Item>
+        )}
+        {onExport && (
+          <DropdownMenu.Item
+            onClick={(e) => {
+              e.stopPropagation();
+              onExport();
+            }}
+          >
+            <Flex align="center" gap="1">
+              <MaterialIcon name="download" size={16} color="var(--slate-11)" />
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>{t('chat.export.menuItem')}</Text>
             </Flex>
           </DropdownMenu.Item>
         )}

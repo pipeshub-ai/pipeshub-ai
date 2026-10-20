@@ -3,22 +3,33 @@ import uuid
 from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Union
 
 from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
     AppGroups,
     CollectionNames,
     ConnectorScopes,
     Connectors,
     DeleteSource,
+    MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
-from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.base.data_store.graph_data_store import (
+    GraphDataStore,
+    ensure_written,
+)
+from app.connectors.sources.localKB.api.models import GrantablePermissionRole
 from app.connectors.services.entity_cleanup_intents import (
     EntityCleanupIntentError,
     record_pending_entity_cleanup,
 )
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.storage_release import (
+    StorageReleaseIntentError,
+    record_pending_storage_release,
+    release_connector_storage,
+)
 from app.connectors.services.trash_purge import load_purge_settings
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
@@ -63,12 +74,8 @@ MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
 # so background cleanups are kept alive here until they finish.
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
-# KB folders use this mime type in the RECORDS doc (matches the legacy create_folder
-# path). Note this differs from MimeTypes.FOLDER ("text/directory").
-KB_FOLDER_MIME_TYPE = "application/vnd.folder"
-# Restore asks for the role its delete needed: a single file can be deleted by a
-# file organizer, a folder or several items only by an owner or writer.
-RESTORE_FILE_ROLES = ("OWNER", "WRITER", "FILEORGANIZER")
+# Restore asks for the role its delete needed: an owner or a writer.
+RESTORE_FILE_ROLES = ("OWNER", "WRITER")
 RESTORE_BATCH_ROLES = ("OWNER", "WRITER")
 MAX_RESTORE_RECORD_IDS = 100
 # "name (restored)", "name (restored 2)", ... before giving up on a free name.
@@ -533,16 +540,29 @@ class KnowledgeBaseService:
             }
 
             async def write_kb(tx_store: "TransactionStore") -> None:
-                await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value)
-                await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
-                await tx_store.batch_create_edges([org_app_edge], CollectionNames.ORG_APP_RELATION.value)
-                await tx_store.batch_create_edges([user_app_edge], CollectionNames.USER_APP_RELATION.value)
+                ensure_written(
+                    await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value), "the knowledge base",
+                )
+                ensure_written(
+                    await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value),
+                    "the knowledge base owner's permission",
+                )
+                ensure_written(
+                    await tx_store.batch_create_edges([org_app_edge], CollectionNames.ORG_APP_RELATION.value),
+                    "the knowledge base's link to the organization",
+                )
+                ensure_written(
+                    await tx_store.batch_create_edges([user_app_edge], CollectionNames.USER_APP_RELATION.value),
+                    "the knowledge base's link to its owner",
+                )
 
             # Creates by one user collide on that user's node (a Neo4j deadlock,
-            # an ArangoDB write conflict). Every write is keyed by kb_key, so a
-            # re-run after a partial Neo4j auto-commit lands the same KB once.
+            # an ArangoDB write conflict). explicit: a failure leaves no half-made
+            # KB on Neo4j either. Every write is keyed by kb_key, so a re-run after
+            # a partial auto-commit (NEO4J_CREATE_TRANSACTIONS=false) lands the
+            # same KB once.
             self.logger.info("💾 Executing database operations...")
-            await self.graph_data_store.execute_idempotent_in_transaction(write_kb)
+            await self.graph_data_store.execute_idempotent_in_transaction(write_kb, explicit=True)
             # After the commit, and outside the retry: the lane is keyed by
             # kb_key, so a second call returns the same lane. Best-effort; a
             # failure is logged and the first publish places the KB instead.
@@ -710,7 +730,7 @@ class KnowledgeBaseService:
             timestamp = get_epoch_timestamp_in_ms()
             user_key, user_role, err = await self._resolve_user_and_kb_access(
                 kb_id, user_id,
-                required_roles=["OWNER", "WRITER", "ORGANIZER"],
+                required_roles=["OWNER", "WRITER"],
             )
             if err:
                 return err
@@ -776,30 +796,31 @@ class KnowledgeBaseService:
             self.logger.info(f"🔐 User {user_key} has OWNER permission - proceeding with deletion")
 
             # Recorded before anything is removed: a lost deleteConnectorEntities
-            # is then still reconciled by the indexing service.
+            # is then still reconciled by the indexing service, and an unfinished
+            # storage release by the connectors service.
             try:
                 await record_pending_entity_cleanup(
                     self.config_service, org_id=org_id, connector_id=kb_id,
                     connector_name=Connectors.KNOWLEDGE_BASE.value,
                 )
-            except EntityCleanupIntentError:
-                self.logger.error("❌ Could not record entity cleanup for KB %s; not deleting it", kb_id)
+                await record_pending_storage_release(
+                    self.config_service, org_id=org_id, connector_id=kb_id,
+                )
+            except (EntityCleanupIntentError, StorageReleaseIntentError):
+                self.logger.error("❌ Could not record the cleanup owed by KB %s; not deleting it", kb_id)
                 return {
                     "success": False,
                     "reason": action_failed("delete this knowledge base"),
                     "code": 500,
                 }
+            self.logger.info("Storage release intent recorded | org=%s connector=%s", org_id, kb_id)
 
+            # A failed delete leaves the intent: a concurrent delete of this KB
+            # may have committed and still owe its release, and the reconciler
+            # drops the intent once stale if the KB does still exist.
             refused = await self._schedule_upload_removal(kb_id, org_id=org_id)
             if refused:
                 return refused
-
-            # Deduplicated content stored under this KB may be read by records in
-            # other connectors; only answerable before this KB's records go.
-            cleanup_helper = StorageCleanupHelper(
-                self.logger, self.graph_provider, self.config_service
-            )
-            shared_vrids = await cleanup_helper.find_shared_virtual_record_ids(kb_id)
 
             result = await self.graph_provider.delete_connector_instance(
                 connector_id=kb_id, org_id=org_id
@@ -853,7 +874,7 @@ class KnowledgeBaseService:
             # background so the API response is not blocked (mirrors the async
             # connector-delete pattern in event_service._handle_delete).
             task = asyncio.create_task(
-                self._cleanup_kb_storage(cleanup_helper, org_id, kb_id, shared_vrids),
+                self._cleanup_kb_storage(org_id, kb_id),
                 name=f"kb-cleanup-{kb_id}",
             )
             _BACKGROUND_TASKS.add(task)
@@ -954,38 +975,13 @@ class KnowledgeBaseService:
             description=f"publish {event['eventType']} for KB {kb_id}",
         )
 
-    async def _cleanup_kb_storage(
-        self,
-        cleanup_helper: StorageCleanupHelper,
-        org_id: str,
-        kb_id: str,
-        shared_vrids: list[str] | None,
-    ) -> None:
-        """Background task: delete blob storage for a deleted KB, then re-index
-        records elsewhere whose shared stored content went with it."""
-        if shared_vrids is None:
-            self.logger.error(
-                f"❌ Skipped blob storage deletion for KB {kb_id}: content shared "
-                f"with other connectors could not be determined."
-            )
-            return
+    async def _cleanup_kb_storage(self, org_id: str, kb_id: str) -> None:
+        """Background task: hand shared content over, then delete the KB's
+        blob storage; an unfinished release keeps its intent for a retry."""
+        cleanup_helper = StorageCleanupHelper(self.logger, self.graph_provider, self.config_service)
         try:
-            deleted = await cleanup_helper.delete_connector_storage(org_id, kb_id)
-            self.logger.info(f"✅ Deleted {deleted} storage documents for KB {kb_id}")
-        except Exception as storage_err:
-            self.logger.error(
-                f"❌ Failed to delete blob storage for KB {kb_id}: {storage_err}. "
-                f"Orphaned blobs may remain in storage."
-            )
-        # Runs even after a failed delete: part of it may have gone through.
-        try:
-            await cleanup_helper.repair_shared_records(
-                org_id, shared_vrids, self.kafka_service.publish_event
-            )
-        except Exception as repair_err:
-            self.logger.error(
-                f"❌ Failed to re-index records sharing content with deleted KB {kb_id}: "
-                f"{repair_err}. Re-index them to restore their stored content."
+            await release_connector_storage(
+                self.logger, cleanup_helper, self.config_service, org_id=org_id, connector_id=kb_id,
             )
         finally:
             await cleanup_helper.close()
@@ -1013,7 +1009,7 @@ class KnowledgeBaseService:
             external_record_group_id=kb_id,
             parent_external_record_id=parent_folder_id or None,
             version=0,
-            mime_type=KB_FOLDER_MIME_TYPE,
+            mime_type=MimeTypes.FOLDER.value,
             weburl=f"/kb/{kb_id}/folder/{folder_id}",
             is_file=False,
             extension=None,
@@ -1158,52 +1154,6 @@ class KnowledgeBaseService:
         except Exception as e:
             self.logger.error(f"❌ Nested folder creation failed: {str(e)}")
             return {"success": False, "code": 500, "reason": action_failed("create this folder")}
-
-    async def get_folder_contents(
-        self,
-        kb_id: str,
-        folder_id: str,
-        user_id: str,
-    ) -> Dict:
-        """Get contents of a folder"""
-        try:
-            self.logger.info(f"🔍 Getting contents of folder {folder_id} in KB {kb_id}")
-            user_key, user_role, err = await self._resolve_user_and_kb_access(kb_id, user_id)
-            if err:
-                return err
-
-            # Scope the folder to THIS KB before reading (the folder_id is caller-supplied;
-            # without this a member of any KB could read another KB's folder contents).
-            if not await self.graph_provider.validate_folder_in_kb(
-                kb_id, folder_id, visibility=RecordVisibility.ALL
-            ):
-                self.logger.warning(f"⚠️ Folder {folder_id} not found in KB {kb_id}")
-                return {"success": False, "code": 404, "reason": "Folder not found in knowledge base"}
-
-            # Get folder contents
-            result = await self.graph_provider.get_folder_contents(
-                kb_id=kb_id,
-                folder_id=folder_id,
-            )
-
-            if result:
-                self.logger.info("✅ Folder contents retrieved successfully")
-                return result
-            else:
-                self.logger.warning("⚠️ Folder not found")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": "Folder not found in knowledge base"
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get folder contents: {str(e)}")
-            return {
-                "success": False,
-                "code": 500,
-                "reason": action_failed("open this folder")
-            }
 
     async def updateFolder(
         self,
@@ -1373,6 +1323,41 @@ class KnowledgeBaseService:
                 "reason": action_failed("delete this folder")
             }
 
+    async def _record_edit_context(self, user_id: str, record_id: str) -> tuple[dict | None, dict | None]:
+        """(the record's KB context, None) when the user may edit it, else (None, refusal)."""
+        kb_context = await self.graph_provider._get_kb_context_for_record(record_id)
+        if not kb_context:
+            return None, {
+                "success": False,
+                "code": 404,
+                "reason": "Knowledge base context not found for record",
+            }
+        user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+        if not user:
+            return None, {
+                "success": False,
+                "code": 404,
+                "reason": f"User not found for user_id: {user_id}",
+            }
+        user_key = user.get("id") or user.get("_key")
+        user_role = await self.graph_provider.get_user_kb_permission(
+            kb_context.get("kb_id"), user_key
+        )
+        if not user_role:
+            # No role on the KB → hide existence (404), consistent with the read path.
+            return None, {
+                "success": False,
+                "code": 404,
+                "reason": "Record not found",
+            }
+        if user_role not in ["OWNER", "WRITER"]:
+            return None, {
+                "success": False,
+                "code": 403,
+                "reason": "User lacks permission to edit records",
+            }
+        return kb_context, None
+
     async def update_record(
         self,
         user_id: str,
@@ -1387,38 +1372,9 @@ class KnowledgeBaseService:
         try:
             self.logger.info(f"🚀 Updating record {record_id}")
 
-            # Resolve KB context and check edit permission (OWNER/WRITER only)
-            kb_context = await self.graph_provider._get_kb_context_for_record(record_id)
-            if not kb_context:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": "Knowledge base context not found for record",
-                }
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
-            if not user:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}",
-                }
-            user_key = user.get("id") or user.get("_key")
-            user_role = await self.graph_provider.get_user_kb_permission(
-                kb_context.get("kb_id"), user_key
-            )
-            if not user_role:
-                # No role on the KB → hide existence (404), consistent with the read path.
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": "Record not found",
-                }
-            if user_role not in ["OWNER", "WRITER"]:
-                return {
-                    "success": False,
-                    "code": 403,
-                    "reason": "User lacks permission to edit records",
-                }
+            kb_context, refusal = await self._record_edit_context(user_id, record_id)
+            if refusal:
+                return refusal
 
             # Check for file rename duplicate conflicts
             if "recordName" in updates:
@@ -2048,7 +2004,7 @@ class KnowledgeBaseService:
     def _trash_item(item: dict, min_age_ms: int | None) -> dict:
         record = item["record"]
         deleted_at = record.get("deletedAtTimestamp")
-        is_folder = item.get("isFile") is False or record.get("mimeType") == KB_FOLDER_MIME_TYPE
+        is_folder = item.get("isFile") is False or record.get("mimeType") in FOLDER_MIME_TYPES
         deleted_by = None
         if item.get("deletedByName") or item.get("deletedByEmail"):
             deleted_by = {"name": item.get("deletedByName"), "email": item.get("deletedByEmail")}
@@ -2091,9 +2047,10 @@ class KnowledgeBaseService:
             if not unique_users and not unique_teams:
                 return {"success": False, "reason": "No users or teams provided", "code": 400}
 
-            # Role is required for users, but not for teams (teams don't have roles)
+            # Role is required for users, but not for teams (teams don't have roles).
+            # Retired roles are never granted.
             if unique_users:
-                valid_roles = ["OWNER", "ORGANIZER", "WRITER", "COMMENTER", "READER"]
+                valid_roles = [r.value for r in GrantablePermissionRole]
                 if not role or role not in valid_roles:
                     return {"success": False, "reason": f"Invalid role: {role}. Role is required for users.", "code": 400}
 
@@ -2115,17 +2072,46 @@ class KnowledgeBaseService:
             if team_err:
                 return team_err
 
+            # The write overwrites an existing edge's role, which would change a
+            # member's role past the owner guards (an owner could demote the
+            # creator or the last other owner). So only new members are written
+            # here; an existing member's role change goes through
+            # update_kb_permission. Its guards run first, so a refusal leaves
+            # nothing half-done, and it writes last: the requester may be
+            # lowering their own role, after which they could not add anyone.
+            # Project sync re-shares on every membership change and relies on it.
+            existing = await self.graph_provider.get_kb_permissions(kb_id=kb_id, user_ids=graph_user_ids)
+            existing_roles = (existing or {}).get("users", {})
+            new_user_ids = [g for g in graph_user_ids if g not in existing_roles]
+            role_changes = [
+                external for external, g in zip(unique_users, graph_user_ids)
+                if g in existing_roles and existing_roles[g] != role
+            ]
+            if role_changes:
+                allowed = await self.update_kb_permission(
+                    kb_id, requester_id, role_changes, [], role, validate_only=True,
+                )
+                if not (allowed or {}).get("success"):
+                    return allowed
+
             # Step 2: Single AQL query to do everything at once
             # Pass role even if only teams (it will be ignored for teams)
             result = await self.graph_provider.create_kb_permissions(
                 kb_id=kb_id,
                 requester_id=requester_id,
-                user_ids=graph_user_ids,
+                user_ids=new_user_ids,
                 team_ids=unique_teams,
                 role=role if role else "READER"  # Default for teams (won't be used)
             )
 
+            if result.get("success") and role_changes:
+                updated = await self.update_kb_permission(kb_id, requester_id, role_changes, [], role)
+                if not (updated or {}).get("success"):
+                    # The new members above are already written.
+                    await notify_kb_records_changed(kb_id)
+                    return updated
             if result.get("success"):
+                result["updatedUsers"] = role_changes
                 self.logger.info(f"✅ Permissions created: {result['grantedCount']} granted")
                 # A revoked user keeps reading this KB until the entry
                 # expires otherwise: the cache is only invalidated on
@@ -2146,9 +2132,12 @@ class KnowledgeBaseService:
         requester_id: str,
         user_ids: List[str],
         team_ids: List[str],
-        new_role: str
+        new_role: str,
+        *,
+        validate_only: bool = False,
     ) -> Optional[Dict]:
-        """Update permissions for users and teams on a knowledge base"""
+        """Update permissions for users and teams on a knowledge base. With
+        ``validate_only`` the guards run and nothing is written."""
         try:
             self.logger.info(f"🚀 Updating permission for {len(user_ids)} users and {len(team_ids)} teams on KB {kb_id} to {new_role}")
 
@@ -2184,7 +2173,7 @@ class KnowledgeBaseService:
                 return resolve_err
 
             # Validate new role
-            valid_roles = ["OWNER", "ORGANIZER", "WRITER", "COMMENTER", "READER"]
+            valid_roles = [r.value for r in GrantablePermissionRole]
             if new_role not in valid_roles:
                 return {
                     "success": False,
@@ -2322,6 +2311,9 @@ class KnowledgeBaseService:
                         }
                     self.logger.info(f"⚠️ Downgrading Owner {owner_user_id} to {new_role} on KB {kb_id} (remaining owners: {total_owner_count - 1})")
                 # If new_role == "OWNER", it's a no-op (no change), which is fine
+
+            if validate_only:
+                return {"success": True}
 
             # Update permissions using batch update method for valid entities only
             result = await self.graph_provider.update_kb_permission(
@@ -2568,100 +2560,6 @@ class KnowledgeBaseService:
                 "success": False,
                 "reason": action_failed("load who this knowledge base is shared with"),
                 "code": 500
-            }
-
-    async def list_all_records(
-        self,
-        user_id: str,
-        org_id: str,
-        page: int = 1,
-        limit: int = 20,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        permissions: Optional[List[str]] = None,
-        date_from: Optional[int] = None,
-        date_to: Optional[int] = None,
-        sort_by: str = "createdAtTimestamp",
-        sort_order: str = "desc",
-        source: str = "all",  # "all", "local", "connector"
-    ) -> Dict:
-        """
-        List all records the user can access (from all KBs, folders, and direct connector permissions), with filters.
-        """
-        try:
-            self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await self.graph_provider.get_user_by_user_id(user_id=user_id, raise_on_error=True)
-
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-
-            skip = (page - 1) * limit
-            sort_order = sort_order.lower() if sort_order.lower() in ["asc", "desc"] else "desc"
-            sort_by = sort_by if sort_by in [
-                "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus"
-            ] else "createdAtTimestamp"
-
-            records, total_count, available_filters = await self.graph_provider.list_all_records(
-                user_id=user_key,
-                org_id=org_id,
-                skip=skip,
-                limit=limit,
-                search=search,
-                record_types=record_types,
-                origins=origins,
-                connectors=connectors,
-                indexing_status=indexing_status,
-                permissions=permissions,
-                date_from=date_from,
-                date_to=date_to,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                source=source,
-            )
-
-            total_pages = (total_count + limit - 1) // limit
-
-            applied_filters = {
-                k: v for k, v in {
-                    "search": search,
-                    "recordTypes": record_types,
-                    "origins": origins,
-                    "connectors": connectors,
-                    "indexingStatus": indexing_status,
-                    "source": source if source != "all" else None,
-                    "dateRange": {"from": date_from, "to": date_to} if date_from or date_to else None,
-                }.items() if v
-            }
-
-            return {
-                "records": records,
-                "pagination": {
-                    "page": page,
-                    "limit": limit,
-                    "totalCount": total_count,
-                    "totalPages": total_pages,
-                },
-                "filters": {
-                    "applied": applied_filters,
-                    "available": available_filters,
-                }
-            }
-        except Exception as e:
-            self.logger.error(f"❌ Failed to list all records: {str(e)}")
-            return {
-                "records": [],
-                "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
-                "filters": {"applied": {}, "available": {}},
-                "error": action_failed("load these files"),
             }
 
     async def list_kb_records(
@@ -3022,6 +2920,7 @@ class KnowledgeBaseService:
         file_dict: Dict,
         parent_folder_id: Optional[str],
         storage_url: str,
+        uploaded_by: Optional[str] = None,
     ) -> FileRecord:
         """Build a KB file FileRecord from the (record, fileRecord) dicts the client
         sends. `from_arango_record` already handles the KB-upload dict shape; we then
@@ -3033,6 +2932,8 @@ class KnowledgeBaseService:
         frec.connector_id = kb_id
         frec.external_record_group_id = kb_id
         frec.parent_external_record_id = parent_folder_id or None
+        # Server-side stamp: never trust a client-supplied uploader.
+        frec.uploaded_by = uploaded_by or None
         if storage_url and frec.external_record_id:
             frec.fetch_signed_url = (
                 f"{storage_url}/api/v1/document/internal/{frec.external_record_id}/download"
@@ -3073,7 +2974,12 @@ class KnowledgeBaseService:
         return folder_map, new_folder_records
 
     async def _build_upload_file_records(
-        self, kb_id: str, files: List[Dict], analysis: Dict, storage_url: str
+        self,
+        kb_id: str,
+        files: List[Dict],
+        analysis: Dict,
+        storage_url: str,
+        user_id: Optional[str] = None,
     ) -> tuple[List[FileRecord], List[Dict], List[str]]:
         """Build file FileRecords, deduplicating by name per destination folder (mirrors
         the provider's _create_files_batch skip logic). Returns (records, skipped, failed)."""
@@ -3121,7 +3027,9 @@ class KnowledgeBaseService:
                 if "recordName" not in record:
                     record["recordName"] = file_name
                 file_records.append(
-                    self._build_kb_file_record(kb_id, record, file_rec, parent_id, storage_url)
+                    self._build_kb_file_record(
+                        kb_id, record, file_rec, parent_id, storage_url, uploaded_by=user_id
+                    )
                 )
         return file_records, skipped_files, failed_files
 
@@ -3156,7 +3064,7 @@ class KnowledgeBaseService:
 
             storage_url = await self._get_storage_url()
             file_records, skipped_files, failed_files = await self._build_upload_file_records(
-                kb_id, files, analysis, storage_url
+                kb_id, files, analysis, storage_url, user_id=user_id
             )
 
             entities = [(fr, []) for fr in new_folder_records] + [(fr, []) for fr in file_records]
@@ -3243,7 +3151,7 @@ class KnowledgeBaseService:
                 }
             self.logger.info(f"KB context: {kb_context}")
 
-            # ── 4. Get current parent via RECORD_RELATIONS ───────────────────
+            # ── 4. Get current parent via NODE_RELATIONS ───────────────────
             parent_info = await self.graph_provider.get_record_parent_info(record_id)
             self.logger.info(f"Parent info: {parent_info}")
             # parent_info = {"parentId": str, "parentType": "record"|"recordGroup", "edgeKey": str} | None
@@ -3295,7 +3203,7 @@ class KnowledgeBaseService:
                             "reason": "Cannot move a folder into one of its own sub-folders (circular reference)",
                         }
                     subtree_height = await self.graph_provider.get_folder_subtree_height(
-                        record_id, folder_mime_types=[KB_FOLDER_MIME_TYPE]
+                        record_id, folder_mime_types=FOLDER_MIME_TYPES
                     )
                     if await self._exceeds_folder_depth(new_parent_id, 1 + subtree_height):
                         return {"success": False, "code": 400, "reason": FOLDER_DEPTH_LIMIT_REASON}

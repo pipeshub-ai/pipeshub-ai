@@ -1,0 +1,227 @@
+name: Docs Changelog
+
+# Manual only. Runs the `release-changelog` skill (.claude/skills/release-changelog/SKILL.md)
+# for a published release, converts the result to the docs format, and opens a
+# PR on pipeshub-ai/documentation that adds changelog/platform/<version>.mdx.
+# When changelog/<version>.md is already on main (reviewed notes), it is converted
+# as is and the skill does not run, unless `regenerate` is set.
+# Nothing else in the docs repo is edited; its own workflow regenerates the page.
+#
+# Claude reads contributor-written release notes and PR text, so it runs in a
+# read-only job and hands over only the converted file; the publish job checks
+# that file before it pushes with the write token.
+#
+# Secrets: ANTHROPIC_API_KEY (Claude API key) and DOCS_REPO_TOKEN (a token that
+# can push branches and open PRs on pipeshub-ai/documentation).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of a published release, e.g. v0.10.0
+        required: true
+        type: string
+      model:
+        description: Claude model ID or alias used for the skill run
+        required: false
+        default: claude-sonnet-5-5
+        type: string
+      regenerate:
+        description: Run the skill even when changelog/<version>.md is already on main
+        required: false
+        default: false
+        type: boolean
+
+env:
+  DOCS_REPO: pipeshub-ai/documentation
+
+concurrency:
+  group: docs-changelog-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Check the inputs and the tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+          # The values reach a command line and a prompt, so allow plain characters only.
+          if ! [[ "$TAG" =~ ^[0-9A-Za-z._-]+$ ]]; then
+            echo "::error::Tag \"$TAG\" has characters that are not allowed."
+            exit 1
+          fi
+          if ! [[ "$MODEL" =~ ^[0-9A-Za-z._:/-]+$ ]]; then
+            echo "::error::Model \"$MODEL\" has characters that are not allowed."
+            exit 1
+          fi
+          if ! is_draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"; then
+            echo "::error::No release found for tag \"$TAG\"."
+            exit 1
+          fi
+          if [ "$is_draft" = "true" ]; then
+            echo "::error::The release for tag \"$TAG\" is still a draft."
+            exit 1
+          fi
+          {
+            echo "version=${TAG#v}"
+            echo "model=$MODEL"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+
+      - name: Use the reviewed notes if they exist
+        id: notes
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          REGENERATE: ${{ inputs.regenerate }}
+          HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          # The skill can edit the workspace, so the convert step checks the
+          # converter against this hash, taken before the skill runs.
+          echo "converter_sha=$(sha256sum .github/scripts/changelog-to-mdx.py | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          if [ -f "changelog/${VERSION}.md" ] && [ "$REGENERATE" != "true" ]; then
+            echo "changelog/${VERSION}.md is on main; converting it without running the skill."
+            echo "run_skill=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$HAS_API_KEY" != "true" ]; then
+            echo "::error::The ANTHROPIC_API_KEY repository secret is not set."
+            exit 1
+          fi
+          echo "run_skill=true" >> "$GITHUB_OUTPUT"
+
+      # The skill's own `gh release view ... > file` is denied in a headless run
+      # (shell redirects are not covered by a tool allow rule), so save it here.
+      - name: Save the release for the skill
+        if: steps.notes.outputs.run_skill == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p tmp-release
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,name,publishedAt,isPrerelease,body > tmp-release/release.json
+
+      - name: Run the release-changelog skill
+        if: steps.notes.outputs.run_skill == 'true'
+        uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          prompt: |
+            Run the release-changelog skill for the release tagged "${{ inputs.tag }}"
+            of pipeshub-ai/pipeshub-ai. Follow .claude/skills/release-changelog/SKILL.md
+            for Steps 1 to 3 only: write changelog/${{ steps.release.outputs.version }}.md.
+            For Step 1, the output of the gh release view command is already saved at
+            tmp-release/release.json: read it with the Read tool instead of running
+            gh release view.
+            Do NOT edit CHANGELOG.md or changelog/README.md. Do NOT run git commit or
+            git push, and do NOT open a PR. Your only output is that one file.
+          claude_args: '--model ${{ steps.release.outputs.model }} --allowedTools "Read,Write,Edit,Glob,Grep,Skill,Bash(gh release view:*),Bash(gh pr view:*),Bash(ls:*),Bash(cat:*),Bash(wc:*),Bash(grep:*),Bash(mkdir:*)"'
+
+      - name: Convert to the docs format
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          CONVERTER_SHA: ${{ steps.notes.outputs.converter_sha }}
+        run: |
+          set -euo pipefail
+          if ! echo "$CONVERTER_SHA  .github/scripts/changelog-to-mdx.py" | sha256sum --check --quiet; then
+            echo "::error::.github/scripts/changelog-to-mdx.py changed during the run; not converting."
+            exit 1
+          fi
+          python3 -I .github/scripts/changelog-to-mdx.py "changelog/${VERSION}.md" "$RUNNER_TEMP/docs-changelog"
+
+      - name: Upload the docs file
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: docs-changelog
+          path: ${{ runner.temp }}/docs-changelog/${{ steps.release.outputs.version }}.mdx
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Download the docs file
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: docs-changelog
+          path: ${{ runner.temp }}/file
+
+      - name: Checkout the docs repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ env.DOCS_REPO }}
+          ref: main
+          token: ${{ secrets.DOCS_REPO_TOKEN }}
+          path: docs
+
+      - name: Open the docs PR
+        working-directory: docs
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
+          VERSION: ${{ needs.generate.outputs.version }}
+          TAG: ${{ inputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # Exactly one regular file, named for the version.
+          mapfile -t files < <(find "$RUNNER_TEMP/file" -type f)
+          if [ "${#files[@]}" -ne 1 ] || [ "$(basename "${files[0]}")" != "${VERSION}.mdx" ]; then
+            echo "::error::Expected only ${VERSION}.mdx from the generate job."
+            exit 1
+          fi
+
+          mkdir -p changelog/platform
+          cp "${files[0]}" "changelog/platform/${VERSION}.mdx"
+          # Validate the file with the docs repo's own script. Its page is
+          # regenerated by the docs workflow, so only the version file is committed.
+          node scripts/changelog/build-index.mjs
+          git add "changelog/platform/${VERSION}.mdx"
+          if git diff --cached --quiet; then
+            echo "::warning::changelog/platform/${VERSION}.mdx is already on main; nothing to do."
+            exit 0
+          fi
+
+          branch="changelog/platform-${VERSION}"
+          # Never overwrite the branch: reviewers may have pushed edits to it.
+          if git ls-remote --exit-code --heads origin "$branch" > /dev/null; then
+            echo "::error::Branch ${branch} already exists on ${DOCS_REPO}. Merge or delete it (closing its PR) before running again."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b "$branch"
+          git commit -q -m "docs(changelog): add platform ${VERSION}"
+          git push origin "HEAD:refs/heads/${branch}"
+
+          title="docs(changelog): platform ${VERSION}"
+          body="Adds \`changelog/platform/${VERSION}.mdx\` for [${TAG}](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}). Generated by the \`release-changelog\` skill ([workflow run](${RUN_URL})). The changelog page is regenerated by the docs workflow on this PR.
+
+          Review checklist:
+          - [ ] The headline captures the biggest story of the release
+          - [ ] Breaking changes and upgrade notes are complete
+          - [ ] Links and code samples render"
+          gh pr create --repo "$DOCS_REPO" --base main --head "$branch" --title "$title" --body "$body"

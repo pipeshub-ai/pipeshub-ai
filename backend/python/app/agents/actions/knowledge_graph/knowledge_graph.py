@@ -24,25 +24,30 @@ from typing import TYPE_CHECKING, Any
 from app.modules.demo_data.chat import excluded_app_ids
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.agent_loop.entity_search_tool import entity_search_offered_in
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
+from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
 )
+from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
 from app.utils.chat_helpers import resolve_frontend_url
 
 from .catalog import ConnectorCatalog
 from .models import NavigationView
 from .navigator import GraphNavigator
-from .ops.scope import resolve_scope
+from .ops.results import result_text, search_result_summary
+from .ops.scope import ids_within_scope, resolve_scope, selection_browse_refusal
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
-from .views import render_lookup_result, render_navigation_view
+from .views import render_lookup_result_with_ids, render_navigation_view_with_ids
 
 if TYPE_CHECKING:
+    from app.agent_loop_lib.core.messages import Part
     from app.agent_loop_lib.core.types import ToolResult
+    from app.agent_loop_lib.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -457,6 +462,10 @@ class KnowledgeGraph:
                 if result.matches:
                     node_id = result.matches[0].id
 
+        refusal = await selection_browse_refusal(state, graph_provider, user_key, org_id, node_id)
+        if refusal:
+            return False, refusal
+
         navigator = GraphNavigator(
             graph_provider=graph_provider,
             user_id=user_id,
@@ -482,12 +491,24 @@ class KnowledgeGraph:
                 node_types=node_types,
                 app_names=app_names,
             )
+            # A linked record is named from any source the user reads, not
+            # only from those the turn is limited to.
+            if view.related:
+                inside = await ids_within_scope(
+                    state, graph_provider, user_key, org_id, [row.id for row in view.related],
+                )
+                view.related = [row for row in view.related if row.id in inside]
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
 
-        remember_record_ids(state, _record_ids_in_view(view))
-        text = render_navigation_view(view, page, record_id_shortener)
+        text, emitted = render_navigation_view_with_ids(view, page, record_id_shortener)
+        fetchable = set(_record_ids_in_view(view))
+        remember_record_ids(
+            state,
+            [rid for rid in emitted if rid in fetchable],
+            names={n.id: n.name for n in (*view.rows, *view.related, *([view.current] if view.current else []))},
+        )
 
         # Sparse-result retry nudge: only fires when time filters were
         # actually applied, so a plain (unfiltered) empty/near-empty listing
@@ -607,10 +628,16 @@ class KnowledgeGraph:
 
         try:
             result = await resolver.resolve_many(idents)
+            # A match outside what the turn is limited to is not a match.
+            inside = await ids_within_scope(
+                state, graph_provider, user_key, org_id, [m.id for m in result.matches],
+            )
         except Exception:
             logger.exception("lookup_record resolve_many failed for %s", idents)
             return False, _NOT_FOUND_MSG
-        remember_record_ids(state, [m.id for m in result.matches])
+        if len(inside) < len(result.matches):
+            kept = [m for m in result.matches if m.id in inside]
+            result = result.model_copy(update={"matches": kept, "ambiguous": result.ambiguous and len(kept) > 1})
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
@@ -620,7 +647,12 @@ class KnowledgeGraph:
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
         record_id_shortener = get_record_id_shortener_if_enabled(state)
 
-        text = render_lookup_result(result, record_id_shortener)
+        text, emitted = render_lookup_result_with_ids(result, record_id_shortener)
+        remember_record_ids(
+            state,
+            emitted,
+            names={m.id: m.name for m in result.matches},
+        )
         # "Zero accessible results" is a legitimate lookup outcome, not a
         # tool failure — `success=False` renders as a red failed-tool-call
         # in the frontend and tells the model "the tool broke" rather than
@@ -770,9 +802,7 @@ class KnowledgeGraph:
                if args.get("source_ids") else "")
             if args.get("query") else None
         ),
-        result_summary=lambda args, result: (
-            _search_result_summary(args, result)
-        ),
+        result_summary=search_result_summary,
         display_name="Searched the knowledge base",
     )
     async def search(
@@ -784,7 +814,7 @@ class KnowledgeGraph:
         modified_after: str | None = None,
         modified_before: str | None = None,
         entity_ids: list[str] | None = None,
-    ) -> str:
+    ) -> str | list[Part]:
         """Semantic search — calls ops/search.py execute_search."""
         from .ops.search import execute_search
         return await execute_search(
@@ -849,6 +879,17 @@ class KnowledgeGraph:
                 required=False,
                 default=10,
             ),
+            ToolParameter(
+                name="named_entity_kinds",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Optional kinds when searching extracted named entities "
+                    "(person, organization, product, date, currency, ...). "
+                    "Ignored unless named-entity extraction is enabled."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
         args_summary=lambda args: (
@@ -864,6 +905,7 @@ class KnowledgeGraph:
         query: str | None = None,
         entity_types: list[str] | None = None,
         top_k: int = 10,
+        named_entity_kinds: list[str] | None = None,
     ) -> tuple[bool, str]:
         """Entity discovery — calls ops/entity_discovery.py."""
         from .ops.entity_discovery import execute_search_entities
@@ -872,6 +914,29 @@ class KnowledgeGraph:
             query=query,
             entity_types=entity_types,
             top_k=top_k,
+            named_entity_kinds=named_entity_kinds,
+        )
+
+    async def _search_entities_with_queries(
+        self,
+        query: str | None = None,
+        entity_types: list[str] | None = None,
+        top_k: int = 10,
+        named_entity_kinds: list[str] | None = None,
+        queries: list[str] | None = None,
+    ) -> tuple[bool, str]:
+        """``search_entities`` where ``search_by_entities`` is offered
+        (``entity_search_surface``): several queries per call, and kinds it
+        cannot serve explained."""
+        from .ops.entity_discovery import execute_search_entities
+        return await execute_search_entities(
+            self.state,
+            query=query,
+            entity_types=entity_types,
+            top_k=top_k,
+            named_entity_kinds=named_entity_kinds,
+            queries=queries,
+            entity_search_offered=True,
         )
 
     # -----------------------------------------------------------------------
@@ -962,6 +1027,153 @@ class KnowledgeGraph:
             limit=limit,
             cursor=cursor,
         )
+
+    @tool(
+        path="/tools/knowledgegraph/find_records_by_value",
+        short_description="Find accessible records that mention a typed value",
+        description=(
+            "Find records the user can access that mention a typed value: a date range, "
+            "an amount in a currency, a quantity, or a percentage. Requires named-entity "
+            "extraction to be enabled. A match set that is too large is rejected rather "
+            "than truncated."
+        ),
+        parameters=[
+            ToolParameter(name="kinds", type=ParameterType.ARRAY, description="Optional entity kinds.", required=False, items={"type": "string"}),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Optional name prefix.", required=False),
+            ToolParameter(name="date_from", type=ParameterType.INTEGER, description="Range start, epoch milliseconds.", required=False),
+            ToolParameter(name="date_to", type=ParameterType.INTEGER, description="Range end, epoch milliseconds.", required=False),
+            ToolParameter(name="amount_min", type=ParameterType.FLOAT, description="Minimum amount.", required=False),
+            ToolParameter(name="amount_max", type=ParameterType.FLOAT, description="Maximum amount.", required=False),
+            ToolParameter(name="currency", type=ParameterType.STRING, description="ISO-4217 currency code.", required=False),
+            ToolParameter(name="quantity_min", type=ParameterType.FLOAT, description="Minimum quantity in SI units.", required=False),
+            ToolParameter(name="quantity_max", type=ParameterType.FLOAT, description="Maximum quantity in SI units.", required=False),
+            ToolParameter(name="dimension", type=ParameterType.STRING, description="Quantity dimension.", required=False),
+            ToolParameter(name="percent_min", type=ParameterType.FLOAT, description="Minimum percentage as a fraction: 0.2 for 20%.", required=False),
+            ToolParameter(name="percent_max", type=ParameterType.FLOAT, description="Maximum percentage as a fraction: 0.2 for 20%.", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        display_name="Found records by typed value",
+    )
+    async def find_records_by_value(
+        self,
+        kinds: list[str] | None = None,
+        name: str | None = None,
+        date_from: int | None = None,
+        date_to: int | None = None,
+        amount_min: float | None = None,
+        amount_max: float | None = None,
+        currency: str | None = None,
+        quantity_min: float | None = None,
+        quantity_max: float | None = None,
+        dimension: str | None = None,
+        percent_min: float | None = None,
+        percent_max: float | None = None,
+    ) -> tuple[bool, str]:
+        from .ops.values import execute_find_records_by_value
+        return await execute_find_records_by_value(
+            self.state,
+            kinds=kinds,
+            name=name,
+            date_from=date_from,
+            date_to=date_to,
+            amount_min=amount_min,
+            amount_max=amount_max,
+            currency=currency,
+            quantity_min=quantity_min,
+            quantity_max=quantity_max,
+            dimension=dimension,
+            percent_min=percent_min,
+            percent_max=percent_max,
+        )
+
+    # -----------------------------------------------------------------------
+    # search_by_entities — offered only where the deployment turns it on
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/search_by_entities",
+        short_description="Search inside the records that mention named people, organizations, products or places",
+        description=(
+            "Search inside the records that mention specific named things: people, customers, "
+            "organizations, products, projects, events or places. Pass their names; each is linked to "
+            "the entities extracted from the documents: an exact name settles it, and otherwise the "
+            "look-alikes found are checked, so 'Acme Robotics' never returns 'Acme Financial'. "
+            "The result opens with how each name was resolved (and which look-alikes are not the "
+            "same), then the best passages for query inside the readable records that mention them, "
+            "cited like search results.\n\n"
+            "Use it when the question names one or more specific entities, especially to find where "
+            "two or more appear together: match=\"all\" keeps records that mention every name, most "
+            "relevant where they appear within a few blocks of each other. Pass several names in one "
+            "call rather than one call each. Example: mentions=[{\"name\": \"Contoso\", \"kind\": "
+            "\"organization\"}, {\"name\": \"Northwind CRM\", \"kind\": \"product\"}], "
+            "match=\"all\", query=\"migration cutover\".\n\n"
+            "Do not use it for topics, ideas or document titles (use search or search_entities), or "
+            "for dates and amounts (use find_records_by_value). A name on most records (the company's "
+            "own name, a first name) narrows little on its own; pair it with a rarer name or a query. "
+            "People are found by their name as written, or by a first name that starts a full one; a "
+            "surname alone is not looked up. Only records indexed while named-entity extraction was on "
+            "are linked to names, so confirm a name that is not found with search before saying it "
+            "is absent."
+        ),
+        parameters=[
+            ToolParameter(
+                name="mentions",
+                type=ParameterType.ARRAY,
+                description=(
+                    "1-5 names to look up, each {\"name\": ..., \"kind\": ...}; kind is optional "
+                    "and is what you believe the name is."
+                ),
+                required=True,
+                items={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "The name as a document would write it."},
+                        "kind": {"type": "string", "enum": list(MENTION_KIND_HINTS)},
+                    },
+                    "required": ["name"],
+                },
+            ),
+            ToolParameter(
+                name="match",
+                type=ParameterType.STRING,
+                description="'any' (default): records mentioning any name; 'all': records mentioning every name.",
+                required=False,
+                enum=["any", "all"],
+            ),
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description=(
+                    "What to look for inside those records, in a document's words. Omit to rank the "
+                    "passages that mention the names."
+                ),
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: _search_by_entities_args_summary(args),
+        result_summary=lambda args, result: _search_by_entities_result_summary(args, result),
+        display_name="Searched records mentioning named entities",
+    )
+    async def search_by_entities(
+        self,
+        mentions: list[dict[str, Any]] | None = None,
+        match: str | None = None,
+        query: str | None = None,
+    ) -> tuple[bool, str] | str | list[Part]:
+        """Entity-linked search — calls ops/entity_search.py."""
+        from .ops.entity_search import execute_search_by_entities
+        return await execute_search_by_entities(self.state, mentions=mentions, match=match, query=query)
+
+    def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
+        """This request's tools: ``search_by_entities`` and the descriptions
+        that go with it only where the deployment offers it
+        (``entity_search_surface``); ``search_timeline`` unless
+        ``TIMELINE_SUMMARIES`` is false."""
+        from .entity_search_surface import tools_for_request
+        from .ops.timeline import without_timeline_unless_enabled
+        tools = without_timeline_unless_enabled(tools)
+        return tools_for_request(self, tools, offered=entity_search_offered_in(self.state))
 
     # -----------------------------------------------------------------------
     # list_files — name-based search / browse (metadata only)
@@ -1077,6 +1289,122 @@ class KnowledgeGraph:
         )
 
     # -----------------------------------------------------------------------
+    # search_timeline — date-ordered search over a span (TIMELINE_SUMMARIES)
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/search_timeline",
+        short_description="Search a span of time period by period and return the matches in date order",
+        description=(
+            "Gather what happened over a span of time, in date order: what came up in a channel, "
+            "project or ticket between two dates, how something evolved, what was decided over a "
+            "period, where things stand after a run of exchanges.\n\n"
+            "It splits the span into up to 6 periods (calendar months, or weeks within one month), "
+            "searches each period separately, and returns each period's best-matching blocks under "
+            "its own heading, oldest first. A plain search returns the top matches overall, which "
+            "bunch around the single best-matching moment and miss the rest of the span; here every "
+            "period gets its own share. The whole result is about the size of one search result.\n\n"
+            "Pass start and end when the question names a period ('between March and May 2026' -> "
+            "start='2026-03-01', end='2026-05-31'), widened by a week or so where it is vague "
+            "('late July', 'mid-September'). With no start it covers the year before end, reaching "
+            "further back when the best matches are older; pass only start for 'since ...'. "
+            "Matches whose record has no source date are listed last. To keep to one channel, "
+            "project or space, pass its record_group entityId from "
+            "knowledgegraph__search_entities in entity_ids.\n\n"
+            "Each period shows a sample, not every record. Answer period by period and cite the "
+            "blocks under each period's heading. For a period that matters and looks thin, search "
+            "it with knowledgegraph__search and its date filters, or read a record in full."
+        ),
+        parameters=[
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description="What to look for in every period — the topic, not the dates.",
+                required=True,
+            ),
+            ToolParameter(
+                name="start",
+                type=ParameterType.STRING,
+                description=(
+                    "First day of the span, 'YYYY-MM-DD' (start of that day, UTC) or an ISO 8601 "
+                    "datetime with a timezone. Omit to cover the year before end, or further back "
+                    "to the earliest of the best matches."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="end",
+                type=ParameterType.STRING,
+                description=(
+                    "Last day of the span, inclusive, same formats as start. Omit to end today."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="date_field",
+                type=ParameterType.STRING,
+                description=(
+                    "'created' (default) places each record by when it was created at its source: "
+                    "a Slack thread by its first message, a ticket by when it was filed. 'modified' "
+                    "places it by its last update, for tickets or pages that changed over the span."
+                ),
+                required=False,
+                default="created",
+            ),
+            ToolParameter(
+                name="source_ids",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Limit to these sources (app-connector or KB-collection IDs from the Knowledge "
+                    "Sources section). Omit to search every accessible source."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
+                name="entity_ids",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Optional entityIds returned by search_entities in this turn: a record_group "
+                    "(a Slack channel, Jira project, Confluence space, Drive folder) keeps the "
+                    "timeline to that group's records; a department/category/topic narrows by it."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Searched "{args.get("query", "")}" period by period'
+            + (f' from {args["start"]}' if args.get("start") else "")
+            + (f' to {args["end"]}' if args.get("end") else "")
+            if args.get("query") else None
+        ),
+        result_summary=lambda args, result: _timeline_result_summary(args, result),
+        display_name="Searched the knowledge base over time",
+    )
+    async def search_timeline(
+        self,
+        query: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        date_field: str | None = None,
+        source_ids: list[str] | None = None,
+        entity_ids: list[str] | None = None,
+    ) -> str | list[Part]:
+        """Date-ordered search — calls ops/timeline.py execute_timeline_search."""
+        from .ops.timeline import execute_timeline_search
+        return await execute_timeline_search(
+            self.state,
+            query,
+            start=start,
+            end=end,
+            date_field=date_field,
+            source_ids=source_ids,
+            entity_ids=entity_ids,
+        )
+
+    # -----------------------------------------------------------------------
     # fetch_record — full document read (dynamically granted)
     # -----------------------------------------------------------------------
     # NOTE: this method is declared here for discoverability but the tool is
@@ -1101,33 +1429,18 @@ async def _get_user_key(graph_provider: Any, user_id: str) -> str | None:
 # Summary helpers for the new knowledgegraph tools
 # ---------------------------------------------------------------------------
 
-def _search_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
-    import re
-    from app.agents.actions.util.tool_summaries import as_text, parse_json_maybe, bullet_list
+def _search_by_entities_args_summary(args: dict[str, Any]) -> str | None:
+    names = [
+        str(item.get("name")) for item in args.get("mentions") or []
+        if isinstance(item, dict) and item.get("name")
+    ]
+    return f"Looked up {', '.join(names)}" if names else None
 
-    text = as_text(result.content)
-    if not text:
-        return None
-    parsed = parse_json_maybe(text)
-    if isinstance(parsed, dict) and parsed.get("status") == "error":
-        return f"Search failed: {parsed.get('message') or 'Unknown error'}"
-    if isinstance(parsed, dict) and (
-        parsed.get("result_count") == 0 or (isinstance(parsed.get("results"), list) and not parsed["results"])
-    ):
-        return str(parsed.get("message") or "No results found")
 
-    match = re.search(r"^Top (\d+) blocks? from (\d+) records?", text, re.IGNORECASE | re.MULTILINE)
-    if not match:
-        match = re.search(r"^Retrieved (\d+) knowledge blocks? from (\d+) documents?", text, re.IGNORECASE | re.MULTILINE)
-    if not match:
-        return None
-    blocks, docs = match.group(1), match.group(2)
-    header = f"Retrieved {blocks} block{'s' if blocks != '1' else ''} from {docs} record{'s' if docs != '1' else ''}"
-    name_re = re.compile(r"^Name\s*:\s*(.+)$", re.MULTILINE)
-    names = [n.strip() for n in name_re.findall(text) if n.strip()]
-    if not names:
-        return header
-    return header + "\n" + bullet_list(names)
+def _search_by_entities_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    if result.is_error:
+        return result_text(result.content) or "Entity search failed"
+    return search_result_summary(args, result) or "Looked up the named entities"
 
 
 def _search_entities_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
@@ -1141,6 +1454,13 @@ def _search_entities_result_summary(args: dict[str, Any], result: "ToolResult") 
         return "Entity search failed" if result.is_error else None
     if result.is_error or parsed.get("status") == "error":
         return parsed.get("message") or "Entity search failed"
+    if isinstance(parsed.get("queries"), list):
+        groups = [q for q in parsed["queries"] if isinstance(q, dict)]
+        found = sum(len(q.get("results") or []) for q in groups)
+        return (
+            f"Found {found} entit{'y' if found == 1 else 'ies'} across "
+            f"{len(groups)} quer{'y' if len(groups) == 1 else 'ies'}"
+        )
     results = parsed.get("results") or []
     if not results:
         return parsed.get("message") or "No matching entities found"
@@ -1158,6 +1478,11 @@ def _find_records_by_entity_result_summary(args: dict[str, Any], result: "ToolRe
     if result.is_error:
         return f"Lookup failed: {first_line}"
     return first_line or "Found records"
+
+
+def _timeline_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    from .ops.timeline import timeline_result_summary
+    return timeline_result_summary(args, result)
 
 
 def _list_files_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:

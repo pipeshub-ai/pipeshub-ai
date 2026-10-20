@@ -930,8 +930,8 @@ class TestGetAllConnectorInstancesInternal:
         assert len(result) == 0
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
-        """Returns empty list on error."""
+    async def test_exception_propagates(self):
+        """A DB error must not look like "no connectors"."""
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_user_connector_instances.side_effect = RuntimeError("error")
@@ -940,9 +940,8 @@ class TestGetAllConnectorInstancesInternal:
         mock_data_store.graph_provider = gp
         container.data_store = AsyncMock(return_value=mock_data_store)
 
-        result = await registry._get_all_connector_instances("user-1", "org-1")
-
-        assert result == []
+        with pytest.raises(RuntimeError, match="error"):
+            await registry._get_all_connector_instances("user-1", "org-1")
 
 
 # ===========================================================================
@@ -1197,8 +1196,8 @@ class TestGetAllConnectorInstances:
         assert len(result["connectors"]) == 0
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
-        """Returns empty result on error."""
+    async def test_exception_propagates(self):
+        """A DB error must not look like an empty connector list."""
         registry, container = _make_registry()
         gp = _make_graph_provider()
         gp.get_filtered_connector_instances.side_effect = RuntimeError("db error")
@@ -1207,12 +1206,10 @@ class TestGetAllConnectorInstances:
         mock_data_store.graph_provider = gp
         container.data_store = AsyncMock(return_value=mock_data_store)
 
-        result = await registry.get_all_connector_instances(
-            "user-1", "org-1", is_admin=False
-        )
-
-        assert result["connectors"] == []
-        assert result["pagination"]["totalCount"] == 0
+        with pytest.raises(RuntimeError, match="db error"):
+            await registry.get_all_connector_instances(
+                "user-1", "org-1", is_admin=False
+            )
 
 
 # ===========================================================================

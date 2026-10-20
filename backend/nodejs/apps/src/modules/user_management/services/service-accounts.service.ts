@@ -59,6 +59,14 @@ export interface ServiceAccountTokenRevoker {
     orgId: string,
     serviceAccountId: string,
   ): Promise<void>;
+  /**
+   * Kills the tokens this account holds to act as other people, leaving its
+   * allow-list intact. Used when the account is disabled rather than deleted.
+   */
+  revokeDelegatedTokensForServiceAccount(
+    orgId: string,
+    serviceAccountId: string,
+  ): Promise<void>;
 }
 
 export interface UpdateServiceAccountInput {
@@ -446,6 +454,21 @@ export class ServiceAccountsService {
         { _id: account._id, orgId, kind: 'service', isDeleted: false },
         { $set: changes },
       ).exec();
+    }
+
+    // Disabling has to reach the tokens this account obtained to act as other
+    // people. The ones it holds in its own name stop working on their own,
+    // because the middleware refuses a disabled account — but a delegated
+    // token names a colleague who is not disabled, so nothing else would stop
+    // it before it expired.
+    //
+    // After the write rather than before: revoking first would leave a window
+    // where the account is still enabled and could mint a replacement.
+    if (changes.isDisabled === true) {
+      await this.tokenRevoker?.revokeDelegatedTokensForServiceAccount(
+        orgId,
+        idOf(account),
+      );
     }
 
     // The graph keeps its own copy of the display name, so a rename has to

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
-from jose import JWTError
+from jwt import PyJWTError as JWTError
 
 from app.api.middlewares import auth as auth_module
 from app.api.middlewares.auth import (
@@ -424,7 +424,7 @@ class TestIsJwtTokenValid:
     @patch("app.api.middlewares.auth.jwt.decode")
     @pytest.mark.parametrize(
         "scope",
-        ["connector:signedUrl", "record:content", "conversation:create", "fetch:config"],
+        ["connector:signedUrl", "record:content", "conversation:create", "fetch:config", "entity:user:write"],
     )
     async def test_scoped_jwt_with_accepted_scope(self, mock_jwt_decode, mock_get_config, scope):
         """A scoped-secret token carrying an accepted service scope is a service token."""
@@ -560,6 +560,59 @@ class TestIsJwtTokenValid:
         assert result["oauthScopes"] == ["read", "write"]
         assert result["oauthClientId"] == "client-abc"
         assert result["token_type"] == "regular"
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.get_config_service")
+    @patch("app.api.middlewares.auth.jwt.decode")
+    async def test_oauth_token_with_no_scopes_raises_401(
+        self, mock_jwt_decode, mock_get_config
+    ):
+        """An OAuth token with an empty, blank, or missing scope claim is rejected."""
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config.return_value = {
+            "jwtSecret": "regular-secret",
+            "scopedJwtSecret": "scoped-secret",
+        }
+        mock_get_config.return_value = mock_config_service
+
+        request = _make_fake_request(authorization="Bearer oauth.jwt.token")
+        for scope in ("", "   ", None):
+            payload = {
+                "userId": "user-1",
+                "tokenType": "oauth",
+                "client_id": "client-abc",
+            }
+            if scope is not None:
+                payload["scope"] = scope
+            mock_jwt_decode.return_value = payload
+            with pytest.raises(HTTPException) as exc_info:
+                await isJwtTokenValid(request)
+            assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.get_config_service")
+    @patch("app.api.middlewares.auth.jwt.decode")
+    async def test_oauth_scope_collapses_repeated_whitespace(
+        self, mock_jwt_decode, mock_get_config
+    ):
+        """Repeated whitespace in a scope claim does not produce empty scope names."""
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config.return_value = {
+            "jwtSecret": "regular-secret",
+            "scopedJwtSecret": "scoped-secret",
+        }
+        mock_get_config.return_value = mock_config_service
+
+        mock_jwt_decode.return_value = {
+            "userId": "user-1",
+            "tokenType": "oauth",
+            "scope": "read  write",
+            "client_id": "client-abc",
+        }
+
+        request = _make_fake_request(authorization="Bearer oauth.jwt.token")
+        result = await isJwtTokenValid(request)
+        assert result["oauthScopes"] == ["read", "write"]
 
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")

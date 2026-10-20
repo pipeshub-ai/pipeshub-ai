@@ -2,6 +2,7 @@ from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import EventTypes
+from app.connectors.core.sync.run_context import get_run_sync_id
 from app.services.messaging.config import Topic
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -126,6 +127,7 @@ class KafkaService:
                     "sourceCreatedAtTimestamp": event_data.get(
                         "createdAtSourceTimestamp"
                     ),
+                    "runSyncId": event_data.get("runSyncId") or get_run_sync_id(),
                 },
             }
 

@@ -380,8 +380,14 @@ class BaseServiceClient:
         data: dict | None = None,
         operation: str = "request",
         budget_seconds: float | None = None,
+        read_timeout: float | None = None,
     ) -> httpx.Response:
         """Execute *method* request with exponential-backoff retry.
+
+        ``read_timeout`` overrides the client-wide socket read timeout for
+        this call alone, for an operation whose deadline belongs to the
+        record rather than the client (a PDF parse). The retry checks
+        reserve the same value, so the two cannot disagree.
 
         ``budget_seconds`` is the caller's own deadline for the whole
         operation (for the indexing pipeline, the record's processing
@@ -407,6 +413,13 @@ class BaseServiceClient:
         transient outcome (5xx, bare 429, transport errors) still counts
         against ``max_retries`` and the breaker as before.
         """
+        def _effective_read() -> float:
+            """What one attempt may take, so the retry checks and the request
+            itself cannot disagree about it."""
+            if read_timeout is not None:
+                return read_timeout
+            return self._timeout.read or 0.0
+
         if self.circuit_breaker.should_attempt_probe():
             probe_ok = await self.health_check()
             if probe_ok:
@@ -445,6 +458,14 @@ class BaseServiceClient:
                         backpressure_attempts, self.max_backpressure_attempts,
                     )
                     kwargs: dict[str, Any] = {"headers": headers}
+                    if read_timeout is not None:
+                        # Built explicitly: httpx.Timeout has no copy_with.
+                        kwargs["timeout"] = httpx.Timeout(
+                            connect=self._timeout.connect,
+                            read=read_timeout,
+                            write=self._timeout.write,
+                            pool=self._timeout.pool,
+                        )
                     if json is not None:
                         kwargs["json"] = json
                     elif content is not None:
@@ -505,7 +526,7 @@ class BaseServiceClient:
                             )
                         if budget_seconds is not None:
                             spent = time.monotonic() - started_at
-                            if spent + wait + (self._timeout.read or 0.0) > budget_seconds:
+                            if spent + wait + _effective_read() > budget_seconds:
                                 # The record above would cancel this attempt
                                 # anyway; a backpressure error re-queues it
                                 # with a proper backoff instead.
@@ -569,13 +590,13 @@ class BaseServiceClient:
                 delay = self.retry_delay * (2 ** (transient_attempts - 1))
                 if budget_seconds is not None:
                     spent = time.monotonic() - started_at
-                    read_timeout = self._timeout.read or 0.0
-                    if spent + delay + read_timeout > budget_seconds:
+                    reserve = _effective_read()
+                    if spent + delay + reserve > budget_seconds:
                         self.logger.warning(
                             "[%s] %s not retried: %.0fs of a %.0fs budget spent and another "
                             "attempt could take %.0fs",
                             self.service_name, operation, spent, budget_seconds,
-                            delay + read_timeout,
+                            delay + reserve,
                         )
                         break
                 self.logger.debug("[%s] Retrying in %.1fs …", self.service_name, delay)
@@ -659,12 +680,14 @@ class BaseServiceClient:
         operation: str = "POST multipart",
         budget_seconds: float | None = None,
         org_id: str | None = None,
+        read_timeout: float | None = None,
     ) -> httpx.Response:
         url = f"{self.service_url}{path}"
         return await self._request_with_retry(
             "POST", url, files=files, data=data, operation=operation,
             headers=await self._auth_headers(org_id),
             budget_seconds=budget_seconds,
+            read_timeout=read_timeout,
         )
 
     async def _get_json(

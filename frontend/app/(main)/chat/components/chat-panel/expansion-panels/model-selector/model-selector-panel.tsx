@@ -118,11 +118,6 @@ export function ModelSelectorPanel({
   const reasoningEffort = normalizeReasoningEffort(useChatStore((s) => s.settings.reasoningEffort[ctxKey] ?? null));
   const agentDefaultEffort = useChatStore((s) => s.settings.agentDefaultReasoningEffort[ctxKey] ?? null);
   const setReasoningEffortForCtx = useChatStore((s) => s.setReasoningEffortForCtx);
-  const hydrateReasoningEffortForCtx = useChatStore((s) => s.hydrateReasoningEffortForCtx);
-
-  useEffect(() => {
-    hydrateReasoningEffortForCtx(ctxKey);
-  }, [ctxKey, hydrateReasoningEffortForCtx]);
 
   const [isLoading, setIsLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
@@ -328,7 +323,7 @@ interface ReasoningEffortSelectorProps {
   modelDefault: ReasoningEffort | null;
 }
 
-function ReasoningEffortSelector({ value, onSelect, agentDefault, modelDefault }: ReasoningEffortSelectorProps) {
+export function ReasoningEffortSelector({ value, onSelect, agentDefault, modelDefault }: ReasoningEffortSelectorProps) {
   const { t } = useTranslation();
   const effectiveDefault = agentDefault ?? modelDefault ?? DEFAULT_REASONING_EFFORT;
   const usesModelDefault = !agentDefault && Boolean(modelDefault);

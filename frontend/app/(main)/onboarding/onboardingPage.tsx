@@ -9,6 +9,7 @@ import { useAuthStore } from '@/config';
 import { getOnboardingStatus, updateOnboardingStatus } from './api';
 import {
   OnboardingHeader,
+  OnboardingBrandFooter,
   OnboardingSteps,
   StepAiModel,
   StepEmbeddingModel,
@@ -418,40 +419,7 @@ function OnboardingPageInner() {
         </Flex>
       )}
 
-      {/* Footer copyright row — fixed height, never scrolls */}
-      {!isLoadingStep && (
-        <Flex
-          justify="center"
-          align="center"
-          style={{ padding: '8px 0 24px', flexShrink: 0 }}
-        >
-          <Text size="1" style={{ color: 'var(--gray-9)', textAlign: 'center' }}>
-            {t('onboarding.footer.copyright')} &nbsp;·&nbsp;{' '}
-            <a href="/privacy" style={{ color: 'var(--gray-9)', textDecoration: 'none' }}>
-              {t('onboarding.footer.privacyPolicy')}
-            </a>{' '}
-            &nbsp;·&nbsp;{' '}
-            <a
-              href="https://pipeshub.com"
-              target="_blank"
-              rel="noreferrer"
-              style={{ color: 'var(--gray-9)', textDecoration: 'none' }}
-            >
-              {t('onboarding.footer.website')}
-            </a>{' '}
-            &nbsp;·&nbsp; {t('onboarding.footer.visitDocs')}{' '}
-            <a
-              href="https://docs.pipeshub.com"
-              target="_blank"
-              rel="noreferrer"
-              style={{ color: 'var(--accent-11)', textDecoration: 'none' }}
-            >
-              {t('onboarding.footer.docsLabel')}
-            </a>{' '}
-            {t('onboarding.footer.toLearnMore')}
-          </Text>
-        </Flex>
-      )}
+      {!isLoadingStep && <OnboardingBrandFooter />}
     </Flex>
   );
 }

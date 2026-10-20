@@ -6,9 +6,10 @@ lists the collection's uploaded files and schedules their removal; it then
 clears the graph and the vector database and, in the background, deletes the
 collection's whole ``records/{kbId}`` storage tree in blob storage and MongoDB
 (``_cleanup_kb_storage``), so every processed envelope filed there goes. That
-tree also held any content another collection shares, so the delete then
-re-indexes the other collection's copy (``repair_shared_records``), which files
-a new envelope under that collection's own folder.
+tree also held any content another collection shares, so before deleting it the
+delete hands that envelope over to the other collection's copy
+(``StorageCleanupHelper.release_connector_storage``): it moves, same document
+id, under that collection's own folder.
 
 Each file as it was uploaded sits under the uploader's
 ``KnowledgeBase/private/{userId}`` folder, outside that tree, so it is removed
@@ -129,7 +130,7 @@ async def collection_delete(
             org_id=test_org_id, records=[shared, *unique], within=doomed_folder, vendor=vendor,
         )
         fp.assert_every_store_holds_it(before)
-        # The survivor's copy is re-indexed by the delete, so it is counted on its own,
+        # The survivor's copy is handed the shared envelope by the delete, so it is counted on its own,
         # against the one envelope filed under the doomed copy before the delete.
         holder, own = survivors
         survivor_before = await fp.capture_when_stable(
@@ -231,10 +232,10 @@ class TestDeletingACollectionWithFoldersAndSharedContent:
         )
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_the_content_it_shared_is_rebuilt_under_the_other_collection(
+    async def test_the_content_it_shared_is_handed_over_to_the_other_collection(
         self, collection_delete, graph_provider, vector_store, blob_store, mongo_store, test_org_id
     ) -> None:
-        await fp.assert_rebuilt(
+        await fp.assert_handed_over(
             collection_delete["shared_before"], graph_provider, vector_store, blob_store, mongo_store,
             org_id=test_org_id, connector_id=collection_delete["survivor_kb"],
             holder=collection_delete["holder"], vendor=collection_delete["vendor"],

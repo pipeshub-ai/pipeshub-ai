@@ -2,47 +2,58 @@
 
 import React, { useMemo } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
-import { KnowledgeItemIcon } from '@/app/components/ui/knowledge-item-icon';
-import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
-import type { AppliedFilters as AppliedFiltersData } from '../types';
+import { KbNodeNameIcon } from '@/app/(main)/knowledge-base/utils/kb-node-name-icon';
+import type { NodeType } from '@/app/(main)/knowledge-base/types';
+import type { AppliedFilterNode, AppliedFilters as AppliedFiltersData } from '../types';
+import { useTranslation } from 'react-i18next';
+import { BELOW_APP_KEYS, selectedNodeKind, type SelectedNodeKind } from '../utils/tree-selection';
 
 interface ResolvedFilterNode {
   id: string;
   name: string;
-  kind: 'collection' | 'connector';
-  connectorType?: string;
+  kind: SelectedNodeKind;
+  /** The node as saved with the message: its type, connector and file type pick the icon. */
+  node: AppliedFilterNode;
+}
+
+/** A filter saved before its node type was kept: the kind it was listed under stands in. */
+function iconNodeType(item: ResolvedFilterNode): NodeType {
+  if (item.node.nodeType) return item.node.nodeType as NodeType;
+  if (item.kind === 'connector' || item.kind === 'collection') return 'app';
+  return item.kind === 'folder' ? 'folder' : 'record';
 }
 
 interface AppliedFiltersProps {
   appliedFilters: AppliedFiltersData;
 }
 
-function toResolvedNodes(data: AppliedFiltersData): ResolvedFilterNode[] {
+function toResolvedNodes(data: AppliedFiltersData, aloneLabel: (name: string) => string): ResolvedFilterNode[] {
   const nodes: ResolvedFilterNode[] = [];
   for (const item of data.apps ?? []) {
-    const isConnector = item.nodeType === 'app';
-    nodes.push({
-      id: item.id,
-      name: item.name,
-      kind: isConnector ? 'connector' : 'collection',
-      connectorType: isConnector && item.connector
-        ? resolveConnectorType(item.connector)
-        : undefined,
-    });
+    nodes.push({ id: item.id, name: item.name, kind: item.nodeType === 'app' ? 'connector' : 'collection', node: item });
   }
   for (const item of data.kb ?? []) {
-    nodes.push({
-      id: item.id,
-      name: item.name,
-      kind: 'collection',
-      connectorType: item.connector ? resolveConnectorType(item.connector) : undefined,
-    });
+    nodes.push({ id: item.id, name: item.name, kind: 'collection', node: item });
+  }
+  for (const bucket of BELOW_APP_KEYS) {
+    for (const item of data[bucket] ?? []) {
+      nodes.push({
+        id: item.id,
+        name: bucket === 'recordsExact' ? aloneLabel(item.name) : item.name,
+        kind: selectedNodeKind(bucket, item.nodeType),
+        node: item,
+      });
+    }
   }
   return nodes;
 }
 
 export function AppliedFilters({ appliedFilters }: AppliedFiltersProps) {
-  const resolvedNodes = useMemo(() => toResolvedNodes(appliedFilters), [appliedFilters]);
+  const { t } = useTranslation();
+  const resolvedNodes = useMemo(
+    () => toResolvedNodes(appliedFilters, (name) => t('chat.selectedAlone', { name })),
+    [appliedFilters, t]
+  );
 
   if (resolvedNodes.length === 0) return null;
 
@@ -62,10 +73,14 @@ export function AppliedFilters({ appliedFilters }: AppliedFiltersProps) {
             flexShrink: 0,
           }}
         >
-          <KnowledgeItemIcon
-            kind={node.kind}
-            connectorType={node.connectorType as Parameters<typeof KnowledgeItemIcon>[0]['connectorType']}
-            size={13}
+          <KbNodeNameIcon
+            isKnowledgeHub
+            nodeType={iconNodeType(node)}
+            connector={node.node.connector || null}
+            extension={node.node.extension}
+            mimeType={node.node.mimeType}
+            name={node.node.name}
+            size={14}
           />
           <Text
             size="1"

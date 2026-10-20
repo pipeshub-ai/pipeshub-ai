@@ -7,6 +7,9 @@ fields:
   assignee_email:
     required: false
     type: array
+  closed_at:
+    required: false
+    type: integer
   creator_email:
     required: false
     type: string
@@ -22,6 +25,9 @@ fields:
   mergeable:
     required: false
     type: string
+  merged_at:
+    required: false
+    type: integer
   merged_by:
     required: false
     type: string

@@ -147,12 +147,29 @@ def test_q5_still_accepts_the_pricing_documents_own_wording(fx: dict, answer: st
 
 @pytest.mark.parametrize(
     "answer",
-    ["The 2026 plan moves Enterprise to a platform-fee model.", "Pricing follows usage-bands now."],
+    ["The 2026 plan moves Enterprise to a platform-fee model.", "Existing customers get an early migration discount."],
 )
 def test_a_hyphenated_restricted_fact_in_alices_answer_is_a_leak(fx: dict, answer: str) -> None:
     passed, verdict = kb_harness.score(_question(fx, "q5"), "none", set(), answer)
     assert passed is False, verdict
     assert "leaked restricted" in verdict
+
+
+def test_naming_usage_bands_as_missing_is_not_a_leak(fx: dict) -> None:
+    # 2026-10-17: Alice's answer listed "seat or usage bands" among what it couldn't find,
+    # with nothing restricted in her results. Ordinary pricing words are not restricted facts.
+    answer = (
+        "I couldn't find an approved 2026 enterprise pricing strategy. The indexed materials do "
+        "not specify enterprise price points, seat or usage bands, or volume discounts."
+    )
+    passed, verdict = kb_harness.score(_question(fx, "q5"), "none", set(), answer)
+    assert "leaked restricted" not in verdict, verdict
+
+
+@pytest.mark.parametrize("answer", ["Bands go up to 5,000 seats.", "The bands are 250 and 1,000 seats."])
+def test_a_restricted_detail_in_alices_answer_is_a_leak(fx: dict, answer: str) -> None:
+    passed, verdict = kb_harness.score(_question(fx, "q5"), "none", set(), answer)
+    assert passed is False and "leaked restricted" in verdict, verdict
 
 
 def test_an_upload_run_asks_only_the_knowledge_bases_it_loaded() -> None:
@@ -350,6 +367,40 @@ def test_record_states_read_every_page_of_the_knowledge_base() -> None:
     assert [r.url.path for r in seen] == ["/api/v1/knowledgeBase/knowledge-hub/nodes/app/kb-1"] * 2
     assert all(r.headers["Authorization"] == "Bearer jwt" for r in seen)
     assert seen[0].url.params["nodeTypes"] == "record" and seen[0].url.params["flattened"] == "true"
+
+
+def _agent_stream(*frames: tuple[str, dict]) -> httpx.MockTransport:
+    body = "".join(f"event: {event}\ndata: {json.dumps(data)}\n\n" for event, data in frames)
+    return httpx.MockTransport(lambda _: httpx.Response(200, text=body, headers={"content-type": "text/event-stream"}))
+
+
+def _turn(text: str) -> list[tuple[str, dict]]:
+    return [("TEXT_MESSAGE_START", {}), ("TEXT_MESSAGE_CONTENT", {"delta": text}), ("TEXT_MESSAGE_END", {})]
+
+
+def _finished(content: str) -> tuple[str, dict]:
+    message = {"messageType": "bot_response", "content": content, "citations": [{"metadata": {"recordName": "doc.md"}}]}
+    return "RUN_FINISHED", {"result": {"conversation": {"messages": [message]}}}
+
+
+def test_an_agent_answer_is_scored_without_the_narration_of_its_tool_turns() -> None:
+    transport = _agent_stream(
+        *_turn("I'll search the internal records."),
+        ("TOOL_CALL_START", {"tool": "search"}),
+        *_turn("I found two records; I'll read both."),
+        ("TOOL_CALL_START", {"tool": "fetch"}),
+        *_turn("The change was approved by the review board."),
+        _finished("The change was approved by the review board."),
+    )
+    answer, cited = kb_harness.ask("http://pipeshub", "jwt", "why?", "agent", transport=transport)
+    assert answer == "The change was approved by the review board."
+    assert cited == ["doc.md"]
+
+
+def test_without_a_saved_answer_the_last_turn_is_scored() -> None:
+    transport = _agent_stream(*_turn("I'll search."), *_turn("The final answer."), _finished(""))
+    answer, _ = kb_harness.ask("http://pipeshub", "jwt", "why?", transport=transport)
+    assert answer == "The final answer."
 
 
 

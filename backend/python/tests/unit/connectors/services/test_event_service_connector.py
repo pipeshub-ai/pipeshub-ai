@@ -25,6 +25,7 @@ from app.connectors.services.event_service import EventService
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from tests.unit.connectors.services.coordinator_stub import (
     at_capacity,
     current,
@@ -613,9 +614,9 @@ class TestHandleStartSync:
             service.graph_provider.delete_sync_points_by_connector_id.assert_awaited_once_with(
                 connector_id="c1"
             )
-            service.graph_provider.delete_connector_sync_edges.assert_awaited_once_with(
-                connector_id="c1"
-            )
+            # Links are not deleted up front any more: a sync cut off partway
+            # left everything it had not reached readable by nobody.
+            service.graph_provider.delete_connector_sync_edges.assert_not_awaited()
             
             # Verify pendingFullSync was cleared after successful schedule
             service.graph_provider.update_node.assert_awaited_once_with(
@@ -1008,6 +1009,31 @@ class TestHandleReindex:
             mock_start.await_args.args[1].close()
 
     @pytest.mark.asyncio
+    async def test_run_reindex_of_a_group_keeps_only_children_the_user_may_access(self, service) -> None:
+        """The providers' user filter is the old model; with the batch access
+        check the children are filtered through it instead."""
+        mock_conn = AsyncMock()
+        mock_conn.reindex_records = AsyncMock()
+        batch = [MagicMock(id=rid, is_placeholder=False) for rid in ("open", "restricted")]
+        service.graph_provider.get_records_by_record_group = AsyncMock(side_effect=[batch, []])
+        service.graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(node_ids=frozenset({"open"})),
+        )
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        await service._run_reindex(
+            connector=mock_conn, connector_name="confluence", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id="rg-1", depth=1, user_key="user-key", status_filters=None,
+        )
+
+        assert service.graph_provider.get_records_by_record_group.await_args.kwargs["user_key"] is None
+        service.graph_provider.check_access.assert_awaited_once_with(
+            "user-key", "org1", node_ids=["open", "restricted"],
+        )
+        reindexed = mock_conn.reindex_records.await_args.args[0]
+        assert [r.id for r in reindexed] == ["open"]
+
+    @pytest.mark.asyncio
     async def test_run_reindex_pages_with_keyset_cursor(self, service):
         """_run_reindex walks batches by cursor and stops on a short batch."""
         mock_conn = AsyncMock()
@@ -1134,6 +1160,7 @@ class TestHandleDelete:
 
     @pytest.mark.asyncio
     async def test_graph_delete_fails_reverts(self, service):
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": False, "error": "DB error"
         })
@@ -1147,6 +1174,51 @@ class TestHandleDelete:
             assert service.graph_provider.batch_upsert_nodes.await_count >= 1
 
     @pytest.mark.asyncio
+    async def test_a_connector_the_graph_delete_already_removed_is_acked_not_recreated(self, service):
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": False, "error": "Connector instance c1 not found"
+        })
+        config_svc = AsyncMock()
+        service.app_container.config_service.return_value = config_svc
+        with current_coordinator() as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("gmail", {
+                "orgId": "org1", "connectorId": "c1", "previousIsActive": True
+            })
+        assert result is True
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
+        # Its credentials and storage are left to the release its intent keeps.
+        config_svc.delete_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failure_after_the_graph_delete_committed_is_acked_without_a_revert(self, service):
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+        with current_coordinator() as mock_stm, patch(
+            "app.connectors.services.event_service.build_connector_cleanup_events",
+            side_effect=RuntimeError("after the graph delete"),
+        ):
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("gmail", {
+                "orgId": "org1", "connectorId": "c1", "previousIsActive": True
+            })
+        assert result is True
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_revert_whose_read_fails_writes_nothing(self, service):
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": False, "error": "DB error"
+        })
+        service.graph_provider.get_document = AsyncMock(side_effect=RuntimeError("graph down"))
+        with current_coordinator() as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("gmail", {
+                "orgId": "org1", "connectorId": "c1", "previousIsActive": True
+            })
+        assert result is False
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_kafka_publish_fails(self, service):
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": True, "virtual_record_ids": ["vr1"], "deleted_records_count": 1
@@ -1158,19 +1230,6 @@ class TestHandleDelete:
             config_svc.delete_config = AsyncMock()
             service.app_container.config_service.return_value = config_svc
             # Should still succeed (kafka failure is non-fatal for delete)
-            result = await service._handle_delete("gmail", {
-                "orgId": "org1", "connectorId": "c1"
-            })
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_config_delete_fails(self, service):
-        with current_coordinator() as mock_stm:
-            mock_stm.cancel_sync = AsyncMock()
-            config_svc = AsyncMock()
-            config_svc.delete_config = AsyncMock(side_effect=Exception("etcd error"))
-            service.app_container.config_service.return_value = config_svc
-            # Should still succeed (config delete failure is non-fatal)
             result = await service._handle_delete("gmail", {
                 "orgId": "org1", "connectorId": "c1"
             })
@@ -1218,10 +1277,15 @@ class TestHandleDelete:
         with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
-        assert calls == ["intent:/services/entityCleanup/pending/c1:org1", "graph-delete"]
+        assert calls[:3] == [
+            "intent:/services/entityCleanup/pending/c1:org1",
+            "intent:/services/storageRelease/pending/c1:org1",
+            "graph-delete",
+        ]
 
     @pytest.mark.asyncio
     async def test_no_graph_delete_without_a_recorded_intent(self, service):
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         config_svc = AsyncMock()
         config_svc.set_config = AsyncMock(return_value=False)
         service.app_container.config_service.return_value = config_svc
@@ -1282,18 +1346,26 @@ class TestConfigServiceFor:
 
     @pytest.mark.asyncio
     async def test_delete_event_deletes_config_through_org_service(self, service):
+        from app.connectors.services import event_service
+
         org_config = AsyncMock()
+        release = AsyncMock(return_value=True)
         with current_coordinator() as mock_stm, \
-             patch.object(service, "_config_service_for", return_value=org_config) as config_for:
+             patch.object(service, "_config_service_for", return_value=org_config) as config_for, \
+             patch.object(event_service, "release_connector_storage", release):
             mock_stm.cancel_sync = AsyncMock()
             result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+            while event_service._storage_release_tasks:
+                await asyncio.gather(*list(event_service._storage_release_tasks))
 
         assert result is True
         config_for.assert_called_once_with("org1")
-        org_config.delete_config.assert_awaited_once_with("/services/connectors/c1/config")
+        assert release.await_args.kwargs["org_config_service"] is org_config
+        org_config.delete_config.assert_not_awaited()
         service.app_container.config_service.return_value.delete_config.assert_not_awaited()
-        # The entity cleanup intent is service-wide: indexing reads it back.
-        service.app_container.config_service.return_value.set_config.assert_awaited_once()
+        # Cleanup intents are service-wide: the reconcilers read them back.
+        written = [c.args[0] for c in service.app_container.config_service.return_value.set_config.await_args_list]
+        assert written[:2] == ["/services/entityCleanup/pending/c1", "/services/storageRelease/pending/c1"]
 
 
 # ===========================================================================

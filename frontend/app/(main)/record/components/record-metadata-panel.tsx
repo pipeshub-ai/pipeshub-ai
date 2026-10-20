@@ -4,6 +4,7 @@ import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties } fr
 import { Box, Flex, Tabs, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { formatDate } from '@/lib/utils/formatters';
+import { isRateLimitPause } from '@/lib/utils/rate-limit-pause';
 import { formatFileSize } from '@/app/components/file-preview/utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
@@ -167,9 +168,14 @@ function IndexingStatusChip({ status }: { status: string | undefined }) {
   );
 }
 
-function shouldShowIndexingReasonTooltip(status: string | undefined, reason: string | undefined): boolean {
+function shouldShowIndexingReasonTooltip(
+  status: string | undefined,
+  reason: string | undefined,
+  retryNotBefore?: number | null,
+): boolean {
   if (!reason?.trim()) return false;
   return (
+    isRateLimitPause(status, reason, retryNotBefore) ||
     status === 'FAILED' ||
     status === 'AUTO_INDEX_OFF' ||
     status === 'FILE_TYPE_NOT_SUPPORTED' ||
@@ -373,7 +379,11 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
     record.sourceLastModifiedTimestamp ?? record.updatedAtTimestamp,
   );
 
-  const showReasonHint = shouldShowIndexingReasonTooltip(record.indexingStatus, record.reason);
+  const showReasonHint = shouldShowIndexingReasonTooltip(
+    record.indexingStatus,
+    record.reason,
+    record.retryNotBefore,
+  );
   const isAttachment = record.connectorName?.toUpperCase() === 'ATTACHMENTS';
   const connectorIconType = resolveConnectorType(record.connectorId || 'generic');
   const shortConnectorId =

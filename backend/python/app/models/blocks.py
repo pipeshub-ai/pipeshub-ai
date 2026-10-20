@@ -170,6 +170,22 @@ class TableMetadata(BaseModel):
     captions: Optional[list[str]] = Field(default_factory=list)
     footnotes: Optional[list[str]] = Field(default_factory=list)
 
+
+def summary_with_captions(summary: str | None, captions: list[str] | None) -> str:
+    """*summary* led by each caption it does not already contain.
+
+    A caption is often all that tells apart sibling tables with the same
+    columns, and an LLM summary written from the grid never sees it.
+    """
+    summary = summary or ""
+    missing = [
+        caption
+        for caption in dict.fromkeys((c or "").strip() for c in captions or [])
+        if caption and caption not in summary
+    ]
+    return "\n".join([*missing, summary] if summary else missing)
+
+
 class CodeMetadata(BaseModel):
     """Metadata specific to code blocks"""
     language: Optional[str] = None
@@ -286,6 +302,7 @@ class GroupSubType(str, Enum):
 
 class SemanticMetadata(BaseModel):
     entities: Optional[list[dict[str, Any]]] = None
+    named_entities: Optional[dict[str, Any]] = None
     section_numbers: Optional[list[str]] = None
     summary: Optional[str] = None
     keywords: Optional[list[str]] = None
@@ -298,6 +315,9 @@ class SemanticMetadata(BaseModel):
     sub_category_level_2: Optional[str] = None
     sub_category_level_3: Optional[str] = None
     confidence: Optional[Confidence] = None
+    # Set when the labels above are the names extracted from this record's
+    # own content (app.modules.indexing.record_label_repair reads it).
+    own_labels: bool | None = None
 
     def to_llm_context(self) -> list[str]:
         lines = []

@@ -7,6 +7,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ToolsetsApi } from '@/app/(main)/toolsets/api';
 import { isProcessedError } from '@/lib/api';
+import { integrationHandoffLink } from '@/lib/auth/desktop-oauth';
+import DesktopHandoffNotice from '@/app/(public)/auth/desktop-handoff-notice';
 import {
   postToolsetOAuthErrorToOpener,
   postToolsetOAuthSuccessToOpener,
@@ -43,6 +45,7 @@ export function ToolsetOAuthCallbackClient() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const ranRef = useRef(false);
+  const [handoffLink, setHandoffLink] = useState<string | null>(null);
 
   const closeWindow = useCallback(() => {
     closePopup();
@@ -51,6 +54,15 @@ export function ToolsetOAuthCallbackClient() {
   useEffect(() => {
     if (ranRef.current) return;
     ranRef.current = true;
+
+    // Started from the desktop app: hand code+state to it rather than completing here with
+    // this browser's session, which may be signed out or belong to someone else.
+    const handoff = integrationHandoffLink('toolset', new URLSearchParams(window.location.search));
+    if (handoff) {
+      setHandoffLink(handoff);
+      window.location.href = handoff;
+      return;
+    }
 
     const run = async () => {
       const toolsetSlug = parseToolsetOAuthCallbackSlug(window.location.pathname);
@@ -117,6 +129,10 @@ export function ToolsetOAuthCallbackClient() {
 
     void run();
   }, [closeWindow, t]);
+
+  if (handoffLink) {
+    return <DesktopHandoffNotice deepLink={handoffLink} titleKey="auth.desktopHandoff.integrationTitle" />;
+  }
 
   const shellStyle = {
     minHeight: '100vh',

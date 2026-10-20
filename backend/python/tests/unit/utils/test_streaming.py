@@ -1246,6 +1246,27 @@ class TestInvokeWithStructuredOutputAndReflection:
         assert result.answer == "recovered"
         assert mock_structured_llm.ainvoke.await_count == 2
 
+    async def test_a_final_error_from_a_reflection_call_is_not_retried(self) -> None:
+        from langchain_openai import ChatOpenAI
+
+        from app.exceptions.non_retryable import NonRetryableError
+
+        class Final(NonRetryableError):
+            pass
+
+        mock_llm = MagicMock(spec=ChatOpenAI)
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.ainvoke = AsyncMock(
+            side_effect=[AIMessage(content="not valid json"), Final("stop"), AIMessage(content="unused")]
+        )
+        mock_llm.with_structured_output = MagicMock(return_value=mock_structured_llm)
+
+        with pytest.raises(Final):
+            await invoke_with_structured_output_and_reflection(
+                mock_llm, [HumanMessage(content="test")], self.SimpleSchema, max_retries=2
+            )
+        assert mock_structured_llm.ainvoke.await_count == 2
+
     async def test_parse_failure_then_reflection_success(self):
         """Initial parse fails, but reflection succeeds."""
         from langchain_openai import ChatOpenAI

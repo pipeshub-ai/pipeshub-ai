@@ -382,3 +382,60 @@ class TestAllScheduledErrorHandling:
             await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
 
         assert exc_info.value.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# connectorIds: one connector's state, for a caller that must not read a gap as "sync is off"
+# ---------------------------------------------------------------------------
+
+
+class TestListedConnectors:
+    @staticmethod
+    def _request(docs: dict, configs: dict) -> MagicMock:
+        request = _make_request()
+        gp = request.app.state.graph_provider
+
+        async def get_document(
+            key: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
+        ) -> dict | None:
+            doc = docs.get(key)
+            if isinstance(doc, Exception):
+                raise doc
+            return doc
+
+        async def get_config(path: str, *, use_cache: bool = True, raise_on_error: bool = False) -> dict | None:
+            # Like ConfigurationService: a store error is None unless the caller asks it to raise.
+            for cid, cfg in configs.items():
+                if cid in path:
+                    if isinstance(cfg, Exception):
+                        if raise_on_error:
+                            raise cfg
+                        return None
+                    return cfg
+            return None
+
+        gp.get_document = AsyncMock(side_effect=get_document)
+        request.app.container.config_service().get_config = AsyncMock(side_effect=get_config)
+        return request
+
+    @pytest.mark.asyncio
+    async def test_each_listed_connector_is_classified_and_none_is_left_out(self) -> None:
+        off = {**_active_doc("c-off", "Web"), "isActive": False}
+        request = self._request(
+            docs={"c-sched": _active_doc("c-sched", "Web"), "c-off": off, "c-unread": _active_doc("c-unread", "Web"),
+                  "c-dberr": RuntimeError("graph down")},
+            configs={"c-sched": _scheduled_sync(15), "c-off": _scheduled_sync(), "c-unread": RuntimeError("kv down")},
+        )
+
+        result = await get_all_scheduled_connector_instances_internal(
+            request, page=1, limit=50, connector_ids="c-sched,c-off,c-unread,c-gone,c-dberr",
+        )
+
+        items = {i["connectorId"]: i for i in result["items"]}
+        assert result["hasMore"] is False and len(items) == 5
+        assert items["c-sched"]["isActive"] is True
+        assert items["c-sched"]["sync"]["scheduledConfig"]["intervalMinutes"] == 15
+        assert items["c-off"]["isActive"] is False and "unreadable" not in items["c-off"]
+        assert items["c-unread"]["unreadable"] is True
+        assert items["c-dberr"]["unreadable"] is True, "a failed read is not a deleted connector"
+        assert items["c-gone"] == {"connectorId": "c-gone", "missing": True}

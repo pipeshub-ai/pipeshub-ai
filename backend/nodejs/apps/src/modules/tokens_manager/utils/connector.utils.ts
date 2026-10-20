@@ -49,6 +49,7 @@ export const executeConnectorCommand = async <T = unknown>(
   method: HttpMethod,
   headers: Record<string, string>,
   body?: any,
+  options: Pick<ConnectorServiceCommandOptions, 'timeoutMs' | 'retries'> = {},
 ): Promise<ConnectorServiceResponse<T>> => {
   const connectorCommandOptions: ConnectorServiceCommandOptions = {
     uri,
@@ -60,6 +61,7 @@ export const executeConnectorCommand = async <T = unknown>(
       'content-type': 'application/json',
     },
     ...(body && { body }),
+    ...options,
   };
   const connectorCommand = new ConnectorServiceCommand<T>(
     connectorCommandOptions,

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,6 +33,16 @@ from app.modules.transformers.entity_vectorstore import (
     EntityPointRef,
     EntityWriteOutcome,
 )
+from tests.support.entity_vector_db import recreate_lock_redis
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+@pytest.fixture(autouse=True)
+def _recreate_lock() -> Iterator[None]:
+    with recreate_lock_redis():
+        yield
+
 
 APPS = CollectionNames.APPS.value
 ORGS = CollectionNames.ORGS.value
@@ -127,6 +137,10 @@ class FakeStore:
         self.recreate_requests: list[bool] = []
         self.stamp = ""
         self.stamp_reads = 0
+        self.stale_checks: list[str] = []
+
+    async def recreate_stale_collection(self, org_id: str) -> None:
+        self.stale_checks.append(org_id)
 
     async def embedding_fingerprint(self, *, recreate: bool = False) -> str:
         self.recreate_requests.append(recreate)
@@ -1172,3 +1186,29 @@ class TestACollectionEmptiedFromOutside:
         assert outcomes == ["idle"] * 30
         assert db.stamp == stamp and db.entity_points == {}
         assert len(graph.updates) == updates
+
+
+class TestPerOrgCollections:
+    """A store that keeps a collection per org recreates one another model
+    wrote only when asked for that org; the rebuild asks for the org it is
+    about to project or sweep, and no other."""
+
+    async def test_a_connector_page_checks_the_org_of_its_rows(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[APPS]["app-1"] = _app()
+        graph.docs[ORGS]["org-2"] = _done_org("org-2")
+        graph.sources[(GROUPS, "app-1")] = [{"_key": "g1", "name": "Eng", "orgId": "org-1"}]
+
+        await _rebuilder(graph, store).tick()
+
+        assert store.stale_checks == ["org-1"]
+
+    async def test_a_taxonomy_page_and_a_sweep_check_their_own_org(self) -> None:
+        graph, store = FakeGraph(), FakeStore()
+        graph.docs[ORGS]["org-1"] = _org()
+        graph.docs[ORGS]["org-2"] = _done_org("org-2")
+
+        outcomes = await _run_until_idle(_rebuilder(graph, store))
+
+        assert "taxonomy" in outcomes and outcomes[-2] == "sweep"
+        assert set(store.stale_checks) == {"org-1"}

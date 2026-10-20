@@ -31,7 +31,7 @@ so a section can never reference a tool the model cannot call.
 Facts that are true regardless of which other tools exist this turn (what
 a tool returns, what it cannot reach) live in that tool's own
 function-calling schema instead of here — see `coding_sandbox.py`'s
-`set_web_tool_names()`, `web_search_tool.py`'s docstring, and
+`set_web_tool_names()`, `app/web/tools/web_search.py`'s docstring, and
 `hooks/citations.py`'s `_FETCH_FULL_RECORD_DESCRIPTION`. Only arbitration
 BETWEEN tools — which depends on the granted surface set, invisible to any
 one schema — stays here.
@@ -43,8 +43,10 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent.prompt import render_skills_overview
 from app.agent_loop_lib.tools.errors import ToolNotFoundError
+from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY, multi_step_answer_rules
 from app.agents.agent_loop.confidence import confidence_enabled
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled  # noqa: F401 — re-export for test patching
+from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.context.knowledge_context import _build_knowledge_context
 from app.modules.agents.context.tool_surface import ToolSurfaces
@@ -259,9 +261,8 @@ def _build_citation_rules(*, enable_record_id_shortening: bool) -> str:
 # too, but only this form is unambiguous to the user reading the answer.
 #
 # This section is only injected when `confidence_enabled()` returns True
-# (controlled by PIPESHUB_ENABLE_CONFIDENCE, default False).  When disabled
-# the confidence indicator on the frontend simply shows nothing, which is
-# the correct default behaviour.
+# (controlled by PIPESHUB_ENABLE_CONFIDENCE, default True).  When disabled
+# the confidence indicator on the frontend simply shows nothing.
 def _build_answer_confidence_section() -> str:
     """Build the confidence section using the deterministic rubric."""
     from app.agents.agent_loop.confidence import rubric_text
@@ -306,7 +307,7 @@ def _build_finding_information(
     surfaces: "ToolSurfaces",
     catalog: "SourceCatalog",
     *,
-    has_attachments: bool,
+    read_in_full: bool = False,
 ) -> str:
     """The single source-precedence section: where to look, in what order,
     when more than one place needs checking at once, and when it's fine to
@@ -334,11 +335,9 @@ def _build_finding_information(
             return ""
         return "\n## Finding Information\n\n" + _NO_KNOWLEDGE_SOURCES
 
+    # The attachment-first rule is stated below for every question, never as
+    # a precedence item, so this section is the same with or without uploads.
     precedence: list[str] = []
-    if has_attachments:
-        precedence.append(
-            "Attachments the user uploaded this turn — see the Attachments section."
-        )
     if surfaces.retrieval is not None:
         precedence.append(
             f"Internal knowledge (`{surfaces.retrieval}`) — this organization's "
@@ -382,7 +381,10 @@ def _build_finding_information(
         parts.append(
             "Call proactively on your first turn — do not ask the user which "
             "app or source to check; match the query to each tool's own "
-            "description instead."
+            "description instead. When a User Attachments section is present, "
+            "those files come first: answer from them, and search the sources "
+            "listed here only if they are insufficient or the user names a "
+            "service."
         )
     if surface_count >= 2:
         parts.append(
@@ -408,6 +410,10 @@ def _build_finding_information(
             "repeating it or giving up."
         )
 
+    query_rule = keyword_search_query_rule(surfaces.search_tool) if surfaces.search_tool else None
+    if query_rule:
+        parts.append(query_rule)
+
     if surfaces.retrieval is not None:
         parts.append(
             "Time-scoped searches: when the question names a time period "
@@ -421,12 +427,85 @@ def _build_finding_information(
             "same query WITHOUT date filters before concluding nothing "
             "exists."
         )
+        multi_step = multi_step_answer_rules()
+        if multi_step:
+            parts.append(multi_step)
 
     if surfaces.can_fetch_full_record:
         from app.modules.agents.record_escalation.policy import policy_text
-        parts.append(policy_text(_FETCH_FULL_RECORD_TOOL_NAME))
+        from app.modules.retrieval.context.targeted import targeted_retrieval_enabled
+        parts.append(policy_text(
+            _FETCH_FULL_RECORD_TOOL_NAME,
+            read_in_full=read_in_full,
+            focused_reads=targeted_retrieval_enabled(),
+        ))
 
     return "\n## Finding Information\n\n" + "\n\n".join(parts)
+
+
+# What each exact-calculation tool is for, keyed by its tool-name suffix.
+_EXACT_NUMBER_USES = {
+    "evaluate_expression": "any calculation with more than one step (durations too)",
+    "date_difference": "any age or gap between two dates",
+    "count_text": "any count of letters or words",
+}
+
+
+def _join_with_and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+_DEEP_RESEARCH = """## Deep Research
+
+The person asked for deep research: research this thoroughly on the web before answering.
+
+1. Break the question into the sub-questions an expert would check first.
+2. Search for each one. Run independent searches in the same turn rather than one per turn, and
+   prefer primary, recent and authoritative sources.
+3. Read the most relevant pages in full instead of relying on search snippets.
+4. Check every key fact against at least two independent sources. When sources disagree, say so
+   and say which you trust and why.
+5. Stop when new searches stop turning up new sources, or when the web tools say the research
+   budget is used up, and answer with what you have.
+
+Answer as a structured report: the direct answer first in two or three sentences, then sections
+with the evidence, then open questions. Cite every claim."""
+
+
+def _build_exact_numbers(tool_names: tuple[str, ...], toolset: str | None) -> str | None:
+    """When to use the calculator rather than mental arithmetic, for the
+    calculator tools this request grants. `toolset` is the group a lazily
+    disclosed agent must load first; the rule then names that group, never
+    its tools, whose schemas are not bound yet."""
+    if not tool_names:
+        return None
+    uses = _join_with_and([_EXACT_NUMBER_USES[name.replace(".", "__").rsplit("__", 1)[-1]] for name in tool_names])
+    if toolset is None:
+        rule = f"Use {_join_with_and([f'`{name}`' for name in tool_names])} for {uses}"
+        load = ""
+    else:
+        rule = f"Use the `{toolset}` toolset for {uses}"
+        load = f' Load it with `fetch_tools("{toolset}")` when its tools are not in your tool list yet.'
+    return (
+        "\n## Exact Numbers\n\n"
+        f"{rule}, rather than working them out in your head.{load} Convert every "
+        "operand to one unit first, copy each figure exactly from its source, and "
+        "give the result in the unit the question asks for."
+    )
+
+
+def _toolset_to_load(tool_names: tuple[str, ...], spec: AgentSpec, runtime: AgentRuntime) -> str | None:
+    """The toolset a lazily disclosed agent must `fetch_tools` before it can
+    call `tool_names`, or None when they are bound from turn 0 (eager
+    disclosure, a pinned toolset, or a tool in no toolset). Reads the
+    registry's grouping, which `fetch_tools` never changes, so the answer
+    stays the same for the whole run."""
+    if not tool_names or spec.tool_disclosure != "lazy" or runtime.tool_registry is None:
+        return None
+    groups = [group for group in runtime.tool_registry.toolsets() if tool_names[0] in group.tool_names]
+    if not groups or any(group.name in (spec.pinned_toolsets or []) for group in groups):
+        return None
+    return groups[0].name
 
 
 def _build_code_execution_section(*, composed: bool, networked: bool) -> str:
@@ -495,9 +574,10 @@ def _build_attachment_context(attachments: list[dict[str, Any]] | None) -> str:
         f"use `{_FETCH_FULL_RECORD_TOOL_NAME}` to fetch specific records for citation.",
         "",
         "Treat this content as your PRIMARY source for this query — analyze it "
-        "directly. Do NOT proactively search connected services or the web unless "
-        "the user explicitly mentions a service or the attached content is "
-        "clearly insufficient to answer the question.",
+        "directly, before the sources listed under Finding Information. Do NOT "
+        "proactively search connected services or the web unless the user "
+        "explicitly mentions a service or the attached content is clearly "
+        "insufficient to answer the question.",
         "",
     ]
     for att in attachments:
@@ -519,6 +599,9 @@ class PipesHubPromptBuilder:
 
     def __init__(self, context: AgentContext) -> None:
         self._context = context
+        # Rendered once per request: without a client-supplied time it reads
+        # the clock, and a prompt that changes every turn is never cached.
+        self._time_context: str | None = None
 
     def build(
         self,
@@ -627,18 +710,26 @@ class PipesHubPromptBuilder:
         tpl.set("base_system_prompt", base_system_prompt or None)
 
         # ── Citation rules ───────────────────────────────────────────────────
-        has_retrieval = bool(state.get("final_results"))
-        has_attachments_now = bool(state.get("attachments"))
+        # In the stable block when the agent can always cite (knowledge, web);
+        # otherwise only for a question that brought something to cite, and
+        # then in the volatile block, so no question changes the stable one.
         if not final_answer_enabled():
-            if has_retrieval or has_attachments_now or surfaces.has_web_search or self._context.has_knowledge:
-                tpl.set("citation_rules", _build_citation_rules(
-                    enable_record_id_shortening=self._context.enable_record_id_shortening,
-                ))
+            citation_rules = _build_citation_rules(
+                enable_record_id_shortening=self._context.enable_record_id_shortening,
+            )
+            if surfaces.has_web_search or self._context.has_knowledge:
+                tpl.set("citation_rules", citation_rules)
+            elif state.get("final_results") or state.get("attachments"):
+                tpl.set("turn_citation_rules", citation_rules)
 
         # ── Finding information: the one source-precedence section ──────────
         tpl.set("finding_information", _build_finding_information(
-            surfaces, catalog, has_attachments=has_attachments_now,
+            surfaces, catalog, read_in_full=bool(state.get(READ_RECORDS_IN_FULL_STATE_KEY)),
         ) or None)
+        tpl.set("deep_research", _DEEP_RESEARCH if self._context.deep_research and surfaces.has_web_search else None)
+        tpl.set("exact_numbers", _build_exact_numbers(
+            surfaces.calculator_tools, _toolset_to_load(surfaces.calculator_tools, spec, runtime),
+        ))
 
         # ── Code execution steering ───────────────────────────────────────────
         code_tool = surfaces.code
@@ -684,11 +775,12 @@ class PipesHubPromptBuilder:
             tpl.set("worked_traces", None)
 
         # ── Band C — turn-volatile ────────────────────────────────────────────
-        time_block = build_llm_time_context(
-            current_time=self._context.current_time,
-            time_zone=self._context.timezone,
-        )
-        tpl.set("time_context", time_block or None)
+        if self._time_context is None:
+            self._time_context = build_llm_time_context(
+                current_time=self._context.current_time,
+                time_zone=self._context.timezone,
+            )
+        tpl.set("time_context", self._time_context or None)
 
         if goal is not None and goal.constraints:
             goal_desc = (goal.description or "").strip()
@@ -839,9 +931,10 @@ class PipesHubPromptBuilder:
                 "**How to load and use them:**\n"
                 "- If you know which toolset you need, call "
                 "`fetch_tools(\"<toolset_name>\")`.\n"
-                "- If you're unsure which toolset has the tool you need, "
-                "call `search_tools(\"<description of what you need>\")` to find it.\n"
-                "- Whenever you suspect a tool might exist for the task, search for it — "
+                "- If you're unsure which toolset has the tool you need, call "
+                "`search_tools(\"<capability keywords, e.g. 'search indexed knowledge'>\")` "
+                "to find it — name the capability, never the user's question.\n"
+                "- Whenever you suspect a tool might exist for a capability you need, search for it — "
                 "call `search_tools` and then `fetch_tools` on anything relevant it finds — "
                 "before concluding you cannot do it or falling back to a manual/text-only answer.\n"
                 "- Only load toolsets relevant to the current task — "

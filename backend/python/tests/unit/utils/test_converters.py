@@ -360,6 +360,43 @@ class TestProcessContentInOrder:
         assert len(result.blocks) >= 1  # At least one table row block
 
     @pytest.mark.asyncio
+    async def test_table_caption_leads_the_summary(self, converter) -> None:
+        """Docling keeps a table's caption in its metadata only; the summary the
+        rows are read under came from the grid alone."""
+        doc_dict = {
+            "body": {"children": [{DOCLING_REF_NODE: "#/tables/0"}]},
+            "tables": [
+                {
+                    "self_ref": "#/tables/0",
+                    "data": {
+                        "table_cells": [{"text": "A1", "row": 0, "col": 0}],
+                        "grid": [[{"text": "A1"}]],
+                        "num_rows": 1,
+                        "num_cols": 1,
+                    },
+                    "prov": [],
+                    "captions": [{DOCLING_REF_NODE: "#/texts/0"}],
+                    "footnotes": [],
+                }
+            ],
+            "texts": [{"self_ref": "#/texts/0", "text": "Fees in 2024", "prov": []}],
+            "pages": {},
+        }
+
+        from app.utils.table_enrichment import TableEnrichmentResult
+
+        enrichment = TableEnrichmentResult(summary="A summary", headers=["A"], descriptions=["Row 1"])
+        with patch("app.utils.converters.docling_doc_to_blocks.get_llm_for_role",
+                   AsyncMock(return_value=(MagicMock(), {}))), \
+             patch("app.utils.converters.docling_doc_to_blocks.enrich_tables",
+                   AsyncMock(return_value=[enrichment])):
+            result = await converter._process_content_in_order(_make_doc(doc_dict))
+
+        table = result.block_groups[0]
+        assert table.table_metadata.captions == ["Fees in 2024"]
+        assert table.data["table_summary"] == "Fees in 2024\nA summary"
+
+    @pytest.mark.asyncio
     async def test_table_block_no_cells_skipped(self, converter):
         """Table with no cells returns None / is skipped."""
         doc_dict = {

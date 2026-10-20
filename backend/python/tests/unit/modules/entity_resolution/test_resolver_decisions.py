@@ -401,4 +401,5 @@ class TestSeveralCandidates:
         with patch.object(resolver_module, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), {}))), \
                 patch.object(resolver_module, "invoke_with_structured_output_and_reflection", side_effect=_capture):
             await make_resolver().resolve(ctx_factory("r1", "acme", metadata_factory(topics=["Release thing"])))
-        assert all(key in seen[0] for key in ("k-a", "k-b", "k-c"))
+        assert all(name in seen[0] for name in ("Release notes", "Release checklist", "Release plan"))
+        assert not any(key in seen[0] for key in ("k-a", "k-b", "k-c"))

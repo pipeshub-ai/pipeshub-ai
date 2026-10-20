@@ -151,9 +151,17 @@ async def test_each_mailbox_is_read_as_its_owner_and_only_its_owner_gets_access(
     await ws.sync()
 
     assert ws.mail_ids() == {"a-sent", "b-recv", "b-other"}
-    assert ws.access("a-sent") == [(ALICE, PermissionType.OWNER)]
-    assert ws.access("b-recv") == [(BOB, PermissionType.READ)]
-    assert ws.access("b-other~1") == [(BOB, PermissionType.READ)]
+    assert ws.access("a-sent") == []
+    assert ws.access("b-recv") == []
+    assert ws.access("b-other~1") == []
+    assert ws.records.records["a-sent"].inherit_permissions is True
+    assert ws.records.records["b-other~1"].inherit_permissions is True
+    mailbox = f"mailbox:{ALICE}"
+    assert ws.records.record_groups[mailbox].inherit_permissions is False
+    assert [(p.email, p.type) for p in ws.records.record_group_permissions[mailbox]] == [(ALICE, PermissionType.OWNER)]
+    assert ws.records.record_groups[f"{ALICE}:SENT"].parent_external_group_id == mailbox
+    assert ws.records.record_groups[f"{ALICE}:SENT"].inherit_permissions is True
+    assert ws.records.record_group_permissions[f"{ALICE}:SENT"] == []
     assert ws.records.records["a-sent"].external_record_group_id == f"{ALICE}:SENT"
     assert ws.records.records["b-recv"].external_record_group_id == f"{BOB}:INBOX"
     assert {ALICE, BOB, ADMIN} <= ws.http.impersonated_subjects()
@@ -218,7 +226,7 @@ async def test_incremental_sync_applies_new_trashed_and_deleted_mail_per_user(ws
 
     assert ws.mail_ids() == {"a-keep", "a-reply", "b-new"}
     assert "a-trash~1" not in ws.records.records
-    assert ws.access("b-new") == [(BOB, PermissionType.READ)]
+    assert ws.access("b-new") == []
     assert (ws.records.records["a-keep"].id, ws.records.records["a-reply"].id) in {(f, t) for f, t, _ in ws.records.relations}
     assert int(ws.checkpoint(ALICE)) > int(alice_before)
 

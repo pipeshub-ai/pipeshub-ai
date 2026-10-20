@@ -1,10 +1,15 @@
 import { z } from 'zod';
-import { googleWorkspaceTypes, storageTypes } from '../constants/constants';
+import {
+  AI_MODEL_TYPES,
+  googleWorkspaceTypes,
+  storageTypes,
+} from '../constants/constants';
 import { REASONING_EFFORT_VALUES } from '../../enterprise_search/constants/constants';
 import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
 } from '../../storage/utils/s3-credentials.util';
+import { canSearch } from '../types/web-search.types';
 
 export const baseStorageSchema = z.object({
   storageType: z.enum([
@@ -468,18 +473,12 @@ export const metricsCollectionRemoteServerSchema = z.object({
 });
 
 
-// Enum definitions
-export const modelType = z.enum([
-  'llm',
-  'embedding',
-  'ocr',
-  'slm',
-  'reasoning',
-  'multiModal',
-  'imageGeneration',
-  'tts',
-  'stt',
-]);
+// Enum definitions. `AI_MODEL_TYPES` is the single list; Zod wants a mutable tuple.
+export const modelType = z.enum(
+  AI_MODEL_TYPES as unknown as [AIModelTypeName, ...AIModelTypeName[]],
+);
+
+type AIModelTypeName = (typeof AI_MODEL_TYPES)[number];
 
 // Provider validation is now dynamic — the Python backend registry is the
 // source of truth.  We only enforce that a non-empty string is provided.
@@ -569,6 +568,71 @@ export const updateProviderRequestSchema = z.object({
   }),
 });
 
+export const discoverModelsRequestSchema = z.object({
+  body: z.object({
+    provider: providerType,
+    capability: z.string().optional(),
+    configuration: configurationSchema.default({}),
+    modelType: modelType.optional(),
+    modelKey: z.string().optional(),
+    query: z.string().optional(),
+  }),
+});
+
+const batchModelSchema = z.object({
+  model: z.string().min(1),
+  modelFriendlyName: z.string().optional(),
+  isMultimodal: z.boolean().default(false),
+  isReasoning: z.boolean().default(false),
+  contextLength: z.number().optional().nullable(),
+});
+
+/** Drop a shared friendly name before the single-model refine. Each batch model carries its own. */
+const batchSharedConfigurationSchema = z.preprocess((value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  if (!('modelFriendlyName' in value)) return value;
+  const copy = { ...(value as Record<string, unknown>) };
+  delete copy.modelFriendlyName;
+  return copy;
+}, configurationSchema);
+
+export const batchAddModelsRequestSchema = z.object({
+  body: z.object({
+    modelType: modelType,
+    provider: providerType,
+    configuration: batchSharedConfigurationSchema,
+    models: z.array(batchModelSchema).min(1).max(25),
+    defaultModel: z.string().optional(),
+    connectionId: z.string().uuid().optional(),
+  }).superRefine((body, ctx) => {
+    const seen = new Set<string>();
+    for (const model of body.models) {
+      if (seen.has(model.model)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate model id ${model.model}`,
+          path: ['models'],
+        });
+      }
+      seen.add(model.model);
+    }
+  }),
+});
+
+export const rotateConnectionCredentialsSchema = z.object({
+  body: z.object({
+    configuration: z.object({
+      apiKey: z.string().optional(),
+      awsAccessKeyId: z.string().optional(),
+      awsAccessSecretKey: z.string().optional(),
+      serviceAccountJson: z.string().optional(),
+    }).strict(),
+  }),
+  params: z.object({
+    connectionId: z.string().min(1),
+  }),
+});
+
 export const addProviderRequestSchema = z.object({
   body: z.object({
     modelType: modelType,
@@ -594,9 +658,10 @@ export const aiModelsConfigSchema = z.object({
       imageGeneration: z.array(modelConfigurationSchema).optional(),
       tts: z.array(modelConfigurationSchema).optional(),
       stt: z.array(modelConfigurationSchema).optional(),
+      decision: z.array(modelConfigurationSchema).optional(),
     })
     .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, decision',
     })
     .refine(
       (data) => {
@@ -615,50 +680,20 @@ export const aiModelsConfigSchema = z.object({
 
 export const modelTypeSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-      'imageGeneration',
-      'tts',
-      'stt',
-    ]),
+    modelType,
   }),
 });
 
 export const updateDefaultModelSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-      'imageGeneration',
-      'tts',
-      'stt',
-    ]),
+    modelType,
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
 });
 
 export const deleteProviderSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-      'imageGeneration',
-      'tts',
-      'stt',
-    ]),
+    modelType,
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
 });
@@ -669,12 +704,52 @@ export const webSearchProviderType = z.enum([
   'serper',
   'tavily',
   'exa',
+  'brave',
+  'searxng',
+  'firecrawl',
+  'crawl4ai',
 ]);
+
+const notADefaultPageReader = (body: {
+  provider: string;
+  isDefault?: boolean;
+}): boolean => !(body.isDefault && !canSearch(body.provider));
+const PAGE_READER_DEFAULT_MESSAGE = {
+  message:
+    'This provider only reads pages, so it cannot be the default web search provider',
+  path: ['isDefault'],
+};
+
+const isServerAddress = (value: unknown): boolean => {
+  if (typeof value !== 'string' || value.length > 2048) {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+};
 
 export const webSearchConfigurationSchema = z
   .record(z.any())
+  .refine(
+    (configuration) =>
+      configuration.baseUrl === undefined ||
+      isServerAddress(configuration.baseUrl),
+    {
+      message:
+        'baseUrl must be an http(s) address of at most 2048 characters, without a user name or password',
+      path: ['baseUrl'],
+    },
+  )
   .describe(
-    'Provider-specific configuration (e.g., apiKey, cx, endpoint, engine)',
+    'Provider-specific configuration (apiKey; baseUrl for searxng, firecrawl and crawl4ai)',
   );
 
 export const webSearchProviderConfigSchema = z.object({
@@ -687,28 +762,32 @@ export const webSearchProviderConfigSchema = z.object({
 });
 
 export const addWebSearchProviderSchema = z.object({
-  body: z.object({
-    provider: webSearchProviderType,
-    configuration: webSearchConfigurationSchema,
-    isDefault: z
-      .boolean()
-      .default(false)
-      .describe('Whether this should be the default provider'),
-  }),
+  body: z
+    .object({
+      provider: webSearchProviderType,
+      configuration: webSearchConfigurationSchema,
+      isDefault: z
+        .boolean()
+        .default(false)
+        .describe('Whether this should be the default provider'),
+    })
+    .refine(notADefaultPageReader, PAGE_READER_DEFAULT_MESSAGE),
 });
 
 export const updateWebSearchProviderSchema = z.object({
   params: z.object({
     providerKey: z.string().min(1, { message: 'Provider key is required' }),
   }),
-  body: z.object({
-    provider: webSearchProviderType,
-    configuration: webSearchConfigurationSchema,
-    isDefault: z
-      .boolean()
-      .default(false)
-      .describe('Whether this should be the default provider'),
-  }),
+  body: z
+    .object({
+      provider: webSearchProviderType,
+      configuration: webSearchConfigurationSchema,
+      isDefault: z
+        .boolean()
+        .default(false)
+        .describe('Whether this should be the default provider'),
+    })
+    .refine(notADefaultPageReader, PAGE_READER_DEFAULT_MESSAGE),
 });
 
 export const deleteWebSearchProviderSchema = z.object({
