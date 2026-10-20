@@ -419,6 +419,33 @@ class TestB3FileIdAcrossShares:
         assert "s/a.txt" not in proc.records
         assert proc.moved_calls == [[("s/a.txt", "s/c.txt")]]
 
+    @pytest.mark.parametrize("reverse", [False, True])
+    async def test_a_path_in_an_unread_folder_is_not_taken_as_moved(self, reverse: bool) -> None:
+        ds = FakeDataSource({})
+        for d in ("keep", "miss"):
+            ds.add("s", d, is_dir=True, file_id=f"dir-{d}")
+        ds.add("s", "keep/b.txt", file_id="7")
+        ds.add("s", "miss/a.txt", file_id="7")
+        proc = FakeProcessor()
+        proc.reverse_nodes = reverse
+        conn = _connector(ds, proc, shares=["s"])
+        await _sync(conn)
+        a_id, b_id = proc.records["s/miss/a.txt"].id, proc.records["s/keep/b.txt"].id
+        ds.fail_dirs.add(("s", "miss"))
+        ds.add("s", "keep/c.txt", file_id="7")
+        await _sync(conn)
+        assert proc.records["s/miss/a.txt"].id == a_id
+        assert proc.records["s/keep/b.txt"].id == b_id
+        assert proc.records["s/keep/c.txt"].id not in {a_id, b_id}
+        assert proc.moved_calls == []
+
+        # Once "miss" is read again and a.txt is really gone, the next rename still moves.
+        ds.fail_dirs.clear()
+        del ds.shares["s"]["miss/a.txt"]
+        ds.add("s", "keep/d.txt", file_id="8")
+        await _sync(conn)
+        assert "s/miss/a.txt" not in proc.records
+
     async def test_copy_keeping_file_id_in_same_share_is_not_a_move(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt", file_id="7")

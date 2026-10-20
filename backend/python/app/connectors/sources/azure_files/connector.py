@@ -1011,6 +1011,8 @@ class AzureFilesConnector(BaseConnector):
         # The share itself is the parent of its top-level items (a placeholder
         # record may exist for it), and no listing returns it.
         seen: set[str] = {share_name}
+        # Directories listed in full; only a path under one of them can be known to be gone.
+        listed: set[str] = set()
         complete = True
         share_gone = False
 
@@ -1100,6 +1102,7 @@ class AzureFilesConnector(BaseConnector):
                                 self.data_entities_processor.note_kept_records(self.connector_id, [stored.id])
 
                     items = response.data or []
+                    listed.add(f"{share_name}/{directory_path}" if directory_path else share_name)
                     self.logger.debug(
                         f"Processing {len(items)} items from {share_name}/{directory_path or 'root'}"
                     )
@@ -1222,7 +1225,7 @@ class AzureFilesConnector(BaseConnector):
             return set(), True
 
         try:
-            await self._write_moves(move_candidates, seen, paths_by_revision)
+            await self._write_moves(share_name, move_candidates, seen, listed, paths_by_revision)
             await flush(force=True)
         except Exception as e:
             complete = False
@@ -1260,27 +1263,35 @@ class AzureFilesConnector(BaseConnector):
 
     async def _write_moves(
         self,
+        share_name: str,
         candidates: list[tuple[str, FileRecord, list[Permission]]],
         seen: set[str],
+        listed: set[str],
         paths_by_revision: dict[str, list[str]] | None = None,
     ) -> None:
         """Write the items found under a stored record's FileId at a new path.
 
-        Only once the whole share is listed is it known which stored paths are
-        gone. Each new path takes one of those with its revision (the record moves,
-        keeping its index when the content did not change); a new path left with
-        none is a copy that kept its FileId (AzCopy, robocopy) and gets a record
-        of its own.
+        Only once the share is listed is it known which stored paths are gone: a
+        path is gone when the directory above it was listed and did not hold it (a
+        directory whose listing failed proves nothing). Each new path takes one of
+        those with its revision (the record moves, keeping its index when the
+        content did not change); a new path left with none is a copy that kept its
+        FileId (AzCopy, robocopy) and gets a record of its own.
         """
+
+        def is_gone(external_id: str) -> bool:
+            parent = get_parent_path(external_id[len(share_name) + 1:])
+            return external_id not in seen and (f"{share_name}/{parent}" if parent else share_name) in listed
+
         moves: list[tuple[str, FileRecord, list[Permission]]] = []
         copies: list[tuple[FileRecord, list[Permission]]] = []
         taken: set[str] = set()
         for old_external_id, record, permissions in candidates:
-            if paths_by_revision is None:
-                gone = [] if old_external_id in seen else [old_external_id]
-            else:
-                gone = paths_by_revision.get(record.external_revision_id or "", [])
-            gone = [path for path in gone if path not in seen and path not in taken]
+            stored_paths = (
+                [old_external_id] if paths_by_revision is None
+                else paths_by_revision.get(record.external_revision_id or "", [])
+            )
+            gone = [path for path in stored_paths if path not in taken and is_gone(path)]
             old_path = old_external_id if old_external_id in gone else next(iter(gone), None)
             stored = None
             if old_path and old_path != old_external_id:
