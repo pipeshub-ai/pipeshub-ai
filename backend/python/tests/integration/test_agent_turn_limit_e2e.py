@@ -223,7 +223,8 @@ class TestTurnLimitEndToEnd:
         answers = [op["value"] for e in events["STATE_DELTA"] for op in e["delta"] if op["path"] == "/normalizedAnswer"]
         assert answers[-1] == _NARRATION
         texts = [p["content"] for p in events["RUN_FINISHED"][0]["result"]["parts"] if p["type"] == "text"]
-        assert _ANSWER not in texts
+        assert all(_ANSWER not in text for text in texts)
+        assert texts[-1] == _NARRATION
 
     async def test_the_two_turns_left_warning_names_no_tool_the_agent_lacks(
         self, chat_model: _ScriptedChatModel,
