@@ -297,6 +297,7 @@ class TestSyncAllProjectIssues:
             "failed_project_keys": [],
             "failed_project_statuses": {},
             "full_sync_project_ids": set(),
+            "leveled_reread_project_ids": set(),
         }
 
 

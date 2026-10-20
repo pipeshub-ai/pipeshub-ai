@@ -415,3 +415,35 @@ def test_security_is_requested_for_ancestor_stubs():
         ANCESTOR_STUB_FIELDS,
     )
     assert "security" in ANCESTOR_STUB_FIELDS
+
+
+@pytest.mark.asyncio
+async def test_the_upgrade_sync_hands_its_reread_projects_to_the_stub_sweep():
+    """N1: stubs written open before this feature are re-submitted once, on the first sync after upgrade."""
+    c = _connector()
+    results = {"p-1": {"total_synced": 0, "new_count": 0, "updated_count": 0, "is_new_project": False, "leveled_reread": True},
+               "p-2": {"total_synced": 0, "new_count": 0, "updated_count": 0, "is_new_project": False}}
+    c._sync_project_issues = AsyncMock(side_effect=lambda rg, *a: results[rg.external_group_id])
+    projects = [(MagicMock(short_name=k, external_group_id=k), []) for k in results]
+    stats = await c._sync_all_project_issues(projects, [], 1)
+    assert stats["leveled_reread_project_ids"] == {"p-1"} and stats["full_sync_project_ids"] == set()
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_open_stub_of_a_leveled_ancestor_is_restricted_after_the_upgrade_sync():
+    """N1: the stub already has a revision, so only the re-read project hands it back to the sweep."""
+    c = _connector()
+    c._issue_security[PROJECT_ID] = _present()
+    stub = TicketRecord(
+        id="rid", org_id="org-1", record_name="x", record_type="TICKET", external_record_id="1001", version=0,
+        origin="CONNECTOR", connector_name="JIRA", connector_id="conn-sec", external_record_group_id=PROJECT_ID,
+        record_group_type="PROJECT", is_placeholder=True, external_revision_id="placeholder:1", access_rule=AccessRule.OPEN)
+    c._bulk_fetch_ancestor_level = AsyncMock(return_value=[_issue({"id": "10102"})])
+    c.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+    c.data_entities_processor.get_all_app_users = AsyncMock(return_value=_users())
+    c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    await c._sweep_placeholder_records({PROJECT_ID}, set())
+    c.data_entities_processor.on_new_records.assert_not_awaited()
+    await c._sweep_placeholder_records({PROJECT_ID}, {PROJECT_ID})
+    record, perms = c.data_entities_processor.on_new_records.await_args.args[0][0]
+    assert record.access_rule == AccessRule.RESTRICTED and perms

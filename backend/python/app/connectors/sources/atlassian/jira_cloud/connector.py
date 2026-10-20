@@ -851,7 +851,10 @@ class JiraConnector(BaseConnector):
             # unreconciled (metadata only; they remain non-indexed stubs).
             await self._sweep_placeholder_records(
                 synced_project_ids={p.external_group_id for p, _ in projects},
-                full_sync_project_ids=sync_stats.get("full_sync_project_ids") or set(),
+                # Projects whose leveled issues were all re-read get their stubs re-submitted
+                # too, so stubs written open before issue security existed are corrected once.
+                full_sync_project_ids=(sync_stats.get("full_sync_project_ids") or set())
+                | (sync_stats.get("leveled_reread_project_ids") or set()),
             )
 
             # 9. Outcome: notify when any project failed issue sync (include keys)
@@ -3421,6 +3424,7 @@ class JiraConnector(BaseConnector):
         # Project key -> the status its issue read failed with (None: transport or other error).
         failed_project_statuses: dict[str, Optional[int]] = {}
         full_sync_project_ids: set[str] = set()
+        leveled_reread_project_ids: set[str] = set()
 
         for project, _ in projects:
             try:
@@ -3432,6 +3436,8 @@ class JiraConnector(BaseConnector):
                 updated_count += project_stats["updated_count"]
                 if project_stats.get("is_new_project"):
                     full_sync_project_ids.add(project.external_group_id)
+                if project_stats.get("leveled_reread"):
+                    leveled_reread_project_ids.add(project.external_group_id)
             except Exception as e:
                 # Per-project failures self-heal: the project checkpoint only advances on
                 # success, so the next sync resumes it. run_sync notifies with the keys.
@@ -3448,6 +3454,7 @@ class JiraConnector(BaseConnector):
             "failed_project_keys": failed_project_keys,
             "failed_project_statuses": failed_project_statuses,
             "full_sync_project_ids": full_sync_project_ids,
+            "leveled_reread_project_ids": leveled_reread_project_ids,
         }
 
     async def _load_issue_security(self, project_key: str) -> IssueSecurityContext:
@@ -3651,6 +3658,7 @@ class JiraConnector(BaseConnector):
             "new_count": stats["new_count"],
             "updated_count": stats["updated_count"],
             "is_new_project": is_new_project,
+            "leveled_reread": reread_all,
         }
 
     async def _record_security_levels(self, project_key: str, level_fps: dict[str, str], *, deferred: bool) -> None:
