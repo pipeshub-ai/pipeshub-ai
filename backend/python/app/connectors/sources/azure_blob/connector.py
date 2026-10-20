@@ -9,7 +9,7 @@ import asyncio
 import base64
 import mimetypes
 import uuid
-from collections.abc import AsyncIterator, Container, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Container, Iterable
 from datetime import datetime, timedelta, timezone
 from logging import Logger
 from typing import TYPE_CHECKING, Any
@@ -495,6 +495,8 @@ class AzureBlobConnector(BaseConnector):
         self._folders_written: set[str] = set()
         # Record ids saved this sync, which the removal pass must keep.
         self._written_ids: set[str] = set()
+        # Removals waiting for every container of the sync to be listed; None outside one.
+        self._queued_removals: list[tuple[str, Callable[[], Awaitable[None]]]] | None = None
         # Part of the source was not read (a container, a listing or a blob failed).
         self._sync_incomplete = False
 
@@ -748,7 +750,19 @@ class AzureBlobConnector(BaseConnector):
                     self.logger.error(f"Error syncing container {container_name}: {e}", exc_info=True)
                     failed.append(container_name)
 
-        await asyncio.gather(*(sync_one(name) for name in container_names if name))
+        self._queued_removals = []
+        try:
+            await asyncio.gather(*(sync_one(name) for name in container_names if name))
+            queued, self._queued_removals = self._queued_removals, None
+            # Only once every container is listed and every move is saved.
+            for container_name, remove in queued:
+                try:
+                    await remove()
+                except Exception as e:
+                    self.logger.error(f"Error removing unlisted records in {container_name}: {e}", exc_info=True)
+                    failed.append(container_name)
+        finally:
+            self._queued_removals = None
         return failed
 
     async def _container_timestamps_and_gone(
@@ -996,7 +1010,13 @@ class AzureBlobConnector(BaseConnector):
         return True
 
     async def _sync_container(self, container_name: str) -> None:
-        """Sync a container, or only the folders the folder filter names."""
+        """Sync a container, or only the folders the folder filter names.
+
+        While ``_sync_containers`` lists several containers, the removal of what this listing
+        lacks is queued in ``self._queued_removals`` instead of run: a record moved into a
+        container still listing is not yet saved under its new name, and removing it now
+        would delete it with its old one.
+        """
         sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
         scope = FolderScope.from_filters(sync_filters)
         if not scope.is_everything:
@@ -1013,17 +1033,24 @@ class AzureBlobConnector(BaseConnector):
         # still stored under its old path until that folder is processed.
         if complete:
             await self._claim_records_of_gone_copies(container_name, unrecorded, listed)
-            await remove_recorded_not_listed(
-                # A record another container just took for a move may not be saved yet.
-                self.data_entities_processor, container_name, scope.list_prefixes, recorded, listed,
-                self._written_ids | self._moved_record_ids, self.logger,
-            )
         else:
             self._sync_incomplete = True
             self.logger.info(f"Not removing records in container {container_name}: a listing did not cover every blob")
-        await clean_up_scope(
-            self.data_entities_processor, self.record_sync_point, self.connector_id, container_name, scope, self.logger
-        )
+
+        async def remove() -> None:
+            if complete:
+                await remove_recorded_not_listed(
+                    self.data_entities_processor, container_name, scope.list_prefixes, recorded, listed,
+                    self._written_ids | self._moved_record_ids, self.logger,
+                )
+            await clean_up_scope(
+                self.data_entities_processor, self.record_sync_point, self.connector_id, container_name, scope, self.logger
+            )
+
+        if self._queued_removals is None:
+            await remove()
+        else:
+            self._queued_removals.append((container_name, remove))
 
     async def _claim_records_of_gone_copies(self, container_name: str, unrecorded: list[dict], listed: set[str]) -> None:
         """Process the unchanged blobs that have no record of their own, when that is safe.

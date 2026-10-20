@@ -336,6 +336,34 @@ class TestLessWork:
         assert db.by_path()[path("new/a.txt")].id == moved
 
     @pytest.mark.asyncio
+    async def test_a_move_to_a_container_still_listing_keeps_its_record(
+        self, connector, store, other, db, config,
+    ) -> None:
+        choose_containers(connector, config, [BUCKET, OTHER])
+        store.put("old/a.txt", "moved content")
+        other.put("b.txt")
+        await connector.run_sync()
+        original = db.by_path()[path("old/a.txt")].id
+
+        other.put("new/a.txt", "moved content")
+        store.delete("old/a.txt")
+        source_done = asyncio.Event()
+        real = connector._sync_container
+
+        async def destination_lists_last(name: str) -> None:
+            if name == OTHER:
+                await asyncio.wait_for(source_done.wait(), timeout=2)
+            await real(name)
+            if name == BUCKET:
+                source_done.set()
+        connector._sync_container = destination_lists_last
+
+        await connector.run_sync()
+
+        assert db.by_path()[path("new/a.txt", OTHER)].id == original
+        assert path("old/a.txt") not in db.paths()
+
+    @pytest.mark.asyncio
     async def test_each_folder_is_saved_once_per_sync(self, connector, store, db) -> None:
         for i in range(5):
             store.put(f"a/b/c/{i}.txt")
