@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from itertools import accumulate
 from typing import Any
 
 from app.agent_loop_lib.core.types import MessageRole
@@ -72,7 +73,14 @@ def shape_tool_result_clearing(
     (tool name, args, summary, hint) so the model retains enough context
     to decide whether to re-call.
 
-    Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``.
+    **Cleared in steps** — once the context exceeds
+    ``budget.trigger_tokens(trigger_ratio)``, every turn but the last
+    ``keep_last_n_turns`` is cleared, and that cut stays where it is until
+    the context *as cleared* exceeds the trigger again (see
+    ``_sticky_cut``). Each request in between extends the one before, so the
+    provider's prompt cache keeps the whole history instead of falling back
+    to the system prompt on every call.
+
     ``protected_tool_names`` prevents clearing regardless of age.
     """
 
@@ -80,8 +88,9 @@ def shape_tool_result_clearing(
         from app.agent_loop_lib.core.tokens import count_tokens
 
         messages = ctx.messages
+        trigger = ctx.budget.trigger_tokens(trigger_ratio)
         total = count_tokens(messages)
-        if total <= ctx.budget.trigger_tokens(trigger_ratio):
+        if total <= trigger:
             await next_fn()
             return
 
@@ -115,43 +124,24 @@ def shape_tool_result_clearing(
             await next_fn()
             return
 
-        clearable: set[int] = set()
-        for turn_indices in turns[: len(turns) - keep_last_n_turns]:
-            clearable.update(turn_indices)
-
-        if protected_tool_names and clearable:
-            protected_indices = set()
-            for i in clearable:
-                tc_id = getattr(messages[i], "tool_call_id", None)
-                if tc_id and call_id_to_name.get(tc_id) in protected_tool_names:
-                    protected_indices.add(i)
-            clearable -= protected_indices
-
-        if not clearable:
-            await next_fn()
-            return
-
         from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import (
             _compact_reference,
         )
 
-        shaped = []
-        cleared = 0
-        for i, msg in enumerate(messages):
-            if i not in clearable:
-                shaped.append(msg)
-                continue
-            text_content = msg.text
-            if isinstance(msg.content, str) and _is_already_compact(text_content):
-                shaped.append(msg)
-                continue
-            cleared += 1
-            if getattr(msg, "artifact_meta", None) is not None:
-                shaped.append(msg.model_copy(update={"content": _compact_reference(msg)}))
-            else:
+        replacements: dict[int, Any] = {}
+        for turn_indices in turns:
+            for i in turn_indices:
+                msg = messages[i]
                 tc_id = getattr(msg, "tool_call_id", None)
                 tool_name = call_id_to_name.get(tc_id, "") if tc_id else ""
-                tool_args = call_id_to_args.get(tc_id, {}) if tc_id else {}
+                if protected_tool_names and tool_name in protected_tool_names:
+                    continue
+                text_content = msg.text
+                if isinstance(msg.content, str) and _is_already_compact(text_content):
+                    continue
+                if getattr(msg, "artifact_meta", None) is not None:
+                    replacements[i] = msg.model_copy(update={"content": _compact_reference(msg)})
+                    continue
                 # Any images the tool returned belong to the current turn's
                 # context; once a result ages past `keep_last_n_turns` its
                 # images are as expendable as its text (same rule L4/L5/L7
@@ -159,20 +149,57 @@ def shape_tool_result_clearing(
                 # can re-call the tool if it needs the image again.
                 ref = _build_tool_ref(
                     tool_name=tool_name,
-                    tool_args=tool_args,
+                    tool_args=call_id_to_args.get(tc_id, {}) if tc_id else {},
                     tool_call_id=tc_id or "",
                     content=text_content,
                     is_error=getattr(msg, "is_error", False),
                 )
-                shaped.append(msg.model_copy(update={"content": ref}))
-        if cleared:
-            logger.info(
-                "tool_result_clearing: cleared %d tool result(s) older than the last %d turn(s), "
-                "%d→%d tokens (turn=%d, budget=%d)",
-                cleared, keep_last_n_turns, total, count_tokens(shaped),
-                ctx.turn_index, ctx.budget.effective_max_tokens,
-            )
+                replacements[i] = msg.model_copy(update={"content": ref})
+
+        cut = _sticky_cut(messages, turns, replacements, trigger, keep_last_n_turns)
+        clearable = {i for turn_indices in turns[:cut] for i in turn_indices if i in replacements}
+        if not clearable:
+            await next_fn()
+            return
+
+        shaped = [replacements[i] if i in clearable else msg for i, msg in enumerate(messages)]
+        logger.info(
+            "tool_result_clearing: cleared %d tool result(s) in the oldest %d of %d turn(s), "
+            "%d→%d tokens (turn=%d, budget=%d)",
+            len(clearable), cut, len(turns), total, count_tokens(shaped),
+            ctx.turn_index, ctx.budget.effective_max_tokens,
+        )
         ctx.messages = shaped
         await next_fn()
 
     return _middleware
+
+
+def _sticky_cut(
+    messages: list[Any], turns: list[set[int]], replacements: dict[int, Any], trigger: int, keep: int,
+) -> int:
+    """How many of the oldest turns to clear.
+
+    Replays the decision every earlier call made: a call happened wherever an
+    assistant message follows, on the history before it. The cut moves to
+    "all but the last ``keep`` turns" only where that history, cleared up to
+    the cut so far, was over the trigger. A pure function of the history, so
+    every call agrees with the ones before it about every turn they share.
+    """
+    from app.agent_loop_lib.core.tokens import count_message_tokens
+
+    sizes = [count_message_tokens(message) for message in messages]
+    prefix = list(accumulate(sizes, initial=0))
+    turn_ends = [max(turn_indices) for turn_indices in turns]
+    calls = [i for i, message in enumerate(messages) if message.role == MessageRole.ASSISTANT]
+    cut = done = saved = 0
+    for call in [*calls, len(messages)]:
+        while done < len(turn_ends) and turn_ends[done] < call:
+            done += 1
+        if prefix[call] - saved > trigger and done - keep > cut:
+            saved += sum(
+                sizes[i] - count_message_tokens(replacements[i])
+                for turn_indices in turns[cut:done - keep] for i in turn_indices if i in replacements
+            )
+            cut = done - keep
+    return cut

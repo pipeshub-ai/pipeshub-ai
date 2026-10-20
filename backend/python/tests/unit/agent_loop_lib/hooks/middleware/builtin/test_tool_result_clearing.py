@@ -382,3 +382,72 @@ class TestMultipartToolMessageClearing:
         ]
         result = await _run_clearing(messages, keep_last_n_turns=3)
         assert result[2].content == recent_parts
+
+
+class TestTheCutHoldsBetweenSteps:
+    """Each call shapes the stored history afresh. The cut must only move when
+    the history as cleared crosses the trigger again; in between, a request
+    extends the previous one, so the provider's prompt cache keeps it."""
+
+    RESULT = "row " * 6_000  # ~6k tokens per tool result
+
+    def _history(self, turns: int) -> list:
+        history: list = [UserMessage(content="Compare every quarterly report.")]
+        for turn in range(turns):
+            history.append(_assistant_call(f"c{turn}", "search", {"q": f"report {turn}"}))
+            history.append(_tool_result(f"c{turn}", f"report {turn}: {self.RESULT}"))
+        return history
+
+    async def _views(self, history: list, **kwargs) -> list[list]:
+        """What each call of the run sends: the history before every assistant
+        message, and the whole of it."""
+        calls = [i for i, message in enumerate(history) if isinstance(message, AssistantMessage)]
+        budget = ContextBudget(max_tokens=100_000)
+        views = []
+        for end in [*calls, len(history)]:
+            ctx = ModelCallContext(messages=list(history[:end]), budget=budget)
+            await shape_tool_result_clearing(**kwargs)(ctx, _noop_next)
+            views.append(ctx.messages)
+        return views
+
+    @staticmethod
+    def _breaks(views: list[list]) -> list[int]:
+        return [k for k, (earlier, later) in enumerate(zip(views, views[1:], strict=False), start=1)
+                if later[:len(earlier)] != earlier]
+
+    @pytest.mark.asyncio
+    async def test_requests_extend_each_other_except_where_the_cut_moves(self) -> None:
+        views = await self._views(self._history(20))
+        breaks = self._breaks(views)
+        first_cleared = next(k for k, view in enumerate(views) if any(_is_compacted(m) for m in view))
+        # Clearing re-cut on every call from the first one on (12 calls here).
+        assert len(views) - first_cleared > 8
+        assert 1 <= len(breaks) <= 3, breaks
+
+    @pytest.mark.asyncio
+    async def test_a_step_clears_all_but_the_last_turns(self) -> None:
+        views = await self._views(self._history(20))
+        for k in self._breaks(views):
+            tool_results = [m for m in views[k] if isinstance(m, ToolMessage)]
+            assert not any(_is_compacted(m) for m in tool_results[-3:])
+            assert all(_is_compacted(m) for m in tool_results[:-3])
+
+    @pytest.mark.asyncio
+    async def test_cleared_context_stays_under_the_trigger(self) -> None:
+        from app.agent_loop_lib.core.tokens import count_tokens
+
+        trigger = ContextBudget(max_tokens=100_000).trigger_tokens(0.5)
+        for view in await self._views(self._history(20)):
+            assert count_tokens(view) <= trigger + 7_000  # at most one turn's results past it
+
+    @pytest.mark.asyncio
+    async def test_a_call_after_a_nudge_sees_the_same_cut(self) -> None:
+        history = self._history(12)
+        nudged = [*history, UserMessage(content="Check the last report again.")]
+        plain, with_nudge = (await self._views(history))[-1], (await self._views(nudged))[-1]
+        assert with_nudge[:len(plain)] == plain
+
+    @pytest.mark.asyncio
+    async def test_protected_results_are_never_cleared_and_still_counted(self) -> None:
+        views = await self._views(self._history(20), protected_tool_names=frozenset({"search"}))
+        assert not any(_is_compacted(m) for view in views for m in view)
