@@ -368,3 +368,42 @@ class TestS3Connector:
             "TC-MOVE-001 passed: file at new path under %s/ (connector %s)",
             new_prefix, connector_id,
         )
+
+    # ------------------------------------------------------------------ #
+    # TC-KEYS-001 — Keys with %, + and spaces download (PP-98)
+    # ------------------------------------------------------------------ #
+    @pytest.mark.order(6)
+    async def test_tc_keys_001_special_character_keys_stream(
+        self,
+        s3_connector: Dict[str, Any],
+        s3_storage: S3StorageHelper,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """
+        TC-KEYS-001: Objects whose keys hold ``%XX``, ``+`` and spaces sync and
+        stream back byte for byte. The signed URL used to decode the stored key
+        and named another object, so these returned 404.
+        """
+        connector_id = s3_connector["connector_id"]
+        bucket_name = s3_connector["bucket_name"]
+        tag = uuid.uuid4().hex[:8]
+        files = {
+            f"{s3_connector['folder']}keys-{tag}/100%25 {name}": f"{name} {tag}".encode()
+            for name in ("a+b.txt", "a%20b.txt")
+        }
+        for key, body in files.items():
+            s3_storage.upload_object(bucket_name, key, body, content_type="text/plain")
+
+        await sync_until_names_visible(
+            pipeshub_client, graph_provider, connector_id, record_names_from_keys(files)
+        )
+
+        for key, body in files.items():
+            record = await graph_provider.get_record_by_external_id(connector_id, f"{bucket_name}/{key}")
+            assert record is not None, f"No record for {key!r} (connector {connector_id})"
+            resp = pipeshub_client.request("GET", f"/api/v1/knowledgeBase/stream/record/{record.id}")
+            assert resp.status_code == 200, f"Streaming {key!r}: {resp.status_code} {resp.text[:300]}"
+            assert resp.content == body, f"Streaming {key!r} returned other bytes"
+
+        logger.info("TC-KEYS-001 passed: %d special-character keys stream (connector %s)", len(files), connector_id)

@@ -1290,9 +1290,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 key = external_record_id[len(f"{bucket_name}/"):]
             else:
                 key = external_record_id.lstrip("/")
-
-            from urllib.parse import unquote
-            key = unquote(key)
+            # Sync stores the key as listed (botocore decodes it), so decoding it again names another object.
 
             bucket_region = await self._get_bucket_region(bucket_name)
 

@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote, unquote, urlsplit
 
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
@@ -143,6 +144,15 @@ class FakeS3DataSource(_FakeDataSource):
 
     async def get_bucket_location(self, Bucket: str, **_: object) -> Response:
         return Response(True, {"LocationConstraint": None})
+
+    async def generate_presigned_url(self, ClientMethod: str, Params: dict[str, str], **_: object) -> Response:
+        """Signs as boto does: the URL path is the given key, percent-encoded."""
+        return Response(True, f"https://{Params['Bucket']}.s3.amazonaws.com/{quote(Params['Key'])}?X-Amz-Signature=x")
+
+    def object_at(self, url: str) -> StoredObject | None:
+        """What a GET of a signed URL returns: the object at the key it names, if any."""
+        parts = urlsplit(url)
+        return self.stores[parts.netloc.split(".")[0]].objects.get(unquote(parts.path[1:]))
 
 
 class FakeGCSDataSource(_FakeDataSource):
