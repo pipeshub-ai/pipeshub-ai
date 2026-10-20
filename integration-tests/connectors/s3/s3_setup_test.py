@@ -1,6 +1,6 @@
 # pyright: ignore-file
 
-"""S3 setup: the Enable connection test proves the key can read the buckets it syncs (PP-112)."""
+"""S3 setup: the Enable connection test (PP-112) and the setup guidance in the registry (PP-102, PP-104, PP-111)."""
 
 import logging
 import uuid
@@ -48,3 +48,16 @@ class TestS3Setup:
                 pipeshub_client.delete_connector(connector.connector_id)
             except Exception as e:
                 logger.error("connector %s cleanup leaked: %s", connector.connector_id, e)
+
+    async def test_tc_setup_001_registry_shows_read_only_and_team_scope_guidance(
+        self, pipeshub_client: PipeshubClient,
+    ) -> None:
+        """TC-SETUP-001: the S3 registry entry carries the banner the connector page shows."""
+        resp = pipeshub_client.request("GET", "/api/v1/connectors/registry", params={"search": "S3"})
+        assert resp.status_code == 200, f"registry failed: HTTP {resp.status_code}: {resp.text[:300]}"
+        s3 = next((c for c in resp.json().get("connectors", []) if c.get("name") == "S3"), None)
+        assert s3 is not None, "S3 is missing from the connector registry"
+        info = s3.get("connectorInfo") or ""
+        for action in ("s3:ListAllMyBuckets", "s3:ListBucket", "s3:GetBucketLocation", "s3:GetObject"):
+            assert action in info, f"the S3 banner must name {action}; got: {info!r}"
+        assert "everyone in your organization" in info, f"the S3 banner must warn about team scope; got: {info!r}"

@@ -493,3 +493,41 @@ class TestS3EntitiesProcessor:
         assert proc.parent_url_generator("test") == "custom/test"
 
 
+
+
+class TestSetupGuidance:
+    """PP-102, PP-104, PP-111: the setup banner names the read-only permissions and the team-scope reach."""
+
+    @staticmethod
+    def _metadata(kind: str) -> dict:
+        if kind == "s3":
+            return S3Connector._connector_metadata
+        from app.connectors.sources.minio.connector import MinIOConnector
+
+        return MinIOConnector._connector_metadata
+
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    def test_info_lists_the_read_permissions_the_connection_test_checks(self, kind: str) -> None:
+        info = self._metadata(kind)["connectorInfo"]
+        for action in ("s3:ListAllMyBuckets", "s3:ListBucket", "s3:GetObject"):
+            assert action in info
+        assert ("s3:GetBucketLocation" in info) == (kind == "s3")
+
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    def test_info_warns_that_a_team_connector_is_searchable_by_the_whole_org(self, kind: str) -> None:
+        info = self._metadata(kind)["connectorInfo"]
+        assert "everyone in your organization" in info
+        assert "every bucket the key can list" in info
+
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    def test_key_fields_ask_for_read_only_access(self, kind: str) -> None:
+        fields = self._metadata(kind)["config"]["auth"]["schemas"]["ACCESS_KEY"]["fields"]
+        keys = [f for f in fields if f["name"] in ("accessKey", "secretKey")]
+        assert len(keys) == 2
+        assert all("read-only" in f["description"] for f in keys)
+
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    def test_bucket_filter_says_empty_syncs_every_bucket(self, kind: str) -> None:
+        filters = self._metadata(kind)["config"]["filters"]["sync"]["schema"]["fields"]
+        buckets = next(f for f in filters if f["name"] == "buckets")
+        assert "every bucket the key can list" in buckets["description"]
