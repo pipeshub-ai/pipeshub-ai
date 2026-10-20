@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
+from app.agent_loop_lib.core.tokens import count_tokens
 from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+logger = logging.getLogger(__name__)
 
 _MARKER = "\n[…truncated"
 _OWN_SUFFIX = "by budget_reduction]"
@@ -136,6 +140,13 @@ def shape_budget_reduction(
                 shaped.append(msg)
                 continue
             shaped.append(msg.model_copy(update={"content": _truncate(msg.content, limit)}))
+        capped = sum(1 for old, new in zip(ctx.messages, shaped) if new is not old)
+        if capped:
+            logger.info(
+                "budget_reduction: capped %d tool result(s), %d→%d tokens (turn=%d, budget=%d)",
+                capped, count_tokens(ctx.messages), count_tokens(shaped),
+                ctx.turn_index, ctx.budget.effective_max_tokens,
+            )
         ctx.messages = shaped
         await next_fn()
 
