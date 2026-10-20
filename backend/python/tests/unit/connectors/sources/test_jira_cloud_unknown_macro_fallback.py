@@ -13,6 +13,7 @@ import pytest
 
 from app.connectors.sources.atlassian.core.adf_markdown import adf_to_markdown
 from app.connectors.sources.atlassian.core.html_utils import (
+    attachment_images_not_inlined,
     has_unknown_macro_placeholder,
     inline_images_as_markdown,
 )
@@ -241,6 +242,30 @@ async def test_fallback_keeps_name_of_image_that_could_not_be_inlined() -> None:
     assert "/rest/api/3/attachment/content/700" not in desc.data
 
 
+@pytest.mark.asyncio
+async def test_fallback_keeps_name_of_image_without_alt_in_adf() -> None:
+    # A media node may have no alt, and its id cannot be mapped back to an attachment. The
+    # name then comes from the attachment the rendered <img> pointed at.
+    connector = _make_bare_connector()
+
+    async def failing_fetch(attachment: dict, cache: dict) -> None:
+        return None
+
+    connector._fetch_attachment_as_base64 = failing_fetch
+    html = '<p><img src="/rest/api/3/attachment/content/700" alt="" /></p>' + RENDERED_WITH_PLACEHOLDERS
+    raw = {**RAW_DESCRIPTION_ADF, "content": [
+        {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "m1", "type": "file"}}]},
+        *RAW_DESCRIPTION_ADF["content"],
+    ]}
+    attachments = [{"id": "700", "filename": "trace.png", "mimeType": "image/png", "size": 10}]
+    result = await _parse(connector, html, raw, attachments=attachments)
+
+    desc = result.block_groups[0]
+    assert desc.format == DataFormat.MARKDOWN
+    assert desc.data.count("trace.png") == 1
+    assert "m1" not in desc.data.split("\n")
+
+
 # ---------------------------------------------------------------------------
 # Comments
 # ---------------------------------------------------------------------------
@@ -298,6 +323,18 @@ class TestHasUnknownMacroPlaceholder:
         assert not has_unknown_macro_placeholder('<span class="error">&#91;Drive&#93;</span>')
         assert not has_unknown_macro_placeholder("<p>Unknown macro: {x} written as plain text</p>")
         assert not has_unknown_macro_placeholder("")
+
+
+class TestAttachmentImagesNotInlined:
+    def test_names_only_attachment_images_that_were_not_inlined(self) -> None:
+        html = (
+            '<img src="/rest/api/3/attachment/content/1" alt="a.png"/>'
+            '<img src="/rest/api/3/attachment/content/2" alt=""/>'
+            '<img src="/rest/api/3/attachment/content/3" alt="c.png"/>'
+            '<img src="https://example.com/x.png" alt="external.png"/>'
+        )
+        attachments = {"2": {"filename": "b.png"}}
+        assert attachment_images_not_inlined(html, {"3"}, attachments) == ["a.png", "b.png"]
 
 
 class TestInlineImagesAsMarkdown:

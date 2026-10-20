@@ -196,3 +196,30 @@ def inline_images_as_markdown(html: str) -> list[str]:
         alt = (img.get("alt") or "").replace("[", "").replace("]", "").strip() or "image"
         lines.append(f"![{alt}]({src})")
     return lines
+
+
+def attachment_images_not_inlined(
+    html: str,
+    inlined_ids: set[str],
+    attachments_by_id: dict[str, dict[str, Any]],
+) -> list[str]:
+    """File names of attachment ``<img>`` tags in ``html`` that were not inlined.
+
+    ``html`` is the rendered HTML *before* ``inline_images_as_base64`` and ``inlined_ids`` is
+    the set it returned. The name comes from the attachment's metadata, else the ``alt``.
+    Used when a body is rebuilt from raw ADF, where a media node may carry no ``alt`` and
+    its id cannot be mapped back to an attachment.
+    """
+    if not html:
+        return []
+    soup = BeautifulSoup(html, "html.parser")
+    names: list[str] = []
+    for img in soup.find_all("img"):
+        match = ATTACHMENT_URL_RE.search(img.get("src", "") or "")
+        if not match or match.group(1) in inlined_ids:
+            continue
+        attachment = attachments_by_id.get(match.group(1)) or {}
+        name = str(attachment.get("filename") or img.get("alt") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names

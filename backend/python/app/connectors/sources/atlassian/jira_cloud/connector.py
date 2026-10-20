@@ -76,6 +76,7 @@ from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.adf_markdown import adf_to_markdown
 from app.connectors.sources.atlassian.core.html_utils import (
+    attachment_images_not_inlined,
     extract_attachment_ids,
     has_unknown_macro_placeholder,
     inline_images_as_base64,
@@ -4527,14 +4528,18 @@ class JiraConnector(BaseConnector):
         )
         return [valid]
 
-    def _markdown_from_raw_body(self, raw_body: object, inlined_html: str) -> str | None:
+    def _markdown_from_raw_body(
+        self, raw_body: object, inlined_html: str, image_names: list[str] | None = None,
+    ) -> str | None:
         """Rebuild a description or comment body as markdown from its raw field value.
 
         Used when Jira's rendered HTML dropped text (see ``has_unknown_macro_placeholder``).
         ``raw_body`` is the field as the REST API returns it: an ADF document (API v3) or a
         wiki-markup string. Images already inlined into the rendered HTML are appended, since
-        ADF media nodes carry no fetchable URL. Returns ``None`` when the raw value has no text,
-        so the caller keeps the rendered HTML.
+        ADF media nodes carry no fetchable URL. ``image_names`` are the file names of images
+        that could not be inlined; any not already in the text are appended, so the name stays
+        indexed even for a media node without ``alt``. Returns ``None`` when the raw value has
+        no text, so the caller keeps the rendered HTML.
         """
         if isinstance(raw_body, dict):
             text = adf_to_markdown(raw_body)
@@ -4544,6 +4549,9 @@ class JiraConnector(BaseConnector):
             text = ""
         if not text:
             return None
+        missing_names = [name for name in (image_names or []) if name not in text]
+        if missing_names:
+            text = f"{text}\n\n" + "\n\n".join(missing_names)
         images = inline_images_as_markdown(inlined_html)
         if images:
             text = f"{text}\n\n" + "\n\n".join(images)
@@ -4568,7 +4576,7 @@ class JiraConnector(BaseConnector):
         """
         raw_description_html = rendered_fields.get("description") or ""
         desc_referenced = extract_attachment_ids(raw_description_html)
-        description_html, _ = await inline_images_as_base64(
+        description_html, desc_inlined = await inline_images_as_base64(
             raw_description_html, attachments_by_id, is_image, fetch_base64
         )
         heading = f"<h1>{html_escape(issue_name)}</h1>"
@@ -4576,7 +4584,11 @@ class JiraConnector(BaseConnector):
         description_format = DataFormat.HTML
 
         if has_unknown_macro_placeholder(raw_description_html):
-            fallback = self._markdown_from_raw_body(raw_description, description_html)
+            fallback = self._markdown_from_raw_body(
+                raw_description,
+                description_html,
+                attachment_images_not_inlined(raw_description_html, desc_inlined, attachments_by_id),
+            )
             if fallback is not None:
                 self.logger.info(
                     "Jira issue %s: rendered description lost text to an unknown-macro "
@@ -4650,13 +4662,17 @@ class JiraConnector(BaseConnector):
 
                 c_referenced = extract_attachment_ids(raw_comment_html)
                 comment_referenced_ids |= c_referenced
-                comment_html, _ = await inline_images_as_base64(
+                comment_html, comment_inlined = await inline_images_as_base64(
                     raw_comment_html, attachments_by_id, is_image, fetch_base64
                 )
                 comment_data = comment_html
                 comment_format = DataFormat.HTML
                 if has_unknown_macro_placeholder(raw_comment_html):
-                    fallback = self._markdown_from_raw_body(comment.get("body"), comment_html)
+                    fallback = self._markdown_from_raw_body(
+                        comment.get("body"),
+                        comment_html,
+                        attachment_images_not_inlined(raw_comment_html, comment_inlined, attachments_by_id),
+                    )
                     if fallback is not None:
                         self.logger.info(
                             "Jira issue %s: rendered comment %s lost text to an unknown-macro "
