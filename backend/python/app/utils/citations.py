@@ -1,4 +1,5 @@
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -436,26 +437,35 @@ _UNRESOLVED_WEB_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(https?://ref\d+\.xyz/?
 _CITATION_LABEL_RE = re.compile(
     r'^\s*(?:(?:sources?|refs?|links?|citations?)\s*#?\s*\d*|\d+(?:\s*[,;]\s*\d+)*)?\s*$', re.IGNORECASE,
 )
-# Link text that only restates where the link points: a URL, a ref token, or a record id.
-_LINK_TARGET_TEXT_RE = re.compile(
-    r'^(?:<?(?:https?://|www\.)\S*>?'
-    rf'|{_REF_TOKEN}'
+# Link text that only names the target: a ref token or a record id.  Meaningless to a reader,
+# so it goes even when the link is dead and no badge replaces it.
+_LINK_ID_TEXT_RE = re.compile(
+    rf'^(?:{_REF_TOKEN}'
     r'|[0-9A-Fa-f]{8}(?:-?[0-9A-Fa-f]{4}){3}-?[0-9A-Fa-f]{12}'
     r'|[0-9A-Fa-f]{24})$'
 )
+# Link text that is a URL: redundant next to a badge that links there, but a dead link's only trace.
+_LINK_URL_TEXT_RE = re.compile(r'^<?(?:https?://|www\.)\S*>?$')
 _LINK_TEXT_WRAPPERS = ' \t\n`\'"[]()<>'
 _CITATION_BADGE = r'\[\d+\]\([^)]*\)'
 # How far back an already-written copy of the link text is looked for.
 _LINK_TEXT_ECHO_WINDOW = 2000
 
 
+def _is_label_or_id(link_text: str) -> bool:
+    return bool(_CITATION_LABEL_RE.match(link_text) or _LINK_ID_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
+
+
 def _is_citation_label(link_text: str) -> bool:
     """True when link text carries no prose: a generic label ("source", "ref 2")
     or the target itself (a URL, ref or record id)."""
-    return bool(
-        _CITATION_LABEL_RE.match(link_text)
-        or _LINK_TARGET_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS))
-    )
+    return _is_label_or_id(link_text) or bool(_LINK_URL_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
+
+
+def _already_written(kept: str, preceding: str) -> bool:
+    """True when ``preceding`` ends with ``kept``, optionally followed by badges."""
+    echo = re.compile(rf'(?<!\w){re.escape(kept)}\s*(?:{_CITATION_BADGE}\s*)*$', re.IGNORECASE)
+    return bool(echo.search(preceding[-(len(kept) + _LINK_TEXT_ECHO_WINDOW):]))
 
 
 def kept_citation_link_text(link_text: str, preceding: str) -> str:
@@ -468,10 +478,19 @@ def kept_citation_link_text(link_text: str, preceding: str) -> str:
     if _is_citation_label(link_text):
         return ''
     kept = link_text.strip()
-    echo = re.compile(rf'(?<!\w){re.escape(kept)}\s*(?:{_CITATION_BADGE}\s*)*$', re.IGNORECASE)
-    if echo.search(preceding[-(len(kept) + _LINK_TEXT_ECHO_WINDOW):]):
-        return ''
-    return kept
+    return '' if _already_written(kept, preceding) else kept
+
+
+def sub_in_order(pattern: re.Pattern[str], text: str, replace: Callable[[re.Match[str], str], str]) -> str:
+    """``pattern.sub`` whose ``replace(match, written)`` also gets the output
+    written so far, so it sees earlier replacements rather than the raw text."""
+    out = ''
+    pos = 0
+    for match in pattern.finditer(text):
+        out += text[pos:match.start()]
+        out += replace(match, out)
+        pos = match.end()
+    return out + text[pos:]
 
 
 def _renumber_citation_links(
@@ -515,11 +534,14 @@ def _strip_unresolved_ref_citations(text: str) -> str:
     ``[source](ref209)`` links in the UI.  The link goes; descriptive text
     ("India – Wikipedia") stays in the sentence, a label goes with it.
     """
-    def _keep_text(m: re.Match) -> str:
-        return '' if _is_citation_label(m.group(1)) else m.group(1).strip()
+    def _keep_text(m: re.Match[str], written: str) -> str:
+        if _is_label_or_id(m.group(1)):
+            return ''
+        kept = m.group(1).strip()
+        return '' if _already_written(kept, written) else kept
 
-    text = _UNRESOLVED_WEB_REF_LINK_RE.sub(_keep_text, text)
-    return _UNRESOLVED_REF_LINK_RE.sub(_keep_text, text)
+    text = sub_in_order(_UNRESOLVED_WEB_REF_LINK_RE, text, _keep_text)
+    return sub_in_order(_UNRESOLVED_REF_LINK_RE, text, _keep_text)
 
 
 def _extract_block_index_from_url(url: str) -> int | None:

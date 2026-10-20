@@ -2576,6 +2576,22 @@ class TestDescriptiveLinkTextIsKept:
         out = self._normalize(normalizer, "In the [Q2 forecast](ref99), it held [source](ref98). Cap 15% [source](ref1).")
         assert out == f"In the Q2 forecast, it held . Cap 15% [1]({self.U1})."
 
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_dead_web_ref_keeps_a_url_written_as_its_text(self, normalizer) -> None:
+        out = self._normalize(normalizer, "See [https://docs.vendor.com/pricing](https://ref99.xyz). Cap 15% [source](ref1).")
+        assert out == f"See https://docs.vendor.com/pricing. Cap 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    @pytest.mark.parametrize("label", ["ref99", "https://ref99.xyz", "444d5fad-0bf9-4daa-8c29-cc133ca4a3a6"])
+    def test_dead_ref_drops_a_ref_or_id_written_as_its_text(self, normalizer, label) -> None:
+        out = self._normalize(normalizer, f"It held [{label}](https://ref99.xyz). Cap 15% [source](ref1).")
+        assert out == f"It held . Cap 15% [1]({self.U1})."
+
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_dead_ref_text_already_written_before_the_link_is_not_repeated(self, normalizer) -> None:
+        out = self._normalize(normalizer, "The Q2 forecast [Q2 forecast](ref99) slipped. Cap 15% [source](ref1).")
+        assert out == f"The Q2 forecast  slipped. Cap 15% [1]({self.U1})."
+
     def test_streamed_prefixes_only_ever_grow(self) -> None:
         """The streaming path emits ``normalized[prev_len:]`` per chunk, so the
         normalized text of a prefix must be a prefix of the next one."""
