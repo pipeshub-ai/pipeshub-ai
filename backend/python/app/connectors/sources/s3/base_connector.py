@@ -1306,7 +1306,8 @@ class S3CompatibleBaseConnector(BaseConnector):
         if not self.data_source:
             return False
         try:
-            problem = await self._access_problem()
+            async with self._shared_client():
+                problem = await self._access_problem()
         except Exception as e:
             self.logger.error(f"{self.connector_name} connection test failed: {e}", exc_info=True)
             await self.notify(
@@ -1336,9 +1337,17 @@ class S3CompatibleBaseConnector(BaseConnector):
         and one bucket losing access must not stop the sync of the others.
         """
         selected = [self.bucket_name] if self.bucket_name else included_names(self.sync_filters, "buckets")
+        # Listed as the sync lists: a policy may allow s3:ListBucket only under an s3:prefix condition.
+        prefix = FolderScope.from_filters(self.sync_filters).list_prefixes[0]
         if selected:
+            semaphore = asyncio.Semaphore(self.bucket_concurrency)
+
+            async def probe(bucket_name: str) -> str | None:
+                async with semaphore:
+                    return await self._bucket_access_problem(bucket_name, prefix)
+
             # A key scoped to named buckets may lack s3:ListAllMyBuckets; sync does not need it then.
-            problems = [p for p in await asyncio.gather(*(self._bucket_access_problem(b) for b in selected)) if p]
+            problems = [p for p in await asyncio.gather(*(probe(b) for b in selected)) if p]
             if len(problems) == len(selected):
                 return " ".join(problems)
             if problems:
@@ -1358,11 +1367,11 @@ class S3CompatibleBaseConnector(BaseConnector):
             )
             return f"Could not list buckets: {response.error}.{hint}"
         problems = []
-        for bucket in (response.data or {}).get("Buckets") or []:
+        for bucket in response.data["Buckets"]:
             name = bucket.get("Name")
             if not name or not name_passes_filter(self.sync_filters, "buckets", name):
                 continue
-            problem = await self._bucket_access_problem(name)
+            problem = await self._bucket_access_problem(name, prefix)
             if problem is None:
                 return None
             problems.append(problem)
@@ -1370,9 +1379,9 @@ class S3CompatibleBaseConnector(BaseConnector):
             return None
         return f"{problems[0]} None of the {len(problems)} listed bucket(s) could be read."
 
-    async def _bucket_access_problem(self, bucket_name: str) -> str | None:
-        """Why the key cannot list or read objects in the bucket, or None."""
-        listing = await self.data_source.list_objects_v2(Bucket=bucket_name, MaxKeys=1)
+    async def _bucket_access_problem(self, bucket_name: str, prefix: str = "") -> str | None:
+        """Why the key cannot list or read objects under ``prefix`` in the bucket, or None."""
+        listing = await self.data_source.list_objects_v2(Bucket=bucket_name, MaxKeys=1, Prefix=prefix or None)
         if not listing.success:
             hint = (
                 f" The key needs s3:ListBucket on arn:aws:s3:::{bucket_name}."

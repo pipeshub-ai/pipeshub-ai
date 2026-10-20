@@ -1,5 +1,6 @@
 """Extended coverage tests for S3 base connector and S3CompatibleBaseConnector."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ from app.connectors.core.registry.filters import (
     FilterOption,
     FilterOptionsResponse,
     IndexingFilterKey,
+    SyncFilterKey,
 )
 from app.models.entities import FileRecord, Record
 
@@ -644,7 +646,7 @@ class TestConnectionTestProbesBucketAccess:
     async def test_one_unreadable_bucket_of_several_warns_and_passes(self, s3_connector):
         _select_buckets(s3_connector, ["finance", "legal"])
         source = _access_source(buckets=None)
-        source.list_objects_v2 = AsyncMock(side_effect=lambda Bucket, MaxKeys: (
+        source.list_objects_v2 = AsyncMock(side_effect=lambda Bucket, MaxKeys, Prefix=None: (
             _make_response(False, error="AccessDenied: Access Denied", status_code=403)
             if Bucket == "legal" else _make_response(True, data={})
         ))
@@ -654,6 +656,48 @@ class TestConnectionTestProbesBucketAccess:
         warning = s3_connector.notify.await_args.kwargs
         assert warning["severity"] == NotificationSeverity.WARNING
         assert "legal" in warning["message"] and "finance" not in warning["message"]
+
+    @pytest.mark.asyncio
+    async def test_probe_lists_under_the_folder_filter_prefix(self, s3_connector):
+        # A policy may allow s3:ListBucket only with an s3:prefix condition, as the sync lists.
+        from app.connectors.core.registry.filters import Filter, FilterType
+
+        s3_connector.sync_filters = FilterCollection(filters=[
+            Filter(key="buckets", value=["finance"], type=FilterType.MULTISELECT, operator="in"),
+            Filter(key=SyncFilterKey.FOLDER_PATHS.value, value=["reports/"], type=FilterType.MULTISELECT, operator="in"),
+        ])
+        source = _access_source(buckets=None)
+        source.list_objects_v2 = AsyncMock(side_effect=lambda Bucket, MaxKeys, Prefix=None: (
+            _make_response(True, data={"Contents": [{"Key": "reports/q1.csv"}]}) if Prefix == "reports/"
+            else _make_response(False, error="AccessDenied: Access Denied", status_code=403)
+        ))
+        s3_connector.data_source = source
+        assert await s3_connector.test_connection_and_access() is True
+        source.list_objects_v2.assert_awaited_once_with(Bucket="finance", MaxKeys=1, Prefix="reports/")
+        source.head_object.assert_awaited_once_with(Bucket="finance", Key="reports/q1.csv")
+
+    @pytest.mark.asyncio
+    async def test_probes_run_at_most_bucket_concurrency_at_once_in_one_client_scope(self, s3_connector):
+        names = [f"b{i}" for i in range(10)]
+        _select_buckets(s3_connector, names)
+        running = peak = 0
+
+        async def listing(Bucket, MaxKeys, Prefix=None):
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+            return _make_response(True, data={})
+
+        source = _access_source(buckets=None)
+        source.list_objects_v2 = AsyncMock(side_effect=listing)
+        s3_connector.data_source = source
+        s3_connector._shared_client = MagicMock(wraps=s3_connector._shared_client)
+        assert await s3_connector.test_connection_and_access() is True
+        assert source.list_objects_v2.await_count == len(names)
+        assert peak == s3_connector.bucket_concurrency
+        s3_connector._shared_client.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_no_selection_without_list_all_my_buckets_names_it(self, s3_connector):
@@ -677,7 +721,7 @@ class TestConnectionTestProbesBucketAccess:
     async def test_no_selection_stops_at_first_readable_bucket(self, s3_connector):
         s3_connector.data_source = _access_source(buckets=["a", "b"], objects=["x"])
         assert await s3_connector.test_connection_and_access() is True
-        s3_connector.data_source.list_objects_v2.assert_awaited_once_with(Bucket="a", MaxKeys=1)
+        s3_connector.data_source.list_objects_v2.assert_awaited_once_with(Bucket="a", MaxKeys=1, Prefix=None)
 
 
 # ===========================================================================
