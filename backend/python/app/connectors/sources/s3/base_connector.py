@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
@@ -455,10 +456,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             else:
                 self.logger.info("Listing all buckets...")
                 list_buckets_payload = await self._list_buckets_or_raise()
-                buckets_to_sync = [
-                    bucket.get("Name") for bucket in list_buckets_payload
-                    if name_passes_filter(sync_filters, "buckets", bucket.get("Name"))
-                ]
+                buckets_to_sync = await self._unfiltered_bucket_names(list_buckets_payload, sync_filters)
                 self.logger.info(f"Found {len(buckets_to_sync)} bucket(s) to sync")
 
             target_names = {n for n in buckets_to_sync if n}
@@ -649,6 +647,21 @@ class S3CompatibleBaseConnector(BaseConnector):
             )
             raise ConnectionError(f"Failed to list {self.connector_name} buckets: {err}")
         return response.data["Buckets"]
+
+    async def _unfiltered_bucket_names(self, listed: list[dict], sync_filters: FilterCollection) -> list[str]:
+        """Listed buckets plus the stored ones: a deleted bucket drops out of ListBuckets,
+        and only syncing it again sees NoSuchBucket and removes its records."""
+        names = [b.get("Name") for b in listed if b.get("Name")]
+        try:
+            groups = await self.data_entities_processor.get_nodes_by_filters(
+                collection=CollectionNames.RECORD_GROUPS.value,
+                filters={"connectorId": self.connector_id, "groupType": RecordGroupType.BUCKET.value},
+            )
+        except Exception as e:  # the listed buckets still sync; the stored ones are retried next run
+            self.logger.warning(f"Could not read the stored buckets: {e}")
+            groups = []
+        stored = sorted({g.get("externalGroupId") for g in groups if isinstance(g, dict)} - {None, ""} - set(names))
+        return [n for n in names + stored if name_passes_filter(sync_filters, "buckets", n)]
 
     async def _get_bucket_region(self, bucket_name: str) -> str:
         """Get the region for a bucket, using cache if available."""
@@ -1766,10 +1779,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 buckets_to_sync = selected_buckets
                 self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
             else:
-                buckets_to_sync = [
-                    bucket.get("Name") for bucket in await self._list_buckets_or_raise()
-                    if name_passes_filter(sync_filters, "buckets", bucket.get("Name"))
-                ]
+                buckets_to_sync = await self._unfiltered_bucket_names(await self._list_buckets_or_raise(), sync_filters)
 
             if not buckets_to_sync:
                 self.logger.warning("No buckets to sync")

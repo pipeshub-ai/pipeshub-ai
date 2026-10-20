@@ -351,6 +351,23 @@ class TestBucketDeletedAtTheSource:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["s3", "minio"])
+    @pytest.mark.parametrize("sync", ["run_sync", "run_incremental_sync"])
+    async def test_a_deleted_bucket_leaves_the_index_with_no_bucket_filter(self, connector, store, db, sync) -> None:
+        # Unfiltered, a deleted bucket drops out of ListBuckets; only its stored group still names it.
+        connector.bucket_name = None
+        store.put("a.txt")
+        await connector.run_sync()
+        assert BUCKET in db.record_groups
+
+        del connector.data_source.stores[BUCKET]
+        await getattr(connector, sync)()
+        await getattr(connector, sync)()
+
+        assert db.paths() == set()
+        assert BUCKET not in db.record_groups
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
     async def test_one_no_such_bucket_keeps_the_records(self, connector, store, db) -> None:
         # A MinIO restarted without its volume answers NoSuchBucket once, then has the bucket again.
         store.put("a.txt")
