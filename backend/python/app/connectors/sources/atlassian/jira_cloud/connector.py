@@ -74,9 +74,12 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraApp
+from app.connectors.sources.atlassian.core.adf_markdown import adf_to_markdown
 from app.connectors.sources.atlassian.core.html_utils import (
     extract_attachment_ids,
+    has_unknown_macro_placeholder,
     inline_images_as_base64,
+    inline_images_as_markdown,
 )
 from app.connectors.sources.atlassian.core.oauth import (
     OAUTH_JIRA_CONFIG_PATH,
@@ -4524,6 +4527,28 @@ class JiraConnector(BaseConnector):
         )
         return [valid]
 
+    def _markdown_from_raw_body(self, raw_body: object, inlined_html: str) -> str | None:
+        """Rebuild a description or comment body as markdown from its raw field value.
+
+        Used when Jira's rendered HTML dropped text (see ``has_unknown_macro_placeholder``).
+        ``raw_body`` is the field as the REST API returns it: an ADF document (API v3) or a
+        wiki-markup string. Images already inlined into the rendered HTML are appended, since
+        ADF media nodes carry no fetchable URL. Returns ``None`` when the raw value has no text,
+        so the caller keeps the rendered HTML.
+        """
+        if isinstance(raw_body, dict):
+            text = adf_to_markdown(raw_body)
+        elif isinstance(raw_body, str):
+            text = raw_body.strip()
+        else:
+            text = ""
+        if not text:
+            return None
+        images = inline_images_as_markdown(inlined_html)
+        if images:
+            text = f"{text}\n\n" + "\n\n".join(images)
+        return text
+
     async def _build_description_block_group(
         self,
         issue_id: str,
@@ -4534,8 +4559,13 @@ class JiraConnector(BaseConnector):
         attachments_by_id: dict[str, dict[str, Any]],
         is_image: Callable[[str], bool],
         fetch_base64: Callable[[dict[str, Any]], Awaitable[Optional[str]]],
+        raw_description: object = None,
     ) -> tuple[BlockGroup, set[str]]:
-        """Build the description BlockGroup (index 0) and return referenced attachment IDs."""
+        """Build the description BlockGroup (index 0) and return referenced attachment IDs.
+
+        Uses the rendered HTML, unless Jira's renderer replaced part of it with an
+        unknown-macro placeholder; then the raw description is indexed as markdown instead.
+        """
         raw_description_html = rendered_fields.get("description") or ""
         desc_referenced = extract_attachment_ids(raw_description_html)
         description_html, _ = await inline_images_as_base64(
@@ -4543,6 +4573,18 @@ class JiraConnector(BaseConnector):
         )
         heading = f"<h1>{html_escape(issue_name)}</h1>"
         description_data = f"{heading}\n{description_html}" if description_html else heading
+        description_format = DataFormat.HTML
+
+        if has_unknown_macro_placeholder(raw_description_html):
+            fallback = self._markdown_from_raw_body(raw_description, description_html)
+            if fallback is not None:
+                self.logger.info(
+                    "Jira issue %s: rendered description lost text to an unknown-macro "
+                    "placeholder; indexing the raw description instead",
+                    issue_key or issue_id,
+                )
+                description_data = f"# {issue_name}\n\n{fallback}"
+                description_format = DataFormat.MARKDOWN
 
         description_block_group = BlockGroup(
             id=str(uuid4()),
@@ -4553,7 +4595,7 @@ class JiraConnector(BaseConnector):
             description=f"Description for issue {issue_key}" if issue_key else "Issue description",
             source_group_id=f"{issue_id}_description",
             data=description_data,
-            format=DataFormat.HTML,
+            format=description_format,
             weburl=weburl,
             requires_processing=True,
         )
@@ -4611,6 +4653,18 @@ class JiraConnector(BaseConnector):
                 comment_html, _ = await inline_images_as_base64(
                     raw_comment_html, attachments_by_id, is_image, fetch_base64
                 )
+                comment_data = comment_html
+                comment_format = DataFormat.HTML
+                if has_unknown_macro_placeholder(raw_comment_html):
+                    fallback = self._markdown_from_raw_body(comment.get("body"), comment_html)
+                    if fallback is not None:
+                        self.logger.info(
+                            "Jira issue %s: rendered comment %s lost text to an unknown-macro "
+                            "placeholder; indexing the raw comment instead",
+                            issue_key or issue_id, comment_id,
+                        )
+                        comment_data = fallback
+                        comment_format = DataFormat.MARKDOWN
                 comment_children = [
                     children_map[i]
                     for i in children_map
@@ -4634,8 +4688,8 @@ class JiraConnector(BaseConnector):
                     name=f"Comment by {author_name}",
                     description=f"Comment by {author_name}",
                     source_group_id=comment_id,
-                    data=comment_html,
-                    format=DataFormat.HTML,
+                    data=comment_data,
+                    format=comment_format,
                     weburl=comment_weburl,
                     requires_processing=True,
                     children_records=comment_children or None,
@@ -4670,6 +4724,11 @@ class JiraConnector(BaseConnector):
         - non-image linked in a comment → child of that comment.
         - non-image linked only in the description → description child.
         - attachment referenced nowhere → description child.
+
+        Fallback: Jira's renderer reads plain text containing ``{`` (a pasted JSON payload, for
+        example) as a wiki macro and replaces it with an "Unknown macro" error, so that text is
+        missing from the rendered HTML. When the description or a comment shows that
+        placeholder, it is indexed as markdown converted from the raw ADF field instead.
         """
         if not weburl:
             raise ValueError("weburl is required when creating BlockGroup for issues")
@@ -4704,6 +4763,7 @@ class JiraConnector(BaseConnector):
         description_block_group, desc_referenced = await self._build_description_block_group(
             issue_id, resolved_issue_key, issue_name, weburl,
             rendered_fields, attachments_by_id, is_image, fetch_base64,
+            raw_description=fields.get("description"),
         )
         block_groups: list[BlockGroup] = [description_block_group]
 

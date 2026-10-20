@@ -150,3 +150,49 @@ def simplify_user_mention_links(soup: BeautifulSoup) -> None:
         if not name:
             continue
         a_tag.replace_with(f"@{name}")
+
+
+# Text of the error Jira's wiki renderer puts in place of a ``{...}`` block it reads as an
+# unknown macro, e.g. ``Unknown macro: {    "eventType"}``. The label is localised, so match
+# the shape ("<label>: {") rather than the English words.
+_UNKNOWN_MACRO_TEXT_RE = re.compile(r"^\s*[^:{}\[\]]{1,60}:\s*\{")
+
+
+def has_unknown_macro_placeholder(html: str) -> bool:
+    """True when Jira's rendered HTML replaced part of the text with an unknown-macro error.
+
+    Jira Cloud renders ``renderedFields`` through its wiki renderer. Plain text that contains
+    a ``{`` (a pasted JSON payload, ``{placeholder}`` text) is read as a macro, and everything
+    from the ``{`` up to the matching ``}`` is replaced with ``<span class="error">Unknown
+    macro: {...}</span>``. That text is then missing from the rendered HTML, so callers fall
+    back to the raw field. Other error spans (an unresolved ``[link]``) keep their text and
+    do not count.
+    """
+    if not html or "error" not in html:
+        return False
+    soup = BeautifulSoup(html, "html.parser")
+    for span in soup.find_all("span", class_="error"):
+        if _UNKNOWN_MACRO_TEXT_RE.match(span.get_text()):
+            return True
+    return False
+
+
+def inline_images_as_markdown(html: str) -> list[str]:
+    """Return a markdown image line for each ``<img>`` with a ``src`` in ``html``.
+
+    Used when a body is rebuilt from raw ADF: ADF media nodes carry no fetchable URL, so the
+    images already inlined into the rendered HTML (base64 data URIs) are carried over.
+    """
+    if not html:
+        return []
+    soup = BeautifulSoup(html, "html.parser")
+    lines: list[str] = []
+    for img in soup.find_all("img"):
+        src = (img.get("src") or "").strip()
+        # Data URIs (inlined attachments) and plain http(s) URLs only; anything with
+        # whitespace or parentheses would break the markdown image syntax.
+        if not src.startswith(("data:", "http://", "https://")) or re.search(r"[\s()]", src):
+            continue
+        alt = (img.get("alt") or "").replace("[", "").replace("]", "").strip() or "image"
+        lines.append(f"![{alt}]({src})")
+    return lines
