@@ -22,7 +22,9 @@ async def test_failed_bucket_list_is_titled_with_the_instance_name(kind: str) ->
     connector.data_source.list_buckets = AsyncMock(return_value=Response(False, error="AccessDenied: Access Denied"))
     connector.notify = AsyncMock()
 
-    await connector.run_sync()
+    # A failed ListBuckets fails the sync (PP-117).
+    with pytest.raises(ConnectionError):
+        await connector.run_sync()
 
     sent = connector.notify.await_args.kwargs
     assert sent["title"].startswith("Finance Storage")

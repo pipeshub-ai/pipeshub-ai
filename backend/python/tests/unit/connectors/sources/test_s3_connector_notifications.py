@@ -8,6 +8,7 @@ import pytest
 
 pytest.importorskip("aioboto3")
 
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.s3.connector import S3Connector
 
 
@@ -126,7 +127,8 @@ async def test_s3_iam_role_sts_access_denied_raises_connector_auth_error(
         AsyncMock(return_value=(MagicMock(), MagicMock())),
     ):
         assert await connector.init() is True
-        assert await connector.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match="AccessDenied"):
+            await connector.test_connection_and_access()
 
     sts.assume_role.assert_awaited_once()
     assert sts.assume_role.await_args.kwargs["ExternalId"] == "wrong"

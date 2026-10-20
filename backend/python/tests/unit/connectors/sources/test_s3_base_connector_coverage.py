@@ -562,7 +562,7 @@ class TestTestConnectionAndAccess:
     async def test_success(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.list_buckets = AsyncMock(
-            return_value=_make_response(True)
+            return_value=_make_response(True, {"Buckets": []})
         )
         result = await s3_connector.test_connection_and_access()
         assert result is True
@@ -925,7 +925,7 @@ class TestGetFilterOptions:
     async def test_no_buckets(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.list_buckets = AsyncMock(
-            return_value=_make_response(True, {})
+            return_value=_make_response(True, {"Buckets": []})
         )
         result = await s3_connector.get_filter_options("buckets")
         assert result.success is True

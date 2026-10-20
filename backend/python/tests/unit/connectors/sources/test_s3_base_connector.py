@@ -552,7 +552,7 @@ class TestTestConnectionAndAccess:
     async def test_success(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.list_buckets = AsyncMock(
-            return_value=_make_response(True)
+            return_value=_make_response(True, {"Buckets": []})
         )
         result = await s3_connector.test_connection_and_access()
         assert result is True
@@ -1123,7 +1123,7 @@ class TestGetFilterOptions:
     async def test_no_buckets(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.list_buckets = AsyncMock(
-            return_value=_make_response(True, {})
+            return_value=_make_response(True, {"Buckets": []})
         )
         result = await s3_connector.get_filter_options("buckets")
         assert result.success is True
@@ -1903,7 +1903,7 @@ class TestGetBucketOptions:
     @pytest.mark.asyncio
     async def test_empty_buckets(self, connector):
         connector.data_source = MagicMock()
-        connector.data_source.list_buckets = AsyncMock(return_value=_resp(True, {}))
+        connector.data_source.list_buckets = AsyncMock(return_value=_resp(True, {"Buckets": []}))
         result = await connector._get_bucket_options(1, 20, None)
         assert result.success is True
         assert result.options == []
@@ -1960,8 +1960,9 @@ class TestGetBucketOptions:
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(return_value=_resp(True, {"Other": []}))
         result = await connector._get_bucket_options(1, 20, None)
-        assert result.success is True
-        assert result.options == []
+        # A ListBuckets answer without a bucket list is broken, not an empty account (PP-117).
+        assert result.success is False
+        assert "no bucket list" in result.message
 
 
 class TestHandleWebhookNotificationFullCoverage:
@@ -2520,7 +2521,7 @@ class TestProcessS3ObjectAdvanced:
         assert record is not None
         assert record.id == "moved-id"
         # The batch saves the move with on_records_moved, which re-points the parent edge itself.
-        assert connector._moved_record_ids == {"moved-id": "mybucket/old/path/file.txt"}
+        assert connector._moved_record_ids == {"mybucket": {"moved-id": "mybucket/old/path/file.txt"}}
         connector.data_entities_processor.delete_parent_child_edge_to_record.assert_not_awaited()
 
     @pytest.mark.asyncio
