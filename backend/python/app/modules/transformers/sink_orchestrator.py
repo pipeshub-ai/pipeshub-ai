@@ -831,7 +831,23 @@ class SinkOrchestrator(Transformer):
             await self._schedule_named_entity_retry(ctx.record, error, retry_attempts)
         elif outcome == "written":
             await self._schedule_named_entity_reextract(ctx.record, extraction)
+        await self._apply_content_dates(ctx, extraction)
         return outcome
+
+    async def _apply_content_dates(self, ctx: TransformContext, extraction: "NamedEntityExtraction") -> None:
+        """A knowledge-base upload takes the dates its content states. The record
+        keeps the dates it has when this fails; never raises."""
+        from app.modules.indexing.content_dates import apply_content_dates
+
+        try:
+            outcome = await apply_content_dates(self.graph_provider, ctx.record, extraction)
+        except Exception as exc:
+            self.logger.warning(
+                "Content dates for record %s not applied: %s", ctx.record.id, type(exc).__name__
+            )
+            return
+        if outcome in ("date", "redate", "revert"):
+            self.logger.info("Content dates for record %s: %s", ctx.record.id, outcome)
 
     async def _schedule_named_entity_reextract(self, record: "Record", extraction: "NamedEntityExtraction") -> None:
         """After the write: the write itself drops any pending job for the record."""

@@ -88,7 +88,7 @@ from app.agents.actions.knowledge_graph.ops.search import (
 )
 from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
 from app.agents.actions.util.tool_summaries import bullet_list
-from app.models.source_dates import is_kb_upload
+from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, is_kb_upload, upload_times_undated
 from app.modules.agents.qna.chat_state import (
     remember_record_ids,
     remember_shown_results,
@@ -275,6 +275,8 @@ def plan_periods(start_ms: int, end_ms: int, *, max_periods: int = MAX_PERIODS) 
 def record_date_ms(record: Any, date_field: str) -> int | None:  # noqa: ANN401
     """The source timestamp a timeline places ``record`` by, in epoch ms."""
     if not isinstance(record, dict):
+        return None
+    if record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD) == "upload" and upload_times_undated():
         return None
     value = record.get(_DATE_FIELDS[date_field][4])
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:

@@ -32,6 +32,7 @@ from app.models.blocks import (
     Point,
 )
 from app.models.entities import Record, RecordType
+from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
@@ -121,6 +122,7 @@ def convert_record_dict_to_record(record_dict: dict[str, Any]) -> Record:
         ),
         source_created_at=record_dict.get("sourceCreatedAtTimestamp"),
         source_updated_at=record_dict.get("sourceLastModifiedTimestamp"),
+        source_timestamp_origin=record_dict.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
         weburl=record_dict.get("webUrl"),
         mime_type=mime_type,
         external_revision_id=record_dict.get("externalRevisionId"),

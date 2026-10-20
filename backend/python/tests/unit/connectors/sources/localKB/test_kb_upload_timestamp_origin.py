@@ -101,3 +101,24 @@ class TestNewVersionStamp:
         stored = self._editable(service)
         await service.update_record("user1", "rec-1", {"recordName": "renamed"})
         assert stored.source_timestamp_origin == "file"
+
+
+class TestNewVersionOfAContentDatedUpload:
+    @pytest.mark.asyncio
+    async def test_its_dates_go_back_to_what_uploads_gave_it(self, service) -> None:
+        stored = TestNewVersionStamp._editable(service)
+        stored.source_timestamp_origin = "content"
+        stored.source_created_at = 1739232000000
+        stored.created_at = UPLOADED - 86_400_000
+        service.graph_provider.get_document = AsyncMock(return_value={
+            "sourceTimestampOrigin": "content", "uploadSourceCreatedAtTimestamp": UPLOADED - 86_400_100,
+        })
+        with patch(
+            "app.connectors.sources.localKB.handlers.kb_service.get_epoch_timestamp_in_ms",
+            return_value=UPLOADED,
+        ):
+            await service.update_record("user1", "rec-1", {}, file_metadata={"lastModified": UPLOADED - 900})
+        # The new version's content is dated again once it is indexed.
+        assert stored.source_created_at == UPLOADED - 86_400_100
+        assert stored.source_updated_at == UPLOADED - 900
+        assert stored.source_timestamp_origin == "upload"

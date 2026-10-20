@@ -84,7 +84,7 @@ from app.models.entities import (
     substitute_user_email,
 )
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES, read_role
-from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD
+from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, upload_times_undated
 from app.modules.code_graph.edge_build_trigger import is_code_record
 from app.schema.arango.documents import (
     agent_schema,
@@ -20747,9 +20747,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return scope, f"(rg != null AND rg.orgId == @org_id) ? {scan_subquery} : []"
         return scope, scan_subquery
 
-    _ENTITY_CANDIDATE_SORT = (
-        "SORT NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0) DESC, key ASC"
-    )
+    @property
+    def _entity_candidate_sort(self) -> str:
+        newest = "NOT_NULL(r.sourceLastModifiedTimestamp, r.updatedAtTimestamp, 0)"
+        if upload_times_undated():
+            newest = f'(r.{SOURCE_TIMESTAMP_ORIGIN_FIELD} == "upload" ? 0 : {newest})'
+        return f"SORT {newest} DESC, key ASC"
 
     def _entity_candidate_records_aql(
         self, entity_type: str, *, filter_record_types: bool
@@ -20781,7 +20784,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FOR rec IN scanned
                         COLLECT key = rec._key INTO grouped KEEP rec
                         LET r = grouped[0].rec
-                        {self._ENTITY_CANDIDATE_SORT}
+                        {self._entity_candidate_sort}
                         LIMIT @offset, @limit
                         RETURN {self._entity_candidate_record_projection("r")}
                 )
@@ -20820,7 +20823,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FOR rec IN scanned
                         COLLECT key = rec._key INTO grouped KEEP rec
                         LET r = grouped[0].rec
-                        {self._ENTITY_CANDIDATE_SORT}
+                        {self._entity_candidate_sort}
                         LIMIT @offset, @window
                         RETURN r
                 )
@@ -23766,6 +23769,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "FILTER record.sourceLastModifiedTimestamp != null AND record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs"
                 )
                 bind_vars["sourceUpdatedBeforeMs"] = u_before
+            if time_filter_lines and upload_times_undated():
+                time_filter_lines.append(f'FILTER record.{SOURCE_TIMESTAMP_ORIGIN_FIELD} != "upload"')
 
         if not time_filter_lines:
             return metadata_filter_clause
