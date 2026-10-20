@@ -479,9 +479,9 @@ class S3CompatibleBaseConnector(BaseConnector):
             if not list_buckets_payload and target_names:
                 try:
                     extra = await self._list_all_buckets()
-                    if extra.success and extra.data:
+                    if extra.success:
                         bucket_creation_ms = _bucket_creation_dates_from_list_buckets(
-                            extra.data.get("Buckets"), target_names
+                            extra.data["Buckets"], target_names
                         )
                 except Exception as e:
                     self.logger.warning(
@@ -1535,18 +1535,8 @@ class S3CompatibleBaseConnector(BaseConnector):
                     message=f"Failed to list buckets: {response.error}"
                 )
 
-            buckets_data = response.data
-            if not buckets_data or "Buckets" not in buckets_data:
-                return FilterOptionsResponse(
-                    success=True,
-                    options=[],
-                    page=page,
-                    limit=limit,
-                    has_more=False
-                )
-
             all_buckets = [
-                bucket.get("Name") for bucket in buckets_data["Buckets"]
+                bucket.get("Name") for bucket in response.data["Buckets"]
                 if bucket.get("Name")
             ]
 
@@ -1795,13 +1785,11 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.logger.info(f"Using filtered buckets: {buckets_to_sync}")
             else:
                 buckets_response = await self._list_all_buckets()
-                if buckets_response.success and buckets_response.data:
-                    buckets_data = buckets_response.data
-                    if "Buckets" in buckets_data:
-                        buckets_to_sync = [
-                            bucket.get("Name") for bucket in buckets_data["Buckets"]
-                            if name_passes_filter(sync_filters, "buckets", bucket.get("Name"))
-                        ]
+                if buckets_response.success:
+                    buckets_to_sync = [
+                        bucket.get("Name") for bucket in buckets_response.data["Buckets"]
+                        if name_passes_filter(sync_filters, "buckets", bucket.get("Name"))
+                    ]
 
             if not buckets_to_sync:
                 self.logger.warning("No buckets to sync")
