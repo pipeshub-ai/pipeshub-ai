@@ -14594,6 +14594,7 @@ components:
         - ACCESS_KEY
         - ACCOUNT_KEY
         - CONNECTION_STRING
+        - ENTRA_ID
         - CUSTOM
         - NONE
 

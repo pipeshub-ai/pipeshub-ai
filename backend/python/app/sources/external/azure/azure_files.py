@@ -6,7 +6,11 @@ Supports listing shares, directories, files, and generating SAS URLs.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from urllib.parse import quote
+
+if TYPE_CHECKING:
+    from azure.storage.fileshare.aio._download_async import StorageStreamDownloader
 
 try:
     from azure.core.exceptions import AzureError, ResourceNotFoundError  # type: ignore
@@ -26,9 +30,6 @@ except ImportError:
     )
 
 from app.sources.client.azure.azure_files import AzureFilesClient, AzureFilesResponse
-
-# Constants
-PATH_PARTS_WITH_DIRECTORY = 2  # Number of parts when path contains directory and filename
 
 
 class AzureFilesDataSource:
@@ -108,6 +109,37 @@ class AzureFilesDataSource:
 
             return self._handle_response(data=shares)
 
+        except AzureError as e:
+            return self._handle_response(error=f"Azure Files API error: {str(e)}")
+        except Exception as e:
+            return self._handle_response(error=f"Unexpected error: {str(e)}")
+
+    async def list_shares_page(
+        self,
+        results_per_page: int,
+        continuation_token: str | None = None,
+        name_starts_with: str | None = None,
+    ) -> AzureFilesResponse:
+        """List one page of file shares.
+
+        Returns:
+            AzureFilesResponse with {"shares": [{"name", "last_modified"}], "next": token or None}
+        """
+        try:
+            client = await self._get_async_share_service_client()
+            pages = client.list_shares(
+                name_starts_with=name_starts_with, results_per_page=results_per_page
+            ).by_page(continuation_token=continuation_token)
+            shares: list[dict[str, Any]] = []
+            async for page in pages:
+                shares = [
+                    {"name": share.name, "last_modified": share.last_modified}
+                    async for share in page
+                ]
+                break
+            return self._handle_response(
+                data={"shares": shares, "next": pages.continuation_token or None}
+            )
         except AzureError as e:
             return self._handle_response(error=f"Azure Files API error: {str(e)}")
         except Exception as e:
@@ -325,13 +357,13 @@ class AzureFilesDataSource:
             AzureFilesResponse with SAS URL
         """
         try:
-            account_name = self._azure_files_client.get_account_name()
             account_key = self._azure_files_client.get_account_key()
 
             if not account_key:
                 return self._handle_response(
                     error="Account key required for SAS URL generation"
                 )
+            account_name = self._azure_files_client.get_account_name()
 
             if expiry is None:
                 expiry = datetime.now(timezone.utc) + timedelta(hours=24)
@@ -339,20 +371,10 @@ class AzureFilesDataSource:
             if start is None:
                 start = datetime.now(timezone.utc) - timedelta(minutes=5)
 
-            # Parse file path to get directory and filename
-            path_parts = file_path.rsplit("/", 1)
-            if len(path_parts) == PATH_PARTS_WITH_DIRECTORY:
-                directory_path = path_parts[0]
-                file_name = path_parts[1]
-            else:
-                directory_path = ""
-                file_name = file_path
-
             sas_token = generate_file_sas(
                 account_name=account_name,
                 share_name=share_name,
-                directory_name=directory_path,
-                file_name=file_name,
+                file_path=file_path.split("/"),
                 account_key=account_key,
                 permission=FileSasPermissions(read="r" in permission),
                 expiry=expiry,
@@ -361,7 +383,8 @@ class AzureFilesDataSource:
 
             # Construct the full URL
             account_url = self._azure_files_client.get_account_url()
-            sas_url = f"{account_url}/{share_name}/{file_path}?{sas_token}"
+            # A name with "#", "?" or "%" must reach Azure as that name, not as URL syntax.
+            sas_url = f"{account_url}/{quote(share_name)}/{quote(file_path)}?{sas_token}"
 
             return self._handle_response(
                 data={"sas_url": sas_url, "expiry": expiry.isoformat()}
@@ -475,6 +498,21 @@ class AzureFilesDataSource:
                 "file_path": file_path,
             }
         )
+
+    async def download_file_stream(
+        self,
+        share_name: str,
+        file_path: str,
+    ) -> "StorageStreamDownloader":
+        """Start downloading a file and return the SDK downloader, for ``.chunks()``.
+
+        Only the first range is fetched here, so a missing file or a refused
+        credential raises (HttpResponseError) before anything is streamed; the
+        rest arrives chunk by chunk instead of being held in memory.
+        """
+        client = await self._get_async_share_service_client()
+        file_client = client.get_share_client(share_name).get_file_client(file_path)
+        return await file_client.download_file()
 
     async def check_directory_exists(
         self, share_name: str, directory_path: str

@@ -534,7 +534,7 @@ class TestAzureFilesRunSync:
     async def test_run_sync_with_share_filter(self, mock_filters, connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
-        connector._sync_share = AsyncMock()
+        connector._sync_share = AsyncMock(return_value=(set(), True))
         connector._create_record_groups_for_shares = AsyncMock()
         # Set share filter
         share_filter = MagicMock()
@@ -557,7 +557,7 @@ class TestAzureFilesRunSync:
         connector.data_source.list_shares = AsyncMock(
             return_value=_make_response(True, [{"name": "s1"}, {"name": "s2"}])
         )
-        connector._sync_share = AsyncMock()
+        connector._sync_share = AsyncMock(return_value=(set(), True))
         connector._create_record_groups_for_shares = AsyncMock()
         await connector.run_sync()
         assert connector._sync_share.await_count == 2
@@ -574,7 +574,9 @@ class TestAzureFilesRunSync:
         connector.data_source.list_shares = AsyncMock(
             return_value=_make_response(False, error="Forbidden")
         )
-        connector._sync_share = AsyncMock()
+        connector._sync_share = AsyncMock(return_value=(set(), True))
         connector._create_record_groups_for_shares = AsyncMock()
-        await connector.run_sync()
+        # A run that read nothing must fail, not finish as a success (PP-360).
+        with pytest.raises(ConnectionError):
+            await connector.run_sync()
         connector._sync_share.assert_not_awaited()

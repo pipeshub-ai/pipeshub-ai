@@ -165,6 +165,7 @@ class TestAzureFilesProcessorComprehensive:
             AzureFilesDataSourceEntitiesProcessor
         )
         proc.account_name = "myaccount"
+        proc.account_url = ""
         url = proc._generate_directory_url("myshare/subdir/folder")
         assert url == "https://myaccount.file.core.windows.net/myshare/subdir/folder"
 
@@ -173,6 +174,7 @@ class TestAzureFilesProcessorComprehensive:
             AzureFilesDataSourceEntitiesProcessor
         )
         proc.account_name = "myaccount"
+        proc.account_url = ""
         url = proc._generate_directory_url("myshare")
         assert url == "https://myaccount.file.core.windows.net/myshare"
 
@@ -417,9 +419,10 @@ class TestRunSyncComprehensive:
                 success=True, data=[{"name": "share1"}]
             ))
             connector._create_record_groups_for_shares = AsyncMock()
-            connector._sync_share = AsyncMock()
+            connector._sync_share = AsyncMock(return_value=(set(), True))
             connector.account_name = "testaccount"
-            connector.scope = ConnectorScope.TEAM.value
+            # A team connector refuses to list every share (PP-347).
+            connector.scope = ConnectorScope.PERSONAL.value
 
             await connector.run_sync()
 
@@ -457,6 +460,6 @@ class TestMiscComprehensive:
             return_value=(FilterCollection(), FilterCollection()),
         ):
             connector._create_record_groups_for_shares = AsyncMock()
-            connector._sync_share = AsyncMock()
+            connector._sync_share = AsyncMock(return_value=(set(), True))
             # incremental sync just calls run_sync under the hood after checking data_source
             await connector.run_incremental_sync()

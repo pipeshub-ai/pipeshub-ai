@@ -295,6 +295,10 @@ class DataSourceEntitiesProcessor:
         if runs and runs.get(connector_id) is run:
             del runs[connector_id]
 
+    def full_sync_running(self, connector_id: str) -> bool:
+        """Whether a full sync of this connector is in progress, so what it does not write is unlinked after it."""
+        return self._full_sync_run(connector_id) is not None
+
     def _full_sync_run(self, connector_id: str | None) -> FullSyncSeen | None:
         runs = getattr(self, "_full_sync_runs", None)
         return runs.get(connector_id) if runs and connector_id else None
