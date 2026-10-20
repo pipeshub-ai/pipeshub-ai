@@ -2609,6 +2609,11 @@ class TestDescriptiveLinkTextIsKept:
         out = self._normalize(normalizer, "See the [Q2 forecast](https://example.com/q2) [Q2 forecast](ref1).")
         assert out == f"See the [Q2 forecast](https://example.com/q2) [1]({self.U1})."
 
+    @pytest.mark.parametrize("normalizer", NORMALIZERS)
+    def test_a_label_and_a_title_on_the_same_target_keep_the_title(self, normalizer) -> None:
+        out = self._normalize(normalizer, "The cap is 15% [source](ref1) [Pricing review](ref1).")
+        assert out == f"The cap is 15% Pricing review [1]({self.U1})."
+
     def test_streamed_prefixes_only_ever_grow(self) -> None:
         """The streaming path emits ``normalized[prev_len:]`` per chunk, so the
         normalized text of a prefix must be a prefix of the next one."""

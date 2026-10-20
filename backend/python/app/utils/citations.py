@@ -314,6 +314,10 @@ def display_url_for_llm(url: str, ref_mapper: "object | None") -> str:
     ref = ref_mapper.get_or_create_ref(url)
     return build_tiny_web_ref_url(ref)
 
+def _link_label(md_link: str) -> str:
+    return md_link[1:md_link.index('](')]
+
+
 def _clean_duplicate_citation_links(
     text: str,
     ref_to_url: dict[str, str] | None = None,
@@ -353,6 +357,10 @@ def _clean_duplicate_citation_links(
         resolved_first = _resolve_ref(first_target, ref_to_url)
         resolved_second = _resolve_ref(second_target, ref_to_url)
         if resolved_first == resolved_second:
+            second_link = m.group(4)
+            # "[source](ref1) [Pricing review](ref1)": keep the link whose text names the source.
+            if _is_citation_label(_link_label(first_link)) and not _is_citation_label(_link_label(second_link)):
+                return second_link
             return first_link
 
         return m.group(0)
