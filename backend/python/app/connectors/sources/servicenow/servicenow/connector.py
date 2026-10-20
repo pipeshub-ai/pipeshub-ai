@@ -491,7 +491,8 @@ class ServiceNowConnector(BaseConnector):
             # An instance that will not evaluate the script can drop the condition and list
             # other users, so anything but exactly one row could link the wrong account
             if len(rows) == 1:
-                email, source_user_id = rows[0].email, rows[0].sys_id
+                email = rows[0].get(ServiceNowFields.EMAIL)
+                source_user_id = rows[0].get(ServiceNowFields.SYS_ID)
         except Exception as e:
             self.logger.debug("Could not read the authenticated ServiceNow user: %s", e)
             return

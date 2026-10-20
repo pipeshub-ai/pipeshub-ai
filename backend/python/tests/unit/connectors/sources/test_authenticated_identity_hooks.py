@@ -41,6 +41,7 @@ from app.sources.client.notion.notion import (
     NotionRESTClientViaOAuth,
     NotionRESTClientViaToken,
 )
+from app.sources.external.servicenow.models import TableAPIRecord
 
 
 def _connector(cls: type, **attrs: object) -> MagicMock:
@@ -138,7 +139,7 @@ class TestServiceNow:
         return _connector(ServiceNowConnector, _get_fresh_datasource=AsyncMock(return_value=datasource))
 
     async def test_registers_the_user_the_token_belongs_to(self) -> None:
-        conn = self._conn([SimpleNamespace(sys_id="6816f79cc0a8016401c5a33be04be441", email=" admin@corp.com ")])
+        conn = self._conn([TableAPIRecord(sys_id="6816f79cc0a8016401c5a33be04be441", email=" admin@corp.com ")])
 
         await ServiceNowConnector._register_authenticated_identity(conn)
 
@@ -148,7 +149,7 @@ class TestServiceNow:
 
     @pytest.mark.parametrize(
         "rows",
-        [[], [SimpleNamespace(sys_id="a1", email="a@corp.com"), SimpleNamespace(sys_id="b2", email="b@corp.com")]],
+        [[], [TableAPIRecord(sys_id="a1", email="a@corp.com"), TableAPIRecord(sys_id="b2", email="b@corp.com")]],
         ids=["no-row", "condition-dropped"],
     )
     async def test_anything_but_exactly_one_row_links_nobody(self, rows: list) -> None:
@@ -157,6 +158,13 @@ class TestServiceNow:
         await ServiceNowConnector._register_authenticated_identity(conn)
 
         assert _registered(conn) == (None, None)
+
+    async def test_a_row_without_an_email_still_reaches_the_helper(self) -> None:
+        conn = self._conn([TableAPIRecord(sys_id="6816f79cc0a8016401c5a33be04be441")])
+
+        await ServiceNowConnector._register_authenticated_identity(conn)
+
+        assert _registered(conn) == (None, "6816f79cc0a8016401c5a33be04be441")
 
 
 class TestSalesforce:

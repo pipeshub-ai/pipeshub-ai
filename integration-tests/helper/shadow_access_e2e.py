@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -86,6 +87,48 @@ RETURN r.id AS id,
     THEN ' via parent record' ELSE ''
   END AS path
 LIMIT $limit
+"""
+
+# The same paths in AQL, for an ArangoDB run.
+_ACCESS_PATHS_AQL = """
+LET u = CONCAT(@users, '/', @user_key)
+LET own = (FOR p IN @@permission FILTER p._from == u AND p.type == 'USER' RETURN p._to)
+LET groups = (FOR t IN own FILTER IS_SAME_COLLECTION(@groups, t) OR IS_SAME_COLLECTION(@roles, t) RETURN t)
+LET via_group = (FOR g IN groups FOR p IN @@permission FILTER p._from == g RETURN p._to)
+LET user_rgs = (FOR t IN own FILTER IS_SAME_COLLECTION(@record_groups, t) RETURN t)
+LET via_rg = (FOR rg IN user_rgs FOR v IN 1..5 INBOUND rg @@inherit RETURN v._id)
+LET group_rgs = (
+  FOR g IN groups FOR p IN @@permission
+  FILTER p._from == g AND p.type IN ['GROUP', 'ROLE'] AND IS_SAME_COLLECTION(@record_groups, p._to)
+  RETURN p._to
+)
+LET via_group_rg = (FOR rg IN group_rgs FOR v IN 1..5 INBOUND rg @@inherit RETURN v._id)
+LET orgs = @with_org ? (
+  FOR b IN @@belongs_to FILTER b._from == u AND IS_SAME_COLLECTION(@orgs, b._to) RETURN b._to
+) : []
+LET via_org = (FOR o IN orgs FOR p IN @@permission FILTER p._from == o RETURN p._to)
+LET org_rgs = (FOR t IN via_org FILTER IS_SAME_COLLECTION(@record_groups, t) RETURN t)
+LET via_org_rg = (FOR rg IN org_rgs FOR v IN 1..2 INBOUND rg @@inherit RETURN v._id)
+FOR r IN @@records
+  FILTER r.connectorId == @connector_id AND r.isDeleted != true
+  LET path = (
+    POSITION(own, r._id) ? 'direct'
+    : POSITION(via_group, r._id) ? 'group'
+    : POSITION(via_rg, r._id) ? 'record-group'
+    : POSITION(via_group_rg, r._id) ? 'group-record-group'
+    : POSITION(via_org, r._id) ? 'org'
+    : POSITION(via_org_rg, r._id) ? 'org-record-group'
+    : null
+  )
+  FILTER path != null
+  LET in_record_group = LENGTH(
+    FOR e IN @@inherit FILTER e._from == r._id AND IS_SAME_COLLECTION(@record_groups, e._to) LIMIT 1 RETURN 1
+  ) > 0
+  LIMIT @limit
+  RETURN {
+    id: r._key,
+    path: CONCAT(path, LIKE(path, '%record-group') AND NOT in_record_group ? ' via parent record' : ''),
+  }
 """
 
 
@@ -168,7 +211,10 @@ async def verify_shadow_access(
     await _drop_link(graph_provider, config_service, link)
     try:
         candidates = await _check_without_link(creator, records, opened, link, vector_store, report)
-        listed_without = _creator_listing(creator, connector_id, "without the link")
+        # A creator with no access of their own is refused the whole app once the link goes
+        listed_without = _listed_among(
+            creator, connector_id, set(report.shadow_only), "without the link",
+        )
     except BaseException:
         await _relink_directly(graph_provider, config_service, link)
         raise
@@ -292,16 +338,32 @@ async def _live_records(
     graph_provider: GraphProviderProtocol, connector_id: str,
 ) -> dict[str, dict[str, Any]]:
     records = await graph_provider.fetch_records_by_type(connector_id, "")
-    return {r["id"]: r for r in records if r.get("id") and r.get("isDeleted") is not True}
+    # ArangoDB hands back raw documents, keyed by _key
+    return {
+        rid: r for r in records
+        if (rid := r.get("id") or r.get("_key")) and r.get("isDeleted") is not True
+    }
 
 
 async def _access_paths(
     graph_provider: GraphProviderProtocol, user_key: str, connector_id: str, *, with_org: bool,
 ) -> dict[str, str]:
-    rows = await graph_provider.client.execute_query(
-        _ACCESS_PATHS,
-        {"user_key": user_key, "connector_id": connector_id, "with_org": with_org, "limit": 5000},
-    )
+    params = {"user_key": user_key, "connector_id": connector_id, "with_org": with_org, "limit": 5000}
+    if os.getenv("TEST_GRAPH_DB_TYPE", "neo4j").lower() == "arango":
+        rows = await graph_provider.execute_query(_ACCESS_PATHS_AQL, bind_vars={
+            **params,
+            "users": CollectionNames.USERS.value,
+            "groups": CollectionNames.GROUPS.value,
+            "roles": CollectionNames.ROLES.value,
+            "record_groups": CollectionNames.RECORD_GROUPS.value,
+            "orgs": CollectionNames.ORGS.value,
+            "@permission": CollectionNames.PERMISSION.value,
+            "@inherit": CollectionNames.INHERIT_PERMISSIONS.value,
+            "@belongs_to": CollectionNames.BELONGS_TO.value,
+            "@records": CollectionNames.RECORDS.value,
+        })
+    else:
+        rows = await graph_provider.client.execute_query(_ACCESS_PATHS, params)
     return {row["id"]: row["path"] for row in rows or []}
 
 
