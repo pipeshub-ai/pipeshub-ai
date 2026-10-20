@@ -369,6 +369,36 @@ class TestB3FileIdAcrossShares:
         assert original in {x.id, y.id}
         assert "s/a.txt" not in proc.records
 
+    async def test_rename_is_found_when_another_share_holds_the_same_file_id(self) -> None:
+        # The connector-wide revision lookup returns one row, which can be the
+        # other share's; the move must still be found in this share.
+        ds = FakeDataSource({})
+        ds.add("a-share", "Finance", is_dir=True, file_id="13835128424026341376")
+        ds.add("b-share", "Docs", is_dir=True, file_id="13835128424026341376")
+        proc = FakeProcessor()
+        conn = _connector(ds, proc, shares=["a-share", "b-share"])
+        await _sync(conn)
+        docs_id = proc.records["b-share/Docs"].id
+        item = ds.shares["b-share"].pop("Docs")
+        ds.shares["b-share"]["Papers"] = {**item, "name": "Papers", "path": "Papers"}
+        await _sync(conn)
+        assert proc.records["b-share/Papers"].id == docs_id
+        assert proc.moved_calls == [[("b-share/Docs", "b-share/Papers")]]
+        assert "a-share/Finance" in proc.records
+
+    async def test_full_sync_still_finds_moves(self) -> None:
+        ds = FakeDataSource({})
+        ds.add("s", "old.txt", file_id="9")
+        proc = FakeProcessor()
+        conn = _connector(ds, proc, shares=["s"])
+        await _sync(conn)
+        rid = proc.records["s/old.txt"].id
+        item = ds.shares["s"].pop("old.txt")
+        ds.shares["s"]["new.txt"] = {**item, "name": "new.txt", "path": "new.txt"}
+        proc.full_sync = True
+        await _sync(conn)
+        assert proc.records["s/new.txt"].id == rid
+
     async def test_copy_keeping_file_id_in_same_share_is_not_a_move(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt", file_id="7")
@@ -430,6 +460,19 @@ class TestO5Moves:
 # ---------------------------------------------------------------------------
 # PP-360 O6 / PP-361 O7: failures fail the run and tell the admin
 # ---------------------------------------------------------------------------
+class TestEmptyAccount:
+    async def test_shares_gone_from_an_empty_account_are_removed(self) -> None:
+        ds = FakeDataSource({})
+        ds.add("s", "a.txt")
+        proc = FakeProcessor()
+        conn = _connector(ds, proc)
+        await _sync(conn)
+        assert "s/a.txt" in proc.records
+        ds.shares.clear()
+        await _sync(conn)
+        assert proc.records == {} and proc.groups == set()
+
+
 class TestO6O7Failures:
     async def test_failed_list_shares_raises_and_notifies(self) -> None:
         ds = FakeDataSource({})

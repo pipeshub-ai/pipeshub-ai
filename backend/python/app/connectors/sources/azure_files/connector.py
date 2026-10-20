@@ -621,18 +621,14 @@ class AzureFilesConnector(BaseConnector):
                     )
                     raise ConnectionError(f"Failed to list shares: {shares_response.error}")
 
-                shares_data = shares_response.data
-                if shares_data:
-                    shares_list_payload = shares_data
-                    shares_to_sync = [
-                        share.get("name")
-                        for share in shares_data
-                        if share.get("name") and name_passes_filter(sync_filters, "shares", share.get("name"))
-                    ]
-                    self.logger.info(f"Found {len(shares_to_sync)} share(s) to sync")
-                else:
-                    self.logger.warning("No shares found")
-                    return
+                # An empty account still runs the cleanup below for shares that are gone.
+                shares_list_payload = shares_response.data or []
+                shares_to_sync = [
+                    share.get("name")
+                    for share in shares_list_payload
+                    if share.get("name") and name_passes_filter(sync_filters, "shares", share.get("name"))
+                ]
+                self.logger.info(f"Found {len(shares_to_sync)} share(s) to sync")
 
             target_names = {n for n in shares_to_sync if n}
             share_ts_ms = _share_last_modified_epoch_ms_from_list(
@@ -1029,7 +1025,13 @@ class AzureFilesConnector(BaseConnector):
         # A full sync writes every record, which also restores links an earlier
         # run lost; other runs leave a record whose revision is unchanged alone.
         full_sync = self._full_sync_running()
-        stored_revisions = {} if full_sync else await self._stored_revisions(share_name)
+        stored_revisions = await self._stored_revisions(share_name)
+        # A move is looked for among this share's records only: FileIds repeat across shares.
+        paths_by_revision: dict[str, list[str]] | None = None
+        if stored_revisions is not None:
+            paths_by_revision = {}
+            for stored_path, revision in stored_revisions.items():
+                paths_by_revision.setdefault(revision, []).append(stored_path)
 
         move_candidates: list[tuple[str, FileRecord, list[Permission]]] = []
         directory_slots = asyncio.Semaphore(DIRECTORY_CONCURRENCY)
@@ -1162,14 +1164,18 @@ class AzureFilesConnector(BaseConnector):
                             if is_directory:
                                 subdirectories.append(item_path)
 
-                            stored_revision = stored_revisions.get(external_record_id)
-                            if stored_revision and stored_revision == self._get_azure_files_revision_id(item):
+                            stored_revision = (stored_revisions or {}).get(external_record_id)
+                            if (
+                                not full_sync
+                                and stored_revision
+                                and stored_revision == self._get_azure_files_revision_id(item)
+                            ):
                                 continue
 
                             # Per item: directories are walked concurrently.
                             moved_from: dict[str, str] = {}
                             record, permissions = await self._process_azure_files_item(
-                                item, share_name, moved_from
+                                item, share_name, moved_from, paths_by_revision
                             )
                             if not record:
                                 if item_name:
@@ -1233,8 +1239,9 @@ class AzureFilesConnector(BaseConnector):
         running = getattr(self.data_entities_processor, "full_sync_running", None)
         return bool(running(self.connector_id)) if callable(running) else True
 
-    async def _stored_revisions(self, share_name: str) -> dict[str, str]:
-        """External id -> stored revision of the share's live records, read once per walk."""
+    async def _stored_revisions(self, share_name: str) -> dict[str, str] | None:
+        """External id -> stored revision of the share's live records, read once per walk;
+        None when they could not be read."""
         try:
             nodes = await self.data_entities_processor.get_nodes_by_filters(
                 CollectionNames.RECORDS.value,
@@ -1244,7 +1251,7 @@ class AzureFilesConnector(BaseConnector):
             )
         except Exception as e:
             self.logger.warning(f"Could not read the stored records of {share_name}; writing every item: {e}")
-            return {}
+            return None
         return {
             node["externalRecordId"]: node["externalRevisionId"]
             for node in nodes
@@ -1332,7 +1339,11 @@ class AzureFilesConnector(BaseConnector):
         return ""
 
     async def _process_azure_files_item(
-        self, item: dict, share_name: str, moved_from: dict[str, str] | None = None
+        self,
+        item: dict,
+        share_name: str,
+        moved_from: dict[str, str] | None = None,
+        paths_by_revision: dict[str, list[str]] | None = None,
     ) -> tuple[FileRecord | None, list[Permission]]:
         """Process a single Azure Files item (file or directory) and convert it to a FileRecord.
 
@@ -1340,7 +1351,8 @@ class AzureFilesConnector(BaseConnector):
 
         An item found by its FileId under another path of the same share reuses that
         record; ``moved_from`` then maps the record id to the stored external id, for
-        the caller to write it as a move.
+        the caller to write it as a move. ``paths_by_revision`` (stored revision ->
+        external ids, this share's records) is where that record is looked for.
         """
         try:
             item_name = item.get("name", "")
@@ -1416,9 +1428,18 @@ class AzureFilesConnector(BaseConnector):
                             f"Stored revision missing for {normalized_path}, processing record"
                         )
             elif current_revision_id:
-                existing_record = await self.data_entities_processor.get_record_by_external_revision_id(
-                    self.connector_id, current_revision_id
-                )
+                if paths_by_revision is not None:
+                    old_path = next(
+                        (p for p in paths_by_revision.get(current_revision_id, ()) if p != external_record_id), None
+                    )
+                    existing_record = (
+                        await self.data_entities_processor.get_record_by_external_id(self.connector_id, old_path)
+                        if old_path else None
+                    )
+                else:
+                    existing_record = await self.data_entities_processor.get_record_by_external_revision_id(
+                        self.connector_id, current_revision_id
+                    )
                 if existing_record and existing_record.external_record_group_id != share_name:
                     # FileIds are unique only within a share; new shares hand out the same ones.
                     existing_record = None
