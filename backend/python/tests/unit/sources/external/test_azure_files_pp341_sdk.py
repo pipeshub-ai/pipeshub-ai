@@ -317,6 +317,8 @@ class TestEntraId:
         for request in service.requests:
             assert request.headers["Authorization"] == "Bearer entra-token", request.url
             assert request.headers["x-ms-file-request-intent"] == "backup", request.url
+            # Share and service operations take OAuth only from this version on.
+            assert request.headers["x-ms-version"] >= "2024-11-04", request.url
         await ds.close_async_client()
         assert credential.closed is True
 

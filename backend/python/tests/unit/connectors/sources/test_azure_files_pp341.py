@@ -339,6 +339,36 @@ class TestB3FileIdAcrossShares:
         assert proc.records["a-share/Finance"].id != proc.records["b-share/Docs"].id
         assert proc.moved_calls == []
 
+    async def test_two_copies_of_a_moved_file_get_one_record_each(self) -> None:
+        import asyncio
+
+        ds = FakeDataSource({})
+        ds.add("s", "a.txt", file_id="7")
+        for d in ("x", "y"):
+            ds.add("s", d, is_dir=True, file_id=f"dir-{d}")
+        proc = FakeProcessor()
+        conn = _connector(ds, proc, shares=["s"])
+        await _sync(conn)
+        original = proc.records["s/a.txt"].id
+        item = ds.shares["s"].pop("a.txt")
+        # Copied twice keeping FileId, size and time, original removed; the two
+        # folders are walked at the same time.
+        ds.add("s", "x/a.txt", file_id="7")
+        ds.add("s", "y/a.txt", file_id="7")
+        real = ds.list_directories_and_files
+
+        async def slow(*args: object, **kwargs: object) -> AzureFilesResponse:
+            await asyncio.sleep(0.01)
+            return await real(*args, **kwargs)
+
+        ds.list_directories_and_files = slow
+        del item
+        await _sync(conn)
+        x, y = proc.records["s/x/a.txt"], proc.records["s/y/a.txt"]
+        assert x.id != y.id
+        assert original in {x.id, y.id}
+        assert "s/a.txt" not in proc.records
+
     async def test_copy_keeping_file_id_in_same_share_is_not_a_move(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt", file_id="7")
@@ -514,6 +544,32 @@ class TestS1TeamScope:
             await _sync(conn)
         assert proc.records == {}
         conn.notify.assert_awaited()
+
+    async def test_team_connector_with_a_not_in_filter_refuses(self) -> None:
+        # Every share but a few, including ones created later, is still org-wide.
+        ds = FakeDataSource({})
+        ds.add("s", "a.txt")
+        ds.add("other", "b.txt")
+        proc = FakeProcessor()
+        conn = _connector(ds, proc, scope="team")
+        conn._test_filters = FilterCollection(filters=[
+            Filter(key="shares", value=["other"], type=FilterType.MULTISELECT, operator=MultiselectOperator.NOT_IN),
+        ])
+        with pytest.raises(ValueError, match="team connector"):
+            await _sync(conn)
+        assert proc.records == {}
+
+    async def test_personal_connector_honours_not_in(self) -> None:
+        ds = FakeDataSource({})
+        ds.add("s", "a.txt")
+        ds.add("other", "b.txt")
+        proc = FakeProcessor()
+        conn = _connector(ds, proc)
+        conn._test_filters = FilterCollection(filters=[
+            Filter(key="shares", value=["other"], type=FilterType.MULTISELECT, operator=MultiselectOperator.NOT_IN),
+        ])
+        await _sync(conn)
+        assert "s/a.txt" in proc.records and "other/b.txt" not in proc.records
 
     async def test_team_connector_with_share_filter_syncs(self) -> None:
         ds = FakeDataSource({})

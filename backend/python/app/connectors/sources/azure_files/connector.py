@@ -568,15 +568,16 @@ class AzureFilesConnector(BaseConnector):
                 if hasattr(self, "sync_filters") and self.sync_filters
                 else FilterCollection()
             )
-            share_filter = sync_filters.get("shares")
 
-            if self.scope == ConnectorScope.TEAM.value and (share_filter is None or share_filter.is_empty()):
+            selected_shares = included_names(sync_filters, "shares")
+            if self.scope == ConnectorScope.TEAM.value and not selected_shares:
                 # Every synced file is readable by the whole organisation, so a team
-                # connector must not pick up every share the credential can list.
+                # connector must not pick up every share the credential can list, nor
+                # every share but a few (Not in), which takes in shares created later.
                 message = (
-                    "A team connector syncs only the shares named in File Share Names, since "
-                    "everything it syncs is visible to the whole organisation. Select the shares "
-                    "to sync in the connector's filters."
+                    "A team connector syncs only the shares named in File Share Names (operator In), "
+                    "since everything it syncs is visible to the whole organisation. Select the "
+                    "shares to sync in the connector's filters."
                 )
                 await self._notify_problem(NotificationType.CONNECTOR_SYNC_ERROR, "No file shares selected", message)
                 raise ValueError(message)
@@ -601,8 +602,6 @@ class AzureFilesConnector(BaseConnector):
                     self.logger.warning(
                         "Personal connector has no created_by; skipping user-app edges."
                     )
-
-            selected_shares = included_names(sync_filters, "shares")
 
             # List all shares or use configured share
             shares_to_sync: list[str] = []
@@ -1032,7 +1031,6 @@ class AzureFilesConnector(BaseConnector):
         full_sync = self._full_sync_running()
         stored_revisions = {} if full_sync else await self._stored_revisions(share_name)
 
-        moved_from: dict[str, str] = {}
         move_candidates: list[tuple[str, FileRecord, list[Permission]]] = []
         directory_slots = asyncio.Semaphore(DIRECTORY_CONCURRENCY)
         write_lock = asyncio.Lock()
@@ -1168,6 +1166,8 @@ class AzureFilesConnector(BaseConnector):
                             if stored_revision and stored_revision == self._get_azure_files_revision_id(item):
                                 continue
 
+                            # Per item: directories are walked concurrently.
+                            moved_from: dict[str, str] = {}
                             record, permissions = await self._process_azure_files_item(
                                 item, share_name, moved_from
                             )
@@ -1176,7 +1176,7 @@ class AzureFilesConnector(BaseConnector):
                                     # Not written, so the unlink after a full sync would cut it off.
                                     complete = False
                                 continue
-                            old_external_id = moved_from.pop(record.id, None)
+                            old_external_id = moved_from.get(record.id)
                             if old_external_id:
                                 move_candidates.append((old_external_id, record, permissions))
                                 continue
@@ -1265,12 +1265,15 @@ class AzureFilesConnector(BaseConnector):
         """
         moves: list[tuple[str, FileRecord, list[Permission]]] = []
         copies: list[tuple[FileRecord, list[Permission]]] = []
+        moved_ids: set[str] = set()
         for old_external_id, record, permissions in candidates:
-            if old_external_id in seen:
+            # A stored record moves once; any other path with its FileId is a copy.
+            if old_external_id in seen or record.id in moved_ids:
                 record.id = str(uuid.uuid4())
                 record.version = 0
                 copies.append((record, permissions))
             else:
+                moved_ids.add(record.id)
                 moves.append((old_external_id, record, permissions))
         for start in range(0, len(moves), self.batch_size):
             await self.data_entities_processor.on_records_moved(moves[start:start + self.batch_size])
