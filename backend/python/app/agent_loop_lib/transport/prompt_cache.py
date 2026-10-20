@@ -19,8 +19,8 @@ LangChain and SDK types, so both transport families apply the same rules:
   over a few keys; GPT-5.6 and later on OpenAI route by prefix, where more keys
   would only split the cache.
 - ``prompt_cache_retention="24h"`` goes only to the models whose docs list it.
-  None of these is sent to any other host: an argument a host does not know is
-  a 400.
+  Each parameter goes only to the hosts named here: an argument a host does
+  not know is a 400.
 - OpenRouter forwards a ``prompt_cache_breakpoint`` to GPT-5.6+, turns it into
   a ``cache_control`` for Claude and drops it for upstreams without one, and
   routes by ``prompt_cache_key``. Claude also needs one on the last message,
