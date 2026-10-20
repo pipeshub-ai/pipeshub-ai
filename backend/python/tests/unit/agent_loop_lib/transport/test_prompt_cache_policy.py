@@ -233,6 +233,14 @@ class TestOpenRouter:
         assert _plan("openai/gpt-5.4", OPENROUTER, refused=frozenset({"prompt_cache_key"})) is None
 
 
+class TestXAI:
+    @pytest.mark.parametrize("model", ["grok-4.7", "gpt-6.1-sol"])
+    def test_the_key_only(self, model: str) -> None:
+        plan = _plan(model, "https://api.x.ai/v1/")
+        assert (set(plan.kwargs), plan.breakpoint, plan.last_message) == ({"prompt_cache_key"}, False, False)
+        assert _plan(model, "https://api.x.ai/v1/", refused=frozenset({"prompt_cache_key"})) is None
+
+
 class TestRejectedCacheParams:
     @pytest.fixture(autouse=True)
     def _clean(self) -> Iterator[None]:
