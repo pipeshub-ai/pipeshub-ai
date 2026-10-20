@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
+from urllib.parse import urlparse
 
 import pytest
 from langchain_core.messages import HumanMessage
@@ -146,7 +147,7 @@ class TestOpenAI:
         from langchain_xai import ChatXAI
 
         llm = ChatXAI(model="grok-4.7", api_key="test")
-        assert cache_target(llm, "grok-4.7").base_url.startswith("https://api.x.ai")
+        assert urlparse(cache_target(llm, "grok-4.7").base_url).hostname == "api.x.ai"
         strategy = _strategy(llm, model_name="grok-4.7")
         assert strategy.finalize([])[1] == {"prompt_cache_key": KEY}
         assert strategy.sent_params == {"prompt_cache_key"}
