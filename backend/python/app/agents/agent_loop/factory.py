@@ -79,7 +79,7 @@ from app.agent_loop_lib.transport.opik_tracing import (
     resolve_opik_gate,
     traced_transport_factory,
 )
-from app.agent_loop_lib.transport.prompt_cache import PromptCacheSettings, routing_key
+from app.agent_loop_lib.transport.prompt_cache import CacheScope, PromptCacheSettings
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
 from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
@@ -444,7 +444,7 @@ class PipesHubAgentFactory:
         output_cap = max_turn_output_chars()
         configured_window = context.configured_context_window
         cache_settings = PromptCacheSettings.from_env()
-        cache_key = routing_key(context.org_id, context.conversation_id, cache_settings.routing_shards)
+        cache_scope = CacheScope(context.org_id, context.conversation_id)
 
         def _langchain_transport() -> LangChainTransport:
             return LangChainTransport(
@@ -455,7 +455,7 @@ class PipesHubAgentFactory:
                 # never registered a `runId` — the check is then a no-op.
                 cancellation_token=context.cancellation_token,
                 cache_strategy=cache_strategy_for(
-                    llm, model_name=model_name, settings=cache_settings, routing_key=cache_key,
+                    llm, model_name=model_name, settings=cache_settings, scope=cache_scope,
                 ),
             )
 
@@ -491,7 +491,7 @@ class PipesHubAgentFactory:
         def _direct_or_langchain() -> "LLMTransport":
             direct = build_direct_transport(
                 llm, model_name=model_name, model_key=model_key,
-                cache_settings=cache_settings, cache_routing_key=cache_key,
+                cache_settings=cache_settings, cache_scope=cache_scope,
             )
             if direct is not None:
                 # The direct SDK transports have no image cap and no

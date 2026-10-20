@@ -4,7 +4,7 @@ A strategy shapes the three parts of a request a provider caches in order, the
 tool definitions, the system prompt and the messages, through three hooks with
 no-op defaults, so a provider overrides only what it needs:
 
-- ``system(stable, volatile)``: the system message. The stable block (the same
+- ``system(stable, volatile)``: the system messages. The stable block (the same
   for every turn and, where possible, every question of an agent) ends in a
   breakpoint; the volatile block (time, the question's context) follows it
   unmarked, so it never invalidates what precedes it.
@@ -12,7 +12,9 @@ no-op defaults, so a provider overrides only what it needs:
 - ``finalize(messages)``: the messages and the per-call kwargs.
 
 ``sent_params`` names the request parameters the strategy adds, so a provider
-error naming one of them is recognised as a rejected cache parameter.
+error naming one of them is recognised as a rejected cache parameter, and
+``without(params)`` is what the strategy can still ask for once those are
+refused.
 """
 
 from __future__ import annotations
@@ -21,12 +23,18 @@ from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage, SystemMessage
 
+from app.agent_loop_lib.transport.prompt_cache import (
+    OPENAI_BREAKPOINT,
+    OPENAI_BREAKPOINT_PARAM,
+)
+
 if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
 
 ANTHROPIC_PARAM = "cache_control"
 BEDROCK_PARAM = "cachepoint"
 _BEDROCK_CACHE_POINT = {"cachePoint": {"type": "default"}}
+_BLOCK_MARKERS = (ANTHROPIC_PARAM, OPENAI_BREAKPOINT_PARAM)
 
 
 class CacheStrategy:
@@ -35,15 +43,20 @@ class CacheStrategy:
     name = "none"
     sent_params: frozenset[str] = frozenset()
 
-    def system(self, stable: str, volatile: str) -> SystemMessage | None:
+    def system(self, stable: str, volatile: str) -> list[SystemMessage]:
         text = "\n\n".join(block for block in (stable, volatile) if block)
-        return SystemMessage(content=text) if text else None
+        return [SystemMessage(content=text)] if text else []
 
     def tools(self, tools: list[dict[str, Any]]) -> list[Any]:
         return list(tools)
 
     def finalize(self, messages: list[BaseMessage]) -> tuple[list[BaseMessage], dict[str, Any]]:
         return messages, {}
+
+    def without(self, params: frozenset[str]) -> CacheStrategy:
+        """This strategy once the provider refused ``params``: providers whose
+        markers stand or fall together drop to no caching."""
+        return NoCacheStrategy() if params & (self.sent_params | {"*"}) else self
 
 
 class NoCacheStrategy(CacheStrategy):
@@ -64,13 +77,13 @@ class AnthropicCacheStrategy(CacheStrategy):
         self._breakpoint = marker
         self._top_level = top_level
 
-    def system(self, stable: str, volatile: str) -> SystemMessage | None:
+    def system(self, stable: str, volatile: str) -> list[SystemMessage]:
         blocks: list[dict[str, Any]] = []
         if stable:
             blocks.append({"type": "text", "text": stable, "cache_control": dict(self._breakpoint)})
         if volatile:
             blocks.append({"type": "text", "text": _after(blocks, volatile)})
-        return SystemMessage(content=blocks) if blocks else None
+        return [SystemMessage(content=blocks)] if blocks else []
 
     def tools(self, tools: list[dict[str, Any]]) -> list[Any]:
         # Anthropic's own tool shape: an OpenAI-format dict would be rebuilt by
@@ -97,13 +110,13 @@ class BedrockCacheStrategy(CacheStrategy):
     def __init__(self, *, cache_tools: bool) -> None:
         self._cache_tools = cache_tools
 
-    def system(self, stable: str, volatile: str) -> SystemMessage | None:
+    def system(self, stable: str, volatile: str) -> list[SystemMessage]:
         blocks: list[dict[str, Any]] = []
         if stable:
             blocks.extend(({"type": "text", "text": stable}, dict(_BEDROCK_CACHE_POINT)))
         if volatile:
             blocks.append({"type": "text", "text": _after(blocks, volatile)})
-        return SystemMessage(content=blocks) if blocks else None
+        return [SystemMessage(content=blocks)] if blocks else []
 
     def tools(self, tools: list[dict[str, Any]]) -> list[Any]:
         if not self._cache_tools or not tools:
@@ -115,23 +128,49 @@ class BedrockCacheStrategy(CacheStrategy):
 
 
 class OpenAICacheStrategy(CacheStrategy):
-    """OpenAI caches automatically; the request only names its cache
-    (``prompt_cache_key``) and, where supported, how long to keep it."""
+    """OpenAI caches automatically; the request names its cache
+    (``prompt_cache_key``), where supported how long to keep it, and on GPT-5.6
+    and later where the shared prefix ends.
+
+    That breakpoint closes a system message of its own: on Chat Completions a
+    change later in the same message misses the cache even past an explicit
+    breakpoint, so the volatile block is a second system message."""
 
     name = "openai"
 
-    def __init__(self, call_kwargs: dict[str, str]) -> None:
+    def __init__(self, call_kwargs: dict[str, str], *, breakpoint_: bool = False) -> None:
         self._call_kwargs = dict(call_kwargs)
-        self.sent_params = frozenset(self._call_kwargs)
+        self._breakpoint = breakpoint_
+        self.sent_params = frozenset(self._call_kwargs) | (
+            {OPENAI_BREAKPOINT_PARAM} if breakpoint_ else frozenset()
+        )
+
+    def system(self, stable: str, volatile: str) -> list[SystemMessage]:
+        if not self._breakpoint or not stable:
+            return super().system(stable, volatile)
+        marked = SystemMessage(content=[
+            {"type": "text", "text": stable, OPENAI_BREAKPOINT_PARAM: dict(OPENAI_BREAKPOINT)},
+        ])
+        return [marked, SystemMessage(content=volatile)] if volatile else [marked]
 
     def finalize(self, messages: list[BaseMessage]) -> tuple[list[BaseMessage], dict[str, Any]]:
         return messages, dict(self._call_kwargs)
 
+    def without(self, params: frozenset[str]) -> CacheStrategy:
+        if "*" in params:
+            return NoCacheStrategy()
+        if not params & self.sent_params:
+            return self
+        kwargs = {name: value for name, value in self._call_kwargs.items() if name not in params}
+        marked = self._breakpoint and OPENAI_BREAKPOINT_PARAM not in params
+        return OpenAICacheStrategy(kwargs, breakpoint_=marked) if kwargs or marked else NoCacheStrategy()
+
 
 def without_cache_markers(messages: list[BaseMessage]) -> list[BaseMessage]:
     """``messages`` with every cache marker a strategy put on them removed: the
-    ``cache_control`` on a block and the Converse ``cachePoint`` blocks. What a
-    request sends once its provider has refused a marker."""
+    ``cache_control`` and ``prompt_cache_breakpoint`` on a block and the
+    Converse ``cachePoint`` blocks. What a request sends once its provider has
+    refused a marker."""
     stripped: list[BaseMessage] = []
     for message in messages:
         content = message.content
@@ -139,7 +178,8 @@ def without_cache_markers(messages: list[BaseMessage]) -> list[BaseMessage]:
             stripped.append(message)
             continue
         blocks = [
-            {key: value for key, value in block.items() if key != ANTHROPIC_PARAM} if isinstance(block, dict) else block
+            {key: value for key, value in block.items() if key not in _BLOCK_MARKERS} if isinstance(block, dict)
+            else block
             for block in content
             if not (isinstance(block, dict) and "cachePoint" in block)
         ]
@@ -148,7 +188,7 @@ def without_cache_markers(messages: list[BaseMessage]) -> list[BaseMessage]:
 
 
 def _is_marked(block: object) -> bool:
-    return isinstance(block, dict) and (ANTHROPIC_PARAM in block or "cachePoint" in block)
+    return isinstance(block, dict) and (any(marker in block for marker in _BLOCK_MARKERS) or "cachePoint" in block)
 
 
 def _after(blocks: list[dict[str, Any]], text: str) -> str:

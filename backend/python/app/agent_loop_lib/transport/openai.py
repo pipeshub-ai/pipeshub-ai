@@ -59,10 +59,14 @@ from app.agent_loop_lib.transport.openai_responses import (
     responses_usage_fields,
     stop_reason_from_responses,
 )
+from app.agent_loop_lib.transport.prompt_cache import (
+    OPENAI_BREAKPOINT,
+    OPENAI_BREAKPOINT_PARAM,
+)
 from app.agent_loop_lib.transport.provider_conflicts import (
     is_api_shape_conflict,
-    is_prompt_cache_param_conflict,
     is_reasoning_mandatory_conflict,
+    refused_cache_params,
 )
 from app.agent_loop_lib.transport.tool_images import relocated_tool_images
 from app.utils.llm_api_mode_store import LLMApiMode, get_llm_api_mode_store
@@ -85,6 +89,10 @@ _FINISH_REASON_MAP: dict[str | None, StopReason] = {
     "tool_calls": StopReason.TOOL_USE,
     "length": StopReason.MAX_TOKENS,
 }
+
+
+def _marked(block: dict[str, Any]) -> dict[str, Any]:
+    return {**block, OPENAI_BREAKPOINT_PARAM: dict(OPENAI_BREAKPOINT)}
 
 
 @dataclass
@@ -190,7 +198,8 @@ class OpenAITransport(LLMTransport):
         max_retries: int | None = None,
         model_key: str | None = None,
         cache_kwargs: dict[str, str] | None = None,
-        on_cache_rejected: Callable[[], None] | None = None,
+        cache_breakpoint: bool = False,
+        on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
         http_client: Any | None = None,
     ) -> None:
         super().__init__()
@@ -219,7 +228,7 @@ class OpenAITransport(LLMTransport):
         if http_client is not None:
             client_kwargs["http_client"] = http_client
         self._client = _openai.AsyncOpenAI(**client_kwargs)
-        self._init_prompt_cache(cache_kwargs, on_cache_rejected)
+        self._init_prompt_cache(cache_kwargs, cache_breakpoint, on_cache_rejected)
         # Cumulative usage across all calls on this transport instance —
         # diagnostic only; see AnthropicTransport's equivalent fields.
         self.total_input_tokens: int = 0
@@ -232,7 +241,8 @@ class OpenAITransport(LLMTransport):
     @classmethod
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
-        cache_kwargs: dict[str, str] | None = None, on_cache_rejected: Callable[[], None] | None = None,
+        cache_kwargs: dict[str, str] | None = None, cache_breakpoint: bool = False,
+        on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
         http_client: Any | None = None,
     ) -> "OpenAITransport":
         """Build from an already-configured `ChatOpenAI`.
@@ -282,28 +292,39 @@ class OpenAITransport(LLMTransport):
             max_retries=max_retries if isinstance(max_retries, int) else None,
             model_key=model_key,
             cache_kwargs=cache_kwargs,
+            cache_breakpoint=cache_breakpoint,
             on_cache_rejected=on_cache_rejected,
             http_client=http_client,
         )
 
     def _init_prompt_cache(
-        self, cache_kwargs: dict[str, str] | None, on_cache_rejected: Callable[[], None] | None,
+        self, cache_kwargs: dict[str, str] | None, cache_breakpoint: bool,
+        on_cache_rejected: Callable[[frozenset[str]], None] | None,
     ) -> None:
-        # prompt_cache_key / prompt_cache_retention, decided by the caller from
-        # the shared policy (`transport/prompt_cache.py`); dropped for good if
-        # the endpoint rejects them.
+        # prompt_cache_key / prompt_cache_retention, and whether the stable
+        # system block ends in a breakpoint, decided by the caller from the
+        # shared policy (`transport/prompt_cache.py`); each is dropped for good
+        # once the endpoint rejects it.
         self._cache_kwargs: dict[str, str] = dict(cache_kwargs or {})
+        self._cache_breakpoint = cache_breakpoint
         self._on_cache_rejected = on_cache_rejected
 
     def _drop_cache_params(self, exc: Exception) -> bool:
         """Whether `exc` is the endpoint refusing a cache parameter this
-        transport sends; if so, later requests (the retry included) go without."""
-        if not is_prompt_cache_param_conflict(exc, self._cache_kwargs):
+        transport sends; if so, later requests (the retry included) go without
+        the ones it named."""
+        sent = {*self._cache_kwargs, *([OPENAI_BREAKPOINT_PARAM] if self._cache_breakpoint else [])}
+        refused = refused_cache_params(exc, sent)
+        if not refused:
             return False
-        logger.warning("%s: prompt-cache parameters rejected; resending without them: %s", type(self).__name__, exc)
-        self._cache_kwargs = {}
+        logger.warning(
+            "%s: prompt-cache parameters %s rejected; resending without them: %s",
+            type(self).__name__, sorted(refused), exc,
+        )
+        self._cache_kwargs = {name: value for name, value in self._cache_kwargs.items() if name not in refused}
+        self._cache_breakpoint = self._cache_breakpoint and OPENAI_BREAKPOINT_PARAM not in refused
         if self._on_cache_rejected is not None:
-            self._on_cache_rejected()
+            self._on_cache_rejected(refused)
         return True
 
     @property
@@ -405,10 +426,13 @@ class OpenAITransport(LLMTransport):
                 blocks.append({"type": "text", "text": text})
         return blocks
 
-    def _format_messages(self, messages: list[Message], system: str | None) -> list[dict[str, Any]]:
-        formatted: list[dict[str, Any]] = []
-        if system:
-            formatted.append({"role": "system", "content": system})
+    def _format_messages(
+        self, messages: list[Message], system: str | None, system_blocks: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        formatted = [
+            {"role": "system", "content": [_marked({"type": "text", "text": text})] if marked else text}
+            for text, marked in self._system_parts(system, system_blocks)
+        ]
         formatted.extend(self._format_message(m) for m in messages)
         # The images `_format_message` left out of tool results, sent the way
         # the LangChain arm sends them, so this transport loses none.
@@ -416,6 +440,17 @@ class OpenAITransport(LLMTransport):
         if relocated is not None:
             formatted.append(self._format_message(relocated))
         return formatted
+
+    def _system_parts(self, system: str | None, system_blocks: list[str] | None) -> list[tuple[str, bool]]:
+        """The system prompt as one system message per part, each with whether
+        it ends in a cache breakpoint. With one, the stable block is a message
+        of its own: on Chat Completions a change later in the same message
+        misses the cache even past an explicit breakpoint."""
+        if self._cache_breakpoint and system_blocks and system_blocks[0]:
+            volatile = "\n\n".join(block for block in system_blocks[1:] if block)
+            return [(system_blocks[0], True), *([(volatile, False)] if volatile else [])]
+        text = system or "\n\n".join(block for block in system_blocks or [] if block)
+        return [(text, False)] if text else []
 
     # ------------------------------------------------------------------
     # Responses API
@@ -451,11 +486,14 @@ class OpenAITransport(LLMTransport):
         stream: bool,
         tool_choice: ToolChoice | None = None,
     ) -> dict[str, Any]:
-        if system_blocks and not system:
-            system = "\n\n".join(b for b in system_blocks if b)
+        system_items = [
+            {"type": "message", "role": "system",
+             "content": [_marked({"type": "input_text", "text": text})] if marked else text}
+            for text, marked in self._system_parts(system, system_blocks)
+        ]
         kwargs: dict[str, Any] = {
             "model": self._responses_model_id(),
-            "input": format_responses_input(messages, system),
+            "input": [*system_items, *format_responses_input(messages, None)],
             **self._default_request_kwargs(),
             **self._cache_kwargs,
         }
@@ -799,14 +837,10 @@ class OpenAITransport(LLMTransport):
             return await self._complete_responses(
                 messages, tools=tools, system=system, system_blocks=system_blocks, tool_choice=tool_choice,
             )
-        # OpenAI automatic prefix caching benefits from stable-first ordering
-        # alone; join blocks when the caller omitted the already-joined string.
-        if system_blocks and not system:
-            system = "\n\n".join(b for b in system_blocks if b)
         resolved_model = model or self._model
         kwargs: dict[str, Any] = {
             "model": resolved_model,
-            "messages": self._format_messages(messages, system),
+            "messages": self._format_messages(messages, system, system_blocks),
             **self._default_request_kwargs(),
             **self._cache_kwargs,
         }
@@ -900,12 +934,10 @@ class OpenAITransport(LLMTransport):
             ):
                 yield event
             return
-        if system_blocks and not system:
-            system = "\n\n".join(b for b in system_blocks if b)
         resolved_model = model or self._model
         kwargs: dict[str, Any] = {
             "model": resolved_model,
-            "messages": self._format_messages(messages, system),
+            "messages": self._format_messages(messages, system, system_blocks),
             "stream": True,
             "stream_options": {"include_usage": True},
             **self._default_request_kwargs(),

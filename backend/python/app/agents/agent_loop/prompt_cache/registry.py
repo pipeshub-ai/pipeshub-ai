@@ -14,10 +14,10 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.transport.prompt_cache import (
     REJECTED_CACHE_PARAMS,
+    CacheScope,
     PromptCacheSettings,
     anthropic_top_level_allowed,
-    openai_cache_kwargs,
-    routing_key,
+    openai_cache_plan,
 )
 from app.agents.agent_loop.prompt_cache.strategies import (
     AnthropicCacheStrategy,
@@ -81,13 +81,14 @@ def cache_strategy_for(
     *,
     model_name: str = "",
     settings: PromptCacheSettings,
-    routing_key: str,
+    scope: CacheScope,
 ) -> CacheStrategy:
     target = cache_target(chat_model, model_name)
-    if not settings.enabled or REJECTED_CACHE_PARAMS.rejected(target.model, target.base_url):
+    if not settings.enabled:
         return NoCacheStrategy()
+    refused = REJECTED_CACHE_PARAMS.refused(target.model, target.base_url)
     build = _BUILDERS.get(target.family)
-    return build(target, settings, routing_key) if build else NoCacheStrategy()
+    return build(target, settings, scope).without(refused) if build else NoCacheStrategy()
 
 
 def family_cache_strategy(
@@ -101,23 +102,28 @@ def family_cache_strategy(
     """The strategy for a fixed prompt sent once or a few times per record (an
     indexing prompt). Records spread over the org's shards by ``shard_key``, and
     every shard of ``family`` shares that prompt's static prefix."""
-    settings = PromptCacheSettings.from_env()
-    key = routing_key(org_id, shard_key, settings.routing_shards, family=family)
-    return cache_strategy_for(chat_model, model_name=model_name, settings=settings, routing_key=key)
+    return cache_strategy_for(
+        chat_model, model_name=model_name, settings=PromptCacheSettings.from_env(),
+        scope=CacheScope(org_id, shard_key, family),
+    )
 
 
-def forget_cache_params(chat_model: Any, model_name: str = "") -> None:  # noqa: ANN401 - any LangChain chat model
-    """Stop sending cache parameters to this model and endpoint for the life
-    of the process, after the provider refused one."""
+def forget_cache_params(
+    chat_model: Any,  # noqa: ANN401 - any LangChain chat model
+    model_name: str = "",
+    params: frozenset[str] | None = None,
+) -> None:
+    """Stop sending ``params`` (every cache parameter when None) to this model
+    and endpoint for the life of the process, after the provider refused them."""
     target = cache_target(chat_model, model_name)
-    REJECTED_CACHE_PARAMS.record(target.model, target.base_url)
+    REJECTED_CACHE_PARAMS.record(target.model, target.base_url, params)
 
 
-def _anthropic(target: CacheTarget, settings: PromptCacheSettings, _key: str) -> CacheStrategy:
+def _anthropic(target: CacheTarget, settings: PromptCacheSettings, _scope: CacheScope) -> CacheStrategy:
     return AnthropicCacheStrategy(settings.breakpoint, top_level=anthropic_top_level_allowed(target.base_url))
 
 
-def _bedrock(target: CacheTarget, _settings: PromptCacheSettings, _key: str) -> CacheStrategy:
+def _bedrock(target: CacheTarget, _settings: PromptCacheSettings, _scope: CacheScope) -> CacheStrategy:
     if _BEDROCK_CLAUDE.search(target.model):
         return BedrockCacheStrategy(cache_tools=True)
     if _BEDROCK_NOVA.search(target.model):
@@ -125,12 +131,12 @@ def _bedrock(target: CacheTarget, _settings: PromptCacheSettings, _key: str) -> 
     return NoCacheStrategy()
 
 
-def _openai(target: CacheTarget, settings: PromptCacheSettings, key: str) -> CacheStrategy:
-    kwargs = openai_cache_kwargs(model=target.model, base_url=target.base_url, settings=settings, key=key)
-    return OpenAICacheStrategy(kwargs) if kwargs else NoCacheStrategy()
+def _openai(target: CacheTarget, settings: PromptCacheSettings, scope: CacheScope) -> CacheStrategy:
+    plan = openai_cache_plan(model=target.model, base_url=target.base_url, settings=settings, scope=scope)
+    return OpenAICacheStrategy(plan.kwargs, breakpoint_=plan.breakpoint) if plan else NoCacheStrategy()
 
 
-_BUILDERS: dict[str, Callable[[CacheTarget, PromptCacheSettings, str], CacheStrategy]] = {
+_BUILDERS: dict[str, Callable[[CacheTarget, PromptCacheSettings, CacheScope], CacheStrategy]] = {
     "anthropic": _anthropic,
     "bedrock": _bedrock,
     "openai": _openai,

@@ -9,6 +9,7 @@ import pytest
 
 from app.agent_loop_lib.transport.prompt_cache import (
     REJECTED_CACHE_PARAMS,
+    CacheScope,
     PromptCacheSettings,
 )
 from app.agents.agent_loop.prompt_cache import (
@@ -28,7 +29,8 @@ if TYPE_CHECKING:
     from app.agents.agent_loop.prompt_cache import CacheStrategy
 
 ON = PromptCacheSettings()
-KEY = "pipeshub:abc:1"
+SCOPE = CacheScope("org-1", "conv-1")
+KEY = SCOPE.key(ON.routing_shards)
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +41,7 @@ def _clean_rejections() -> Iterator[None]:
 
 
 def _strategy(llm: object, model_name: str = "", settings: PromptCacheSettings = ON) -> CacheStrategy:
-    return cache_strategy_for(llm, model_name=model_name, settings=settings, routing_key=KEY)
+    return cache_strategy_for(llm, model_name=model_name, settings=settings, scope=SCOPE)
 
 
 def _anthropic(base_url: str | None = None) -> BaseChatModel:
@@ -110,8 +112,28 @@ class TestOpenAI:
         assert isinstance(_strategy(_openai(foundry, "gpt-5.4")), OpenAICacheStrategy)
         assert isinstance(_strategy(_openai(foundry, "Llama-4-Maverick")), NoCacheStrategy)
 
-    def test_newer_family_gets_no_retention(self) -> None:
-        assert _strategy(_openai(model="gpt-5.6")).finalize([])[1] == {"prompt_cache_key": KEY}
+    def test_newer_family_gets_a_breakpoint_and_no_retention(self) -> None:
+        strategy = _strategy(_openai(model="gpt-5.6"))
+        # OpenAI routes GPT-5.6 and later by prefix: one key per org.
+        assert strategy.finalize([])[1] == {"prompt_cache_key": SCOPE.key(1)}
+        assert strategy.sent_params == {"prompt_cache_key", "prompt_cache_breakpoint"}
+        assert len(strategy.system("stable", "volatile")) == 2
+
+    def test_azure_gpt_6_keeps_the_sharded_key(self) -> None:
+        strategy = _strategy(_azure(deployment="gpt-6.1-sol"), model_name="gpt-6.1-sol")
+        assert strategy.finalize([])[1] == {"prompt_cache_key": KEY}
+        assert "prompt_cache_breakpoint" in strategy.sent_params
+
+    def test_a_refused_parameter_is_left_out_of_the_next_strategy(self) -> None:
+        REJECTED_CACHE_PARAMS.record("gpt-5.4", None, {"prompt_cache_retention"})
+        assert _strategy(_openai()).finalize([])[1] == {"prompt_cache_key": KEY}
+        REJECTED_CACHE_PARAMS.record("gpt-6.1-sol", "https://acme.openai.azure.com", {"prompt_cache_breakpoint"})
+        strategy = _strategy(_azure(deployment="gpt-6.1-sol"), model_name="gpt-6.1-sol")
+        assert strategy.sent_params == {"prompt_cache_key"}
+
+    def test_everything_refused_means_no_caching(self) -> None:
+        REJECTED_CACHE_PARAMS.record("gpt-5.4", None)
+        assert isinstance(_strategy(_openai()), NoCacheStrategy)
 
 
 class TestBedrock:

@@ -54,7 +54,7 @@ class _Llm:
 
 def _markers(messages: list[BaseMessage]) -> str:
     text = json.dumps([message.content for message in messages])
-    return ",".join(name for name in ("cache_control", "cachePoint") if name in text)
+    return ",".join(name for name in ("cache_control", "cachePoint", "prompt_cache_breakpoint") if name in text)
 
 
 @pytest.fixture(autouse=True)
@@ -137,13 +137,14 @@ async def test_a_refusal_turns_the_whole_cache_off() -> None:
         (BedrockCacheStrategy(cache_tools=False), "ValidationException: 400 extraneous key [cachePoint] is not permitted"),
         (AnthropicCacheStrategy({"type": "ephemeral"}, top_level=False), "Error code: 400 - cache_control: Extra inputs are not permitted"),
         (AnthropicCacheStrategy({"type": "ephemeral"}, top_level=True), "Error code: 400 - cache_control: Extra inputs are not permitted"),
+        (OpenAICacheStrategy(KWARGS, breakpoint_=True), "Error code: 400 - prompt_cache_breakpoint is not supported on this model"),
     ],
-    ids=["bedrock", "anthropic-in-message", "anthropic-top-level"],
+    ids=["bedrock", "anthropic-in-message", "anthropic-top-level", "openai-breakpoint"],
 )
 async def test_a_refused_marker_in_the_messages_is_stripped_too(cache: object, refusal: str) -> None:
     """Bedrock and Anthropic put their markers on the messages, not only in the
     kwargs: the resend and every later call carry none of them."""
-    messages = [cache.system("Classify the document.", ""), HumanMessage(content="q")]
+    messages = [*cache.system("Classify the document.", ""), HumanMessage(content="q")]
     llm = _Llm([_BadRequest(refusal), "not json", '{"value": 4}'])
     recorded: list[str] = []
     assert await _invoke(llm, cache, messages, on_cache_rejected=lambda: recorded.append("x")) == _Answer(value=4)

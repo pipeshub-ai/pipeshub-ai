@@ -652,7 +652,7 @@ class DocumentExtraction(Transformer):
         try:
             with llm_call_site("classify"):
                 parsed_response = await invoke_with_structured_output_and_reflection(
-                    llm, [system, HumanMessage(content=document)], DocumentClassification, prompt_cache=cache,
+                    llm, [*system, HumanMessage(content=document)], DocumentClassification, prompt_cache=cache,
                     # Recorded under the name the strategy was chosen with, so the next record skips it.
                     on_cache_rejected=lambda: forget_cache_params(llm, model_name),
                     raise_call_errors=True,

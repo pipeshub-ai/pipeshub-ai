@@ -64,9 +64,9 @@ from app.agent_loop_lib.transport.provider_conflicts import (
     API_SHAPE_CONFLICT_MARKERS,
     REASONING_MANDATORY_CONFLICT_MARKERS,
     is_api_shape_conflict,
-    is_prompt_cache_param_conflict,
     is_reasoning_mandatory_conflict,
     is_tool_result_image_conflict,
+    refused_cache_params,
 )
 from app.agent_loop_lib.transport.tool_images import has_tool_result_images
 from app.agents.agent_loop.converters import (
@@ -329,8 +329,8 @@ class LangChainTransport(LLMTransport):
         self._llm = chat_model
         self._model = model_name
         # How this provider is asked to cache the tools, the system prompt and
-        # the history (`prompt_cache.cache_strategy_for`). Swapped for
-        # `NoCacheStrategy` if the provider rejects a cache parameter.
+        # the history (`prompt_cache.cache_strategy_for`). Narrowed by
+        # `CacheStrategy.without` if the provider rejects a cache parameter.
         self._cache: CacheStrategy = cache_strategy or NoCacheStrategy()
         self._cache_target = cache_target(chat_model, model_name)
         # Bedrock reports input without cached tokens; every other provider
@@ -486,19 +486,22 @@ class LangChainTransport(LLMTransport):
         """The LangChain messages and call kwargs for one provider call, shaped
         by the cache strategy. Rebuilt for every attempt, so a retry after the
         strategy changed sends what the new one asks for."""
-        system_message = self._cache.system(*prompt)
         converted = self._to_langchain(messages, None, relocate=relocate)
-        return self._cache.finalize([system_message, *converted] if system_message else converted)
+        return self._cache.finalize([*self._cache.system(*prompt), *converted])
 
     def _drop_cache_params(self, exc: Exception) -> bool:
         """Whether `exc` is the provider refusing a cache parameter this request
-        carried. If so, the rest of this run is sent without cache parameters,
+        carried. If so, the rest of this run is sent without the ones it named,
         and so is every later run for this model and endpoint in this process."""
-        if not is_prompt_cache_param_conflict(exc, self._cache.sent_params):
+        refused = refused_cache_params(exc, self._cache.sent_params)
+        if not refused:
             return False
-        logger.warning("LangChainTransport: prompt-cache parameters rejected; resending without them: %s", redact_error_for_log(str(exc)))
-        REJECTED_CACHE_PARAMS.record(self._cache_target.model, self._cache_target.base_url)
-        self._cache = NoCacheStrategy()
+        logger.warning(
+            "LangChainTransport: prompt-cache parameters %s rejected; resending without them: %s",
+            sorted(refused), redact_error_for_log(str(exc)),
+        )
+        REJECTED_CACHE_PARAMS.record(self._cache_target.model, self._cache_target.base_url, refused)
+        self._cache = self._cache.without(refused)
         self._bound_by_tools.clear()
         return True
 
