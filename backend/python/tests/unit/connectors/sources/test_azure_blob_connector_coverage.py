@@ -725,7 +725,7 @@ class TestGetSignedUrl:
     async def test_success(self, azure_connector):
         azure_connector.data_source = MagicMock()
         azure_connector.data_source.generate_blob_sas_url = AsyncMock(
-            return_value=_make_response(True, {"sas_url": "https://blob.url/sas"})
+            return_value=_make_response(True, {"sas_url": "https://blob.url/sas", "expiry": "2026-01-01T00:15:00+00:00"})
         )
         record = MagicMock(
             id="r1", external_record_group_id="container",
@@ -766,7 +766,7 @@ class TestGetSignedUrl:
     async def test_key_without_container_prefix(self, azure_connector):
         azure_connector.data_source = MagicMock()
         azure_connector.data_source.generate_blob_sas_url = AsyncMock(
-            return_value=_make_response(True, {"sas_url": "https://blob.url/sas"})
+            return_value=_make_response(True, {"sas_url": "https://blob.url/sas", "expiry": "2026-01-01T00:15:00+00:00"})
         )
         record = MagicMock(
             id="r1", external_record_group_id="container",
@@ -794,7 +794,7 @@ class TestStreamRecord:
         from fastapi import HTTPException
         record = MagicMock()
         record.is_file = True
-        azure_connector.get_signed_url = AsyncMock(return_value=None)
+        azure_connector._download_url = AsyncMock(return_value=(None, False))
         with pytest.raises(HTTPException):
             await azure_connector.stream_record(record)
 

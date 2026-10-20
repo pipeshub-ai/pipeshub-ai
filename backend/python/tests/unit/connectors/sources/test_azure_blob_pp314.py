@@ -94,7 +94,7 @@ class TestDownloadLinks:
         c = connector()
         c.account_url = "https://acct.blob.core.windows.net"
         c.data_source = MagicMock()
-        c.data_source.generate_blob_sas_url = AsyncMock(return_value=SimpleNamespace(success=True, data={"sas_url": "u"}))
+        c.data_source.generate_blob_sas_url = AsyncMock(return_value=SimpleNamespace(success=True, data={"sas_url": "u", "expiry": "t"}))
 
         await c.get_signed_url(record("x/100%25 #1.txt"))
 
@@ -108,7 +108,7 @@ class TestDownloadLinks:
         c = connector()
         c.account_url = "http://127.0.0.1:10000/devstoreaccount1"
         c.data_source = MagicMock()
-        c.data_source.generate_blob_sas_url = AsyncMock(return_value=SimpleNamespace(success=True, data={"sas_url": "u"}))
+        c.data_source.generate_blob_sas_url = AsyncMock(return_value=SimpleNamespace(success=True, data={"sas_url": "u", "expiry": "t"}))
 
         await c.get_signed_url(record("a.txt"))
 
@@ -492,3 +492,51 @@ class TestReviewFollowUps:
         moved = await TestRenameKeepsIndexing.process(stored)
 
         assert moved.indexing_status != ProgressStatus.COMPLETED.value
+
+
+class TestCodeRabbitFollowUps:
+    """PR #4393 review."""
+
+    @pytest.mark.asyncio
+    async def test_a_reused_connection_string_sas_is_streamed_but_never_handed_out(self) -> None:
+        c = connector()
+        c.data_source = data_source(SAS_ONLY)
+
+        assert await c.get_signed_url(record("a.txt")) is None
+        url, minted = await c._download_url(record("a.txt"))
+        assert url.startswith("https://acct.blob.core.windows.net/docs/a.txt?") and not minted
+
+    @pytest.mark.asyncio
+    async def test_a_rename_to_another_file_type_is_indexed_again(self) -> None:
+        stored = TestRenameKeepsIndexing.stored(recordName="a.md", mimeType="text/markdown")
+
+        moved = await TestRenameKeepsIndexing.process(stored)
+
+        assert moved.indexing_status != ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_each_listing_page_takes_a_rate_limit_token(self) -> None:
+        from azure.core.async_paging import AsyncItemPaged, AsyncList
+
+        pages = [["a", "b"], ["c"]]
+
+        async def get_next(token: str | None) -> int:
+            return int(token or 0)
+
+        async def extract(i: int) -> tuple[str | None, AsyncList]:
+            return (str(i + 1) if i + 1 < len(pages) else None), AsyncList(pages[i])
+        c = connector()
+        tokens = []
+
+        class Guard:
+            async def __aenter__(self) -> None:
+                tokens.append(1)
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+        c._resilience, c._resilience_loaded = SimpleNamespace(guard=Guard), True
+
+        blobs = [b async for b in c._paced(AsyncItemPaged(get_next, extract))]
+
+        assert blobs == ["a", "b", "c"]
+        assert len(tokens) == 3  # two pages, then the call that finds the listing done

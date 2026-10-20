@@ -9,7 +9,7 @@ import asyncio
 import base64
 import mimetypes
 import uuid
-from collections.abc import Container, Iterable
+from collections.abc import AsyncIterator, Container, Iterable
 from datetime import datetime, timedelta, timezone
 from logging import Logger
 from typing import TYPE_CHECKING, Any
@@ -18,6 +18,7 @@ from urllib.parse import quote
 if TYPE_CHECKING:
     from azure.storage.blob import BlobProperties  # type: ignore[import-untyped]
 
+from azure.core.async_paging import AsyncItemPaged  # type: ignore[import-untyped]
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     Connectors,
@@ -1109,117 +1110,113 @@ class AzureBlobConnector(BaseConnector):
         unjudged = False
 
         try:
-            async with self.resilience.guard():
-                response = await self.data_source.list_blobs(
-                    container_name=container_name,
-                    prefix=prefix or None,
-                    # ADLS Gen2 marks directories only in metadata (hdi_isfolder).
-                    include=["metadata"],
-                )
+            response = await self.data_source.list_blobs(
+                container_name=container_name,
+                prefix=prefix or None,
+                # ADLS Gen2 marks directories only in metadata (hdi_isfolder).
+                include=["metadata"],
+            )
 
-                if not response.success:
-                    raise ConnectionError(response.error or "Unknown error")
+            if not response.success:
+                raise ConnectionError(response.error or "Unknown error")
 
-                blobs_iterator = response.data
-                if blobs_iterator is None:
-                    self.logger.info(f"No blobs found in container {container_name}")
-                    return listed, False
+            if response.data is None:
+                self.logger.info(f"No blobs found in container {container_name}")
+                return listed, False
 
-                # Azure SDK returns an AsyncItemPaged object which handles pagination internally.
-                # We iterate directly over it using async for.
-                async for blob in blobs_iterator:
-                    obj_timestamp_ms = None
-                    judged = False
-                    try:
-                        blob_count += 1
-                        # Convert BlobProperties to dict for consistent handling
-                        blob_dict = self._blob_properties_to_dict(blob)
-                        blob_name = blob_dict.get("name", "")
-                        if not blob_name:
-                            continue
-
-                        if self._is_folder_blob(blob_dict):
-                            # A folder marker ('a/b/') or an ADLS Gen2 directory ('a/b') is the same
-                            # folder record that the paths of its files imply (container/a/b).
-                            folder = blob_name.strip("/")
-                            if folder and scope.includes_folder(f"{folder}/"):
-                                listed |= listed_record_ids(container_name, folder)
-                                judged = True
-                                # An ADLS directory unchanged since the last sync already has its folder.
-                                if not (last_sync_time and not self._pass_date_filters(
-                                    blob_dict, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
-                                )):
-                                    await self._ensure_parent_folders_exist(
-                                        container_name, [*get_folder_path_segments_from_blob_name(folder), folder]
-                                    )
-                            continue
-
-                        if not scope.includes_file(blob_name):
-                            continue
-
-                        # Check extension filter
-                        if not self._pass_extension_filter(blob_name):
-                            self.logger.debug(
-                                f"Skipping {blob_name}: does not pass extension filter"
-                            )
-                            continue
-
-                        if not self._pass_date_filters(blob_dict, *user_date_filters):
-                            continue
-
-                        # Kept before processing: a blob that fails to process still exists.
-                        listed |= listed_record_ids(container_name, blob_name)
-                        judged = True
-
-                        if last_sync_time and not self._pass_date_filters(
-                            blob_dict, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
-                        ):
-                            if f"{container_name}/{blob_name.lstrip('/')}" not in recorded:
-                                # Its content may be held by another key's record; decided once every prefix is listed.
-                                unrecorded.append(blob_dict)
-                            continue
-
-                        # Track max timestamp for incremental sync
-                        last_modified = blob_dict.get("last_modified")
-                        if last_modified:
-                            if isinstance(last_modified, datetime):
-                                obj_timestamp_ms = int(last_modified.timestamp() * 1000)
-                                max_timestamp = max(max_timestamp, obj_timestamp_ms)
-                            elif isinstance(last_modified, str):
-                                try:
-                                    obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
-                                    obj_timestamp_ms = int(obj_dt.timestamp() * 1000)
-                                    max_timestamp = max(max_timestamp, obj_timestamp_ms)
-                                except ValueError:
-                                    pass
-
-                        # Ensure folder hierarchy exists from blob path (Azure Blob has no folder objects)
-                        path_segments = get_folder_path_segments_from_blob_name(blob_name)
-                        if path_segments:
-                            await self._ensure_parent_folders_exist(container_name, path_segments)
-
-                        record, permissions = await self._process_azure_blob(
-                            blob_dict, container_name, recorded
-                        )
-                        if record:
-                            batch_records.append((record, permissions))
-
-                            if len(batch_records) >= self.batch_size:
-                                await self._save(batch_records)
-                                batch_records = []
-                        elif blob_name.lstrip("/"):
-                            # The processor returns no record for a real name only on an error.
-                            failed.add(obj_timestamp_ms)
-                    except Exception as e:
-                        error_blob_name = blob_dict.get("name", "unknown") if "blob_dict" in locals() else "unknown"
-                        self.logger.error(
-                            f"Error processing blob {error_blob_name}: {e}",
-                            exc_info=True,
-                        )
-                        failed.add(obj_timestamp_ms)
-                        # An object that errored before it was judged may still be kept.
-                        unjudged = unjudged or not judged
+            async for blob in self._paced(response.data):
+                obj_timestamp_ms = None
+                judged = False
+                try:
+                    blob_count += 1
+                    # Convert BlobProperties to dict for consistent handling
+                    blob_dict = self._blob_properties_to_dict(blob)
+                    blob_name = blob_dict.get("name", "")
+                    if not blob_name:
                         continue
+
+                    if self._is_folder_blob(blob_dict):
+                        # A folder marker ('a/b/') or an ADLS Gen2 directory ('a/b') is the same
+                        # folder record that the paths of its files imply (container/a/b).
+                        folder = blob_name.strip("/")
+                        if folder and scope.includes_folder(f"{folder}/"):
+                            listed |= listed_record_ids(container_name, folder)
+                            judged = True
+                            # An ADLS directory unchanged since the last sync already has its folder.
+                            if not (last_sync_time and not self._pass_date_filters(
+                                blob_dict, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
+                            )):
+                                await self._ensure_parent_folders_exist(
+                                    container_name, [*get_folder_path_segments_from_blob_name(folder), folder]
+                                )
+                        continue
+
+                    if not scope.includes_file(blob_name):
+                        continue
+
+                    # Check extension filter
+                    if not self._pass_extension_filter(blob_name):
+                        self.logger.debug(
+                            f"Skipping {blob_name}: does not pass extension filter"
+                        )
+                        continue
+
+                    if not self._pass_date_filters(blob_dict, *user_date_filters):
+                        continue
+
+                    # Kept before processing: a blob that fails to process still exists.
+                    listed |= listed_record_ids(container_name, blob_name)
+                    judged = True
+
+                    if last_sync_time and not self._pass_date_filters(
+                        blob_dict, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
+                    ):
+                        if f"{container_name}/{blob_name.lstrip('/')}" not in recorded:
+                            # Its content may be held by another key's record; decided once every prefix is listed.
+                            unrecorded.append(blob_dict)
+                        continue
+
+                    # Track max timestamp for incremental sync
+                    last_modified = blob_dict.get("last_modified")
+                    if last_modified:
+                        if isinstance(last_modified, datetime):
+                            obj_timestamp_ms = int(last_modified.timestamp() * 1000)
+                            max_timestamp = max(max_timestamp, obj_timestamp_ms)
+                        elif isinstance(last_modified, str):
+                            try:
+                                obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
+                                obj_timestamp_ms = int(obj_dt.timestamp() * 1000)
+                                max_timestamp = max(max_timestamp, obj_timestamp_ms)
+                            except ValueError:
+                                pass
+
+                    # Ensure folder hierarchy exists from blob path (Azure Blob has no folder objects)
+                    path_segments = get_folder_path_segments_from_blob_name(blob_name)
+                    if path_segments:
+                        await self._ensure_parent_folders_exist(container_name, path_segments)
+
+                    record, permissions = await self._process_azure_blob(
+                        blob_dict, container_name, recorded
+                    )
+                    if record:
+                        batch_records.append((record, permissions))
+
+                        if len(batch_records) >= self.batch_size:
+                            await self._save(batch_records)
+                            batch_records = []
+                    elif blob_name.lstrip("/"):
+                        # The processor returns no record for a real name only on an error.
+                        failed.add(obj_timestamp_ms)
+                except Exception as e:
+                    error_blob_name = blob_dict.get("name", "unknown") if "blob_dict" in locals() else "unknown"
+                    self.logger.error(
+                        f"Error processing blob {error_blob_name}: {e}",
+                        exc_info=True,
+                    )
+                    failed.add(obj_timestamp_ms)
+                    # An object that errored before it was judged may still be kept.
+                    unjudged = unjudged or not judged
+                    continue
 
             self.logger.info(f"Processed {blob_count} blobs from container {container_name}")
 
@@ -1571,6 +1568,22 @@ class AzureBlobConnector(BaseConnector):
             self.logger.error(f"Error processing Azure blob: {e}", exc_info=True)
             return None, []
 
+    async def _paced(self, blobs: "AsyncItemPaged | AsyncIterator[dict]") -> AsyncIterator["BlobProperties | dict"]:
+        """Blobs of an SDK listing, taking a rate-limit token for each page it requests."""
+        if not isinstance(blobs, AsyncItemPaged):
+            async for blob in blobs:
+                yield blob
+            return
+        pages = blobs.by_page()
+        while True:
+            async with self.resilience.guard():
+                try:
+                    page = await pages.__anext__()
+                except StopAsyncIteration:
+                    return
+            async for blob in page:
+                yield blob
+
     async def _still_in_container(self, record: Record) -> bool:
         """Whether ``record``'s blob is still listed. A check that fails counts as yes:
         taking a copy for a move would lose the original's record."""
@@ -1649,7 +1662,13 @@ class AzureBlobConnector(BaseConnector):
         return None
 
     async def get_signed_url(self, record: Record) -> str | None:
-        """Generate a SAS URL for an Azure blob."""
+        """A short-lived SAS URL for one blob, or None when the credentials can only reuse
+        the connection string's own SAS (its lifetime and scope are the admin's)."""
+        url, minted = await self._download_url(record)
+        return url if minted else None
+
+    async def _download_url(self, record: Record) -> tuple[str | None, bool]:
+        """A URL that reads the blob, and whether it is a SAS minted here (15 minutes, this blob)."""
         if not self.data_source:
             raise connector_not_ready(self.display_name)
         try:
@@ -1691,7 +1710,7 @@ class AzureBlobConnector(BaseConnector):
             )
 
             if response.success and response.data:
-                return response.data.get("sas_url")
+                return response.data.get("sas_url"), response.data.get("expiry") is not None
 
             # A failure here means the credential can't sign (no account key, no
             # Entra ID delegation, no SAS) — the connector is misconfigured, the blob is fine.
@@ -1716,7 +1735,8 @@ class AzureBlobConnector(BaseConnector):
                 detail="Cannot stream folder content",
             )
 
-        signed_url = await self.get_signed_url(record)
+        # Streamed server-side, so a reused connection-string SAS never leaves PipesHub.
+        signed_url, _ = await self._download_url(record)
         if not signed_url:
             raise not_found_at_source(self.display_name)
 

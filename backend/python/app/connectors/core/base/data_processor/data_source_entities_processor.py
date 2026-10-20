@@ -2479,10 +2479,11 @@ class DataSourceEntitiesProcessor:
                 and record.external_revision_id == same_id.get("externalRevisionId")
                 # A move to another group must reindex: the vectors carry the group ids.
                 and record.external_record_group_id == same_id.get("externalGroupId")
+                # A rename to another file type needs a new parse of the same bytes.
+                and not self._file_type_changed(record, renamed := Record.from_arango_base_record(same_id))
             ):
                 # A move or rename that kept its record id and content is already indexed;
                 # its vectors stay keyed by the stored virtualRecordId.
-                renamed = Record.from_arango_base_record(same_id)
                 self._preserve_indexing_state(record, renamed)
                 record.virtual_record_id = record.virtual_record_id or renamed.virtual_record_id
             elif publishes_event:

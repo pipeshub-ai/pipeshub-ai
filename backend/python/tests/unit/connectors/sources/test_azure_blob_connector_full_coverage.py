@@ -1205,7 +1205,7 @@ class TestGetSignedUrlExtended:
     async def test_url_encoded_blob_name(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.generate_blob_sas_url = AsyncMock(
-            return_value=_resp(True, {"sas_url": "https://sas.url"})
+            return_value=_resp(True, {"sas_url": "https://sas.url", "expiry": "2026-01-01T00:15:00+00:00"})
         )
         record = MagicMock(
             id="r1",
@@ -1223,7 +1223,7 @@ class TestStreamRecordExtended:
     @patch("app.connectors.sources.azure_blob.connector.stream_content")
     async def test_success(self, mock_stream, mock_create, connector):
         mock_create.return_value = MagicMock()
-        connector.get_signed_url = AsyncMock(return_value="https://sas.url")
+        connector._download_url = AsyncMock(return_value=("https://sas.url", True))
         record = MagicMock(spec=FileRecord)
         record.is_file = True
         record.id = "r1"
@@ -1234,7 +1234,7 @@ class TestStreamRecordExtended:
 
     @pytest.mark.asyncio
     async def test_no_mime_type(self, connector):
-        connector.get_signed_url = AsyncMock(return_value="https://sas.url")
+        connector._download_url = AsyncMock(return_value=("https://sas.url", True))
         record = MagicMock(spec=FileRecord)
         record.is_file = True
         record.id = "r1"
