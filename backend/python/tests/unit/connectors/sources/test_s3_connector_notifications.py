@@ -78,8 +78,9 @@ async def test_s3_iam_role_sts_access_denied_raises_connector_auth_error(
     mock_data_store_provider,
 ):
     """A role the base key cannot assume (bad ARN or wrong external ID) surfaces as CONNECTOR_AUTH_ERROR."""
-    import aioboto3
     from botocore.exceptions import ClientError
+
+    from app.sources.client.s3 import s3 as s3_module
 
     from app.services.notification.types import NotificationType
 
@@ -101,13 +102,13 @@ async def test_s3_iam_role_sts_access_denied_raises_connector_auth_error(
     sts.__aenter__ = AsyncMock(return_value=sts)
     sts.__aexit__ = AsyncMock(return_value=False)
     sts.assume_role = AsyncMock(side_effect=denied)
-    real_session = aioboto3.Session
+    real_create = s3_module.create_aio_session
 
-    def session_factory(*args, **kwargs):
-        if "botocore_session" in kwargs:
-            return real_session(*args, **kwargs)
+    def session_factory(access_key_id, secret_access_key, region_name):
+        if not access_key_id:
+            return real_create(access_key_id, secret_access_key, region_name)
         base = MagicMock()
-        base.client.return_value = sts
+        base.create_client.return_value = sts
         return base
 
     with patch("app.connectors.sources.s3.connector.S3App"):
@@ -122,7 +123,7 @@ async def test_s3_iam_role_sts_access_denied_raises_connector_auth_error(
         )
     connector.notify = AsyncMock()
 
-    with patch("app.sources.client.s3.s3.aioboto3.Session", side_effect=session_factory), patch(
+    with patch("app.sources.client.s3.s3.create_aio_session", side_effect=session_factory), patch(
         "app.connectors.sources.s3.connector.load_connector_filters",
         AsyncMock(return_value=(MagicMock(), MagicMock())),
     ):

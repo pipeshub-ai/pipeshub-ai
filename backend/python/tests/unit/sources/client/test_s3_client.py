@@ -363,21 +363,21 @@ class _FakeSTS:
 
 def _patch_sts(fake_sts):
     """Route only the base-key session (the STS caller) to the fake; keep real sessions otherwise."""
-    import aioboto3
+    from app.sources.client.s3 import s3 as s3_module
 
-    real_session = aioboto3.Session
+    real_create = s3_module.create_aio_session
 
-    def factory(*args, **kwargs):
-        if "botocore_session" in kwargs:
-            return real_session(*args, **kwargs)
+    def factory(access_key_id, secret_access_key, region_name):
+        if not access_key_id:
+            return real_create(access_key_id, secret_access_key, region_name)
         base = MagicMock()
-        base.base_kwargs = kwargs
-        base.client.return_value = fake_sts
+        base.base_args = (access_key_id, secret_access_key, region_name)
+        base.create_client.return_value = fake_sts
         factory.base_sessions.append(base)
         return base
 
     factory.base_sessions = []
-    return patch("app.sources.client.s3.s3.aioboto3.Session", side_effect=factory), factory
+    return patch("app.sources.client.s3.s3.create_aio_session", side_effect=factory), factory
 
 
 class TestS3AssumeRole:
@@ -412,10 +412,10 @@ class TestS3AssumeRole:
             "ExternalId": "ext-123",
         }]
         # STS is called with the base key only; S3 calls sign with the temporary credentials.
-        assert factory.base_sessions[0].base_kwargs["aws_access_key_id"] == "AKIDBASE"
-        assert factory.base_sessions[0].client.call_args.args == ("sts",)
+        assert factory.base_sessions[0].base_args[0] == "AKIDBASE"
+        assert factory.base_sessions[0].create_client.call_args.args == ("sts",)
         assert (frozen.access_key, frozen.secret_key, frozen.token) == ("ASIA1", "TMPSECRET1", "TOKEN1")
-        assert session.region_name == "eu-west-1"
+        assert session.get_config_variable("region") == "eu-west-1"
 
     @pytest.mark.asyncio
     async def test_assume_role_without_external_id_omits_it(self, logger, mock_config_service):

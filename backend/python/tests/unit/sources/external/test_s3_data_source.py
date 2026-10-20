@@ -36,7 +36,7 @@ class _FakeSession:
         self.opened += 1
         yield _FakeBotoClient(self.error_status)
 
-    def client(self, *args: object, **kwargs: object) -> AbstractAsyncContextManager[_FakeBotoClient]:
+    def create_client(self, *args: object, **kwargs: object) -> AbstractAsyncContextManager[_FakeBotoClient]:
         return self._client()
 
 
