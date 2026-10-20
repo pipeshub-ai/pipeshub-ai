@@ -349,8 +349,11 @@ class _Scripted:
         return dict(answer)
 
 
-async def _scripted(index: _Scripted) -> tuple[int, dict[str, Any]]:
-    return await _search(_quarter(limit=3), index)  # type: ignore[arg-type]
+async def _scripted(index: _Scripted, body: SearchQuery | None = None) -> tuple[int, dict[str, Any]]:
+    return await _search(body or _quarter(limit=3), index)  # type: ignore[arg-type]
+
+
+_CAVEAT = "Some periods could not be searched in full, so finding nothing does not show the information is missing."
 
 
 class TestWhenNothingIsFound:
@@ -412,3 +415,74 @@ class TestWhenNothingIsFound:
         assert status == 200
         assert body["timeline"]["notes"] == []
         assert body["message"] == "No results found in any period."
+
+
+class TestAFailureIsNeverReportedAsNoRecords:
+    """One search answers 404 and another fails, nothing is found: the
+    failure is what the caller gets, whichever search it came from."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("code", [422, 500, 503])
+    async def test_a_months_failure_wins_over_the_whole_spans_404(self, code: int) -> None:
+        april = _ms("2025-04-01")
+
+        def period(time_range: dict[str, int]) -> dict[str, Any]:
+            return _status(code, "failed") if time_range["source_created_after_ms"] == april else _status(404)
+
+        status, body = await _scripted(_Scripted(whole=_status(404, "No accessible documents"), period=period))
+
+        assert status == code
+        assert body["message"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_with_no_failure_the_whole_spans_own_404_is_passed_on(self) -> None:
+        status, body = await _scripted(_Scripted(whole=_status(404, "whole span"), period=_status(404, "a month")))
+
+        assert status == 404
+        assert body["message"] == "whole span"
+
+    @pytest.mark.asyncio
+    async def test_a_raised_whole_span_search_beside_an_empty_and_a_404_month_is_not_a_negative(self) -> None:
+        april = _ms("2025-04-01")
+
+        def period(time_range: dict[str, int]) -> dict[str, Any]:
+            return _status(404) if time_range["source_created_after_ms"] == april else _status(200, "No results")
+
+        status, body = await _scripted(_Scripted(whole=RuntimeError("down"), period=period))
+
+        assert status == 200
+        assert _CAVEAT in body["timeline"]["notes"]
+
+
+class TestTheWholeSpanSearchCountsForTheCaveat:
+    """With no start, only the whole-span search covers undated records and
+    those older than the year a timeline reaches back."""
+
+    _NO_START = SearchQuery(
+        query="rollout", rewriteQuery=False, timeline="created", createdBefore="2025-05-31", limit=3,
+    )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("whole", [
+        _status(503, "vector store unavailable"),
+        {**_status(200, "No results"), "searchIncomplete": "Only part of the index was searched."},
+    ])
+    async def test_a_failed_or_partial_whole_span_search_keeps_empty_periods_from_meaning_missing(
+        self, whole: dict[str, Any],
+    ) -> None:
+        status, body = await _scripted(
+            _Scripted(whole=whole, period=_status(200, "No results")), self._NO_START,
+        )
+
+        assert status == 200
+        assert _CAVEAT in body["timeline"]["notes"]
+        assert body["message"] == f"No results found in any period. {_CAVEAT}"
+
+    @pytest.mark.asyncio
+    async def test_a_whole_span_search_that_ran_in_full_adds_no_caveat(self) -> None:
+        status, body = await _scripted(
+            _Scripted(whole=_status(200, "No results"), period=_status(200, "No results")), self._NO_START,
+        )
+
+        assert status == 200
+        assert _CAVEAT not in body["timeline"]["notes"]

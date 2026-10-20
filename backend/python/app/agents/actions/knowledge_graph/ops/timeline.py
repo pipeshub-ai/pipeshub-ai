@@ -591,10 +591,11 @@ async def timeline_search_response(
     ``searchResults`` come period by period, oldest first, and by record date
     within a period; each hit carries ``timelinePeriod``, its index in
     ``timeline.periods``. When nothing was found and no search succeeded,
-    the whole-span search's own response is returned, as a plain search
-    would have returned it (a refused filter, no accessible records, an
-    index that is down); if that search raised, a period's failure is
-    returned instead. None when there is no failure to pass on.
+    a failure (a refused filter, an index that is down) is returned in
+    preference to "no accessible records": the whole-span search's first,
+    then any period's. Otherwise the whole-span search's own response, as a
+    plain search would have returned it. None when every search raised and
+    none failed with a response.
     """
     if end_ms is not None:
         end_ms = min(end_ms, _now_ms())
@@ -611,20 +612,29 @@ async def timeline_search_response(
         recorded, start_ms, end_ms, date_field, log,
         period_limit=period_limit, on_whole_span=whole.append,
     )
+    span_answer = whole[0] if whole and isinstance(whole[0], dict) else None
     found = isinstance(collected, _Collected) and any(h.results for h in collected.hits)
     if not found and not any(r.get("status_code", 200) == 200 for r in responses):
-        # The whole-span search is the plain search over the span, so its
-        # answer is the one a plain search would have given. The period
-        # searches run beside it, and an empty month's quick 404 must not
-        # stand in for its slower 503 or 422.
-        if whole and isinstance(whole[0], dict):
-            return whole[0]
-        return next(
-            (r for r in responses if r.get("status_code") in _FAILED_SEARCH_STATUS_CODES), None,
-        )
+        # A failure wins over "no accessible records": a 404 from any search
+        # is a negative only while every search ran. The whole-span search's
+        # failure first, being the plain search over the span; then any
+        # period's, whichever finished first. With no failure, the whole-span
+        # search's own answer, as a plain search would have given it.
+        def hard(r: dict[str, Any] | None) -> bool:
+            return r is not None and r.get("status_code") in _FAILED_SEARCH_STATUS_CODES
+
+        failure = span_answer if hard(span_answer) else next(filter(hard, responses), None)
+        return failure or span_answer
     if isinstance(collected, str):
         return None
-    return _api_response(collected, responses, date_field, start_given=start_ms is not None)
+    # The whole-span search alone covers records with no source date and,
+    # with no start, those before the year a timeline reaches back; if it
+    # failed or reached part of the index, empty periods are not a negative.
+    whole_partial = span_answer is None or _failed(span_answer, log) or bool(span_answer.get("searchIncomplete"))
+    return _api_response(
+        collected, responses, date_field,
+        start_given=start_ms is not None, whole_partial=whole_partial,
+    )
 
 
 def _api_response(
@@ -633,6 +643,7 @@ def _api_response(
     date_field: str,
     *,
     start_given: bool,
+    whole_partial: bool = False,
 ) -> dict[str, Any]:
     search_results: list[dict[str, Any]] = []
     record_map: dict[str, Any] = {}
@@ -681,7 +692,7 @@ def _api_response(
 
     notes: list[str] = []
     caveat = None
-    if not search_results and any(h.failed or h.incomplete for h in collected.hits):
+    if not search_results and (whole_partial or any(h.failed or h.incomplete for h in collected.hits)):
         caveat = (
             "Some periods could not be searched in full, so finding nothing does not "
             "show the information is missing."
