@@ -586,12 +586,10 @@ class S3CompatibleBaseConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(record_groups)
             self.logger.info(f"Created {len(record_groups)} record group(s) for buckets")
 
-    def _get_date_filters(self) -> tuple[int | None, int | None, int | None, int | None]:
-        """Extract date filter values from sync_filters."""
+    def _get_date_filters(self) -> tuple[int | None, int | None]:
+        """The modified date bounds from sync_filters; S3 lists no creation time, so there is no created filter."""
         modified_after_ms: int | None = None
         modified_before_ms: int | None = None
-        created_after_ms: int | None = None
-        created_before_ms: int | None = None
 
         modified_date_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
         if modified_date_filter and not modified_date_filter.is_empty():
@@ -605,27 +603,13 @@ class S3CompatibleBaseConnector(BaseConnector):
                 modified_before_ms = int(before_dt.timestamp() * 1000)
                 self.logger.info(f"Applying modified date filter: before {before_dt}")
 
-        created_date_filter = self.sync_filters.get(SyncFilterKey.CREATED)
-        if created_date_filter and not created_date_filter.is_empty():
-            after_iso, before_iso = created_date_filter.get_datetime_iso()
-            if after_iso:
-                after_dt = datetime.fromisoformat(after_iso).replace(tzinfo=timezone.utc)
-                created_after_ms = int(after_dt.timestamp() * 1000)
-                self.logger.info(f"Applying created date filter: after {after_dt}")
-            if before_iso:
-                before_dt = datetime.fromisoformat(before_iso).replace(tzinfo=timezone.utc)
-                created_before_ms = int(before_dt.timestamp() * 1000)
-                self.logger.info(f"Applying created date filter: before {before_dt}")
-
-        return modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
+        return modified_after_ms, modified_before_ms
 
     def _pass_date_filters(
         self,
         obj: dict,
         modified_after_ms: int | None = None,
         modified_before_ms: int | None = None,
-        created_after_ms: int | None = None,
-        created_before_ms: int | None = None
     ) -> bool:
         """Returns True if S3 object PASSES date filters (should be kept)."""
         key = obj.get("Key", "")
@@ -633,7 +617,7 @@ class S3CompatibleBaseConnector(BaseConnector):
         if is_folder:
             return True
 
-        if not any([modified_after_ms, modified_before_ms, created_after_ms, created_before_ms]):
+        if not any([modified_after_ms, modified_before_ms]):
             return True
 
         last_modified = obj.get("LastModified")
@@ -649,13 +633,6 @@ class S3CompatibleBaseConnector(BaseConnector):
             return False
         if modified_before_ms and obj_timestamp_ms > modified_before_ms:
             self.logger.debug(f"Skipping {key}: modified {obj_timestamp_ms} after cutoff {modified_before_ms}")
-            return False
-
-        if created_after_ms and obj_timestamp_ms < created_after_ms:
-            self.logger.debug(f"Skipping {key}: created {obj_timestamp_ms} before cutoff {created_after_ms}")
-            return False
-        if created_before_ms and obj_timestamp_ms > created_before_ms:
-            self.logger.debug(f"Skipping {key}: created {obj_timestamp_ms} after cutoff {created_before_ms}")
             return False
 
         return True
@@ -783,7 +760,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             )
 
         user_date_filters = self._get_date_filters()
-        modified_after_ms, modified_before_ms, created_after_ms, created_before_ms = user_date_filters
+        modified_after_ms, modified_before_ms = user_date_filters
 
         # Each listed prefix keeps its own continuation token and last sync time.
         sync_point_key = generate_record_sync_point_key(
@@ -891,9 +868,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                             listed |= listed_record_ids(bucket_name, key)
                             judged = True
 
-                            if last_sync_time and not self._pass_date_filters(
-                                obj, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
-                            ):
+                            if last_sync_time and not self._pass_date_filters(obj, modified_after_ms, modified_before_ms):
                                 if not is_folder and f"{bucket_name}/{key.lstrip('/')}" not in recorded:
                                     # Its content may be held by another key's record; decided once every prefix is listed.
                                     unrecorded.append(obj)

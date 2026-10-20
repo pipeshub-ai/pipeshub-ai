@@ -244,45 +244,35 @@ class TestS3DateFilters:
     def test_get_date_filters_empty(self, s3_connector):
         from app.connectors.core.registry.filters import FilterCollection
         s3_connector.sync_filters = FilterCollection()
-        ma, mb, ca, cb = s3_connector._get_date_filters()
-        assert all(x is None for x in (ma, mb, ca, cb))
+        ma, mb = s3_connector._get_date_filters()
+        assert all(x is None for x in (ma, mb))
 
     def test_pass_date_filters_folder(self, s3_connector):
-        assert s3_connector._pass_date_filters({"Key": "folder/"}, 100, None, None, None) is True
+        assert s3_connector._pass_date_filters({"Key": "folder/"}, 100, None) is True
 
     def test_pass_date_filters_no_filters(self, s3_connector):
-        assert s3_connector._pass_date_filters({"Key": "file.txt"}, None, None, None, None) is True
+        assert s3_connector._pass_date_filters({"Key": "file.txt"}, None, None) is True
 
     def test_pass_date_filters_no_last_modified(self, s3_connector):
-        assert s3_connector._pass_date_filters({"Key": "file.txt"}, 100, None, None, None) is True
+        assert s3_connector._pass_date_filters({"Key": "file.txt"}, 100, None) is True
 
     def test_pass_date_filters_modified_after_fail(self, s3_connector):
         now = datetime.now(timezone.utc)
         obj = {"Key": "file.txt", "LastModified": now}
         future_ms = int((now.timestamp() + 3600) * 1000)
-        assert s3_connector._pass_date_filters(obj, future_ms, None, None, None) is False
+        assert s3_connector._pass_date_filters(obj, future_ms, None) is False
 
     def test_pass_date_filters_modified_before_fail(self, s3_connector):
         now = datetime.now(timezone.utc)
         obj = {"Key": "file.txt", "LastModified": now}
         past_ms = int((now.timestamp() - 3600) * 1000)
-        assert s3_connector._pass_date_filters(obj, None, past_ms, None, None) is False
+        assert s3_connector._pass_date_filters(obj, None, past_ms) is False
 
-    def test_pass_date_filters_created_after_fail(self, s3_connector):
-        now = datetime.now(timezone.utc)
-        obj = {"Key": "file.txt", "LastModified": now}
-        future_ms = int((now.timestamp() + 3600) * 1000)
-        assert s3_connector._pass_date_filters(obj, None, None, future_ms, None) is False
 
-    def test_pass_date_filters_created_before_fail(self, s3_connector):
-        now = datetime.now(timezone.utc)
-        obj = {"Key": "file.txt", "LastModified": now}
-        past_ms = int((now.timestamp() - 3600) * 1000)
-        assert s3_connector._pass_date_filters(obj, None, None, None, past_ms) is False
 
     def test_pass_date_filters_non_datetime_last_modified(self, s3_connector):
         obj = {"Key": "file.txt", "LastModified": "not a datetime"}
-        assert s3_connector._pass_date_filters(obj, 100, None, None, None) is True
+        assert s3_connector._pass_date_filters(obj, 100, None) is True
 
 
 # ===========================================================================
@@ -493,3 +483,14 @@ class TestS3EntitiesProcessor:
         assert proc.parent_url_generator("test") == "custom/test"
 
 
+
+
+def test_s3_and_minio_offer_no_created_date_filter():
+    """PP-101: S3 lists no creation time; the created filter judged LastModified, as modified does."""
+    from app.connectors.sources.minio.connector import MinIOConnector
+
+    for connector_class in (S3Connector, MinIOConnector):
+        fields = connector_class._connector_metadata["config"]["filters"]["sync"]["schema"]["fields"]
+        names = {f["name"] for f in fields}
+        assert "modified" in names
+        assert "created" not in names

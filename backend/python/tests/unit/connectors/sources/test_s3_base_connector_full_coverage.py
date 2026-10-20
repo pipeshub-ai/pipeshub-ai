@@ -1140,7 +1140,7 @@ class TestProcessS3ObjectAdvanced:
 
 
 class TestGetDateFiltersWithValues:
-    def test_modified_and_created_filters(self, connector):
+    def test_the_created_filter_is_ignored(self, connector):
         mock_modified = MagicMock()
         mock_modified.is_empty.return_value = False
         mock_modified.get_datetime_iso.return_value = ("2025-01-01T00:00:00", "2025-06-01T00:00:00")
@@ -1152,11 +1152,9 @@ class TestGetDateFiltersWithValues:
             "modified": mock_modified,
             "created": mock_created,
         }.get(k))
-        ma, mb, ca, cb = connector._get_date_filters()
+        ma, mb = connector._get_date_filters()
         assert ma is not None
         assert mb is not None
-        assert ca is not None
-        assert cb is not None
 
     def test_partial_modified_after_only(self, connector):
         mock_filter = MagicMock()
@@ -1164,7 +1162,7 @@ class TestGetDateFiltersWithValues:
         mock_filter.get_datetime_iso.return_value = ("2025-03-01T00:00:00", None)
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(side_effect=lambda k: mock_filter if k == "modified" else None)
-        ma, mb, ca, cb = connector._get_date_filters()
+        ma, mb = connector._get_date_filters()
         assert ma is not None
         assert mb is None
 
@@ -1173,8 +1171,8 @@ class TestGetDateFiltersWithValues:
         mock_filter.is_empty.return_value = True
         connector.sync_filters = MagicMock()
         connector.sync_filters.get = MagicMock(return_value=mock_filter)
-        ma, mb, ca, cb = connector._get_date_filters()
-        assert all(x is None for x in (ma, mb, ca, cb))
+        ma, mb = connector._get_date_filters()
+        assert all(x is None for x in (ma, mb))
 
 
 class TestRunSyncAdvanced:
