@@ -359,3 +359,37 @@ class TestBucketDeletedAtTheSource:
 
         assert db.paths() == {path("a.txt")}
         assert BUCKET in db.record_groups
+
+
+class TestDateFilters:
+    """PP-118: narrowing a date filter removes what it now leaves out, through the delete path."""
+
+    @pytest.mark.asyncio
+    async def test_a_modified_filter_removes_what_it_now_leaves_out(self, connector, store, db, config) -> None:
+        store.put("old.txt")
+        cutoff = store.tick()
+        store.put("new.txt")
+        await connector.run_sync()
+        old = db.by_path()[path("old.txt")].id
+
+        config.set_dates("modified", after=cutoff)
+        await connector.run_incremental_sync()
+
+        assert db.deleted == [old]
+        assert db.paths() == {path("new.txt")}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["gcs", "azure_blob"])
+    async def test_a_created_filter_judges_the_creation_time(self, connector, store, db, config) -> None:
+        store.put("old.txt")
+        cutoff = store.tick()
+        store.put("new.txt")
+        store.put("old.txt", "old, edited after the cutoff")
+        await connector.run_sync()
+        old = db.by_path()[path("old.txt")].id
+
+        config.set_dates("created", after=cutoff)
+        await connector.run_incremental_sync()
+
+        assert db.deleted == [old]
+        assert db.paths() == {path("new.txt")}

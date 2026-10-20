@@ -387,6 +387,13 @@ class FakeConfigService:
     def set_extensions(self, operator: str, extensions: list[str]) -> None:
         self.sync_filters["file_extensions"] = {"operator": operator, "value": extensions, "type": "multiselect"}
 
+    def set_dates(self, filter_name: str, after: datetime | None = None, before: datetime | None = None) -> None:
+        """A date filter as the UI saves it: epoch-ms bounds, relative ranges already made absolute."""
+        operator = "is_between" if after and before else "is_after" if after else "is_before"
+        bounds = {"start": after, "end": before}
+        value = {k: int(v.timestamp() * 1000) if v else None for k, v in bounds.items()}
+        self.sync_filters[filter_name] = {"operator": operator, "value": value, "type": "datetime"}
+
     async def get_config(self, path: str, default: object = None, **_: object) -> object:
         if path == f"/services/connectors/{CONNECTOR_ID}/config":
             self.reads += 1
