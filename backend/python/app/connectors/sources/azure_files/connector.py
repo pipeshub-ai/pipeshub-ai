@@ -1570,12 +1570,19 @@ class AzureFilesConnector(BaseConnector):
 
             if readable:
                 share_name, items = readable
-                first_file = next((i for i in items if not i.get("is_directory") and i.get("path")), None)
-                if first_file:
-                    props = await self.data_source.get_file_properties(share_name, first_file["path"])
+                # Reading properties needs the Read permission that listing does not.
+                item = next((i for i in items if not i.get("is_directory") and i.get("path")), None) or next(
+                    (i for i in items if i.get("path")), None
+                )
+                if item:
+                    props = await (
+                        self.data_source.get_directory_properties(share_name, item["path"])
+                        if item.get("is_directory")
+                        else self.data_source.get_file_properties(share_name, item["path"])
+                    )
                     if not props.success:
                         self.logger.error(
-                            f"Azure Files connection test failed: cannot read files in share {share_name} "
+                            f"Azure Files connection test failed: cannot read share {share_name} "
                             f"(needs Read permission): {props.error}"
                         )
                         return False

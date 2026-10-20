@@ -604,6 +604,16 @@ class TestO2ConnectionTest:
         assert await conn.test_connection_and_access() is False
         ds.get_file_properties.assert_awaited_once_with("s", "a.txt")
 
+    async def test_read_is_checked_on_a_folder_when_the_root_has_no_file(self):
+        ds = FakeDataSource({})
+        ds.add("s", "d", is_dir=True)
+        ds.add("s", "d/a.txt")
+        ds.get_directory_properties = AsyncMock(return_value=_err("AuthorizationPermissionMismatch"))
+        conn = _connector(ds, FakeProcessor())
+        conn.sync_filters = _filters(["s"])
+        assert await conn.test_connection_and_access() is False
+        ds.get_directory_properties.assert_awaited_once_with("s", "d")
+
     async def test_directory_listing_refused_fails(self):
         ds = FakeDataSource({})
         ds.add("s", "a.txt")

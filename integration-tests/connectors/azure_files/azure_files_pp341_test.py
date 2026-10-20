@@ -18,6 +18,8 @@ shared test share.
                          one it syncs only that share (PP-347)
   TC-FILEID-TWO-SHARES — folders of two fresh shares keep their own records even
                          when the service hands out the same FileId (PP-344)
+  TC-SAS               — a Read+List SAS connection string syncs and downloads; a
+                         List-only one is refused by the connection test (PP-349, PP-356)
 """
 
 import hashlib
@@ -51,8 +53,32 @@ def _share_name(tag: str) -> str:
     return f"pp341-{uuid.uuid4().hex[:10]}-{tag}"
 
 
-def _config(shares: List[str] | None) -> Dict[str, Any]:
-    config: Dict[str, Any] = {"auth": {"connectionString": os.getenv("AZURE_FILES_CONNECTION_STRING")}}
+def _sas_connection_string(permission: str) -> str:
+    """An account SAS for the File service only, from the test account key."""
+    from datetime import datetime, timedelta, timezone
+
+    from azure.storage.fileshare import (  # type: ignore[import-not-found]
+        AccountSasPermissions,
+        ResourceTypes,
+        ShareServiceClient,
+        generate_account_sas,
+    )
+
+    service = ShareServiceClient.from_connection_string(os.environ["AZURE_FILES_CONNECTION_STRING"])
+    token = generate_account_sas(
+        service.account_name,
+        service.credential.account_key,
+        resource_types=ResourceTypes(service=True, container=True, object=True),
+        permission=AccountSasPermissions(read="r" in permission, list="l" in permission),
+        expiry=datetime.now(timezone.utc) + timedelta(hours=2),
+    )
+    return f"FileEndpoint={service.primary_endpoint};SharedAccessSignature={token}"
+
+
+def _config(shares: List[str] | None, connection_string: str | None = None) -> Dict[str, Any]:
+    config: Dict[str, Any] = {"auth": {
+        "connectionString": connection_string or os.getenv("AZURE_FILES_CONNECTION_STRING"),
+    }}
     if shares is not None:
         config["filters"] = {"sync": {"values": {
             "shares": {"value": shares, "operator": "in", "type": "multiselect"},
@@ -75,12 +101,12 @@ async def scratch(
         made["shares"].append(name)
         return name
 
-    def connector(shares: List[str] | None, *, scope: str = "personal") -> str:
+    def connector(shares: List[str] | None, *, scope: str = "personal", connection_string: str | None = None) -> str:
         instance = pipeshub_client.create_connector(
             connector_type="Azure Files",
             instance_name=f"azure-files-pp341-{uuid.uuid4().hex[:8]}",
             scope=scope,
-            config=_config(shares),
+            config=_config(shares, connection_string),
         )
         made["connectors"].append(instance.connector_id)
         pipeshub_client.toggle_sync(instance.connector_id, enable=True)
@@ -241,3 +267,22 @@ class TestAzureFilesPP341:
         docs = await graph_provider.get_record_by_external_id(connector_id, f"{b}/Docs")
         assert finance.id != docs.id
         assert await graph_provider.get_record_parent_external_id(connector_id, f"{a}/Finance/f.txt") == f"{a}/Finance"
+
+    async def test_tc_sas(self, scratch, azure_files_storage, pipeshub_client, graph_provider) -> None:
+        from pipeshub_client import PipeshubClientError  # type: ignore[import-not-found]
+
+        make_share, make_connector = scratch
+        share = make_share("sas")
+        azure_files_storage.upload_file(share, "d/a.txt", b"read through a SAS")
+        connector_id = make_connector([share], connection_string=_sas_connection_string("rl"))
+
+        async def synced() -> bool:
+            return await _has(graph_provider, connector_id, f"{share}/d", f"{share}/d/a.txt")
+
+        await _wait(connector_id, synced, "sync with a Read+List SAS")
+        record = await graph_provider.get_record_by_external_id(connector_id, f"{share}/d/a.txt")
+        # No account key in a SAS string: the download streams through the SDK.
+        assert _download(pipeshub_client, record.id) == b"read through a SAS"
+
+        with pytest.raises(PipeshubClientError, match="Connection test failed"):
+            make_connector([share], connection_string=_sas_connection_string("l"))
