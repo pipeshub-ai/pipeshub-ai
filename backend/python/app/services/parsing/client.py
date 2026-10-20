@@ -168,22 +168,25 @@ class ParsingClient(BaseServiceClient):
         if provider is not None:
             form_data["provider"] = provider.value
 
+        record_budget = messaging_env.record_processing_timeout_for(extension, mime_type)
         try:
             response = await self._post_multipart(
                 "/api/v1/parse",
                 files={"file": (record_name, file_content, mime_type or "application/octet-stream")},
                 data=form_data,
                 operation="parse",
-                # Deliberately the generic timeout, not the PDF one. This is
-                # only the retry budget: the socket read timeout is fixed when
-                # the client is built (min(2400, RECORD_PROCESSING_TIMEOUT *
-                # 0.8) = 1440s), so widening the budget here would not let one
-                # attempt run longer -- it would only let a second 1440s
-                # attempt start that cannot finish either. Making the service
-                # path honour the PDF budget needs a per-request read timeout
-                # threaded through BaseServiceClient; the in-process Docling
-                # path is what the record-level PDF budget covers.
-                budget_seconds=messaging_env.record_processing_timeout,
+                budget_seconds=record_budget,
+                # The client-wide read timeout is sized from the generic
+                # record budget and capped at MAX_PARSE_READ_TIMEOUT_SECONDS,
+                # which is one Docling *batch* (PDF_PARSING_TIMEOUT_SECONDS),
+                # not the sum of them. With USE_PARSING_SERVICE=true the whole
+                # page-batch loop is a single /api/v1/parse response, so a
+                # large filing hit that cap long before its own budget and no
+                # wider retry budget could help it. Per record, per call.
+                read_timeout=max(
+                    self._timeout.read or 0.0,
+                    record_budget * PARSE_SHARE_OF_RECORD_BUDGET,
+                ),
                 org_id=org_id,
             )
         except ServiceBackpressureError as exc:
