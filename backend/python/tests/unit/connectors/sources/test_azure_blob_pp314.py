@@ -540,3 +540,28 @@ class TestCodeRabbitFollowUps:
 
         assert blobs == ["a", "b", "c"]
         assert len(tokens) == 3  # two pages, then the call that finds the listing done
+
+    @pytest.mark.asyncio
+    async def test_a_copy_being_checked_does_not_stop_a_real_move_elsewhere(self) -> None:
+        import asyncio
+
+        c = connector()
+        c._reset_run_state()
+        held = record("gone.txt", container="a", external_revision_id="md5==")
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=held)
+        c.data_entities_processor.delete_parent_child_edge_to_record = AsyncMock()
+        answers = iter([True, False])  # first check: the original is still there (a copy); then it is gone
+
+        async def check(_record) -> bool:
+            await asyncio.sleep(0.01)
+            return next(answers)
+        c._still_in_container = check
+        blob = {"name": "x.txt", "content_md5": "md5==", "etag": "e", "size": 1}
+
+        (copy, _), (move, _) = await asyncio.gather(
+            c._process_azure_blob(dict(blob), "b"), c._process_azure_blob(dict(blob), "c"),
+        )
+
+        assert copy.id != held.id
+        assert move.id == held.id

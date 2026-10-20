@@ -489,6 +489,8 @@ class AzureBlobConnector(BaseConnector):
         # Records moved during this sync: two new copies of a deleted blob
         # must not both take its record before the batch naming it is saved.
         self._moved_record_ids: set[str] = set()
+        # Claim and presence check run as one step: containers are listed side by side.
+        self._move_claim_lock = asyncio.Lock()
         # Folder ids already saved this sync: every file under a/b/c would save a, a/b and a/b/c again.
         self._folders_written: set[str] = set()
         # Record ids saved this sync, which the removal pass must keep.
@@ -1465,16 +1467,13 @@ class AzureBlobConnector(BaseConnector):
                 existing_record = await self.data_entities_processor.get_record_by_external_revision_id(
                     self.connector_id, current_revision_id
                 )
-                if existing_record and existing_record.id in self._moved_record_ids:
-                    existing_record, taken_by = None, existing_record.external_record_id
-                else:
-                    taken_by = None
+                taken_by = None
                 if existing_record:
-                    # Claimed before the check awaits, so a container listed alongside cannot take it too.
-                    self._moved_record_ids.add(existing_record.id)
-                    if await self._still_in_container(existing_record):
-                        self._moved_record_ids.discard(existing_record.id)
-                        existing_record, taken_by = None, existing_record.external_record_id
+                    async with self._move_claim_lock:
+                        if existing_record.id in self._moved_record_ids or await self._still_in_container(existing_record):
+                            existing_record, taken_by = None, existing_record.external_record_id
+                        else:
+                            self._moved_record_ids.add(existing_record.id)
                 if taken_by:
                     self.logger.info(f"New document: {normalized_name} is a copy of {taken_by}, not a move")
 
