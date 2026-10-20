@@ -723,7 +723,8 @@ class TestRunSyncExtended:
         s3_connector.data_source.list_buckets = AsyncMock(
             return_value=_make_response(False, error="err")
         )
-        await s3_connector.run_sync()
+        with pytest.raises(ConnectionError, match="err"):
+            await s3_connector.run_sync()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
@@ -2489,7 +2490,8 @@ class TestRunSyncAdvanced:
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(return_value=_resp(False, error="denied"))
-        await connector.run_sync()
+        with pytest.raises(ConnectionError, match="denied"):
+            await connector.run_sync()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
@@ -2497,7 +2499,9 @@ class TestRunSyncAdvanced:
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(return_value=_resp(True, {}))
-        await connector.run_sync()
+        # No "Buckets" key is a broken answer, not an account without buckets.
+        with pytest.raises(ConnectionError, match="no bucket list"):
+            await connector.run_sync()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)

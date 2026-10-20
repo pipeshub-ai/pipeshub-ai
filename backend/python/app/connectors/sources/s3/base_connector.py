@@ -445,8 +445,10 @@ class S3CompatibleBaseConnector(BaseConnector):
             else:
                 self.logger.info("Listing all buckets...")
                 buckets_response = await self.data_source.list_buckets()
-                if not buckets_response.success:
-                    err = buckets_response.error or "unknown error"
+                buckets_data = buckets_response.data
+                # An account without buckets answers {"Buckets": []}; no "Buckets" key is a broken answer.
+                if not buckets_response.success or not isinstance(buckets_data, dict) or "Buckets" not in buckets_data:
+                    err = buckets_response.error or "the response has no bucket list"
                     self.logger.error(f"Failed to list buckets: {err}")
                     await self.notify(
                         type=NotificationType.CONNECTOR_SYNC_ERROR,
@@ -455,19 +457,14 @@ class S3CompatibleBaseConnector(BaseConnector):
                         "Check credentials and s3:ListAllMyBuckets / bucket access.",
                         severity=NotificationSeverity.ERROR,
                     )
-                    return
+                    raise ConnectionError(f"Failed to list {self.connector_name} buckets: {err}")
 
-                buckets_data = buckets_response.data
-                if buckets_data and "Buckets" in buckets_data:
-                    list_buckets_payload = buckets_data["Buckets"]
-                    buckets_to_sync = [
-                        bucket.get("Name") for bucket in list_buckets_payload
-                        if name_passes_filter(sync_filters, "buckets", bucket.get("Name"))
-                    ]
-                    self.logger.info(f"Found {len(buckets_to_sync)} bucket(s) to sync")
-                else:
-                    self.logger.warning("No buckets found")
-                    return
+                list_buckets_payload = buckets_data["Buckets"]
+                buckets_to_sync = [
+                    bucket.get("Name") for bucket in list_buckets_payload
+                    if name_passes_filter(sync_filters, "buckets", bucket.get("Name"))
+                ]
+                self.logger.info(f"Found {len(buckets_to_sync)} bucket(s) to sync")
 
             target_names = {n for n in buckets_to_sync if n}
             bucket_creation_ms = _bucket_creation_dates_from_list_buckets(

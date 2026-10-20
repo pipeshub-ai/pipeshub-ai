@@ -30,6 +30,7 @@ from app.connectors.sources.s3.base_connector import (
 from app.connectors.sources.s3.connector import S3Connector
 from app.models.entities import FileRecord, Record, RecordType, User
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.notification.types import NotificationType
 
 
 @pytest.fixture()
@@ -1194,19 +1195,33 @@ class TestRunSyncAdvanced:
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_list_buckets_failure(self, mock_filters, connector):
+    @pytest.mark.parametrize("answer", [_resp(False, error="denied"), _resp(True, {}), _resp(True, None)])
+    async def test_a_failed_bucket_list_fails_the_sync(self, mock_filters, connector, answer):
+        # PP-117: the sync used to finish as if it had succeeded.
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
-        connector.data_source.list_buckets = AsyncMock(return_value=_resp(False, error="denied"))
-        await connector.run_sync()
+        connector.data_source.list_buckets = AsyncMock(return_value=answer)
+        connector.notify = AsyncMock()
+        connector._sync_bucket = AsyncMock()
+
+        with pytest.raises(ConnectionError, match="Failed to list"):
+            await connector.run_sync()
+
+        connector.notify.assert_awaited_once()
+        assert connector.notify.await_args.kwargs["type"] == NotificationType.CONNECTOR_SYNC_ERROR
+        connector._sync_bucket.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_no_buckets_found(self, mock_filters, connector):
+    async def test_an_account_without_buckets_finishes_cleanly(self, mock_filters, connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
-        connector.data_source.list_buckets = AsyncMock(return_value=_resp(True, {}))
+        connector.data_source.list_buckets = AsyncMock(return_value=_resp(True, {"Buckets": []}))
+        connector.notify = AsyncMock()
+
         await connector.run_sync()
+
+        connector.notify.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
