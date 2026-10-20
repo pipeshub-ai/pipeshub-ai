@@ -151,8 +151,8 @@ class TestOpenAICachePlan:
 
     @pytest.mark.parametrize(("model", "base_url"), [
         ("Llama-4-Maverick", "https://res.services.ai.azure.com/models"),
-        ("gpt-5.4", "https://openrouter.ai/api/v1"),
-        ("gpt-6.1-sol", "https://openrouter.ai/api/v1"),
+        ("gpt-6.1-sol", "https://api.together.xyz/v1"),
+        ("gpt-6.1-sol", "http://litellm.internal:4000"),
         ("qwen3", "http://localhost:11434/v1"),
     ])
     def test_nothing_for_other_hosts(self, model: str, base_url: str) -> None:
@@ -198,6 +198,39 @@ class TestOpenAICachePlan:
     def test_sent_params(self) -> None:
         assert _plan("gpt-6.1-sol").sent_params == {"prompt_cache_key", "prompt_cache_breakpoint"}
         assert _plan("gpt-5.4").sent_params == {"prompt_cache_key", "prompt_cache_retention"}
+
+
+OPENROUTER = "https://openrouter.ai/api/v1"
+
+
+class TestOpenRouter:
+    """OpenRouter turns a breakpoint into what the upstream takes (GPT-5.6+:
+    the same field; Claude: a cache_control) and drops it elsewhere; the key
+    routes a shard of the org to one upstream."""
+
+    @pytest.mark.parametrize(("model", "breakpoint_", "last_message"), [
+        ("openai/gpt-6.1-sol", True, False),
+        ("openai/gpt-5.6-luna", True, False),
+        ("anthropic/claude-sonnet-5.5", True, True),
+        ("openai/gpt-5.4", False, False),
+        ("google/gemini-3.8-flash", False, False),
+        ("deepseek/deepseek-v4.1-flash", False, False),
+        ("gpt-6.1-sol", False, False),
+    ])
+    def test_markers_by_upstream(self, model: str, breakpoint_: bool, last_message: bool) -> None:
+        plan = _plan(model, OPENROUTER)
+        assert (plan.breakpoint, plan.last_message) == (breakpoint_, last_message)
+        assert set(plan.kwargs) == {"prompt_cache_key"}
+
+    def test_keys_spread_over_the_shards(self) -> None:
+        keys = {_plan("anthropic/claude-sonnet-5.5", OPENROUTER, conversation=f"c-{i}").kwargs["prompt_cache_key"]
+                for i in range(200)}
+        assert len(keys) == 8
+
+    def test_a_refused_breakpoint_takes_both_markers(self) -> None:
+        plan = _plan("anthropic/claude-sonnet-5.5", OPENROUTER, refused=frozenset({"prompt_cache_breakpoint"}))
+        assert (plan.breakpoint, plan.last_message, set(plan.kwargs)) == (False, False, {"prompt_cache_key"})
+        assert _plan("openai/gpt-5.4", OPENROUTER, refused=frozenset({"prompt_cache_key"})) is None
 
 
 class TestRejectedCacheParams:

@@ -72,8 +72,7 @@ def build_direct_transport(
             scope=cache_scope or CacheScope(""), refused=refused,
         ) if caching else None
         return {
-            "cache_kwargs": plan.kwargs if plan else {},
-            "cache_breakpoint": bool(plan and plan.breakpoint),
+            "cache_plan": plan,
             "on_cache_rejected": lambda params: REJECTED_CACHE_PARAMS.record(target.model, target.base_url, params),
         }
 

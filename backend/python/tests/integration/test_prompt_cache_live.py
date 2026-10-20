@@ -16,6 +16,8 @@ entry no earlier run left behind.
 - Azure OpenAI: ``AZURE_OPENAI_ENDPOINT``, ``AZURE_OPENAI_API_KEY``,
   ``AZURE_OPENAI_API_VERSION`` and ``AZURE_OPENAI_DEPLOYMENT``; the deployed
   model from ``PIPESHUB_LIVE_AZURE_MODEL`` (default: the deployment name).
+- OpenRouter: ``OPENROUTER_API_KEY``; model from
+  ``PIPESHUB_LIVE_OPENROUTER_MODEL`` (default ``anthropic/claude-haiku-5.5``).
 """
 
 from __future__ import annotations
@@ -148,6 +150,19 @@ def _azure() -> tuple[object, str, str]:
     return llm, model, endpoint
 
 
+def _openrouter() -> tuple[object, str]:
+    api_key = _env("OPENROUTER_API_KEY")
+    if not api_key:
+        pytest.skip("no OpenRouter key")
+    from langchain_openai import ChatOpenAI
+
+    from app.config.constants.ai_models import OPENROUTER_BASE_URL
+
+    model = os.getenv("PIPESHUB_LIVE_OPENROUTER_MODEL", "anthropic/claude-haiku-5.5")
+    return ChatOpenAI(model=model, api_key=api_key, base_url=OPENROUTER_BASE_URL, max_tokens=16,
+                      stream_usage=True), model
+
+
 async def test_anthropic_reads_back_what_it_wrote() -> None:
     llm, model = _anthropic()
     first, second = await _twice(_transport(llm, model), _blocks())
@@ -182,3 +197,17 @@ async def test_azure_openai_new_conversation_reads_the_shared_prefix() -> None:
 
     assert second.cache_read_tokens >= 2_000, (first, second)
     assert not REJECTED_CACHE_PARAMS.refused(model, endpoint), "the endpoint refused a cache parameter"
+
+
+async def test_openrouter_reads_back_the_whole_request() -> None:
+    llm, model = _openrouter()
+    first, second = await _twice(_transport(llm, model), _blocks())
+
+    assert second.cache_read_tokens >= first.input_tokens * 0.9, (first, second)
+
+
+async def test_openrouter_new_conversation_reads_the_shared_prefix() -> None:
+    llm, model = _openrouter()
+    first, second = await _two_conversations(lambda conversation: _transport(llm, model, conversation))
+
+    assert second.cache_read_tokens >= 2_000, (first, second)

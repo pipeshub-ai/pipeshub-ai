@@ -31,6 +31,8 @@ from app.agent_loop_lib.transport.prompt_cache import (
 if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
 
+    from app.agent_loop_lib.transport.prompt_cache import OpenAICachePlan
+
 ANTHROPIC_PARAM = "cache_control"
 BEDROCK_PARAM = "cachepoint"
 _BEDROCK_CACHE_POINT = {"cachePoint": {"type": "default"}}
@@ -129,8 +131,8 @@ class BedrockCacheStrategy(CacheStrategy):
 
 class OpenAICacheStrategy(CacheStrategy):
     """OpenAI caches automatically; the request names its cache
-    (``prompt_cache_key``), where supported how long to keep it, and on GPT-5.6
-    and later where the shared prefix ends.
+    (``prompt_cache_key``), where supported how long to keep it, and, on
+    GPT-5.6 and later or through OpenRouter, where the shared prefix ends.
 
     That breakpoint closes a system message of its own: on Chat Completions a
     change later in the same message misses the cache even past an explicit
@@ -138,15 +140,12 @@ class OpenAICacheStrategy(CacheStrategy):
 
     name = "openai"
 
-    def __init__(self, call_kwargs: dict[str, str], *, breakpoint_: bool = False) -> None:
-        self._call_kwargs = dict(call_kwargs)
-        self._breakpoint = breakpoint_
-        self.sent_params = frozenset(self._call_kwargs) | (
-            {OPENAI_BREAKPOINT_PARAM} if breakpoint_ else frozenset()
-        )
+    def __init__(self, plan: OpenAICachePlan) -> None:
+        self._plan = plan
+        self.sent_params = plan.sent_params
 
     def system(self, stable: str, volatile: str) -> list[SystemMessage]:
-        if not self._breakpoint or not stable:
+        if not self._plan.breakpoint or not stable:
             return super().system(stable, volatile)
         marked = SystemMessage(content=[
             {"type": "text", "text": stable, OPENAI_BREAKPOINT_PARAM: dict(OPENAI_BREAKPOINT)},
@@ -154,16 +153,15 @@ class OpenAICacheStrategy(CacheStrategy):
         return [marked, SystemMessage(content=volatile)] if volatile else [marked]
 
     def finalize(self, messages: list[BaseMessage]) -> tuple[list[BaseMessage], dict[str, Any]]:
-        return messages, dict(self._call_kwargs)
+        if self._plan.last_message:
+            messages = _mark_last_message(messages, {OPENAI_BREAKPOINT_PARAM: dict(OPENAI_BREAKPOINT)})
+        return messages, dict(self._plan.kwargs)
 
     def without(self, params: frozenset[str]) -> CacheStrategy:
-        if "*" in params:
-            return NoCacheStrategy()
-        if not params & self.sent_params:
+        if not params & (self.sent_params | {"*"}):
             return self
-        kwargs = {name: value for name, value in self._call_kwargs.items() if name not in params}
-        marked = self._breakpoint and OPENAI_BREAKPOINT_PARAM not in params
-        return OpenAICacheStrategy(kwargs, breakpoint_=marked) if kwargs or marked else NoCacheStrategy()
+        plan = self._plan.without(params)
+        return NoCacheStrategy() if plan.empty else OpenAICacheStrategy(plan)
 
 
 def without_cache_markers(messages: list[BaseMessage]) -> list[BaseMessage]:
@@ -212,7 +210,7 @@ def _anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
 def _mark_last_message(messages: list[BaseMessage], marker: dict[str, Any]) -> list[BaseMessage]:
     """The last message with ``marker`` on its last content block; an assistant
     turn is left alone (its blocks may be thinking, which cannot be marked).
-    String content becomes the one text block Anthropic reads it as, so the
+    String content becomes the one text block the provider reads it as, so the
     marked request means the same as the unmarked one."""
     if not messages or isinstance(messages[-1], AIMessage):
         return messages

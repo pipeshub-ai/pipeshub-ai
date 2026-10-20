@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.messages import HumanMessage
 
 from app.agent_loop_lib.transport.prompt_cache import (
     REJECTED_CACHE_PARAMS,
@@ -101,11 +102,16 @@ class TestOpenAI:
     def test_azure_unknown_deployment_gets_the_key_only(self) -> None:
         assert _strategy(_azure()).finalize([])[1] == {"prompt_cache_key": KEY}
 
-    @pytest.mark.parametrize("base_url", [
-        "https://openrouter.ai/api/v1", "http://localhost:4000", "https://api.together.xyz/v1",
-    ])
+    @pytest.mark.parametrize("base_url", ["http://localhost:4000", "https://api.together.xyz/v1"])
     def test_compatible_hosts_get_nothing(self, base_url: str) -> None:
         assert isinstance(_strategy(_openai(base_url)), NoCacheStrategy)
+
+    def test_openrouter_marks_claude_and_routes_by_key(self) -> None:
+        strategy = _strategy(_openai("https://openrouter.ai/api/v1", "anthropic/claude-sonnet-5.5"))
+        assert isinstance(strategy, OpenAICacheStrategy)
+        messages, kwargs = strategy.finalize([HumanMessage(content="hi")])
+        assert kwargs == {"prompt_cache_key": KEY}
+        assert messages[-1].content == [{"type": "text", "text": "hi", "prompt_cache_breakpoint": {"mode": "explicit"}}]
 
     def test_foundry_only_for_openai_models(self) -> None:
         foundry = "https://acme.services.ai.azure.com/models"

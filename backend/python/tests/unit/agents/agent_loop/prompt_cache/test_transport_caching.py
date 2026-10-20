@@ -25,7 +25,10 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
-from app.agent_loop_lib.transport.prompt_cache import REJECTED_CACHE_PARAMS
+from app.agent_loop_lib.transport.prompt_cache import (
+    REJECTED_CACHE_PARAMS,
+    OpenAICachePlan,
+)
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.prompt_cache import (
     AnthropicCacheStrategy,
@@ -92,7 +95,7 @@ def _messages() -> list[Any]:
 
 
 def _transport(model: Any, strategy: Any = None, **kwargs: Any) -> LangChainTransport:  # noqa: ANN401
-    return LangChainTransport(model, model_name="gpt-5.4", cache_strategy=strategy or OpenAICacheStrategy(KWARGS),
+    return LangChainTransport(model, model_name="gpt-5.4", cache_strategy=strategy or OpenAICacheStrategy(OpenAICachePlan(KWARGS)),
                               **kwargs)
 
 
@@ -184,7 +187,7 @@ class TestRejectedCacheParameter:
     async def test_a_refused_breakpoint_keeps_the_key(self) -> None:
         refusal = _bad_request("{'error': {'message': 'prompt_cache_breakpoint is not supported on this model'}}")
         model = _RecordingModel(errors=[refusal])
-        strategy = OpenAICacheStrategy({"prompt_cache_key": "k"}, breakpoint_=True)
+        strategy = OpenAICacheStrategy(OpenAICachePlan({"prompt_cache_key": "k"}, breakpoint=True))
         await _transport(model, strategy).complete(_messages(), tools=TOOLS, system_blocks=[STABLE, VOLATILE])
         first, retry = model.calls
         assert first["messages"][0].content[0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
