@@ -35,6 +35,8 @@ export function formatAuthTypeName(authType: string): string {
     USERNAME_PASSWORD: 'Username & Password',
     BASIC_AUTH: 'Basic authentication',
     BEARER_TOKEN: 'Bearer Token',
+    CONNECTION_STRING: 'Connection String',
+    ENTRA_ID: 'Microsoft Entra ID',
     CUSTOM: 'Custom',
     NONE: 'None',
   };

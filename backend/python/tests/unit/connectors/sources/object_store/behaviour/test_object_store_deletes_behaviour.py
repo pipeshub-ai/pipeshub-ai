@@ -24,6 +24,17 @@ def path(key: str) -> str:
     return f"{BUCKET}/{key}"
 
 
+async def sync_with_failed_listing(connector: BaseConnector) -> None:
+    """Azure Blob fails the run when a listing fails, so it shows as failed (PP-334); the others return."""
+    from app.connectors.sources.azure_blob.connector import AzureBlobConnector
+
+    if isinstance(connector, AzureBlobConnector):
+        with pytest.raises(Exception):
+            await connector.run_incremental_sync()
+    else:
+        await connector.run_incremental_sync()
+
+
 @pytest.fixture(params=ALL)
 def kind(request: pytest.FixtureRequest) -> str:
     return request.param
@@ -148,7 +159,7 @@ class TestRenameAcrossChosenFolders:
 
         store.rename("legal/a.txt", "reports/b.txt")
         store.fail_prefix = "reports/"
-        await connector.run_incremental_sync()
+        await sync_with_failed_listing(connector)
 
         assert db.deleted == []
         assert path("legal/a.txt") in db.paths()
@@ -184,7 +195,7 @@ class TestFailedListing:
         await self._synced_then_first_key_deleted(connector, store)
         store.fail_page, store.fail_mode = 1, mode
 
-        await connector.run_incremental_sync()
+        await sync_with_failed_listing(connector)
 
         assert db.deleted == []
         assert path("a.txt") in db.paths()
@@ -211,7 +222,7 @@ class TestFailedListing:
     async def test_the_next_complete_listing_deletes(self, connector, store, db) -> None:
         await self._synced_then_first_key_deleted(connector, store)
         store.fail_page = 1
-        await connector.run_incremental_sync()
+        await sync_with_failed_listing(connector)
         store.fail_page = None
 
         await connector.run_incremental_sync()
@@ -226,7 +237,7 @@ class TestFailedListing:
         store.delete("a.txt")
         db.failing.add("get_records_in_record_group")
 
-        await connector.run_incremental_sync()
+        await sync_with_failed_listing(connector)
 
         assert db.deleted == []
 
