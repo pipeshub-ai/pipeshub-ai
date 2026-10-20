@@ -1,6 +1,7 @@
 """Tests for Azure Files connector."""
 
 import logging
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1940,7 +1941,7 @@ class TestStreamRecord:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.azure_files.connector.create_stream_record_response")
     async def test_streams_the_sdk_chunks(self, mock_create, conn):
-        async def chunks():
+        async def chunks() -> AsyncIterator[bytes]:
             yield b"ab"
             yield b"cd"
 
@@ -2016,7 +2017,7 @@ class TestCleanup:
 # ===========================================================================
 class TestGetFilterOptions:
     @staticmethod
-    def _page(names, next_token=None):
+    def _page(names: list[str], next_token: str | None = None) -> MagicMock:
         return _make_response(True, {"shares": [{"name": n} for n in names], "next": next_token})
 
     @pytest.mark.asyncio

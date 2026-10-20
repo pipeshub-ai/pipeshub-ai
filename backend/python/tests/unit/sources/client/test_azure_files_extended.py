@@ -8,8 +8,7 @@ Extended tests for app.sources.client.azure.azure_files covering missing lines:
 - AzureFilesClient.build_with_account_key_config error
 """
 
-import logging
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -19,8 +18,6 @@ from app.sources.client.azure.azure_files import (
     AzureFilesConfigurationError,
     AzureFilesConnectionStringConfig,
     AzureFilesRESTClient,
-    AzureFilesResponse,
-    AzureFilesShareError,
 )
 
 

@@ -26,24 +26,24 @@ CONNECTOR_ID = "az-files-pp341"
 LIST_TIME = datetime(2024, 5, 1, 10, 0, 0, 123456, tzinfo=timezone.utc)
 
 
-def _ok(data):
+def _ok(data: object) -> AzureFilesResponse:
     return AzureFilesResponse(success=True, data=data)
 
 
-def _err(error):
+def _err(error: str) -> AzureFilesResponse:
     return AzureFilesResponse(success=False, error=error)
 
 
 class FakeDataSource:
     """Shares as {share: {path: item}}; directories are items with is_directory=True."""
 
-    def __init__(self, shares):
+    def __init__(self, shares) -> None:
         self.shares = shares
         self.fail_dirs: set[tuple[str, str]] = set()
         self.fail_list_shares = False
         self.listed: list[tuple[str, str]] = []
 
-    def add(self, share, path, *, is_dir=False, file_id=None, size=10, written=LIST_TIME):
+    def add(self, share, path, *, is_dir=False, file_id=None, size=10, written=LIST_TIME) -> None:
         self.shares.setdefault(share, {})[path] = {
             "name": path.rsplit("/", 1)[-1],
             "path": path,
@@ -56,12 +56,14 @@ class FakeDataSource:
             "etag": f'"etag-{path}"',
         }
 
-    async def list_shares(self, **kwargs):
+    async def list_shares(self, **kwargs: object) -> AzureFilesResponse:
         if self.fail_list_shares:
             return _err("Azure Files API error: AuthenticationFailed")
         return _ok([{"name": s, "last_modified": LIST_TIME} for s in self.shares])
 
-    async def list_directories_and_files(self, share_name, directory_path="", name_starts_with=None):
+    async def list_directories_and_files(
+        self, share_name: str, directory_path: str = "", name_starts_with: str | None = None
+    ) -> AzureFilesResponse:
         self.listed.append((share_name, directory_path))
         if (share_name, directory_path) in self.fail_dirs:
             return _err("Azure Files API error: ServerBusy")
@@ -75,12 +77,12 @@ class FakeDataSource:
                 items.append(dict(item))
         return _ok(items)
 
-    async def get_share_properties(self, share_name):
+    async def get_share_properties(self, share_name: str) -> AzureFilesResponse:
         if share_name not in self.shares:
             return _err(f"Share not found: {share_name}")
         return _ok({"name": share_name})
 
-    async def get_file_properties(self, share_name, file_path):
+    async def get_file_properties(self, share_name: str, file_path: str) -> AzureFilesResponse:
         item = self.shares.get(share_name, {}).get(file_path)
         if not item:
             return _err(f"File not found: {share_name}/{file_path}")
@@ -88,14 +90,14 @@ class FakeDataSource:
         naive = item["last_write_time"].replace(tzinfo=None)
         return _ok({**item, "last_modified": naive, "last_write_time": naive, "creation_time": naive})
 
-    async def close_async_client(self):
+    async def close_async_client(self) -> None:
         return None
 
 
 class FakeProcessor:
     """Records by external id, with the lookups the connector makes."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.org_id = "org-1"
         self.records: dict[str, object] = {}
         self.new_calls: list[list] = []
@@ -105,34 +107,36 @@ class FakeProcessor:
         self.groups: set[str] = set()
         self.full_sync = False
 
-    def _store(self, record):
+    def _store(self, record) -> None:
         for ext, existing in list(self.records.items()):
             if existing.id == record.id and ext != record.external_record_id:
                 del self.records[ext]
         self.records[record.external_record_id] = record
 
-    async def on_new_records(self, batch):
+    async def on_new_records(self, batch) -> None:
         self.new_calls.append([r.external_record_id for r, _ in batch])
         for record, _ in batch:
             self._store(record)
 
-    async def on_records_moved(self, moves, **kwargs):
+    async def on_records_moved(self, moves, **kwargs) -> None:
         self.moved_calls.append([(old, r.external_record_id) for old, r, _ in moves])
         for old, record, _ in moves:
             self.records.pop(old, None)
             self._store(record)
 
-    async def get_record_by_external_id(self, connector_id, external_id):
+    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> object:
         return self.records.get(external_id)
 
-    async def get_record_by_external_revision_id(self, connector_id, revision):
+    async def get_record_by_external_revision_id(self, connector_id: str, revision: str) -> object:
         # Like the graph query: any share, first match.
         return next((r for r in self.records.values() if r.external_revision_id == revision), None)
 
-    async def get_records_by_record_type(self, connector_id, record_type):
+    async def get_records_by_record_type(self, connector_id: str, record_type: object) -> list:
         return list(self.records.values())
 
-    async def get_nodes_by_filters(self, collection, filters, return_fields=None, *, raise_on_error=False):
+    async def get_nodes_by_filters(
+        self, collection: str, filters: dict, return_fields: list | None = None, *, raise_on_error: bool = False
+    ) -> list[dict]:
         if collection == CollectionNames.RECORD_GROUPS.value:
             return [{"externalGroupId": g} for g in sorted(self.groups)]
         assert collection == CollectionNames.RECORDS.value
@@ -149,52 +153,54 @@ class FakeProcessor:
             })
         return out
 
-    def _delete_ids(self, ids):
+    def _delete_ids(self, ids) -> None:
         for ext, r in list(self.records.items()):
             if r.id in ids:
                 del self.records[ext]
                 self.deleted.append(ext)
 
-    async def on_record_deleted(self, record_id):
+    async def on_record_deleted(self, record_id) -> bool:
         self._delete_ids({record_id})
         return False
 
-    async def on_records_deleted_cascade(self, record_ids, connector_id, **kwargs):
+    async def on_records_deleted_cascade(self, record_ids: list, connector_id: str, **kwargs: object) -> dict:
         self._delete_ids(set(record_ids))
         return {"success": True}
 
-    def note_kept_records(self, connector_id, record_ids):
+    def note_kept_records(self, connector_id, record_ids) -> None:
         self.kept.extend(record_ids)
 
-    def full_sync_running(self, connector_id):
+    def full_sync_running(self, connector_id: str) -> bool:
         return self.full_sync
 
-    async def delete_parent_child_edge_to_record(self, record_id):
+    async def delete_parent_child_edge_to_record(self, record_id) -> int:
         return 0
 
-    async def on_new_record_groups(self, groups):
+    async def on_new_record_groups(self, groups) -> None:
         self.groups.update(g.external_group_id for g, _ in groups)
 
-    async def on_record_group_deleted(self, external_group_id, connector_id):
+    async def on_record_group_deleted(self, external_group_id, connector_id) -> bool:
         self.groups.discard(external_group_id)
         self._delete_ids({r.id for r in self.records.values() if r.external_record_group_id == external_group_id})
         return True
 
-    async def ensure_team_app_edge(self, connector_id):
+    async def ensure_team_app_edge(self, connector_id) -> None:
         return None
 
-    async def get_user_by_user_id(self, user_id):
+    async def get_user_by_user_id(self, user_id) -> None:
         return None
 
 
-def _filters(shares=None):
+def _filters(shares: list | None = None) -> FilterCollection:
     filters = []
     if shares is not None:
         filters.append(Filter(key="shares", value=shares, type=FilterType.MULTISELECT, operator=MultiselectOperator.IN))
     return FilterCollection(filters=filters)
 
 
-def _connector(ds, proc, *, scope="personal", shares=None):
+def _connector(
+    ds: FakeDataSource, proc: FakeProcessor, *, scope: str = "personal", shares: list | None = None
+) -> AzureFilesConnector:
     with patch("app.connectors.sources.azure_files.connector.AzureFilesApp"):
         conn = AzureFilesConnector(
             logger=logging.getLogger("test.azure_files.pp341"),
@@ -215,7 +221,7 @@ def _connector(ds, proc, *, scope="personal", shares=None):
     return conn
 
 
-async def _sync(conn):
+async def _sync(conn) -> None:
     with patch(
         "app.connectors.sources.azure_files.connector.load_connector_filters",
         new=AsyncMock(return_value=(conn._test_filters, FilterCollection())),
@@ -227,7 +233,7 @@ async def _sync(conn):
 # PP-342 B1: an incomplete full sync must say so to the shared unlink
 # ---------------------------------------------------------------------------
 class TestB1IncompleteCoverage:
-    async def test_failed_directory_listing_reports_incomplete(self):
+    async def test_failed_directory_listing_reports_incomplete(self) -> None:
         ds = FakeDataSource({})
         ds.add("docs", "A", is_dir=True)
         ds.add("docs", "A/a.txt")
@@ -242,7 +248,7 @@ class TestB1IncompleteCoverage:
         assert conn.full_sync_coverage().complete is False
         assert "docs/A/a.txt" in proc.records  # nor removed by the connector
 
-    async def test_item_that_fails_to_process_reports_incomplete(self):
+    async def test_item_that_fails_to_process_reports_incomplete(self) -> None:
         ds = FakeDataSource({})
         ds.add("docs", "a.txt")
         proc = FakeProcessor()
@@ -251,14 +257,14 @@ class TestB1IncompleteCoverage:
             await _sync(conn)
         assert conn.full_sync_coverage().complete is False
 
-    async def test_flag_resets_on_next_run(self):
+    async def test_flag_resets_on_next_run(self) -> None:
         ds = FakeDataSource({})
         ds.add("docs", "a.txt")
         ds.fail_dirs.add(("docs", ""))
         proc = FakeProcessor()
         conn = _connector(ds, proc, shares=["docs"])
-        with pytest.raises(Exception):
-            await _sync(conn)  # every share failed
+        with pytest.raises(RuntimeError, match="No share could be read"):
+            await _sync(conn)
         assert conn.full_sync_coverage().complete is False
         ds.fail_dirs.clear()
         await _sync(conn)
@@ -269,7 +275,7 @@ class TestB1IncompleteCoverage:
 # PP-343 B2: per-share completeness; a selected share that is gone
 # ---------------------------------------------------------------------------
 class TestB2PerShareDeletes:
-    async def test_gone_share_does_not_block_deletes_elsewhere(self):
+    async def test_gone_share_does_not_block_deletes_elsewhere(self) -> None:
         ds = FakeDataSource({})
         ds.add("keep", "secret.txt")
         ds.add("keep", "stay.txt")
@@ -288,7 +294,7 @@ class TestB2PerShareDeletes:
         assert "gone/old.txt" not in proc.records
         assert any("gone" in str(c.kwargs.get("message", "")) for c in conn.notify.await_args_list)
 
-    async def test_failing_share_keeps_its_records_but_others_delete(self):
+    async def test_failing_share_keeps_its_records_but_others_delete(self) -> None:
         ds = FakeDataSource({})
         ds.add("keep", "secret.txt")
         ds.add("flaky", "f.txt")
@@ -304,7 +310,7 @@ class TestB2PerShareDeletes:
         assert "flaky/f.txt" in proc.records  # unread, so kept
         assert conn.full_sync_coverage().complete is False
 
-    async def test_records_of_share_taken_out_of_the_filter_are_removed(self):
+    async def test_records_of_share_taken_out_of_the_filter_are_removed(self) -> None:
         ds = FakeDataSource({})
         ds.add("a", "1.txt")
         ds.add("b", "2.txt")
@@ -321,7 +327,7 @@ class TestB2PerShareDeletes:
 # PP-344 B3: FileIds repeat across shares
 # ---------------------------------------------------------------------------
 class TestB3FileIdAcrossShares:
-    async def test_same_file_id_in_two_shares_makes_two_records(self):
+    async def test_same_file_id_in_two_shares_makes_two_records(self) -> None:
         ds = FakeDataSource({})
         ds.add("a-share", "Finance", is_dir=True, file_id="13835128424026341376")
         ds.add("b-share", "Docs", is_dir=True, file_id="13835128424026341376")
@@ -333,7 +339,7 @@ class TestB3FileIdAcrossShares:
         assert proc.records["a-share/Finance"].id != proc.records["b-share/Docs"].id
         assert proc.moved_calls == []
 
-    async def test_copy_keeping_file_id_in_same_share_is_not_a_move(self):
+    async def test_copy_keeping_file_id_in_same_share_is_not_a_move(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt", file_id="7")
         proc = FakeProcessor()
@@ -349,14 +355,14 @@ class TestB3FileIdAcrossShares:
 # PP-345 B4 / PP-346 B5: exact names
 # ---------------------------------------------------------------------------
 class TestB4B5Names:
-    def test_percent_name_is_not_decoded(self):
+    def test_percent_name_is_not_decoded(self) -> None:
         conn = _connector(FakeDataSource({}), FakeProcessor())
         record = SimpleNamespace(id="r", external_record_group_id="s", external_record_id="s/dir/100%25.pdf")
         assert conn._extract_file_path_info(record) == ("s", "dir/100%25.pdf")
         record.external_record_id = "s/a%20b.txt"
         assert conn._extract_file_path_info(record) == ("s", "a%20b.txt")
 
-    async def test_leading_and_trailing_spaces_are_kept(self):
+    async def test_leading_and_trailing_spaces_are_kept(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", " notes.txt", file_id="1")
         ds.add("s", "notes.txt", file_id="2")
@@ -376,7 +382,7 @@ class TestB4B5Names:
 # PP-359 O5: a rename goes through on_records_moved
 # ---------------------------------------------------------------------------
 class TestO5Moves:
-    async def test_rename_uses_records_moved(self):
+    async def test_rename_uses_records_moved(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "old.txt", file_id="9")
         proc = FakeProcessor()
@@ -395,25 +401,25 @@ class TestO5Moves:
 # PP-360 O6 / PP-361 O7: failures fail the run and tell the admin
 # ---------------------------------------------------------------------------
 class TestO6O7Failures:
-    async def test_failed_list_shares_raises_and_notifies(self):
+    async def test_failed_list_shares_raises_and_notifies(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
         ds.fail_list_shares = True
         conn = _connector(ds, FakeProcessor())
-        with pytest.raises(Exception):
+        with pytest.raises(ConnectionError, match="Failed to list shares"):
             await _sync(conn)
         conn.notify.assert_awaited()
         assert conn.display_name in conn.notify.await_args.kwargs["message"]
 
-    async def test_every_share_failing_raises(self):
+    async def test_every_share_failing_raises(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
         ds.fail_dirs.add(("s", ""))
         conn = _connector(ds, FakeProcessor(), shares=["s"])
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError, match="No share could be read"):
             await _sync(conn)
 
-    async def test_partial_failure_notifies(self):
+    async def test_partial_failure_notifies(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
         ds.add("t", "b.txt")
@@ -427,13 +433,13 @@ class TestO6O7Failures:
 # PP-363 O9: same revision from a listing and from get_file_properties
 # ---------------------------------------------------------------------------
 class TestO9Revision:
-    def test_list_and_properties_revisions_match(self):
+    def test_list_and_properties_revisions_match(self) -> None:
         conn = _connector(FakeDataSource({}), FakeProcessor())
         listed = {"file_id": "1", "size": 5, "last_write_time": LIST_TIME, "is_directory": False}
         props = {**listed, "last_write_time": LIST_TIME.replace(tzinfo=None)}
         assert conn._get_azure_files_revision_id(listed) == conn._get_azure_files_revision_id(props)
 
-    async def test_reindex_of_unchanged_file_is_not_an_update(self):
+    async def test_reindex_of_unchanged_file_is_not_an_update(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
         proc = FakeProcessor()
@@ -446,7 +452,7 @@ class TestO9Revision:
 # PP-352 P2: unchanged items are not rewritten on a scheduled run
 # ---------------------------------------------------------------------------
 class TestP2SkipUnchanged:
-    async def test_second_run_writes_nothing_when_nothing_changed(self):
+    async def test_second_run_writes_nothing_when_nothing_changed(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "d", is_dir=True)
         ds.add("s", "d/a.txt")
@@ -458,7 +464,7 @@ class TestP2SkipUnchanged:
         assert proc.new_calls == []
         assert {"s/d", "s/d/a.txt"} <= set(proc.records)
 
-    async def test_full_sync_rewrites_and_changed_item_is_written(self):
+    async def test_full_sync_rewrites_and_changed_item_is_written(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
         ds.add("s", "b.txt")
@@ -479,7 +485,7 @@ class TestP2SkipUnchanged:
 # PP-354 P4: stale records are deleted in batches
 # ---------------------------------------------------------------------------
 class TestP4BatchDelete:
-    async def test_stale_records_deleted_in_one_batch(self):
+    async def test_stale_records_deleted_in_one_batch(self) -> None:
         ds = FakeDataSource({})
         for i in range(5):
             ds.add("s", f"f{i}.txt")
@@ -499,17 +505,17 @@ class TestP4BatchDelete:
 # PP-347 S1: a team connector must name its shares
 # ---------------------------------------------------------------------------
 class TestS1TeamScope:
-    async def test_team_connector_without_share_filter_refuses(self):
+    async def test_team_connector_without_share_filter_refuses(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
         proc = FakeProcessor()
         conn = _connector(ds, proc, scope="team")
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match="team connector"):
             await _sync(conn)
         assert proc.records == {}
         conn.notify.assert_awaited()
 
-    async def test_team_connector_with_share_filter_syncs(self):
+    async def test_team_connector_with_share_filter_syncs(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
         ds.add("other", "b.txt")
@@ -523,7 +529,7 @@ class TestS1TeamScope:
 # PP-353 P3: directories are listed concurrently, but boundedly
 # ---------------------------------------------------------------------------
 class TestP3BoundedConcurrency:
-    async def test_listings_overlap_up_to_the_limit(self):
+    async def test_listings_overlap_up_to_the_limit(self) -> None:
         import asyncio
 
         from app.connectors.sources.azure_files import connector as module
@@ -535,7 +541,7 @@ class TestP3BoundedConcurrency:
         active = peak = 0
         real = ds.list_directories_and_files
 
-        async def slow_listing(*args, **kwargs):
+        async def slow_listing(*args: object, **kwargs: object) -> AzureFilesResponse:
             nonlocal active, peak
             active += 1
             peak = max(peak, active)
@@ -558,7 +564,7 @@ class TestP3BoundedConcurrency:
 # PP-355 O1 / PP-347 S1 / PP-348 S2 / PP-349 S3 / PP-350 S4: registry metadata
 # ---------------------------------------------------------------------------
 class TestRegistryMetadata:
-    def test_declares_resilience_info_and_auth_types(self):
+    def test_declares_resilience_info_and_auth_types(self) -> None:
         meta = AzureFilesConnector._connector_metadata
         assert meta["supportedAuthTypes"] == ["CONNECTION_STRING", "ENTRA_ID"]
         assert meta["resilienceConfig"]["rate_limit"] == 50
@@ -577,14 +583,14 @@ class TestRegistryMetadata:
 # PP-356 O2: the connection test checks what a sync needs
 # ---------------------------------------------------------------------------
 class TestO2ConnectionTest:
-    async def test_passes_with_list_and_read(self):
+    async def test_passes_with_list_and_read(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
         conn = _connector(ds, FakeProcessor())
         conn.sync_filters = _filters(["s"])
         assert await conn.test_connection_and_access() is True
 
-    async def test_missing_selected_share_warns_but_does_not_block_the_connector(self):
+    async def test_missing_selected_share_warns_but_does_not_block_the_connector(self) -> None:
         # Enabling sync runs this test; failing here would stop the sync that removes
         # a gone share's files (PP-343).
         ds = FakeDataSource({})
@@ -595,7 +601,7 @@ class TestO2ConnectionTest:
         assert await conn.test_connection_and_access() is True
         ds.get_file_properties.assert_awaited_once_with("s", "a.txt")
 
-    async def test_list_only_sas_fails_on_read(self):
+    async def test_list_only_sas_fails_on_read(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
         ds.get_file_properties = AsyncMock(return_value=_err("AuthorizationPermissionMismatch"))
@@ -604,7 +610,7 @@ class TestO2ConnectionTest:
         assert await conn.test_connection_and_access() is False
         ds.get_file_properties.assert_awaited_once_with("s", "a.txt")
 
-    async def test_read_is_checked_on_a_folder_when_the_root_has_no_file(self):
+    async def test_read_is_checked_on_a_folder_when_the_root_has_no_file(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "d", is_dir=True)
         ds.add("s", "d/a.txt")
@@ -614,7 +620,7 @@ class TestO2ConnectionTest:
         assert await conn.test_connection_and_access() is False
         ds.get_directory_properties.assert_awaited_once_with("s", "d")
 
-    async def test_directory_listing_refused_fails(self):
+    async def test_directory_listing_refused_fails(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
         ds.fail_dirs.add(("s", ""))
@@ -622,7 +628,7 @@ class TestO2ConnectionTest:
         conn.sync_filters = FilterCollection()
         assert await conn.test_connection_and_access() is False
 
-    async def test_share_sas_needs_no_list_shares(self):
+    async def test_share_sas_needs_no_list_shares(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
         ds.fail_list_shares = True
@@ -635,7 +641,7 @@ class TestO2ConnectionTest:
 # PP-351 P1: SAS URLs are short-lived, and a missing key is not an error
 # ---------------------------------------------------------------------------
 class TestP1SignedUrl:
-    async def test_sas_expiry_is_minutes(self):
+    async def test_sas_expiry_is_minutes(self) -> None:
         from datetime import timedelta
 
         ds = FakeDataSource({})
@@ -646,7 +652,7 @@ class TestP1SignedUrl:
         expiry = ds.generate_file_sas_url.await_args.kwargs["expiry"]
         assert expiry - datetime.now(timezone.utc) <= timedelta(minutes=5)
 
-    async def test_no_key_is_logged_at_debug(self, caplog):
+    async def test_no_key_is_logged_at_debug(self, caplog) -> None:
         ds = FakeDataSource({})
         ds.generate_file_sas_url = AsyncMock(return_value=_err("Account key required for SAS URL generation"))
         conn = _connector(ds, FakeProcessor())
@@ -660,7 +666,7 @@ class TestP1SignedUrl:
 # PP-357 O3: URLs come from the account's endpoint
 # ---------------------------------------------------------------------------
 class TestO3Urls:
-    def test_web_url_uses_the_client_endpoint(self):
+    def test_web_url_uses_the_client_endpoint(self) -> None:
         conn = _connector(FakeDataSource({}), FakeProcessor())
         conn.account_name = None
         conn.account_url = "https://acct.file.core.chinacloudapi.cn"
@@ -669,7 +675,7 @@ class TestO3Urls:
 
 
 class TestB1SharedUnlink:
-    async def test_shared_unlink_is_skipped_after_a_failed_listing(self):
+    async def test_shared_unlink_is_skipped_after_a_failed_listing(self) -> None:
         """The step in sync_runner that removed the links of unwritten records."""
         from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
         from app.connectors.core.sync.sync_runner import _unlink_what_full_sync_missed

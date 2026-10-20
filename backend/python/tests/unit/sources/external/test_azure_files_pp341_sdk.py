@@ -9,7 +9,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, unquote, urlparse
 
 import pytest
-from azure.core.credentials import AccessToken
+from azure.core.credentials import AccessToken, AccessTokenInfo
 from azure.core.pipeline.transport import AsyncHttpResponse, AsyncHttpTransport
 from azure.core.utils import CaseInsensitiveDict
 
@@ -29,21 +29,21 @@ CONTENT = b"0123456789"
 
 
 class _Body:
-    def __init__(self, response):
+    def __init__(self, response) -> None:
         self.response = response
         self._parts = [response.body()] if response.body() else []
 
-    def __aiter__(self):
+    def __aiter__(self) -> "_Body":
         return self
 
-    async def __anext__(self):
+    async def __anext__(self) -> bytes:
         if not self._parts:
             raise StopAsyncIteration
         return self._parts.pop(0)
 
 
 class _Response(AsyncHttpResponse):
-    def __init__(self, request, status, headers, body):
+    def __init__(self, request, status, headers, body) -> None:
         super().__init__(request, None)
         self.status_code = status
         self.headers = CaseInsensitiveDict(headers)
@@ -51,42 +51,42 @@ class _Response(AsyncHttpResponse):
         self.content_type = self.headers.get("Content-Type")
         self._body = body
 
-    def body(self):
+    def body(self) -> bytes:
         return self._body
 
-    async def load_body(self):
+    async def load_body(self) -> None:
         return None
 
-    async def read(self):
+    async def read(self) -> bytes:
         return self._body
 
     @property
-    def content(self):
+    def content(self) -> bytes:
         return self._body
 
-    def stream_download(self, pipeline, **kwargs):
+    def stream_download(self, pipeline: object, **kwargs: object) -> _Body:
         return _Body(self)
 
 
 class FakeFilesService(AsyncHttpTransport):
     """Answers list shares, list directory, file properties and ranged downloads."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.requests = []
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "FakeFilesService":
         return self
 
-    async def __aexit__(self, *args):
+    async def __aexit__(self, *args: object) -> None:
         return None
 
-    async def open(self):
+    async def open(self) -> None:
         return None
 
-    async def close(self):
+    async def close(self) -> None:
         return None
 
-    async def send(self, request, **kwargs):
+    async def send(self, request: object, **kwargs: object) -> _Response:
         self.requests.append(request)
         query = parse_qs(urlparse(request.url).query)
         if query.get("comp") == ["list"] and "restype" not in query:
@@ -133,11 +133,11 @@ class FakeFilesService(AsyncHttpTransport):
         }, part)
 
 
-def _data_source(service, **client_kwargs):
+def _data_source(service: "FakeFilesService", **client_kwargs: object) -> AzureFilesDataSource:
     config = AzureFilesConnectionStringConfig(connectionString=KEY_CONNECTION_STRING)
     from azure.storage.fileshare.aio import ShareServiceClient
 
-    async def create():
+    async def create() -> object:
         return ShareServiceClient.from_connection_string(KEY_CONNECTION_STRING, transport=service, **client_kwargs)
 
     config.create_async_share_service_client = create
@@ -145,7 +145,7 @@ def _data_source(service, **client_kwargs):
 
 
 class TestListSharesPage:
-    async def test_pages_by_continuation_token(self):
+    async def test_pages_by_continuation_token(self) -> None:
         service = FakeFilesService()
         ds = _data_source(service)
         first = await ds.list_shares_page(results_per_page=2)
@@ -164,7 +164,7 @@ class TestListSharesPage:
 
 
 class TestDownloadFileStream:
-    async def test_chunks_arrive_by_range_not_all_at_once(self):
+    async def test_chunks_arrive_by_range_not_all_at_once(self) -> None:
         service = FakeFilesService()
         ds = _data_source(service, max_single_get_size=4, max_chunk_get_size=4)
         downloader = await ds.download_file_stream("alpha", "a.txt")
@@ -174,7 +174,7 @@ class TestDownloadFileStream:
         ranges = [r.headers["x-ms-range"] for r in service.requests if r.method == "GET"]
         assert ranges == ["bytes=0-3", "bytes=4-7", "bytes=8-9"]
 
-    async def test_connector_streams_with_a_real_connection_string_client(self):
+    async def test_connector_streams_with_a_real_connection_string_client(self) -> None:
         """PP-351: a key connection string, the default setup, no longer reads the
         whole file into memory before the first byte is sent."""
         import logging
@@ -204,7 +204,7 @@ class TestDownloadFileStream:
 
 
 class TestRevisionShapes:
-    async def test_listing_and_properties_give_the_same_revision(self):
+    async def test_listing_and_properties_give_the_same_revision(self) -> None:
         """PP-363: the SDK returns an aware time from a listing and a naive one from
         get_file_properties; the revision must not depend on which was read."""
         import logging
@@ -228,7 +228,7 @@ class TestRevisionShapes:
 
 
 class TestSasUrl:
-    async def test_key_connection_string_signs_short_lived_encoded_urls(self):
+    async def test_key_connection_string_signs_short_lived_encoded_urls(self) -> None:
         from datetime import datetime, timedelta, timezone
 
         ds = _data_source(FakeFilesService())
@@ -241,7 +241,7 @@ class TestSasUrl:
         assert unquote(url.path) == "/alpha/dir/a #1?.txt"
         assert parse_qs(url.query)["sp"] == ["r"]
 
-    async def test_sas_connection_string_has_no_key(self):
+    async def test_sas_connection_string_has_no_key(self) -> None:
         config = AzureFilesConnectionStringConfig(
             connectionString="FileEndpoint=https://acct.file.core.usgovcloudapi.net/;SharedAccessSignature=sv=1&sig=x"
         )
@@ -255,31 +255,30 @@ class TestSasUrl:
 
 
 class _FakeCredential:
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         self.args = args
         self.closed = False
 
-    async def get_token(self, *scopes, **kwargs):
+    async def get_token(self, *scopes: str, **kwargs: object) -> AccessToken:
         return AccessToken("entra-token", 4_102_444_800)
 
-    async def get_token_info(self, *scopes, **kwargs):
-        from azure.core.credentials import AccessTokenInfo
+    async def get_token_info(self, *scopes: str, **kwargs: object) -> AccessTokenInfo:
 
         return AccessTokenInfo("entra-token", 4_102_444_800)
 
-    async def close(self):
+    async def close(self) -> None:
         self.closed = True
 
 
 class TestEntraId:
-    async def test_builds_from_config_and_sends_backup_intent_bearer(self):
+    async def test_builds_from_config_and_sends_backup_intent_bearer(self) -> None:
         config = {"auth": {
             "authType": "ENTRA_ID", "accountUrl": "https://acct.file.core.windows.net/",
             "tenantId": "t", "clientId": "c", "clientSecret": "s",
         }}
 
         class _Config:
-            async def get_config(self, path):
+            async def get_config(self, path: str) -> dict:
                 return config
 
         client = await AzureFilesClient.build_from_services(
@@ -293,8 +292,8 @@ class TestEntraId:
         service = FakeFilesService()
         with patch("azure.identity.aio.ClientSecretCredential", _FakeCredential):
             sdk_client = await client.get_async_share_service_client()
-        sdk_client._client._config.transport = service  # noqa: SLF001
-        sdk_client._pipeline._transport = service  # noqa: SLF001
+        sdk_client._client._config.transport = service
+        sdk_client._pipeline._transport = service
         credential = sdk_client.credential
         assert credential.args == ("t", "c", "s")
         ds = AzureFilesDataSource(client)
@@ -306,7 +305,7 @@ class TestEntraId:
         await ds.close_async_client()
         assert credential.closed is True
 
-    def test_missing_fields_are_refused(self):
+    def test_missing_fields_are_refused(self) -> None:
         from app.sources.client.azure.azure_files import AzureFilesConfigurationError
 
         with pytest.raises(AzureFilesConfigurationError, match="clientSecret"):
