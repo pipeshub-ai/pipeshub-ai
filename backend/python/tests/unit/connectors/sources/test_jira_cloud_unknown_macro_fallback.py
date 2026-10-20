@@ -316,6 +316,13 @@ class TestAdfToMarkdown:
         assert md == "@Alice see https://example.atlassian.net/browse/EX-1 IN PROGRESS 🎉 due 2026-01-01"
         assert "account-id-not-indexed" not in md
 
+    def test_block_card_is_its_own_paragraph(self) -> None:
+        adf = {"type": "doc", "content": [
+            {"type": "blockCard", "attrs": {"url": "https://example.com/spec"}},
+            _para(_text("next")),
+        ]}
+        assert adf_to_markdown(adf) == "https://example.com/spec\n\nnext"
+
     def test_non_document_returns_empty(self) -> None:
         assert adf_to_markdown(None) == ""
         assert adf_to_markdown("wiki text") == ""
