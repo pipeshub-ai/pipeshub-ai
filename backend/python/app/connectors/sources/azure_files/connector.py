@@ -1702,8 +1702,13 @@ class AzureFilesConnector(BaseConnector):
             raise to_stream_error(e, connector=self.display_name) from e
 
         async def chunks() -> AsyncGenerator[bytes, None]:
-            async for chunk in downloader.chunks():
-                yield chunk
+            try:
+                async for chunk in downloader.chunks():
+                    yield chunk
+            except Exception as e:
+                # A later range request can fail too (a file deleted mid-download).
+                self.logger.error(f"Error streaming file for record {record.id}: {e}", exc_info=True)
+                raise to_stream_error(e, connector=self.display_name) from e
 
         return create_stream_record_response(
             chunks(),

@@ -1100,6 +1100,29 @@ class TestStreamRecord:
         assert [c async for c in body] == [b"ab", b"cd"]
 
     @pytest.mark.asyncio
+    @patch("app.connectors.sources.azure_files.connector.create_stream_record_response")
+    async def test_error_in_a_later_chunk_is_mapped(self, mock_create, conn) -> None:
+        from fastapi import HTTPException
+
+        class _AzureNotFound(Exception):
+            status_code = 404
+
+        async def chunks() -> AsyncIterator[bytes]:
+            yield b"ab"
+            raise _AzureNotFound("deleted mid-download")
+
+        downloader = MagicMock()
+        downloader.chunks = chunks
+        conn.data_source = MagicMock()
+        conn.data_source.download_file_stream = AsyncMock(return_value=downloader)
+        await conn.stream_record(_make_file_record())
+        body = mock_create.call_args.args[0]
+        assert await body.__anext__() == b"ab"
+        with pytest.raises(HTTPException) as exc_info:
+            await body.__anext__()
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
     async def test_stream_not_found(self, conn):
         from fastapi import HTTPException
 

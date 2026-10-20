@@ -112,6 +112,10 @@ class FakeFilesService(AsyncHttpTransport):
                 "<Etag>\"0x9\"</Etag></Properties></File></Entries><NextMarker /></EnumerationResults>"
             ).encode()
             return _Response(request, 200, {"Content-Type": "application/xml"}, body)
+        if query.get("restype") == ["share"]:
+            return _Response(request, 200, {
+                "ETag": '"0x1"', "Last-Modified": "Wed, 01 May 2024 10:00:00 GMT", "x-ms-share-quota": "5",
+            }, b"")
         headers = {
             "ETag": '"0x9"',
             "Last-Modified": "Wed, 01 May 2024 10:00:00 GMT",
@@ -297,11 +301,22 @@ class TestEntraId:
         credential = sdk_client.credential
         assert credential.args == ("t", "c", "s")
         ds = AzureFilesDataSource(client)
-        listed = await ds.list_directories_and_files("alpha", "")
-        assert listed.success, listed.error
-        request = service.requests[-1]
-        assert request.headers["Authorization"] == "Bearer entra-token"
-        assert request.headers["x-ms-file-request-intent"] == "backup"
+        # Every call the connector makes: the share-level ones too, which take OAuth
+        # from API version 2024-11-04 (the SDK's) with the backup intent.
+        calls = [
+            ds.list_directories_and_files("alpha", ""),
+            ds.list_shares(),
+            ds.list_shares_page(results_per_page=2),
+            ds.get_share_properties("alpha"),
+            ds.get_file_properties("alpha", "a.txt"),
+        ]
+        for call in calls:
+            response = await call
+            assert response.success, response.error
+        assert len(service.requests) >= len(calls)
+        for request in service.requests:
+            assert request.headers["Authorization"] == "Bearer entra-token", request.url
+            assert request.headers["x-ms-file-request-intent"] == "backup", request.url
         await ds.close_async_client()
         assert credential.closed is True
 
