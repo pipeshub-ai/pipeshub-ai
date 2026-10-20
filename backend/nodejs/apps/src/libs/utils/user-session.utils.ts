@@ -15,6 +15,18 @@ export interface SessionClaims {
   iat?: number;
 }
 
+/**
+ * A session accepted at handshake, as remembered for re-checking it later.
+ * `email` is the one in the token, not the account's current address: rules
+ * keyed on an email have to judge the address the session was issued for.
+ */
+export interface AcceptedSession {
+  userId: string;
+  orgId: string;
+  iat?: number;
+  email?: string;
+}
+
 type SessionUser = { isDisabled?: boolean; kind?: string };
 type SessionActivity = { activityType?: string; createdAt?: Date | null };
 
@@ -108,7 +120,7 @@ export async function findSessionRefusal(
  * activities are read again. Results are in the order of `sessions`.
  */
 export async function findSessionRefusals(
-  sessions: ReadonlyArray<{ userId: string; orgId: string; iat?: number }>,
+  sessions: ReadonlyArray<AcceptedSession>,
 ): Promise<Array<string | null>> {
   if (sessions.length === 0) return [];
 

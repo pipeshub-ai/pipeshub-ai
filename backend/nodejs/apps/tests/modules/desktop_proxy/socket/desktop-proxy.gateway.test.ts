@@ -65,7 +65,7 @@ describe('DesktopProxySocketGateway session checks', () => {
 
   const makeGateway = (sessions: Record<string, sinon.SinonStub>) =>
     new DesktopProxySocketGateway(
-      { verifyToken: sinon.stub().resolves({ userId: USER, orgId: ORG, role: 'member', iat: 1_000 }) } as never,
+      { verifyToken: sinon.stub().resolves({ userId: USER, orgId: ORG, role: 'member', iat: 1_000, email: 'old@x.com' }) } as never,
       sessions as never,
     ) as any
 
@@ -84,13 +84,18 @@ describe('DesktopProxySocketGateway session checks', () => {
       expect(socket.data.userId).to.equal(undefined)
     })
 
-    it('accepts a live session and records the token issue time', async () => {
+    it('accepts a live session and records the token issue time and email', async () => {
       const findSessionRefusal = sinon.stub().resolves(null)
       const gateway = makeGateway({ findSessionRefusal })
       const socket = makeSocket()
 
       expect(await gateway.authenticateHandshake(socket)).to.equal(undefined)
-      expect(socket.data).to.deep.equal({ userId: USER, orgId: ORG, issuedAt: 1_000 })
+      expect(socket.data).to.deep.equal({
+        userId: USER,
+        orgId: ORG,
+        issuedAt: 1_000,
+        email: 'old@x.com',
+      })
       expect(findSessionRefusal.firstCall.args[0]).to.include({ userId: USER, orgId: ORG })
     })
 
@@ -113,7 +118,8 @@ describe('DesktopProxySocketGateway session checks', () => {
     }
 
     it('disconnects only the sockets whose session no longer holds', async () => {
-      const revoked = makeSocket({ userId: USER, orgId: ORG, issuedAt: 1_000 })
+      // The token's email, not the account's current one, is what gets re-checked.
+      const revoked = makeSocket({ userId: USER, orgId: ORG, issuedAt: 1_000, email: 'old@x.com' })
       const live = makeSocket({ userId: OTHER, orgId: ORG, issuedAt: 1_000 })
       const findSessionRefusals = sinon.stub().resolves(['This account is disabled', null])
       const gateway = withSockets(makeGateway({ findSessionRefusals }), [revoked, live])
@@ -121,8 +127,8 @@ describe('DesktopProxySocketGateway session checks', () => {
       await gateway.disconnectRevokedSessions()
 
       expect(findSessionRefusals.firstCall.args[0]).to.deep.equal([
-        { userId: USER, orgId: ORG, iat: 1_000 },
-        { userId: OTHER, orgId: ORG, iat: 1_000 },
+        { userId: USER, orgId: ORG, iat: 1_000, email: 'old@x.com' },
+        { userId: OTHER, orgId: ORG, iat: 1_000, email: undefined },
       ])
       expect(revoked.disconnect.calledOnceWith(true)).to.equal(true)
       expect(live.disconnect.called).to.equal(false)

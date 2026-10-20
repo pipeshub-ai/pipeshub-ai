@@ -26,8 +26,9 @@ import {
 type RestProxySocketData = {
   userId: string;
   orgId: string;
-  /** `iat` of the handshake token, for re-checking the session later. */
+  /** `iat` and `email` of the handshake token, for re-checking the session later. */
   issuedAt?: number;
+  email?: string;
   deviceId?: string;
   deviceName?: string;
 };
@@ -262,6 +263,8 @@ export class DesktopProxySocketGateway {
     socket.data.orgId = orgId;
     socket.data.issuedAt =
       typeof decoded.iat === 'number' ? decoded.iat : undefined;
+    socket.data.email =
+      typeof decoded.email === 'string' ? decoded.email : undefined;
     return undefined;
   }
 
@@ -284,6 +287,7 @@ export class DesktopProxySocketGateway {
           userId: socket.data.userId,
           orgId: socket.data.orgId,
           iat: socket.data.issuedAt,
+          email: socket.data.email,
         })),
       );
       sockets.forEach((socket, i) => {
