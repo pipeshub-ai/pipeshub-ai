@@ -2434,10 +2434,12 @@ class TestFetchGroupMembers:
     def _group_sync_conn(member_pages):
         c = _conn()
         dep = c.data_entities_processor
-        dep.on_new_app_users = AsyncMock()
+        # Like the graph: get_all_app_users returns only the users linked to the connector.
+        linked: list[AppUser] = []
+        dep.on_new_app_users = AsyncMock(side_effect=lambda users: linked.extend(users))
         dep.on_new_user_groups = AsyncMock()
         dep.migrate_group_to_user_by_external_id = AsyncMock()
-        dep.get_all_app_users = AsyncMock(return_value=[])
+        dep.get_all_app_users = AsyncMock(side_effect=lambda *a, **k: list(linked))
         dep.withdraw_app_user_access = AsyncMock()
         ds = MagicMock()
         ds.search_users = AsyncMock(return_value=_resp(200, {"results": [
@@ -2446,7 +2448,6 @@ class TestFetchGroupMembers:
         ds.get_groups = AsyncMock(return_value=_resp(200, {"results": [{"id": "g1", "name": "Group 1"}]}))
         ds.get_group_members = AsyncMock(side_effect=member_pages)
         c._get_fresh_datasource = AsyncMock(return_value=ds)
-        c._resolve_group_app_users = AsyncMock(return_value=[])
         return c
 
     @pytest.mark.asyncio
@@ -2464,6 +2465,9 @@ class TestFetchGroupMembers:
         saved = c.data_entities_processor.on_new_app_users.await_args.args[0]
         assert [u.source_user_id for u in saved] == ["acc-d"]
         assert c._inactive_account_ids == set()
+        # Linked before the group is saved, so the group keeps the account as a member.
+        (_, members), = c.data_entities_processor.on_new_user_groups.await_args.args[0]
+        assert [u.source_user_id for u in members] == ["acc-d"]
 
     @pytest.mark.asyncio
     async def test_a_member_list_failing_on_page_two_withdraws_nothing(self):

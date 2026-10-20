@@ -1176,6 +1176,8 @@ class ConfluenceConnector(BaseConnector):
             self._pending_inactive_ids = set()
             self._pending_active_emails = set()
             every_member_list_read = True
+            # (group, member emails, member accountIds) of each group read in full.
+            read_groups: list[tuple[dict, list[str], list[str]]] = []
 
             # Pagination variables for groups
             batch_size = 50
@@ -1203,7 +1205,6 @@ class ConfluenceConnector(BaseConnector):
                 if not groups_data:
                     break
 
-                # Process each group and its members
                 for group_data in groups_data:
                     try:
                         group_id = group_data.get("id")
@@ -1212,9 +1213,8 @@ class ConfluenceConnector(BaseConnector):
                         if not group_id or not group_name:
                             continue
 
-                        self.logger.debug(f"  Processing group: {group_name} ({group_id})")
+                        self.logger.debug(f"  Reading group: {group_name} ({group_id})")
 
-                        # Fetch members for this group
                         members = await self._fetch_group_members(group_id, group_name)
                         if members is None:
                             # Saving the group now would replace its members with an empty list.
@@ -1223,34 +1223,10 @@ class ConfluenceConnector(BaseConnector):
                             )
                             every_member_list_read = False
                             continue
-                        member_emails, member_account_ids = members
-
-                        # Create user group
-                        user_group = self._transform_to_user_group(group_data)
-                        if not user_group:
-                            continue
-
-                        # Get AppUser objects for members
-                        try:
-                            app_users = await self._resolve_group_app_users(
-                                member_emails, member_account_ids
-                            )
-                        except Exception as lookup_error:
-                            # Saving the group now would replace its members with an empty list.
-                            self.logger.warning(
-                                f"Keeping the stored members of group {group_name}: "
-                                f"its members could not be looked up ({lookup_error})"
-                            )
-                            continue
-
-                        # Save group with members
-                        await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
-                        total_groups_synced += 1
-                        total_memberships_synced += len(app_users)
-                        self.logger.debug(f"Group {group_name}: {len(app_users)} members")
+                        read_groups.append((group_data, *members))
 
                     except Exception as group_error:
-                        self.logger.error(f"❌ Failed to process group {group_data.get('name')}: {group_error}")
+                        self.logger.error(f"❌ Failed to read group {group_data.get('name')}: {group_error}")
                         every_member_list_read = False
                         continue
 
@@ -1269,6 +1245,38 @@ class ConfluenceConnector(BaseConnector):
                 self._inactive_account_ids = self._pending_inactive_ids
                 self._active_member_emails = self._pending_active_emails
                 self._group_read_complete = True
+            # Members resolve only to users linked to the connector, so a reactivated
+            # account has to be linked again before its groups are saved.
+            await self._restore_reactivated_users()
+
+            for group_data, member_emails, member_account_ids in read_groups:
+                group_name = group_data.get("name")
+                try:
+                    user_group = self._transform_to_user_group(group_data)
+                    if not user_group:
+                        continue
+
+                    try:
+                        app_users = await self._resolve_group_app_users(
+                            member_emails, member_account_ids
+                        )
+                    except Exception as lookup_error:
+                        # Saving the group now would replace its members with an empty list.
+                        self.logger.warning(
+                            f"Keeping the stored members of group {group_name}: "
+                            f"its members could not be looked up ({lookup_error})"
+                        )
+                        continue
+
+                    await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
+                    total_groups_synced += 1
+                    total_memberships_synced += len(app_users)
+                    self.logger.debug(f"Group {group_name}: {len(app_users)} members")
+
+                except Exception as group_error:
+                    self.logger.error(f"❌ Failed to process group {group_name}: {group_error}")
+                    continue
+
             self.logger.info(f"✅ Group sync complete. Groups: {total_groups_synced}, Memberships: {total_memberships_synced}")
 
         except Exception as e:
@@ -4090,19 +4098,24 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
             return None
 
-    async def _reconcile_inactive_app_users(self) -> None:
-        """After the group sync: save the held-back users that are active again, then withdraw
-        the stored ones now inactive. Statuses from a partial group read are not trusted."""
+    async def _restore_reactivated_users(self) -> None:
+        """Save the users _sync_users held back whose account this sync's full group read
+        reports active again. Statuses from a partial group read are not trusted."""
         held_back, self._held_back_users = self._held_back_users, []
         if not self._group_read_complete:
-            self.logger.warning(
-                "Not every group member list was read: account statuses stay as last read in full"
-            )
             return
         reactivated = [u for u in held_back if u.source_user_id not in self._inactive_account_ids]
         if reactivated:
             await self._save_app_users(reactivated)
             self.logger.info(f"Restored {len(reactivated)} Confluence user(s) active again at the source")
+
+    async def _reconcile_inactive_app_users(self) -> None:
+        """After the group sync: withdraw the stored users now inactive, from a full group read only."""
+        if not self._group_read_complete:
+            self.logger.warning(
+                "Not every group member list was read: account statuses stay as last read in full"
+            )
+            return
         await self._withdraw_inactive_app_users()
 
     async def _withdraw_inactive_app_users(self) -> None:
