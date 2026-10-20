@@ -51,6 +51,7 @@ _SEED_SEARCH = {
     "modifiedAfter": "2000-01-01",
     "modifiedBefore": "2999-12-31",
     "rewriteQuery": False,
+    "timeline": "created",
 }
 
 
