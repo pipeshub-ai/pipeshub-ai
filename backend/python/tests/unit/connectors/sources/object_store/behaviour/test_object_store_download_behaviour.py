@@ -4,6 +4,8 @@ Sync stores the key exactly as the listing returns it (botocore decodes the
 listing). A signed URL must name that same key, or the GET misses the object.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 from object_store_behaviour_fakes import (
     FakeCheckpointStore,
@@ -38,3 +40,14 @@ class TestSignedUrl:
 
         fetched = connector.data_source.object_at(url)
         assert fetched is not None and fetched.key == key
+
+    @pytest.mark.asyncio
+    async def test_the_signed_url_lives_five_minutes(self, connector, store, db) -> None:
+        """Its only caller fetches it at once, on the server; S3 checks expiry when the GET starts."""
+        store.put("a.txt")
+        await connector.run_sync()
+        sign = connector.data_source.generate_presigned_url = AsyncMock(wraps=connector.data_source.generate_presigned_url)
+
+        await connector.get_signed_url(db.by_path()["bucket-1/a.txt"])
+
+        assert sign.await_args.kwargs["ExpiresIn"] == 300

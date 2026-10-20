@@ -106,6 +106,8 @@ def _bucket_creation_dates_from_list_buckets(
 
 # Default connector endpoint for signed URL generation
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
+# The only caller fetches the URL at once on the server; S3 checks expiry when the GET starts.
+PRESIGNED_URL_EXPIRY_SECONDS = 300
 
 
 def _s3_last_modified_to_epoch_ms(last_modified: Any) -> int:
@@ -1302,7 +1304,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             response = await self.data_source.generate_presigned_url(
                 ClientMethod="get_object",
                 Params={"Bucket": bucket_name, "Key": key},
-                ExpiresIn=86400,
+                ExpiresIn=PRESIGNED_URL_EXPIRY_SECONDS,
                 region_name=bucket_region
             )
 
