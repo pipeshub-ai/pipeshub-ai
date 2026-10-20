@@ -581,8 +581,10 @@ class TestTestConnectionAndAccess:
         s3_connector.data_source.list_buckets = AsyncMock(
             return_value=_make_response(False, error="Access denied")
         )
-        result = await s3_connector.test_connection_and_access()
-        assert result is False
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+
+        with pytest.raises(ConnectorInitError, match="Access denied"):
+            await s3_connector.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_exception(self, s3_connector):

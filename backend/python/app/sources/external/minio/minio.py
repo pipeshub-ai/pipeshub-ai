@@ -84,7 +84,11 @@ class MinIODataSource:
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -130,7 +134,11 @@ class MinIODataSource:
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -155,7 +163,11 @@ class MinIODataSource:
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -214,7 +226,11 @@ class MinIODataSource:
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -291,7 +307,11 @@ class MinIODataSource:
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -463,7 +483,11 @@ class MinIODataSource:
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -498,7 +522,11 @@ class MinIODataSource:
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -528,6 +556,10 @@ class MinIODataSource:
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")

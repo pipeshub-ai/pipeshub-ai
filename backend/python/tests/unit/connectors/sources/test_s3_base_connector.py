@@ -570,8 +570,10 @@ class TestTestConnectionAndAccess:
         s3_connector.data_source.list_buckets = AsyncMock(
             return_value=_make_response(False, error="Access denied")
         )
-        result = await s3_connector.test_connection_and_access()
-        assert result is False
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+
+        with pytest.raises(ConnectorInitError, match="Access denied"):
+            await s3_connector.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_exception(self, s3_connector):
@@ -579,6 +581,95 @@ class TestTestConnectionAndAccess:
         s3_connector.data_source.list_buckets = AsyncMock(side_effect=Exception("err"))
         result = await s3_connector.test_connection_and_access()
         assert result is False
+
+
+def _select_buckets(connector, names):
+    from app.connectors.core.registry.filters import Filter, FilterType
+
+    connector.sync_filters = FilterCollection(
+        filters=[Filter(key="buckets", value=names, type=FilterType.MULTISELECT, operator="in")]
+    )
+
+
+def _access_source(*, buckets=None, list_status=None, objects=None, head_status=None):
+    """A data source whose listing and reads fail with the given HTTP status (None: they succeed)."""
+    source = MagicMock()
+    if buckets is None:
+        source.list_buckets = AsyncMock(return_value=_make_response(False, error="AccessDenied: Access Denied", status_code=403))
+    else:
+        source.list_buckets = AsyncMock(return_value=_make_response(True, data={"Buckets": [{"Name": b} for b in buckets]}))
+    if list_status:
+        source.list_objects_v2 = AsyncMock(return_value=_make_response(False, error="AccessDenied: Access Denied", status_code=list_status))
+    else:
+        contents = [{"Key": k} for k in (objects or [])]
+        source.list_objects_v2 = AsyncMock(return_value=_make_response(True, data={"Contents": contents} if contents else {}))
+    if head_status:
+        source.head_object = AsyncMock(return_value=_make_response(False, error="403: Forbidden", status_code=head_status))
+    else:
+        source.head_object = AsyncMock(return_value=_make_response(True, data={}))
+    return source
+
+
+class TestConnectionTestProbesBucketAccess:
+    """PP-112: the test proves the key can list and read the buckets the sync uses."""
+
+    @pytest.mark.asyncio
+    async def test_selected_bucket_without_list_bucket_fails(self, s3_connector):
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+
+        _select_buckets(s3_connector, ["finance"])
+        s3_connector.data_source = _access_source(buckets=["finance"], list_status=403)
+        with pytest.raises(ConnectorInitError) as err:
+            await s3_connector.test_connection_and_access()
+        assert "s3:ListBucket" in str(err.value) and "finance" in str(err.value)
+
+    @pytest.mark.asyncio
+    async def test_selected_buckets_pass_without_list_all_my_buckets(self, s3_connector):
+        _select_buckets(s3_connector, ["finance"])
+        s3_connector.data_source = _access_source(buckets=None, objects=["a.txt"])
+        assert await s3_connector.test_connection_and_access() is True
+        s3_connector.data_source.head_object.assert_awaited_once_with(Bucket="finance", Key="a.txt")
+
+    @pytest.mark.asyncio
+    async def test_selected_bucket_without_get_object_fails(self, s3_connector):
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+
+        _select_buckets(s3_connector, ["finance"])
+        s3_connector.data_source = _access_source(buckets=["finance"], objects=["a.txt"], head_status=403)
+        with pytest.raises(ConnectorInitError) as err:
+            await s3_connector.test_connection_and_access()
+        assert "s3:GetObject" in str(err.value) and "finance" in str(err.value)
+
+    @pytest.mark.asyncio
+    async def test_empty_selected_bucket_passes(self, s3_connector):
+        _select_buckets(s3_connector, ["finance"])
+        s3_connector.data_source = _access_source(buckets=["finance"])
+        assert await s3_connector.test_connection_and_access() is True
+        s3_connector.data_source.head_object.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_selection_without_list_all_my_buckets_names_it(self, s3_connector):
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+
+        s3_connector.data_source = _access_source(buckets=None)
+        with pytest.raises(ConnectorInitError) as err:
+            await s3_connector.test_connection_and_access()
+        assert "s3:ListAllMyBuckets" in str(err.value)
+
+    @pytest.mark.asyncio
+    async def test_no_selection_fails_when_no_listed_bucket_is_readable(self, s3_connector):
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+
+        s3_connector.data_source = _access_source(buckets=["a", "b"], objects=["x"], head_status=403)
+        with pytest.raises(ConnectorInitError) as err:
+            await s3_connector.test_connection_and_access()
+        assert "s3:GetObject" in str(err.value)
+
+    @pytest.mark.asyncio
+    async def test_no_selection_stops_at_first_readable_bucket(self, s3_connector):
+        s3_connector.data_source = _access_source(buckets=["a", "b"], objects=["x"])
+        assert await s3_connector.test_connection_and_access() is True
+        s3_connector.data_source.list_objects_v2.assert_awaited_once_with(Bucket="a", MaxKeys=1)
 
 
 # ===========================================================================
@@ -1547,7 +1638,10 @@ class TestTestConnectionAndAccessFullCoverage:
     async def test_failure(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(return_value=_resp(False, error="denied"))
-        assert await connector.test_connection_and_access() is False
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+
+        with pytest.raises(ConnectorInitError, match="denied"):
+            await connector.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_exception(self, connector):

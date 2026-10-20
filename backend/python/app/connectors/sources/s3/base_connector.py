@@ -6,6 +6,7 @@ object storage systems. The base classes and utilities here are used by both
 S3Connector and MinIOConnector to avoid code duplication.
 """
 
+import asyncio
 import mimetypes
 import uuid
 from abc import abstractmethod
@@ -25,7 +26,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
@@ -1276,23 +1277,11 @@ class S3CompatibleBaseConnector(BaseConnector):
             ]
 
     async def test_connection_and_access(self) -> bool:
-        """Test connection and access."""
+        """Check that the key can list and read the buckets the sync uses."""
         if not self.data_source:
             return False
         try:
-            response = await self.data_source.list_buckets()
-            if response.success:
-                self.logger.info(f"{self.connector_name} connection test successful.")
-                return True
-            else:
-                self.logger.error(f"{self.connector_name} connection test failed: {response.error}")
-                await self.notify(
-                    type=NotificationType.CONNECTOR_AUTH_ERROR,
-                    severity=NotificationSeverity.ERROR,
-                    title=f"Connection test failed",
-                    message=f"{self.connector_name.value}: {response.error}",
-                )
-                return False
+            problem = await self._access_problem()
         except Exception as e:
             self.logger.error(f"{self.connector_name} connection test failed: {e}", exc_info=True)
             await self.notify(
@@ -1302,6 +1291,69 @@ class S3CompatibleBaseConnector(BaseConnector):
                 message=f"{self.connector_name.value}: {e}",
             )
             return False
+        if problem is None:
+            self.logger.info(f"{self.connector_name} connection test successful.")
+            return True
+        self.logger.error(f"{self.connector_name} connection test failed: {problem}")
+        await self.notify(
+            type=NotificationType.CONNECTOR_AUTH_ERROR,
+            severity=NotificationSeverity.ERROR,
+            title=f"Connection test failed",
+            message=f"{self.connector_name.value}: {problem}",
+        )
+        raise ConnectorInitError(f"{self.display_name}: {problem}")
+
+    async def _access_problem(self) -> str | None:
+        """Why the key cannot sync, or None.
+
+        Every selected bucket must be readable. With no selection, sync takes every
+        bucket the key can list, so one readable bucket is enough.
+        """
+        selected = [self.bucket_name] if self.bucket_name else included_names(self.sync_filters, "buckets")
+        if selected:
+            # A key scoped to named buckets may lack s3:ListAllMyBuckets; sync does not need it then.
+            problems = await asyncio.gather(*(self._bucket_access_problem(b) for b in selected))
+            return " ".join(p for p in problems if p) or None
+        response = await self.data_source.list_buckets()
+        if not response.success:
+            hint = (
+                " The key needs s3:ListAllMyBuckets, or name the buckets in the Bucket Names filter."
+                if getattr(response, "status_code", None) == HttpStatusCode.FORBIDDEN.value else ""
+            )
+            return f"Could not list buckets: {response.error}.{hint}"
+        problems = []
+        for bucket in (response.data or {}).get("Buckets") or []:
+            name = bucket.get("Name")
+            if not name or not name_passes_filter(self.sync_filters, "buckets", name):
+                continue
+            problem = await self._bucket_access_problem(name)
+            if problem is None:
+                return None
+            problems.append(problem)
+        if not problems:
+            return None
+        return f"{problems[0]} None of the {len(problems)} listed bucket(s) could be read."
+
+    async def _bucket_access_problem(self, bucket_name: str) -> str | None:
+        """Why the key cannot list or read objects in the bucket, or None."""
+        listing = await self.data_source.list_objects_v2(Bucket=bucket_name, MaxKeys=1)
+        if not listing.success:
+            hint = (
+                f" The key needs s3:ListBucket on arn:aws:s3:::{bucket_name}."
+                if getattr(listing, "status_code", None) == HttpStatusCode.FORBIDDEN.value else ""
+            )
+            return f"Could not list objects in bucket '{bucket_name}': {listing.error}.{hint}"
+        contents = (listing.data or {}).get("Contents") or []
+        if not contents:
+            return None
+        head = await self.data_source.head_object(Bucket=bucket_name, Key=contents[0].get("Key"))
+        if not head.success:
+            hint = (
+                f" The key needs s3:GetObject on arn:aws:s3:::{bucket_name}/*."
+                if getattr(head, "status_code", None) == HttpStatusCode.FORBIDDEN.value else ""
+            )
+            return f"Could not read objects in bucket '{bucket_name}': {head.error}.{hint}"
+        return None
 
     async def get_signed_url(self, record: Record) -> str | None:
         """Generate a presigned URL for an S3 object."""
