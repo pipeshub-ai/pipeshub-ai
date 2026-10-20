@@ -62,6 +62,7 @@ from app.agent_loop_lib.transport.openai_responses import (
 from app.agent_loop_lib.transport.prompt_cache import (
     OPENAI_BREAKPOINT,
     OPENAI_BREAKPOINT_PARAM,
+    OpenAICachePlan,
 )
 from app.agent_loop_lib.transport.provider_conflicts import (
     is_api_shape_conflict,
@@ -92,6 +93,20 @@ _FINISH_REASON_MAP: dict[str | None, StopReason] = {
 
 def _marked(block: dict[str, Any]) -> dict[str, Any]:
     return {**block, OPENAI_BREAKPOINT_PARAM: dict(OPENAI_BREAKPOINT)}
+
+
+def _mark_last(item: dict[str, Any], text_type: str) -> None:
+    """A breakpoint on the last block of a user or tool item (a chat message,
+    or a Responses message or function output); string content becomes the
+    one text block it stands for. An assistant item is left alone."""
+    if item.get("role") == "assistant" or item.get("type") == "function_call":
+        return
+    field_name = "output" if item.get("type") == "function_call_output" else "content"
+    content = item.get(field_name)
+    if isinstance(content, str):
+        item[field_name] = [_marked({"type": text_type, "text": content})] if content else content
+    elif isinstance(content, list) and content and isinstance(content[-1], dict):
+        item[field_name] = [*content[:-1], _marked(content[-1])]
 
 
 @dataclass
@@ -196,8 +211,7 @@ class OpenAITransport(LLMTransport):
         timeout: float | None = None,
         max_retries: int | None = None,
         model_key: str | None = None,
-        cache_kwargs: dict[str, str] | None = None,
-        cache_breakpoint: bool = False,
+        cache_plan: OpenAICachePlan | None = None,
         on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
         http_client: Any | None = None,
     ) -> None:
@@ -227,7 +241,7 @@ class OpenAITransport(LLMTransport):
         if http_client is not None:
             client_kwargs["http_client"] = http_client
         self._client = _openai.AsyncOpenAI(**client_kwargs)
-        self._init_prompt_cache(cache_kwargs, cache_breakpoint, on_cache_rejected)
+        self._init_prompt_cache(cache_plan, on_cache_rejected)
         # Cumulative usage across all calls on this transport instance —
         # diagnostic only; see AnthropicTransport's equivalent fields.
         self.total_input_tokens: int = 0
@@ -240,7 +254,7 @@ class OpenAITransport(LLMTransport):
     @classmethod
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
-        cache_kwargs: dict[str, str] | None = None, cache_breakpoint: bool = False,
+        cache_plan: OpenAICachePlan | None = None,
         on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
         http_client: Any | None = None,
     ) -> "OpenAITransport":
@@ -290,38 +304,36 @@ class OpenAITransport(LLMTransport):
             timeout=timeout if isinstance(timeout, (int, float)) else None,
             max_retries=max_retries if isinstance(max_retries, int) else None,
             model_key=model_key,
-            cache_kwargs=cache_kwargs,
-            cache_breakpoint=cache_breakpoint,
+            cache_plan=cache_plan,
             on_cache_rejected=on_cache_rejected,
             http_client=http_client,
         )
 
     def _init_prompt_cache(
-        self, cache_kwargs: dict[str, str] | None, cache_breakpoint: bool,
-        on_cache_rejected: Callable[[frozenset[str]], None] | None,
+        self, cache_plan: OpenAICachePlan | None, on_cache_rejected: Callable[[frozenset[str]], None] | None,
     ) -> None:
-        # prompt_cache_key / prompt_cache_retention, and whether the stable
-        # system block ends in a breakpoint, decided by the caller from the
-        # shared policy (`transport/prompt_cache.py`); each is dropped for good
-        # once the endpoint rejects it.
-        self._cache_kwargs: dict[str, str] = dict(cache_kwargs or {})
-        self._cache_breakpoint = cache_breakpoint
+        # What to ask the endpoint to cache, decided by the caller from the
+        # shared policy (`transport/prompt_cache.py`); each part is dropped for
+        # good once the endpoint rejects it.
+        self._cache_plan = cache_plan or OpenAICachePlan()
         self._on_cache_rejected = on_cache_rejected
+
+    @property
+    def _cache_kwargs(self) -> dict[str, str]:
+        return self._cache_plan.kwargs
 
     def _drop_cache_params(self, exc: Exception) -> bool:
         """Whether `exc` is the endpoint refusing a cache parameter this
         transport sends; if so, later requests (the retry included) go without
         the ones it named."""
-        sent = {*self._cache_kwargs, *([OPENAI_BREAKPOINT_PARAM] if self._cache_breakpoint else [])}
-        refused = refused_cache_params(exc, sent)
+        refused = refused_cache_params(exc, self._cache_plan.sent_params)
         if not refused:
             return False
         logger.warning(
             "%s: prompt-cache parameters %s rejected; resending without them: %s",
             type(self).__name__, sorted(refused), exc,
         )
-        self._cache_kwargs = {name: value for name, value in self._cache_kwargs.items() if name not in refused}
-        self._cache_breakpoint = self._cache_breakpoint and OPENAI_BREAKPOINT_PARAM not in refused
+        self._cache_plan = self._cache_plan.without(refused)
         if self._on_cache_rejected is not None:
             self._on_cache_rejected(refused)
         return True
@@ -436,6 +448,8 @@ class OpenAITransport(LLMTransport):
             for text, marked in self._system_parts(system, system_blocks)
         ]
         formatted.extend(self._format_message(m) for m in messages)
+        if self._cache_plan.last_message and messages:
+            _mark_last(formatted[-1], "text")
         return formatted
 
     def _system_parts(self, system: str | None, system_blocks: list[str] | None) -> list[tuple[str, bool]]:
@@ -443,7 +457,7 @@ class OpenAITransport(LLMTransport):
         it ends in a cache breakpoint. With one, the stable block is a message
         of its own: on Chat Completions a change later in the same message
         misses the cache even past an explicit breakpoint."""
-        if self._cache_breakpoint and system_blocks and system_blocks[0]:
+        if self._cache_plan.breakpoint and system_blocks and system_blocks[0]:
             volatile = "\n\n".join(block for block in system_blocks[1:] if block)
             return [(system_blocks[0], True), *([(volatile, False)] if volatile else [])]
         text = system or "\n\n".join(block for block in system_blocks or [] if block)
@@ -488,9 +502,12 @@ class OpenAITransport(LLMTransport):
              "content": [_marked({"type": "input_text", "text": text})] if marked else text}
             for text, marked in self._system_parts(system, system_blocks)
         ]
+        items = format_responses_input(messages, None)
+        if self._cache_plan.last_message and items:
+            _mark_last(items[-1], "input_text")
         kwargs: dict[str, Any] = {
             "model": self._responses_model_id(),
-            "input": [*system_items, *format_responses_input(messages, None)],
+            "input": [*system_items, *items],
             **self._default_request_kwargs(),
             **self._cache_kwargs,
         }

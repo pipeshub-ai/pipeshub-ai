@@ -35,6 +35,8 @@ from app.agent_loop_lib.transport.openai import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from app.agent_loop_lib.transport.prompt_cache import OpenAICachePlan
+
 logger = logging.getLogger(__name__)
 
 # Re-exported: RequestDefaults moved to `openai.py` when the direct OpenAI
@@ -61,8 +63,7 @@ class AzureOpenAITransport(OpenAITransport):
         timeout: float | None = None,
         max_retries: int | None = None,
         model_key: str | None = None,
-        cache_kwargs: dict[str, str] | None = None,
-        cache_breakpoint: bool = False,
+        cache_plan: OpenAICachePlan | None = None,
         on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
         http_client: Any | None = None,
     ) -> None:
@@ -101,7 +102,7 @@ class AzureOpenAITransport(OpenAITransport):
         if http_client is not None:
             client_kwargs["http_client"] = http_client
         self._client = _openai.AsyncAzureOpenAI(**client_kwargs)
-        self._init_prompt_cache(cache_kwargs, cache_breakpoint, on_cache_rejected)
+        self._init_prompt_cache(cache_plan, on_cache_rejected)
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
         self.total_llm_calls: int = 0
@@ -111,7 +112,7 @@ class AzureOpenAITransport(OpenAITransport):
     @classmethod
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
-        cache_kwargs: dict[str, str] | None = None, cache_breakpoint: bool = False,
+        cache_plan: OpenAICachePlan | None = None,
         on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
         http_client: Any | None = None,
     ) -> "AzureOpenAITransport":
@@ -173,8 +174,7 @@ class AzureOpenAITransport(OpenAITransport):
             timeout=timeout if isinstance(timeout, (int, float)) else None,
             max_retries=getattr(llm, "max_retries", None),
             model_key=model_key,
-            cache_kwargs=cache_kwargs,
-            cache_breakpoint=cache_breakpoint,
+            cache_plan=cache_plan,
             on_cache_rejected=on_cache_rejected,
             http_client=http_client,
         )

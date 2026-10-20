@@ -10,7 +10,10 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 
-from app.agent_loop_lib.transport.prompt_cache import REJECTED_CACHE_PARAMS
+from app.agent_loop_lib.transport.prompt_cache import (
+    REJECTED_CACHE_PARAMS,
+    OpenAICachePlan,
+)
 from app.agents.agent_loop.prompt_cache import (
     AnthropicCacheStrategy,
     BedrockCacheStrategy,
@@ -25,7 +28,7 @@ if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
 
 KWARGS = {"prompt_cache_key": "pipeshub:abc:document-extraction:3"}
-OPENAI = OpenAICacheStrategy(KWARGS)
+OPENAI = OpenAICacheStrategy(OpenAICachePlan(KWARGS))
 REFUSED_KEY = "Error code: 400 - Unrecognized request argument supplied: prompt_cache_key"
 
 
@@ -127,7 +130,7 @@ async def test_a_refusal_turns_the_whole_cache_off() -> None:
     refused = _BadRequest("Error code: 400 - Unrecognized request argument supplied: prompt_cache_retention")
     llm = _Llm([refused, '{"value": 2}'])
     with patch.object(streaming, "forget_cache_params"):
-        assert await _invoke(llm, OpenAICacheStrategy(both)) == _Answer(value=2)
+        assert await _invoke(llm, OpenAICacheStrategy(OpenAICachePlan(both))) == _Answer(value=2)
     assert llm.seen == [both, {}]
 
 
@@ -137,7 +140,7 @@ async def test_a_refusal_turns_the_whole_cache_off() -> None:
         (BedrockCacheStrategy(cache_tools=False), "ValidationException: 400 extraneous key [cachePoint] is not permitted"),
         (AnthropicCacheStrategy({"type": "ephemeral"}, top_level=False), "Error code: 400 - cache_control: Extra inputs are not permitted"),
         (AnthropicCacheStrategy({"type": "ephemeral"}, top_level=True), "Error code: 400 - cache_control: Extra inputs are not permitted"),
-        (OpenAICacheStrategy(KWARGS, breakpoint_=True), "Error code: 400 - prompt_cache_breakpoint is not supported on this model"),
+        (OpenAICacheStrategy(OpenAICachePlan(KWARGS, breakpoint=True)), "Error code: 400 - prompt_cache_breakpoint is not supported on this model"),
     ],
     ids=["bedrock", "anthropic-in-message", "anthropic-top-level", "openai-breakpoint"],
 )

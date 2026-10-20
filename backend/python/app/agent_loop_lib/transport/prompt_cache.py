@@ -21,6 +21,10 @@ LangChain and SDK types, so both transport families apply the same rules:
 - ``prompt_cache_retention="24h"`` goes only to the models whose docs list it.
   None of these is sent to any other host: an argument a host does not know is
   a 400.
+- OpenRouter forwards a ``prompt_cache_breakpoint`` to GPT-5.6+, turns it into
+  a ``cache_control`` for Claude and drops it for upstreams without one, and
+  routes by ``prompt_cache_key``. Claude also needs one on the last message,
+  or no turn reads the history before it.
 - A parameter a host rejects anyway is remembered for the process
   (``RejectedCacheParams``), and later requests go without it.
 """
@@ -48,6 +52,7 @@ AZURE_OPENAI_HOSTS = (".openai.azure.com", ".cognitiveservices.azure.com")
 # Azure AI Foundry hosts OpenAI models next to Llama, Mistral, DeepSeek, ...;
 # only OpenAI's own model names get OpenAI's cache parameters there.
 FOUNDRY_HOSTS = (".services.ai.azure.com", ".models.ai.azure.com")
+OPENROUTER_HOSTS = ("openrouter.ai",)
 _OPENAI_MODEL = re.compile(r"^(gpt-|o\d)", re.IGNORECASE)
 _GPT_VERSION = re.compile(r"^gpt-(\d+)(?:\.(\d+))?(?:-|$)", re.IGNORECASE)
 _FIRST_BREAKPOINT_VERSION = (5, 6)
@@ -110,15 +115,30 @@ class CacheScope:
 
 @dataclass(frozen=True)
 class OpenAICachePlan:
-    """What one OpenAI or Azure request asks to cache: the request kwargs, and
-    whether the stable system block ends in an explicit breakpoint."""
+    """What one request in OpenAI's format asks to cache: the request kwargs,
+    whether the stable system block ends in an explicit breakpoint, and whether
+    the last message does too."""
 
     kwargs: dict[str, str] = field(default_factory=dict)
     breakpoint: bool = False
+    last_message: bool = False
 
     @property
     def sent_params(self) -> frozenset[str]:
-        return frozenset(self.kwargs) | ({OPENAI_BREAKPOINT_PARAM} if self.breakpoint else frozenset())
+        marked = self.breakpoint or self.last_message
+        return frozenset(self.kwargs) | ({OPENAI_BREAKPOINT_PARAM} if marked else frozenset())
+
+    @property
+    def empty(self) -> bool:
+        return not self.sent_params
+
+    def without(self, refused: frozenset[str]) -> OpenAICachePlan:
+        """This plan less what a provider refused (``"*"``: everything)."""
+        if "*" in refused:
+            return OpenAICachePlan()
+        marked = OPENAI_BREAKPOINT_PARAM not in refused
+        kwargs = {name: value for name, value in self.kwargs.items() if name not in refused}
+        return OpenAICachePlan(kwargs, self.breakpoint and marked, self.last_message and marked)
 
 
 def anthropic_breakpoint(ttl: str = "5m") -> dict[str, str]:
@@ -156,10 +176,15 @@ def openai_cache_plan(
     *, model: str | None, base_url: str | None, settings: PromptCacheSettings, scope: CacheScope,
     refused: frozenset[str] = frozenset(),
 ) -> OpenAICachePlan | None:
-    """The cache parameters of a request to OpenAI or Azure OpenAI, less any in
-    ``refused``; None for any other host or model, or when nothing is left."""
+    """The cache parameters of a request to OpenAI, Azure OpenAI or OpenRouter,
+    less any in ``refused``; None for any other host or model, or when nothing
+    is left."""
     host = _host(base_url)
-    if not settings.enabled or not _openai_cache_target(model, host):
+    if not settings.enabled:
+        return None
+    if host is not None and _matches(host, OPENROUTER_HOSTS):
+        return _openrouter_plan(model, settings, scope, refused)
+    if not _openai_cache_target(model, host):
         return None
     breakpoints = explicit_breakpoints(model)
     on_openai = host is None or _matches(host, OPENAI_HOSTS)
@@ -167,9 +192,18 @@ def openai_cache_plan(
     retention_models = OPENAI_RETENTION_MODELS if on_openai else AZURE_RETENTION_MODELS
     if settings.openai_retention and _listed(model, retention_models):
         kwargs[OPENAI_RETENTION_PARAM] = settings.openai_retention
-    kwargs = {name: value for name, value in kwargs.items() if name not in refused}
-    marked = breakpoints and OPENAI_BREAKPOINT_PARAM not in refused
-    return OpenAICachePlan(kwargs, marked) if kwargs or marked else None
+    plan = OpenAICachePlan(kwargs, breakpoints).without(refused)
+    return None if plan.empty else plan
+
+
+def _openrouter_plan(
+    model: str | None, settings: PromptCacheSettings, scope: CacheScope, refused: frozenset[str],
+) -> OpenAICachePlan | None:
+    vendor, _, name = (model or "").lower().partition("/")
+    claude = vendor == "anthropic"
+    marked = claude or (vendor == "openai" and explicit_breakpoints(name))
+    plan = OpenAICachePlan({OPENAI_KEY_PARAM: scope.key(settings.routing_shards)}, marked, claude).without(refused)
+    return None if plan.empty else plan
 
 
 def _openai_cache_target(model: str | None, host: str | None) -> bool:

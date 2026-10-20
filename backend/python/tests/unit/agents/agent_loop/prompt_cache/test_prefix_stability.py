@@ -22,6 +22,7 @@ from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.registry import ToolRegistry
+from app.agent_loop_lib.transport.prompt_cache import OpenAICachePlan
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
@@ -193,9 +194,7 @@ class TestOpenAIPrefix:
             endpoint.replies = _openai_replies(names, responses=responses)
             llm = ChatOpenAI(model="gpt-6.1-sol", api_key="test", base_url=endpoint.url, max_retries=0,
                              use_responses_api=responses)
-            transport = LangChainTransport(llm, model_name="gpt-6.1-sol", cache_strategy=OpenAICacheStrategy(
-                {"prompt_cache_key": "pipeshub:org:0"}, breakpoint_=True,
-            ))
+            transport = LangChainTransport(llm, model_name="gpt-6.1-sol", cache_strategy=OpenAICacheStrategy(OpenAICachePlan({"prompt_cache_key": "pipeshub:org:0"}, breakpoint=True)))
             builder = PipesHubPromptBuilder(make_context(timezone="Asia/Kolkata", has_knowledge=True))
             transports = TransportRegistry()
             transports.register("lc", lambda transport=transport: transport)

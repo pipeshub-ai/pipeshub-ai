@@ -133,7 +133,7 @@ def _bedrock(target: CacheTarget, _settings: PromptCacheSettings, _scope: CacheS
 
 def _openai(target: CacheTarget, settings: PromptCacheSettings, scope: CacheScope) -> CacheStrategy:
     plan = openai_cache_plan(model=target.model, base_url=target.base_url, settings=settings, scope=scope)
-    return OpenAICacheStrategy(plan.kwargs, breakpoint_=plan.breakpoint) if plan else NoCacheStrategy()
+    return OpenAICacheStrategy(plan) if plan else NoCacheStrategy()
 
 
 _BUILDERS: dict[str, Callable[[CacheTarget, PromptCacheSettings, CacheScope], CacheStrategy]] = {

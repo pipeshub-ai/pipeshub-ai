@@ -11,12 +11,18 @@ import httpx
 import openai
 import pytest
 
-from app.agent_loop_lib.core.messages import UserMessage
+from app.agent_loop_lib.core.messages import (
+    AssistantMessage,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent
 from app.agent_loop_lib.transport.openai import OpenAITransport, RequestDefaults
 from app.agent_loop_lib.transport.prompt_cache import (
     REJECTED_CACHE_PARAMS,
     CacheScope,
+    OpenAICachePlan,
     PromptCacheSettings,
 )
 from app.agents.agent_loop.direct_transport import build_direct_transport
@@ -67,19 +73,19 @@ def _transport(**kwargs: Any) -> OpenAITransport:  # noqa: ANN401
 
 class TestRequests:
     async def test_chat_complete(self) -> None:
-        transport = _transport(cache_kwargs=KWARGS)
+        transport = _transport(cache_plan=OpenAICachePlan(KWARGS))
         transport._client.chat.completions.create = AsyncMock(return_value=_chat())
         await transport.complete([UserMessage(content="hi")])
         assert {k: transport._client.chat.completions.create.call_args.kwargs[k] for k in KWARGS} == KWARGS
 
     async def test_chat_stream(self) -> None:
-        transport = _transport(cache_kwargs=KWARGS)
+        transport = _transport(cache_plan=OpenAICachePlan(KWARGS))
         transport._client.chat.completions.create = AsyncMock(return_value=_chunks())
         _ = [event async for event in transport.stream([UserMessage(content="hi")])]
         assert transport._client.chat.completions.create.call_args.kwargs["prompt_cache_key"] == KWARGS["prompt_cache_key"]
 
     def test_responses_kwargs(self) -> None:
-        transport = _transport(cache_kwargs=KWARGS, defaults=RequestDefaults(use_responses_api=True, model="gpt-5.4"))
+        transport = _transport(cache_plan=OpenAICachePlan(KWARGS), defaults=RequestDefaults(use_responses_api=True, model="gpt-5.4"))
         kwargs = transport._build_responses_kwargs([UserMessage(content="hi")], None, "sys", None, stream=False)
         assert {k: kwargs[k] for k in KWARGS} == KWARGS
 
@@ -103,7 +109,7 @@ class TestBreakpoint:
     ending in an explicit breakpoint; the volatile rest follows it."""
 
     async def test_chat(self) -> None:
-        transport = _transport(cache_kwargs={"prompt_cache_key": "k"}, cache_breakpoint=True)
+        transport = _transport(cache_plan=OpenAICachePlan({"prompt_cache_key": "k"}, breakpoint=True))
         transport._client.chat.completions.create = AsyncMock(return_value=_chat())
         await transport.complete([UserMessage(content="hi")], system="\n\n".join(BLOCKS), system_blocks=BLOCKS)
         messages = transport._client.chat.completions.create.call_args.kwargs["messages"]
@@ -114,7 +120,7 @@ class TestBreakpoint:
         assert messages[2]["role"] == "user"
 
     def test_responses(self) -> None:
-        transport = _transport(cache_breakpoint=True, defaults=RequestDefaults(use_responses_api=True, model="gpt-6.1-sol"))
+        transport = _transport(cache_plan=OpenAICachePlan(breakpoint=True), defaults=RequestDefaults(use_responses_api=True, model="gpt-6.1-sol"))
         kwargs = transport._build_responses_kwargs([UserMessage(content="hi")], None, "\n\n".join(BLOCKS), BLOCKS,
                                                    stream=False)
         assert kwargs["input"][:2] == [
@@ -125,7 +131,7 @@ class TestBreakpoint:
         assert kwargs["input"][2]["role"] == "user"
 
     async def test_off_the_prompt_is_one_message_as_before(self) -> None:
-        transport = _transport(cache_kwargs={"prompt_cache_key": "k"})
+        transport = _transport(cache_plan=OpenAICachePlan({"prompt_cache_key": "k"}))
         transport._client.chat.completions.create = AsyncMock(return_value=_chat())
         await transport.complete([UserMessage(content="hi")], system="\n\n".join(BLOCKS), system_blocks=BLOCKS)
         messages = transport._client.chat.completions.create.call_args.kwargs["messages"]
@@ -134,7 +140,7 @@ class TestBreakpoint:
 
     async def test_a_refused_breakpoint_keeps_the_key(self) -> None:
         refused = MagicMock()
-        transport = _transport(cache_kwargs={"prompt_cache_key": "k"}, cache_breakpoint=True, on_cache_rejected=refused)
+        transport = _transport(cache_plan=OpenAICachePlan({"prompt_cache_key": "k"}, breakpoint=True), on_cache_rejected=refused)
         transport._client.chat.completions.create = AsyncMock(side_effect=[
             _rejected("prompt_cache_breakpoint"), _chat(),
         ])
@@ -145,10 +151,47 @@ class TestBreakpoint:
         refused.assert_called_once_with(frozenset({"prompt_cache_breakpoint"}))
 
 
+class TestLastMessage:
+    """Through OpenRouter, Claude caches the history only up to a marked block."""
+
+    async def test_chat_marks_the_last_tool_result(self) -> None:
+        transport = _transport(cache_plan=OpenAICachePlan({"prompt_cache_key": "k"}, breakpoint=True, last_message=True))
+        transport._client.chat.completions.create = AsyncMock(return_value=_chat())
+        history = [
+            UserMessage(content="hi"),
+            AssistantMessage(tool_calls=[ToolCall(id="t1", name="lookup", arguments={})]),
+            ToolMessage(content="found it", tool_call_id="t1"),
+        ]
+        await transport.complete(history, system_blocks=BLOCKS)
+        messages = transport._client.chat.completions.create.call_args.kwargs["messages"]
+        assert messages[-1]["content"] == [{"type": "text", "text": "found it", "prompt_cache_breakpoint": BREAKPOINT}]
+        assert messages[2] == {"role": "user", "content": "hi"}
+
+    def test_responses_marks_the_last_function_output(self) -> None:
+        transport = _transport(cache_plan=OpenAICachePlan(last_message=True),
+                               defaults=RequestDefaults(use_responses_api=True, model="gpt-6.1-sol"))
+        history = [
+            UserMessage(content="hi"),
+            AssistantMessage(tool_calls=[ToolCall(id="t1", name="lookup", arguments={})]),
+            ToolMessage(content="found it", tool_call_id="t1"),
+        ]
+        kwargs = transport._build_responses_kwargs(history, None, None, BLOCKS, stream=False)
+        assert kwargs["input"][-1]["output"] == [
+            {"type": "input_text", "text": "found it", "prompt_cache_breakpoint": BREAKPOINT},
+        ]
+
+    async def test_an_assistant_last_is_left_alone(self) -> None:
+        transport = _transport(cache_plan=OpenAICachePlan(last_message=True))
+        transport._client.chat.completions.create = AsyncMock(return_value=_chat())
+        await transport.complete([UserMessage(content="hi"), AssistantMessage(content="draft")])
+        messages = transport._client.chat.completions.create.call_args.kwargs["messages"]
+        assert messages[-1]["content"] == "draft"
+
+
 class TestRejection:
     async def test_complete_retries_once_without_the_refused_one(self) -> None:
         rejected = MagicMock()
-        transport = _transport(cache_kwargs=KWARGS, on_cache_rejected=rejected)
+        transport = _transport(cache_plan=OpenAICachePlan(KWARGS), on_cache_rejected=rejected)
         transport._client.chat.completions.create = AsyncMock(side_effect=[
             _rejected("prompt_cache_retention"), _chat(), _chat(),
         ])
@@ -161,7 +204,7 @@ class TestRejection:
         rejected.assert_called_once_with(frozenset({"prompt_cache_retention"}))
 
     async def test_stream_retries_once_without_the_refused_one(self) -> None:
-        transport = _transport(cache_kwargs=KWARGS)
+        transport = _transport(cache_plan=OpenAICachePlan(KWARGS))
         transport._client.chat.completions.create = AsyncMock(side_effect=[_rejected("prompt_cache_key"), _chunks()])
         events = [event async for event in transport.stream([UserMessage(content="hi")])]
         assert isinstance(events[-1], StreamCompleteEvent)
@@ -170,7 +213,7 @@ class TestRejection:
         assert retry["prompt_cache_retention"] == "24h"
 
     async def test_an_unrelated_400_is_raised(self) -> None:
-        transport = _transport(cache_kwargs=KWARGS)
+        transport = _transport(cache_plan=OpenAICachePlan(KWARGS))
         transport._client.chat.completions.create = AsyncMock(side_effect=[_rejected("frobnicate")])
         with pytest.raises(Exception, match="frobnicate"):
             await transport.complete([UserMessage(content="hi")])
@@ -205,7 +248,7 @@ class TestBuildDirectTransport:
     def test_openai(self) -> None:
         transport = build_direct_transport(_openai_llm(), "gpt-5.4", cache_settings=ON, cache_scope=SCOPE)
         assert transport._cache_kwargs == {"prompt_cache_key": KEY, "prompt_cache_retention": "24h"}
-        assert transport._cache_breakpoint is False
+        assert transport._cache_plan.breakpoint is False
 
     def test_azure_uses_the_configured_model(self) -> None:
         transport = build_direct_transport(_azure_llm(), "gpt-5.4", cache_settings=ON, cache_scope=SCOPE)
@@ -213,14 +256,20 @@ class TestBuildDirectTransport:
 
     def test_gpt_6_gets_the_breakpoint(self) -> None:
         azure = build_direct_transport(_azure_llm(), "gpt-6.1-sol", cache_settings=ON, cache_scope=SCOPE)
-        assert (azure._cache_kwargs, azure._cache_breakpoint) == ({"prompt_cache_key": KEY}, True)
+        assert (azure._cache_kwargs, azure._cache_plan.breakpoint) == ({"prompt_cache_key": KEY}, True)
         openai_ = build_direct_transport(_openai_llm("gpt-6.1-sol"), "gpt-6.1-sol", cache_settings=ON, cache_scope=SCOPE)
-        assert (openai_._cache_kwargs, openai_._cache_breakpoint) == ({"prompt_cache_key": SCOPE.key(1)}, True)
+        assert (openai_._cache_kwargs, openai_._cache_plan.breakpoint) == ({"prompt_cache_key": SCOPE.key(1)}, True)
 
     def test_compatible_host_gets_nothing(self) -> None:
-        transport = build_direct_transport(_openai_llm(base_url="https://openrouter.ai/api/v1"), "gpt-6.1-sol",
+        transport = build_direct_transport(_openai_llm(base_url="https://api.together.xyz/v1"), "gpt-6.1-sol",
                                            cache_settings=ON, cache_scope=SCOPE)
-        assert (transport._cache_kwargs, transport._cache_breakpoint) == ({}, False)
+        assert (transport._cache_kwargs, transport._cache_plan.breakpoint) == ({}, False)
+
+    def test_openrouter_claude_marks_the_stable_block_and_the_last_message(self) -> None:
+        llm = _openai_llm("anthropic/claude-sonnet-5.5", base_url="https://openrouter.ai/api/v1")
+        transport = build_direct_transport(llm, "anthropic/claude-sonnet-5.5", cache_settings=ON, cache_scope=SCOPE)
+        plan = transport._cache_plan
+        assert (plan.kwargs, plan.breakpoint, plan.last_message) == ({"prompt_cache_key": KEY}, True, True)
 
     def test_anthropic_ttl(self) -> None:
         transport = build_direct_transport(_anthropic_llm(), "claude-opus-5-5",
