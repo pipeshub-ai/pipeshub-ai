@@ -294,6 +294,9 @@ record_schema = {
             "lastSyncTimestamp": {"type": ["number", "null"]},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            # Knowledge-base uploads: what set the two above (SourceTimestampOrigin).
+            # A pattern, so a new origin needs no schema release first.
+            "sourceTimestampOrigin": {"type": "string", "pattern": "^[a-z_]{1,32}$"},
             "isDeleted": {"type": "boolean", "default": False},
             "isArchived": {"type": "boolean", "default": False},
             "isVLMOcrProcessed": {"type": "boolean", "default": False},

@@ -38,6 +38,7 @@ from app.connectors.services.vector_cleanup_events import (
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
 from app.models.entities import FileRecord, RecordType
+from app.models.source_dates import upload_origin
 from app.modules.indexing.record_republish import reembeds_from_storage
 from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
@@ -1446,6 +1447,7 @@ class KnowledgeBaseService:
                 # Content changed (new blob uploaded): bump revision so the record is
                 # re-persisted, force reindex, and emit updateRecord (Qdrant refresh).
                 record.source_updated_at = file_metadata.get("lastModified", timestamp)
+                record.source_timestamp_origin = upload_origin(record.source_updated_at, timestamp).value
                 record.external_revision_id = str(timestamp)
                 await processor.on_record_content_update(record)
             else:
@@ -3000,6 +3002,7 @@ class KnowledgeBaseService:
         frec.parent_external_record_id = parent_folder_id or None
         # Server-side stamp: never trust a client-supplied uploader.
         frec.uploaded_by = uploaded_by or None
+        frec.source_timestamp_origin = upload_origin(frec.source_created_at, frec.created_at).value
         if storage_url and frec.external_record_id:
             frec.fetch_signed_url = (
                 f"{storage_url}/api/v1/document/internal/{frec.external_record_id}/download"
