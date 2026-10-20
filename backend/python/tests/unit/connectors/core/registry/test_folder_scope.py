@@ -185,7 +185,7 @@ class TestRemoveRecordsOutsideScope:
         assert removed == CleanupResult(removed=1, failed=1)
 
     @pytest.mark.asyncio
-    async def test_deletes_through_the_cascade_that_sweeps_type_nodes_and_edges(self):
+    async def test_deletes_through_the_cascade_that_sweeps_type_nodes_and_edges(self) -> None:
         processor = MagicMock()
         processor.get_records_in_record_group = AsyncMock(return_value=[self.record("a", "b1/x/1.pdf")])
         processor.on_records_deleted_cascade = AsyncMock(return_value=DELETED)
@@ -197,7 +197,7 @@ class TestRemoveRecordsOutsideScope:
         )
 
     @pytest.mark.asyncio
-    async def test_a_delete_the_store_reports_as_failed_counts_as_failed(self):
+    async def test_a_delete_the_store_reports_as_failed_counts_as_failed(self) -> None:
         processor = MagicMock()
         processor.get_records_in_record_group = AsyncMock(return_value=[self.record("a", "b1/x/1.pdf")])
         processor.on_records_deleted_cascade = AsyncMock(
@@ -211,7 +211,7 @@ class TestRemoveRecordsOutsideScope:
         assert removed == CleanupResult(removed=0, failed=1)
 
     @pytest.mark.asyncio
-    async def test_with_the_trash_on_a_trashed_record_is_left_for_the_purge(self, monkeypatch):
+    async def test_with_the_trash_on_a_trashed_record_is_left_for_the_purge(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "app.services.featureflag.platform_settings.is_soft_delete_enabled", AsyncMock(return_value=True)
         )

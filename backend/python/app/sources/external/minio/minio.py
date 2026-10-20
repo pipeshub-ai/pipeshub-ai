@@ -109,7 +109,7 @@ class MinIODataSource:
         BucketRegion: Optional[str] = None
     ) -> S3Response:
         """MinIO List Buckets operation."""
-        kwargs: Dict[str, Any] = {}
+        kwargs: dict[str, Any] = {}
         if MaxBuckets is not None:
             kwargs['MaxBuckets'] = MaxBuckets
         if ContinuationToken is not None:

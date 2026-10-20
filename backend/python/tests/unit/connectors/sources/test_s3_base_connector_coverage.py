@@ -571,7 +571,9 @@ class TestTestConnectionAndAccess:
         s3_connector.data_source.list_buckets = AsyncMock(
             return_value=_make_response(False, error="Access denied")
         )
-        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+        from app.connectors.core.base.connector.connector_service import (
+            ConnectorInitError,
+        )
 
         with pytest.raises(ConnectorInitError, match="Access denied"):
             await s3_connector.test_connection_and_access()
@@ -1228,7 +1230,7 @@ class TestCreateS3PermissionsEdgeCases:
         assert perms == []
 
     @pytest.mark.asyncio
-    async def test_unknown_scope_never_grants_the_org(self, s3_connector):
+    async def test_unknown_scope_never_grants_the_org(self, s3_connector) -> None:
         s3_connector.scope = "INVALID"
         s3_connector.created_by = "user-1"
         perms = await s3_connector._create_s3_permissions("bucket", "key")

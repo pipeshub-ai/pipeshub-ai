@@ -76,13 +76,12 @@ async def test_s3_iam_role_sts_access_denied_raises_connector_auth_error(
     mock_logger,
     mock_data_entities_processor,
     mock_data_store_provider,
-):
+) -> None:
     """A role the base key cannot assume (bad ARN or wrong external ID) surfaces as CONNECTOR_AUTH_ERROR."""
     from botocore.exceptions import ClientError
 
-    from app.sources.client.s3 import s3 as s3_module
-
     from app.services.notification.types import NotificationType
+    from app.sources.client.s3 import s3 as s3_module
 
     config_service = AsyncMock()
     config_service.get_config = AsyncMock(return_value={
@@ -104,7 +103,7 @@ async def test_s3_iam_role_sts_access_denied_raises_connector_auth_error(
     sts.assume_role = AsyncMock(side_effect=denied)
     real_create = s3_module.create_aio_session
 
-    def session_factory(access_key_id, secret_access_key, region_name):
+    def session_factory(access_key_id, secret_access_key, region_name) -> object:
         if not access_key_id:
             return real_create(access_key_id, secret_access_key, region_name)
         base = MagicMock()
@@ -138,7 +137,7 @@ async def test_s3_iam_role_sts_access_denied_raises_connector_auth_error(
     assert "AccessDenied" in kwargs["message"]
 
 
-def test_s3_registry_keeps_access_key_default_and_offers_iam_role():
+def test_s3_registry_keeps_access_key_default_and_offers_iam_role() -> None:
     # The create route auto-selects supportedAuthTypes[0] when no authType is sent.
     auth = S3Connector._connector_metadata["config"]["auth"]
     assert auth["supportedAuthTypes"] == ["ACCESS_KEY", "IAM_ROLE"]

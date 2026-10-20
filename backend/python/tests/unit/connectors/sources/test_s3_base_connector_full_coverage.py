@@ -274,7 +274,9 @@ class TestTestConnectionAndAccess:
     async def test_failure(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(return_value=_resp(False, error="denied"))
-        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+        from app.connectors.core.base.connector.connector_service import (
+            ConnectorInitError,
+        )
 
         with pytest.raises(ConnectorInitError, match="denied"):
             await connector.test_connection_and_access()
@@ -1141,7 +1143,7 @@ class TestProcessS3ObjectAdvanced:
 
 
 class TestGetDateFiltersWithValues:
-    def test_the_created_filter_is_ignored(self, connector):
+    def test_the_created_filter_is_ignored(self, connector) -> None:
         mock_modified = MagicMock()
         mock_modified.is_empty.return_value = False
         mock_modified.get_datetime_iso.return_value = ("2025-01-01T00:00:00", "2025-06-01T00:00:00")
@@ -1195,7 +1197,7 @@ class TestRunSyncAdvanced:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
     @pytest.mark.parametrize("answer", [_resp(False, error="denied"), _resp(True, {}), _resp(True, None)])
-    async def test_a_failed_bucket_list_fails_the_sync(self, mock_filters, connector, answer):
+    async def test_a_failed_bucket_list_fails_the_sync(self, mock_filters, connector, answer) -> None:
         # PP-117: the sync used to finish as if it had succeeded.
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
@@ -1212,7 +1214,7 @@ class TestRunSyncAdvanced:
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_an_account_without_buckets_finishes_cleanly(self, mock_filters, connector):
+    async def test_an_account_without_buckets_finishes_cleanly(self, mock_filters, connector) -> None:
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(return_value=_resp(True, {"Buckets": []}))

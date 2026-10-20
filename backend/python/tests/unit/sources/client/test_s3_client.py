@@ -338,17 +338,17 @@ class TestS3Client:
 class _FakeSTS:
     """STS client stand-in: hands out numbered temporary credentials."""
 
-    def __init__(self, expiration):
+    def __init__(self, expiration) -> None:
         self.expiration = expiration
         self.calls = []
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "_FakeSTS":
         return self
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc) -> bool:
         return False
 
-    async def assume_role(self, **kwargs):
+    async def assume_role(self, **kwargs) -> dict:
         self.calls.append(kwargs)
         n = len(self.calls)
         return {
@@ -361,13 +361,13 @@ class _FakeSTS:
         }
 
 
-def _patch_sts(fake_sts):
+def _patch_sts(fake_sts) -> tuple:
     """Route only the base-key session (the STS caller) to the fake; keep real sessions otherwise."""
     from app.sources.client.s3 import s3 as s3_module
 
     real_create = s3_module.create_aio_session
 
-    def factory(access_key_id, secret_access_key, region_name):
+    def factory(access_key_id, secret_access_key, region_name) -> object:
         if not access_key_id:
             return real_create(access_key_id, secret_access_key, region_name)
         base = MagicMock()
@@ -395,7 +395,7 @@ class TestS3AssumeRole:
     @pytest.mark.asyncio
     async def test_build_from_services_assumes_role_and_uses_temporary_credentials(
         self, logger, mock_config_service
-    ):
+    ) -> None:
         from datetime import datetime, timedelta, timezone
 
         mock_config_service.get_config = AsyncMock(return_value=self.ROLE_CONFIG)
@@ -418,7 +418,7 @@ class TestS3AssumeRole:
         assert session.get_config_variable("region") == "eu-west-1"
 
     @pytest.mark.asyncio
-    async def test_assume_role_without_external_id_omits_it(self, logger, mock_config_service):
+    async def test_assume_role_without_external_id_omits_it(self, logger, mock_config_service) -> None:
         from datetime import datetime, timedelta, timezone
 
         auth = {k: v for k, v in self.ROLE_CONFIG["auth"].items() if k != "externalId"}
@@ -434,7 +434,7 @@ class TestS3AssumeRole:
     @pytest.mark.asyncio
     async def test_credentials_near_expiry_are_refreshed_on_next_call(
         self, logger, mock_config_service
-    ):
+    ) -> None:
         from datetime import datetime, timedelta, timezone
 
         t0 = datetime.now(timezone.utc)
@@ -456,14 +456,14 @@ class TestS3AssumeRole:
         assert len(fake_sts.calls) == 2
 
     @pytest.mark.asyncio
-    async def test_build_from_services_iam_role_requires_role_arn(self, logger, mock_config_service):
+    async def test_build_from_services_iam_role_requires_role_arn(self, logger, mock_config_service) -> None:
         auth = {k: v for k, v in self.ROLE_CONFIG["auth"].items() if k != "roleArn"}
         mock_config_service.get_config = AsyncMock(return_value={"auth": auth})
         with pytest.raises(ValueError, match="Role ARN"):
             await S3Client.build_from_services(logger, mock_config_service, "conn-42")
 
     @pytest.mark.asyncio
-    async def test_build_from_services_iam_role_requires_base_key(self, logger, mock_config_service):
+    async def test_build_from_services_iam_role_requires_base_key(self, logger, mock_config_service) -> None:
         auth = {k: v for k, v in self.ROLE_CONFIG["auth"].items() if k != "secretKey"}
         mock_config_service.get_config = AsyncMock(return_value={"auth": auth})
         with pytest.raises(ValueError, match="Access key ID and secret"):

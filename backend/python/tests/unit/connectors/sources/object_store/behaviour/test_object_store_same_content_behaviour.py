@@ -6,6 +6,8 @@ alone is not a move: a copy leaves the original in place, and each key needs
 its own record.
 """
 
+from collections.abc import Awaitable, Callable
+
 import pytest
 from object_store_behaviour_fakes import (
     BUCKET,
@@ -174,11 +176,11 @@ class TestExistenceCheckOfTheOriginal:
         assert db.by_path()[path("b.txt")].id != original
 
 
-def _listing_without(source, hidden_from_prefix_listing: str):
+def _listing_without(source, hidden_from_prefix_listing: str) -> Callable[..., Awaitable[object]]:
     """The sync listing as is; a prefix listing of exactly ``hidden_from_prefix_listing`` misses it."""
     real = source.list_objects_v2
 
-    async def list_objects_v2(**kwargs):
+    async def list_objects_v2(**kwargs) -> object:
         response = await real(**kwargs)
         if kwargs.get("Prefix") == hidden_from_prefix_listing and response.data:
             response.data["Contents"] = [o for o in response.data.get("Contents", []) if o["Key"] != hidden_from_prefix_listing]

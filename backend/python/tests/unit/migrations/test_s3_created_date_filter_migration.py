@@ -30,7 +30,7 @@ class _MemoryConfigService:
         self.failing_reads = failing_reads
         self.writes: list[str] = []
 
-    async def get_config(self, path, default=None, use_cache=True, *, raise_on_error=False):
+    async def get_config(self, path, default=None, use_cache=True, *, raise_on_error=False) -> object:
         if path in self.failing_reads:
             if raise_on_error:
                 raise ConnectionError(f"store did not answer for {path}")

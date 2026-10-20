@@ -27,15 +27,21 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
-from app.services.notification.types import (
-    NotificationSeverity,
-    NotificationType,
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     FailedItems,
     SyncDataPointType,
@@ -45,16 +51,6 @@ from app.connectors.core.base.sync_point.sync_point import (
 )
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.core.registry.folder_scope import (
-    FolderScope,
-    clean_up_scope,
-    listed_record_ids,
-    path_in_container,
-    recorded_ids,
-    remove_container,
-    remove_deselected_containers,
-    remove_records_not_listed,
-)
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOption,
@@ -66,6 +62,16 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
     name_passes_filter,
 )
+from app.connectors.core.registry.folder_scope import (
+    FolderScope,
+    clean_up_scope,
+    listed_record_ids,
+    path_in_container,
+    recorded_ids,
+    remove_container,
+    remove_deselected_containers,
+    remove_records_not_listed,
+)
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -76,12 +82,9 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import Permission
-from app.connectors.core.base.error.stream_errors import (
-    connector_not_ready,
-    map_source_status,
-    not_downloadable,
-    not_found_at_source,
-    to_stream_error,
+from app.services.notification.types import (
+    NotificationSeverity,
+    NotificationType,
 )
 from app.sources.client.s3.s3 import S3Response
 from app.utils.streaming import create_stream_record_response, stream_content

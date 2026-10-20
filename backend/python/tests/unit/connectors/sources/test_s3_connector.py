@@ -485,7 +485,7 @@ class TestS3EntitiesProcessor:
 
 
 
-def test_s3_and_minio_offer_no_created_date_filter():
+def test_s3_and_minio_offer_no_created_date_filter() -> None:
     """PP-101: S3 lists no creation time; the created filter judged LastModified, as modified does."""
     from app.connectors.sources.minio.connector import MinIOConnector
 

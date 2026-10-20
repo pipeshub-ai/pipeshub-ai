@@ -114,7 +114,7 @@ class TestBaseConnectorDisplayName:
         c.instance_name = "Engineering Docs"
         assert c.display_name == "Engineering Docs"
 
-    def test_factory_instance_name_wins_over_the_type_name(self):
+    def test_factory_instance_name_wins_over_the_type_name(self) -> None:
         """Sync paths only have the name ConnectorFactory sets (PP-120)."""
         c = self._make(metadata={"name": "S3"})
         c.connector_instance_name = "Finance S3"

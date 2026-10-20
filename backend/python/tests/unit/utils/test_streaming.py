@@ -2121,7 +2121,7 @@ class TestStreamContentCoverage:
                     pass
 
     @pytest.mark.asyncio
-    async def test_stream_content_never_logs_the_signed_query(self, caplog):
+    async def test_stream_content_never_logs_the_signed_query(self, caplog) -> None:
         """The query of a presigned URL is a credential; only the path may be logged."""
         from fastapi import HTTPException
 

@@ -132,7 +132,7 @@ class S3RESTClientViaAssumeRole(S3RESTClientViaAccessKey):
         self.session_name = session_name
         self.external_id = external_id
 
-    async def _assume_role(self) -> Dict[str, str]:
+    async def _assume_role(self) -> dict[str, str]:
         kwargs = {"RoleArn": self.role_arn, "RoleSessionName": self.session_name}
         if self.external_id:
             kwargs["ExternalId"] = self.external_id

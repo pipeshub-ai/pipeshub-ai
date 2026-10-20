@@ -17,7 +17,10 @@ from object_store_behaviour_fakes import (
 )
 
 from app.connectors.core.base.connector.connector_service import BaseConnector
-from app.connectors.core.base.sync_point.sync_point import LISTING_CLOCK_SKEW_MS, listing_checkpoint
+from app.connectors.core.base.sync_point.sync_point import (
+    LISTING_CLOCK_SKEW_MS,
+    listing_checkpoint,
+)
 
 ALL = ["s3", "minio", "gcs", "azure_blob"]
 

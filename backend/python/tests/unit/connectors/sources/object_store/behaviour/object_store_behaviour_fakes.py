@@ -389,7 +389,7 @@ class FakeRecordsDb:
     async def ensure_team_app_edge(self, connector_id: str) -> None:
         return None
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> Any:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> object:
         """As the graph providers answer: a failed query is None unless the caller asks it to raise."""
         if "get_user_by_user_id" in self.failing:
             if raise_on_error:
