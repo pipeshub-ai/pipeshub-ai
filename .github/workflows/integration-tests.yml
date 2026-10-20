@@ -464,9 +464,10 @@ jobs:
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
-          # Source containers only where their suites run. Not on core: its
-          # expression names every connector, to leave them out.
+          # Source containers (and the Zendesk token) only where their suites run.
+          # Not on core: its expression names every connector, to leave them out.
           PROFILES=""
+          ZENDESK_SUITE=false
           if [[ "$SHARD" == connectors-* || "$SHARD" == dispatch ]]; then
             # A pull request keeps only the suites its changes reach (empty: all).
             if [[ "$SHARD" == connectors-* && -n "$PR_MARKERS" ]]; then
@@ -482,6 +483,7 @@ jobs:
                 nextcloud|bookstack) PROFILES+=",selfhosted-sources" ;;
                 zammad)              PROFILES+=",zammad-source" ;;
                 smb)                 PROFILES+=",smb-source" ;;
+                zendesk)             ZENDESK_SUITE=true ;;
               esac
             done
           fi
@@ -493,6 +495,7 @@ jobs:
           {
             echo "MARKERS=$MARKERS"
             echo "COMPOSE_PROFILES=${PROFILES#,}"
+            echo "ZENDESK_SUITE=$ZENDESK_SUITE"
           } >> "$GITHUB_ENV"
 
       - name: Set up Node.js
@@ -560,7 +563,7 @@ jobs:
       # client_credentials grant: a fresh token every run, nothing rotates or is written back.
       # Must cover every job whose markers select zendesk, or that job runs the suite without a token.
       - name: Mint Zendesk test token
-        if: ${{ contains(env.MARKERS, 'zendesk') }}
+        if: env.ZENDESK_SUITE == 'true'
         working-directory: integration-tests
         env:
           ZENDESK_TEST_CLIENT_ID: ${{ secrets.ZENDESK_TEST_CLIENT_ID }}
