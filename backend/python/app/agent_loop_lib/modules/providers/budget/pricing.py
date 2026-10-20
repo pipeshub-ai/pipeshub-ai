@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 # Prices are USD per 1M tokens: (input, output). Single source of truth for
 # cost math — both BudgetTracker (enforcement) and the CLI (display) read
@@ -81,12 +85,33 @@ MODEL_CONTEXT_WINDOW: dict[str, int] = {
     "gpt-5.4": 128_000,
     "gpt-5.6-luna": 200_000,
     "gpt-5.6-terra": 200_000,
+    # A working budget well below its 922k input limit: prompts past 272k are
+    # billed at the long-context rate and answer slower. contextLength overrides it.
+    "gpt-6.1-sol": 300_000,
+    # Maximum input, not the 1.05M window: the API rejects a prompt above it.
+    "gpt-6-sol": 922_000,
+    "gpt-6-luna": 922_000,
+    "gpt-6-astra": 922_000,
+    "gpt-5.6-sol": 922_000,
+    "gpt-5.5": 922_000,
 }
 
 _DEFAULT_CONTEXT_WINDOW = 128_000
+
+_FALLBACK_LOGGED: set[str] = set()
 
 
 def get_context_window(model: str | None) -> int:
     """Total token window for a model, falling back to a conservative default
     for unknown/local/mock models."""
-    return MODEL_CONTEXT_WINDOW.get(model or "", _DEFAULT_CONTEXT_WINDOW)
+    window = MODEL_CONTEXT_WINDOW.get(model or "")
+    if window is not None:
+        return window
+    if model and model not in _FALLBACK_LOGGED:
+        _FALLBACK_LOGGED.add(model)
+        logger.info(
+            "No context window known for model %r; budgeting for %d tokens. "
+            "Set contextLength on the model's configuration to use its real window.",
+            model, _DEFAULT_CONTEXT_WINDOW,
+        )
+    return _DEFAULT_CONTEXT_WINDOW
