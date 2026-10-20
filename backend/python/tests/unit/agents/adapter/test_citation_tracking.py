@@ -13,6 +13,7 @@ replaces the check-then-`register_tool` pattern that used to raise
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -31,6 +32,9 @@ from app.agents.agent_loop.hooks.citations import (
     citation_tracking,
 )
 from app.models.blocks import BlockType
+
+if TYPE_CHECKING:
+    import pytest
 
 
 async def _noop_next() -> None:
@@ -382,10 +386,13 @@ class TestFetchToolDescription:
     def test_metadata_that_answers_outright_does_not_need_a_read(self) -> None:
         assert "settles the question outright" in self._description()
 
-    def test_full_read_chat_drops_the_visible_fact_skip(self) -> None:
+    def test_full_read_chat_drops_the_visible_fact_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Enterprise search under THOROUGH_RETRIEVAL asks for the records an
         answer rests on in full; the tool's own skip case must agree."""
         from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+        # Focused reads add a paragraph that the full-read policy drops; this
+        # compares the skip case alone.
+        monkeypatch.setenv("TARGETED_RETRIEVAL", "false")
         from app.agents.agent_loop.hooks.citations import _FetchFullRecordTool
 
         default = self._description()

@@ -1,7 +1,9 @@
 import asyncio
 import json
 import re
-from typing import TYPE_CHECKING, Any, Optional
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -9,6 +11,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
+from app.agents.actions.knowledge_graph.ops.timeline import (
+    PERIOD_SEARCH_LIMIT,
+    timeline_search_response,
+    timeline_summaries_enabled,
+)
 from app.api.middlewares.auth import deny_service_tokens, require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
@@ -24,6 +31,7 @@ from app.utils.user_errors import provider_error_code
 from app.utils.user_messages import action_failed
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from logging import Logger
 
     from langchain_core.runnables import Runnable
@@ -54,6 +62,12 @@ class SearchQuery(BaseModel):
     # expanded variants. For callers that write their own search queries,
     # such as an agent. Left out, the rewrite and expansion run as before.
     rewriteQuery: bool = True
+    # Set, the search runs period by period over the span the matching date
+    # bounds give (createdAfter/createdBefore for "created"), as the
+    # assistant's timeline tool does, and returns the matches in date order,
+    # each labelled with its period. ``limit`` is then the matches per period.
+    # Left out, a plain ranked search as before.
+    timeline: Literal["created", "modified"] | None = None
 
 
 # The parser names the assistant tool's parameters; this route receives the
@@ -77,6 +91,14 @@ def _with_request_field_names(message: str) -> str:
     return _RANGE_LABEL.sub(
         lambda m: m.group(1) + _REQUEST_FIELD_NAMES[m.group(2)] + m.group(3), message
     )
+
+
+# The request fields that bound a timeline's span, and the time-range keys
+# they parse to, by the date the timeline places records by.
+_TIMELINE_SPAN = {
+    "created": ("createdAfter", "createdBefore", "source_created_after_ms", "source_created_before_ms"),
+    "modified": ("modifiedAfter", "modifiedBefore", "source_updated_after_ms", "source_updated_before_ms"),
+}
 
 
 def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
@@ -189,6 +211,60 @@ async def _rewritten_queries(
     return _queries_for_search(query, rewritten_query, expanded_queries)
 
 
+@dataclass(frozen=True)
+class _TimelineSpan:
+    date_field: str
+    start_ms: int | None
+    end_ms: int | None
+    other_bounds: dict[str, int]
+    """Bounds on the other date, kept on every search of the timeline."""
+
+
+def _timeline_span(date_field: str, time_range: dict[str, int] | None) -> _TimelineSpan:
+    """The span the request's bounds on ``date_field`` give, checked before
+    any search runs. An inverted range was already refused by the parser."""
+    after_field, _, after_key, before_key = _TIMELINE_SPAN[date_field]
+    bounds = time_range or {}
+    start_ms = bounds.get(after_key)
+    # A timeline ends today at the latest, so its start cannot be later.
+    if start_ms is not None and start_ms > time.time() * 1000:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{after_field} is in the future, so the timeline has no span to search.",
+        )
+    return _TimelineSpan(
+        date_field=date_field,
+        start_ms=start_ms,
+        end_ms=bounds.get(before_key),
+        other_bounds={k: v for k, v in bounds.items() if k not in (after_key, before_key)},
+    )
+
+
+async def _timeline_search(
+    span: _TimelineSpan,
+    period_limit: int,
+    run_search: "Callable[[dict[str, int] | None, int | None], Awaitable[dict[str, Any]]]",
+    logger: "Logger",
+) -> dict[str, Any]:
+    """The timeline tool's period-by-period search, each search being
+    ``run_search``: the plain search, with its permission check and filters."""
+
+    async def search_span(bounds: dict[str, int] | None, limit: int) -> dict[str, Any]:
+        return await run_search({**span.other_bounds, **(bounds or {})} or None, limit)
+
+    results = await timeline_search_response(
+        search_span,
+        start_ms=span.start_ms,
+        end_ms=span.end_ms,
+        date_field=span.date_field,
+        period_limit=period_limit,
+        log=logger,
+    )
+    if results is None:
+        raise HTTPException(status_code=500, detail=action_failed("run this search"))
+    return results
+
+
 @router.post("/search", dependencies=[Depends(require_scopes(OAuthScopes.SEMANTIC_WRITE))])
 @inject
 async def search(
@@ -201,6 +277,8 @@ async def search(
     container = request.app.container
     logger = container.logger()
     time_range = _search_time_range(body)
+    timeline = body.timeline if timeline_summaries_enabled() else None
+    span = _timeline_span(timeline, time_range) if timeline else None
     timer = StageTimer()
     try:
         if body.rewriteQuery:
@@ -209,19 +287,28 @@ async def search(
             queries = _queries_for_search(body.query, None, None)
         timer.mark("query_transform")
 
-        results = await retrieval_service.search_with_filters(
-            queries=queries,
-            org_id=request.state.user.get("orgId"),
-            user_id=request.state.user.get("userId"),
-            limit=body.limit,
-            filter_groups=body.filters,
-            knowledge_search=True,
-            time_range=time_range,
-        )
+        async def run_search(bounds: dict[str, int] | None, limit: int | None) -> dict[str, Any]:
+            return await retrieval_service.search_with_filters(
+                queries=queries,
+                org_id=request.state.user.get("orgId"),
+                user_id=request.state.user.get("userId"),
+                limit=limit,
+                filter_groups=body.filters,
+                knowledge_search=True,
+                time_range=bounds,
+            )
+
+        if span is None:
+            results = await run_search(time_range, body.limit)
+        else:
+            # ``limit`` is the matches per period when the caller set it.
+            period_limit = body.limit if "limit" in body.model_fields_set and body.limit else PERIOD_SEARCH_LIMIT
+            results = await _timeline_search(span, period_limit, run_search, logger)
         timer.mark("retrieval")
         timer.emit(
             logger, "search",
             rewrite="on" if body.rewriteQuery else "off", queries=len(queries),
+            timeline=timeline,
         )
         custom_status_code = results.get("status_code", 500)
         logger.info(f"Custom status code: {custom_status_code}")
@@ -234,7 +321,7 @@ async def search(
             "domain": domain_from_email(_su_email),
             "status_code": custom_status_code,
             "num_queries": len(queries),
-            "search_type": "search",
+            "search_type": "timeline" if timeline else "search",
         })
 
         return JSONResponse(status_code=custom_status_code, content=results)

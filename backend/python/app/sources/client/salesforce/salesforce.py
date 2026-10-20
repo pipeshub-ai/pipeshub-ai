@@ -219,7 +219,22 @@ class SalesforceClient(IClient):
 
             refresh_token = credentials_config.get("refresh_token")
 
-            from app.edition_config import get_oauth_credentials_for_toolset
+            from app.agents.toolset_store import SCOPE_PERSONAL, is_personal
+            from app.edition_config import (
+                get_oauth_credentials_for_toolset,
+                get_toolset_by_id,
+            )
+
+            instance_id = toolset_config.get("instanceId")
+            record = (
+                await get_toolset_by_id(instance_id, config_service, org_id=toolset_config.get("orgId"))
+                if instance_id else None
+            )
+            personal = toolset_config.get("scope") == SCOPE_PERSONAL or (record is not None and is_personal(record))
+            if personal and record is None:
+                # get_toolset_by_id withholds a personal action whose address is no longer public.
+                raise ValueError(f"Salesforce instance '{instance_id}' not found")
+
             oauth_config = await get_oauth_credentials_for_toolset(
                 toolset_config=toolset_config,
                 config_service=config_service,
@@ -242,8 +257,12 @@ class SalesforceClient(IClient):
                 refresh_token=refresh_token,
             )
 
+            client = cls.build_with_config(config)
+            if personal:
+                # Its instance URL is its owner's: connect only to the public address checked.
+                client.get_client().require_public_addresses()
             logger.info("Built Salesforce client from toolset config")
-            return cls.build_with_config(config)
+            return client
 
         except Exception as e:
             logger.error(f"Failed to build Salesforce client from toolset config: {str(e)}")

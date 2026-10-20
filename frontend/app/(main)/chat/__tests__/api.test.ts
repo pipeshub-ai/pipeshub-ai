@@ -8,6 +8,7 @@ vi.mock('@/lib/api', () => ({
     get: vi.fn(),
     post: vi.fn(),
     put: vi.fn(),
+    patch: vi.fn(),
     delete: vi.fn(),
   },
   streamSSERequest: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock('@/lib/api', () => ({
 
 const mockedGet = vi.mocked(apiClient.get);
 const mockedPost = vi.mocked(apiClient.post);
+const mockedPatch = vi.mocked(apiClient.patch);
 
 describe('ChatApi.fetchAvailableLlms', () => {
   beforeEach(() => {
@@ -146,5 +148,82 @@ describe('ChatApi.uploadAttachments', () => {
     const config = mockedPost.mock.calls[0][2] as { timeout?: number };
     expect(config.timeout).toBe(CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS);
     expect(CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS).toBeGreaterThan(90_000);
+  });
+});
+
+describe('ChatApi.setConversationPinned', () => {
+  beforeEach(() => {
+    mockedPatch.mockReset();
+    mockedPatch.mockResolvedValue({ data: {} });
+  });
+
+  it('pins with PATCH .../pin', async () => {
+    await ChatApi.setConversationPinned('conv-1', true);
+
+    expect(mockedPatch).toHaveBeenCalledTimes(1);
+    expect(mockedPatch).toHaveBeenCalledWith('/api/v1/conversations/conv-1/pin');
+  });
+
+  it('unpins with PATCH .../unpin', async () => {
+    await ChatApi.setConversationPinned('conv-1', false);
+
+    expect(mockedPatch).toHaveBeenCalledWith('/api/v1/conversations/conv-1/unpin');
+  });
+
+  it('keeps an odd id inside its path segment', async () => {
+    await ChatApi.setConversationPinned('a/b?c', true);
+
+    expect(mockedPatch).toHaveBeenCalledWith('/api/v1/conversations/a%2Fb%3Fc/pin');
+  });
+
+  it('lets a failed request reach the caller, which has to roll the row back', async () => {
+    mockedPatch.mockRejectedValueOnce(new Error('404'));
+
+    await expect(ChatApi.setConversationPinned('conv-1', true)).rejects.toThrow('404');
+  });
+});
+
+describe('ChatApi.fetchConversations — pin flag', () => {
+  const row = (id: string, extra: Record<string, unknown> = {}) => ({
+    _id: id,
+    title: id,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    isShared: false,
+    sharedWith: [],
+    lastActivityAt: 1,
+    isOwner: true,
+    ...extra,
+  });
+
+  beforeEach(() => mockedGet.mockReset());
+
+  it('marks a pinned chat and leaves the others without the field', async () => {
+    mockedGet.mockResolvedValueOnce({
+      data: {
+        conversations: [row('a', { isPinned: true }), row('b')],
+        source: 'owned',
+        pagination: { page: 1, limit: 10, totalCount: 2, totalPages: 1, hasNextPage: false, hasPrevPage: false },
+      },
+    });
+
+    const { conversations } = await ChatApi.fetchConversations(1, 10, { source: 'owned' });
+
+    expect(conversations[0].isPinned).toBe(true);
+    expect('isPinned' in conversations[1]).toBe(false);
+  });
+
+  it('never carries a false pin, whatever the server sent', async () => {
+    mockedGet.mockResolvedValueOnce({
+      data: {
+        conversations: [row('a', { isPinned: false })],
+        source: 'owned',
+        pagination: { page: 1, limit: 10, totalCount: 1, totalPages: 1, hasNextPage: false, hasPrevPage: false },
+      },
+    });
+
+    const { conversations } = await ChatApi.fetchConversations(1, 10, { source: 'owned' });
+
+    expect('isPinned' in conversations[0]).toBe(false);
   });
 });

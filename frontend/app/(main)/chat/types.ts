@@ -139,6 +139,8 @@ export interface ConversationApiResponse {
   updatedAt: string;
   isOwner: boolean;
   accessLevel: string;
+  /** `true` when the owner pinned it; absent (never `false`) otherwise. Owner's own list only. */
+  isPinned?: boolean;
   /** Present when this conversation is linked to a Project. */
   projectId?: string;
   projectVisibility?: 'private' | 'project';
@@ -171,6 +173,8 @@ export interface Conversation {
   status?: string;
   modelInfo?: ModelInfo;
   isOwner?: boolean;
+  /** Pinned by its owner. Absent when not pinned; only set on the owner's own list. */
+  isPinned?: boolean;
   /** Present when this conversation is linked to a Project. */
   projectId?: string;
   projectVisibility?: 'private' | 'project';

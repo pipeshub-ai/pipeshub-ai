@@ -76,6 +76,10 @@ from app.edition_config import (
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
 )
+from app.utils.desktop_state import (
+    mark_desktop_state,
+    strip_desktop_state,
+)
 from app.utils.env_utils import env_int
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
@@ -1181,6 +1185,7 @@ async def _build_oauth_authorization_url(
     initiated_by: str,
     owner_type: str,
     registry: Optional[MCPRegistry] = None,
+    desktop: bool = False,
 ) -> dict[str, Any]:
     """Core DCR-or-static-client OAuth authorize flow, shared by the per-user and
     agent-key (`/agents/{agent_key}/...`) routes. `owner_id` is a plain user for the
@@ -1284,7 +1289,7 @@ async def _build_oauth_authorization_url(
             authorization_url=authorization_url,
             client_id=client_id,
             redirect_uri=redirect_uri,
-            state=state,
+            state=mark_desktop_state(state, desktop=desktop),
             scopes=scopes,
             code_challenge=code_challenge,
             extra_params=template.authorization_params if template else None,
@@ -1308,6 +1313,8 @@ async def get_oauth_authorization_url(
     request: Request,
     instance_id: str,
     base_url: Optional[str] = Query(default=None, alias="baseUrl"),
+    *,
+    desktop: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
@@ -1319,7 +1326,7 @@ async def get_oauth_authorization_url(
 
     return await _build_oauth_authorization_url(
         config_service, instance, instance_id, user_id, org_id, base_url,
-        initiated_by=user_id, owner_type="user", registry=_get_mcp_registry(request),
+        initiated_by=user_id, owner_type="user", registry=_get_mcp_registry(request), desktop=desktop,
     )
 
 
@@ -1486,6 +1493,7 @@ async def handle_oauth_callback(
     # caller identity"), matching every other error branch below.
     caller_user = getattr(request.state, "user", {}) or {}
     caller_id = caller_user.get("userId")
+    state = strip_desktop_state(state)
 
     if error:
         await _note_a_refused_client_document(config_service, state, error, caller_id)
@@ -2130,6 +2138,8 @@ async def get_agent_oauth_authorization_url(
     agent_key: str,
     instance_id: str,
     base_url: Optional[str] = Query(default=None, alias="baseUrl"),
+    *,
+    desktop: Annotated[bool, Query()] = False,
 ) -> dict[str, Any]:
     """OAuth authorize for a service-account agent — the resulting state record's
     `userId` field carries `agent_key`, so `/oauth/callback` persists tokens at
@@ -2148,7 +2158,7 @@ async def get_agent_oauth_authorization_url(
 
     return await _build_oauth_authorization_url(
         config_service, instance, instance_id, agent_key, org_id, base_url,
-        initiated_by=user_id, owner_type="agent", registry=_get_mcp_registry(request),
+        initiated_by=user_id, owner_type="agent", registry=_get_mcp_registry(request), desktop=desktop,
     )
 
 

@@ -760,6 +760,8 @@
     "like": "Útil",
     "dislike": "No útil",
     "copy": "Copiar",
+    "fork": "Bifurcar chat",
+    "forkFromHere": "Bifurcar desde aquí",
     "regenerate": "Regenerar",
     "readAloud": "Leer en voz alta",
     "stopReading": "Dejar de leer",
@@ -857,7 +859,9 @@
       "editComingSoonDescription": "Estamos desarrollando soporte para editar",
       "deprecatedTools": "Este agente tiene herramientas que ya no están disponibles. Abre el Agent Builder para eliminarlas.",
       "openAgentBuilder": "Abrir Agent Builder",
-      "loadConversationFailed": "No pudimos abrir esta conversación. Recarga la página para intentarlo de nuevo."
+      "loadConversationFailed": "No pudimos abrir esta conversación. Recarga la página para intentarlo de nuevo.",
+      "forkSuccess": "Se inició un chat nuevo desde este punto",
+      "forkError": "No se pudo bifurcar este chat. Inténtelo de nuevo."
     },
     "queryModes": {
       "chat": {
@@ -1000,6 +1004,11 @@
     "deleteAgentDescription": "El agente llamado",
     "deleteAgentWarning": "será eliminado permanentemente de Pipeshub. Los chats que lo utilicen podrían dejar de funcionar como se espera.",
     "deleteChat": "Eliminar",
+    "pin": "Fijar",
+    "unpin": "Desfijar",
+    "pinned": "Fijados",
+    "pinFailed": "No se pudo fijar el chat",
+    "unpinFailed": "No se pudo desfijar el chat",
     "export": {
       "menuItem": "Exportar",
       "exporting": "Exportando el chat…",
@@ -1277,7 +1286,7 @@
       "showAll": "Mostrar todo",
       "showLess": "Mostrar menos",
       "partial": "Solo se muestra el principio de los detalles: la llamada completa es más larga.",
-      "deletesData": "Elimina datos",
+      "cantBeUndone": "No se puede deshacer",
       "allow": "Permitir",
       "dontAskAgain": "No volver a preguntar por esta herramienta",
       "answerFailed": "No se pudo enviar tu respuesta. Inténtalo de nuevo.",
@@ -2044,7 +2053,7 @@
       "title": "Acciones",
       "subtitle": "Configure acciones automatizadas como crear registros, actualizar campos o activar flujos de trabajo. Cada aplicación tiene una acción adaptada a sus funciones admitidas.",
       "yourActionsTitle": "Sus acciones",
-      "yourActionsSubtitle": "Autentique y gestione las acciones que su administrador ha puesto a disposición de su cuenta.",
+      "yourActionsSubtitle": "Inicie sesión en las acciones que su administrador ha puesto a su disposición o añada las suyas.",
       "tabs": {
         "all": "Todas",
         "configured": "Configuradas",
@@ -2064,7 +2073,7 @@
         "manage": "Gestionar",
         "unavailable": "No disponible",
         "notConfigured": "No configurada",
-        "adminSetupRequired": "Requiere configuración del administrador"
+        "add": "Añadir"
       },
       "trailingYourActions": "Sus acciones",
       "loading": "Cargando acciones…",
@@ -2124,7 +2133,7 @@
         "refreshingList": "Actualizando lista…",
         "searchInstances": "Buscar instancias…",
         "teamInstanceInfo": "Autentíquese contra las instancias de acción de su organización. Las acciones autenticadas pueden añadirse a sus agentes.",
-        "personalInstanceInfo": "Autentíquese contra las instancias de acción de su organización. Una vez autenticado, puede usar estas acciones en sus agentes.",
+        "personalInstanceInfo": "Inicie sesión en las acciones de su organización o añada las suyas. Una vez iniciada la sesión, puede usarlas en sus agentes.",
         "instanceTabs": {
           "all": "Todas ({{count}})",
           "authenticated": "Autenticadas ({{count}})",
@@ -2188,14 +2197,30 @@
         "numberMin": "Introduce un número entero de al menos {{min, number}}.",
         "numberMax": "Introduce un número entero de hasta {{max, number}}."
       },
-      "adminRequiredToast": "Solo los administradores pueden añadir acciones nuevas. Pida a su administrador que configure primero esta acción.",
-      "personalNonAdminHint": "Las acciones marcadas como \"No configurada\" debe configurarlas un administrador antes de que pueda usarlas.",
       "toolRules": {
         "open": "Aprobaciones de herramientas",
         "title": "Aprobaciones de herramientas: {{name}}",
         "description": "Qué ocurre cuando un asistente o agente quiere usar una de estas herramientas. Las mismas reglas se aplican a todos en tu organización.",
         "readOnly": "Solo un administrador puede cambiarlas.",
-        "toolsError": "No se pudieron cargar las herramientas de este conjunto."
+        "toolsError": "No se pudieron cargar las herramientas de este conjunto.",
+        "defaults": "Las herramientas que leen o cambian datos se ejecutan. Una herramienta que borra datos, vacía una hoja o envía correo pregunta primero en un chat de la aplicación PipesHub y no se ejecuta donde nadie puede responder, como el bot de Slack o la API.",
+        "enterpriseTitle": "Aprobaciones de herramientas de la organización",
+        "enterpriseDescription": "Elige qué herramientas de este conjunto se ejecutan, preguntan primero o nunca se ejecutan, para todos en tu organización."
+      },
+      "personal": {
+        "setupCallout": "Solo usted puede ver y usar esta acción, y no se puede añadir a agentes compartidos con su organización. Inicie sesión en ella después de añadirla.",
+        "yours": "Suya",
+        "addOwn": "Añadir la suya",
+        "added": "Acción añadida.",
+        "delete": "Eliminar acción",
+        "deleteTitle": "¿Eliminar {{name}}?",
+        "deleteBody": "También se eliminan su inicio de sesión y las aprobaciones de herramientas de esta acción. No se puede deshacer.",
+        "deleted": "Acción eliminada.",
+        "adminOnly": "Solo un administrador puede añadir {{name}}: se conecta a un servidor por su nombre de host. Pida a su administrador que la añada para su organización."
+      },
+      "enterprise": {
+        "userActionsTitle": "Acciones propias de las personas",
+        "userActionsDescription": "Revise y elimine las acciones que las personas de su organización añaden para sí mismas."
       }
     },
     "rightPanel": {
@@ -3200,7 +3225,7 @@
           "none": "El servidor no indica qué hace esta herramienta, así que se trata como si cambiara datos."
         },
         "group": {
-          "destructive": "Elimina datos",
+          "destructive": "No se puede deshacer",
           "write": "Cambia datos",
           "read": "Solo lectura",
           "notOffered": "No disponible ahora",
@@ -4543,7 +4568,8 @@
     "mcpAgentApprovals": "Aprobaciones de herramientas por agente",
     "limitSource": "Elegir qué busca {{name}}",
     "limitSourceHint": "Deja marcada toda la fuente, o desmárcala y marca las carpetas y elementos en los que el agente puede buscar.",
-    "limitSourceCount": "Limitado a {{count}} seleccionados"
+    "limitSourceCount": "Limitado a {{count}} seleccionados",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} es su acción personal. No se puede añadir a un agente compartido con su organización ni a uno que se ejecute como cuenta de servicio."
   },
   "recordView": {
     "sections": {
@@ -4819,6 +4845,7 @@
     },
     "desktopHandoff": {
       "title": "Inicio de sesión enviado a PipesHub",
+      "integrationTitle": "Autorización enviada a PipesHub",
       "description": "Puedes cerrar esta pestaña y volver a la aplicación de PipesHub.",
       "openApp": "Abrir PipesHub"
     }

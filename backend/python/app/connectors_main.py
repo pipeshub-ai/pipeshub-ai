@@ -21,6 +21,7 @@ from app.edition_config import (
 )
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.modules.demo_data.router import demo_data_router
+from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
@@ -776,6 +777,7 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
     mark_process_non_dumpable()
+    install_log_redaction()
     # Initialize container
     app_container = await get_initialized_container()
     app.container = app_container  # type: ignore

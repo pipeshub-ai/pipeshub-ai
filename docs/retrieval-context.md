@@ -75,11 +75,11 @@ not fit. It is on by default and does not follow `HIGH_ACCURACY_MODE`.
 ## Finding with less, then reading the right part (`TARGETED_RETRIEVAL`)
 
 Search results are most of what a knowledge question writes into the prompt:
-each search fills the 64,000-character tool-result cap, and a question
-usually runs about three. Yet when an answer misses a fact, the record that
+with `TARGETED_RETRIEVAL` off, each search fills the 64,000-character
+tool-result cap, and a question usually runs about three. Yet when an answer misses a fact, the record that
 holds it was usually found; the fact sat in a part of it the passages did not
-show. `TARGETED_RETRIEVAL=true` (opt-in, not part of `HIGH_ACCURACY_MODE`)
-moves characters from breadth to depth:
+show. `TARGETED_RETRIEVAL` (on by default, and not tied to
+`HIGH_ACCURACY_MODE`) moves characters from breadth to depth:
 
 - **Smaller searches.** A search result is fitted to
   `TARGETED_SEARCH_MAX_CHARS` (32,000) instead of 64,000.
@@ -113,6 +113,8 @@ moves characters from breadth to depth:
   turn with no tools (a model that cannot call them) gets no note asking it
   to read a record.
 
-Off, none of this runs: results, the fetch tool's schema and the prompt are
-unchanged. `tests/perf/bench_targeted_retrieval.py` replays a mix of searches
-through this code with both settings and prints the characters each sends.
+`TARGETED_RETRIEVAL=false` (or `0`, `no`, `off`) turns it off. Off, none of
+this runs: results, the fetch tool's schema and the prompt are as they were
+before the feature. `tests/perf/bench_targeted_retrieval.py` replays a mix of
+searches through this code with both settings and prints the characters each
+sends.

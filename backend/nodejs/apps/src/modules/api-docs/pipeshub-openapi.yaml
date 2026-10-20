@@ -21,6 +21,9 @@ info:
 
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
+
+    ## Query parameter names
+    On every `/api/v1` and `/mcp` endpoint, a query parameter whose name starts with `$` or contains `.` (including a nested name such as `filter[$ne]` or `a.b`) is refused with `400` and error code `VALIDATION_ERROR`. Only names are checked: values may contain dots, such as file names.
   version: 1.0.0
   contact:
     name: API Support
@@ -1849,9 +1852,10 @@ components:
             type: string
             enum: [allow, ask, block]
           description: >-
-            Tool name → rule, for everyone in the organization. Each name must be a tool of the
-            instance's toolset. A tool without one starts from its kind: `read` at allow, `write`
-            at ask, `destructive` at block.
+            Tool name → rule: for everyone in the organization on an organization instance, for
+            its owner on a personal one. Each name must be a tool of the instance's toolset. A tool
+            without one starts from its kind: `read` at allow, `write` at allow, `destructive` at
+            ask.
     ToolsetToolRules:
       allOf:
         - $ref: '#/components/schemas/ToolsetToolRulesUpdate'
@@ -1859,7 +1863,9 @@ components:
           properties:
             canEdit:
               type: boolean
-              description: Whether the caller may change the rules (an admin).
+              description: >-
+                Whether the caller may change the rules: an admin on an organization instance,
+                the owner on a personal one.
     McpToolInfo:
       type: object
       properties:
@@ -5036,6 +5042,7 @@ components:
         - "AZURE FILES"
         - "LINEAR"
         - "ZAMMAD"
+        - "ZENDESK"
         - "ZOOM"
         - "GITLAB"
         - "GITLAB PERSONAL"
@@ -5151,6 +5158,14 @@ components:
             - AUTO_INDEX_OFF: Auto-indexing disabled for this record
             - EMPTY: File has no extractable content
           example: "COMPLETED"
+        hasIndexedCopy:
+          type: boolean
+          description: |
+            True after the record is indexed (every COMPLETED write, including the upgrade
+            backfill for records indexed earlier), and false once it is marked EMPTY. A later
+            re-queue or a failed re-index leaves it as it is, so search keeps returning the
+            previous indexed copy until the new version is indexed. Absent until the first
+            COMPLETED or EMPTY write sets it.
         indexingStatus:
           type: string
           enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
@@ -5436,6 +5451,14 @@ components:
               nullable: true
             indexingStatus:
               type: string
+            hasIndexedCopy:
+              type: boolean
+              description: |
+                True after the record is indexed (every COMPLETED write, including the upgrade
+                backfill for records indexed earlier), and false once it is marked EMPTY. A later
+                re-queue or a failed re-index leaves it as it is, so search keeps returning the
+                previous indexed copy until the new version is indexed. Absent until the first
+                COMPLETED or EMPTY write sets it.
             extractionStatus:
               type: string
             reason:
@@ -9807,6 +9830,13 @@ components:
           type: string
           enum: [read, write]
           readOnly: true
+        isPinned:
+          type: boolean
+          description: |
+            `true` when the owner pinned this conversation. Absent on
+            conversations that are not pinned (never `false`). Set via
+            `PATCH /conversations/{conversationId}/pin`. Only returned to the
+            owner: lists with `source=shared` omit it.
         projectId:
           type: string
           format: objectId
@@ -9826,6 +9856,36 @@ components:
             `PATCH /conversations/{conversationId}/project-visibility`.
         sharedBy:
           $ref: '#/components/schemas/ConversationSharedBy'
+
+    ConversationPinResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - isPinned
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: Conversation identifier
+        isPinned:
+          type: boolean
+          description: The conversation's pin state after the call.
+        meta:
+          type: object
+          additionalProperties: false
+          properties:
+            requestId:
+              type: string
+              description: Request correlation identifier
+            timestamp:
+              type: string
+              format: date-time
+              description: Response generation timestamp
+            duration:
+              type: integer
+              description: Server processing time in milliseconds
 
     # ==================== PROJECT SCHEMAS ====================
 
@@ -10151,6 +10211,62 @@ components:
             updated, new ids are added. The project owner is silently
             skipped if included (ownership is implicit).
 
+    ForkConversationResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - forkedFrom
+        - messageCount
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: New conversation identifier
+        title:
+          type: string
+          description: Title of the forked conversation
+        projectId:
+          type: string
+          format: objectId
+          description: |
+            Project the fork is linked to. Present only when the source conversation
+            belonged to a project that the caller can still view; otherwise omitted.
+        forkedFrom:
+          type: object
+          additionalProperties: false
+          required:
+            - conversationId
+            - messageId
+          properties:
+            conversationId:
+              type: string
+              format: objectId
+            messageId:
+              type: string
+              format: objectId
+        messageCount:
+          type: integer
+          minimum: 0
+          description: Number of messages copied into the new conversation
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+            - timestamp
+            - duration
+          properties:
+            requestId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+            duration:
+              type: integer
+              description: Server-side processing time in milliseconds
+
     ShareRequest:
       type: object
       description: Request to share a conversation or search with other users
@@ -10247,6 +10363,28 @@ components:
             model call: faster, and suited to callers that write their own queries, such
             as an agent. The results can differ from a search with the rewrite.
           example: false
+        timeline:
+          type: string
+          enum: [created, modified]
+          description: |
+            Search a span of time period by period instead of ranking matches over the whole
+            span, for questions such as "how did this evolve" or "what changed between March
+            and May". A plain search returns the best matches overall, which bunch around one
+            moment; a timeline splits the span into up to 6 periods (calendar months, or weeks
+            within one month), searches each period on its own and beside one search of the
+            whole span, and returns the matches in date order, each labelled with its period.
+
+            The value is the date records are placed by: `created` (when the record was
+            created at its source) or `modified` (its last change). The span is that date's
+            bounds (`createdAfter` / `createdBefore`, or `modifiedAfter` / `modifiedBefore`);
+            with no start it covers the year before the end, or further back to the earliest
+            of the best matches. Bounds on the other date apply to every period. `limit` is the
+            number of matches each period's own search asks for (10 when left out); matches from
+            the search of the whole span (up to 50) are added to the periods their records are
+            dated in, so a period can hold more than `limit`. Each search applies the same permissions
+            and filters as a plain search. Left out, the search is a plain ranked search, as
+            before. A server whose `TIMELINE_SUMMARIES` setting is `false` ignores it.
+          example: created
 
     SemanticSearchBoundingBox:
       type: object
@@ -10493,6 +10631,12 @@ components:
             a table) brought the whole section back: how many blocks it sits from the passage
             the search matched nearest to it. `0` is a matched passage. Absent when the hit matched
             directly or the section matched as a whole.
+        timelinePeriod:
+          type: integer
+          minimum: 0
+          description: |
+            Set only on a search with `timeline`: the index in `timeline.periods` of the period
+            this hit's record is dated in.
 
     SemanticSearchGraphRecord:
       type: object
@@ -10760,6 +10904,79 @@ components:
           description: Maps virtual record id (object property name) to the accessible graph record document for that id.
           additionalProperties:
             $ref: '#/components/schemas/SemanticSearchGraphRecord'
+        timeline:
+          $ref: '#/components/schemas/SemanticSearchTimeline'
+
+    SemanticSearchTimeline:
+      type: object
+      additionalProperties: false
+      description: |
+        Present only on a search with `timeline` set. `searchResults` then come period by period,
+        oldest first, and by record date within a period; each hit's `timelinePeriod` is its
+        period's index in `periods`.
+      required:
+        - dateField
+        - start
+        - end
+        - periods
+        - notes
+      properties:
+        dateField:
+          type: string
+          enum: [created, modified]
+        start:
+          type: string
+          format: date
+          description: First day of the span searched.
+        end:
+          type: string
+          format: date
+          description: Last day of the span searched, inclusive.
+        periods:
+          type: array
+          items:
+            $ref: '#/components/schemas/SemanticSearchTimelinePeriod'
+        notes:
+          type: array
+          items:
+            type: string
+          description: Plain-language notes on the span, such as the start chosen when none was given.
+
+    SemanticSearchTimelinePeriod:
+      type: object
+      additionalProperties: false
+      required:
+        - label
+        - start
+        - end
+        - records
+        - matches
+      properties:
+        label:
+          type: string
+          example: "March 2026 (2026-03-01 to 2026-03-31)"
+        start:
+          type: string
+          format: date
+          nullable: true
+          description: First day of the period. `null` for the last bucket, of matches whose record has no source date.
+        end:
+          type: string
+          format: date
+          nullable: true
+        records:
+          type: integer
+          minimum: 0
+          description: Records with matches in this period. `0` may only mean nothing matched this query then.
+        matches:
+          type: integer
+          minimum: 0
+        searchFailed:
+          type: boolean
+          description: This period's own search failed; any matches shown come from the search of the whole span.
+        searchIncomplete:
+          type: string
+          description: The search reached only part of the index for this period, so a record missing here may still exist.
 
     SemanticSearchExecuteResponse:
       type: object
@@ -21494,13 +21711,23 @@ paths:
           in: query
           required: false
           description: |
-            `desktop` for a sign-in started by the PipesHub desktop app. Needs `state`
-            and `code_challenge`; without both it is ignored. The callback then sends
-            no cookies and redirects to `/auth/sign-in/samlSso/success` with `state`
-            and a single-use `code` (or `saml_error`), redeemed at `/saml/desktop/exchange`.
+            How the callback hands tokens back. The callback never sets cookies; it
+            redirects to `/auth/sign-in/samlSso/success` with a single-use `code`,
+            redeemed at `/saml/exchange`.
+
+            - `web`: a browser sign-in. Needs `code_challenge`.
+            - `desktop`: a sign-in started by the PipesHub desktop app. Needs `state`
+              and `code_challenge`; the success page also echoes `state` (and
+              `saml_error` on failure), and the code is redeemed at `/saml/desktop/exchange`.
+
+            A request to this `/signIn` route is always SP-initiated. Omitting
+            `client` or a valid `code_challenge` still completes at the IdP, but
+            the callback redirects to `{frontendUrl}/login?saml_error=sign_in_restart`.
+            An IdP-initiated sign-in (Okta app tile) never hits this route; that
+            callback issues a one-time `code` with no PKCE.
           schema:
             type: string
-            enum: [desktop]
+            enum: [web, desktop]
         - name: state
           in: query
           required: false
@@ -21510,7 +21737,7 @@ paths:
         - name: code_challenge
           in: query
           required: false
-          description: PKCE S256 challenge (43 base64url characters) for the desktop handoff code.
+          description: PKCE S256 challenge (43 base64url characters) for the handoff code.
           schema:
             type: string
       responses:
@@ -21575,8 +21802,10 @@ paths:
           description: |
             Redirect to the frontend. All outcomes use this status code.
 
-            **Success:** Redirects to `{frontendUrl}/auth/sign-in/samlSso/success`.
-            Access and refresh tokens are delivered as `Secure; SameSite=None` cookies.
+            **Success:** Redirects to `{frontendUrl}/auth/sign-in/samlSso/success?code=<code>`.
+            No cookies are set. The single-use `code` is redeemed at `/saml/exchange`.
+            A PipesHub-started sign-in also sends the PKCE verifier; an IdP-initiated
+            sign-in redeems the code alone.
 
             **Failure:** Redirects to `{frontendUrl}/login?saml_error=<code>`.
 
@@ -21585,6 +21814,7 @@ paths:
             | `auth_failed`       | Passport rejected the SAML assertion (invalid signature, expired, etc.) |
             | `saml_sso_disabled` | SAML SSO is not enabled for this organization                           |
             | `jit_disabled`      | User has no account and Just-In-Time provisioning is disabled           |
+            | `sign_in_restart`   | A `web`/`desktop` start was missing a valid PKCE challenge; start again from the login page |
             | `unknown`           | Unexpected server-side error during callback processing                 |
             | *(raw message)*     | Passport parse error surfaced before the custom callback fired          |
           headers:
@@ -21595,20 +21825,15 @@ paths:
                 type: string
               examples:
                 success:
-                  value: "https://app.example.com/auth/sign-in/samlSso/success"
+                  value: "https://app.example.com/auth/sign-in/samlSso/success?code=0123abcd"
                 error_sso_disabled:
                   value: "https://app.example.com/login?saml_error=saml_sso_disabled"
                 error_jit_disabled:
                   value: "https://app.example.com/login?saml_error=jit_disabled"
                 error_auth_failed:
                   value: "https://app.example.com/login?saml_error=auth_failed"
-            Set-Cookie:
-              description: |
-                Set on successful authentication only.
-                - `accessToken`: JWT access token, expires in 1 hour (`Secure; SameSite=None`)
-                - `refreshToken`: JWT refresh token, expires in 7 days (`Secure; SameSite=None`)
-              schema:
-                type: string
+                error_sign_in_restart:
+                  value: "https://app.example.com/login?saml_error=sign_in_restart"
 
         '400':
           description: Invalid or malformed SAML response
@@ -21638,15 +21863,61 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthError'
 
+  /saml/exchange:
+    post:
+      tags:
+        - SAML
+      summary: Redeem a SAML handoff code
+      description: |
+        Exchanges the single-use code from a browser SAML sign-in for PipesHub tokens.
+        The code expires after 2 minutes and is consumed by the first attempt.
+        `codeVerifier` is required when the sign-in started from PipesHub (`client=web`);
+        omit it for an IdP-initiated code.
+      operationId: exchangeSamlCode
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                code:
+                  type: string
+                  description: Handoff code from the success page redirect
+                codeVerifier:
+                  type: string
+                  description: PKCE verifier matching the `code_challenge` sent to `/saml/signIn`. Omit for IdP-initiated sign-in.
+              required:
+                - code
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  refreshToken:
+                    type: string
+        '401':
+          description: Unknown, expired, already used, or verifier mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /saml/desktop/exchange:
     post:
       tags:
         - SAML
       summary: Redeem a desktop SAML handoff code
       description: |
-        Exchanges the single-use code from a desktop SAML sign-in (see `client=desktop`
-        on `/saml/signIn`) for PipesHub tokens. The code expires after 2 minutes and is
-        consumed by the first attempt, whether or not the verifier matches.
+        Same as `/saml/exchange`, for the code from a desktop SAML sign-in (see
+        `client=desktop` on `/saml/signIn`).
       operationId: exchangeSamlDesktopCode
       security: []
       requestBody:
@@ -31264,6 +31535,9 @@ paths:
         **Sorting:**
 
         Conversations are sorted by last activity timestamp (most recent first) by default.
+        With `source=owned`, conversations the caller pinned
+        (`PATCH /conversations/{conversationId}/pin`) come first, in the same order,
+        whatever `sortBy` is. `source=shared` is never pinned-first.
       operationId: getAllConversations
       x-pipeshub-sdk: true
       security:
@@ -33649,6 +33923,111 @@ paths:
         '500':
           description: Persistence layer failed to update the conversation document.
 
+  /conversations/{conversationId}/pin:
+    patch:
+      tags:
+        - Conversations
+      summary: Pin conversation
+      description: |
+        Pin a conversation so it is listed first in the caller's own conversation list.
+
+        **Access:**
+
+        Owner only: the caller must be the conversation's `initiator`. People the
+        conversation is shared with, even with `write` access, cannot pin it, and
+        their own lists are not affected by the owner's pin.
+
+        **Behaviour:**
+
+        Idempotent: pinning an already pinned conversation succeeds and changes nothing.
+        Archived and deleted conversations cannot be pinned. Archiving a pinned
+        conversation removes its pin. Pinning does not change `lastActivityAt` or
+        `updatedAt`, so the conversation keeps its place among the other pinned chats.
+
+        - Path params: `conversationId`
+        - Query params: none
+        - Body: none
+      operationId: pinConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation is pinned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPinResponse'
+        '400':
+          description: Missing user or organization context, or `conversationId` is not a valid id
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - token is missing the `conversation:write` scope
+        '404':
+          description: Conversation not found, deleted, archived, an agent conversation, or not owned by the caller.
+        '500':
+          description: Persistence layer failed to update the conversation document.
+
+  /conversations/{conversationId}/unpin:
+    patch:
+      tags:
+        - Conversations
+      summary: Unpin conversation
+      description: |
+        Remove a conversation's pin so it is listed by recent activity again.
+
+        **Access:**
+
+        Owner only, as for `PATCH /conversations/{conversationId}/pin`.
+
+        **Behaviour:**
+
+        Idempotent: unpinning a conversation that is not pinned succeeds and changes nothing.
+
+        - Path params: `conversationId`
+        - Query params: none
+        - Body: none
+      operationId: unpinConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation identifier
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Conversation is not pinned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPinResponse'
+        '400':
+          description: Missing user or organization context, or `conversationId` is not a valid id
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - token is missing the `conversation:write` scope
+        '404':
+          description: Conversation not found, deleted, an agent conversation, or not owned by the caller.
+        '500':
+          description: Persistence layer failed to update the conversation document.
+
   /conversations/{conversationId}/message/{messageId}/regenerate:
     post:
       tags:
@@ -33732,6 +34111,55 @@ paths:
             Cannot regenerate. Common causes: target message is not the last
             message in the conversation, target message is not of type
             `bot_response`, or no preceding `user_query` exists.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
+
+  /conversations/{conversationId}/message/{messageId}/fork:
+    post:
+      tags:
+        - Conversations
+      summary: Fork conversation from a message
+      description: |
+        Copy this conversation into a new private chat owned by the caller,
+        including every message up to and including `messageId`. The original
+        conversation is left unchanged.
+
+        Only the owner of the conversation can fork it. A shared recipient or a
+        project member gets 404, because their access to the original's
+        attachments and artifacts is revoked on unshare. The fork does not
+        inherit share settings. If the source is linked to a project the caller
+        can still see, the fork stays in that project but is private to the
+        caller; otherwise it is created outside the project.
+      operationId: forkConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: messageId
+          in: path
+          required: true
+          description: Inclusive last message to copy into the new chat
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '201':
+          description: Forked conversation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForkConversationResponse'
+        '400':
+          description: Invalid conversation or message id
         '401':
           description: Unauthorized
         '404':
@@ -36853,6 +37281,56 @@ paths:
             with offset information.
         '401':
           description: Unauthorized
+
+  /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/fork:
+    post:
+      tags:
+        - Agents
+      summary: Fork agent conversation from a message
+      description: |
+        Copy this agent conversation into a new private chat owned by the
+        caller, including every message up to and including `messageId`. The
+        original conversation is left unchanged.
+
+        Only the owner of the conversation can fork it; anyone else gets 404.
+      operationId: forkAgentConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: messageId
+          in: path
+          required: true
+          description: Inclusive last message to copy into the new chat
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '201':
+          description: Forked conversation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForkConversationResponse'
+        '400':
+          description: Invalid conversation, message or agent id
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
 
   /agents/{agentKey}/conversations/{conversationId}/cancel:
     post:
@@ -41132,6 +41610,15 @@ paths:
           schema:
             type: string
             enum: [authenticated, not-authenticated]
+        - name: scope
+          in: query
+          required: false
+          description: >-
+            `org` lists the organization's instances only, leaving out the caller's own personal
+            ones (the admin catalog). Omitted, both are listed; each item's `scope` says which it is.
+          schema:
+            type: string
+            enum: [org]
         - name: search
           in: query
           required: false
@@ -41258,6 +41745,12 @@ paths:
                         createdBy:
                           type: string
                           description: User ID that created the instance. Absent on registry-only entries.
+                        scope:
+                          type: string
+                          enum: [org, personal]
+                          description: >-
+                            `org` for the organization's instances, `personal` for the caller's own. Absent on
+                            registry-only entries.
                         createdAtTimestamp:
                           type: integer
                           format: int64
@@ -41723,7 +42216,13 @@ paths:
       tags:
         - Toolset Instances
       summary: Create toolset instance
-      description: Create a new toolset instance (admin only).
+      description: >-
+        Create a toolset instance. An administrator's is the organization's unless `scope` is
+        `personal`; anyone else's is always personal: kept for its owner only, who alone sees it,
+        signs in to it, uses it and sets its tool approvals. A personal instance stores only its
+        toolset's setup fields (for OAuth, the owner's own client ID and secret), every address in
+        it must be public, and each user can have a limited number
+        (`TOOLSET_MAX_PERSONAL_INSTANCES`, 25 by default).
       operationId: createToolsetInstance
       security:
         - bearerAuth: []
@@ -41754,22 +42253,35 @@ paths:
                   type: string
                 oauthInstanceName:
                   type: string
+                scope:
+                  type: string
+                  enum: [org, personal]
+                  description: >-
+                    `personal` for the caller's own instance. Omitted, an administrator's instance
+                    is the organization's and anyone else's is personal.
       responses:
         '201':
           description: Instance created successfully
         '400':
-          description: Invalid request
+          description: >-
+            Invalid request, including a personal instance's undeclared setting, missing OAuth
+            client, or non-public address
         '401':
           description: Unauthorized
-        '403':
-          description: Forbidden
+        '409':
+          description: A name already in use, or the caller's limit of personal instances reached
+        '503':
+          description: The caller's role couldn't be confirmed, so nothing was created
 
   /toolsets/instances/{instanceId}:
     get:
       tags:
         - Toolset Instances
       summary: Get toolset instance
-      description: Retrieve a single toolset instance by its identifier.
+      description: >-
+        Retrieve a single toolset instance: an organization one, or the caller's own personal one
+        (anyone else's personal instance is not found, for administrators too). Its `scope` is
+        `org` or `personal`.
       operationId: getToolsetInstance
       security:
         - bearerAuth: []
@@ -41791,7 +42303,10 @@ paths:
       tags:
         - Toolset Instances
       summary: Update toolset instance
-      description: Update an existing toolset instance's configuration (admin only).
+      description: >-
+        Update a toolset instance: an organization one by an administrator, a personal one by its
+        owner only. A personal instance's new OAuth client signs its owner out of it; its scope
+        never changes.
       operationId: updateToolsetInstance
       security:
         - bearerAuth: []
@@ -41822,7 +42337,9 @@ paths:
       tags:
         - Toolset Instances
       summary: Delete toolset instance
-      description: Delete a toolset instance and its associated configuration (admin only).
+      description: >-
+        Delete a toolset instance, every sign-in to it and its tool approval rules: an organization
+        one by an administrator, a personal one by its owner only. Refused while an agent uses it.
       operationId: deleteToolsetInstance
       security:
         - bearerAuth: []
@@ -42022,8 +42539,13 @@ paths:
         - Toolset Instances
       summary: Get a toolset instance's tool approval rules
       description: >-
-        Which of the instance's tools run, ask for approval, or never run, for everyone in the
-        organization. Every member can read them; `canEdit` says whether the caller may change them.
+        Which of the instance's tools run, ask for approval, or never run. An organization
+        instance's apply to everyone in the organization and every member can read them; a
+        personal instance's are its owner's, and nobody else finds them. `canEdit` says whether
+        the caller may change them. An organization instance's are served only when organization
+        tool rules are on (`organization_toolset_tool_rules` in the edition config); otherwise 404,
+        and each tool starts from what it does to data. A personal instance's are served in every
+        edition.
       operationId: getToolsetToolRules
       security:
         - bearerAuth: []
@@ -42043,12 +42565,19 @@ paths:
         '401':
           description: Unauthorized
         '404':
-          description: Instance not found
+          description: >-
+            Instance not found, or organization tool rules are off: "Organization tool approvals
+            aren't available here. Each person answers the approval card in the chat."
     put:
       tags:
         - Toolset Instances
-      summary: Set a toolset instance's tool approval rules (admin only)
-      description: Replaces the instance's rules. They apply to everyone in the organization.
+      summary: Set a toolset instance's tool approval rules
+      description: >-
+        Replaces the instance's rules: an organization instance's by administrators only (they
+        apply to everyone in the organization), a personal instance's by its owner. An
+        organization instance's are served only when organization tool rules are on; otherwise
+        404 before any admin check, and nothing is saved. A personal instance's are served in
+        every edition.
       operationId: updateToolsetToolRules
       security:
         - bearerAuth: []
@@ -42077,9 +42606,12 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Only administrators can change them
+          description: An organization instance's rules, and the caller isn't an administrator
         '404':
-          description: Instance not found
+          description: >-
+            Instance not found, someone else's personal instance, or an organization instance
+            while organization tool rules are off: "Organization tool approvals aren't available
+            here. Each person answers the approval card in the chat."
 
   /toolsets/oauth-configs/{toolsetType}:
     get:

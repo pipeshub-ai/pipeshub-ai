@@ -840,6 +840,8 @@
     "like": "有幫助",
     "dislike": "沒有幫助",
     "copy": "複製",
+    "fork": "分叉對話",
+    "forkFromHere": "從此處分叉",
     "regenerate": "重新產生",
     "readAloud": "朗讀",
     "stopReading": "停止朗讀",
@@ -883,6 +885,11 @@
     "rename": "重新命名",
     "archive": "封存",
     "deleteChat": "刪除",
+    "pin": "置頂",
+    "unpin": "取消置頂",
+    "pinned": "已置頂",
+    "pinFailed": "無法置頂聊天",
+    "unpinFailed": "無法取消置頂聊天",
     "export": {
       "menuItem": "匯出",
       "exporting": "正在匯出聊天…",
@@ -967,7 +974,9 @@
       "editComingSoonDescription": "我們正在開發編輯功能",
       "deprecatedTools": "此代理包含已不再提供的工具。請開啟代理建構器將其移除。",
       "openAgentBuilder": "開啟代理建構器",
-      "loadConversationFailed": "無法開啟此對話。請重新整理頁面後再試一次。"
+      "loadConversationFailed": "無法開啟此對話。請重新整理頁面後再試一次。",
+      "forkSuccess": "已從此處開始新對話",
+      "forkError": "無法分叉此對話，請重試。"
     },
     "queryModes": {
       "chat": {
@@ -1346,7 +1355,7 @@
       "showAll": "顯示全部",
       "showLess": "收合",
       "partial": "僅顯示詳細資訊的開頭部分：完整呼叫更長。",
-      "deletesData": "刪除資料",
+      "cantBeUndone": "無法復原",
       "allow": "允許",
       "dontAskAgain": "此工具不再詢問",
       "answerFailed": "無法傳送你的回答，請再試一次。",
@@ -2162,7 +2171,7 @@
       "title": "動作",
       "subtitle": "設定自動化動作，例如建立記錄、更新欄位或觸發工作流程。每個應用程式都有針對其支援功能量身打造的動作。",
       "yourActionsTitle": "您的動作",
-      "yourActionsSubtitle": "驗證並管理管理員為您的帳戶開放的動作。",
+      "yourActionsSubtitle": "登入管理員為您開放的動作，或新增您自己的動作。",
       "tabs": {
         "all": "全部",
         "configured": "已設定",
@@ -2182,7 +2191,7 @@
         "manage": "管理",
         "unavailable": "無法使用",
         "notConfigured": "未設定",
-        "adminSetupRequired": "需要管理員設定"
+        "add": "新增"
       },
       "trailingYourActions": "您的動作",
       "loading": "正在載入動作…",
@@ -2242,7 +2251,7 @@
         "refreshingList": "正在更新清單…",
         "searchInstances": "搜尋執行個體…",
         "teamInstanceInfo": "對貴組織的動作執行個體進行驗證。已驗證的動作可以加入您的代理程式。",
-        "personalInstanceInfo": "對貴組織的動作執行個體進行驗證。完成驗證後，您就可以在代理程式中使用這些動作。",
+        "personalInstanceInfo": "登入組織的動作或新增您自己的動作。登入後即可在代理程式中使用。",
         "instanceTabs": {
           "all": "全部（{{count}}）",
           "authenticated": "已驗證（{{count}}）",
@@ -2306,14 +2315,30 @@
         "numberMin": "請輸入不小於 {{min, number}} 的整數。",
         "numberMax": "請輸入不大於 {{max, number}} 的整數。"
       },
-      "adminRequiredToast": "只有管理員可以新增動作。請請管理員先設定此動作。",
-      "personalNonAdminHint": "標示為「未設定」的動作需由管理員先完成設定，您才能使用。",
       "toolRules": {
         "open": "工具核准",
         "title": "工具核准：{{name}}",
         "description": "當助理或代理程式想使用這些工具時會發生什麼。這些規則對您組織中的每個人都相同。",
         "readOnly": "只有管理員可以變更這些規則。",
-        "toolsError": "無法載入此工具集的工具。"
+        "toolsError": "無法載入此工具集的工具。",
+        "defaults": "讀取或變更資料的工具會直接執行。刪除資料、清空工作表或傳送電子郵件的工具會先在 PipesHub 應用程式的聊天中詢問，在無人能回應的地方（例如 Slack 機器人或 API）不會執行。",
+        "enterpriseTitle": "組織工具核准",
+        "enterpriseDescription": "為組織中的所有人選擇此工具組中的哪些工具直接執行、先詢問或從不執行。"
+      },
+      "personal": {
+        "setupCallout": "只有您可以檢視和使用此動作，且無法新增到與組織共用的代理程式中。新增後請登入。",
+        "yours": "我的",
+        "addOwn": "新增我的",
+        "added": "動作已新增。",
+        "delete": "刪除動作",
+        "deleteTitle": "刪除 {{name}}？",
+        "deleteBody": "您對此動作的登入資訊和工具核准也會一併刪除。刪除後無法復原。",
+        "deleted": "動作已刪除。",
+        "adminOnly": "只有管理員可以新增 {{name}}：它透過主機名稱連線到伺服器。請要求管理員為您的組織新增。"
+      },
+      "enterprise": {
+        "userActionsTitle": "成員自己的動作",
+        "userActionsDescription": "檢視並移除組織成員為自己新增的動作。"
       }
     },
     "rightPanel": {
@@ -3314,7 +3339,7 @@
           "none": "伺服器沒有說明此工具的作用，因此將其視為會變更資料。"
         },
         "group": {
-          "destructive": "刪除資料",
+          "destructive": "無法復原",
           "write": "變更資料",
           "read": "唯讀",
           "notOffered": "目前未提供",
@@ -4580,7 +4605,8 @@
     "mcpAgentApprovals": "依代理程式設定工具核准",
     "limitSource": "選擇 {{name}} 的搜尋範圍",
     "limitSourceHint": "保持勾選整個來源，或取消勾選後勾選代理可以搜尋的資料夾和項目。",
-    "limitSourceCount": "僅限所選的 {{count}} 項"
+    "limitSourceCount": "僅限所選的 {{count}} 項",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} 是您的個人動作，無法新增到與組織共用或以服務帳戶執行的代理程式中。"
   },
   "recordView": {
     "sections": {
@@ -4856,6 +4882,7 @@
     },
     "desktopHandoff": {
       "title": "登入已傳送至 PipesHub",
+      "integrationTitle": "授權已傳送至 PipesHub",
       "description": "您可以關閉此分頁並返回 PipesHub 應用程式。",
       "openApp": "開啟 PipesHub"
     }

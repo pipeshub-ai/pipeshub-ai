@@ -52,10 +52,10 @@ export const isValidEmail = (email: string) => {
 };
 
 
-const desktopExchangeValidationSchema = z.object({
+const exchangeValidationSchema = z.object({
   body: z.object({
     code: z.string().min(1),
-    codeVerifier: z.string().min(1),
+    codeVerifier: z.string().min(1).optional(),
   }),
   query: z.object({}),
   params: z.object({}),
@@ -79,23 +79,31 @@ export function createSamlRouter(container: Container) {
 
   /**
    * A desktop sign-in ran in the user's browser, so its outcome goes to the
-   * success page, which forwards it to the app by deep link. Web sign-ins keep
-   * their existing redirects.
+   * success page, which forwards it to the app by deep link. Web sign-ins
+   * report errors on the login page instead.
    */
   const desktopRelayState = (req: AuthSessionRequest) => {
     const relayState = samlController.parseRelayState(req);
     return relayState.client === 'desktop' &&
       isValidDesktopState(relayState.state) &&
       isValidCodeChallenge(relayState.codeChallenge)
-      ? { state: relayState.state as string, codeChallenge: relayState.codeChallenge as string }
+      ? { state: relayState.state, codeChallenge: relayState.codeChallenge }
       : null;
   };
-  const desktopSuccessUrl = (params: Record<string, string>) =>
+  const webRelayState = (
+    req: AuthSessionRequest,
+  ): { state?: string; codeChallenge: string } | null => {
+    const relayState = samlController.parseRelayState(req);
+    return relayState.client === 'web' && isValidCodeChallenge(relayState.codeChallenge)
+      ? { codeChallenge: relayState.codeChallenge }
+      : null;
+  };
+  const successUrl = (params: Record<string, string>) =>
     `${config.frontendUrl}/auth/sign-in/samlSso/success?${new URLSearchParams(params).toString()}`;
   const samlErrorUrl = (req: AuthSessionRequest, code: string) => {
     const desktop = desktopRelayState(req);
     return desktop
-      ? desktopSuccessUrl({ state: desktop.state, saml_error: code })
+      ? successUrl({ state: desktop.state, saml_error: code })
       : `${config.frontendUrl}/login?saml_error=${encodeURIComponent(code)}`;
   };
   const redirectSamlError = (req: AuthSessionRequest, res: Response, code: string) =>
@@ -103,7 +111,7 @@ export function createSamlRouter(container: Container) {
 
   router.use(attachContainerMiddleware(container));
   // No server-side login session: sign-in state travels in RelayState and the
-  // Redis sign-in session, and the callback sets its own token cookies.
+  // Redis sign-in session, and the callback hands tokens over by one-time code.
   router.use(passport.initialize());
 
   router.get(
@@ -168,7 +176,23 @@ export function createSamlRouter(container: Container) {
           samlProfile.orgId = defaultOrg?._id?.toString();
         }
 
+        // SP-initiated must finish with PKCE. /signIn always sets
+        // spInitiated; a claimed web/desktop without a valid challenge is
+        // the same. IdP-initiated (Okta app tile) has neither — still a
+        // one-time code, no cookies.
+        const desktop = desktopRelayState(req);
+        const web = webRelayState(req);
         const relayState = samlController.parseRelayState(req);
+        if (
+          !desktop &&
+          !web &&
+          (relayState.spInitiated ||
+            relayState.client === 'web' ||
+            relayState.client === 'desktop')
+        ) {
+          return redirectSamlError(req, res, 'sign_in_restart');
+        }
+        const handoff = desktop ?? web;
         const orgId = relayState.orgId || samlProfile.orgId;
 
         const orgAuthConfig = await OrgAuthConfig.findOne({ orgId, isDeleted: false });
@@ -260,29 +284,13 @@ export function createSamlRouter(container: Container) {
           auth_method: 'saml',
         });
 
-        const desktop = desktopRelayState(req);
-        if (desktop) {
-          const code = await samlDesktopHandoffService.issue(
-            { accessToken, refreshToken },
-            desktop.codeChallenge,
-          );
-          return res.redirect(desktopSuccessUrl({ state: desktop.state, code }));
-        }
-
-        res.cookie("accessToken", accessToken, {
-          secure: true,
-          sameSite: "none",
-          maxAge: 60 * 60 * 1000,
-        });
-
-        res.cookie("refreshToken", refreshToken, {
-          secure: true,
-          sameSite: "none",
-          maxAge: 7 * 24 * 60 * 60 * 1000,
-        });
-
-
-        res.redirect(`${config.frontendUrl}/auth/sign-in/samlSso/success`);
+        const code = await samlDesktopHandoffService.issue(
+          { accessToken, refreshToken },
+          handoff?.codeChallenge,
+        );
+        res.redirect(
+          successUrl(handoff?.state ? { state: handoff.state, code } : { code }),
+        );
       } catch (error) {
         logger.error('SAML callback error', { error: error instanceof Error ? error.message : String(error) });
         return redirectSamlError(req, res, 'unknown');
@@ -291,18 +299,20 @@ export function createSamlRouter(container: Container) {
   );
 
   // Unauthenticated by design: the code and PKCE verifier are the credential.
-  router.post(
-    '/desktop/exchange',
-    ValidationMiddleware.validate(desktopExchangeValidationSchema),
-    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
-      try {
-        const { code, codeVerifier } = req.body as { code: string; codeVerifier: string };
-        res.status(200).json(await samlDesktopHandoffService.redeem(code, codeVerifier));
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
+  const exchangeHandoffCode = async (
+    req: AuthSessionRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { code, codeVerifier } = req.body as { code: string; codeVerifier?: string };
+      res.status(200).json(await samlDesktopHandoffService.redeem(code, codeVerifier));
+    } catch (error) {
+      next(error);
+    }
+  };
+  router.post('/exchange', ValidationMiddleware.validate(exchangeValidationSchema), exchangeHandoffCode);
+  router.post('/desktop/exchange', ValidationMiddleware.validate(exchangeValidationSchema), exchangeHandoffCode);
 
   router.post(
     '/updateAppConfig',

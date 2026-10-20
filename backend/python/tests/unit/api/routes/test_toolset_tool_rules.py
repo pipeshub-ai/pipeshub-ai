@@ -55,6 +55,12 @@ def toolsets() -> ModuleType:
     return module
 
 
+@pytest.fixture(autouse=True)
+def _organization_rules(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These routes serve an admin's rules; `TestWithoutOrganizationRules` turns them off."""
+    monkeypatch.setattr("app.edition_config.organization_toolset_tool_rules", True, raising=False)
+
+
 def _registry() -> MagicMock:
     registry = MagicMock()
     registry.get_toolset_metadata.return_value = {"name": "jira", "tools": _JIRA_TOOLS}
@@ -185,3 +191,23 @@ class TestTheToolsetsSchema:
         assert {tool["name"]: tool["kind"] for tool in schema["toolset"]["tools"]} == {
             "search_issues": "read", "create_issue": "write", "delete_issue": "destructive", "remove_watcher": "destructive",
         }
+
+
+class TestWithoutOrganizationRules:
+    """The default build has no organization rules: both routes answer 404, and nothing is saved."""
+
+    @pytest.fixture(autouse=True)
+    def _off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("app.edition_config.organization_toolset_tool_rules", False, raising=False)
+
+    async def test_reading_isnt_found(self, toolsets: ModuleType) -> None:
+        with pytest.raises(HTTPException) as exc:
+            await _get(toolsets, _Store(), admin=True)
+        assert exc.value.status_code == 404
+
+    async def test_saving_isnt_found_and_saves_nothing(self, toolsets: ModuleType) -> None:
+        store = _Store()
+        with pytest.raises(HTTPException) as exc:
+            await _put(toolsets, store, {"create_issue": "ask"})
+        assert exc.value.status_code == 404
+        assert _RULES_KEY not in store.values

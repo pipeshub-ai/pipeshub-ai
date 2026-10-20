@@ -325,6 +325,15 @@ class World:
     def _fresh_value(self, key: str) -> str:
         if key == "unique_name":
             return self._unique_name()
+        if key == "fresh_toolset":
+            made = self._create_toolset(self._unique_name("toolset"), KEYED_TOOLSET_TYPE, "API_TOKEN", {})
+            # A case may have deleted it already.
+            self._later(f"toolset {made['instanceName']}", lambda: self._delete_toolset(made["_id"]))
+            return str(made["_id"])
+        if key == "fresh_personal_toolset":
+            return str(self._create_toolset(
+                self._unique_name("toolset"), KEYED_TOOLSET_TYPE, "API_TOKEN", {}, caller=CREATOR, scope="personal",
+            )["_id"])
         if key in ("fresh_mcp", "fresh_personal_mcp"):
             self._switch_on(MCP_FLAG)
             if key == "fresh_mcp":
@@ -369,19 +378,30 @@ class World:
         )
         return {"oauth_config": config_id, **made}
 
-    def _create_toolset(self, name: str, toolset_type: str, auth_type: str, auth: dict[str, str]) -> dict[str, Any]:
-        body = self._json(
-            ADMIN, "POST", f"{_TOOLSETS}/instances", f"Creating a {toolset_type} toolset",
-            json={"instanceName": name, "toolsetType": toolset_type, "authType": auth_type, "authConfig": auth},
-        )
+    def _create_toolset(
+        self, name: str, toolset_type: str, auth_type: str, auth: dict[str, str], *,
+        caller: str = ADMIN, scope: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"instanceName": name, "toolsetType": toolset_type, "authType": auth_type, "authConfig": auth}
+        if scope:
+            payload["scope"] = scope
+        body = self._json(caller, "POST", f"{_TOOLSETS}/instances", f"Creating a {toolset_type} toolset", json=payload)
         instance = body.get("instance") or {}
         if not instance.get("_id"):
             raise RuntimeError(f"Creating a {toolset_type} toolset returned no id.")
+        if scope == "personal":
+            # Only its owner can delete it; a case may have deleted it already.
+            self._later(f"personal toolset {name}", lambda: self._delete_toolset(instance["_id"], caller=caller))
         return instance
 
-    def _delete_toolset(self, instance_id: str) -> None:
-        self._json(ADMIN, "DELETE", f"{_TOOLSETS}/instances/{instance_id}", "Deleting a test toolset",
+    def _delete_toolset(self, instance_id: str, *, caller: str = ADMIN) -> None:
+        self._json(caller, "DELETE", f"{_TOOLSETS}/instances/{instance_id}", "Deleting a test toolset",
                    ok=(200, 404))
+
+    def _build_personal_toolsets(self) -> dict[str, str]:
+        name = f"{PREFIX}-personal-toolset-{uuid.uuid4().hex[:10]}"
+        instance = self._create_toolset(name, KEYED_TOOLSET_TYPE, "API_TOKEN", {}, caller=CREATOR, scope="personal")
+        return {"personal_toolset": str(instance["_id"]), "personal_toolset_name": name}
 
     def _build_toolsets(self) -> dict[str, str]:
         tag = uuid.uuid4().hex[:10]

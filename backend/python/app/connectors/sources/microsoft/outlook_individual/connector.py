@@ -267,7 +267,7 @@ class OutlookIndividualConnector(BaseConnector):
             connector_id = self.connector_id
 
             # Read connector scope and creator info from config
-            config_path = ConfigPaths.CONNECTOR_CONFIG.format(connector_id=connector_id)
+            config_path = ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=connector_id)
             config = await self.config_service.get_config(config_path)
 
             if not config:
@@ -410,7 +410,7 @@ class OutlookIndividualConnector(BaseConnector):
             raise Exception("Outlook client not initialized. Call init() first.")
 
         # Fetch current config from etcd (async I/O)
-        config_path = ConfigPaths.CONNECTOR_CONFIG.format(connector_id=self.connector_id)
+        config_path = ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=self.connector_id)
         config = await self.config_service.get_config(config_path)
 
         if not config:

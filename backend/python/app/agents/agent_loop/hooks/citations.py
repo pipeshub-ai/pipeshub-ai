@@ -282,7 +282,10 @@ class _FetchFullRecordTool(Tool):
                 type=ParameterType.INTEGER,
                 description=(
                     "Block index to start from (inclusive). Use the value from a previous "
-                    "truncation hint to continue reading a large record. Default 0."
+                    "truncation hint to continue reading a large record. Default 0. "
+                    "A continuation reads one record at a time: when it is above 0, pass "
+                    "exactly one record_id — such a call naming several is rejected. "
+                    "Leaving it 0 (or unset) keeps the normal one-call multi-record read."
                 ),
                 required=False,
                 default=0,

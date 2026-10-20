@@ -771,7 +771,7 @@ class Outlook:
             ToolParameter(name="bcc_recipients", type=ParameterType.LIST, description="List of BCC recipient email addresses", required=False),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
     )
     async def send_email(
         self,
@@ -919,7 +919,7 @@ class Outlook:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the message to reply to", required=True),
             ToolParameter(name="comment", type=ParameterType.STRING, description="Reply comment / body text", required=True),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
     )
     async def reply_to_message(
         self,
@@ -947,7 +947,7 @@ class Outlook:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the message to reply-all to", required=True),
             ToolParameter(name="comment", type=ParameterType.STRING, description="Reply-all comment / body text", required=True),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
     )
     async def reply_all_to_message(
         self,
@@ -976,7 +976,7 @@ class Outlook:
             ToolParameter(name="to_recipients", type=ParameterType.LIST, description="List of recipient email addresses to forward to", required=True),
             ToolParameter(name="comment", type=ParameterType.STRING, description="Optional comment to include with the forwarded message", required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
     )
     async def forward_message(
         self,
@@ -1490,7 +1490,7 @@ class Outlook:
             ToolParameter(name="recurrence", type=ParameterType.DICT, description="Recurrence pattern and range dict matching MS Graph API format", required=False),
             ToolParameter(name="is_online_meeting", type=ParameterType.BOOLEAN, description="Whether to create an online meeting link", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
     )
     async def create_calendar_event(
         self,
@@ -1593,7 +1593,7 @@ class Outlook:
             ToolParameter(name="is_online_meeting", type=ParameterType.BOOLEAN, description="Whether to create an online meeting link", required=False),
             ToolParameter(name="recurrence", type=ParameterType.DICT, description="Updated recurrence settings (same structure as create_calendar_event)", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
     )
     async def update_calendar_event(
         self,

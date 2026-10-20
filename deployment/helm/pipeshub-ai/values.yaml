@@ -367,9 +367,18 @@ config:
   # search_by_entities, which links named people, organizations, products or
   # places to extracted entities and searches the records that mention them.
   # It stays off under this mode unless set, and needs named-entity extraction.
+  # TIMELINE_SUMMARIES is not part of this mode: it is on unless set to
+  # "false" through extraEnv. With it on, the agent has search_timeline, which
+  # searches a span of time period by period and returns the matches in date
+  # order, and questions about a span ("between March and May", "how did X
+  # evolve") are pointed to it.
   # FETCH_SIZE_BY_CHARS is not part of this mode: it is on unless set to
   # "false" through extraEnv. With it on, fetch_record reads as much of each
   # record as fits a share of the context window instead of a block count.
+  # TARGETED_RETRIEVAL is not part of this mode either: it is on unless set to
+  # "false" through extraEnv. With it on, a search returns fewer passages per
+  # record and fetch_record takes a query that reads the part of a record it
+  # names.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network

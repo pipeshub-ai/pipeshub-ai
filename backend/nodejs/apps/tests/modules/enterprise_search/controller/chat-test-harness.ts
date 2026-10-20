@@ -103,6 +103,7 @@ interface QueryState {
   limit?: number
   lean: boolean
   session?: unknown
+  exclude?: string[]
 }
 
 /** Chainable, awaitable stand-in for a Mongoose query. */
@@ -127,7 +128,12 @@ class FakeQuery<T> implements PromiseLike<T> {
     this.state.lean = true
     return this
   }
-  select(): this {
+  /** Honours `-field` exclusions on `lean()` results; any other projection is ignored. */
+  select(projection?: unknown): this {
+    if (typeof projection === 'string') {
+      const excluded = projection.split(/\s+/).filter((token) => token.startsWith('-')).map((token) => token.slice(1))
+      this.state.exclude = [...(this.state.exclude ?? []), ...excluded]
+    }
     return this
   }
   populate(): this {
@@ -168,6 +174,15 @@ const shape = (docs: StoredDoc[], state: QueryState): unknown[] => {
       for (const [field, direction] of sortEntries) {
         const a = normalize((x as unknown as Doc)[field]) as number | string
         const b = normalize((y as unknown as Doc)[field]) as number | string
+        // MongoDB orders a missing or null field before every value. Without this a
+        // missing field compares as equal to everything, hiding sort-order bugs.
+        const aMissing = a === undefined || a === null
+        const bMissing = b === undefined || b === null
+        if (aMissing || bMissing) {
+          if (aMissing && !bMissing) return -direction
+          if (!aMissing && bMissing) return direction
+          continue
+        }
         if (a < b) return -direction
         if (a > b) return direction
       }
@@ -176,7 +191,12 @@ const shape = (docs: StoredDoc[], state: QueryState): unknown[] => {
   }
   if (state.skip) rows = rows.slice(state.skip)
   if (state.limit) rows = rows.slice(0, state.limit)
-  return state.lean ? rows.map((row) => row.toObject()) : rows.map((row) => bindSession(row, state))
+  if (!state.lean) return rows.map((row) => bindSession(row, state))
+  return rows.map((row) => {
+    const object = row.toObject() as Doc
+    for (const field of state.exclude ?? []) delete object[field]
+    return object
+  })
 }
 
 type SessionOption = { session?: unknown } | null | undefined

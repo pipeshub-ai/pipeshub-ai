@@ -1192,7 +1192,8 @@ class TestCreateAgentInstanceFields:
 
         services = {
             "graph_provider": AsyncMock(),
-            "config_service": AsyncMock(),
+            # The instance the agent attaches, in the org list the save checks against.
+            "config_service": AsyncMock(get_config=AsyncMock(return_value=[{"_id": "inst1", "orgId": "o1"}])),
             "logger": MagicMock(),
         }
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn1")

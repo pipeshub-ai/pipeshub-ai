@@ -7594,7 +7594,7 @@ describe('ConfigurationManager Controller', () => {
 
       await handler(req, res, next)
 
-      expect(res.writeHead.calledWith(200, sinon.match({ 'Content-Type': 'text/event-stream' }))).to.be.true
+      expect(res.writeHead.calledWith(200, sinon.match({ 'Content-Type': 'text/event-stream; charset=utf-8' }))).to.be.true
       expect(res.write.calledOnce).to.be.true
       const written = res.write.firstCall.args[0] as string
       expect(written).to.include('event: progress')

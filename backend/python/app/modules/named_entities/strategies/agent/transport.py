@@ -9,7 +9,7 @@ streamed turn holds the cap's permit only: it cannot be retried as one call.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.messages import Message
 from app.agent_loop_lib.core.responses import ModelResponse, StructuredResponse
@@ -18,6 +18,9 @@ from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
 from app.services.llm_gateway.gateway import get_llm_gateway
 from app.utils.concurrency import indexing_llm_slot
+
+if TYPE_CHECKING:
+    from app.agent_loop_lib.core.tool_schema import ToolChoice
 
 
 class SlottedTransport(LLMTransport):
@@ -46,6 +49,8 @@ class SlottedTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         return await get_llm_gateway().call(
             lambda: self._inner.complete(
@@ -56,6 +61,7 @@ class SlottedTransport(LLMTransport):
                 thinking_budget=thinking_budget,
                 effort=effort,
                 system_blocks=system_blocks,
+                **({"tool_choice": tool_choice} if tool_choice else {}),
             ),
             provider=self._gateway_provider,
             call_site="named_entities",
@@ -85,6 +91,8 @@ class SlottedTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         return self._stream(
             messages,
@@ -94,6 +102,7 @@ class SlottedTransport(LLMTransport):
             thinking_budget=thinking_budget,
             effort=effort,
             system_blocks=system_blocks,
+            **({"tool_choice": tool_choice} if tool_choice else {}),
         )
 
     async def _stream(self, messages, **kwargs) -> AsyncIterator[StreamEvent]:

@@ -184,7 +184,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiobotocore==3.9.2",
-    "aiohttp==3.14.3",
+    "aiohttp==3.14.4",
     "aiokafka==0.12.0",
     "aiolimiter==1.2.1",
     "azure-ai-formrecognizer==3.3.3",
@@ -289,7 +289,7 @@ dependencies = [
     "Pillow>=12.3.0,<13",
     "pdfplumber==0.11.9",
     "pillow-avif-plugin==1.5.5",
-    "pypdfium2==4.30.0",
+    "pypdfium2==5.14.0",
     "protobuf>=4.25.0,<6",
     "pydantic==2.12.5",
     "py-trello==0.20.1",

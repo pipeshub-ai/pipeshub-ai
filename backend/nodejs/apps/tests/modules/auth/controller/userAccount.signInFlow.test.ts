@@ -1606,6 +1606,17 @@ describe('UserAccountController sign-in flow', () => {
       cookieSecret: 'saml-cookie-secret',
     };
 
+    const webHandoff = {
+      client: 'web',
+      codeChallenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+    };
+    const handoffService = { issue: sinon.stub(), redeem: sinon.stub() };
+
+    beforeEach(() => {
+      handoffService.issue.reset();
+      handoffService.issue.resolves('c'.repeat(64));
+    });
+
     // The real callback that runs after passport has checked the IdP's
     // assertion; passport's output (req.user) is the only thing faked.
     function samlCallback(): RequestHandler {
@@ -1616,8 +1627,7 @@ describe('UserAccountController sign-in flow', () => {
       bind('AppConfig', appConfig);
       bind('AuthMiddleware', { scopedTokenValidator: () => sinon.stub() });
       bind('SessionService', sessionService);
-      // These are web sign-ins; the desktop handoff is never reached.
-      bind('SamlDesktopHandoffService', {});
+      bind('SamlDesktopHandoffService', handoffService);
       bind('IamService', iamService);
       bind('JitProvisioningService', jitService);
       bind('ConfigurationManagerService', configService);
@@ -1641,13 +1651,19 @@ describe('UserAccountController sign-in flow', () => {
         redirect: sinon.stub(),
         cookie: sinon.stub(),
       };
-      const relayState = Buffer.from(JSON.stringify({ orgId, sessionToken })).toString('base64');
+      const relayState = Buffer.from(
+        JSON.stringify({ orgId, sessionToken, ...webHandoff }),
+      ).toString('base64');
       await samlCallback()(
         fakeRequest({ user: { email, orgId }, body: { RelayState: relayState } }),
         res as unknown as Response,
         sinon.stub() as unknown as NextFunction,
       );
-      return { redirect: String(res.redirect.firstCall?.args[0]), cookies: res.cookie };
+      return {
+        redirect: String(res.redirect.firstCall?.args[0]),
+        cookies: res.cookie,
+        issued: handoffService.issue,
+      };
     }
 
     async function passStepOneAsAlice(steps: string[][] = [['password'], ['samlSso']]) {
@@ -1732,7 +1748,7 @@ describe('UserAccountController sign-in flow', () => {
       });
 
       try {
-        const { redirect, cookies } = await samlSignsInAs(newcomer.email, token);
+        const { redirect, cookies, issued } = await samlSignsInAs(newcomer.email, token);
 
         expect(jitService.provisionUser.firstCall.args.slice(0, 4)).to.deep.equal([
           newcomer.email,
@@ -1740,10 +1756,10 @@ describe('UserAccountController sign-in flow', () => {
           orgId,
           'saml',
         ]);
-        expect(redirect).to.equal('http://app/auth/sign-in/samlSso/success');
-        const access = cookies.getCalls().find((c) => c.args[0] === 'accessToken');
+        expect(redirect).to.equal(`http://app/auth/sign-in/samlSso/success?code=${'c'.repeat(64)}`);
+        expect(cookies.called).to.be.false;
         expect(
-          (jwt.verify(String(access?.args[1]), JWT_SECRET) as TokenClaims).userId,
+          (jwt.verify(String(issued.firstCall.args[0].accessToken), JWT_SECRET) as TokenClaims).userId,
         ).to.equal(newcomer._id);
       } finally {
         delete directory[newcomer.email];
@@ -1753,12 +1769,12 @@ describe('UserAccountController sign-in flow', () => {
     it("signs Alice in when the SAML step is Alice's own account", async () => {
       const token = await passStepOneAsAlice();
 
-      const { redirect, cookies } = await samlSignsInAs(alice.email, token);
+      const { redirect, cookies, issued } = await samlSignsInAs(alice.email, token);
 
-      expect(redirect).to.equal('http://app/auth/sign-in/samlSso/success');
-      const access = cookies.getCalls().find((c) => c.args[0] === 'accessToken');
+      expect(redirect).to.equal(`http://app/auth/sign-in/samlSso/success?code=${'c'.repeat(64)}`);
+      expect(cookies.called).to.be.false;
       expect(
-        (jwt.verify(String(access?.args[1]), JWT_SECRET) as TokenClaims).userId,
+        (jwt.verify(String(issued.firstCall.args[0].accessToken), JWT_SECRET) as TokenClaims).userId,
       ).to.equal(alice._id);
     });
   });

@@ -96,12 +96,25 @@ interface ChatSectionElementProps {
    * `agentId` is set (see `buildChatHref`).
    */
   projectId?: string;
+  /**
+   * Called with the new pin state when the user pins or unpins this row, and
+   * again with the old one if the request fails. For lists that keep their own
+   * copy of the rows (the "More" panel) rather than reading the store.
+   */
+  onPinnedChange?: (pinned: boolean) => void;
 }
 
 /**
  * A single conversation item in the chat sidebar.
  */
-export function ChatSectionElement({ conversation, isActive, onClick, agentId, projectId }: ChatSectionElementProps) {
+export function ChatSectionElement({
+  conversation,
+  isActive,
+  onClick,
+  agentId,
+  projectId,
+  onPinnedChange,
+}: ChatSectionElementProps) {
   const { t } = useTranslation();
 
   const [isHovered, setIsHovered] = useState(false);
@@ -156,6 +169,10 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
   const renameConversation = useChatStore((s) => s.renameConversation);
   const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
   const moveConversationToProject = useChatStore((s) => s.moveConversationToProject);
+  const setConversationPinned = useChatStore((s) => s.setConversationPinned);
+  // One request at a time: a second click while the first is in flight would
+  // otherwise send the opposite request and the two could land out of order.
+  const isPinRequestInFlight = useRef(false);
 
   useEffect(() => {
     if (isRenaming) {
@@ -205,6 +222,24 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
       renameInputRef.current?.blur();
     } else if (e.key === 'Escape') {
       setIsRenaming(false);
+    }
+  };
+
+  const handleTogglePin = async () => {
+    if (isPinRequestInFlight.current) return;
+    isPinRequestInFlight.current = true;
+    const pinned = conversation.isPinned !== true;
+    setConversationPinned(conversation.id, pinned);
+    onPinnedChange?.(pinned);
+    try {
+      await ChatApi.setConversationPinned(conversation.id, pinned);
+      bumpConversationsVersion();
+    } catch {
+      setConversationPinned(conversation.id, !pinned);
+      onPinnedChange?.(!pinned);
+      toast.error(pinned ? t('chat.pinFailed') : t('chat.unpinFailed'));
+    } finally {
+      isPinRequestInFlight.current = false;
     }
   };
 
@@ -392,6 +427,10 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
               onOpenChange={setMenuOpen}
               onRename={handleStartRename}
               onExport={() => void handleExport()}
+              // Agent chats have no pin API, and project rows come from a list that
+              // does not carry the pin, so only the main list offers it.
+              onTogglePin={agentId || projectId ? undefined : () => void handleTogglePin()}
+              isPinned={conversation.isPinned === true}
               onArchive={() => setArchiveDialogOpen(true)}
               onDelete={() => setDeleteDialogOpen(true)}
               showRename={true}

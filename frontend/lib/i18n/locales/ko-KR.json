@@ -840,6 +840,8 @@
     "like": "도움이 됨",
     "dislike": "도움이 안 됨",
     "copy": "복사",
+    "fork": "채팅 분기",
+    "forkFromHere": "여기서 분기",
     "regenerate": "다시 생성",
     "readAloud": "소리 내어 읽기",
     "stopReading": "읽기 중지",
@@ -883,6 +885,11 @@
     "rename": "이름 변경",
     "archive": "보관",
     "deleteChat": "삭제",
+    "pin": "고정",
+    "unpin": "고정 해제",
+    "pinned": "고정됨",
+    "pinFailed": "채팅을 고정하지 못했습니다",
+    "unpinFailed": "채팅 고정을 해제하지 못했습니다",
     "export": {
       "menuItem": "내보내기",
       "exporting": "채팅을 내보내는 중…",
@@ -967,7 +974,9 @@
       "editComingSoonDescription": "편집 기능을 준비하고 있습니다",
       "deprecatedTools": "이 에이전트에 더 이상 사용할 수 없는 도구가 있습니다. Agent Builder를 열어 제거하세요.",
       "openAgentBuilder": "Agent Builder 열기",
-      "loadConversationFailed": "이 대화를 열 수 없습니다. 페이지를 새로 고친 후 다시 시도해 주세요."
+      "loadConversationFailed": "이 대화를 열 수 없습니다. 페이지를 새로 고친 후 다시 시도해 주세요.",
+      "forkSuccess": "이 지점부터 새 채팅을 시작했습니다",
+      "forkError": "채팅을 분기하지 못했습니다. 다시 시도하세요."
     },
     "queryModes": {
       "chat": {
@@ -1346,7 +1355,7 @@
       "showAll": "모두 보기",
       "showLess": "간단히 보기",
       "partial": "세부 정보의 앞부분만 표시됩니다. 전체 호출은 더 깁니다.",
-      "deletesData": "데이터 삭제",
+      "cantBeUndone": "되돌릴 수 없음",
       "allow": "허용",
       "dontAskAgain": "이 도구는 다시 묻지 않기",
       "answerFailed": "답변을 보내지 못했습니다. 다시 시도하세요.",
@@ -2162,7 +2171,7 @@
       "title": "액션",
       "subtitle": "레코드 생성, 필드 업데이트, 워크플로우 트리거 같은 자동화된 액션을 구성합니다. 각 앱에는 지원되는 기능에 맞춘 액션이 있습니다.",
       "yourActionsTitle": "내 액션",
-      "yourActionsSubtitle": "관리자가 내 계정에 제공한 액션을 인증하고 관리합니다.",
+      "yourActionsSubtitle": "관리자가 제공한 액션에 로그인하거나 직접 추가하세요.",
       "tabs": {
         "all": "전체",
         "configured": "구성됨",
@@ -2182,7 +2191,7 @@
         "manage": "관리",
         "unavailable": "사용 불가",
         "notConfigured": "구성되지 않음",
-        "adminSetupRequired": "관리자 설정 필요"
+        "add": "추가"
       },
       "trailingYourActions": "내 액션",
       "loading": "액션을 불러오는 중…",
@@ -2242,7 +2251,7 @@
         "refreshingList": "목록 업데이트 중…",
         "searchInstances": "인스턴스 검색…",
         "teamInstanceInfo": "조직의 액션 인스턴스에 대해 인증합니다. 인증된 액션은 에이전트에 추가할 수 있습니다.",
-        "personalInstanceInfo": "조직의 액션 인스턴스에 대해 인증합니다. 인증이 완료되면 에이전트에서 이 액션들을 사용할 수 있습니다.",
+        "personalInstanceInfo": "조직의 액션에 로그인하거나 직접 추가하세요. 로그인하면 에이전트에서 사용할 수 있습니다.",
         "instanceTabs": {
           "all": "전체({{count}})",
           "authenticated": "인증됨({{count}})",
@@ -2306,14 +2315,30 @@
         "numberMin": "{{min, number}} 이상의 정수를 입력하세요.",
         "numberMax": "{{max, number}} 이하의 정수를 입력하세요."
       },
-      "adminRequiredToast": "관리자만 새 작업을 추가할 수 있습니다. 관리자에게 이 작업을 먼저 구성해 달라고 요청하세요.",
-      "personalNonAdminHint": "\"구성되지 않음\"으로 표시된 작업은 사용하기 전에 관리자가 설정해야 합니다.",
       "toolRules": {
         "open": "도구 승인",
         "title": "도구 승인: {{name}}",
         "description": "어시스턴트나 에이전트가 이 도구를 사용하려고 할 때 어떻게 되는지입니다. 조직의 모든 사용자에게 같은 규칙이 적용됩니다.",
         "readOnly": "관리자만 변경할 수 있습니다.",
-        "toolsError": "이 도구 모음의 도구를 불러오지 못했습니다."
+        "toolsError": "이 도구 모음의 도구를 불러오지 못했습니다.",
+        "defaults": "데이터를 읽거나 변경하는 도구는 실행됩니다. 데이터를 삭제하거나 시트를 비우거나 이메일을 보내는 도구는 PipesHub 앱 채팅에서 먼저 묻고, Slack 봇이나 API처럼 아무도 응답할 수 없는 곳에서는 실행되지 않습니다.",
+        "enterpriseTitle": "조직 도구 승인",
+        "enterpriseDescription": "조직의 모든 사용자에게 이 도구 세트의 어떤 도구를 실행할지, 먼저 물을지, 실행하지 않을지 선택하세요."
+      },
+      "personal": {
+        "setupCallout": "이 액션은 나만 보고 사용할 수 있으며, 조직과 공유된 에이전트에는 추가할 수 없습니다. 추가한 후 로그인하세요.",
+        "yours": "내 액션",
+        "addOwn": "직접 추가",
+        "added": "액션을 추가했습니다.",
+        "delete": "액션 삭제",
+        "deleteTitle": "{{name}}을(를) 삭제할까요?",
+        "deleteBody": "이 액션의 로그인 정보와 도구 승인도 함께 삭제됩니다. 되돌릴 수 없습니다.",
+        "deleted": "액션을 삭제했습니다.",
+        "adminOnly": "{{name}}은(는) 관리자만 추가할 수 있습니다. 호스트 이름으로 서버에 연결하기 때문입니다. 관리자에게 조직용으로 추가해 달라고 요청하세요."
+      },
+      "enterprise": {
+        "userActionsTitle": "구성원의 개인 액션",
+        "userActionsDescription": "조직 구성원이 직접 추가한 액션을 검토하고 삭제합니다."
       }
     },
     "rightPanel": {
@@ -3314,7 +3339,7 @@
           "none": "서버가 이 도구의 동작을 알려주지 않아 데이터를 변경하는 도구로 취급합니다."
         },
         "group": {
-          "destructive": "데이터 삭제",
+          "destructive": "되돌릴 수 없음",
           "write": "데이터 변경",
           "read": "읽기 전용",
           "notOffered": "현재 제공되지 않음",
@@ -4580,7 +4605,8 @@
     "mcpAgentApprovals": "에이전트별 도구 승인",
     "limitSource": "{{name}}에서 검색할 범위 선택",
     "limitSourceHint": "소스 전체를 선택된 상태로 두거나, 선택을 해제하고 에이전트가 검색할 폴더와 항목을 선택하세요.",
-    "limitSourceCount": "선택한 {{count}}개 항목으로 제한됨"
+    "limitSourceCount": "선택한 {{count}}개 항목으로 제한됨",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 액션입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다."
   },
   "recordView": {
     "sections": {
@@ -4856,6 +4882,7 @@
     },
     "desktopHandoff": {
       "title": "로그인이 PipesHub로 전송되었습니다",
+      "integrationTitle": "인증이 PipesHub로 전송되었습니다",
       "description": "이 탭을 닫고 PipesHub 앱으로 돌아가세요.",
       "openApp": "PipesHub 열기"
     }

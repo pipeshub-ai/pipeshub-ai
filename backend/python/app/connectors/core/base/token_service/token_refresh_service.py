@@ -23,7 +23,11 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.interface.producer import IMessagingProducer
-from app.utils.oauth_config import get_oauth_config
+from app.utils.oauth_config import (
+    carry_oauth_url_settings,
+    get_oauth_config,
+    pin_oauth_urls,
+)
 from app.utils.request_context import (
     new_system_root,
     reset_context,
@@ -436,6 +440,7 @@ class TokenRefreshService:
         # A Salesforce refresh must go to the login host that issued the token.
         if config_data.get(AuthFieldKeys.LOGIN_URL):
             oauth_flow_config[AuthFieldKeys.LOGIN_URL] = config_data[AuthFieldKeys.LOGIN_URL]
+        carry_oauth_url_settings(connector_type, config_data, oauth_flow_config)
 
         # Add optional infrastructure fields if present
         if OAuthConfigKeys.TOKEN_ACCESS_TYPE in shared_oauth_config:
@@ -783,6 +788,8 @@ class TokenRefreshService:
             connector_type,
             auth_config
         )
+        carry_oauth_url_settings(connector_type, auth_config, oauth_flow_config)
+        pin_oauth_urls(connector_type, oauth_flow_config)
         oauth_config = get_oauth_config(oauth_flow_config)
 
         from app.connectors.core.base.token_service.oauth_service import OAuthProvider

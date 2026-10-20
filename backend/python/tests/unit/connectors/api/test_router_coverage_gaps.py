@@ -3584,6 +3584,7 @@ class TestPrepareConnectorConfigOAuth:
         from app.connectors.api.router import _prepare_connector_config
 
         config_service = AsyncMock()
+        config_service.get_config.return_value = {"frontend": {"publicEndpoint": "http://myapp.com"}}
 
         result = await _prepare_connector_config(
             config={"auth": {"someField": "val"}},

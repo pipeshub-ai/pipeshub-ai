@@ -1326,6 +1326,72 @@ def _assert_no_personal_mcp_servers(
         )
 
 
+async def _assert_toolsets_visible(
+    toolsets_with_tools: dict[str, dict[str, Any]],
+    config_service: ConfigurationService,
+    org_id: str,
+    user_id: str,
+) -> dict[str, dict[str, Any]]:
+    """An agent may only attach toolset instances the editor can see — the org's, or their own
+    personal ones; anything else would save fine and then fail every chat. Attachments without an
+    instance (saved before instances existed) are left as they are. Returns the instances by id."""
+    from app.agents.toolset_store import is_personal
+    from app.edition_config import get_toolset_by_id
+
+    attached = {ts["instanceId"]: ts for ts in toolsets_with_tools.values() if ts.get("instanceId")}
+    found = await asyncio.gather(*[get_toolset_by_id(instance_id, config_service, org_id) for instance_id in attached])
+    visible = {
+        instance_id: instance
+        for instance_id, instance in zip(attached, found)
+        if instance and (not is_personal(instance) or instance.get("createdBy") == user_id)
+    }
+    missing = [ts.get("instanceName") or ts.get("displayName") or instance_id for instance_id, ts in attached.items() if instance_id not in visible]
+    if missing:
+        raise InvalidRequestError(f"Action(s) not found: {', '.join(missing)}.")
+    return visible
+
+
+def _names_an_instance(toolsets_with_tools: dict[str, dict[str, Any]]) -> bool:
+    return any(ts.get("instanceId") for ts in toolsets_with_tools.values())
+
+
+async def _attached_personal_toolsets(
+    instance_ids: set[str], config_service: ConfigurationService, org_id: str,
+) -> dict[str, dict[str, Any]]:
+    """The personal toolset instances among `instance_ids`, whoever owns them (as for MCP servers,
+    a co-editor can't resolve the owner's, and dropping what it can't see would let sharing past)."""
+    from app.agents.toolset_store import find_personal_instance
+
+    found = await asyncio.gather(*[
+        find_personal_instance(config_service, org_id, instance_id, raise_on_error=True) for instance_id in instance_ids
+    ])
+    return {instance["_id"]: instance for instance in found if instance}
+
+
+def _toolset_attachments_unreadable() -> AgentError:
+    return AgentError(
+        "This agent's actions couldn't be checked, so it can't be shared right now. Please try again in a moment.",
+        status_code=503,
+    )
+
+
+def _assert_no_personal_toolsets(
+    instances: dict[str, dict[str, Any]], *, shared_with_org: bool, service_account: bool,
+) -> None:
+    """A personal action holds one user's sign-in and is visible to that user only; an agent other
+    people run could never use it."""
+    if not (shared_with_org or service_account):
+        return
+    from app.agents.toolset_store import is_personal
+
+    personal = [instance.get("instanceName") or instance_id for instance_id, instance in instances.items() if is_personal(instance)]
+    if personal:
+        raise InvalidRequestError(
+            f"Personal actions ({', '.join(personal)}) can't be attached to an agent that is shared "
+            "with the organization or runs as a service account."
+        )
+
+
 async def _read_agent_mcp_attachments(
     agent_full_id: str, graph_provider: IGraphDBProvider, transaction: str,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -2358,6 +2424,10 @@ async def create_agent(request: Request) -> JSONResponse:
 
         # Parse toolsets, knowledge, skills, and MCP servers BEFORE starting transaction
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+        attached_toolsets = (
+            await _assert_toolsets_visible(toolsets_with_tools, services["config_service"], org_key, user_context["userId"])
+            if _names_an_instance(toolsets_with_tools) else {}
+        )
         mcp_servers_with_tools = _parse_mcp_servers(body.get("mcpServers", []))
         attached_mcp_instances = (
             await _assert_mcp_servers_exist(
@@ -2380,6 +2450,7 @@ async def create_agent(request: Request) -> JSONResponse:
         _assert_no_personal_mcp_servers(
             attached_mcp_instances, shared_with_org=share_with_org, service_account=is_service_account,
         )
+        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org, service_account=is_service_account)
 
         # Create agent document
         agent_key = str(uuid.uuid4())
@@ -3022,6 +3093,11 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             if mcp_servers_with_tools else {}
         )
         mcp_servers_with_tools = _bind_mcp_attachments_to_instances(mcp_servers_with_tools, attached_mcp_instances)
+        toolsets_in_body = _parse_toolsets(body.get("toolsets", [])) if "toolsets" in body else {}
+        attached_toolsets = (
+            await _assert_toolsets_visible(toolsets_in_body, services["config_service"], org_key, user_context["userId"])
+            if _names_an_instance(toolsets_in_body) else {}
+        )
 
         # Check permissions first, then fetch full agent data
         perm = await services["graph_provider"].check_agent_permission(agent_id, user_key, org_key)
@@ -3071,6 +3147,16 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         _assert_no_personal_mcp_servers(
             attached_mcp_instances, shared_with_org=final_shared, service_account=final_service_account,
         )
+        if sharing_turned_on and "toolsets" not in body:
+            existing_toolset_ids = {ts["instanceId"] for ts in agent.get("toolsets") or [] if ts.get("instanceId")}
+            try:
+                attached_toolsets = await _attached_personal_toolsets(
+                    existing_toolset_ids, services["config_service"], org_key,
+                ) if existing_toolset_ids else {}
+            except Exception as e:
+                logger.error(f"Could not check the actions of agent {agent_id} before sharing it: {e}")
+                raise _toolset_attachments_unreadable() from e
+        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared, service_account=final_service_account)
 
         # Handle shareWithOrg flag changes
         if "shareWithOrg" in body:
@@ -3128,8 +3214,8 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
         # Update toolsets if provided in request (even if empty array - means delete all)
         if "toolsets" in body:
-            # Parse toolsets first to validate before anything is written
-            toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+            # Parsed and checked before the update above
+            toolsets_with_tools = toolsets_in_body
 
             graph_provider = services["graph_provider"]
             transaction_id = None

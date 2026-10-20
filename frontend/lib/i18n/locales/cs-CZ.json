@@ -875,6 +875,8 @@
     "like": "Užitečné",
     "dislike": "Neužitečné",
     "copy": "Kopírovat",
+    "fork": "Rozvětvit chat",
+    "forkFromHere": "Rozvětvit odtud",
     "regenerate": "Vygenerovat znovu",
     "readAloud": "Přečíst nahlas",
     "stopReading": "Zastavit čtení",
@@ -920,6 +922,11 @@
     "rename": "Přejmenovat",
     "archive": "Archivovat",
     "deleteChat": "Smazat",
+    "pin": "Připnout",
+    "unpin": "Odepnout",
+    "pinned": "Připnuté",
+    "pinFailed": "Chat se nepodařilo připnout",
+    "unpinFailed": "Chat se nepodařilo odepnout",
     "export": {
       "menuItem": "Exportovat",
       "exporting": "Exportování chatu…",
@@ -1004,7 +1011,9 @@
       "editComingSoonDescription": "Na podpoře úprav pracujeme",
       "deprecatedTools": "Tento agent má nástroje, které už nejsou k dispozici. Otevřete Tvůrce agentů a odeberte je.",
       "openAgentBuilder": "Otevřít Tvůrce agentů",
-      "loadConversationFailed": "Tuto konverzaci se nepodařilo otevřít. Obnovte stránku a zkuste to znovu."
+      "loadConversationFailed": "Tuto konverzaci se nepodařilo otevřít. Obnovte stránku a zkuste to znovu.",
+      "forkSuccess": "Zahájena nová konverzace od tohoto místa",
+      "forkError": "Tuto konverzaci se nepodařilo rozvětvit. Zkuste to znovu."
     },
     "queryModes": {
       "chat": {
@@ -1402,7 +1411,7 @@
       "showAll": "Zobrazit vše",
       "showLess": "Zobrazit méně",
       "partial": "Je zobrazen pouze začátek podrobností: celé volání je delší.",
-      "deletesData": "Maže data",
+      "cantBeUndone": "Nelze vrátit zpět",
       "allow": "Povolit",
       "dontAskAgain": "U tohoto nástroje se už znovu neptat",
       "answerFailed": "Vaši odpověď se nepodařilo odeslat. Zkuste to znovu.",
@@ -2246,7 +2255,7 @@
       "title": "Akce",
       "subtitle": "Nakonfigurujte automatizované akce, jako je vytváření záznamů, aktualizace polí nebo spouštění workflow. Každá aplikace má akci přizpůsobenou funkcím, které podporuje.",
       "yourActionsTitle": "Vaše akce",
-      "yourActionsSubtitle": "Ověřte se a spravujte akce, které váš správce zpřístupnil pro váš účet.",
+      "yourActionsSubtitle": "Ověřte se vůči akcím, které zpřístupnil váš správce, nebo přidejte vlastní.",
       "tabs": {
         "all": "Vše",
         "configured": "Nakonfigurované",
@@ -2266,7 +2275,7 @@
         "manage": "Spravovat",
         "unavailable": "Není k dispozici",
         "notConfigured": "Nenakonfigurováno",
-        "adminSetupRequired": "Vyžaduje nastavení správcem"
+        "add": "Přidat"
       },
       "trailingYourActions": "Vaše akce",
       "loading": "Načítání akcí…",
@@ -2326,7 +2335,7 @@
         "refreshingList": "Aktualizace seznamu…",
         "searchInstances": "Hledat instance…",
         "teamInstanceInfo": "Ověřte se vůči instancím akcí vaší organizace. Ověřené akce lze přidat do vašich agentů.",
-        "personalInstanceInfo": "Ověřte se vůči instancím akcí vaší organizace. Po ověření můžete tyto akce používat ve svých agentech.",
+        "personalInstanceInfo": "Ověřte se vůči akcím vaší organizace nebo přidejte vlastní. Po ověření je můžete používat ve svých agentech.",
         "instanceTabs": {
           "all": "Vše ({{count}})",
           "authenticated": "Ověřené ({{count}})",
@@ -2390,14 +2399,30 @@
         "numberMin": "Zadejte celé číslo nejméně {{min, number}}.",
         "numberMax": "Zadejte celé číslo nejvýše {{max, number}}."
       },
-      "adminRequiredToast": "Nové akce mohou přidávat pouze správci. Požádejte svého správce, aby tuto akci nejprve nakonfiguroval.",
-      "personalNonAdminHint": "Akce označené jako \"Nenakonfigurováno\" musí nejprve nastavit správce, než je budete moci používat.",
       "toolRules": {
         "open": "Schvalování nástrojů",
         "title": "Schvalování nástrojů: {{name}}",
         "description": "Co se stane, když asistent nebo agent chce použít některý z těchto nástrojů. Stejná pravidla platí pro všechny ve vaší organizaci.",
         "readOnly": "Měnit je může pouze správce.",
-        "toolsError": "Nástroje této sady nástrojů se nepodařilo načíst."
+        "toolsError": "Nástroje této sady nástrojů se nepodařilo načíst.",
+        "defaults": "Nástroje, které čtou nebo mění data, se spustí. Nástroj, který maže data, vymaže list nebo odešle e-mail, se nejdřív zeptá v chatu v aplikaci PipesHub a nespustí se tam, kde nikdo nemůže odpovědět, například v botovi pro Slack nebo přes API.",
+        "enterpriseTitle": "Schvalování nástrojů v organizaci",
+        "enterpriseDescription": "Vyberte, které nástroje této sady se spustí, nejdřív se zeptají, nebo se nikdy nespustí, a to pro všechny ve vaší organizaci."
+      },
+      "personal": {
+        "setupCallout": "Tuto akci vidíte a používáte jen vy a nelze ji přidat k agentům sdíleným s vaší organizací. Po přidání se vůči ní ověřte.",
+        "yours": "Vaše",
+        "addOwn": "Přidat vlastní",
+        "added": "Akce byla přidána.",
+        "delete": "Smazat akci",
+        "deleteTitle": "Smazat {{name}}?",
+        "deleteBody": "Smaže se i vaše ověření a schválení nástrojů pro tuto akci. Tuto operaci nelze vrátit zpět.",
+        "deleted": "Akce byla smazána.",
+        "adminOnly": "{{name}} může přidat pouze správce: připojuje se k serveru podle názvu hostitele. Požádejte správce, aby ji přidal pro vaši organizaci."
+      },
+      "enterprise": {
+        "userActionsTitle": "Vlastní akce uživatelů",
+        "userActionsDescription": "Zkontrolujte a odeberte akce, které si lidé ve vaší organizaci přidali sami."
       }
     },
     "rightPanel": {
@@ -3406,7 +3431,7 @@
           "none": "Server neuvádí, co tento nástroj dělá, proto se považuje za nástroj měnící data."
         },
         "group": {
-          "destructive": "Maže data",
+          "destructive": "Nelze vrátit zpět",
           "write": "Mění data",
           "read": "Pouze pro čtení",
           "notOffered": "Nyní nenabízeno",
@@ -4688,7 +4713,8 @@
     "mcpAgentApprovals": "Schvalování nástrojů pro jednotlivé agenty",
     "limitSource": "Vyberte, co {{name}} prohledává",
     "limitSourceHint": "Ponechte zaškrtnutý celý zdroj, nebo jej odškrtněte a zaškrtněte složky a položky, které smí agent prohledávat.",
-    "limitSourceCount": "Omezeno na vybrané položky: {{count}}"
+    "limitSourceCount": "Omezeno na vybrané položky: {{count}}",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} je vaše osobní akce. Nelze ji přidat k agentovi sdílenému s vaší organizací ani k agentovi běžícímu jako servisní účet."
   },
   "recordView": {
     "sections": {
@@ -4976,6 +5002,7 @@
     },
     "desktopHandoff": {
       "title": "Přihlášení odesláno do PipesHub",
+      "integrationTitle": "Autorizace odeslána do PipesHub",
       "description": "Tuto kartu můžete zavřít a vrátit se do aplikace PipesHub.",
       "openApp": "Otevřít PipesHub"
     }

@@ -221,6 +221,8 @@ class ItemType(str, Enum):
     FEATURE = "FEATURE"
     SUBTASK = "SUBTASK"
     INCIDENT = "INCIDENT"
+    # The root cause that incidents are linked to (Zendesk's "problem" ticket type).
+    PROBLEM = "PROBLEM"
     IMPROVEMENT = "IMPROVEMENT"
     QUESTION = "QUESTION"
     DOCUMENTATION = "DOCUMENTATION"
@@ -1362,6 +1364,7 @@ _SOURCE_STATUS_LABELS: dict[Connectors, str] = {
     Connectors.JIRA_CLOUD_PERSONAL: "Jira",
     Connectors.JIRA_DATA_CENTER: "Jira",
     Connectors.JIRA_DATA_CENTER_PERSONAL: "Jira",
+    Connectors.ZENDESK: "Zendesk",
 }
 
 

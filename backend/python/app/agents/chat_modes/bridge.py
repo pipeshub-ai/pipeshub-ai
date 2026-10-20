@@ -51,6 +51,7 @@ from app.agents.agent_loop.hooks import (
     CitationCollector,
     ensure_fetch_full_record_available,
 )
+from app.agents.agent_loop.period_summary import timeline_replaces_prefetch
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
 from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
@@ -563,7 +564,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                         read_in_full=bool(context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY)),
                     )
                 )
-                if policy.prefetch_retrieval else None
+                if policy.prefetch_retrieval and not timeline_replaces_prefetch(query_info.get("query"))
+                else None
             )
 
             agent, _runtime, goal, clarifying_questions = await factory.create(

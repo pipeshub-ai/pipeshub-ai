@@ -32,7 +32,7 @@ from app.agent_loop_lib.core.streaming import (
     ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
-from app.agent_loop_lib.core.tool_schema import ToolSchema
+from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
 from app.agent_loop_lib.transport.content_filter import (
     CONTENT_FILTER_STOP_REASONS,
@@ -412,6 +412,7 @@ class OpenAITransport(LLMTransport):
         system: str | None,
         system_blocks: list[str] | None,
         stream: bool,
+        tool_choice: ToolChoice | None = None,
     ) -> dict[str, Any]:
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
@@ -424,6 +425,8 @@ class OpenAITransport(LLMTransport):
         formatted_tools = format_responses_tools(tools)
         if formatted_tools:
             kwargs["tools"] = formatted_tools
+            if tool_choice == "none":
+                kwargs["tool_choice"] = "none"
         if stream:
             # No stream_options: include_usage is Chat-Completions-only, and
             # usage always arrives on response.completed.
@@ -436,8 +439,12 @@ class OpenAITransport(LLMTransport):
         tools: list[ToolSchema] | None = None,
         system: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
-        kwargs = self._build_responses_kwargs(messages, tools, system, system_blocks, stream=False)
+        kwargs = self._build_responses_kwargs(
+            messages, tools, system, system_blocks, stream=False, tool_choice=tool_choice,
+        )
         try:
             response = await self._client.responses.create(**kwargs)
         except Exception as exc:
@@ -494,8 +501,12 @@ class OpenAITransport(LLMTransport):
         tools: list[ToolSchema] | None = None,
         system: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        kwargs = self._build_responses_kwargs(messages, tools, system, system_blocks, stream=True)
+        kwargs = self._build_responses_kwargs(
+            messages, tools, system, system_blocks, stream=True, tool_choice=tool_choice,
+        )
         final_response: Any = None
         # Fallback only. The terminal event carries the fully-formed Response,
         # so the same parser as _complete_responses builds the final message;
@@ -744,10 +755,12 @@ class OpenAITransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         if self._wants_responses():
             return await self._complete_responses(
-                messages, tools=tools, system=system, system_blocks=system_blocks,
+                messages, tools=tools, system=system, system_blocks=system_blocks, tool_choice=tool_choice,
             )
         # OpenAI automatic prefix caching benefits from stable-first ordering
         # alone; join blocks when the caller omitted the already-joined string.
@@ -763,6 +776,8 @@ class OpenAITransport(LLMTransport):
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
             kwargs["tools"] = formatted_tools
+            if tool_choice == "none":
+                kwargs["tool_choice"] = "none"
         if effort:
             # o-series/gpt-5-series "reasoning effort" knob — accepted as a
             # no-op parameter by models that don't support it.
@@ -839,10 +854,12 @@ class OpenAITransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         if self._wants_responses():
             async for event in self._stream_responses(
-                messages, tools=tools, system=system, system_blocks=system_blocks,
+                messages, tools=tools, system=system, system_blocks=system_blocks, tool_choice=tool_choice,
             ):
                 yield event
             return
@@ -860,6 +877,8 @@ class OpenAITransport(LLMTransport):
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
             kwargs["tools"] = formatted_tools
+            if tool_choice == "none":
+                kwargs["tool_choice"] = "none"
         if effort:
             kwargs["reasoning_effort"] = effort
 
@@ -1031,12 +1050,14 @@ class OpenAITransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         try:
             return await self._complete_once(
                 messages=messages, tools=tools, system=system, model=model,
                 thinking_budget=thinking_budget, effort=effort,
-                system_blocks=system_blocks,
+                system_blocks=system_blocks, tool_choice=tool_choice,
             )
         except Exception as exc:
             dropped = self._drop_cache_params(exc)
@@ -1046,7 +1067,7 @@ class OpenAITransport(LLMTransport):
         result = await self._complete_once(
             messages=messages, tools=tools, system=system, model=model,
             thinking_budget=thinking_budget, effort=effort,
-            system_blocks=system_blocks,
+            system_blocks=system_blocks, tool_choice=tool_choice,
         )
         # Only after the retry actually worked -- recording a guess would make
         # every later request build the wrong shape from the start.
@@ -1063,6 +1084,8 @@ class OpenAITransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream, retrying once on a request-shape conflict.
 
@@ -1075,7 +1098,7 @@ class OpenAITransport(LLMTransport):
             async for event in self._stream_once(
                 messages=messages, tools=tools, system=system, model=model,
                 thinking_budget=thinking_budget, effort=effort,
-                system_blocks=system_blocks,
+                system_blocks=system_blocks, tool_choice=tool_choice,
             ):
                 emitted = True
                 yield event
@@ -1092,7 +1115,7 @@ class OpenAITransport(LLMTransport):
         async for event in self._stream_once(
             messages=messages, tools=tools, system=system, model=model,
             thinking_budget=thinking_budget, effort=effort,
-            system_blocks=system_blocks,
+            system_blocks=system_blocks, tool_choice=tool_choice,
         ):
             yield event
         if mode is not None:

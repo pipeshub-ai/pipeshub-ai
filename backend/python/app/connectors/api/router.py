@@ -162,11 +162,15 @@ from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import (
     SALESFORCE_LOGIN_URL_ERROR,
+    check_oauth_url_settings,
     check_salesforce_login_url_setting,
     extract_oauth_error_message,
     get_oauth_config,
+    pin_oauth_urls,
 )
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
+from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
+from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
@@ -3925,13 +3929,17 @@ def _mirror_shared_client_fields(
             auth.pop(alias, None)
 
 
-def _check_salesforce_login_url(connector_type: str, settings: dict[str, Any] | None) -> None:
-    """Refuse a Salesforce login URL off salesforce.com before it is saved: the token request
+def _check_oauth_app_urls(connector_type: str, settings: dict[str, Any] | None) -> None:
+    """Refuse an OAuth host off the provider's domain before it is saved: the token request
     sends the client secret there from the server."""
     try:
         check_salesforce_login_url_setting(connector_type, settings)
     except ValueError as e:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=SALESFORCE_LOGIN_URL_ERROR) from e
+    try:
+        check_oauth_url_settings(connector_type, settings)
+    except ValueError as e:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e  # user-written message
 
 
 async def _link_to_shared_oauth_app(
@@ -4280,12 +4288,8 @@ async def _prepare_connector_config(
 
         redirect_uri = selected_auth_schema.get(AuthFieldKeys.REDIRECT_URI, "")
         if redirect_uri:
-            if base_url:
-                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-            else:
-                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-                fallback_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                redirect_uri = f"{fallback_url.rstrip('/')}/{redirect_uri}"
+            oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+            redirect_uri = f"{oauth_base_url}/{redirect_uri}"
 
         prepared_config[OAuthConfigKeys.AUTH].update({
             AuthFieldKeys.AUTHORIZE_URL: authorize_url,
@@ -5282,15 +5286,8 @@ async def update_connector_instance_auth_config(
             selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_schemas else {}
             redirect_uri = selected_auth_schema.get(AuthFieldKeys.REDIRECT_URI, "")
             if redirect_uri:
-                if base_url:
-                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-                else:
-                    endpoints = await config_service.get_config(
-                        "/services/endpoints",
-                        use_cache=False
-                    )
-                    base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+                redirect_uri = f"{oauth_base_url}/{redirect_uri}"
 
             # Only use registry defaults if user hasn't provided these values
             oauth_updates = {
@@ -5830,15 +5827,8 @@ async def update_connector_instance_config(
                 selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_schemas else {}
                 redirect_uri = selected_auth_schema.get(AuthFieldKeys.REDIRECT_URI, "")
                 if redirect_uri:
-                    if base_url:
-                        redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-                    else:
-                        endpoints = await config_service.get_config(
-                            "/services/endpoints",
-                            use_cache=False
-                        )
-                        base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                        redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                    oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+                    redirect_uri = f"{oauth_base_url}/{redirect_uri}"
 
                 new_config[OAuthConfigKeys.AUTH].update({
                     AuthFieldKeys.AUTHORIZE_URL: authorize_url,
@@ -6325,12 +6315,8 @@ async def _update_oauth_infrastructure_fields(
     if AuthFieldKeys.REDIRECT_URI not in oauth_config:
         redirect_uri_path = oauth_registry_config.redirect_uri
         if redirect_uri_path:
-            if base_url:
-                oauth_config[AuthFieldKeys.REDIRECT_URI] = f"{base_url.rstrip('/')}/{redirect_uri_path}"
-            else:
-                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-                fallback_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                oauth_config[AuthFieldKeys.REDIRECT_URI] = f"{fallback_url.rstrip('/')}/{redirect_uri_path}"
+            oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+            oauth_config[AuthFieldKeys.REDIRECT_URI] = f"{oauth_base_url}/{redirect_uri_path}"
         else:
             oauth_config[AuthFieldKeys.REDIRECT_URI] = ""
 
@@ -6511,6 +6497,11 @@ async def _build_oauth_flow_config(
         connector_type, {**oauth_flow_config, **connector_settings}, raw_scopes
     )
 
+    try:
+        pin_oauth_urls(connector_type, oauth_flow_config)
+    except ValueError as e:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e  # user-written message
+
     return oauth_flow_config
 
 
@@ -6519,6 +6510,8 @@ async def get_oauth_authorization_url(
     connector_id: str,
     request: Request,
     base_url: str | None = Query(None),
+    *,
+    desktop: Annotated[bool, Query()] = False,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> dict[str, Any]:
     """
@@ -6666,7 +6659,9 @@ async def get_oauth_authorization_url(
             if not original_state:
                 raise ValueError("No state parameter in authorization URL")
 
-            encoded_state = _encode_state_with_instance(original_state, connector_id)
+            encoded_state = mark_desktop_state(
+                _encode_state_with_instance(original_state, connector_id), desktop=desktop
+            )
             query_params["state"] = [encoded_state]
 
             final_auth_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{urlencode(query_params, doseq=True)}"
@@ -6722,6 +6717,10 @@ async def handle_oauth_callback(
 
     settings_base_path = await _get_settings_base_path(graph_provider)
     connector_id = None  # For error handling
+    base_url = await resolve_oauth_base_url(
+        resolve_config_service(container, request.state.user.get("orgId")), base_url
+    )
+    state = strip_desktop_state(state)
 
     try:
         # ============================================================
@@ -6736,7 +6735,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": error,
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error={error}"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error={error}"
             }
 
         if not code or not state:
@@ -6744,7 +6743,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "missing_parameters",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=missing_parameters"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=missing_parameters"
             }
 
         # ============================================================
@@ -6771,7 +6770,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "invalid_state",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=invalid_state"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=invalid_state"
             }
 
         # ============================================================
@@ -6789,7 +6788,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "instance_not_found",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=instance_not_found"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=instance_not_found"
             }
 
         connector_type = instance.get("type", "").replace(" ", "")
@@ -6819,7 +6818,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "config_not_found",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=config_not_found"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=config_not_found"
             }
 
         auth_config = config[OAuthConfigKeys.AUTH]
@@ -6841,7 +6840,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "oauth_config_fetch_error",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=oauth_config_fetch_error"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=oauth_config_fetch_error"
             }
 
         logger.info(f"Callback redirect URI: {oauth_flow_config.get(AuthFieldKeys.REDIRECT_URI, '')}")
@@ -6972,7 +6971,7 @@ async def handle_oauth_callback(
             "success": False,
             "error": "server_error",
             "error_message": error_message,
-            "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=server_error"
+            "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=server_error"
         }
 
 
@@ -9209,7 +9208,7 @@ async def _create_or_update_oauth_config(
         logger = logging.getLogger(__name__)
 
     # Raised before the try below, which turns every failure into a None return.
-    _check_salesforce_login_url(connector_type, auth_config)
+    _check_oauth_app_urls(connector_type, auth_config)
 
     try:
         # Get OAuth field names from registry (dynamic, no hardcoding)
@@ -9415,7 +9414,7 @@ async def _validate_admin_oauth_config_before_creation(
     Raises:
         HTTPException: If OAuth name conflicts are detected
     """
-    _check_salesforce_login_url(connector_type, config.get(OAuthConfigKeys.AUTH))
+    _check_oauth_app_urls(connector_type, config.get(OAuthConfigKeys.AUTH))
 
     oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
     has_oauth_credentials = any(
@@ -9600,7 +9599,7 @@ async def create_oauth_config(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="config is required"
             )
-        _check_salesforce_login_url(connector_type, config)
+        _check_oauth_app_urls(connector_type, config)
 
         # Get OAuth config from registry (completely independent)
         # OAuth configs are self-contained and don't depend on connector/toolset registries
@@ -9955,7 +9954,7 @@ async def update_oauth_config(
             existing_cfg = oauth_config.get(OAuthConfigKeys.CONFIG, {}) or {}
             cleaned = strip_redacted_fields(new_config)
             merged = {**existing_cfg, **cleaned}
-            _check_salesforce_login_url(connector_type, merged)
+            _check_oauth_app_urls(connector_type, merged)
             oauth_config[OAuthConfigKeys.CONFIG] = merged
 
         # Ensure OAuth infrastructure fields are present (if missing, add from registry)

@@ -4,7 +4,7 @@ Replaces ``shape_offload`` with a smarter, two-phase design:
 
 *  **Old-turn** tool results (older than ``keep_last_n_turns``) that
    carry ``artifact_meta`` are compacted to a compact reference once the
-   context exceeds ``trigger_ratio × budget``.
+   context exceeds ``budget.trigger_tokens(trigger_ratio)``.
 *  **Recent-turn** results (within ``keep_last_n_turns``) are kept full
    when budget allows.  This ensures the model sees full data from its
    most recent tool calls at least once — the model that *called* the
@@ -90,7 +90,7 @@ def shape_artifact_compaction(
         turn must keep it to give the model its first look.
     trigger_ratio:
         Old-turn artifacts are only compacted when context exceeds
-        ``trigger_ratio × budget``.
+        ``budget.trigger_tokens(trigger_ratio)``.
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
@@ -119,51 +119,29 @@ def shape_artifact_compaction(
         initial_total = total
         compacted_count = 0
 
-        if total > budget * trigger_ratio:
+        if total > ctx.budget.trigger_tokens(trigger_ratio):
             for i in prev_indices:
                 total = _swap_compact(messages, i, total)
                 compacted_count += 1
 
-        if total <= budget:
-            if compacted_count:
-                logger.info(
-                    "artifact_compaction: compacted %d prev-turn artifact(s), "
-                    "%d→%d tokens (turn=%d, budget=%d)",
-                    compacted_count, initial_total, total,
-                    current_turn, budget,
-                )
-            ctx.messages = messages
-            await next_fn()
-            return
-
-        curr_with_schema.sort(
-            key=lambda i: count_message_tokens(messages[i]), reverse=True
-        )
-        for i in curr_with_schema:
-            total = _swap_compact(messages, i, total)
+        overflow = total > budget
+        for tier in (curr_with_schema, curr_without_schema):
             if total <= budget:
                 break
+            tier.sort(key=lambda i: count_message_tokens(messages[i]), reverse=True)
+            for i in tier:
+                total = _swap_compact(messages, i, total)
+                compacted_count += 1
+                if total <= budget:
+                    break
 
-        if total <= budget:
-            ctx.messages = messages
-            await next_fn()
-            return
-
-        curr_without_schema.sort(
-            key=lambda i: count_message_tokens(messages[i]), reverse=True
-        )
-        for i in curr_without_schema:
-            total = _swap_compact(messages, i, total)
-            compacted_count += 1
-            if total <= budget:
-                break
-
-        logger.info(
-            "artifact_compaction: compacted %d artifact(s) total (incl. recent-turn overflow), "
-            "%d→%d tokens (turn=%d, budget=%d)",
-            compacted_count, initial_total, total,
-            current_turn, budget,
-        )
+        if compacted_count:
+            logger.info(
+                "artifact_compaction: compacted %d %s, %d→%d tokens (turn=%d, budget=%d)",
+                compacted_count,
+                "artifact(s) total (incl. recent-turn overflow)" if overflow else "prev-turn artifact(s)",
+                initial_total, total, current_turn, budget,
+            )
         ctx.messages = messages
         await next_fn()
 

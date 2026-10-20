@@ -833,8 +833,7 @@ class TestLinkRecord:
             linked_record_id="rec-linked-1",
         ))
         ctx = rec.to_llm_context()
-        assert "URL" in ctx
-        assert "https://example.com" in ctx
+        assert "* URL: https://example.com" in ctx.splitlines()
         assert "Title" in ctx
         assert "Example Link" in ctx
         assert "Public Access" in ctx

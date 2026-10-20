@@ -24,7 +24,7 @@ from app.agent_loop_lib.core.streaming import (
     StreamEvent,
     TextDeltaEvent,
 )
-from app.agent_loop_lib.core.tool_schema import ToolSchema
+from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
 from app.agent_loop_lib.transport.content_filter import (
     CONTENT_FILTER_STOP_REASONS,
@@ -488,6 +488,8 @@ class AnthropicTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         formatted = [self._format_message(m) for m in messages]
         message_cache = self._message_cache(formatted)
@@ -529,6 +531,8 @@ class AnthropicTransport(LLMTransport):
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
             kwargs["tools"] = self._apply_tool_cache(formatted_tools)
+            if tool_choice == "none":
+                kwargs["tool_choice"] = {"type": "none"}
 
         try:
             response = await self._client.messages.create(**kwargs)
@@ -537,7 +541,7 @@ class AnthropicTransport(LLMTransport):
                 raise self._wrap_error(exc, "complete") from exc
             return await self.complete(
                 messages, tools=tools, system=system, model=model, thinking_budget=thinking_budget,
-                effort=effort, system_blocks=system_blocks,
+                effort=effort, system_blocks=system_blocks, tool_choice=tool_choice,
             )
 
         usage = self._usage_from(response)
@@ -599,6 +603,8 @@ class AnthropicTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         formatted = [self._format_message(m) for m in messages]
         message_cache = self._message_cache(formatted)
@@ -635,6 +641,8 @@ class AnthropicTransport(LLMTransport):
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
             kwargs["tools"] = self._apply_tool_cache(formatted_tools)
+            if tool_choice == "none":
+                kwargs["tool_choice"] = {"type": "none"}
 
         emitted = False
         try:
@@ -662,6 +670,6 @@ class AnthropicTransport(LLMTransport):
             return
         async for event in self.stream(
             messages, tools=tools, system=system, model=model, thinking_budget=thinking_budget,
-            effort=effort, system_blocks=system_blocks,
+            effort=effort, system_blocks=system_blocks, tool_choice=tool_choice,
         ):
             yield event

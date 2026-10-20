@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -75,6 +76,7 @@ from app.agents.agent_loop.converters import (
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
+from app.agents.agent_loop.error_classification import redact_error_for_log
 from app.agents.agent_loop.image_guard import cap_images
 from app.agents.agent_loop.prompt_cache import NoCacheStrategy, cache_target
 from app.utils.llm_api_mode_store import (
@@ -92,7 +94,7 @@ if TYPE_CHECKING:
 
     from app.agent_loop_lib.core.context import CancellationToken
     from app.agent_loop_lib.core.messages import AssistantMessage, Message
-    from app.agent_loop_lib.core.tool_schema import ToolSchema
+    from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
     from app.agents.agent_loop.prompt_cache import CacheStrategy
 
 logger = logging.getLogger(__name__)
@@ -217,6 +219,11 @@ def _is_network_error(exc: Exception) -> bool:
 _OLLAMA_CLASS_NAME = "ChatOllama"
 _OPENAI_CLASS_NAMES = frozenset({"BaseChatOpenAI", "ChatOpenAI", "AzureChatOpenAI"})
 
+# `tool_choice` asking each `cache_target` family for a reply without tool
+# calls. Bedrock Converse has no such value, and an unknown provider is never
+# sent one it may reject: both keep the plain binding.
+_NO_TOOL_CALLS: dict[str, Any] = {"anthropic": {"type": "none"}, "openai": "none"}
+
 
 def _is_openai_family(chat_model: "BaseChatModel") -> bool:
     return bool({cls.__name__ for cls in type(chat_model).__mro__} & _OPENAI_CLASS_NAMES)
@@ -329,7 +336,7 @@ class LangChainTransport(LLMTransport):
         self._opik_callbacks = build_langchain_opik_callbacks(opik_project_name)
         # Keyed on the turn's tool names; see `_bind_tools`. A transport is
         # built per request, so this can never be shared across users.
-        self._bound_by_tools: dict[tuple[str, ...], BaseChatModel] = {}
+        self._bound_by_tools: dict[tuple[str | bool, ...], BaseChatModel] = {}
 
     def _langchain_config(self) -> dict[str, Any]:
         """`config=` kwarg for every `ainvoke`/`astream` call below — see
@@ -347,6 +354,7 @@ class LangChainTransport(LLMTransport):
 
     def _bind_tools(
         self, tools: list[ToolSchema] | None, llm: BaseChatModel | None = None,
+        tool_choice: ToolChoice | None = None,
     ) -> BaseChatModel:
         """Binds `tools` onto `llm` (defaults to `self._llm`), or raises a
         `TransportError` if binding fails.
@@ -386,7 +394,8 @@ class LangChainTransport(LLMTransport):
         # handing it the cached original made the retry re-raise the very error
         # it was retrying.
         cacheable = llm is self._llm
-        cache_key = tuple(tool_names)
+        choice = _NO_TOOL_CALLS.get(self._cache_target.family) if tool_choice == "none" else None
+        cache_key = (*tool_names, choice is not None)
         if cacheable:
             cached = self._bound_by_tools.get(cache_key)
             if cached is not None:
@@ -398,8 +407,10 @@ class LangChainTransport(LLMTransport):
             # becomes required, and the model fills the optional ones with "" or 0, which a server
             # refuses (Linear's `customView` must be non-empty). See `openai_responses.py`.
             lc_tools = [{**tool, "function": {**tool["function"], "strict": False}} for tool in lc_tools]
+        # A copy: ChatAnthropic.bind_tools adds keys to a dict tool_choice.
+        choice_kwargs = {"tool_choice": copy.deepcopy(choice)} if choice is not None else {}
         try:
-            bound = llm.bind_tools(lc_tools)
+            bound = llm.bind_tools(lc_tools, **choice_kwargs)
         except Exception as exc:
             logger.error(
                 "LangChainTransport: bind_tools() failed for %d tool(s) %s — "
@@ -458,7 +469,7 @@ class LangChainTransport(LLMTransport):
         and so is every later run for this model and endpoint in this process."""
         if not is_prompt_cache_param_conflict(exc, self._cache.sent_params):
             return False
-        logger.warning("LangChainTransport: prompt-cache parameters rejected; resending without them: %s", exc)
+        logger.warning("LangChainTransport: prompt-cache parameters rejected; resending without them: %s", redact_error_for_log(str(exc)))
         REJECTED_CACHE_PARAMS.record(self._cache_target.model, self._cache_target.base_url)
         self._cache = NoCacheStrategy()
         self._bound_by_tools.clear()
@@ -472,12 +483,13 @@ class LangChainTransport(LLMTransport):
         *,
         relocate: bool | None = None,
         llm: BaseChatModel | None = None,
+        tool_choice: ToolChoice | None = None,
     ) -> AIMessage:
         """One `ainvoke`, resent once without cache parameters if the provider
         rejects one (the second pass has none, so it cannot loop)."""
         while True:
             lc_messages, call_kwargs = self._request(messages, prompt, relocate=relocate)
-            bound = self._bind_tools(tools, llm=llm)
+            bound = self._bind_tools(tools, llm=llm, tool_choice=tool_choice)
             try:
                 return await bound.ainvoke(lc_messages, config=self._langchain_config(), **call_kwargs)
             except Exception as exc:
@@ -700,6 +712,8 @@ class LangChainTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
         # thinking_budget/effort are LangChain-provider-specific `.bind()`
         # kwargs (e.g. ChatAnthropic(thinking=...), ChatOpenAI(reasoning_effort=...))
@@ -709,24 +723,24 @@ class LangChainTransport(LLMTransport):
         prompt = _system_prompt(system, system_blocks)
         # Bound up front so a bind failure surfaces as itself, not as a
         # provider error; the binding is cached for the calls below.
-        self._bind_tools(tools)
+        self._bind_tools(tools, tool_choice=tool_choice)
 
         try:
-            ai_message = await self._ainvoke(messages, tools, prompt)
+            ai_message = await self._ainvoke(messages, tools, prompt, tool_choice=tool_choice)
         except Exception as exc:
             if self._relocates_tool_images(exc, messages):
                 logger.warning(
                     "LangChainTransport.complete: model=%s rejected images inside tool "
                     "results, retrying once with them moved to a user message: %s",
-                    self._model, exc,
+                    self._model, redact_error_for_log(str(exc)),
                 )
                 try:
-                    ai_message = await self._ainvoke(messages, tools, prompt, relocate=True)
+                    ai_message = await self._ainvoke(messages, tools, prompt, relocate=True, tool_choice=tool_choice)
                 except Exception as retry_exc:
                     logger.error(
                         "LangChainTransport.complete: tool-image relocation retry also "
                         "failed for model=%s: %s — raising the ORIGINAL error",
-                        self._model, retry_exc,
+                        self._model, redact_error_for_log(str(retry_exc)),
                     )
                     raise self._wrap_error(exc, "complete") from exc
                 # Pinned for the rest of this run so every later call builds
@@ -740,15 +754,17 @@ class LangChainTransport(LLMTransport):
             logger.warning(
                 "LangChainTransport.complete: provider conflict for model=%s, "
                 "retrying once with api_mode=%s: %s",
-                self._model, mode, exc,
+                self._model, mode, redact_error_for_log(str(exc)),
             )
             try:
-                ai_message = await self._ainvoke(messages, tools, prompt, llm=fallback_llm)
+                ai_message = await self._ainvoke(
+                    messages, tools, prompt, llm=fallback_llm, tool_choice=tool_choice,
+                )
             except Exception as retry_exc:
                 logger.error(
                     "LangChainTransport.complete: retry with api_mode=%s also failed for "
                     "model=%s: %s — raising the ORIGINAL error",
-                    mode, self._model, retry_exc,
+                    mode, self._model, redact_error_for_log(str(retry_exc)),
                 )
                 raise self._wrap_error(exc, "complete") from exc
             # Pinned for the rest of this agent loop (many more calls will
@@ -839,7 +855,7 @@ class LangChainTransport(LLMTransport):
             first_attempt_error = exc
             logger.warning(
                 "LangChainTransport: raw-schema attempt raised %s: %s",
-                type(exc).__name__, exc,
+                type(exc).__name__, redact_error_for_log(str(exc)),
             )
 
         second_raw: Any = None
@@ -893,10 +909,12 @@ class LangChainTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: ToolChoice | None = None,
     ) -> AsyncIterator[StreamEvent]:
         prompt = _system_prompt(system, system_blocks)
         lc_messages, call_kwargs = self._request(messages, prompt)
-        lc_llm = self._bind_tools(tools)
+        lc_llm = self._bind_tools(tools, tool_choice=tool_choice)
         relocate: bool | None = None
 
         chunks: list[AIMessage] = []
@@ -1014,7 +1032,7 @@ class LangChainTransport(LLMTransport):
                 if not chunks and self._drop_cache_params(exc):
                     lc_messages, call_kwargs = self._request(messages, prompt, relocate=relocate)
                     try:
-                        current_llm = self._bind_tools(tools, llm=fallback_llm)
+                        current_llm = self._bind_tools(tools, llm=fallback_llm, tool_choice=tool_choice)
                     except Exception:
                         raise self._wrap_error(exc, "stream") from exc
                     continue
@@ -1029,7 +1047,7 @@ class LangChainTransport(LLMTransport):
                         "LangChainTransport.stream: retry (api_mode=%s, "
                         "relocated_images=%s) also failed for model=%s: %s — "
                         "raising the ORIGINAL error",
-                        fallback_mode, relocated_images, self._model, exc,
+                        fallback_mode, relocated_images, self._model, redact_error_for_log(str(exc)),
                     )
                     raise self._wrap_error(original_exc, "stream") from original_exc
                 if chunks:
@@ -1055,7 +1073,7 @@ class LangChainTransport(LLMTransport):
                     logger.warning(
                         "LangChainTransport.stream: model=%s rejected images inside tool "
                         "results, retrying once with them moved to a user message: %s",
-                        self._model, exc,
+                        self._model, redact_error_for_log(str(exc)),
                     )
                     continue
                 fallback = self._conflict_fallback(exc)
@@ -1064,7 +1082,7 @@ class LangChainTransport(LLMTransport):
                 original_exc = exc
                 fallback_llm, fallback_mode = fallback
                 try:
-                    current_llm = self._bind_tools(tools, llm=fallback_llm)
+                    current_llm = self._bind_tools(tools, llm=fallback_llm, tool_choice=tool_choice)
                 except Exception:
                     # Same rationale as `complete()`'s identical guard: a
                     # bind failure on the fallback model must not replace
@@ -1075,7 +1093,7 @@ class LangChainTransport(LLMTransport):
                 logger.warning(
                     "LangChainTransport.stream: provider conflict for model=%s, "
                     "retrying once with api_mode=%s: %s",
-                    self._model, fallback_mode, exc,
+                    self._model, fallback_mode, redact_error_for_log(str(exc)),
                 )
             finally:
                 # Best-effort: never let cleanup mask the real outcome (an

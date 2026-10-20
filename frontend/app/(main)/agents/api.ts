@@ -1,5 +1,5 @@
 import { apiClient } from '@/lib/api';
-import { mapApiConversationToConversation } from '@/chat/api';
+import { mapApiConversationToConversation, type ForkConversationResult } from '@/chat/api';
 import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from '@/chat/constants';
 
@@ -567,6 +567,21 @@ export const AgentsApi = {
    */
   async deleteAgentConversation(agentId: string, conversationId: string): Promise<void> {
     await apiClient.delete(`${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}`);
+  },
+
+  /**
+   * Copy an agent conversation into a new chat, including every message up to `messageId`.
+   * POST /api/v1/agents/:agentId/conversations/:conversationId/message/:messageId/fork
+   */
+  async forkAgentConversation(
+    agentId: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<ForkConversationResult> {
+    const { data } = await apiClient.post<ForkConversationResult>(
+      `${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}/message/${messageId}/fork`,
+    );
+    return data;
   },
 
   /**
