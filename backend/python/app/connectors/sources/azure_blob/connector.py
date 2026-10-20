@@ -821,9 +821,7 @@ class AzureBlobConnector(BaseConnector):
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 description=f"Azure Blob Container: {container_name}",
-                web_url=get_parent_weburl_for_azure_blob(
-                    container_name, self.account_name or ""
-                ),
+                web_url=get_parent_weburl_for_azure_blob(container_name, self.account_url),
                 source_created_at=lm_ms,
                 source_updated_at=lm_ms,
                 inherit_permissions=True,
@@ -1013,8 +1011,9 @@ class AzureBlobConnector(BaseConnector):
         if complete:
             await self._claim_records_of_gone_copies(container_name, unrecorded, listed)
             await remove_recorded_not_listed(
+                # A record another container just took for a move may not be saved yet.
                 self.data_entities_processor, container_name, scope.list_prefixes, recorded, listed,
-                self._written_ids, self.logger,
+                self._written_ids | self._moved_record_ids, self.logger,
             )
         else:
             self._sync_incomplete = True
@@ -1146,9 +1145,13 @@ class AzureBlobConnector(BaseConnector):
                             if folder and scope.includes_folder(f"{folder}/"):
                                 listed |= listed_record_ids(container_name, folder)
                                 judged = True
-                                await self._ensure_parent_folders_exist(
-                                    container_name, [*get_folder_path_segments_from_blob_name(folder), folder]
-                                )
+                                # An ADLS directory unchanged since the last sync already has its folder.
+                                if not (last_sync_time and not self._pass_date_filters(
+                                    blob_dict, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
+                                )):
+                                    await self._ensure_parent_folders_exist(
+                                        container_name, [*get_folder_path_segments_from_blob_name(folder), folder]
+                                    )
                             continue
 
                         if not scope.includes_file(blob_name):
@@ -1465,17 +1468,21 @@ class AzureBlobConnector(BaseConnector):
                 existing_record = await self.data_entities_processor.get_record_by_external_revision_id(
                     self.connector_id, current_revision_id
                 )
-                if existing_record and (
-                    existing_record.id in self._moved_record_ids or await self._still_in_container(existing_record)
-                ):
-                    self.logger.info(
-                        f"New document: {normalized_name} is a copy of {existing_record.external_record_id}, not a move"
-                    )
-                    existing_record = None
+                if existing_record and existing_record.id in self._moved_record_ids:
+                    existing_record, taken_by = None, existing_record.external_record_id
+                else:
+                    taken_by = None
+                if existing_record:
+                    # Claimed before the check awaits, so a container listed alongside cannot take it too.
+                    self._moved_record_ids.add(existing_record.id)
+                    if await self._still_in_container(existing_record):
+                        self._moved_record_ids.discard(existing_record.id)
+                        existing_record, taken_by = None, existing_record.external_record_id
+                if taken_by:
+                    self.logger.info(f"New document: {normalized_name} is a copy of {taken_by}, not a move")
 
                 if existing_record:
                     is_move = True
-                    self._moved_record_ids.add(existing_record.id)
                     self.logger.info(
                         f"Move/rename detected: {normalized_name} - file moved from {existing_record.external_record_id} to {external_record_id}"
                     )
@@ -1831,6 +1838,9 @@ class AzureBlobConnector(BaseConnector):
         self, org_id: str, record: Record
     ) -> tuple[Record, list[Permission]] | None:
         """Check if record has been updated at source and fetch updated data."""
+        if isinstance(record, FileRecord) and not record.is_file:
+            # Folders are implied by blob paths; an ADLS directory blob is not a file to refetch.
+            return None
         try:
             container_name = record.external_record_group_id
             external_record_id = record.external_record_id

@@ -264,7 +264,8 @@ async def stream_content(
         ) from e
     except aiohttp.ClientError as e:
         logger.error(
-            f"❌ NETWORK ERROR: Failed to fetch file content from signed URL: {str(e)} | {log_prefix}"
+            # Only the type: the message of a redirect or URL error holds the whole signed URL.
+            f"❌ NETWORK ERROR: Failed to fetch file content from signed URL: {type(e).__name__} | {log_prefix}"
         )
         raise map_source_status(
             HttpStatusCode.BAD_GATEWAY.value, connector=connector

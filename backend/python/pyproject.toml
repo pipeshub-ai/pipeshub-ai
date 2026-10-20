@@ -188,6 +188,7 @@ dependencies = [
     "aiokafka==0.12.0",
     "aiolimiter==1.2.1",
     "azure-ai-formrecognizer==3.3.3",
+    "azure-identity==1.26.0",
     "azure-storage-blob==12.28.0",
     "azure-storage-file-share==12.19.0",
     "beautifulsoup4==4.15.0",

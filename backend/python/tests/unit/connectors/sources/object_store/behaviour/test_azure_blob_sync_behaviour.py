@@ -200,6 +200,20 @@ class TestFolderBlobs:
         ]
 
     @pytest.mark.asyncio
+    async def test_an_unchanged_directory_blob_is_not_saved_again(self, connector, store, db) -> None:
+        store.put("x/y", "")
+        store.put("x/y/z.txt")
+        store.put("later.txt")  # the checkpoint lands after both x/y and x/y/z.txt
+        connector.data_source.metadata = {"x/y": {"hdi_isfolder": "true"}}
+        await connector.run_sync()
+        db.written.clear()
+
+        await connector.run_sync()
+
+        assert path("x/y") not in db.written
+        assert path("x/y") in db.paths()
+
+    @pytest.mark.asyncio
     async def test_a_stored_trailing_slash_duplicate_is_removed(self, connector, store, db) -> None:
         store.put("a/b/", "")
         store.put("a/b/c.txt")

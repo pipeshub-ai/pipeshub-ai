@@ -2477,6 +2477,8 @@ class DataSourceEntitiesProcessor:
                 and same_id.get("indexingStatus") == ProgressStatus.COMPLETED.value
                 and record.external_revision_id
                 and record.external_revision_id == same_id.get("externalRevisionId")
+                # A move to another group must reindex: the vectors carry the group ids.
+                and record.external_record_group_id == same_id.get("externalGroupId")
             ):
                 # A move or rename that kept its record id and content is already indexed;
                 # its vectors stay keyed by the stored virtualRecordId.

@@ -420,3 +420,75 @@ class TestRenameKeepsIndexing:
         moved = await self.process(self.stored(externalRevisionId="other=="))
 
         assert moved.indexing_status != ProgressStatus.COMPLETED.value
+
+
+class TestReviewFollowUps:
+    """Defects found reviewing the PP-314 change itself."""
+
+    @pytest.mark.asyncio
+    async def test_container_groups_link_to_the_account_endpoint(self) -> None:
+        c = connector()
+        c.account_url = "https://acct.blob.core.chinacloudapi.cn"
+        c.data_entities_processor.on_new_record_groups = AsyncMock()
+
+        await c._create_record_groups_for_containers(["docs"])
+
+        group = c.data_entities_processor.on_new_record_groups.await_args.args[0][0][0]
+        assert group.web_url == "https://acct.blob.core.chinacloudapi.cn/docs"
+
+    @pytest.mark.asyncio
+    async def test_two_containers_cannot_both_take_one_record_for_a_move(self) -> None:
+        import asyncio
+
+        c = connector()
+        c._reset_run_state()
+        held = record("gone.txt", container="a", external_revision_id="md5==")
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=held)
+        c.data_entities_processor.delete_parent_child_edge_to_record = AsyncMock()
+
+        async def slow_check(_record) -> bool:
+            await asyncio.sleep(0.01)
+            return False
+        c._still_in_container = slow_check
+        blob = {"name": "x.txt", "content_md5": "md5==", "etag": "e", "size": 1}
+
+        (first, _), (second, _) = await asyncio.gather(
+            c._process_azure_blob(dict(blob), "b"), c._process_azure_blob(dict(blob), "c"),
+        )
+
+        assert sorted([first.id == held.id, second.id == held.id]) == [False, True]
+
+    @pytest.mark.asyncio
+    async def test_a_folder_record_is_not_refetched_on_reindex(self) -> None:
+        c = connector()
+        c.data_source = MagicMock()
+        c.data_source.get_blob_properties = AsyncMock()
+        folder = record("a/b")
+        folder.is_file = False
+
+        assert await c._check_and_fetch_updated_record("org-1", folder) is None
+        c.data_source.get_blob_properties.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_closing_the_data_source_closes_the_entra_id_credential(self) -> None:
+        rest = AzureBlobRESTClient(AzureBlobEntraIdConfig(
+            accountUrl="https://acct.blob.core.windows.net", tenantId="t", clientId="c", clientSecret="s",
+        ))
+        ds = AzureBlobDataSource(AzureBlobClient(rest))
+        service = await ds._get_async_blob_service_client()
+        credential = service.credential
+        credential.close = AsyncMock()
+
+        await ds.close_async_client()
+
+        credential.close.assert_awaited_once()
+        assert rest._async_blob_service_client is None
+
+    @pytest.mark.asyncio
+    async def test_a_move_to_another_group_is_indexed_again(self) -> None:
+        stored = TestRenameKeepsIndexing.stored(externalGroupId="other-container")
+
+        moved = await TestRenameKeepsIndexing.process(stored)
+
+        assert moved.indexing_status != ProgressStatus.COMPLETED.value

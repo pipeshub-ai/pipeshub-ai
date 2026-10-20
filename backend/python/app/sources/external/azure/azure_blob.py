@@ -2966,9 +2966,9 @@ class AzureBlobDataSource:
             return AzureBlobResponse(success=False, error=f"User delegation SAS generation failed: {str(e)}")
 
     async def close_async_client(self) -> None:
-        """Close the async client if it exists."""
+        """Close the async client, and the Entra ID credential behind it, if they exist."""
         if self._async_blob_service_client:
-            await self._async_blob_service_client.close()
+            await self._azure_blob_client_wrapper.close_async_client()
             self._async_blob_service_client = None
 
     async def __aenter__(self) -> "AzureBlobDataSource":
