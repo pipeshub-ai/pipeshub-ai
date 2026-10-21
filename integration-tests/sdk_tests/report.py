@@ -19,7 +19,10 @@ the report names the tag each previous run used.
 
 --out writes summary.md (the job summary and the pull request comment),
 verdict.txt, and slack.json: the Slack message and the failures for its thread,
-as chat.postMessage bodies without the channel.
+as chat.postMessage bodies without the channel. A test is named by the operation
+IDs it calls, in that order, in the summary and in Slack. A row that is not a
+test of operations (a suite that wrote no results, a build that failed) keeps
+its own name.
 
 A skipped test counts as a failure: Speakeasy writes a skipped placeholder for a
 case it could not turn into code, so a skip means the case never ran. A suite
@@ -118,6 +121,95 @@ def case_id(test_name: str) -> str:
     "TestAgents_AgentLifecycle" (go test) all become "agentsagentlifecycle".
     """
     return re.sub(r"[^a-z0-9]", "", test_name.lower()).removeprefix("test")
+
+
+_SDK_TESTS = Path(__file__).resolve().parent
+_API_DOCS = _SDK_TESTS.parents[1] / "backend/nodejs/apps/src/modules/api-docs"
+_TEST_GROUP = re.compile(r"#\s*test\s+(\S+)")
+
+
+def _unique(names: list[str]) -> list[str]:
+    seen: list[str] = []
+    for name in names:
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def handwritten_operation_groups(text: str) -> dict[str, list[str]]:
+    """case id -> operationIds, from the "# test <id>" groups in operations.txt."""
+    groups: dict[str, list[str]] = {}
+    current: str | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        header = _TEST_GROUP.fullmatch(line)
+        if header:
+            current = header.group(1)
+            groups.setdefault(current, [])
+            continue
+        if not line or line.startswith("#") or current is None:
+            continue
+        if line not in groups[current]:
+            groups[current].append(line)
+    return groups
+
+
+def _read_arazzo() -> dict | None:
+    """The generated-test spec, or None when it cannot be read."""
+    try:
+        import yaml
+    except ImportError:
+        return None
+    try:
+        loaded = yaml.safe_load(
+            (_API_DOCS / "tests.arazzo.yaml").read_text(encoding="utf-8")
+        )
+    except (OSError, yaml.YAMLError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def load_operation_catalog() -> dict[str, list[str]]:
+    """case id -> the operationIds that test calls, in call order.
+
+    Generated tests come from tests.arazzo.yaml. Speakeasy names a test from its
+    group and workflowId, and case_id of those two joined is the JUnit case id.
+    Hand-written tests come from handwritten/operations.txt. An empty catalog
+    (the spec files cannot be read) leaves each row with its JUnit name.
+    """
+    catalog: dict[str, list[str]] = {}
+    arazzo = _read_arazzo()
+    if isinstance(arazzo, dict):
+        for workflow in arazzo.get("workflows") or []:
+            if not isinstance(workflow, dict):
+                continue
+            group = str(workflow.get("x-speakeasy-test-group") or "")
+            workflow_id = str(workflow.get("workflowId") or "")
+            operations = _unique(
+                [
+                    step["operationId"]
+                    for step in workflow.get("steps") or []
+                    if isinstance(step, dict) and step.get("operationId")
+                ]
+            )
+            if workflow_id and operations:
+                catalog[case_id(f"{group}{workflow_id}")] = operations
+    try:
+        grouped = handwritten_operation_groups(
+            (_SDK_TESTS / "handwritten" / "operations.txt").read_text(encoding="utf-8")
+        )
+    except OSError:
+        grouped = {}
+    catalog.update(grouped)
+    return catalog
+
+
+def operation_label(case_key: str, fallback: str, catalog: dict[str, list[str]]) -> str:
+    """The operationIds a case calls, or the JUnit name when it calls none."""
+    operations = catalog.get(case_key)
+    if not operations:
+        return fallback
+    return ", ".join(operations)
 
 
 def _problem_detail(problem: ET.Element) -> str:
@@ -230,9 +322,11 @@ def _previous_label(language: str, releases: dict[str, str]) -> str:
 
 
 def _failure_lines(
-    results: list[LanguageResult], releases: dict[str, str]
+    results: list[LanguageResult],
+    releases: dict[str, str],
+    catalog: dict[str, list[str]],
 ) -> list[str]:
-    """One line per failed case: language, run, case name, first line of the error."""
+    """One line per failed case: language, run, operation IDs, first line of the error."""
     no_current = [
         f"{result.language} {CURRENT}: no results; generation, the install or the "
         "suite failed, see the job log"
@@ -240,7 +334,8 @@ def _failure_lines(
         if result.current is None
     ]
     return no_current + [
-        f"{result.language} {run}: {case.name}: "
+        f"{result.language} {run}: "
+        f"{operation_label(case_id(case.name), case.name, catalog)}: "
         f"{(case.detail.splitlines() or ['no detail'])[0][:300]}"
         for result in results
         for run, cases in (
@@ -254,10 +349,34 @@ def _failure_lines(
     ]
 
 
+def _operation_matrix(
+    results: list[LanguageResult], catalog: dict[str, list[str]]
+) -> list[list[str]]:
+    """One row per test: the operation IDs it calls, then each SDK's result."""
+    labels: dict[str, str] = {}
+    for result in results:
+        for cases in (result.current, result.previous):
+            for key, case in (cases or {}).items():
+                labels.setdefault(key, operation_label(key, case.name, catalog))
+    header = ["Operations"]
+    for result in results:
+        header += [f"{result.language} current", f"{result.language} previous"]
+    rows = [header]
+    for key in sorted(labels):
+        row = [labels[key]]
+        for result in results:
+            row += [_cell(result.current, key), _cell(result.previous, key)]
+        rows.append(row)
+    return rows
+
+
 def render_summary(
-    results: list[LanguageResult], releases: dict[str, str] | None = None
+    results: list[LanguageResult],
+    releases: dict[str, str] | None = None,
+    catalog: dict[str, list[str]] | None = None,
 ) -> str:
     releases = releases or {}
+    catalog = load_operation_catalog() if catalog is None else catalog
     verdict = overall_verdict(results)
     flag_cases = sorted(
         f"{r.language}/{key}"
@@ -281,23 +400,15 @@ def render_summary(
         for r in results
     ]
 
-    names: dict[str, str] = {}
-    for result in results:
-        for cases in (result.current, result.previous):
-            for key, case in (cases or {}).items():
-                names.setdefault(key, case.name)
+    matrix = _operation_matrix(results, catalog)
+    lines += [
+        "",
+        "| " + " | ".join(matrix[0]) + " |",
+        "| " + " | ".join("---" for _ in matrix[0]) + " |",
+    ]
+    lines += ["| " + " | ".join(row) + " |" for row in matrix[1:]]
 
-    header = " | ".join(
-        f"{r.language} current | {r.language} previous" for r in results
-    )
-    lines += ["", f"| Case | {header} |", "| --- |" + " --- | --- |" * len(results)]
-    for key in sorted(names):
-        cells = " | ".join(
-            f"{_cell(r.current, key)} | {_cell(r.previous, key)}" for r in results
-        )
-        lines.append(f"| {names[key]} | {cells} |")
-
-    failures = _failure_lines(results, releases)
+    failures = _failure_lines(results, releases, catalog)
     if failures:
         lines += ["", "### Failures", "", *(f"- {line}" for line in failures)]
     return "\n".join(lines) + "\n"
@@ -375,6 +486,7 @@ def slack_payloads(
     results: list[LanguageResult],
     info: RunInfo,
     releases: dict[str, str] | None = None,
+    catalog: dict[str, list[str]] | None = None,
 ) -> dict[str, object]:
     """The report message and, when a case failed, a thread reply with the failures.
 
@@ -382,6 +494,7 @@ def slack_payloads(
     reports zip in the same thread.
     """
     releases = releases or {}
+    catalog = load_operation_catalog() if catalog is None else catalog
     verdict = overall_verdict(results)
     title = f"{_SLACK_ICONS[verdict]} SDK Tests: {verdict.value}"
     if info.trigger:
@@ -418,6 +531,15 @@ def slack_payloads(
                 [{"type": "raw_text", "text": cell} for cell in row] for row in rows
             ],
         },
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Operations*"}},
+        {
+            "type": "table",
+            "column_settings": [{"align": "left"}] * (1 + 2 * len(results)),
+            "rows": [
+                [{"type": "raw_text", "text": cell} for cell in row]
+                for row in _operation_matrix(results, catalog)
+            ],
+        },
         {"type": "section", "text": {"type": "mrkdwn", "text": MEANING[verdict]}},
     ]
     context = [
@@ -451,7 +573,9 @@ def slack_payloads(
             }
         )
 
-    failures = [_slack_escape(line) for line in _failure_lines(results, releases)]
+    failures = [
+        _slack_escape(line) for line in _failure_lines(results, releases, catalog)
+    ]
     thread = None
     if failures:
         body = "\n".join(failures)

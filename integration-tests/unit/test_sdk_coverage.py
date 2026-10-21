@@ -44,7 +44,9 @@ def test_generated_operations_come_from_every_step_of_every_workflow():
 
 
 def test_handwritten_list_ignores_comments_and_blank_lines():
-    assert handwritten_operations("# why\n\nstreamChat\n  uploadRecords  \n") == {
+    assert handwritten_operations(
+        "# why\n# test handwrittenconversationstreams\n\nstreamChat\n  uploadRecords  \n"
+    ) == {
         "streamChat",
         "uploadRecords",
     }
