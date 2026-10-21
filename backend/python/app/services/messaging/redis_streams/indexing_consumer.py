@@ -2861,7 +2861,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # distributed concurrency manager) — an XAUTOCLAIMed message can still
         # be concurrently processed by whichever consumer held it before if we
         # only check this when distributed concurrency is enabled.
-        if not await self._pending_message_is_owned(stream_name, message_id):
+        try:
+            owned = await self._pending_message_is_owned(stream_name, message_id)
+        except Exception as exc:
+            self.logger.warning(
+                "Could not check pending ownership of %s (%r); left pending "
+                "for retry",
+                message_id,
+                exc,
+            )
+            return False
+        if not owned:
             self.logger.debug(
                 "Skipping %s because its pending entry was ACKed or "
                 "transferred to another consumer",
@@ -3214,9 +3224,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 )
                 acked = True
             elif self.retry_manager is not None and parsed_message:
-                failure_count, should_dead_letter = (
-                    await self._increment_retry_and_check(stable_message_id)
-                )
+                try:
+                    failure_count, should_dead_letter = (
+                        await self._increment_retry_and_check(stable_message_id)
+                    )
+                except Exception as count_error:
+                    self.logger.warning(
+                        "Could not count the failed attempt of %s (%r); left "
+                        "pending for retry",
+                        message_id,
+                        count_error,
+                    )
+                    return False
                 if should_dead_letter:
                     await self._abandon_message(
                         message_id,

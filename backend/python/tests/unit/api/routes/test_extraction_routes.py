@@ -226,6 +226,24 @@ def test_classify_llm_failure_returns_500() -> None:
     assert "LLM timeout" in body["error"]
 
 
+def test_classify_refusal_is_not_answered_as_retryable() -> None:
+    """A 5xx makes the extraction client send the whole document again."""
+    from app.exceptions.non_retryable import NonRetryableError
+    from app.services.base_client import TRANSIENT_STATUS_CODES
+
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(side_effect=NonRetryableError("over budget"))
+
+    response = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify",
+        json={"block_container": _empty_bc_dict(), "org_id": "org-123"},
+    )
+
+    assert response.status_code == 422
+    assert response.status_code not in TRANSIENT_STATUS_CODES
+    assert response.json() == {"success": False, "classification": None, "error": "over budget"}
+
+
 def test_classify_invalid_block_container_returns_422() -> None:
     mock_extraction = MagicMock()
 

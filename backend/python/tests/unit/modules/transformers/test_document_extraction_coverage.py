@@ -4,7 +4,7 @@ Targets the missing lines/branches:
 - Lines 161-162: tiktoken.get_encoding raises exception -> enc = None
 - Line 172: enc.encode raises exception -> fallback heuristic
 - Lines 248-249: TABLE_ROW token budget exceeded (truncation)
-- Lines 323-325: extract_metadata exception propagation (raise inside except)
+- extract_metadata: a failed model call, and a deliberate stop that propagates
 - Line 354->357: _fallback_summary response without .content attribute
 - Lines 378-379: process_document delegates to extract_metadata
 """
@@ -142,8 +142,34 @@ class TestExtractMetadataExceptionPropagation:
                 await ext.extract_metadata(blocks, "org-1")
 
     @pytest.mark.asyncio
-    async def test_extract_metadata_invoke_raises_propagates(self):
-        """When invoke_with_structured_output_and_reflection raises, exception propagates."""
+    async def test_a_failed_call_is_skipped_without_resending_the_document(self) -> None:
+        """While the model is down, a fallback summary would double every record's cost."""
+        ext = _build_extractor()
+
+        fake_llm = MagicMock()
+        fake_llm.ainvoke = AsyncMock()
+        fake_config = {"isMultimodal": False, "contextLength": 128000}
+
+        blocks = [_make_text_block("Some content")]
+
+        with patch(
+            "app.modules.transformers.document_extraction.get_llm_for_role",
+            return_value=(fake_llm, fake_config),
+        ), patch.object(ext, "graph_provider") as mock_graph, patch(
+            "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+            side_effect=ConnectionError("Connection error."),
+        ) as structured:
+            mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
+
+            assert await ext.extract_metadata(blocks, "org-1") is None
+
+        assert structured.await_args.kwargs["raise_call_errors"] is True
+        fake_llm.ainvoke.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_deliberate_stop_still_propagates(self) -> None:
+        from app.exceptions.non_retryable import NonRetryableError
+
         ext = _build_extractor()
 
         fake_llm = MagicMock()
@@ -156,11 +182,11 @@ class TestExtractMetadataExceptionPropagation:
             return_value=(fake_llm, fake_config),
         ), patch.object(ext, "graph_provider") as mock_graph, patch(
             "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
-            side_effect=ValueError("structured output failed"),
+            side_effect=NonRetryableError("stop"),
         ):
             mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
 
-            with pytest.raises(ValueError, match="structured output failed"):
+            with pytest.raises(NonRetryableError):
                 await ext.extract_metadata(blocks, "org-1")
 
 
@@ -346,3 +372,31 @@ class TestExtractMetadataDepartmentsFallback:
             result = await ext.extract_metadata(blocks, "org-1")
 
         assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_content_preparation_does_not_block_the_loop():
+    import asyncio
+    import time
+
+    ext = _build_extractor()
+
+    def slow_prepare(*_args: object, **_kwargs: object) -> list:
+        time.sleep(0.5)  # stands in for resizing a large image
+        return []
+
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.05)
+            ticks += 1
+
+    ticking = asyncio.create_task(ticker())
+    with patch.object(ext, "_prepare_content", side_effect=slow_prepare):
+        result = await ext._classify_blocks([], "org", [], {}, "r", "FILE")
+    ticking.cancel()
+
+    assert result is None
+    assert ticks >= 5

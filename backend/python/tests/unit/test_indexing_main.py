@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 from unittest.mock import ANY, AsyncMock, MagicMock, patch, PropertyMock
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.responses import JSONResponse
@@ -17,6 +18,11 @@ from app.config.constants.arangodb import (
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.config import MessageBrokerType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from app.services.messaging.retry_manager import RetryManager
 
 @pytest.fixture(autouse=True)
 def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -54,6 +60,8 @@ def _make_container():
     mock_producer.send_event = AsyncMock(return_value=True)
     mock_consumer = MagicMock()
     mock_consumer.concurrency_manager = None
+    mock_consumer.retry_manager = None
+    mock_consumer.disposition_sink = None
     mock_consumer._run_on_main_loop = None
     container.kafka_consumers = [("record", mock_consumer, mock_producer)]
     return container
@@ -506,6 +514,25 @@ class TestRecoverInProgressRecords:
         assert send_kwargs["topic"] == "record-events"
         assert send_kwargs["payload"]["recordId"] == "r1"
         assert send_kwargs["key"] == "r1"
+
+    async def test_recoveries_of_one_version_share_a_retry_budget(self) -> None:
+        """A fresh tracking id per recovery gave a record that always hung a new budget each time."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        gp.get_nodes_by_filters = AsyncMock(
+            return_value=[{"_key": "r1", "recordName": "big.pdf", "version": 4, "orgId": "org1"}]
+        )
+
+        await recover_in_progress_records(mock_container, gp)
+        await recover_in_progress_records(mock_container, gp)
+
+        producer = mock_container.kafka_consumers[0][2]
+        tracking_ids = {
+            call.kwargs["payload"]["_retry_tracking_id"] for call in producer.send_event.await_args_list
+        }
+        assert tracking_ids == {"stale-recovery:r1:4"}
 
     async def test_recovered_event_names_its_connector_so_it_goes_to_that_connectors_lane(
         self,
@@ -3319,3 +3346,178 @@ class TestLaneUpkeepInTheRecoveryPass:
         assert upkeep.await_args.kwargs["backlog"] is None
         assert upkeep.await_args.kwargs["assignments"] is assignments
         logger.warning.assert_called_once()
+
+
+class TestRecoveryBudget:
+    """Recovery stops handing back a record that keeps failing, and has the handler end it."""
+
+    MAX_ATTEMPTS = 3
+    BACKSTOP = 4
+    TRACKING_ID = "stale-recovery:r1:2"
+
+    @pytest.fixture
+    def tracker(self) -> "RetryManager":
+        pytest.importorskip("fakeredis.aioredis")
+        from fakeredis.aioredis import FakeRedis
+
+        from app.services.messaging.retry_manager import RetryManager
+
+        return RetryManager(MagicMock(), redis_client=FakeRedis())
+
+    @pytest.fixture(autouse=True)
+    def limits(self) -> "Iterator[None]":
+        with patch("app.modules.indexing.recovery_budget.messaging_env") as env:
+            env.max_delivery_attempts = self.MAX_ATTEMPTS
+            env.redis_max_deliveries = self.BACKSTOP
+            yield
+
+    @staticmethod
+    def _stuck(tracker: "RetryManager | None", **fields: object) -> tuple[MagicMock, MagicMock, AsyncMock]:
+        record = {"_key": "r1", "recordName": "big.pdf", "version": 2, "orgId": "org1", **fields}
+        container = _make_container()
+        consumer = container.kafka_consumers[0][1]
+        consumer.retry_manager = tracker
+        sink = AsyncMock()
+        consumer.disposition_sink = sink
+        gp = _make_graph_provider()
+        gp.get_nodes_by_filters = AsyncMock(return_value=[record])
+        return container, gp, sink
+
+    async def test_a_record_whose_recovered_attempts_failed_is_ended_by_the_handler(self, tracker) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container, gp, sink = self._stuck(tracker)
+        for _ in range(self.MAX_ATTEMPTS):
+            await tracker.increment_and_check(self.TRACKING_ID, self.MAX_ATTEMPTS)
+
+        await recover_in_progress_records(container, gp)
+
+        container.kafka_consumers[0][2].send_event.assert_not_awaited()
+        sink.on_recovery_exhausted.assert_awaited_once_with("r1", resume_enrichment=False)
+        gp.update_node.assert_not_awaited()
+
+    async def test_a_record_that_never_got_to_fail_is_ended_at_the_hand_back_limit(self, tracker) -> None:
+        """Attempts that died before their failure was counted are still bounded."""
+        from app.indexing_main import recover_in_progress_records
+
+        container, gp, sink = self._stuck(tracker)
+        producer = container.kafka_consumers[0][2]
+
+        for _ in range(self.BACKSTOP + 2):
+            await recover_in_progress_records(container, gp)
+
+        assert producer.send_event.await_count == self.BACKSTOP
+        assert await tracker.get_handbacks(self.TRACKING_ID) == self.BACKSTOP
+        assert sink.on_recovery_exhausted.await_count == 2
+
+    async def test_a_pass_that_cannot_publish_spends_nothing(self, tracker) -> None:
+        """The record was never handed back, so it must not be given up for it."""
+        from app.indexing_main import recover_in_progress_records
+
+        container, gp, sink = self._stuck(tracker)
+        container.kafka_consumers[0][2].send_event = AsyncMock(side_effect=ConnectionError("broker down"))
+
+        for _ in range(self.BACKSTOP + 2):
+            await recover_in_progress_records(container, gp)
+
+        assert await tracker.get_handbacks(self.TRACKING_ID) == 0
+        sink.on_recovery_exhausted.assert_not_awaited()
+
+    async def test_with_record_leases_a_failed_status_write_still_counts_the_hand_back(self, tracker) -> None:
+        """With leases the event is published before the status write: once out, it counts."""
+        from app.indexing_main import recover_in_progress_records
+
+        container, gp, sink = self._stuck(tracker, processingStartedAt=0)
+        container.kafka_consumers[0][1].concurrency_manager = _FakeConcurrencyManager()
+        gp.update_node = AsyncMock(side_effect=RuntimeError("graph write failed"))
+        producer = container.kafka_consumers[0][2]
+
+        for _ in range(self.BACKSTOP + 2):
+            await recover_in_progress_records(container, gp)
+
+        assert producer.send_event.await_count == self.BACKSTOP
+        assert sink.on_recovery_exhausted.await_count == 2
+
+    async def test_deliveries_the_consumer_counts_do_not_spend_hand_backs(self, tracker) -> None:
+        """A consumer counts every delivery of the tracking id before it runs."""
+        from app.indexing_main import recover_in_progress_records
+
+        container, gp, sink = self._stuck(tracker)
+        for _ in range(self.BACKSTOP * 2):
+            await tracker.record_delivery(self.TRACKING_ID)
+
+        await recover_in_progress_records(container, gp)
+
+        container.kafka_consumers[0][2].send_event.assert_awaited_once()
+        sink.on_recovery_exhausted.assert_not_awaited()
+
+    async def test_an_indexed_record_only_ends_its_enrichment(self, tracker) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container, gp, sink = self._stuck(
+            tracker,
+            indexingStatus=ProgressStatus.COMPLETED.value,
+            extractionStatus=ProgressStatus.IN_PROGRESS.value,
+            processingStartedAt=0,
+        )
+
+        async def enrichment_still_running(doc_id: str, collection: str, **_kwargs: object) -> dict | None:
+            if collection == CollectionNames.RECORDS.value:
+                return {**gp.get_nodes_by_filters.return_value[0]}
+            return None
+
+        gp.get_document = AsyncMock(side_effect=enrichment_still_running)
+        for _ in range(self.MAX_ATTEMPTS):
+            await tracker.increment_and_check(self.TRACKING_ID, self.MAX_ATTEMPTS)
+
+        await recover_in_progress_records(container, gp)
+
+        sink.on_recovery_exhausted.assert_awaited_once_with("r1", resume_enrichment=True)
+
+    async def test_a_success_in_between_gives_the_record_a_new_budget(self, tracker) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container, gp, sink = self._stuck(tracker)
+        for _ in range(self.MAX_ATTEMPTS):
+            await tracker.increment_and_check(self.TRACKING_ID, self.MAX_ATTEMPTS)
+        await tracker.record_handback(self.TRACKING_ID)
+        await tracker.clear(self.TRACKING_ID)
+
+        await recover_in_progress_records(container, gp)
+
+        container.kafka_consumers[0][2].send_event.assert_awaited_once()
+        sink.on_recovery_exhausted.assert_not_awaited()
+
+    async def test_a_new_version_of_the_record_has_its_own_budget(self, tracker) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container, gp, sink = self._stuck(tracker, version=3)
+        for _ in range(self.MAX_ATTEMPTS):
+            await tracker.increment_and_check(self.TRACKING_ID, self.MAX_ATTEMPTS)
+
+        await recover_in_progress_records(container, gp)
+
+        container.kafka_consumers[0][2].send_event.assert_awaited_once()
+
+    async def test_without_a_retry_tracker_recovery_always_requeues(self) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container, gp, sink = self._stuck(None)
+
+        for _ in range(self.BACKSTOP + 2):
+            await recover_in_progress_records(container, gp)
+
+        assert container.kafka_consumers[0][2].send_event.await_count == self.BACKSTOP + 2
+        sink.on_recovery_exhausted.assert_not_awaited()
+
+    async def test_without_a_sink_to_end_it_recovery_keeps_requeueing(self, tracker) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        container, gp, _sink = self._stuck(tracker)
+        container.kafka_consumers[0][1].disposition_sink = None
+        for _ in range(self.MAX_ATTEMPTS):
+            await tracker.increment_and_check(self.TRACKING_ID, self.MAX_ATTEMPTS)
+
+        await recover_in_progress_records(container, gp)
+
+        container.kafka_consumers[0][2].send_event.assert_awaited_once()

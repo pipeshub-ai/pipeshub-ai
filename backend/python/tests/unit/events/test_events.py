@@ -7,6 +7,8 @@ these tests provide additional coverage for edge cases and boundary conditions.
 
 import hashlib
 import json
+from collections.abc import AsyncIterator
+from contextlib import AbstractContextManager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,6 +21,7 @@ from app.config.constants.arangodb import (
 )
 from app.events.events import DedupDecision, EventProcessor
 from app.exceptions.indexing_exceptions import ProcessingError
+from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf, UnreadablePdfError
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -98,6 +101,15 @@ async def _drain(async_gen):
 async def _mock_processor_gen(*args, **kwargs):
     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+
+
+def _pdf_inspection(needs_ocr: bool = False, **patch_kwargs: object) -> AbstractContextManager[AsyncMock]:
+    """Patch the PDF inspection to read every file as sent, deciding *needs_ocr*."""
+    patch_kwargs.setdefault(
+        "side_effect",
+        lambda content, **_kw: InspectedPdf(content, needs_ocr=needs_ocr, repaired=False),
+    )
+    return patch("app.events.events.inspect_untrusted_pdf", new_callable=AsyncMock, **patch_kwargs)
 
 
 # ===========================================================================
@@ -944,7 +956,7 @@ class TestOnEventEdgeCases:
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
+             _pdf_inspection(needs_ocr=False), \
              patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "true"}):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
             events = await _drain(ep.on_event(event_data))
@@ -953,41 +965,113 @@ class TestOnEventEdgeCases:
         processor.process_pdf_with_pdf_plumber.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_pymupdf_failure_falls_back_to_ocr(self):
+    async def test_a_layout_parser_failure_is_not_sent_to_ocr(self) -> None:
+        """A PDF with a text layer is never OCR'd page by page, one model call each."""
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
 
-        async def pymupdf_fails(*args, **kwargs):
-            raise RuntimeError("pymupdf error")
+        async def layout_parser_fails(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            raise ProcessingError("layout parser failed")
             yield  # noqa: unreachable
 
-        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=pymupdf_fails)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=layout_parser_fails)
         processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
+             _pdf_inspection(needs_ocr=False), \
              patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "true"}):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
-            events = await _drain(ep.on_event(event_data))
+            with pytest.raises(ProcessingError):
+                await _drain(ep.on_event(event_data))
 
-        processor.process_pdf_document_with_ocr.assert_called_once()
+        processor.process_pdf_document_with_ocr.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_fitz_open_exception_defaults_to_layout_parser(self):
-        """If OCR detection fails (e.g. corrupt PDF), routing defaults to layout parser."""
+    async def test_a_pdf_larger_than_docling_accepts_goes_to_the_layout_parser(self) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
              patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, side_effect=Exception("corrupted pdf")):
+             _pdf_inspection(needs_ocr=False), \
+             patch("app.events.events.within_docling_size_limit", return_value=False):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        processor.process_pdf_with_docling.assert_not_called()
+        processor.process_pdf_with_pdf_plumber.assert_called_once()
+        processor.process_pdf_document_with_ocr.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_docling_retries_the_record_without_another_parser(self) -> None:
+        from app.services.docling.client import DoclingUnavailableError
+
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+
+        async def docling_down(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            raise DoclingUnavailableError("Docling could not parse rec-1.pdf: down")
+            yield  # noqa: unreachable
+
+        processor.process_pdf_with_docling = MagicMock(side_effect=docling_down)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(needs_ocr=False):
+            with pytest.raises(DoclingUnavailableError):
+                await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        processor.process_pdf_with_pdf_plumber.assert_not_called()
+        processor.process_pdf_document_with_ocr.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_pdf_fails_before_any_parser_reads_it(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(side_effect=UnreadablePdfError("pdfium could not open the PDF either")):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
+            with pytest.raises(UnreadablePdfError):
+                await _drain(ep.on_event(event_data))
+
+        processor.process_pdf_with_docling.assert_not_called()
+        processor.process_pdf_document_with_ocr.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_parsers_read_the_bytes_the_inspection_returned(self) -> None:
+        """A rewritten file replaces the damaged one for every parser, the fallback included."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+
+        async def docling_fails(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id="rec-1"))
+
+        processor.process_pdf_with_docling = MagicMock(side_effect=docling_fails)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        rewritten = InspectedPdf(b"%PDF-rewritten", needs_ocr=False, repaired=True)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(side_effect=None, return_value=rewritten) as inspect:
+            event_data = _make_event_payload(extension=ExtensionTypes.PDF.value, buffer=b"%PDF-damaged")
             await _drain(ep.on_event(event_data))
 
-        processor.process_pdf_with_docling.assert_called_once()
+        assert inspect.await_args.args[0] == b"%PDF-damaged"
+        assert processor.process_pdf_with_docling.call_args.kwargs["pdf_binary"] == b"%PDF-rewritten"
+        assert processor.process_pdf_with_pdf_plumber.call_args.kwargs["pdf_binary"] == b"%PDF-rewritten"
 
 
 class TestEpubDispatch:
@@ -1602,115 +1686,29 @@ class TestOnEventUpdateEvent:
 
 
 class TestOnEventDoclingFallback:
-    """Test docling failure falls back to OCR handler."""
+    """A PDF Docling cannot read is read by the layout parser, never by per-page OCR."""
 
     @pytest.mark.asyncio
-    async def test_docling_failure_falls_back_to_ocr(self):
+    async def test_docling_failure_falls_back_to_the_layout_parser(self) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
 
-        async def docling_fails(*args, **kwargs):
+        async def docling_fails(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
             yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id="rec-1"))
 
         processor.process_pdf_with_docling = MagicMock(side_effect=docling_fails)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
         processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
+             _pdf_inspection(needs_ocr=False), \
              patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
-            events = await _drain(ep.on_event(event_data))
+            await _drain(ep.on_event(event_data))
 
-        processor.process_pdf_document_with_ocr.assert_called_once()
-
-
-# ===========================================================================
-# Coverage: _get_pdf_ocr_detection_worker_count (lines 32-35)
-# ===========================================================================
-
-
-class TestPdfOcrDetectionWorkerCount:
-    """Tests for _get_pdf_ocr_detection_worker_count."""
-
-    def test_valid_env_value(self):
-        from app.events.events import _get_pdf_ocr_detection_worker_count
-        with patch.dict("os.environ", {"PDF_OCR_DETECTION_WORKERS": "4"}):
-            result = _get_pdf_ocr_detection_worker_count()
-        assert result == 4
-
-    def test_invalid_env_value_returns_1(self):
-        """Invalid integer returns 1 (lines 34-35)."""
-        from app.events.events import _get_pdf_ocr_detection_worker_count
-        with patch.dict("os.environ", {"PDF_OCR_DETECTION_WORKERS": "not-a-number"}):
-            result = _get_pdf_ocr_detection_worker_count()
-        assert result == 1
-
-    def test_zero_value_returns_1(self):
-        """Zero returns 1 (max(1,...))."""
-        from app.events.events import _get_pdf_ocr_detection_worker_count
-        with patch.dict("os.environ", {"PDF_OCR_DETECTION_WORKERS": "0"}):
-            result = _get_pdf_ocr_detection_worker_count()
-        assert result == 1
-
-    def test_no_env_uses_cpu_count(self):
-        from app.events.events import _get_pdf_ocr_detection_worker_count
-        with patch.dict("os.environ", {}, clear=False):
-            import os
-            os.environ.pop("PDF_OCR_DETECTION_WORKERS", None)
-            result = _get_pdf_ocr_detection_worker_count()
-        assert result >= 1
-
-
-# ===========================================================================
-# Coverage: _detect_pdf_needs_ocr (lines 52-72)
-# ===========================================================================
-
-
-class TestDetectPdfNeedsOcr:
-    """Tests for _detect_pdf_needs_ocr."""
-
-    def test_empty_pdf_returns_false(self):
-        """PDF with 0 pages returns False (line 57)."""
-        from app.events.events import _detect_pdf_needs_ocr
-
-        mock_pdf = MagicMock()
-        mock_pdf.pages = []
-        mock_cm = MagicMock()
-        mock_cm.__enter__.return_value = mock_pdf
-        mock_cm.__exit__.return_value = None
-        with patch("app.events.events.pdfplumber.open", return_value=mock_cm):
-            assert _detect_pdf_needs_ocr(b"fake pdf") is False
-
-    def test_all_pages_need_ocr(self):
-        """All pages need OCR -> True (lines 62-66)."""
-        from app.events.events import _detect_pdf_needs_ocr
-
-        pages = [MagicMock() for _ in range(4)]
-        mock_pdf = MagicMock()
-        mock_pdf.pages = pages
-        mock_cm = MagicMock()
-        mock_cm.__enter__.return_value = mock_pdf
-        mock_cm.__exit__.return_value = None
-        with patch("app.events.events.pdfplumber.open", return_value=mock_cm), patch(
-            "app.events.events.OCRStrategy.needs_ocr", return_value=True
-        ):
-            assert _detect_pdf_needs_ocr(b"fake pdf") is True
-
-    def test_no_pages_need_ocr_early_exit(self):
-        """Early exit when remaining pages can't reach threshold (lines 68-70)."""
-        from app.events.events import _detect_pdf_needs_ocr
-
-        pages = [MagicMock() for _ in range(4)]
-        mock_pdf = MagicMock()
-        mock_pdf.pages = pages
-        mock_cm = MagicMock()
-        mock_cm.__enter__.return_value = mock_pdf
-        mock_cm.__exit__.return_value = None
-        with patch("app.events.events.pdfplumber.open", return_value=mock_cm), patch(
-            "app.events.events.OCRStrategy.needs_ocr", return_value=False
-        ):
-            assert _detect_pdf_needs_ocr(b"fake pdf") is False
+        processor.process_pdf_with_pdf_plumber.assert_called_once()
+        processor.process_pdf_document_with_ocr.assert_not_called()
 
 
 # ===========================================================================
@@ -1896,21 +1894,21 @@ class TestOnEventOcrPath:
     """Test PDF OCR processing path."""
 
     @pytest.mark.asyncio
-    async def test_ocr_check_exception_defaults_to_false(self):
-        """OCR check failure defaults to no OCR (line 410)."""
+    async def test_a_pdf_that_needs_no_ocr_goes_to_docling(self) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, side_effect=RuntimeError("OCR check failed")), \
+             _pdf_inspection(needs_ocr=False), \
              patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}):
             event_data = _make_event_payload(extension="pdf")
-            events = await _drain(ep.on_event(event_data))
+            await _drain(ep.on_event(event_data))
 
-        # Should fall through to docling since OCR check failed (needs_ocr=False)
         processor.process_pdf_with_docling.assert_called_once()
+        processor.process_pdf_document_with_ocr.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_pdf_needs_ocr_uses_ocr_handler(self):
@@ -1921,7 +1919,7 @@ class TestOnEventOcrPath:
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=True):
+             _pdf_inspection(needs_ocr=True):
             event_data = _make_event_payload(extension="pdf")
             events = await _drain(ep.on_event(event_data))
 

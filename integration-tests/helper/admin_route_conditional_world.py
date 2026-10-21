@@ -390,13 +390,23 @@ class World:
         if not instance.get("_id"):
             raise RuntimeError(f"Creating a {toolset_type} toolset returned no id.")
         if scope == "personal":
-            # Only its owner can delete it; a case may have deleted it already.
-            self._later(f"personal toolset {name}", lambda: self._delete_toolset(instance["_id"], caller=caller))
+            self._later(f"personal toolset {name}", lambda: self._delete_personal_toolset(instance["_id"], caller))
         return instance
 
-    def _delete_toolset(self, instance_id: str, *, caller: str = ADMIN) -> None:
-        self._json(caller, "DELETE", f"{_TOOLSETS}/instances/{instance_id}", "Deleting a test toolset",
+    def _delete_toolset(self, instance_id: str) -> None:
+        self._json(ADMIN, "DELETE", f"{_TOOLSETS}/instances/{instance_id}", "Deleting a test toolset",
                    ok=(200, 404))
+
+    def _delete_personal_toolset(self, instance_id: str, owner: str) -> None:
+        """Only its owner can delete it. A case may have deleted it already, and a member who is not
+        an admin is refused with 403 rather than 404 once it is gone, so look before deleting."""
+        path = f"{_TOOLSETS}/instances/{instance_id}"
+        reply = send("GET", f"{self.gateway_url}{path}", self.token(owner), timeout=self._timeout)
+        if reply.status == 404:
+            return
+        if reply.status != 200:
+            raise RuntimeError(f"Looking up a test personal toolset returned HTTP {reply.status}: {reply.text[:300]}")
+        self._json(owner, "DELETE", path, "Deleting a test personal toolset")
 
     def _build_personal_toolsets(self) -> dict[str, str]:
         name = f"{PREFIX}-personal-toolset-{uuid.uuid4().hex[:10]}"

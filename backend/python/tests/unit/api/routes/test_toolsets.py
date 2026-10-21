@@ -5471,7 +5471,7 @@ class TestCreateToolsetInstanceRoute:
 
     @pytest.mark.asyncio
     async def test_create_instance_oauth_create_config_fails(self) -> None:
-        """Cover lines 1330-1335 (OAuth config creation fails)."""
+        """A failed OAuth app save refuses the create rather than storing the client secret inline."""
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
@@ -5491,11 +5491,12 @@ class TestCreateToolsetInstanceRoute:
              patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=[]), \
              patch("app.api.routes.toolsets._get_oauth_configs_for_type", return_value=[]), \
              patch("app.api.routes.toolsets._check_oauth_name_conflict", return_value=False), \
-             patch("app.api.routes.toolsets._create_or_update_toolset_oauth_config", return_value=None):
-            result = await create_toolset_instance(req, cs)
+             patch("app.api.routes.toolsets._create_or_update_toolset_oauth_config", return_value=None), \
+             pytest.raises(HTTPException) as exc:
+            await create_toolset_instance(req, cs)
 
-        # Should still succeed even if OAuth config creation fails
-        assert result["status"] == "success"
+        assert exc.value.status_code == 500
+        cs.set_config.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_create_instance_oauth_config_no_auth_config(self) -> None:

@@ -76,3 +76,17 @@ class IRetryTracker(ABC):
         the backstop disarmed rather than tripping it.
         """
         return 0
+
+    async def record_handback(self, message_id: str) -> int:
+        """Count one hand-back of *message_id* by stale-record recovery and return the total.
+
+        Its own counter: consumers count deliveries under the same id before
+        each run, and recovery counts a hand-back only once its event is
+        published. Cleared with the others. Trackers that cannot count
+        hand-backs return 0.
+        """
+        return 0
+
+    async def get_handbacks(self, message_id: str) -> int:
+        """Hand-backs counted for *message_id*; 0 for a tracker that does not count them."""
+        return 0
