@@ -12,6 +12,8 @@ import { CrawlingWorkerService } from '../../../../src/modules/crawling_manager/
 import { ConnectorsCrawlingService } from '../../../../src/modules/crawling_manager/services/connectors/connectors'
 import { SyncEventProducer } from '../../../../src/modules/knowledge_base/services/sync_events.service'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
+// The router resolves AuthMiddleware through src/config; bind it under that key.
+import { AuthMiddleware as EditionAuthMiddleware } from '../../../../src/config'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
 import { INVALID_PATH_SEGMENT_MESSAGE } from '../../../../src/libs/middlewares/safe-path-params.middleware'
@@ -179,7 +181,7 @@ describe('Crawling manager over HTTP', () => {
       },
     } as unknown as OAuthTokenService
     const container = new Container()
-    container.bind(AuthMiddleware).toConstantValue(new AuthMiddleware(Logger.getInstance(), tokens, () => oauthService))
+    container.bind<AuthMiddleware>(EditionAuthMiddleware).toConstantValue(new AuthMiddleware(Logger.getInstance(), tokens, () => oauthService))
     container.bind<AppConfig>('AppConfig').toConstantValue(config)
     container.bind(CrawlingSchedulerService).toConstantValue(service)
     const app = express()

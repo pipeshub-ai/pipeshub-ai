@@ -1039,6 +1039,29 @@ class TestOnEventEdgeCases:
                 await _drain(ep.on_event(event_data))
 
     @pytest.mark.asyncio
+    async def test_stale_reason_is_cleared_in_the_database(self):
+        """A new attempt clears the previous failure reason before processing,
+        since a successful completion never writes `reason` itself."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "FILE",
+            "reason": "Parsing failed.",
+        }
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             patch.object(ep, "update_record_fields", new_callable=AsyncMock, return_value=True) as upd:
+            event_data = _make_event_payload(extension=ExtensionTypes.DOCX.value)
+            await _drain(ep.on_event(event_data))
+
+        cleared = [
+            c.args[1] for c in upd.call_args_list
+            if "reason" in c.args[1]
+        ]
+        assert cleared, "stale reason should be persisted as cleared"
+        assert cleared[0] == {"reason": None}
+
+    @pytest.mark.asyncio
     async def test_pymupdf_env_flag_routes_to_pymupdf(self):
         """ENABLE_PDFPLUMBER_PROCESSOR=true routes to process_pdf_with_pdf_plumber."""
         ep, _, processor, gp = _make_event_processor()
