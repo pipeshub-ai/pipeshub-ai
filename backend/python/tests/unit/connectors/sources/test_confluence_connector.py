@@ -2414,7 +2414,7 @@ class TestFetchGroupMembers:
         assert account_ids == []
 
     @pytest.mark.asyncio
-    async def test_inactive_members_are_left_out_and_recorded(self):
+    async def test_inactive_members_are_left_out_and_recorded(self) -> None:
         c = _conn()
         mock_ds = MagicMock()
         mock_ds.get_group_members = AsyncMock(return_value=_resp(200, {"results": [
@@ -2431,7 +2431,7 @@ class TestFetchGroupMembers:
         assert c._inactive_account_ids == set()
 
     @staticmethod
-    def _group_sync_conn(member_pages):
+    def _group_sync_conn(member_pages: list) -> ConfluenceConnector:
         c = _conn()
         dep = c.data_entities_processor
         # Like the graph: get_all_app_users returns only the users linked to the connector.
@@ -2451,7 +2451,7 @@ class TestFetchGroupMembers:
         return c
 
     @pytest.mark.asyncio
-    async def test_a_reactivated_account_is_saved_again_in_the_same_sync(self):
+    async def test_a_reactivated_account_is_saved_again_in_the_same_sync(self) -> None:
         c = self._group_sync_conn([_resp(200, {"results": [
             {"accountId": "acc-d", "email": "d@t.com", "accountStatus": "active"},
         ]})])
@@ -2470,7 +2470,7 @@ class TestFetchGroupMembers:
         assert [u.source_user_id for u in members] == ["acc-d"]
 
     @pytest.mark.asyncio
-    async def test_a_member_list_failing_on_page_two_withdraws_nothing(self):
+    async def test_a_member_list_failing_on_page_two_withdraws_nothing(self) -> None:
         c = self._group_sync_conn([
             _resp(200, {
                 "results": [{"accountId": "acc-n", "email": "n@t.com", "accountStatus": "inactive"}],
@@ -2491,7 +2491,7 @@ class TestFetchGroupMembers:
         c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_withdraws_stored_users_reported_inactive(self):
+    async def test_withdraws_stored_users_reported_inactive(self) -> None:
         c = _conn()
         dep = c.data_entities_processor
         stored = [
@@ -2508,7 +2508,7 @@ class TestFetchGroupMembers:
         dep.withdraw_app_user_access.assert_awaited_once_with("conn-cov-1", [stored[1]])
 
     @pytest.mark.asyncio
-    async def test_withdraw_noop_without_inactive_members(self):
+    async def test_withdraw_noop_without_inactive_members(self) -> None:
         c = _conn()
         c.data_entities_processor.withdraw_app_user_access = AsyncMock()
         await c._withdraw_inactive_app_users()
@@ -4510,7 +4510,7 @@ class TestSyncUsersHappyPath:
         assert saved[0].email == "user1@example.com"
 
     @pytest.mark.asyncio
-    async def test_skips_accounts_last_seen_inactive(self):
+    async def test_skips_accounts_last_seen_inactive(self) -> None:
         c = _mk_connector()
         c._inactive_account_ids = {"acc-d"}
         ds = MagicMock()
@@ -9463,7 +9463,7 @@ class TestIncludeJiraScopeSetting:
 class TestFindUserAccountIdByEmail:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("active, expected", [(True, "acc-1"), (False, None)])
-    async def test_deactivated_jira_account_is_not_returned(self, active, expected):
+    async def test_deactivated_jira_account_is_not_returned(self, active, expected) -> None:
         from app.sources.external.confluence.confluence import ConfluenceDataSource
 
         client = MagicMock()

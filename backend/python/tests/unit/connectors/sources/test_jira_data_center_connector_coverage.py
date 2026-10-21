@@ -2565,7 +2565,7 @@ async def test_parse_issue_to_blocks_plain_string_comment_body():
 
 
 @pytest.mark.asyncio
-async def test_parse_issue_to_blocks_leaves_out_restricted_comments():
+async def test_parse_issue_to_blocks_leaves_out_restricted_comments() -> None:
     conn = _make_connector()
     issue_data = {
         "id": "10", "key": "K-1", "fields": {"summary": "T"},

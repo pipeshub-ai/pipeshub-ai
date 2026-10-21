@@ -2713,7 +2713,7 @@ class TestParseIssueToBlocksCoverage:
         assert comment_bg.data == "<p>Comment 1</p>"
 
     @pytest.mark.asyncio
-    async def test_restricted_comments_are_left_out(self):
+    async def test_restricted_comments_are_left_out(self) -> None:
         connector = _make_connector()
         issue_data = {"id": "100", "fields": {"summary": "Test"}}
         comments_data = [
@@ -2736,7 +2736,7 @@ class TestParseIssueToBlocksCoverage:
         assert {bg.source_group_id for bg in result.block_groups} & {"c1", "c2", "c3"} == {"c1"}
         assert "secret" not in result.model_dump_json()
 
-    def test_restricted_comment_images_are_not_treated_as_inline(self):
+    def test_restricted_comment_images_are_not_treated_as_inline(self) -> None:
         connector = _make_connector()
         fields = {
             "attachment": [{"id": "9", "filename": "s.png", "mimeType": "image/png", "size": 10}],
