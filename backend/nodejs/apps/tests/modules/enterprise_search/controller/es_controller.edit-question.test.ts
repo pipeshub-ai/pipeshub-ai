@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import * as controllerModule from '../../../../src/modules/enterprise_search/controller/es_controller'
+import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 import { settle } from './chat-test-harness'
@@ -13,7 +14,7 @@ const FIRST_QUESTION = 'What changed in the release?'
 const CARD_ANSWERS = 'User selections:\n1. "What do you enjoy?" → Pop'
 
 /** How the last turn was saved: a plain answer, or a question card that was answered. */
-type Turn = 'plain' | 'card' | 'card-after-approval' | 'card-without-question'
+type Turn = 'plain' | 'card' | 'card-on-reply' | 'card-after-approval' | 'card-without-question'
 
 const FILE_A = { recordId: 'rec-a', recordName: 'a.pdf', mimeType: 'application/pdf', extension: 'pdf', virtualRecordId: 'v-a' }
 const FILE_B = { recordId: 'rec-b', recordName: 'b.png', mimeType: 'image/png', extension: 'png', virtualRecordId: 'v-b' }
@@ -23,6 +24,8 @@ function editFlow(options: {
   title?: string
   earlierTurn?: boolean
   turn?: Turn
+  /** What the last question says; defaults to FIRST_QUESTION. */
+  question?: string
   /** Files stored with the question. */
   storedFiles?: Array<typeof FILE_A>
   /** Files the request sends; omitted sends none. */
@@ -53,15 +56,22 @@ function editFlow(options: {
       }) as never)
       const turn = options.turn ?? 'plain'
       if (turn !== 'card-without-question') {
-        store.addMessage(session, { messageType: 'user_query', content: FIRST_QUESTION, attachments: options.storedFiles ?? [] } as never)
+        store.addMessage(session, { messageType: 'user_query', content: options.question ?? FIRST_QUESTION, attachments: options.storedFiles ?? [] } as never)
       }
       if (turn !== 'plain') {
-        store.addMessage(session, { messageType: 'bot_response', content: 'Which one do you enjoy?' })
+        // The card sits on the reply itself, or in a `tool_call` row of its own.
         store.addMessage(session, {
-          messageType: 'tool_call',
-          content: '',
-          tools: [{ toolName: 'ask_user_question', toolCallId: 'ask_1' }],
+          messageType: 'bot_response',
+          content: 'Which one do you enjoy?',
+          ...(turn === 'card-on-reply' ? { tools: [{ toolName: 'ask_user_question' }] } : {}),
         } as never)
+        if (turn !== 'card-on-reply') {
+          store.addMessage(session, {
+            messageType: 'tool_call',
+            content: '',
+            tools: [{ toolName: 'ask_user_question', toolCallId: 'ask_1' }],
+          } as never)
+        }
         if (turn === 'card-after-approval') {
           store.addMessage(session, { messageType: 'user_query', content: 'Tool approval: allow once' })
           store.addMessage(session, { messageType: 'bot_response', content: 'Approved.' })
@@ -486,6 +496,107 @@ describe('es_controller editing the last question', () => {
       await finish(run)
 
       expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(CARD_ANSWERS)
+    })
+  })
+
+  describe('which turns count as card turns, and what an edit takes with it', () => {
+    const TYPED = 'User selections: what does this mean?'
+    const rowsOf = (run: Awaited<ReturnType<typeof startStream>>) =>
+      run.messages().map((m) => `${String(m.messageType)}: ${String(m.content)}`)
+    const start = async (options: Parameters<typeof editFlow>[0]) => {
+      const run = await startStream(editFlow(options), controllerModule, undefined, { wait: false })
+      await settle()
+      return run
+    }
+    async function finish(run: Awaited<ReturnType<typeof startStream>>, answer = 'Two things.') {
+      run.ai.send('RUN_FINISHED', finalAnswer(answer))
+      run.ai.finish()
+      await run.res.ended
+      await run.done
+      await settle()
+    }
+
+    it('treats a card stamped on the reply, with no row of its own, as a card turn', async () => {
+      const run = await start({ edit: 'What changed in v2?', turn: 'card-on-reply' })
+      await finish(run)
+
+      expect(rowsOf(run)).to.deep.equal(['user_query: What changed in v2?', 'bot_response: Two things.'])
+    })
+
+    it('edits only the question the reader typed when it merely starts like card answers', async () => {
+      const run = await start({ edit: 'What changed in v2?', question: TYPED, earlierTurn: true })
+
+      const body = run.ai.streamCalls[0]?.body as { query: string; previousConversations: unknown[] }
+      expect(body.query).to.equal('What changed in v2?')
+      expect(JSON.stringify(body.previousConversations)).to.contain('An earlier question')
+      await finish(run)
+
+      expect(rowsOf(run)).to.deep.equal([
+        'user_query: An earlier question',
+        'bot_response: An earlier answer.',
+        'user_query: What changed in v2?',
+        'bot_response: Two things.',
+      ])
+    })
+
+    it('regenerates a question that starts like card answers as it was', async () => {
+      const run = await start({ question: TYPED, earlierTurn: true })
+      await finish(run)
+
+      expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(TYPED)
+      expect(rowsOf(run).slice(0, 2)).to.deep.equal(['user_query: An earlier question', 'bot_response: An earlier answer.'])
+    })
+
+    it('refuses to edit a question that starts like card answers when it cannot tell what it is', async () => {
+      const run = await start({ edit: 'What changed in v2?', question: TYPED })
+      await run.done
+      await settle()
+
+      expect(run.res.eventsOf('RUN_ERROR')[0]?.data.message).to.match(/cannot be edited/)
+      expect(run.ai.streamCalls).to.deep.equal([])
+    })
+
+    it('keeps the card rows when the new answer cannot be saved', async () => {
+      sinon.stub(searchUtils, 'handleRegenerationSuccess').rejects(new Error('database is down'))
+      const run = await start({ edit: 'What changed in v2?', turn: 'card' })
+      const before = rowsOf(run)
+
+      run.ai.send('RUN_FINISHED', finalAnswer('Two things.'))
+      run.ai.finish()
+      await run.res.ended
+      await run.done
+      await settle()
+
+      const after = rowsOf(run)
+      for (const row of before.slice(1, 4)) expect(after, `${row} is still there`).to.include(row)
+      expect(after.filter((row) => row.startsWith('tool_call'))).to.have.length(1)
+    })
+
+    it('drops the card rows after the partial answer when the user leaves mid-answer', async () => {
+      const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const run = await start({ edit: 'What changed in v2?', turn: 'card' })
+
+      run.ai.send('TEXT_MESSAGE_CONTENT', delta('Two '))
+      await settle()
+      run.res.disconnect()
+      await settle(10)
+      clock.tick(DETACHED_RUN_MAX_MS + 1)
+      await settle(20)
+
+      expect(rowsOf(run)).to.deep.equal(['user_query: What changed in v2?', 'bot_response: Two '])
+    })
+
+    it('keeps the whole card turn when the user leaves before any answer text', async () => {
+      const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const run = await start({ edit: 'What changed in v2?', turn: 'card' })
+      const before = rowsOf(run)
+
+      run.res.disconnect()
+      await settle(10)
+      clock.tick(DETACHED_RUN_MAX_MS + 1)
+      await settle(20)
+
+      expect(rowsOf(run).slice(0, 4)).to.deep.equal(before.slice(0, 4))
     })
   })
 })

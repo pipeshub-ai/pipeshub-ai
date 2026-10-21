@@ -306,7 +306,7 @@ export const updateUserQueryContent = async (
     { new: true, session: mongoSession || undefined },
   );
 
-const hasAskUserQuestionTool = (msg: IMessage | undefined): boolean =>
+export const hasAskUserQuestionTool = (msg: IMessage | undefined): boolean =>
   Boolean(msg?.tools?.some((tool) => tool.toolName?.includes('ask_user_question')));
 
 /**
@@ -2757,9 +2757,13 @@ export const handleRegenerationSuccess = async (
   // already see must not fail on transcript housekeeping.
   if (staleAskToolCallIds?.length) {
     try {
-      await deleteMessagesById(staleAskToolCallIds, session);
+      await deleteMessagesById(
+        staleAskToolCallIds,
+        session,
+        existingConversation._id,
+      );
     } catch (cleanupErr: any) {
-      logger.warn('Failed to drop stale ask_user_question rows after regenerate', {
+      logger.warn('Failed to drop stale rows after regenerate', {
         conversationId: existingConversation._id,
         messageId,
         error: cleanupErr?.message,
