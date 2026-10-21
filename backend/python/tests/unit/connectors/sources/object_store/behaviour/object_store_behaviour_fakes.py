@@ -13,8 +13,10 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 from urllib.parse import quote, unquote, urlsplit
 
+from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     matches_visibility,
@@ -277,6 +279,19 @@ class FakeRecordsDb:
         self.record_permissions: dict[str, list[Any]] = {}
         self.group_permissions: dict[str, list[Any]] = {}
         self.app_users: list[Any] = []
+        # What the running full sync wrote, as the processor notes it for run_sync_task's unlink.
+        self.seen: FullSyncSeen | None = None
+
+    def begin_full_sync_run(self, connector_id: str) -> FullSyncSeen:
+        self.seen = FullSyncSeen()
+        return self.seen
+
+    def end_full_sync_run(self, connector_id: str, run: FullSyncSeen) -> None:
+        self.seen = None
+
+    def _note_seen(self, collection: str, node_id: str) -> None:
+        if self.seen is not None:
+            self.seen.add(collection, node_id)
 
     def _check(self, method: str) -> None:
         if method in self.failing:
@@ -337,6 +352,7 @@ class FakeRecordsDb:
             if same_path and same_path.id != record.id:
                 record.id = same_path.id
             self.records[record.id] = record
+            self._note_seen("records", record.id)
 
     async def on_records_moved(self, moves: list[tuple[str, Any, list[Any]]]) -> None:
         """In place: the stored record at the old external id takes the new path and keeps its id."""
@@ -348,9 +364,11 @@ class FakeRecordsDb:
                 record.id = stored.id
             self.records[record.id] = record
             self.record_permissions.setdefault(record.external_record_id, []).extend(permissions)
+            self._note_seen("records", record.id)
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, permissions in groups:
+            self._note_seen("recordGroups", group.id)
             self.record_groups[group.external_group_id] = group
             self.group_permissions[group.external_group_id] = list(permissions)
 
@@ -485,3 +503,37 @@ def make_connector(
     connector.batch_size = 2
     connector.list_page_size = 2
     return connector
+
+
+def runner_graph() -> AsyncMock:
+    """The graph provider ``run_sync_task`` writes the app's status to.
+
+    Its ``unlink_nodes_missed_by_full_sync`` is the step after a full sync that strips the
+    edges of every record that sync did not write.
+    """
+    from app.config.constants.arangodb import AppStatus
+
+    graph = AsyncMock()
+    graph.get_document = AsyncMock(return_value={"id": CONNECTOR_ID, "status": AppStatus.FULL_SYNCING.value})
+    graph.unlink_nodes_missed_by_full_sync = AsyncMock(return_value=(0, True))
+    return graph
+
+
+async def run_full_sync_task(connector: BaseConnector, graph: AsyncMock) -> None:
+    """Run a full sync the way the scheduler does, through ``run_sync_task``; what ``run_sync`` raises is raised too."""
+    from app.config.constants.arangodb import AppStatus
+    from app.connectors.core.sync.sync_runner import run_sync_task
+
+    await run_sync_task(
+        connector, CONNECTOR_ID, graph, logging.getLogger("test.objstore.runner"),
+        start_status=AppStatus.FULL_SYNCING.value,
+    )
+
+
+def idle_write(graph: AsyncMock) -> dict[str, Any]:
+    """The finalizer's IDLE write, which also carries pendingFullSync when a full sync is owed."""
+    from app.config.constants.arangodb import AppStatus
+
+    writes = [c.args[2] for c in graph.update_node.await_args_list if c.args[2].get("status") == AppStatus.IDLE.value]
+    assert len(writes) == 1, writes
+    return writes[0]

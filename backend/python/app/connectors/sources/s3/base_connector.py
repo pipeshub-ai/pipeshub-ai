@@ -429,9 +429,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     self.connector_id
                 )
             else:
-                creator = await self._creator_or_notify()
-                if creator is None:
-                    return
+                creator = await self._creator_or_raise()
                 await self.data_entities_processor.on_new_app_users(self.get_app_users([creator]))
 
             # Get sync filters
@@ -1284,8 +1282,8 @@ class S3CompatibleBaseConnector(BaseConnector):
             self._creator = user
         return self._creator
 
-    async def _creator_or_notify(self) -> User | None:
-        """The creator, or None after telling the user why the sync stopped before writing anything."""
+    async def _creator_or_raise(self) -> User:
+        """The creator, or a notification and the error: a run that ends normally would count as a full sync."""
         try:
             return await self._load_creator()
         except Exception as e:
@@ -1297,7 +1295,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 "Existing access is unchanged. The next sync tries again.",
                 severity=NotificationSeverity.ERROR,
             )
-            return None
+            raise
 
     async def test_connection_and_access(self) -> bool:
         """Check that the key can list and read the buckets the sync uses."""
