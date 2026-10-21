@@ -8,9 +8,9 @@ from pipeshub_sdk import Pipeshub
 
 from .errors import raises_status
 
-# CI points this at the stack's web-fixtures feed, so the sync does not depend on the internet.
+# The integration stack's web-fixtures feed, so the sync does not depend on the internet.
 FEED_URL = os.environ.get(
-    "PIPESHUB_SDK_TEST_RSS_FEED_URL", "https://feeds.bbci.co.uk/news/rss.xml"
+    "PIPESHUB_SDK_TEST_RSS_FEED_URL", "http://web-fixtures:8080/feeds/news.xml"
 )
 SYNC_TIMEOUT_SECONDS = 300
 

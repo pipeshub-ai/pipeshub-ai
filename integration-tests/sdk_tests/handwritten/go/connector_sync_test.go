@@ -15,13 +15,13 @@ import (
 
 const syncTimeout = 5 * time.Minute
 
-// feedURL is the feed the sync test reads. CI points it at the stack's web-fixtures feed,
-// so the sync does not depend on the internet.
+// feedURL is the feed the sync test reads: by default the integration stack's web-fixtures
+// feed, so the sync does not depend on the internet.
 func feedURL() string {
 	if url := os.Getenv("PIPESHUB_SDK_TEST_RSS_FEED_URL"); url != "" {
 		return url
 	}
-	return "https://feeds.bbci.co.uk/news/rss.xml"
+	return "http://web-fixtures:8080/feeds/news.xml"
 }
 
 func waitForIdle(t *testing.T, s *pipeshub.Pipeshub, connectorID string) {
