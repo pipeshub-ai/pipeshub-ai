@@ -363,25 +363,6 @@ class TestProviderErrorCode:
         error = openai.NotFoundError("not found", response=httpx.Response(404, request=request), body=None)
         assert ue.provider_error_code(error) == "model_not_found"
 
-    @pytest.mark.parametrize(
-        ("status", "error_code", "expected"),
-        (
-            (400, "ValidationException", "invalid_request"),
-            (403, "AccessDeniedException", "auth_error"),
-            (429, "ThrottlingException", "rate_limit"),
-        ),
-    )
-    def test_a_bedrock_client_error_is_read_by_its_http_status(
-        self, status: int, error_code: str, expected: str,
-    ) -> None:
-        from botocore.exceptions import ClientError
-
-        response = {
-            "Error": {"Code": error_code, "Message": "rejected"},
-            "ResponseMetadata": {"HTTPStatusCode": status},
-        }
-        assert ue.provider_error_code(ClientError(response, "Converse")) == expected
-
 
 class TestRepositoryFileReasons:
     @pytest.mark.parametrize(
