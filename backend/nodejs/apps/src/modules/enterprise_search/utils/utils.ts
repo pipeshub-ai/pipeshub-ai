@@ -2137,6 +2137,10 @@ export const markAgentConversationFailed = async (
  * Build filter for agent conversations. `ONLY_AGENT` is applied here (in
  * addition to always requiring a concrete `agentKey`) as defense-in-depth
  * now that agent and plain-chat sessions share one collection.
+ *
+ * `includeShared` adds the read-only "shared with me" branch. It is off by
+ * default so owner-only actions built on this filter (fork, cancel, archive
+ * list) never widen to a recipient; only the read paths opt in.
  */
 export const buildAgentConversationFilter = (
   req: any,
@@ -2146,6 +2150,7 @@ export const buildAgentConversationFilter = (
   conversationId?: string,
   contentMatchIds?: mongoose.Types.ObjectId[],
   accessibleProjectIds?: mongoose.Types.ObjectId[],
+  includeShared: boolean = false,
 ) => {
   const filter: any = {
     ...ONLY_AGENT,
@@ -2153,6 +2158,16 @@ export const buildAgentConversationFilter = (
     orgId: new mongoose.Types.ObjectId(orgId),
     $or: [
       { userId: new mongoose.Types.ObjectId(userId) },
+      ...(includeShared
+        ? [
+            {
+              $and: [
+                { isShared: true },
+                { 'sharedWith.userId': new mongoose.Types.ObjectId(userId) },
+              ],
+            },
+          ]
+        : []),
       ...(accessibleProjectIds && accessibleProjectIds.length > 0
         ? [
             {

@@ -8,6 +8,8 @@ import {
   conversationIdParamsSchema,
   conversationTitleParamsSchema,
   conversationShareParamsSchema,
+  agentConversationShareParamsSchema,
+  agentConversationUnshareParamsSchema,
   forkConversationParamsSchema,
   forkAgentConversationParamsSchema,
   messageIdParamsSchema,
@@ -467,6 +469,58 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = conversationShareParamsSchema.safeParse(data)
       expect(result.success).to.be.false
+    })
+  })
+
+  describe('agentConversationShareParamsSchema', () => {
+    const params = { agentKey: 'agent-1', conversationId: '507f1f77bcf86cd799439011' }
+    const user = '507f1f77bcf86cd799439012'
+
+    it('accepts userIds with no access level, or an explicit read', () => {
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user] } }).success).to.be.true
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user], accessLevel: 'read' } }).success).to.be.true
+    })
+
+    it('rejects write access instead of silently dropping it', () => {
+      const result = agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user], accessLevel: 'write' } })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects an unknown access level and unknown body fields', () => {
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user], accessLevel: 'admin' } }).success).to.be.false
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user], isShared: true } }).success).to.be.false
+    })
+
+    it('rejects an empty list, a malformed id and a missing list', () => {
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [] } }).success).to.be.false
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: ['nope'] } }).success).to.be.false
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: {} }).success).to.be.false
+    })
+
+    it('caps how many users one request may name', () => {
+      const ids = (n: number) => Array.from({ length: n }, (_, i) => user.slice(0, -2) + String(10 + (i % 90)))
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: ids(50) } }).success).to.be.true
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: ids(51) } }).success).to.be.false
+    })
+
+    it('requires a valid agent key and conversation id', () => {
+      expect(agentConversationShareParamsSchema.safeParse({ params: { ...params, conversationId: 'x' }, body: { userIds: [user] } }).success).to.be.false
+      expect(agentConversationShareParamsSchema.safeParse({ params: { conversationId: params.conversationId }, body: { userIds: [user] } }).success).to.be.false
+    })
+  })
+
+  describe('agentConversationUnshareParamsSchema', () => {
+    const params = { agentKey: 'agent-1', conversationId: '507f1f77bcf86cd799439011' }
+    const user = '507f1f77bcf86cd799439012'
+
+    it('accepts a list of user ids', () => {
+      expect(agentConversationUnshareParamsSchema.safeParse({ params, body: { userIds: [user] } }).success).to.be.true
+    })
+
+    it('rejects an empty list, a malformed id and unknown body fields', () => {
+      expect(agentConversationUnshareParamsSchema.safeParse({ params, body: { userIds: [] } }).success).to.be.false
+      expect(agentConversationUnshareParamsSchema.safeParse({ params, body: { userIds: ['nope'] } }).success).to.be.false
+      expect(agentConversationUnshareParamsSchema.safeParse({ params, body: { userIds: [user], accessLevel: 'read' } }).success).to.be.false
     })
   })
 

@@ -355,7 +355,9 @@ function ChatContent() {
 
       if (agentId?.trim()) {
         try {
-          const { agent, toolFullNames } = await AgentsApi.getAgent(agentId);
+          // Opening an existing chat: a chat shared with the user may belong to an agent they cannot
+          // open, and the chat itself loads without it, so that is not worth an error toast.
+          const { agent, toolFullNames } = await AgentsApi.getAgent(agentId, { quiet: Boolean(conversationId) });
           if (cancelled) return;
           const knowledgeDefaults = extractAgentKnowledgeDefaults(agent);
           const collectionRows = extractAgentKnowledgeCollectionRows(agent);
@@ -1007,15 +1009,11 @@ function ChatContent() {
     );
   }, [conversationId, historyAndShareAgentId]);
 
-  // Agent threads are not shareable by anyone (including the owner), so gate on
-  // historyAndShareAgentId (slot-scoped, set for both URL and restored agent threads).
-  const showConversationShare =
-    Boolean(
-      conversationId &&
-        chatShareAdapter &&
-        activeSlotIsOwner === true &&
-        !historyAndShareAgentId
-    );
+  // Only the owner sees the Share button, for plain and agent chats alike. Agent chats are shared
+  // read-only: the backend refuses `write`, and a recipient gets no composer (see showChatInput).
+  const showConversationShare = Boolean(
+    conversationId && chatShareAdapter && activeSlotIsOwner === true
+  );
 
   useEffect(() => {
     if (!showConversationShare && isShareSidebarOpen) {
@@ -1223,6 +1221,7 @@ function ChatContent() {
           displayName={agentContextDisplayName}
           isMobile={isMobile}
           hasExpandButton={!isMobile && isNavCollapsed}
+          readOnly={activeSlotIsOwner === false}
         />
       )}
 

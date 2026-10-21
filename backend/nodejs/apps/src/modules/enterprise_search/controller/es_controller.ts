@@ -2124,7 +2124,10 @@ export const getAllConversations = async (
         contentMatchIds,
         accessibleProjectIds,
       ),
-      ...EXCLUDE_AGENT,
+      // Chats shared with the user include agent chats, so the recipient can open them
+      // from the sidebar without first finding the agent. Owned chats stay plain-chat only:
+      // agent chats are listed per agent.
+      sessionType: isOwned ? EXCLUDE_AGENT.sessionType : { $in: [EXCLUDE_AGENT.sessionType, ONLY_AGENT.sessionType] },
     };
     let selection = ChatSession.find(filter)
       .sort(sortOptions as any)
@@ -2685,14 +2688,38 @@ const deleteConversation = async (
   }
 };
 
-export const shareConversationById =
-  (appConfig: AppConfig) =>
+/**
+ * Which sessions a share/unshare handler may touch. Plain chats and agent
+ * chats live in one collection, so the scope is what keeps
+ * `/conversations/:id/share` from sharing an agent chat and vice versa.
+ */
+type ShareScope = (req: AuthenticatedUserRequest) => Record<string, unknown>;
+
+const plainChatShareScope: ShareScope = () => EXCLUDE_AGENT;
+const agentChatShareScope: ShareScope = (req) => ({
+  ...ONLY_AGENT,
+  agentKey: req.params.agentKey,
+});
+
+/**
+ * Shared by the plain-chat and agent-chat share routes. `readOnlyShares`
+ * (agent chats) refuses any access level but 'read' and refuses sharing with
+ * oneself: a recipient can open the transcript but never continue, regenerate,
+ * rename, archive or delete it.
+ */
+const createShareConversationHandler =
+  (
+    appConfig: AppConfig,
+    scopeFor: ShareScope,
+    { readOnlyShares = false }: { readOnlyShares?: boolean } = {},
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     let session: ClientSession | null = null;
     const { conversationId } = req.params;
     let { userIds, accessLevel } = req.body;
+    const scope = scopeFor(req);
     try {
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
@@ -2717,6 +2744,20 @@ export const shareConversationById =
           );
         }
 
+        if (readOnlyShares) {
+          if (accessLevel && accessLevel !== 'read') {
+            throw new BadRequestError(
+              "Agent conversations can only be shared with 'read' access",
+            );
+          }
+          if (userIds.some((id: unknown) => String(id) === String(userId))) {
+            throw new BadRequestError(
+              'You cannot share a conversation with yourself',
+            );
+          }
+          userIds = [...new Set(userIds.map((id: unknown) => String(id)))];
+        }
+
         // Get conversation with access control
         const conversation = await ChatSession.findOne({
           _id: conversationId,
@@ -2724,7 +2765,7 @@ export const shareConversationById =
           userId,
           isDeleted: false,
           initiator: userId, // Only initiator can share
-          ...EXCLUDE_AGENT,
+          ...scope,
         });
 
         if (!conversation) {
@@ -2739,7 +2780,7 @@ export const shareConversationById =
         // Handle user-specific sharing
         // Validate all user IDs
         const validUsers = await Promise.all(
-          userIds.map(async (id) => {
+          userIds.map(async (id: string) => {
             if (!mongoose.Types.ObjectId.isValid(id)) {
               throw new BadRequestError(`Invalid user ID format: ${id}`);
             }
@@ -2796,7 +2837,7 @@ export const shareConversationById =
 
         // Update the conversation
         const updatedConversation = await ChatSession.findOneAndUpdate(
-          { _id: conversationId, ...EXCLUDE_AGENT },
+          { _id: conversationId, ...scope },
           updateObject,
           {
             new: true,
@@ -2890,13 +2931,23 @@ export const shareConversationById =
     }
   };
 
-export const unshareConversationById =
-  (appConfig: AppConfig) =>
+export const shareConversationById = (appConfig: AppConfig) =>
+  createShareConversationHandler(appConfig, plainChatShareScope);
+
+/** Owner-only, read-only share of an agent conversation. */
+export const shareAgentConversation = (appConfig: AppConfig) =>
+  createShareConversationHandler(appConfig, agentChatShareScope, {
+    readOnlyShares: true,
+  });
+
+const createUnshareConversationHandler =
+  (appConfig: AppConfig, scopeFor: ShareScope) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
   let session: ClientSession | null = null;
   const { conversationId } = req.params;
+  const scope = scopeFor(req);
   try {
     const { userIds } = req.body;
     const userId = req.user?.userId;
@@ -2928,7 +2979,7 @@ export const unshareConversationById =
         orgId,
         isDeleted: false,
         initiator: userId, // Only initiator can unshare
-        ...EXCLUDE_AGENT,
+        ...scope,
       });
 
       if (!conversation) {
@@ -2956,7 +3007,7 @@ export const unshareConversationById =
 
       // Update the conversation
       const updatedConversation = await ChatSession.findOneAndUpdate(
-        { _id: conversationId, ...EXCLUDE_AGENT },
+        { _id: conversationId, ...scope },
         updateObject,
         {
           new: true,
@@ -3049,6 +3100,12 @@ export const unshareConversationById =
     }
   }
 };
+
+export const unshareConversationById = (appConfig: AppConfig) =>
+  createUnshareConversationHandler(appConfig, plainChatShareScope);
+
+export const unshareAgentConversation = (appConfig: AppConfig) =>
+  createUnshareConversationHandler(appConfig, agentChatShareScope);
 
 /**
  * PUT /api/v1/conversations/:conversationId/project
@@ -7654,24 +7711,22 @@ export const getAllAgentConversations = async (
       ]);
 
     const processedConversations = conversations.map((conversation: any) => {
-      const conversationWithComputedFields = addComputedFields(
+      const { sharedWith: recipients, ...row } = addComputedFields(
         conversation as IAgentConversation,
         userId,
       );
-      return {
-        ...conversationWithComputedFields,
-      };
+      // A project member sees another user's project-visible chat here; who it was shared with is
+      // the owner's business.
+      return row.isOwner ? { ...row, sharedWith: recipients } : row;
     });
-    const processedSharedWithMeConversations = sharedWithMeConversations.map(
-      (sharedWithMeConversation: any) => {
-        const conversationWithComputedFields = addComputedFields(
+    const processedSharedWithMeConversations = await attachSharedBy(
+      sharedWithMeConversations.map((sharedWithMeConversation: any) =>
+        addComputedFields(
           sharedWithMeConversation as IAgentConversation,
           userId,
-        );
-        return {
-          ...conversationWithComputedFields,
-        };
-      },
+        ),
+      ),
+      orgId,
     );
 
     // Build response metadata
@@ -7707,7 +7762,9 @@ export const getAllAgentConversations = async (
   }
 };
 
-export const getAgentConversationById = async (
+export const getAgentConversationById =
+  (appConfig: AppConfig) =>
+  async (
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
@@ -7752,6 +7809,7 @@ export const getAgentConversationById = async (
       conversationId as string,
       contentMatchIds,
       accessibleProjectIds,
+      true,
     );
 
     // Build message filter
@@ -7786,6 +7844,25 @@ export const getAgentConversationById = async (
       throw new NotFoundError('Conversation not found');
     }
 
+    // A recipient may be on the conversation only through a share, so the
+    // artifacts the owner created since sharing are granted on first view.
+    const initiatorId = session.initiator?.toString();
+    const isRecipient = Boolean(initiatorId) && initiatorId !== userId;
+    if (page === 1 && isRecipient) {
+      await syncConversationRecordPermissions({
+        appConfig,
+        records: 'artifacts',
+        method: HttpMethod.POST,
+        grantorUserId: initiatorId as string,
+        orgId,
+        body: { conversationId, userIds: [userId] },
+        requestId,
+        conversationId,
+        timeoutMs: CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS,
+        maxAttempts: 1,
+      });
+    }
+
     const sessionId = session._id as unknown as Types.ObjectId;
 
     const totalMessages = await ChatSessionMessage.countDocuments({
@@ -7804,6 +7881,24 @@ export const getAgentConversationById = async (
       populateCitations: true,
     });
 
+    if (isRecipient) {
+      const attachmentRecordIds = collectChatAttachmentRecordIds(messages);
+      if (attachmentRecordIds.length > 0) {
+        await syncConversationRecordPermissions({
+          appConfig,
+          records: 'attachments',
+          method: HttpMethod.POST,
+          grantorUserId: initiatorId as string,
+          orgId,
+          body: { userIds: [userId], recordIds: attachmentRecordIds },
+          requestId,
+          conversationId,
+          timeoutMs: CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS,
+          maxAttempts: 1,
+        });
+      }
+    }
+
     const conversationWithMessages = attachMessages(session, messages);
 
     // Sort messages using existing helper
@@ -7814,7 +7909,7 @@ export const getAgentConversationById = async (
     );
 
     // Build conversation response using existing helper
-    const conversationResponse = buildConversationResponse(
+    const builtResponse = buildConversationResponse(
       conversationWithMessages as unknown as IChatSessionDocument,
       userId,
       {
@@ -7826,6 +7921,14 @@ export const getAgentConversationById = async (
         hasPrevPage: skip + effectiveLimit < totalMessages,
       },
       sortedMessages,
+    );
+    // The recipient list is the owner's business: a viewer is told who shared
+    // the chat, never who else can read it.
+    const { sharedWith: _ownerOnlySharedWith, ...recipientSafeResponse } =
+      builtResponse;
+    const conversationResponse = await attachSharedByIfRecipient(
+      builtResponse.access.isOwner ? builtResponse : recipientSafeResponse,
+      orgId,
     );
 
     // Build filters metadata using existing helper

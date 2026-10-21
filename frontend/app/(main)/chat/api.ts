@@ -128,6 +128,7 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     isOwner: conv.isOwner,
     ...(conv.isPinned === true ? { isPinned: true } : {}),
     sharedBy: conv.sharedBy,
+    agentKey: conv.agentKey,
   };
 }
 

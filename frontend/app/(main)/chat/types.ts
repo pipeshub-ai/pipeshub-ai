@@ -145,6 +145,8 @@ export interface ConversationApiResponse {
   projectId?: string;
   projectVisibility?: 'private' | 'project';
   sharedBy?: SharedByInfo;
+  /** Only on agent conversations shared with the user; needed to open them (`?agentId=`). */
+  agentKey?: string;
 }
 
 export type ConversationSource = 'owned' | 'shared';
@@ -179,6 +181,8 @@ export interface Conversation {
   projectId?: string;
   projectVisibility?: 'private' | 'project';
   sharedBy?: SharedByInfo;
+  /** Set on a shared agent conversation: the agent it belongs to. */
+  agentKey?: string;
 }
 
 export interface ChatSuggestion {

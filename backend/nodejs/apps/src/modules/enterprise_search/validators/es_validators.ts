@@ -516,6 +516,39 @@ export const agentConversationTitleParamsSchema =
     body: titleBodySchema,
   });
 
+/** Most people one request may share an agent conversation with; each id costs an IAM lookup. */
+const AGENT_SHARE_MAX_USERS = 50;
+
+/**
+ * Schema for POST /:agentKey/conversations/:conversationId/share — agent
+ * conversations are read-only for recipients, so the only access level a caller
+ * may name is 'read'. The strict body rejects `accessLevel: 'write'` outright
+ * instead of silently stripping it.
+ */
+export const agentConversationShareParamsSchema =
+  agentConversationParamsSchema.extend({
+    body: z
+      .object({
+        userIds: userIdsSchema.max(AGENT_SHARE_MAX_USERS, {
+          message: `At most ${AGENT_SHARE_MAX_USERS} users can be shared with at once`,
+        }),
+        accessLevel: z.literal('read').optional(),
+      })
+      .strict(),
+  });
+
+/** Schema for POST /:agentKey/conversations/:conversationId/unshare. */
+export const agentConversationUnshareParamsSchema =
+  agentConversationParamsSchema.extend({
+    body: z
+      .object({
+        userIds: userIdsSchema.max(AGENT_SHARE_MAX_USERS, {
+          message: `At most ${AGENT_SHARE_MAX_USERS} users can be unshared at once`,
+        }),
+      })
+      .strict(),
+  });
+
 /** Schema for POST /:agentKey/conversations/:conversationId/cancel — cooperatively stop an in-flight agent run. */
 export const cancelAgentConversationStreamParamsSchema =
   agentConversationParamsSchema.extend({

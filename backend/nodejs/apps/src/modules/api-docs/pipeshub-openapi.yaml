@@ -9741,6 +9741,11 @@ components:
             `PATCH /conversations/{conversationId}/project-visibility`.
         sharedBy:
           $ref: '#/components/schemas/ConversationSharedBy'
+        agentKey:
+          type: string
+          description: |
+            Only on agent conversations (returned by `GET /conversations?source=shared`). Open
+            them with `GET /agents/{agentKey}/conversations/{conversationId}`.
 
     ConversationSharedBy:
       type: object
@@ -13860,6 +13865,41 @@ components:
       properties:
         conversation:
           $ref: '#/components/schemas/StoredAgentConversation'
+        meta:
+          $ref: '#/components/schemas/RequestMeta'
+
+    AgentConversationShareResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Sharing state of an agent conversation after a share or unshare call.
+        Recipients are always read-only.
+      required:
+        - id
+        - isShared
+        - sharedWith
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+        isShared:
+          type: boolean
+          description: "`false` once the last recipient is removed."
+        sharedWith:
+          type: array
+          items:
+            type: object
+            required:
+              - userId
+              - accessLevel
+            properties:
+              userId:
+                type: string
+                format: objectId
+              accessLevel:
+                type: string
+                enum: [read]
         meta:
           $ref: '#/components/schemas/RequestMeta'
 
@@ -31654,7 +31694,8 @@ paths:
           required: false
           description: |
             `owned` — owner list (`userId` filter only).
-            `shared` — explicit share grant list (`isShared` + `sharedWith`).
+            `shared` — explicit share grant list (`isShared` + `sharedWith`). Includes agent
+            conversations shared with the caller; those rows carry `agentKey`.
             Defaults to `owned` when omitted.
           schema:
             type: string
@@ -37873,6 +37914,180 @@ paths:
           description: |
             Agent conversation not found for the authenticated user, organization,
             and agent scope, or the conversation is soft-deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /agents/{agentKey}/conversations/{conversationId}/share:
+    post:
+      tags:
+        - Agents
+      summary: Share an agent conversation (read-only)
+      description: |
+        Share an agent conversation with other users in the caller's
+        organization. **Owner only** — the caller must be the conversation's
+        initiator.
+
+        Recipients get **read-only** access: they can open the transcript and
+        list it under "shared with me", but cannot continue, regenerate, rename,
+        archive, delete, fork or cancel it, rate its answers, or re-share it.
+        Only `read` is accepted as an access level.
+
+        Sharing is additive (existing recipients are kept) and idempotent. The
+        recipients are also granted read access to the conversation's artifacts
+        and chat attachments. Recipients see the full transcript, including
+        citations and tool output, as the owner sees it.
+      operationId: shareAgentConversation
+      x-pipeshub-sdk: false
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - userIds
+              properties:
+                userIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: string
+                    format: objectId
+                  description: IDs of users in the caller's organization to share with.
+                  example: ["507f1f77bcf86cd799439011"]
+                accessLevel:
+                  type: string
+                  enum: [read]
+                  default: read
+                  description: Only `read` is supported; `write` is rejected with `400`.
+      responses:
+        '200':
+          description: Conversation shared.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationShareResponse'
+        '400':
+          description: |
+            Invalid request. Possible causes: malformed or empty `userIds`, more
+            than 50 users, `accessLevel` other than `read`, sharing with
+            yourself, or a user who does not exist in the caller's organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Conversation not found, deleted, belongs to a different agent, or
+            the caller is not its owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /agents/{agentKey}/conversations/{conversationId}/unshare:
+    post:
+      tags:
+        - Agents
+      summary: Unshare an agent conversation
+      description: |
+        Remove specific users from an agent conversation's recipient list and
+        revoke their access to its artifacts and attachments. **Owner only.**
+        When the last recipient is removed the conversation becomes private
+        again (`isShared: false`). Removing a user who is not a recipient is a
+        no-op.
+      operationId: unshareAgentConversation
+      x-pipeshub-sdk: false
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:write]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - userIds
+              properties:
+                userIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: string
+                    format: objectId
+                  description: IDs of users to remove from the share list.
+                  example: ["507f1f77bcf86cd799439011"]
+      responses:
+        '200':
+          description: Conversation unshared.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AgentConversationShareResponse'
+                  - type: object
+                    properties:
+                      unsharedUsers:
+                        type: array
+                        items:
+                          type: string
+                          format: objectId
+        '400':
+          description: Malformed, empty or oversized `userIds`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Conversation not found, deleted, belongs to a different agent, or
+            the caller is not its owner.
           content:
             application/json:
               schema:

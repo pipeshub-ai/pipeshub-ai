@@ -227,3 +227,12 @@ describe('ChatApi.fetchConversations — pin flag', () => {
     expect('isPinned' in conversations[0]).toBe(false);
   });
 });
+
+describe('mapApiConversationToConversation', () => {
+  it('keeps the agent a shared agent conversation belongs to, and leaves plain chats without one', async () => {
+    const { mapApiConversationToConversation } = await import('../api');
+    const base = { _id: 'c1', title: 'T', createdAt: 'a', updatedAt: 'b', isShared: true, isOwner: false } as never;
+    expect(mapApiConversationToConversation({ ...(base as object), agentKey: 'agent-7' } as never).agentKey).toBe('agent-7');
+    expect(mapApiConversationToConversation(base).agentKey).toBeUndefined();
+  });
+});
