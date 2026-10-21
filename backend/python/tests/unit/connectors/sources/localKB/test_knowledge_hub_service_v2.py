@@ -535,9 +535,12 @@ async def test_numbered_pages_cover_the_listing_once_in_order(service, provider,
     provider.get_knowledge_hub_root_nodes_v2.side_effect = listing
     seen: list[str] = []
     for page in range(1, 20 // limit + 3):
+        provider.get_knowledge_hub_root_nodes_v2.reset_mock()
         result = await service.get_nodes(user_id="u1", org_id="o1", page=page, limit=limit, sort_by="name",
                                          sort_order="asc")
         assert result.success is True
+        # One keyset step per page before it, stopping where the listing ends.
+        assert provider.get_knowledge_hub_root_nodes_v2.await_count <= page
         expected = rows[(page - 1) * limit:page * limit]
         assert [i.id for i in result.items] == [r["id"] for r in expected]
         assert result.pagination.totalItems == len(rows)
