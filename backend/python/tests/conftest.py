@@ -53,6 +53,9 @@ def pytest_collection_modifyitems(config, items) -> None:
     # Parsing every module, and the first import of the generated Graph
     # client, does not fit in 30s once the workers share the runner.
     longer = pytest.mark.timeout(120)
+    # The copy without its own marker starts two interpreters and allows
+    # each 300s. The 30s body timeout killed the first one.
+    two_processes = pytest.mark.timeout(630)
     slow_body = {
         "test_no_production_code_writes_anyone_documents",
         "test_only_the_provider_implementations_import_a_redis_client",
@@ -80,7 +83,12 @@ def pytest_collection_modifyitems(config, items) -> None:
     relaxed_linear_bound_ms = 1000
     for item in items:
         name = getattr(item, "originalname", item.name)
-        if name in slow_body or name in sandbox_contract:
+        if (
+            name == "test_answer_rules_prefix_is_the_same_in_every_process"
+            and item.get_closest_marker("timeout") is None
+        ):
+            item.add_marker(two_processes)
+        elif name in slow_body or name in sandbox_contract:
             item.add_marker(longer)
         elif item.name == "test_the_probe_sees_the_stall_a_pdfminer_thread_causes":
             item.add_marker(skip_probe)
