@@ -356,6 +356,23 @@ describe('XSS Sanitization Middleware', () => {
       expect(next.firstCall.args).to.have.length(0)
     })
 
+    it('passes an API toolset spec and credentials through unchanged', () => {
+      const spec = 'info:\n  description: >\n    Tickets & <b>comments</b>\n'
+      const res = createMockResponse()
+      for (const [method, path, body] of [
+        ['POST', '/api/v1/api-toolsets/validate', { spec }],
+        ['POST', '/api/v1/api-toolsets/instances', { name: 'Acme', spec }],
+        ['PUT', '/api/v1/api-toolsets/instances/abc', { name: 'Acme', spec }],
+        ['PUT', '/api/v1/api-toolsets/instances/abc/credentials', { apiKey: 'k<&>y' }],
+      ] as const) {
+        const req = createMockRequest({ path, method, body: { ...body } })
+        const next = createMockNext()
+        xssSanitizationMiddleware(req, res, next)
+        expect(next.firstCall.args, `${method} ${path}`).to.have.length(0)
+        expect(req.body, `${method} ${path}`).to.deep.equal(body)
+      }
+    })
+
     it('should skip validation for POST to /api/v1/skills/import/finalize', () => {
       const req = createMockRequest({
         path: '/api/v1/skills/import/finalize',
