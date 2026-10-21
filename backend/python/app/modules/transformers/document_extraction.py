@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import io
 import logging
@@ -239,7 +240,7 @@ def semantic_metadata_from_classification(classification: DocumentClassification
 
 
 class ExtractionLLMError(Exception):
-    """The model produced neither a classification nor a fallback summary."""
+    """The model call failed, or produced neither a classification nor a fallback summary."""
 
     code = "LLM_FAILED"
 
@@ -491,7 +492,9 @@ class DocumentExtraction(Transformer):
         llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
         self.logger.debug(f"Context length: {context_length}")
-        content = self._prepare_content(
+        # Off the loop: PIL resizing and tiktoken on a large deck stall it for seconds.
+        content = await asyncio.to_thread(
+            self._prepare_content,
             blocks, is_multimodal_llm=bool(config.get("isMultimodal")), context_length=context_length,
         )
         if len(content) == 0:
@@ -510,14 +513,23 @@ class DocumentExtraction(Transformer):
             llm, family=PROMPT_FAMILY, org_id=org_id, shard_key=record_name, model_name=model_name,
         )
         system = cache.system(instructions, "")
-        with llm_call_site("classify"):
-            # An outage raises rather than falling back: the fallback would call the same provider.
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                llm, [system, HumanMessage(content=document)], DocumentClassification, prompt_cache=cache,
-                # Recorded under the name the strategy was chosen with, so the next record skips it.
-                on_cache_rejected=lambda: forget_cache_params(llm, model_name),
-                raise_unavailable=True,
-            )
+        try:
+            with llm_call_site("classify"):
+                parsed_response = await invoke_with_structured_output_and_reflection(
+                    llm, [system, HumanMessage(content=document)], DocumentClassification, prompt_cache=cache,
+                    # Recorded under the name the strategy was chosen with, so the next record skips it.
+                    on_cache_rejected=lambda: forget_cache_params(llm, model_name),
+                    raise_call_errors=True,
+                    raise_unavailable=True,
+                )
+        except (NonRetryableError, LLMUnavailableError):
+            raise
+        except Exception as e:
+            # The model did not answer. The fallback would resend the whole
+            # document to the same model, doubling every record's cost while
+            # it is down; only a reply that did not fit the schema earns one.
+            # Not None: that reads as nothing to classify, which is final.
+            raise ExtractionLLMError(f"Document classification call failed: {e}") from e
         if parsed_response is not None:
             self.logger.debug("✅ Document classification parsed successfully")
             return self.to_semantic_metadata(parsed_response)

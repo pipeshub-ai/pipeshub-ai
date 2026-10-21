@@ -89,6 +89,8 @@ class TestDriveWorkspaceSharedDriveLifecycle:
     @pytest.mark.order(1)
     @pytest.mark.xfail(
         strict=True,
+        # Only the fan-out assertion is B3. A sync that times out is a failure of its own.
+        raises=AssertionError,
         reason="B3: a group member who can open the file but not read its permission list gets a "
         "direct USER edge from the permissions fallback (team connector _fetch_permissions), "
         "so the group share fans out to members who sync.",
@@ -97,21 +99,40 @@ class TestDriveWorkspaceSharedDriveLifecycle:
         self,
         drive_workspace_sd_lifecycle_connector: dict[str, Any],
         drive_workspace_admin_datasource: Any,
+        pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-DRV-SD-LC-001b (GD PE1): members reached only through the group get no direct edge."""
         state = drive_workspace_sd_lifecycle_connector
         if not state.get("group_shared"):
             pytest.skip("TC-DRV-SD-LC-001 did not share the file with the group")
-        if not state.get("second_user_email"):
+        second_user = state.get("second_user_email")
+        if not second_user:
             # B3 only shows through a group member who syncs; without one the xfail would pass.
             pytest.skip(f"{ENV_SECOND_USER} not set, so no group member syncs")
         connector_id = state["connector_id"]
         file_id = state["group_file_id"]
         organizer = state["test_user_email"].lower()
+        members = await list_group_user_member_emails(drive_workspace_admin_datasource, state["group_email"])
+        if second_user.lower() not in {address.lower() for address in members}:
+            pytest.skip(f"{ENV_SECOND_USER} is not a direct member of {state['group_email']}")
+
+        # TC-DRV-SD-LC-001 stops once the organizer's pass grants the group, which can be
+        # before the member's pass has read the share. Until it has, no direct edge can
+        # exist, so the check below would pass with B3 still there. The member's pass
+        # always files the item under their own Shared-with-me group.
+        member_swm_id = f"0S:{second_user.lower()}"
+
+        async def _member_pass_read_the_share() -> bool:
+            return await graph_provider.record_belongs_to_external_group(connector_id, file_id, member_swm_id)
+
+        await sync_until(
+            pipeshub_client, graph_provider, connector_id, _member_pass_read_the_share,
+            description=f"group-share.txt in {second_user}'s Shared with me group {member_swm_id}",
+        )
         fanned_out = [
             address
-            for address in await list_group_user_member_emails(drive_workspace_admin_datasource, state["group_email"])
+            for address in members
             if address.lower() != organizer
             and await graph_provider.user_has_direct_record_permission(connector_id, address, file_id)
         ]

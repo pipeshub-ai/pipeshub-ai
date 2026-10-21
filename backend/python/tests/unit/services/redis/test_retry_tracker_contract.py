@@ -105,6 +105,36 @@ class TestRetryTrackerContract:
         finally:
             await manager.cleanup()
 
+    async def test_hand_backs_count_on_their_own_and_expire(self, make_provider) -> None:
+        manager = await _make_manager(make_provider)
+        try:
+            await manager.record_delivery("msg-hb")
+
+            assert await manager.get_handbacks("msg-hb") == 0
+            assert await manager.record_handback("msg-hb") == 1
+            assert await manager.record_handback("msg-hb") == 2
+            assert await manager.get_handbacks("msg-hb") == 2
+
+            key = manager._build_key("msg-hb", prefix=manager.HANDBACK_KEY_PREFIX)
+            ttl = await manager._client().ttl(key)
+            assert 0 < ttl <= manager.ttl_seconds
+        finally:
+            await manager.cleanup()
+
+    async def test_clear_and_clear_batch_remove_hand_backs_too(self, make_provider) -> None:
+        manager = await _make_manager(make_provider)
+        try:
+            ids = _ids_spanning_multiple_slots()[:4]
+            for message_id in ids:
+                await manager.record_handback(message_id)
+
+            await manager.clear(ids[0])
+            await manager.clear_batch(ids[1:])
+
+            assert [await manager.get_handbacks(m) for m in ids] == [0, 0, 0, 0]
+        finally:
+            await manager.cleanup()
+
     async def test_clear_batch_survives_cross_slot_ids(self, make_provider) -> None:
         manager = await _make_manager(make_provider)
         try:

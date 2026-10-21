@@ -16,6 +16,7 @@ from app.services.messaging.config import (
     get_message_broker_type,
     messaging_env,
 )
+from app.services.messaging.fail_safe_retry_tracker import FailSafeRetryTracker
 from app.services.messaging.interface.admin import IMessageAdmin
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
@@ -183,7 +184,8 @@ class MessagingFactory:
         """Create a RetryManager for persistent failure retry tracking.
 
         This RetryManager stores retry counts in Redis and can be used by both Kafka
-        and Redis Streams consumers that implement failure-based retry logic.
+        and Redis Streams consumers that implement failure-based retry logic. It is
+        wrapped so that the retry budget still holds while Redis does not answer.
 
         Args:
             logger: Logger instance
@@ -191,11 +193,15 @@ class MessagingFactory:
             ttl_seconds: TTL for retry keys (default: 24 hours)
 
         Returns:
-            RetryManager instance (must call initialize() before use)
+            The tracker (must call initialize() before use)
         """
-        return RetryManager(
-            logger=logger,
-            redis_config=redis_config,
+        return FailSafeRetryTracker(
+            RetryManager(
+                logger=logger,
+                redis_config=redis_config,
+                ttl_seconds=ttl_seconds,
+            ),
+            logger,
             ttl_seconds=ttl_seconds,
         )
 

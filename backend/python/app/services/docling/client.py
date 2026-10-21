@@ -4,8 +4,15 @@ import asyncio
 import os
 from typing import TYPE_CHECKING, Optional
 
+from app.exceptions.indexing_exceptions import IndexingError
 from app.models.blocks import BlocksContainer
-from app.services.base_client import BaseServiceClient, ServiceCallError
+from app.services.base_client import (
+    BaseServiceClient,
+    ServiceAuthRefusedError,
+    ServiceBackpressureError,
+    ServiceCallError,
+    ServiceUnavailableError,
+)
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 
 if TYPE_CHECKING:
@@ -19,6 +26,29 @@ from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count
 from app.utils.request_context import inject_request_headers
 
 MAX_PDF_BYTES = 100 * 1024 * 1024
+
+
+class DoclingUnavailableError(IndexingError):
+    """Docling could not be asked: it is down, refused this service, or is shedding load.
+
+    An ``IndexingError`` so that the record is retried later. Read as a failed
+    parse, it sent every PDF to the per-page OCR fallback while Docling was down.
+    """
+
+
+# A 500 is most often Docling failing on this file; these say it is not serving.
+_UNAVAILABLE_STATUSES = frozenset({502, 503, 504})
+
+
+def within_docling_size_limit(size_bytes: int) -> bool:
+    return size_bytes <= MAX_PDF_BYTES
+
+
+def _docling_unavailable(exc: ServiceCallError) -> bool:
+    return (
+        isinstance(exc, (ServiceUnavailableError, ServiceAuthRefusedError, ServiceBackpressureError))
+        or exc.status_code in _UNAVAILABLE_STATUSES
+    )
 
 
 class DoclingClient(BaseServiceClient):
@@ -60,7 +90,7 @@ class DoclingClient(BaseServiceClient):
             self.logger.error(f"❌ Invalid pdf_binary type: expected bytes, got {type(pdf_binary).__name__}")
             return False
 
-        if len(pdf_binary) > MAX_PDF_BYTES:
+        if not within_docling_size_limit(len(pdf_binary)):
             self.logger.error(f"❌ PDF too large for processing: {len(pdf_binary)} bytes (max: {MAX_PDF_BYTES} bytes)")
             return False
 
@@ -175,6 +205,8 @@ class DoclingClient(BaseServiceClient):
                 operation=f"parse_pdf({record_name})",
             )
         except ServiceCallError as exc:
+            if _docling_unavailable(exc):
+                raise DoclingUnavailableError(f"Docling could not parse {record_name}: {exc}") from exc
             self.logger.error(f"❌ Parsing PDF {record_name} failed: {exc}")
             return None
 
