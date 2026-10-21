@@ -43,7 +43,7 @@ def _fresh_lane_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(assignment, "_shared", {})
 
 
-def pytest_collection_modifyitems(items):
+def pytest_collection_modifyitems(items) -> None:
     """xdist refuses to run unless every worker collected the same node ids
     in the same order. Parametrize over a set (hash-seeded per process)
     shuffles that order, so sort once after collection."""
