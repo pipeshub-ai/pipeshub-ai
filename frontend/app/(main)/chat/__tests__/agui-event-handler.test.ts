@@ -1202,9 +1202,21 @@ describe('createAGUIEventHandler — a model call discarded mid-stream', () => {
     handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The dep' }));
     handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
     handle(frame('CUSTOM', { runId: 'root', name: 'message_discarded', value: { messageId: 'm1' } }));
+    spies.onChunk.mockClear();
     handle(patch('The dep', 7));
     handle(patch('', 0));
 
-    expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: '', citations: [] });
+    for (const [chunk] of spies.onChunk.mock.calls) {
+      expect(chunk.accumulated).toBe('');
+    }
+
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm2' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The deploy broke it.' }));
+    handle(patch('The deploy broke it.', 20));
+    expect(spies.onChunk).toHaveBeenLastCalledWith({
+      chunk: '',
+      accumulated: 'The deploy broke it.',
+      citations: [],
+    });
   });
 });

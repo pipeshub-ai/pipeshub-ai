@@ -350,6 +350,7 @@ export function createAGUIEventHandler(
 ): (event: SSEEvent) => void {
   let textBuffer = '';
   let rawTextReceived = 0;
+  let awaitingRetryAfterDiscard = false;
   let state: AGUIStreamState = { citations: [], normalizedAnswer: '', rawLength: 0 };
   const partsBuilder = new LivePartsBuilder();
   const emitParts = () => callbacks.onParts?.(partsBuilder.snapshot());
@@ -402,6 +403,7 @@ export function createAGUIEventHandler(
         if (isNewRootTurn) {
           textBuffer = '';
           rawTextReceived = 0;
+          awaitingRetryAfterDiscard = false;
         }
         if (data) partsBuilder.handleTextStart(data);
         emitParts();
@@ -536,13 +538,15 @@ export function createAGUIEventHandler(
           }
         }
         if (textOps.length === 0) break;
-        state = applyStatePatch(state, textOps);
-        // rawLength 0 with nothing received this turn is a clear (a model call
-        // was discarded); it must win over a lagging snapshot adopted meanwhile.
+        const patched = applyStatePatch(state, textOps);
+        // The answer streamer runs behind these frames: until the next turn,
+        // only its clear (rawLength 0) is newer than the discard.
+        if (awaitingRetryAfterDiscard && patched.rawLength > 0) break;
+        state = patched;
         const normalizationCurrent =
           state.rawLength > 0
             ? state.rawLength >= rawTextReceived
-            : rawTextReceived === 0 || state.normalizedAnswer.length >= textBuffer.length;
+            : state.normalizedAnswer.length >= textBuffer.length;
         if (normalizationCurrent) {
           textBuffer = state.normalizedAnswer;
         }
@@ -574,6 +578,7 @@ export function createAGUIEventHandler(
           if (partsBuilder.isRootRun(runId)) {
             textBuffer = '';
             rawTextReceived = 0;
+            awaitingRetryAfterDiscard = true;
             state = { ...state, normalizedAnswer: '', rawLength: 0 };
             callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
           }
