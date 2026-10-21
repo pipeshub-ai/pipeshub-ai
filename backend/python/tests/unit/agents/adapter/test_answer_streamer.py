@@ -390,6 +390,19 @@ class TestDiscardedModelCall:
 
         assert streamer.streamed_answer == "The deploy broke it."
 
+    async def test_discard_with_nothing_streamed_still_marks_the_answer_in_agui(self) -> None:
+        """The dashboard ignores answer snapshots after `message_discarded`
+        until this marked one, so it is sent even when nothing changed."""
+        context = make_context(protocol="agui")
+        streamer, sink = _make_streamer(context)
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_END, {"discarded": True}))
+
+        ops = {op["path"]: op["value"] for op in sink.events[-1]["data"]["delta"]}
+        assert ops["/discarded"] is True
+        assert ops["/normalizedAnswer"] == ""
+
     async def test_discard_keeps_the_cut_off_reply_a_continuation_carried(self) -> None:
         streamer, sink = _make_streamer()
 

@@ -538,11 +538,18 @@ export function createAGUIEventHandler(
           }
         }
         if (textOps.length === 0) break;
-        const patched = applyStatePatch(state, textOps);
-        // The answer streamer runs behind these frames: until the next turn,
-        // only its clear (rawLength 0) is newer than the discard.
-        if (awaitingRetryAfterDiscard && patched.rawLength > 0) break;
-        state = patched;
+        // The answer streamer runs behind these frames, so snapshots of the
+        // discarded attempt can follow `message_discarded`; the one marked
+        // `/discarded` is the first written after it.
+        const endsDiscard = textOps.some((op) => op.path === '/discarded');
+        if (awaitingRetryAfterDiscard && !endsDiscard) break;
+        state = applyStatePatch(state, textOps);
+        if (endsDiscard) {
+          awaitingRetryAfterDiscard = false;
+          textBuffer = state.normalizedAnswer;
+          callbacks.onChunk?.({ chunk: '', accumulated: textBuffer, citations: state.citations });
+          break;
+        }
         const normalizationCurrent =
           state.rawLength > 0
             ? state.rawLength >= rawTextReceived

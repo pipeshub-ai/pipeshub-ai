@@ -202,14 +202,16 @@ def _coalesce_key(event: dict[str, Any]) -> tuple[str, str] | None:
     merging is correct) and `artifact()`'s `add` op on `/artifacts/-` (an
     APPEND to a list — merging or dropping one would lose an artifact the
     client never sees again). So any `STATE_DELTA` carrying an `add` op
-    must never coalesce with anything, including another `add`."""
+    must never coalesce with anything, including another `add`. Neither may
+    the snapshot marked `/discarded`: the client drops snapshots until it
+    sees that marker, so merging it into the next one would lose it."""
     name = event.get("event")
     if name in _COALESCABLE_DELTA_FIELD:
         data = event.get("data") or {}
         return (name, data.get("messageId", ""))
     if name in _COALESCABLE_SNAPSHOT_EVENTS:
         delta = (event.get("data") or {}).get("delta") or []
-        if any(op.get("op") == "add" for op in delta):
+        if any(op.get("op") == "add" or op.get("path") == "/discarded" for op in delta):
             return None
         return (name, "")
     return None

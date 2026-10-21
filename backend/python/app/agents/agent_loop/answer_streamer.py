@@ -207,7 +207,7 @@ class TerminalAnswerStreamer:
         self._withheld = False
         return True
 
-    async def _emit_state_delta(self, chunk: str = "") -> None:
+    async def _emit_state_delta(self, chunk: str = "", *, discarded: bool = False) -> None:
         answer_text, confidence = parse_confidence_from_answer(self._buffer)
         answer_text = strip_partial_confidence_trailer(answer_text)
         normalized, citations = normalize_citations_and_chunks(
@@ -220,7 +220,7 @@ class TerminalAnswerStreamer:
         )
         for evt in self._context.formatter.answer_delta(
             self._context, chunk=chunk, accumulated=normalized, citations=citations,
-            confidence=confidence, raw_length=len(self._buffer),
+            confidence=confidence, raw_length=len(self._buffer), discarded=discarded,
         ):
             await self._event_sink.write(evt)
 
@@ -228,10 +228,8 @@ class TerminalAnswerStreamer:
         """The model call failed mid-stream and may be retried: take back
         what it streamed so the retry does not show it a second time."""
         del self.reasoning_turns[self._model_call_reasoning_start:]
-        if len(self._buffer) == self._carried:
-            return
         self._buffer = self._buffer[:self._carried]
-        await self._emit_state_delta()
+        await self._emit_state_delta(discarded=True)
 
     async def _drop_carried_text(self) -> None:
         """A turn that followed a cut-off reply wrote its answer through a

@@ -1185,38 +1185,59 @@ describe('createAGUIEventHandler — a model call discarded mid-stream', () => {
     expect(texts).toEqual(['Searching.', 'The deploy broke it.']);
   });
 
-  it('keeps the answer cleared when a snapshot of the discarded attempt lags behind the discard', () => {
-    const { callbacks, spies } = makeCallbacks();
-    const handle = createAGUIEventHandler(callbacks);
-    const patch = (normalizedAnswer: string, rawLength: number): SSEEvent =>
-      frame('STATE_DELTA', {
-        runId: 'root',
-        delta: [
-          { op: 'replace', path: '/citations', value: [] },
-          { op: 'replace', path: '/normalizedAnswer', value: normalizedAnswer },
-          { op: 'replace', path: '/rawLength', value: rawLength },
-        ],
-      });
+  const patch = (normalizedAnswer: string, rawLength: number, discarded = false): SSEEvent =>
+    frame('STATE_DELTA', {
+      runId: 'root',
+      delta: [
+        { op: 'replace', path: '/citations', value: [] },
+        { op: 'replace', path: '/normalizedAnswer', value: normalizedAnswer },
+        { op: 'replace', path: '/rawLength', value: rawLength },
+        ...(discarded ? [{ op: 'replace', path: '/discarded', value: true }] : []),
+      ],
+    });
 
+  function discardWithLaggingSnapshot(handle: (event: SSEEvent) => void): void {
     handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
     handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The dep' }));
     handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
     handle(frame('CUSTOM', { runId: 'root', name: 'message_discarded', value: { messageId: 'm1' } }));
+    handle(patch('The dep', 7));
+  }
+
+  it('ignores a snapshot of the discarded attempt that lags behind the discard', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    discardWithLaggingSnapshot(handle);
     spies.onChunk.mockClear();
     handle(patch('The dep', 7));
-    handle(patch('', 0));
+    handle(patch('', 0, true));
 
-    for (const [chunk] of spies.onChunk.mock.calls) {
-      expect(chunk.accumulated).toBe('');
-    }
+    expect(spies.onChunk.mock.calls.map(([chunk]) => chunk.accumulated)).toEqual(['']);
+  });
 
-    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm2' }));
-    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The deploy broke it.' }));
-    handle(patch('The deploy broke it.', 20));
+  it('shows an error answer that follows a discard the server did not retry', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    discardWithLaggingSnapshot(handle);
+    handle(patch('', 0, true));
+    handle(patch('The call to the AI model failed.', 32));
+
     expect(spies.onChunk).toHaveBeenLastCalledWith({
       chunk: '',
-      accumulated: 'The deploy broke it.',
+      accumulated: 'The call to the AI model failed.',
       citations: [],
     });
+  });
+
+  it('restores the cut-off reply a discarded continuation carried', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    discardWithLaggingSnapshot(handle);
+    handle(patch('Part one, ', 10, true));
+
+    expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: 'Part one, ', citations: [] });
   });
 });
