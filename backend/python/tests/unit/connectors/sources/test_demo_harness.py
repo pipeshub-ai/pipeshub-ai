@@ -154,10 +154,17 @@ def test_q5_fails_an_answer_the_judge_says_gets_the_pricing_model_wrong(fx: dict
     assert "FAIL contradicted" in verdict
 
 
-def test_q5_still_needs_the_fee_amount_exactly(fx: dict) -> None:
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Enterprise moves from per-seat pricing to a platform fee plus usage bands.",
+        # PR #482 is q5's distractor: its number must not stand in for the fee.
+        "Enterprise moves from per-seat pricing to a platform fee plus usage bands, as PR #482 notes.",
+    ],
+)
+def test_q5_still_needs_the_fee_amount_exactly(fx: dict, answer: str) -> None:
     q = _question(fx, "q5")
     client = _OneVerdictClient(q, "supported")
-    answer = "Enterprise moves from per-seat pricing to a platform fee plus usage bands."
     assert kb_harness.score(q, "cites", {"drive-pricing-2026"}, answer, judge=AnswerJudge(client))[0] is False
 
 

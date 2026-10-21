@@ -13,7 +13,8 @@
 #
 # The facts come from the Acme Corp fixture: the expense policy's approval
 # bands, PR #482's review, the export fix, the Northwind renewal, the on-call
-# handbook, the exports launch and the 2026 holiday carry-over change.
+# handbook, the exports launch, the 2026 holiday carry-over change and the 2026
+# pricing strategy.
 
 cases:
   # --- Expense approvals: the edge at $250 -------------------------------------
@@ -726,3 +727,22 @@ cases:
     claims:
       - state: "A refund takes 10 to 15 working days."
         expect: [contradicted, missing]
+
+  # --- The 2026 pricing strategy ----------------------------------------------------
+  - id: pricing-platform-plus-usage
+    about: Bob's agent on 2026-10-19 says "platform-plus-usage model", "base price" and "usage bands"
+    answer: |
+      In the Acme Corp demo data, the 2026 enterprise pricing strategy is:
+      - Shift from per-seat pricing to a platform-plus-usage model.
+      - Base price: $48,000 annually, covering up to 250 seats.
+      - Usage bands: pricing tiers are structured around 250, 1,000, and 5,000 seats.
+    claims:
+      - state: "Enterprise pricing for 2026 moves from per-seat pricing to a platform fee plus usage bands."
+        expect: supported
+
+  - id: pricing-seat-discounts
+    about: the same seat counts as volume discounts on per-seat pricing
+    answer: "Enterprise keeps per-seat pricing in 2026, with volume discounts at 250, 1,000 and 5,000 seats."
+    claims:
+      - state: "Enterprise pricing for 2026 moves from per-seat pricing to a platform fee plus usage bands."
+        expect: contradicted
