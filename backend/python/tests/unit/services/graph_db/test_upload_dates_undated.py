@@ -1,7 +1,9 @@
 """With content dates on, an upload dated only by its upload has no document date.
 
-Date filters leave it out and newest-first entity listings put it last, on both
-graph backends and in the keyword search's own date check.
+Its upload time is still the latest it can have been written, so a date filter
+leaves it out only when its upload falls before an after-bound; newest-first
+entity listings put it last. Both graph backends and the keyword search's own
+date check follow the same rule.
 """
 
 from __future__ import annotations
@@ -21,6 +23,10 @@ FEBRUARY_2025 = {
     "source_created_before_ms": int(datetime(2025, 2, 28, tzinfo=UTC).timestamp() * 1000),
 }
 SINCE_2026 = {"source_created_after_ms": int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)}
+SINCE_2027 = {"source_created_after_ms": int(datetime(2027, 1, 1, tzinfo=UTC).timestamp() * 1000)}
+BEFORE_2024 = {"source_created_before_ms": int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)}
+EDITED_BEFORE_2024 = {"source_updated_before_ms": int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)}
+EDITED_SINCE_2027 = {"source_updated_after_ms": int(datetime(2027, 1, 1, tzinfo=UTC).timestamp() * 1000)}
 
 
 @pytest.fixture
@@ -38,13 +44,35 @@ def _arango_clause(time_range: dict | None) -> str:
 
 class TestDateFilters:
     def test_off_the_filters_are_unchanged(self) -> None:
-        assert "sourceTimestampOrigin" not in _neo4j_clause(SINCE_2026)
-        assert "sourceTimestampOrigin" not in _arango_clause(SINCE_2026)
+        assert "sourceTimestampOrigin" not in _neo4j_clause(FEBRUARY_2025)
+        assert "sourceTimestampOrigin" not in _arango_clause(FEBRUARY_2025)
 
     @pytest.mark.usefixtures("content_dates_on")
-    def test_on_both_backends_leave_upload_dated_records_out(self) -> None:
-        assert "AND coalesce(r.sourceTimestampOrigin, '') <> 'upload'" in _neo4j_clause(SINCE_2026)
-        assert 'FILTER record.sourceTimestampOrigin != "upload"' in _arango_clause(SINCE_2026)
+    def test_on_an_after_bound_still_reads_the_upload_time(self) -> None:
+        assert _neo4j_clause(SINCE_2026) == "AND r.sourceCreatedAtTimestamp >= $sourceCreatedAfterMs"
+        assert _arango_clause(SINCE_2026) == "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs"
+
+    @pytest.mark.usefixtures("content_dates_on")
+    def test_on_a_before_bound_keeps_upload_dated_records(self) -> None:
+        assert _neo4j_clause(BEFORE_2024) == (
+            "AND (r.sourceCreatedAtTimestamp <= $sourceCreatedBeforeMs"
+            " OR coalesce(r.sourceTimestampOrigin, '') = 'upload')"
+        )
+        assert _neo4j_clause(EDITED_BEFORE_2024) == (
+            "AND (r.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs"
+            " OR coalesce(r.sourceTimestampOrigin, '') = 'upload')"
+        )
+        assert _arango_clause(BEFORE_2024) == (
+            "FILTER (record.sourceCreatedAtTimestamp != null"
+            " AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs)"
+            ' OR record.sourceTimestampOrigin == "upload"'
+        )
+
+    @pytest.mark.usefixtures("content_dates_on")
+    def test_on_no_clause_leaves_every_upload_dated_record_out(self) -> None:
+        for time_range in (SINCE_2026, FEBRUARY_2025, BEFORE_2024, EDITED_SINCE_2027):
+            assert "<> 'upload'" not in _neo4j_clause(time_range)
+            assert '!= "upload"' not in _arango_clause(time_range)
 
     @pytest.mark.usefixtures("content_dates_on")
     def test_on_a_search_without_dates_is_unchanged(self) -> None:
@@ -54,15 +82,29 @@ class TestDateFilters:
     @pytest.mark.usefixtures("content_dates_on")
     def test_keyword_hits_follow_the_same_rule(self) -> None:
         email = {"sourceCreatedAtTimestamp": EMAIL_DAY, "sourceTimestampOrigin": "content"}
-        upload = {"sourceCreatedAtTimestamp": UPLOADED, "sourceTimestampOrigin": "upload"}
+        upload = {
+            "sourceCreatedAtTimestamp": UPLOADED,
+            "sourceLastModifiedTimestamp": UPLOADED,
+            "sourceTimestampOrigin": "upload",
+        }
         drive = {"sourceCreatedAtTimestamp": UPLOADED}
         assert _graph_record_in_time_range(email, FEBRUARY_2025) is True
-        assert _graph_record_in_time_range(upload, SINCE_2026) is False
+        assert _graph_record_in_time_range(email, SINCE_2026) is False
+        # Uploaded after each lower bound, so it may have been written in range.
+        assert _graph_record_in_time_range(upload, SINCE_2026) is True
+        assert _graph_record_in_time_range(upload, FEBRUARY_2025) is True
+        assert _graph_record_in_time_range(upload, BEFORE_2024) is True
+        assert _graph_record_in_time_range(upload, EDITED_BEFORE_2024) is True
+        # Uploaded before the lower bound, so written before it too.
+        assert _graph_record_in_time_range(upload, SINCE_2027) is False
+        assert _graph_record_in_time_range(upload, EDITED_SINCE_2027) is False
         assert _graph_record_in_time_range(drive, SINCE_2026) is True
+        assert _graph_record_in_time_range(drive, FEBRUARY_2025) is False
 
     def test_off_keyword_hits_match_upload_times(self) -> None:
         upload = {"sourceCreatedAtTimestamp": UPLOADED, "sourceTimestampOrigin": "upload"}
         assert _graph_record_in_time_range(upload, SINCE_2026) is True
+        assert _graph_record_in_time_range(upload, BEFORE_2024) is False
 
 
 class TestNewestFirst:

@@ -7536,21 +7536,30 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         if not time_range:
             return ""
+        # An upload dated only by its upload was written at or before that
+        # time: an after-bound still rules it out, a before-bound cannot.
+        undated = (
+            f" OR coalesce({record_var}.{SOURCE_TIMESTAMP_ORIGIN_FIELD}, '') = 'upload'"
+            if upload_times_undated()
+            else ""
+        )
+
+        def before(condition: str) -> str:
+            return f"AND ({condition}{undated})" if undated else f"AND {condition}"
+
         conditions: list[str] = []
         if "source_created_after_ms" in time_range:
             parameters["sourceCreatedAfterMs"] = time_range["source_created_after_ms"]
             conditions.append(f"AND {record_var}.sourceCreatedAtTimestamp >= $sourceCreatedAfterMs")
         if "source_created_before_ms" in time_range:
             parameters["sourceCreatedBeforeMs"] = time_range["source_created_before_ms"]
-            conditions.append(f"AND {record_var}.sourceCreatedAtTimestamp <= $sourceCreatedBeforeMs")
+            conditions.append(before(f"{record_var}.sourceCreatedAtTimestamp <= $sourceCreatedBeforeMs"))
         if "source_updated_after_ms" in time_range:
             parameters["sourceUpdatedAfterMs"] = time_range["source_updated_after_ms"]
             conditions.append(f"AND {record_var}.sourceLastModifiedTimestamp >= $sourceUpdatedAfterMs")
         if "source_updated_before_ms" in time_range:
             parameters["sourceUpdatedBeforeMs"] = time_range["source_updated_before_ms"]
-            conditions.append(f"AND {record_var}.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs")
-        if conditions and upload_times_undated():
-            conditions.append(f"AND coalesce({record_var}.{SOURCE_TIMESTAMP_ORIGIN_FIELD}, '') <> 'upload'")
+            conditions.append(before(f"{record_var}.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs"))
         return "\n".join(conditions)
 
     @staticmethod

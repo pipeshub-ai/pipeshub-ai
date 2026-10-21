@@ -109,8 +109,9 @@ def content_dates_replace() -> frozenset[SourceTimestampOrigin]:
 
 
 def upload_times_undated() -> bool:
-    """Whether a record dated only by its upload counts as undated: left out of
-    date filters and put last in newest-first listings. On with content dates."""
+    """Whether a record dated only by its upload counts as undated: bounded only
+    by its upload in date filters (written then or earlier) and put last in
+    newest-first listings. On with content dates."""
     return bool(content_dates_replace())
 
 

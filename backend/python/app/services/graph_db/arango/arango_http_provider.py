@@ -23744,6 +23744,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         time_filter_lines: list[str] = []
         if time_range:
+            # An upload dated only by its upload was written at or before that
+            # time: an after-bound still rules it out, a before-bound cannot.
+            undated = (
+                f' OR record.{SOURCE_TIMESTAMP_ORIGIN_FIELD} == "upload"' if upload_times_undated() else ""
+            )
+
+            def before(condition: str) -> str:
+                return f"FILTER ({condition}){undated}" if undated else f"FILTER {condition}"
+
             c_after = time_range.get("source_created_after_ms")
             c_before = time_range.get("source_created_before_ms")
             u_after = time_range.get("source_updated_after_ms")
@@ -23756,7 +23765,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars["sourceCreatedAfterMs"] = c_after
             if c_before is not None:
                 time_filter_lines.append(
-                    "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs"
+                    before("record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs")
                 )
                 bind_vars["sourceCreatedBeforeMs"] = c_before
             if u_after is not None:
@@ -23766,11 +23775,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars["sourceUpdatedAfterMs"] = u_after
             if u_before is not None:
                 time_filter_lines.append(
-                    "FILTER record.sourceLastModifiedTimestamp != null AND record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs"
+                    before(
+                        "record.sourceLastModifiedTimestamp != null"
+                        " AND record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs"
+                    )
                 )
                 bind_vars["sourceUpdatedBeforeMs"] = u_before
-            if time_filter_lines and upload_times_undated():
-                time_filter_lines.append(f'FILTER record.{SOURCE_TIMESTAMP_ORIGIN_FIELD} != "upload"')
 
         if not time_filter_lines:
             return metadata_filter_clause

@@ -1951,20 +1951,21 @@ def _record_in_time_range(
         except (ValueError, TypeError):
             return None
 
-    if record.get("source_timestamp_origin") == "upload" and upload_times_undated():
-        return False
+    # An upload dated only by its upload was written at or before that time:
+    # an after-bound still rules it out, a before-bound cannot.
+    undated = record.get("source_timestamp_origin") == "upload" and upload_times_undated()
     created = _ts("source_created_at")
     modified = _ts("source_updated_at")
     if "source_created_after_ms" in time_range:
         if created is None or created < time_range["source_created_after_ms"]:
             return False
-    if "source_created_before_ms" in time_range:
+    if "source_created_before_ms" in time_range and not undated:
         if created is None or created > time_range["source_created_before_ms"]:
             return False
     if "source_updated_after_ms" in time_range:
         if modified is None or modified < time_range["source_updated_after_ms"]:
             return False
-    if "source_updated_before_ms" in time_range:
+    if "source_updated_before_ms" in time_range and not undated:
         if modified is None or modified > time_range["source_updated_before_ms"]:
             return False
     return True
