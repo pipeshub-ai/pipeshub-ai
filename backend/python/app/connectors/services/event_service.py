@@ -113,12 +113,12 @@ _evict_tasks: set = set()
 _storage_release_tasks: set[asyncio.Task] = set()
 
 # The sync task writes the app document the moment it starts, the same instant
-# the full-sync prep releases its lock. On ArangoDB one of the two writes loses
-# with a write-write conflict; a lost release left isLocked set after the sync
-# ended, and every toggle, filter change and delete answered 409 until restart.
-# The other writer is a single-document write, so short waits clear it.
-_APP_STATUS_WRITE_ATTEMPTS = 5
-_APP_STATUS_RETRY_DELAY = 0.1
+# the full-sync prep releases its lock, and on ArangoDB one of the two writes
+# can lose with a write-write conflict. A lost release left isLocked set after
+# the sync ended, so every toggle, filter change and delete answered 409 until
+# restart. The other writer is a single-document write; short waits clear it.
+_LOCK_RELEASE_RETRIES = 4
+_LOCK_RELEASE_RETRY_DELAY = 0.1
 
 
 class EventService:
@@ -155,24 +155,58 @@ class EventService:
             payload["status"] = status
         if is_locked is not None:
             payload["isLocked"] = is_locked
-        for attempt in range(1, _APP_STATUS_WRITE_ATTEMPTS + 1):
-            try:
-                await self.graph_provider.batch_upsert_nodes(
-                    [payload], CollectionNames.APPS.value
+        await self.graph_provider.batch_upsert_nodes(
+            [payload], CollectionNames.APPS.value
+        )
+
+    async def _release_full_sync_lock(self, connector_id: str) -> bool:
+        """Clear isLocked after the full-sync prep; whether it was cleared.
+
+        Only a write-write conflict is retried, and only through ``update_node``
+        after a fresh read finds the connector still there and not DELETING.
+        The first write is an upsert: replayed after a delete won the conflict
+        it would bring the app back as a ghost node, and clearing the lock of a
+        connector being deleted drops the guard other routes refuse work on.
+        """
+        try:
+            await self._update_app_status(connector_id, is_locked=False)
+            return True
+        except Exception as e:
+            # `is not True`: a mocked provider answers with a truthy mock.
+            if self.graph_provider.is_write_conflict(e) is not True:
+                raise
+            self.logger.warning(
+                f"Lock release for connector {connector_id} collided with another writer; retrying"
+            )
+
+        for attempt in range(1, _LOCK_RELEASE_RETRIES + 1):
+            await asyncio.sleep(_LOCK_RELEASE_RETRY_DELAY * attempt)
+            # raise_on_error: an unreachable graph must not read as "deleted".
+            doc = await self.graph_provider.get_document(
+                document_key=connector_id,
+                collection=CollectionNames.APPS.value,
+                raise_on_error=True,
+            )
+            if not doc or doc.get("status") == "DELETING":
+                self.logger.info(
+                    f"Not releasing the lock of {connector_id}: it is deleted or being deleted"
                 )
-                return
+                return False
+            try:
+                return bool(
+                    await self.graph_provider.update_node(
+                        connector_id,
+                        CollectionNames.APPS.value,
+                        {"isLocked": False, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+                    )
+                )
             except Exception as e:
-                # `is not True`: a mocked provider answers with a truthy mock.
                 if (
-                    attempt == _APP_STATUS_WRITE_ATTEMPTS
+                    attempt == _LOCK_RELEASE_RETRIES
                     or self.graph_provider.is_write_conflict(e) is not True
                 ):
                     raise
-                self.logger.warning(
-                    f"Status write for connector {connector_id} collided with another "
-                    f"writer (attempt {attempt}/{_APP_STATUS_WRITE_ATTEMPTS}); retrying"
-                )
-                await asyncio.sleep(_APP_STATUS_RETRY_DELAY * attempt)
+        return False
 
     def _get_connector(self, connector_id: str) -> BaseConnector | None:
         """
@@ -869,8 +903,8 @@ class EventService:
             # Prep done and task scheduled — release the lock now.
             # Status stays FULL_SYNCING until run_sync() finishes.
             try:
-                await self._update_app_status(connector_id, is_locked=False)
-                self.logger.info(f"🔓 Released lock for connector {connector_id} (status remains FULL_SYNCING)")
+                if await self._release_full_sync_lock(connector_id):
+                    self.logger.info(f"🔓 Released lock for connector {connector_id} (status remains FULL_SYNCING)")
             except Exception as unlock_err:
                 self.logger.error(f"❌ Failed to release lock for connector {connector_id}: {unlock_err}")
                 # Non-fatal: sync task is already running; log and continue
