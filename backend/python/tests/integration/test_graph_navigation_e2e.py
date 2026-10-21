@@ -47,6 +47,7 @@ from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     matches_visibility,
 )
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 # Jira issue-type subTypes used by the seeded fixture below map to a real
 # `TicketRecord` (RecordType.TICKET + ItemType), same as production Jira
@@ -148,6 +149,18 @@ class SeededGraphProvider:
         if not node.get("_accessible", True):
             return None  # permission denied → same as missing
         return {k: v for k, v in node.items() if not k.startswith("_")}
+
+    async def check_access(
+        self, user_key: str, org_id: str, *, node_ids: Any = (), **_kwargs: Any,
+    ) -> AccessCheck:
+        """The seeded user can read a node in this org unless it is marked inaccessible."""
+        admitted = frozenset(
+            node_id for node_id in node_ids
+            if (node := self._nodes.get(node_id))
+            and node.get("orgId") == org_id
+            and node.get("_accessible", True)
+        )
+        return AccessCheck(node_ids=admitted, node_ids_in_scope=admitted)
 
     async def get_linked_records(
         self,
