@@ -737,21 +737,35 @@ cases:
       - Base price: $48,000 annually, covering up to 250 seats.
       - Usage bands: pricing tiers are structured around 250, 1,000, and 5,000 seats.
     claims:
-      - state: "Enterprise pricing for 2026 moves from per-seat pricing to a platform fee plus usage bands."
+      - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
         expect: supported
-      - state: "Enterprise pricing for 2026 starts at $48,000 a year."
+      - state: "The 2026 Enterprise pricing includes a $48,000 annual fee."
         expect: supported
 
   - id: pricing-ten-times-the-fee
     about: "$480,000 holds \"$48\" but is not the fee"
     answer: "Enterprise moves to a platform fee of $480,000 a year plus usage bands."
     claims:
-      - state: "Enterprise pricing for 2026 starts at $48,000 a year."
+      - state: "The 2026 Enterprise pricing includes a $48,000 annual fee."
         expect: contradicted
 
   - id: pricing-seat-discounts
     about: the same seat counts as volume discounts on per-seat pricing
     answer: "Enterprise keeps per-seat pricing in 2026, with volume discounts at 250, 1,000 and 5,000 seats."
     claims:
-      - state: "Enterprise pricing for 2026 moves from per-seat pricing to a platform fee plus usage bands."
+      - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
         expect: contradicted
+
+  - id: pricing-grandfathered-customers
+    about: a 2026-10-21 answer that also says existing customers keep their pricing for now
+    answer: |
+      In the Acme Corp demo data, the 2026 Enterprise pricing strategy is:
+      - Replace per-seat pricing with an annual platform fee plus usage bands.
+      - Charge a $48,000 annual platform fee covering up to 250 seats.
+      - Define usage bands at 250, 1,000, and 5,000 seats.
+      - Grandfather existing customers on their current pricing through the end of their current term.
+    claims:
+      - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
+        expect: supported
+      - state: "The 2026 Enterprise pricing includes a $48,000 annual fee."
+        expect: supported
