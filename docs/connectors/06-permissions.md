@@ -159,7 +159,7 @@ In a full sync, the first write of an existing record replaces its grants. At th
 | Pattern | Where |
 | --- | --- |
 | Wiki: `RESTRICTED` spaces inheriting from the App; pages `STRICT`, or `RESTRICTED` when they carry a read restriction | Confluence Cloud, `connectors/sources/atlassian/confluence_cloud/connector.py` (space and page builders) |
-| Storage with per-file ACLs and broken inheritance | Google Drive team, `connectors/sources/google/drive/team/drive_access.py` for the ACL mapping; the unreadable-ACL keep path (`inheritance_when_unreadable`, `note_kept_records`) is in `connectors/sources/google/drive/team/connector.py`. Box, `connectors/sources/box/connector.py` |
+| Storage with per-file ACLs and broken inheritance | Google Drive team: ACL mapping in `connectors/sources/google/drive/team/drive_access.py`. When that read fails, `team/connector.py` calls the processor's `inheritance_when_unreadable` and keeps the stored inheritance. `note_kept_records` is the processor method for a node you did not rewrite; Jira Cloud calls it. Box, `connectors/sources/box/connector.py` |
 | Ticketing: project groups with grants from the permission scheme; projects whose scheme is unreadable held back with their stored access kept; issues inherit | Jira Cloud, `connectors/sources/atlassian/jira_cloud/connector.py` |
 | Groups before record groups before records; `ORG` grant for a public team | Linear, `connectors/sources/linear/connector.py` |
 | `APP_LEVEL`, inherit up to the App | S3, `connectors/sources/s3/base_connector.py` |

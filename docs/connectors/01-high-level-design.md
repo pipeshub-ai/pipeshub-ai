@@ -89,10 +89,12 @@ flowchart TD
   D --> R[run_sync]
   F -->|no| R
   R --> W[Processor writes what the run saw]
-  W --> Q{This run was a full sync, wrote at least one node, and coverage is complete?}
-  Q -->|no window, complete| U[Unlink every node the run did not write]
-  Q -->|window_start_ms, complete| Win[Keep pre-window records and windowed groups, drop their direct grants, unlink the rest]
-  Q -->|complete is false| K[Unlink nothing]
+  W --> Q{Was this a full sync?}
+  Q -->|no| N[Leave existing links in place]
+  Q -->|yes| C{Wrote at least one node, and complete?}
+  C -->|no| K[Unlink nothing]
+  C -->|yes, no window| U[Unlink every node the run did not write]
+  C -->|yes, window_start_ms| Win[Keep pre-window records and windowed groups, drop their direct grants, unlink the rest]
 ```
 
 `complete=false` is an error skip. Never use it for a date window: deletions would then never be cleaned up.
