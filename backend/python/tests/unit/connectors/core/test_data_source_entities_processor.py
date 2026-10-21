@@ -8516,7 +8516,7 @@ class TestParentRecordInAnotherGroup:
 
         assert stub.external_record_group_id == "ext-b"
         tx_store.batch_update_nodes.assert_any_await(
-            [{"id": "epic-1", "externalGroupId": "ext-b"}], CollectionNames.RECORDS.value
+            [{"id": "epic-1", "externalGroupId": "ext-b", "recordGroupId": "rg-b"}], CollectionNames.RECORDS.value
         )
 
     @pytest.mark.asyncio

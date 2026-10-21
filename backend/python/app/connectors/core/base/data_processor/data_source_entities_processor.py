@@ -723,22 +723,28 @@ class DataSourceEntitiesProcessor:
             elif parent_record is not None and parent_record.is_placeholder:
                 # A stub minted as a link target has no group; as a parent it shares
                 # the child's, else the connector's backfill never finds it.
-                if (
+                joins_childs_group = (
                     not parent_record.external_record_group_id
                     and not parent_record.record_group_id
-                    and record.external_record_group_id
-                ):
+                    and bool(record.external_record_group_id)
+                )
+                if joins_childs_group:
                     parent_record.external_record_group_id = record.external_record_group_id
                     parent_record.record_group_type = record.record_group_type
-                    await tx_store.batch_update_nodes(
-                        [{"id": parent_record.id, "externalGroupId": record.external_record_group_id}],
-                        CollectionNames.RECORDS.value,
-                    )
                 # A pre-existing placeholder never re-syncs as a real record, so its
                 # record-group (BELONGS_TO) edge isn't restored after a full sync (which
                 # deletes all edges). Re-anchor it here — idempotently — so the placeholder
                 # and its subtree stay reachable from the record group.
                 record_group_id = await self._handle_record_group(parent_record, tx_store)
+                if joins_childs_group:
+                    await tx_store.batch_update_nodes(
+                        [{
+                            "id": parent_record.id,
+                            "externalGroupId": parent_record.external_record_group_id,
+                            "recordGroupId": record_group_id,
+                        }],
+                        CollectionNames.RECORDS.value,
+                    )
                 if record_group_id:
                     # parent_record was read from the store, so pass it as the
                     # existing record: without it the stale inherit-permissions
@@ -4722,6 +4728,7 @@ class DataSourceEntitiesProcessor:
                     connector_id, CollectionNames.APPS.value,
                     CollectionNames.USER_APP_RELATION.value,
                 )
+        await self._access_changed([connector_id])
         self.logger.info(f"Withdrew connector {connector_id} from {len(users)} user(s) no longer eligible at the source")
 
     @retry_on_deadlock()

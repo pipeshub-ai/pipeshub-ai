@@ -498,7 +498,9 @@ class ConfluenceConnector(BaseConnector):
         self._pending_inactive_ids: set[str] = set()
         self._pending_active_emails: set[str] = set()
         self._group_read_complete = False
-        # Users _sync_users held back as inactive; restored if this sync's group read finds them active.
+        # Until one group read completes (as after a restart) no status is known, so every user waits for it.
+        self._account_statuses_known = False
+        # Users _sync_users held back; saved if this sync's group read finds them active.
         self._held_back_users: list[AppUser] = []
         self._space_listing_complete = False
 
@@ -906,7 +908,10 @@ class ConfluenceConnector(BaseConnector):
                         continue
                     # search/user carries no account status: hold back what the last complete
                     # group read saw inactive until this sync's group read says otherwise.
-                    if app_user.source_user_id in self._inactive_account_ids:
+                    if (
+                        not self._account_statuses_known
+                        or app_user.source_user_id in self._inactive_account_ids
+                    ):
                         self._held_back_users.append(app_user)
                         continue
                     app_users.append(app_user)
@@ -1245,6 +1250,7 @@ class ConfluenceConnector(BaseConnector):
                 self._inactive_account_ids = self._pending_inactive_ids
                 self._active_member_emails = self._pending_active_emails
                 self._group_read_complete = True
+                self._account_statuses_known = True
             # Members resolve only to users linked to the connector, so a reactivated
             # account has to be linked again before its groups are saved.
             await self._restore_reactivated_users()
@@ -4103,11 +4109,15 @@ class ConfluenceConnector(BaseConnector):
         reports active again. Statuses from a partial group read are not trusted."""
         held_back, self._held_back_users = self._held_back_users, []
         if not self._group_read_complete:
+            if held_back:
+                self.logger.warning(
+                    f"Not saving {len(held_back)} Confluence user(s) this sync: their account status is unknown"
+                )
             return
-        reactivated = [u for u in held_back if u.source_user_id not in self._inactive_account_ids]
-        if reactivated:
-            await self._save_app_users(reactivated)
-            self.logger.info(f"Restored {len(reactivated)} Confluence user(s) active again at the source")
+        active = [u for u in held_back if u.source_user_id not in self._inactive_account_ids]
+        if active:
+            await self._save_app_users(active)
+            self.logger.info(f"Saved {len(active)} held-back Confluence user(s) the group read reports active")
 
     async def _reconcile_inactive_app_users(self) -> None:
         """After the group sync: withdraw the stored users now inactive, from a full group read only."""

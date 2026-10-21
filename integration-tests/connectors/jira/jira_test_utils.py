@@ -874,7 +874,9 @@ async def count_visible_jira_projects(datasource: JiraDataSource) -> int:
         data = resp.json() or {}
         batch = data.get("values") or []
         total += len(batch)
-        if not batch or data.get("isLast", True):
+        # As the connector pages it: isLast decides; a short page is the end only without it.
+        is_last = data.get("isLast")
+        if not batch or is_last or (is_last is None and len(batch) < 50):
             return total
         start_at += len(batch)
 

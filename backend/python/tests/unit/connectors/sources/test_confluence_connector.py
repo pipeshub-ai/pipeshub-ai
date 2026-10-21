@@ -2470,6 +2470,19 @@ class TestFetchGroupMembers:
         assert [u.source_user_id for u in members] == ["acc-d"]
 
     @pytest.mark.asyncio
+    async def test_after_a_restart_an_inactive_account_is_never_linked(self) -> None:
+        c = self._group_sync_conn([_resp(200, {"results": [
+            {"accountId": "acc-d", "email": "d@t.com", "accountStatus": "inactive"},
+        ]})])
+
+        await c._sync_users()
+        await c._sync_user_groups()
+        await c._reconcile_inactive_app_users()
+
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+        assert c._inactive_account_ids == {"acc-d"}
+
+    @pytest.mark.asyncio
     async def test_a_member_list_failing_on_page_two_withdraws_nothing(self) -> None:
         c = self._group_sync_conn([
             _resp(200, {
@@ -4242,6 +4255,8 @@ def _mk_connector():
     """Create a fresh ConfluenceConnector with full mocks."""
     logger, dep, dsp, cs, _ = _make_mock_deps_fullcov()
     c = ConfluenceConnector(logger, dep, dsp, cs, "conn-new-1", "team", "usr-1")
+    # As after a first complete group read; a just-started connector holds every user back.
+    c._account_statuses_known = True
     return c
 
 
