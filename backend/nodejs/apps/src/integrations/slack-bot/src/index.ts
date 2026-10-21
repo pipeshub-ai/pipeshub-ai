@@ -79,9 +79,11 @@ import {
   resolveSlackErrorMessage,
   resolveSlackErrorMessageAsync,
   parseSSEEvents,
+  finalTurnRow,
   buildChatStreamUrl,
   resolveSlackBotForEvent,
   resolveThreadId,
+  slackClientMessageId,
   sendUserFacingSlackErrorMessage,
   slackCallerDisplayName,
   isIgnoredSlackMessage,
@@ -538,6 +540,7 @@ async function processSlackMessage(
       url,
       {
         query,
+        clientMessageId: slackClientMessageId(typedMessage),
         chatMode: currentAgentId? "quick" : "agent",
         currentTime: new Date().toISOString(),
         ...(userTimezone ? { timezone: userTimezone } : {}),
@@ -1217,10 +1220,15 @@ async function processSlackMessage(
       return;
     }
 
-    const botResponses = conversationData.messages;
-    const botResponse =
-      [...botResponses].reverse().find((msg) => msg.messageType === "bot_response") ??
-      null;
+    const botResponse = finalTurnRow(conversationData.messages);
+    if (botResponse?.messageType === 'error') {
+      // A failed turn streams its error text as answer text; replace that copy so it shows once.
+      await deleteStreamMessages();
+      await sendOrUpdateNonStreamMessage(
+        resolveSlackErrorMessage(botResponse.content),
+      );
+      return;
+    }
     if (!botResponse) {
       const invalidResponseMessage =
         "Received an unexpected response format from the backend. Please try again later.";

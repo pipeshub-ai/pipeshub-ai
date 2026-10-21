@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { AnyZodObject, z, ZodRawShape } from 'zod';
 import {
   validateNoFormatSpecifiers,
   validateNoXSS,
@@ -17,6 +17,18 @@ const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
 /** Reusable MongoDB ObjectId string validator with a configurable error label. */
 const objectId = (label: string) =>
   z.string().regex(OBJECT_ID_REGEX, { message: `Invalid ${label} format` });
+
+/** The same request schema with more `body` fields; the schema itself when there are none. */
+export function withBodyFields(
+  schema: AnyZodObject,
+  fields: ZodRawShape,
+): AnyZodObject {
+  if (Object.keys(fields).length === 0) {
+    return schema;
+  }
+  const body = (schema.shape as ZodRawShape).body as AnyZodObject;
+  return schema.extend({ body: body.extend(fields) });
+}
 
 const appOrKbIdSchema = z.string().uuid({ message: 'Must be a valid UUID' });
 
@@ -458,8 +470,16 @@ export const conversationTitleParamsSchema = conversationIdParamsSchema.extend({
 });
 
 export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
-  body: z.object({ userIds: userIdsSchema }),
+  body: z.object({
+    userIds: userIdsSchema,
+    accessLevel: z.enum(['read', 'write']).optional(),
+  }),
 });
+
+export const conversationUnshareParamsSchema =
+  conversationIdParamsSchema.extend({
+    body: z.object({ userIds: userIdsSchema }),
+  });
 
 /** Schema for POST /:conversationId/cancel — cooperatively stop an in-flight assistant run. */
 export const cancelConversationStreamParamsSchema = conversationIdParamsSchema.extend({
@@ -623,6 +643,25 @@ export const agentAddMessageParamsSchema = z.object({
   }),
   body: agentAddMessageBodySchema,
 });
+
+/**
+ * Internal (scoped-token) agent stream routes. Slack forwards the caller's
+ * identity to the AI backend (ai-chat-payload.ts::assignCallerContextToAiPayload);
+ * the public schemas strip those keys on purpose, so only these variants keep them.
+ */
+const internalCallerContextSchema = {
+  callerDisplayName: z.string().optional(),
+  callerEmail: z.string().optional(),
+};
+
+export const agentInternalStreamCreateSchema = agentStreamCreateSchema.extend({
+  body: agentStreamCreateBodySchema.extend(internalCallerContextSchema),
+});
+
+export const agentInternalAddMessageParamsSchema =
+  agentAddMessageParamsSchema.extend({
+    body: agentAddMessageBodySchema.extend(internalCallerContextSchema),
+  });
 
 // ---------------------------------------------------------------------------
 // Agent non-streaming: create + add message (`chatMode` defaults to `quick`)

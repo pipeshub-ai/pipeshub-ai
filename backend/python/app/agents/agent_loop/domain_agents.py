@@ -51,6 +51,7 @@ from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToo
 from app.agents.agent_loop.answer_rules import multi_step_answer_rules
 from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.agents.agent_loop.sub_agent_prompt import build_sub_agent_prompt
+from app.modules.agents.chat_extension import get_chat_extension
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
@@ -457,10 +458,13 @@ def plan_domain_agents(
     claims: dict[str, list[str]] = {}
     claimed: set[str] = set()
     registered = tool_registry.names()
+    # Sub-agents share the parent's `AgentContext`, so `invocation` cannot tell them
+    # apart; these tools stay with the top-level assistant by never being claimed.
+    top_level_only = get_chat_extension().top_level_only_tool_prefixes()
     for definition in definitions:
         names: list[str] = []
         for name in registered:
-            if name in claimed:
+            if name in claimed or name.startswith(top_level_only):
                 continue
             tool = tool_registry.resolve_by_name(name)
             app_name = tool.app_name

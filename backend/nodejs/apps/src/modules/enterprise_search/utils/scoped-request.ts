@@ -76,7 +76,12 @@ export const hydrateScopedRequestAsUser = async (
     throw new UnauthorizedError('Email not found in scoped token');
   }
 
-  const orgId = await resolveSoleOrgId();
+  const rawTokenOrgId: unknown = (req as AuthenticatedServiceRequest)
+    .tokenPayload?.orgId;
+  const tokenOrgId =
+    typeof rawTokenOrgId === 'string' ? rawTokenOrgId : undefined;
+  // A scoped token names its org; only a token without one falls back to the sole org.
+  const orgId = tokenOrgId ?? (await resolveSoleOrgId());
 
   const user = await Users.findOne({
     email,

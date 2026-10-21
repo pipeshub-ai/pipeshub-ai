@@ -12,54 +12,84 @@ import {
   resolveNotificationAuthContext,
 } from '../utils/notification-api.utils';
 
-export async function listNotifications(
-  req: AuthenticatedUserRequest,
-  res: Response,
-  next: NextFunction,
-): Promise<void> {
-  try {
-    const authContext = resolveNotificationAuthContext(req.user);
-    if (!authContext) {
-      res.status(401).json({ message: 'Unauthorized' });
-      return;
-    }
-    const { userOid, orgOid } = authContext;
+/** Container key of an `INotificationContextResolver`; unbound, rows are returned as stored. */
+export const NOTIFICATION_CONTEXT_RESOLVER = Symbol.for(
+  'notification.ContextResolver',
+);
 
-    const notificationStatus =
-      typeof req.query.status === 'string' ? req.query.status : null;
-    const limit = clampPageSize(req.query.limit);
-    const baseFilter = buildRetentionFilter(
-      orgOid,
-      userOid,
-      notificationStatus,
-    );
-
-    let cursorFilter: Record<string, unknown> = {};
-    const rawCursor = req.query.cursor;
-    if (rawCursor !== undefined && rawCursor !== '') {
-      try {
-        cursorFilter = buildCursorFilter(decodeCursor(rawCursor as string));
-      } catch (err) {
-        if (err instanceof InvalidNotificationCursorError) {
-          res.status(400).json({ message: 'Invalid cursor' });
-          return;
-        }
-        throw err;
-      }
-    }
-
-    const filter = { ...baseFilter, ...cursorFilter };
-    const rows = await Notifications.find(filter)
-      .sort({ createdAt: -1, _id: -1 })
-      .limit(limit + 1)
-      .lean();
-
-    const { notifications, hasMore, cursor } = paginateResults(rows, limit);
-    res.json({ notifications, cursor, hasMore });
-  } catch (err) {
-    next(err);
-  }
+/** Adds display context to notification rows, keyed by row index. Never throws. */
+export interface INotificationContextResolver {
+  resolve(
+    req: AuthenticatedUserRequest,
+    rows: readonly { type: string; payload?: Record<string, unknown> }[],
+  ): Promise<ReadonlyMap<number, object>>;
 }
+
+/** Without a context resolver the response is exactly the stored rows. */
+export const listNotifications =
+  (context?: INotificationContextResolver) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const authContext = resolveNotificationAuthContext(req.user);
+      if (!authContext) {
+        res.status(401).json({ message: 'Unauthorized' });
+        return;
+      }
+      const { userOid, orgOid } = authContext;
+
+      const notificationStatus =
+        typeof req.query.status === 'string' ? req.query.status : null;
+      const limit = clampPageSize(req.query.limit);
+      const baseFilter = buildRetentionFilter(
+        orgOid,
+        userOid,
+        notificationStatus,
+      );
+
+      let cursorFilter: Record<string, unknown> = {};
+      const rawCursor = req.query.cursor;
+      if (rawCursor !== undefined && rawCursor !== '') {
+        try {
+          cursorFilter = buildCursorFilter(decodeCursor(rawCursor as string));
+        } catch (err) {
+          if (err instanceof InvalidNotificationCursorError) {
+            res.status(400).json({ message: 'Invalid cursor' });
+            return;
+          }
+          throw err;
+        }
+      }
+
+      const filter = { ...baseFilter, ...cursorFilter };
+      const rows = await Notifications.find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(limit + 1)
+        .lean();
+
+      const page = paginateResults(rows, limit);
+      const contexts = context
+        ? await context.resolve(req, page.notifications)
+        : new Map<number, object>();
+      const notifications =
+        contexts.size === 0
+          ? page.notifications
+          : page.notifications.map((row, index) => {
+              const ctx = contexts.get(index);
+              return ctx ? { ...row, context: ctx } : row;
+            });
+      res.json({
+        notifications,
+        cursor: page.cursor,
+        hasMore: page.hasMore,
+      });
+    } catch (err) {
+      next(err);
+    }
+  };
 
 export async function getNotificationStats(
   req: AuthenticatedUserRequest,

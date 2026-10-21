@@ -21,7 +21,7 @@ from tests.unit.agents.adapter.conftest import make_context
 
 _QUESTION = "Create a page in Testspace, then ask me whether to add a footer comment"
 _PAGE = "Created page 98765 in space TS."
-_KEY = "/services/agents/parked-turns/conv-1"
+_KEY = "/services/agents/parked-turns/conv-1/user-1"
 _CREATE = ToolCall(id="c1", name="mcp_atlassian_createConfluencePage", arguments={"title": "Plan"})
 
 
@@ -166,3 +166,26 @@ async def test_a_long_result_is_kept_cut() -> None:
 
     kept_result = store.values[_KEY]["messages"][1]["content"]
     assert kept_result.endswith("[result cut]") and len(kept_result) < 21_000
+
+
+async def test_each_person_in_a_conversation_keeps_their_own_turn() -> None:
+    store = _Store()
+    await _keep_question(store)
+    other = SimpleNamespace(context=await _history(*_as_the_model_had_it(page="Created page 11111.")), visible_tools=set())
+    await parked_turn.keep_question(_context(store, user_id="user-2"), other)  # type: ignore[arg-type]
+
+    for user_id, page in (("user-1", _PAGE), ("user-2", "Created page 11111.")):
+        history = await _history(*_as_the_history_has_it())
+        assert await parked_turn.restore(_context(store, user_id=user_id), history, call_id="q1") is not None
+        assert next(m.content for m in await history.messages() if isinstance(m, ToolMessage)) == page
+
+
+async def test_a_turn_kept_under_the_old_conversation_key_still_carries_on() -> None:
+    store = _Store()
+    await _keep_question(store)
+    store.values["/services/agents/parked-turns/conv-1"] = store.values.pop(_KEY)
+    history = await _history(*_as_the_history_has_it())
+
+    assert await parked_turn.restore(_context(store, user_id="user-2"), history, call_id="q1") is None
+    assert await parked_turn.restore(_context(store), history, call_id="q1") == ["mcp_atlassian_createConfluencePage"]
+    assert any(isinstance(m, ToolMessage) and m.content == _PAGE for m in await history.messages())

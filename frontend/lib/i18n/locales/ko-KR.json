@@ -928,6 +928,7 @@
     "showDiagramSource": "소스 표시",
     "hideDiagramSource": "소스 숨기기",
     "stoppedMarker": "중지됨",
+    "stoppedBeforeAnswer": "답변이 시작되기 전에 중지됨",
     "toolCard": {
       "arguments": "인수",
       "result": "결과",
@@ -1366,7 +1367,8 @@
       "notice": {
         "expired": "{{server}}의 {{tool}}이(가) 실행되지 않았습니다. 요청이 만료되었습니다. 아직 필요하면 다시 요청하세요.",
         "passed": "{{server}}의 {{tool}}이(가) 승인되지 않아 실행되지 않았습니다.",
-        "waiting": "{{server}}의 {{tool}}이(가) 대화 소유자의 승인을 기다리고 있습니다."
+        "waiting": "{{server}}의 {{tool}}이(가) 대화 소유자의 승인을 기다리고 있습니다.",
+        "waitingFor": "{{server}}의 {{tool}}이(가) {{name}} 님의 승인을 기다리고 있습니다."
       },
       "receipt": {
         "allowed": "{{tool}}을(를) 허용했습니다",
@@ -1404,7 +1406,10 @@
       "download": "아티팩트 다운로드",
       "downloading": "아티팩트 다운로드 중"
     },
-    "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다."
+    "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다.",
+    "answerFailedTitle": "이 답변을 생성하지 못했습니다",
+    "answerFailedRetry": "다시 시도",
+    "cannotOpenSource": "이 문서를 열 수 없습니다. 삭제되었거나 액세스 권한이 없을 수 있습니다."
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -4911,7 +4916,9 @@
     "back": "뒤로",
     "skip": "건너뛰기",
     "next": "다음",
-    "submit": "제출"
+    "submit": "제출",
+    "unknownPerson": "이전 멤버",
+    "waitingFor": "{{name}}님의 답변을 기다리는 중"
   },
   "oauthDevice": {
     "title": "기기 연결",
@@ -4986,7 +4993,9 @@
     },
     "team": "팀",
     "teamsNoRoles": "팀에는 역할이 없습니다",
-    "invite": "Pipeshub에 초대"
+    "invite": "Pipeshub에 초대",
+    "removeSelection": "{{name}} 제거",
+    "peopleCanSee_other": "{{count}}명이 이 채팅을 볼 수 있음"
   },
   "demoData": {
     "badge": {

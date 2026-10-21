@@ -6,6 +6,11 @@ import { NotificationService } from '../../../../src/modules/notification/servic
 import { NotificationProducer } from '../../../../src/modules/notification/service/notification.producer'
 import { NotificationConsumer } from '../../../../src/modules/notification/service/notification.consumer'
 import { TYPES } from '../../../../src/libs/types/container.types'
+import {
+  NOTIFICATION_DELIVERY_POLICY,
+  deliverToRecipients,
+} from '../../../../src/modules/notification/service/notification-delivery.port'
+import { createFakeRedisProvider, stubGetRedisProvider } from '../../../helpers/fake-redis-provider'
 
 describe('notification/container/notification.container', () => {
   afterEach(() => {
@@ -69,6 +74,25 @@ describe('NotificationContainer - coverage', () => {
       const container = await NotificationContainer.initialize(appConfig)
       const authTokenService = container.get(TYPES.AuthTokenService)
       expect(authTokenService).to.exist
+    })
+
+    it('delivers through the bound policy, which can be rebound, and gives the socket server Redis', async () => {
+      const redis = createFakeRedisProvider()
+      stubGetRedisProvider(redis)
+      const appConfig = {
+        jwtSecret: 'test-jwt-secret',
+        scopedJwtSecret: 'test-scoped-jwt-secret',
+        kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+        redis: { host: 'localhost', port: 6379 },
+      } as any
+
+      const container = await NotificationContainer.initialize(appConfig)
+      expect(container.get(NOTIFICATION_DELIVERY_POLICY)).to.equal(deliverToRecipients)
+      const custom = { plan: sinon.stub() }
+      container.rebind(NOTIFICATION_DELIVERY_POLICY).toConstantValue(custom)
+
+      expect((container.get(NotificationConsumer) as any).deliveryPolicy).to.equal(custom)
+      expect((container.get(NotificationService) as any).redisProvider).to.equal(redis)
     })
   })
 

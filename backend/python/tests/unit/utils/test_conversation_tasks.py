@@ -1,6 +1,8 @@
 """Tests for app.utils.conversation_tasks — task registration and collection."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 from unittest.mock import patch
 
 import pytest
@@ -11,6 +13,8 @@ from app.utils.conversation_tasks import (
     pop_tasks,
     _rows_to_csv_bytes,
     await_and_collect_results,
+    cancel_run_tasks,
+    set_task_run,
 )
 
 
@@ -212,3 +216,71 @@ class TestAwaitAndCollectResults:
         results = await ct.await_and_collect_results("conv_slow")
         assert results == []
         assert task.cancelled() or task.done()
+
+
+
+T = TypeVar("T")
+
+
+async def _file(name: str) -> dict[str, object]:
+    return {"type": "artifacts", "artifacts": [{"name": name}]}
+
+
+async def _in_run(run_id: str, work: Callable[[], Awaitable[T]]) -> T:
+    """Runs *work* as a run's producer task does: in its own task, with the run set."""
+    async def _run() -> T:
+        set_task_run(run_id)
+        return await work()
+
+    return await asyncio.create_task(_run())
+
+
+class TestTasksBelongToTheirRun:
+    @pytest.mark.asyncio
+    async def test_a_run_collects_only_the_tasks_its_own_tools_started(self) -> None:
+        """Two runs of one conversation on one worker: the one that stopped on a question
+        leaves its file, and the next run's answer must not carry it."""
+        async def stopped() -> None:
+            register_task("conv1", asyncio.create_task(_file("first.csv")))
+
+        async def answered() -> list[dict]:
+            register_task("conv1", asyncio.create_task(_file("second.csv")))
+            return await await_and_collect_results("conv1")
+
+        await _in_run("run-1", stopped)
+        results = await _in_run("run-2", answered)
+
+        assert [a["name"] for r in results for a in r["artifacts"]] == ["second.csv"]
+        assert list(_conversation_tasks) == [("conv1", "run-1")]
+
+    @pytest.mark.asyncio
+    async def test_a_task_started_by_a_task_of_the_run_stays_with_the_run(self) -> None:
+        async def work() -> list[dict]:
+            async def parent() -> dict[str, object]:
+                register_task("conv1", asyncio.create_task(_file("child.csv")))
+                return await _file("parent.csv")
+
+            register_task("conv1", asyncio.create_task(parent()))
+            return await await_and_collect_results("conv1")
+
+        results = await _in_run("run-1", work)
+
+        assert {a["name"] for r in results for a in r["artifacts"]} == {"parent.csv", "child.csv"}
+        assert _conversation_tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_a_run_cancels_the_tasks_it_never_collected(self) -> None:
+        async def work() -> tuple[asyncio.Task, asyncio.Task]:
+            task = asyncio.create_task(asyncio.sleep(10))
+            register_task("conv1", task)
+            other = asyncio.create_task(asyncio.sleep(10))
+            _conversation_tasks[("conv1", "run-2")] = [other]
+            cancel_run_tasks("conv1")
+            return task, other
+
+        task, other = await _in_run("run-1", work)
+        await asyncio.sleep(0)
+
+        assert task.cancelled()
+        assert not other.done() and list(_conversation_tasks) == [("conv1", "run-2")]
+        other.cancel()

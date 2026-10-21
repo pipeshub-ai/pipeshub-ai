@@ -14,6 +14,8 @@ export const CHAT_ERROR_MESSAGES = {
     "PipesHub couldn't answer right now. Please try again in a minute.",
   failed:
     'Something went wrong while answering. Please send your message again, and if it keeps happening, contact your workspace admin.',
+  timedOut:
+    'The answer took too long and was stopped. Click Regenerate or send your message again.',
 } as const;
 
 // The service answering the chat can't be reached at all.

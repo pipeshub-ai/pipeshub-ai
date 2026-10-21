@@ -29,10 +29,12 @@ vi.mock('next/navigation', () => ({
 }));
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
-vi.mock('@/config', () => ({
+vi.mock('@/config', async () => ({
   useUserPermission: (key: string) => !permissions.denied.has(key),
   PermissionLockIcon: () => <span>Locked</span>,
   InheritedConfigNotice: () => null,
+  agentBuilderExtension: (await vi.importActual<typeof import('../agent-builder-extension')>('../agent-builder-extension'))
+    .defaultAgentBuilderExtension,
 }));
 
 // Nothing here may reach the network: every API module below is faked, and
@@ -92,7 +94,8 @@ import { AgentBuilder } from '../agent-builder';
 function lastSavedPayload(fn: ReturnType<typeof vi.fn>): AgentFormPayload {
   const call = fn.mock.calls[fn.mock.calls.length - 1];
   if (!call) throw new Error('Nothing was saved');
-  return call[call.length - 1] as AgentFormPayload;
+  // createAgent(payload, options?) and updateAgent(key, payload, options?)
+  return (typeof call[0] === 'string' ? call[1] : call[0]) as AgentFormPayload;
 }
 
 async function renderNewAgent() {

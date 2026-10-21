@@ -52,6 +52,9 @@ import { buildDraftKey } from '@/chat/utils/composer-draft';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
 import { PastedTextChip } from '@/chat/components/pasted-text-chip';
 import { TextPreviewDialog } from '@/chat/components/text-preview-dialog';
+import { chatSlots } from '@/config';
+import type { ComposerSendExtra } from '../chat-extension';
+import type { ComposerInputHandle } from './composer/composer-input.types';
 import {
   isLargePaste,
   createPastedTextFile,
@@ -108,6 +111,7 @@ interface ChatInputProps {
     message: string,
     attachments?: AttachmentRef[],
     mentions?: MentionNode[],
+    extra?: ComposerSendExtra,
   ) => void | boolean | Promise<void | boolean>;
   /** `@` searches node names under this parent. Omitted, search is global. */
   mentionParent?: MentionParent | null;
@@ -144,7 +148,11 @@ interface ChatInputProps {
   prefill?: { text: string; key: number } | null;
   /** Keep unsent text per conversation across reloads and navigation (main chat only). */
   persistDraft?: boolean;
+  /** Send stays (no Stop in its place) and submits go through while the chat's answer streams. */
+  sendDuringRun?: boolean;
 }
+
+type PasteIntent = { kind: 'files'; files: File[] } | { kind: 'text'; text: string };
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -242,6 +250,7 @@ export function ChatInput({
   prefill,
   persistDraft = false,
   mentionParent,
+  sendDuringRun = false,
 }: ChatInputProps) {
   const router = useRouter();
   const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
@@ -301,7 +310,7 @@ export function ChatInput({
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<ComposerInputHandle>(null);
   const chipsScrollRef = useRef<HTMLDivElement>(null);
 
   // `prefill` seeds the composer from an external suggestion chip. Keyed by
@@ -312,7 +321,7 @@ export function ChatInput({
     if (!prefill || prefill.key === lastPrefillKeyRef.current) return;
     lastPrefillKeyRef.current = prefill.key;
     setMessage(prefill.text);
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    setTimeout(() => composerRef.current?.focus(), 0);
   }, [prefill]);
 
   useEffect(() => {
@@ -510,6 +519,7 @@ export function ChatInput({
 
   // Active slot ID for regenerate/edit flows
   const activeSlotId = useChatStore((s) => s.activeSlotId);
+  const composerInput = chatSlots.useComposerInput({ composerRef, message, setMessage, slotId: activeSlotId });
 
   // Is the active slot currently streaming? The widget composer starts a new
   // chat, so a run left going on the chat page is not its run.
@@ -522,6 +532,8 @@ export function ChatInput({
   const isStopping = useChatStore((s) =>
     variant !== 'widget' && s.activeSlotId ? (s.slots[s.activeSlotId]?.stopping ?? false) : false
   );
+  // The run holds the composer: Stop replaces Send and submits wait.
+  const runBusy = isStreaming && !sendDuringRun;
 
   const handleStopStream = useCallback(() => {
     const sid = useChatStore.getState().activeSlotId;
@@ -814,11 +826,16 @@ export function ChatInput({
   // as { messageId, text: question }).
   const handleShowRegenBar = useCallback((payload?: unknown) => {
     if (typeof payload !== 'object' || payload === null) return;
-    const { messageId, text, appliedFilters } = payload as { messageId: string; text?: string; appliedFilters?: AppliedFilters };
+    const { messageId, text, appliedFilters, slotId } = payload as {
+      messageId: string;
+      text?: string;
+      appliedFilters?: AppliedFilters;
+      slotId?: string;
+    };
     if (!messageId) return;
     dismissExpansionPanels();
     setRegenModelOverride(null);
-    setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters });
+    setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters, ...(slotId ? { slotId } : {}) });
     // Pre-fill textarea so user can see what will be regenerated (shown dimmed/disabled)
     setMessage(text ?? '');
   }, [dismissExpansionPanels]);
@@ -837,7 +854,7 @@ export function ChatInput({
     setActiveMessageAction({ type: 'editQuery', messageId, text });
     // Populate the textarea with the original question so the user can edit it
     setMessage(text ?? '');
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    setTimeout(() => composerRef.current?.focus(), 0);
   }, [dismissExpansionPanels]);
 
   // Dismissing either action clears the pill bar and resets the textarea to empty.
@@ -883,8 +900,9 @@ export function ChatInput({
       setActiveMessageAction(null);
       setRegenModelOverride(null);
       setMessage('');
-      if (activeSlotId) {
-        streamRegenerateForSlot(activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters);
+      const regenSlotId = activeMessageAction.slotId ?? activeSlotId;
+      if (regenSlotId) {
+        streamRegenerateForSlot(regenSlotId, activeMessageAction.messageId, modelOverride, originalFilters);
       }
       return;
     }
@@ -900,6 +918,8 @@ export function ChatInput({
     }
   }, [activeMessageAction, regenModelOverride, activeSlotId, t]);
 
+  const submitRef = useRef<((e: React.SyntheticEvent) => void) | null>(null);
+
   const handleSubmit = (e: React.SyntheticEvent) => {
     e.preventDefault();
 
@@ -907,7 +927,7 @@ export function ChatInput({
 
     const sid = variant === 'widget' ? null : useChatStore.getState().activeSlotId;
     const liveSlot = sid ? useChatStore.getState().slots[sid] : undefined;
-    if ((liveSlot?.isStreaming && !liveSlot.stopping) || isUniversalAgentLoading) return;
+    if ((liveSlot?.isStreaming && !liveSlot.stopping && !sendDuringRun) || isUniversalAgentLoading) return;
     if (liveSlot?.remoteRunInProgress) {
       showRemoteRunInProgressToast();
       return;
@@ -1038,6 +1058,8 @@ export function ChatInput({
       const refs = uploadedFiles
         .filter((f) => f.status === 'uploaded' && f.ref)
         .map((f) => f.ref!);
+      const resolved = composerInput.resolveSend(message, () => submitRef.current?.(e));
+      if (!resolved) return;
       const kept = retainedMentions(message, mentions);
       const sent = variant === 'widget'
         ? [
@@ -1081,15 +1103,13 @@ export function ChatInput({
         setMentions([]);
         setUploadedFiles([]);
         setShowUploadArea(false);
-        if (textareaRef.current) {
-          textareaRef.current.style.height = 'auto';
-        }
+        composerRef.current?.clear();
       };
-      const sending = onSend(
-        stripMentionPads(message, kept),
-        refs.length > 0 ? refs : undefined,
-        sent.length > 0 ? sent : undefined,
-      );
+      const text = stripMentionPads(resolved.text, kept);
+      const files = refs.length > 0 ? refs : undefined;
+      const nodes = sent.length > 0 ? sent : undefined;
+      // A fourth argument only when there is something extra, so a caller sees the usual three-argument call.
+      const sending = resolved.extra ? onSend(text, files, nodes, resolved.extra) : onSend(text, files, nodes);
       if (sending instanceof Promise) {
         // The host said why it refused (or failed); the draft stays for another try.
         void sending.then((ok) => { if (ok !== false) clearDraft(); }, () => {});
@@ -1098,6 +1118,10 @@ export function ChatInput({
       }
     }
   };
+
+  useEffect(() => {
+    submitRef.current = handleSubmit;
+  });
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Escape cancels whichever action mode is active (edit or regenerate)
@@ -1359,12 +1383,12 @@ export function ChatInput({
    * Both paths use the same gating as the attach control: enterprise search
    * (`mode === 'search'`) and web search do not accept attachments.
    */
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+  const classifyPaste = useCallback((data: DataTransfer | null | undefined): PasteIntent | null => {
     if (isRegenerateMode || isSearchMode || settings.queryMode === 'web-search') {
-      return;
+      return null;
     }
-    const items = e.clipboardData?.items;
-    if (!items) return;
+    const items = data?.items;
+    if (!data || !items) return null;
 
     const fileItems: File[] = [];
     let hasFileItem = false;
@@ -1391,25 +1415,32 @@ export function ChatInput({
       }
     }
 
-    if (fileItems.length > 0) {
-      // Stop the event here — without this, bubbling causes the handler to fire
-      // once for each ancestor that also has onPaste registered, producing
-      // duplicate chips for the same paste action.
-      e.stopPropagation();
-      // Prevent the browser from trying to render the raw image data as text.
-      e.preventDefault();
-      processFiles(fileItems, { source: 'paste' });
-      return;
-    }
+    if (fileItems.length > 0) return { kind: 'files', files: fileItems };
 
     // No file items — check whether the plain text itself is large enough
     // to collapse into an attachment. Held Shift bypasses this entirely.
-    if (hasFileItem || shiftKeyHeldRef.current) return;
-    const text = e.clipboardData?.getData('text/plain') ?? '';
-    if (!text || !isLargePaste(text)) return;
+    if (hasFileItem || shiftKeyHeldRef.current) return null;
+    const text = data.getData('text/plain') ?? '';
+    return text && isLargePaste(text) ? { kind: 'text', text } : null;
+  }, [isRegenerateMode, isSearchMode, settings.queryMode]);
 
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const intent = classifyPaste(e.clipboardData);
+    if (!intent) return;
+
+    // Stop the event here — without this, bubbling causes the handler to fire
+    // once for each ancestor that also has onPaste registered, producing
+    // duplicate chips for the same paste action. preventDefault keeps the
+    // browser from rendering raw image data (or the large text) into the field.
     e.stopPropagation();
     e.preventDefault();
+
+    if (intent.kind === 'files') {
+      processFiles(intent.files, { source: 'paste' });
+      return;
+    }
+
+    const { text } = intent;
     const file = createPastedTextFile(text, {
       ...DEFAULT_PASTE_ATTACHMENT_CONFIG,
       truncationNotice: t('chat.attachments.pasteTruncated', {
@@ -1423,7 +1454,13 @@ export function ChatInput({
       pasteCharCount: text.length,
       pasteLineCount: text.split('\n').length,
     });
-  }, [processFiles, isRegenerateMode, isSearchMode, settings.queryMode]);
+  }, [processFiles, classifyPaste, t]);
+
+  /** The rich editor asks before inserting a paste: the container owns attachment and pasted-text chips. */
+  const shouldDeferPaste = useCallback(
+    (data: DataTransfer | null) => classifyPaste(data) !== null,
+    [classifyPaste],
+  );
 
   /**
    * "Show in text field" — moves a pasted-text chip's content back into the
@@ -1435,7 +1472,7 @@ export function ChatInput({
     void file.file.text().then((text) => {
       setMessage((prev) => (prev.trim() ? `${prev}\n\n${text}` : text));
       removeFile(file.id);
-      setTimeout(() => textareaRef.current?.focus(), 0);
+      setTimeout(() => composerRef.current?.focus(), 0);
     });
   }, [removeFile]);
 
@@ -1613,8 +1650,8 @@ export function ChatInput({
 
   // Auto-focus the textarea when expanding from widget to full
   useEffect(() => {
-    if (isExpanded && variant === 'widget' && textareaRef.current) {
-      textareaRef.current.focus();
+    if (isExpanded && variant === 'widget') {
+      composerRef.current?.focus();
     }
   }, [isExpanded, variant]);
 
@@ -1700,7 +1737,7 @@ export function ChatInput({
           />
 
           {/* Send / Stop — same contract as full composer */}
-          {isStreaming ? (
+          {runBusy ? (
             <IconButton
               variant="solid"
               size="2"
@@ -1762,36 +1799,15 @@ export function ChatInput({
   }
 
   const composerActive =
-    !isStreaming && (isInputFocused || message.trim() || isEditMode || isListening);
-
-  const textareaLayoutStyle: React.CSSProperties = {
-    width: '100%',
-    backgroundColor: 'transparent',
-    outline: 'none',
-    border: 'none',
-    fontSize: 'var(--font-size-2)',
-    lineHeight: '20px',
-    letterSpacing: 0,
-    resize: 'none',
-    maxHeight: '160px',
-    fontFamily: 'Manrope, sans-serif',
-    height: 'auto',
-    overflow: 'auto',
-    padding: 0,
-    margin: 0,
-  };
-
-  const syncTextareaHeight = (e: React.FormEvent<HTMLTextAreaElement>) => {
-    const target = e.currentTarget;
-    target.style.height = 'auto';
-    target.style.height = `${Math.min(target.scrollHeight, 160)}px`;
-  };
+    !runBusy && (isInputFocused || message.trim() || isEditMode || isListening);
 
   return (
     <>
     <Flex
       ref={containerRef}
       data-composer-shell=""
+      // Lets a popover from an extension line up with the composer card.
+      data-composer-card
       direction="column"
       align="stretch"
       onPaste={handlePaste}
@@ -2241,51 +2257,52 @@ export function ChatInput({
       ) : ((usesScopedPanel && isAgentResourcesPanelOpen) || assistantCollectionsOverlayActive) &&
         expansionViewMode === 'overlay' ? (
         /* Render textarea underneath while overlay is open */
-        <MentionComposerField
+        <chatSlots.ComposerField
+          rich={composerInput.rich}
+          shouldDeferPaste={shouldDeferPaste}
           value={message}
-          mentions={mentions}
           onChange={setMessage}
+          mentions={mentions}
           onMentionsChange={setMentions}
           onKeyDown={handleKeyDown}
           onFocus={() => setIsInputFocused(true)}
           onBlur={() => setIsInputFocused(false)}
           placeholder={resolvedPlaceholder}
-          parent={mentionParent}
-          selection={mentionSelection}
+          ariaLabel={resolvedPlaceholder}
+          mentionParent={mentionParent}
+          mentionSelection={mentionSelection}
           mentionsOff={mentionsOff}
-          onSelectionChange={onMentionSelectionChange}
-          multiline
-          style={{ ...textareaLayoutStyle, color: 'var(--slate-11)' }}
-          onInput={syncTextareaHeight}
+          onMentionSelectionChange={onMentionSelectionChange}
+          muted
         />
       ) : !showUploadArea || isActionMode ? (
         // isActionMode keeps the textarea visible even when showUploadArea is true,
         // so the user can see / edit their query during edit or regenerate flows.
         // In regenerate mode the textarea is disabled and text is rendered dimmed;
         // in edit mode it is fully editable (focused immediately on activation).
-        <MentionComposerField
-          ref={textareaRef}
-          value={displayValue}
-          mentions={mentions}
+        <chatSlots.ComposerField
+          rich={composerInput.rich}
+          shouldDeferPaste={shouldDeferPaste}
+          ref={composerRef}
+          value={message}
+          interim={interimTranscript}
           onChange={setMessage}
+          mentions={mentions}
           onMentionsChange={setMentions}
           onKeyDown={handleKeyDown}
           onFocus={() => setIsInputFocused(true)}
           onBlur={() => setIsInputFocused(false)}
           placeholder={isListening ? t('chat.listening') : resolvedPlaceholder}
+          ariaLabel={isListening ? t('chat.listening') : resolvedPlaceholder}
           readOnly={isRegenerateMode}
-          parent={mentionParent}
-          selection={mentionSelection}
+          mentionParent={mentionParent}
+          mentionSelection={mentionSelection}
           mentionsOff={mentionsOff}
-          onSelectionChange={onMentionSelectionChange}
-          multiline
-          style={{
-            ...textareaLayoutStyle,
-            color: isRegenerateMode ? 'var(--slate-a8)' : 'var(--neutral-12)',
-          }}
-          onInput={syncTextareaHeight}
+          onMentionSelectionChange={onMentionSelectionChange}
         />
       ) : null}
+
+      {composerInput.overlay}
 
       {/* Bottom controls — fixed 32px row so left/right share one baseline */}
       <Flex align="center" justify="between" style={{ width: '100%', minWidth: 0, minHeight: 32 }}>
@@ -2751,7 +2768,7 @@ export function ChatInput({
           )}
 
           {/* Send / Stop button */}
-          {isStreaming ? (
+          {runBusy ? (
             <IconButton
               variant="solid"
               size="2"

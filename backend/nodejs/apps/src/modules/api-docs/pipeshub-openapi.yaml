@@ -449,6 +449,18 @@ components:
       description: The frontend origin the OAuth callback returns to; must match the configured one.
       schema:
         type: string
+    StreamFrame:
+      name: frame
+      in: query
+      required: false
+      description: |
+        `turn` makes the final `RUN_FINISHED` carry only the rows this turn wrote, marked
+        `frame: turn`, for a client that merges them by id into the rows it has. On a regenerate
+        those are the new answer plus `removedIds`, the cards it removed. Without it the final
+        frame carries the newest 1,000 rows of the conversation.
+      schema:
+        type: string
+        enum: [turn]
   headers:
     X-Conversation-Id:
       description: |
@@ -2023,13 +2035,20 @@ components:
             code:
               type: string
               description: |
-                Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`
+                Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`.
+                Domain errors carry their own unprefixed code (for example `CONVERSATION_BUSY`).
                 For unhandled runtime errors (e.g. database unavailable) it is `INTERNAL_ERROR`.
               example: HTTP_FORBIDDEN
             message:
               type: string
               description: Human-readable description of the error
               example: You need admin access to do this. Ask an admin in your organisation.
+            details:
+              type: object
+              additionalProperties: true
+              description: |
+                Public, structured context for a domain error (for example the run that holds a
+                conversation). Present in every environment, only for domain errors; absent otherwise.
             metadata:
               type: object
               description: Additional context (only present in development environments)
@@ -9039,6 +9058,11 @@ components:
             and only when the model emitted a trailing confidence block.
 
             This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
+        answerMatchType:
+          type: string
+          enum: [Capability Card]
+          description: |
+            Present only on an answer produced by an extension instead of the model. It is not a search answer, so clients should not show confidence or sources for it.
         followUpQuestions:
           type: array
           items:
@@ -10311,7 +10335,7 @@ components:
             Permission level for shared users:
 
             - `read` — Can view only
-            - `write` — Can add messages
+            - `write` — Stored as `read`; the response carries an `ACCESS_LEVEL_DOWNGRADED` warning
 
     SemanticSearchRequest:
       type: object
@@ -13592,6 +13616,7 @@ components:
         the same agent. Both arrays use the same pagination and sort inputs,
         but `pagination.totalCount` and `totalPages` are computed only from
         `conversations` because the handler counts the owned-query filter only.
+        `totalCount` stops at 1,000; `hasNextPage` is exact past that.
       required:
         - conversations
         - sharedWithMeConversations
@@ -14304,9 +14329,10 @@ components:
         object that includes a `"type"` field matching `event`, plus
         type-specific fields. Stable gateway-generated top-level outcomes:
 
-        - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
-          persisted `conversation` and a `meta` block with `requestId`,
-          `timestamp` and `duration`.
+        - `RUN_FINISHED` — `{ type, result }`; `result` carries the
+          persisted `conversation` (which rows: see the `frame` query
+          parameter) and a `meta` block with `requestId`, `timestamp` and
+          `duration`.
         - `RUN_ERROR` — `{ type, message, code? }`. The conversation row is
           marked FAILED before the stream closes.
 
@@ -14363,8 +14389,9 @@ components:
           `title` so the client can link the stream to the new row before
           any tokens arrive.
         - `RUN_FINISHED` — fired once after the AI backend finishes.
-          The gateway emits `{ type, result }`; `result` carries the full
-          persisted `conversation` and a `meta` block.
+          The gateway emits `{ type, result }`; `result` carries the
+          persisted `conversation` (which rows: see the `frame` query
+          parameter) and a `meta` block.
         - `RUN_ERROR` — fired when the stream fails. Carries a `message`
           and optional `code`; the conversation row is marked FAILED
           before close.
@@ -16285,6 +16312,11 @@ components:
         description:
           type: string
           description: Feature flag description
+        descriptionKey:
+          type: string
+          description: |
+            Optional translation key for the description. Labs shows its translation instead, falling back to
+            `description`; the translated text can include `{{description}}`.
         defaultEnabled:
           type: boolean
           description: Default enabled state
@@ -17915,6 +17947,9 @@ components:
             connectorId: "conn-abc123"
             connectorName: "S3"
             errorCode: "FORBIDDEN"
+        dedupeKey:
+          type: string
+          description: Per-recipient delivery key; an event with the same key is delivered at most once
         isDeleted:
           type: boolean
           default: false
@@ -22248,6 +22283,9 @@ paths:
                           type: boolean
                         isBlocked:
                           type: boolean
+                        isDisabled:
+                          type: boolean
+                          description: Account disabled by an administrator. Such a user cannot sign in.
                         createdAtTimestamp:
                           type: integer
                           description: "Epoch milliseconds of `createdAt` (absent if field is null)"
@@ -31394,6 +31432,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /conversations/stream:
     post:
@@ -31417,7 +31467,8 @@ paths:
         3. AI-backend events stream through (token chunks, tool calls,
            status, etc.).
         4. On success a single root `RUN_FINISHED` event is emitted carrying
-           the full persisted conversation in `result`.
+           the persisted conversation in `result`; the `frame` query
+           parameter says which of its rows.
         5. On failure a root `RUN_ERROR` event is emitted and the
            conversation is marked FAILED before the stream closes.
 
@@ -31440,6 +31491,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [conversation:chat]
+      parameters:
+        - $ref: '#/components/parameters/StreamFrame'
       requestBody:
         required: true
         description: "Request payload"
@@ -31474,6 +31527,18 @@ paths:
             example, the initial conversation row could not be persisted).
             Once the stream is open, terminal failures are surfaced as a
             `RUN_ERROR` SSE event instead of an HTTP status change.
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /conversations/attachments/upload:
     post:
@@ -31751,6 +31816,7 @@ paths:
                         type: integer
                       totalCount:
                         type: integer
+                        description: Matches, counted up to 1,000. `hasNextPage` is exact past that.
                       totalPages:
                         type: integer
                       hasNextPage:
@@ -32929,6 +32995,13 @@ paths:
                             enum: [read, write]
                       sharedBy:
                         $ref: '#/components/schemas/ConversationSharedBy'
+                      rev:
+                        type: integer
+                        minimum: 0
+                        description: |
+                          Change counter of the conversation, read before its messages. It moves on
+                          every change to the conversation or its messages, so a later read showing a
+                          higher value means something changed since this response.
                   filters:
                     type: object
                     additionalProperties: false
@@ -33202,9 +33275,8 @@ paths:
 
         **Permissions:**
 
-        The conversation initiator can always delete. Users the conversation has
-        been shared with may delete it only when their `sharedWith.accessLevel`
-        is `write`.
+        Only the conversation owner can delete. Anyone else gets `404`
+        (`CONVERSATION_NOT_FOUND`).
 
         **Artifacts:** before the conversation is marked deleted, every artifact
         the caller created in it is deleted for good (every version and stored
@@ -33400,6 +33472,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /conversations/{conversationId}/messages/stream:
     post:
@@ -33433,6 +33517,7 @@ paths:
           schema:
             type: string
             format: objectId
+        - $ref: '#/components/parameters/StreamFrame'
       requestBody:
         required: true
         description: "Request payload"
@@ -33472,6 +33557,18 @@ paths:
             conversation). Once the stream is open, terminal failures are
             surfaced as a `RUN_ERROR` SSE event instead of an HTTP status
             change.
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /conversations/{conversationId}/share:
     post:
@@ -33489,12 +33586,13 @@ paths:
         **Access Levels:**
 
         - `read` - Can view conversation and messages (default)
-        - `write` - Can view and add new messages
+        - `write` - Stored as `read`; the response carries an
+          `ACCESS_LEVEL_DOWNGRADED` warning.
 
         **Permissions:**
 
-        Only the conversation initiator (owner) can share. Users must belong
-        to the same organization.
+        Only the conversation owner can share; anyone else gets `404`. Users
+        must belong to the same organization.
       operationId: shareConversation
       security:
         - bearerAuth: []
@@ -33556,6 +33654,26 @@ paths:
                           type: string
                           format: objectId
                           description: Subdocument identifier auto-assigned by MongoDB.
+                  warnings:
+                    type: array
+                    description: Present only when `write` was requested; access is stored as `read`.
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required:
+                        - code
+                        - requested
+                        - applied
+                      properties:
+                        code:
+                          type: string
+                          enum: [ACCESS_LEVEL_DOWNGRADED]
+                        requested:
+                          type: string
+                          enum: [write]
+                        applied:
+                          type: string
+                          enum: [read]
                   meta:
                     type: object
                     additionalProperties: false
@@ -34166,6 +34284,7 @@ paths:
           schema:
             type: string
             format: objectId
+        - $ref: '#/components/parameters/StreamFrame'
       requestBody:
         description: "Request payload"
         content:
@@ -34198,6 +34317,18 @@ paths:
           description: Unauthorized
         '404':
           description: Conversation or message not found
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /conversations/{conversationId}/message/{messageId}/fork:
     post:
@@ -35774,6 +35905,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -35810,6 +35945,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -35845,6 +35984,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -35885,6 +36028,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -36049,6 +36196,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -36083,6 +36234,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -36117,6 +36272,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -36153,6 +36312,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -36193,6 +36356,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -37190,6 +37357,7 @@ paths:
           schema:
             type: string
             minLength: 1
+        - $ref: '#/components/parameters/StreamFrame'
       requestBody:
         required: true
         description: Initial turn payload for the new agent conversation stream.
@@ -37208,6 +37376,18 @@ paths:
           description: Invalid request body
         '401':
           description: Unauthorized
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}/messages/stream:
     post:
@@ -37238,6 +37418,7 @@ paths:
           schema:
             type: string
             format: objectId
+        - $ref: '#/components/parameters/StreamFrame'
       requestBody:
         required: true
         description: Follow-up message payload for the agent conversation stream.
@@ -37258,6 +37439,18 @@ paths:
           description: Unauthorized
         '404':
           description: Conversation not found
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate:
     post:
@@ -37328,6 +37521,7 @@ paths:
           schema:
             type: string
             format: objectId
+        - $ref: '#/components/parameters/StreamFrame'
       requestBody:
         required: true
         description: |
@@ -37364,6 +37558,18 @@ paths:
             with offset information.
         '401':
           description: Unauthorized
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/fork:
     post:
@@ -37676,6 +37882,18 @@ paths:
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -38392,6 +38610,18 @@ paths:
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
           content:
             application/json:
               schema:

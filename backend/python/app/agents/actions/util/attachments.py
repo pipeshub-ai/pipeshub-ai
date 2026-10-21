@@ -198,7 +198,11 @@ async def resolve_attachments(
         ))
         return bundle
 
-    actor = Actor(org_id=org_id, user_id=user_id)
+    actor = Actor(
+        org_id=org_id, user_id=user_id,
+        run_id=state.get("run_id"), acl_version=state.get("acl_version"),
+        conversation_id=state.get("conversation_id"),
+    )
     # Knowledge records are read as the run's user; the chat's artifacts as their owner.
     artifact_actor = artifact_owner(state)
 

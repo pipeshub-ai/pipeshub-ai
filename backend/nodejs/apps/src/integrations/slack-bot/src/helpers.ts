@@ -521,6 +521,21 @@ export function parseSSEEvents(buffer: string): { events: StreamEvent[]; remaind
   return { events, remainder };
 }
 
+/**
+ * The row the finished turn saved: the last answer or error row. Turns on a conversation never
+ * overlap, so an earlier answer belongs to an earlier turn and must not stand in for a failed one.
+ */
+export function finalTurnRow(messages: BotResponse[]): BotResponse | null {
+  return (
+    [...messages]
+      .reverse()
+      .find(
+        (msg) =>
+          msg.messageType === 'bot_response' || msg.messageType === 'error',
+      ) ?? null
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Error handling
 // ---------------------------------------------------------------------------
@@ -745,6 +760,13 @@ export function truncateForSlack(text: string): string {
 
 export function resolveThreadId(typedMessage: SlackMessagePayload): string {
   return typedMessage.thread_ts || typedMessage.ts;
+}
+
+/** One id per Slack message, so the server can recognise a send repeated for the same message. */
+export function slackClientMessageId(
+  typedMessage: SlackMessagePayload,
+): string {
+  return `slack:${typedMessage.channel}:${typedMessage.ts}`;
 }
 
 export async function sendUserFacingSlackErrorMessage(

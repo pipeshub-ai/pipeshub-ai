@@ -209,6 +209,7 @@ from app.services.graph_db.entity_index_queries import (
     build_entity_index_source_page_aql,
     entity_index_source,
 )
+from app.services.graph_db.errors import UniqueConstraintViolation, violates_unique_constraint
 from app.services.graph_db.interface.graph_db_provider import (
     ACCESS_WALK_MAX_DEPTH,
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -2910,6 +2911,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert failed: {str(e)}")
+            if violates_unique_constraint(str(e)):
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     async def _upsert_record_nodes_releasing_trash(
@@ -3023,6 +3026,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result is not None
         except Exception as e:
             self.logger.error(f"❌ Update node failed: {str(e)}")
+            if violates_unique_constraint(str(e)):
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     async def update_node_if_match(

@@ -456,6 +456,35 @@ class TestTheGate:
         store.writes_fail = False
         assert (await _gate(context, _adapter(read_only=False, name="update_issue"))).decision == PreDecision.ASK
 
+    async def test_a_call_a_later_check_denies_leaves_nothing_waiting(self) -> None:
+        """Middleware added after the gate (as run-specific checks are) has its say before any card."""
+        store, refused, asked = _Store(), _adapter(read_only=False), _adapter(read_only=False, name="update_issue")
+        context = _context(store)
+        context.tool_state[approvals.TOOLS_BY_PATH] = {refused.path: refused, asked.path: asked}
+        hooks = HookRegistry()
+        hooks.on(HookEvent.PRE_TOOL_USE).use(approvals.approval_gate(context))
+
+        async def _later_check(ctx: ToolCallContext, next_fn: Any) -> None:  # noqa: ANN401
+            if ctx.tool_path == refused.path:
+                ctx.deny("Refused by a later check.")
+            await next_fn()
+
+        hooks.on(HookEvent.PRE_TOOL_USE).use(_later_check)
+        pipeline = hooks.on(HookEvent.PRE_TOOL_USE)
+
+        denied = await pipeline.dispatch(_gate_ctx(refused, title="Bug"))
+        assert (denied.decision, denied.decision_reason) == (PreDecision.DENY, "Refused by a later check.")
+        assert denied.pending_approval is None and store.pending() == []
+        assert approvals._PENDING_IN_RUN not in context.tool_state
+        assert approvals.PENDING_MESSAGE not in context.tool_state
+
+        # The slot is free: the next call that needs a person still gets its card.
+        waiting = await pipeline.dispatch(_gate_ctx(asked, key="X-1"))
+        assert waiting.decision == PreDecision.ASK and waiting.pending_approval is not None
+        (saved,) = store.pending()
+        assert saved["toolName"] == "update_issue"
+        assert context.tool_state[approvals.PENDING_MESSAGE].startswith(approvals.WAITING_PREFIX)
+
     async def test_the_kill_switch_lets_everything_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("MCP_TOOL_APPROVALS", "false")
         ctx = await _gate(_context(), _adapter(read_only=False))

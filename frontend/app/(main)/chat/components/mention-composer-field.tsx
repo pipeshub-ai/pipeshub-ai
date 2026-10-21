@@ -69,6 +69,7 @@ interface MentionComposerFieldProps {
   onSelectionChange?: (next: ChatKnowledgeFilters) => void;
   style?: React.CSSProperties;
   'aria-label'?: string;
+  'data-testid'?: string;
 }
 
 export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionComposerFieldProps>(
@@ -91,6 +92,7 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
       onSelectionChange,
       style,
       'aria-label': ariaLabel,
+      'data-testid': testId,
     },
     ref,
   ) {
@@ -475,6 +477,7 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
         <textarea
           ref={setRefs}
           className="chat-input-textarea"
+          data-testid={testId}
           value={value}
           readOnly={readOnly}
           rows={1}

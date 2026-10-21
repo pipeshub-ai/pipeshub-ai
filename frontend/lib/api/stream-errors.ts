@@ -1,6 +1,6 @@
 'use client';
 
-import { extractApiErrorMessage } from './api-error';
+import { extractApiErrorCode, extractApiErrorDetails, extractApiErrorMessage } from './api-error';
 
 /**
  * What a person reads when a streamed request (chat, agent chat) fails. The
@@ -28,11 +28,15 @@ type StreamErrorMessages = typeof STREAM_ERROR_MESSAGES | typeof CHAT_STREAM_ERR
 /** An error whose message was written for the user, so it can be shown as-is. */
 export class StreamError extends Error {
   readonly status?: number;
+  readonly code?: string;
+  readonly details?: Record<string, unknown>;
 
-  constructor(message: string, status?: number) {
+  constructor(message: string, status?: number, code?: string, details?: Record<string, unknown>) {
     super(message);
     this.name = 'StreamError';
     this.status = status;
+    this.code = code;
+    this.details = details;
   }
 }
 
@@ -72,16 +76,19 @@ export async function streamHttpError(
     // Not JSON (a proxy's HTML page, an empty body): fall back on the status.
   }
   const { status } = response;
-  if (status === 401) return new StreamError(messages.sessionExpired, status);
+  const code = extractApiErrorCode(body);
+  const details = extractApiErrorDetails(body);
+  const fail = (message: string) => new StreamError(message, status, code, details);
+  if (status === 401) return fail(messages.sessionExpired);
   if (status === 429 || status === 503 || status === 504) {
-    return new StreamError(busyStreamMessage(retryAfterSeconds(response)), status);
+    return fail(busyStreamMessage(retryAfterSeconds(response)));
   }
   if (status >= 400 && status < 500) {
     const serverMessage = readableServerMessage(body);
-    if (serverMessage) return new StreamError(serverMessage, status);
-    if (status === 403) return new StreamError(messages.forbidden, status);
+    if (serverMessage) return fail(serverMessage);
+    if (status === 403) return fail(messages.forbidden);
   }
-  return new StreamError(messages.unavailable, status);
+  return fail(messages.unavailable);
 }
 
 /**

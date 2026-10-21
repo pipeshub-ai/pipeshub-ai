@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.modules.authz.chat_content_access import NoChatContentAccess
 from app.services.artifact_registry.access import (
     AccessDeniedError,
     AccessPolicy,
@@ -57,7 +58,7 @@ class TestAuthorizeReadWrite:
         graph.add_user(USER, key="ukey-1")
         _seed_record(graph, "art-1")
         graph.edges["permission"].append({"from_id": "ukey-1", "to_id": "art-1", "role": "READER"})
-        policy = AccessPolicy(graph)
+        policy = AccessPolicy(graph, NoChatContentAccess())
         actor = Actor(org_id=ORG, user_id=USER)
 
         assert (await policy.authorize_read(actor, "art-1"))["_key"] == "art-1"
@@ -116,3 +117,32 @@ class TestGrantOwnerPermission:
         # Caller (VersionManager) is responsible for persisting — this
         # method must not have written anything itself.
         assert graph.edges["permission"] == []
+
+
+def _shared_artifact(graph: FakeGraphProvider, artifact_id: str = "art-1", *, conv: str | None = "conv-1") -> None:
+    """B's artifact (OWNER edge), with C having no edge at all."""
+    graph.add_user("owner-b", key="ukey-b")
+    graph.add_user(USER, key="ukey-c")
+    graph.nodes["users"]["ukey-b"] = {"_key": "ukey-b", "userId": "owner-b"}
+    graph.nodes["records"][artifact_id] = {
+        "_key": artifact_id, "orgId": ORG, "recordName": "r.pdf",
+        "connectorName": "CODING_SANDBOX", "recordType": "ARTIFACT",
+    }
+    graph.nodes["artifacts"][artifact_id] = {
+        "_key": artifact_id, "orgId": ORG, "conversationId": conv, "runId": "run-1",
+        "visibility": "VISIBLE", "isTemporary": False,
+    }
+    graph.edges["permission"].append({
+        "from_id": "ukey-b", "from_collection": "users", "to_id": artifact_id,
+        "type": "USER", "role": "OWNER",
+    })
+
+
+class TestAuthorizeWithoutAnEdge:
+    """A user with no permission edge on another user's conversation artifact."""
+
+    async def test_is_denied_by_default(self) -> None:
+        graph = FakeGraphProvider()
+        _shared_artifact(graph)
+        with pytest.raises(AccessDeniedError):
+            await AccessPolicy(graph).authorize_read(Actor(org_id=ORG, user_id=USER), "art-1")

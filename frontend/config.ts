@@ -60,3 +60,15 @@ export { ConnectorOverviewExtras } from '@/app/(main)/workspace/connectors/compo
 export { ToolsetToolRulesNotice as ToolsetToolRulesDialog } from '@/app/(main)/workspace/actions/components/toolset-tool-rules-notice';
 
 
+
+// Chat extension points
+export { defaultChatExtension as chatExtension, defaultChatSlots as chatSlots } from '@/app/(main)/chat/chat-extension';
+
+// Notification panel and socket
+export { defaultNotificationExtension as notificationExtension } from '@/app/(main)/notifications/notification-extension';
+
+// Profile page sections
+export { ProfileExtraSections } from '@/app/(main)/workspace/profile/components/profile-extra-sections';
+
+// Agent builder
+export { defaultAgentBuilderExtension as agentBuilderExtension } from '@/app/(main)/agents/agent-builder/agent-builder-extension';

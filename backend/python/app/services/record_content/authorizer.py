@@ -1,6 +1,6 @@
 """`TieredRecordAuthorizer` — cheapest-first, no bypass.
 
-Three tiers, each a real check:
+Four tiers, each a real check:
 
 0. The record is live. A record in the trash keeps its permission edges so it
    can be restored, and tier 2 would otherwise grant access from the edge alone.
@@ -10,6 +10,10 @@ Three tiers, each a real check:
    check: connector and collection records by the permission model, and
    artifacts and chat attachments (records outside every App) by a grant on
    the record itself.
+3. Chat content (a chat attachment or artifact tier 2 did not grant): the
+   installed `ChatContentAccess` decides. When it says graph edges do not
+   grant chat content, tier 2 counts nothing on a chat attachment or
+   artifact, so this tier decides for its uploader too.
 
 A direct user-to-record edge is not accepted on its own: it would skip the
 STRICT/RESTRICTED rule and the connector gate, and these bytes leave the
@@ -22,6 +26,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.modules.authz.chat_content_access import (
+    ChatContentAccess,
+    acl_grant_counts,
+    get_chat_content_access,
+)
 from app.services.graph_db.common.record_visibility import is_live_record
 
 from .models import RecordAccessDeniedError, RecordNotFoundError
@@ -38,10 +47,13 @@ class TieredRecordAuthorizer:
     beyond the injected graph_provider.
     """
 
-    def __init__(self, graph_provider: Any) -> None:
+    def __init__(self, graph_provider: Any, chat_access: ChatContentAccess | None = None) -> None:
         self._graph = graph_provider
+        self._chat_access = chat_access
 
-    async def authorize(self, actor: Any, record: Any) -> None:
+    async def authorize(
+        self, actor: Any, record: Any, *, conversation_id: str | None = None,
+    ) -> None:
         """Authorize `actor` to read `record`. Raises `RecordAccessDeniedError`
         on denial; returns `None` on success.
 
@@ -69,10 +81,22 @@ class TieredRecordAuthorizer:
         )
 
         # Tier 2 — the permission model
+        access = self._chat_access or get_chat_content_access()
         tier3_result = await self._graph.check_record_access_with_details(
             actor.user_id, actor.org_id, record_id
         )
-        if tier3_result is not None:
+        if acl_grant_counts(access, tier3_result):
+            return
+
+        # Tier 3 — chat content the permission model did not grant
+        if await access.can_read_chat_content(
+            self._graph,
+            user_id=actor.user_id,
+            org_id=actor.org_id,
+            record=record,
+            conversation_id=conversation_id,
+            acl_version=getattr(actor, "acl_version", None),
+        ):
             return
 
         logger.warning(

@@ -17,7 +17,7 @@ interface ArtifactsPanelProps {
   /** Jump to the CODE artifact `artifact.derivedFromCodeArtifactId` was generated from. Rejects with a gone error when that artifact was deleted. */
   onViewSource?: (codeArtifactId: string) => void | Promise<void>;
   /** recordId -> highest version seen anywhere in the conversation — powers the "newer version available" hint (see `MessageList`). */
-  latestArtifactVersions?: Map<string, number>;
+  latestArtifactVersions?: ReadonlyMap<string, number>;
 }
 
 const MIME_ICONS: Record<string, string> = {

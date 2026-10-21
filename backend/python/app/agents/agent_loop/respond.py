@@ -312,19 +312,26 @@ class AnswerFinalizer:
             agent_output = streamed
 
         if (not agent_output or not agent_output.strip()) and agent_needs_input:
+            answer = ""
+            if self._context.conversation_id:
+                from app.utils.conversation_tasks import await_and_collect_results
+                from app.utils.streaming import _append_task_markers
+
+                # The files this run made come with its question; no later run collects them.
+                answer = _append_task_markers(answer, await await_and_collect_results(self._context.conversation_id))
             waiting_response: dict[str, Any] = {
-                "answer": "",
+                "answer": answer,
                 "citations": [],
                 "status": "waiting_input",
             }
             waiting_response.update(_tool_names_from_state(state))
-            self._attach_parts(waiting_response, final_text="")
+            self._attach_parts(waiting_response, final_text=answer)
             await self._emit_ask_user_question_fallback(state, event_sink)
             for evt in self._context.formatter.answer_final(
                 self._context, completion_data=waiting_response,
             ):
                 await event_sink.write(evt)
-            state["response"] = ""
+            state["response"] = answer
             state["completion_data"] = waiting_response
             return waiting_response
 
@@ -514,7 +521,8 @@ class AnswerFinalizer:
 
         clean_output, _ = parse_confidence_from_answer(streamed_answer)
         completion_data: dict[str, Any] = {"status": "stopped"}
-        self._attach_parts(completion_data, final_text=clean_output)
+        # No answer text yet: the last text streamed was narration before a tool call, and stays.
+        self._attach_parts(completion_data, final_text=clean_output, append=not clean_output)
 
         parts = completion_data.get("parts")
         if parts:

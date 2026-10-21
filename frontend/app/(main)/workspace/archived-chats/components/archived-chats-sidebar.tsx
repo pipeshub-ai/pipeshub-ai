@@ -19,6 +19,7 @@ import { Spinner } from '@/app/components/ui/spinner';
 import type { Conversation, AgentArchivedGroup } from '../types';
 import { ArchivedChatsApi } from '../api';
 import { DeleteConfirmDialog } from './delete-confirm-dialog';
+import { chatExtension } from '@/config';
 
 interface ArchivedChatsSidebarProps {
   conversations: Conversation[];
@@ -50,6 +51,8 @@ interface ArchivedChatsSidebarProps {
 interface ArchivedChatItemMenuProps {
   isParentHovered: boolean;
   isRestoring: boolean;
+  /** Only the chat's owner can delete it; `false` hides the entry. */
+  isOwner?: boolean;
   onOpenChange?: (open: boolean) => void;
   onRestore: () => void;
   onDelete: () => void;
@@ -58,6 +61,7 @@ interface ArchivedChatItemMenuProps {
 function ArchivedChatItemMenu({
   isParentHovered,
   isRestoring,
+  isOwner,
   onOpenChange,
   onRestore,
   onDelete,
@@ -79,6 +83,7 @@ function ArchivedChatItemMenu({
       <DropdownMenu.Trigger>
         <button
           type="button"
+          aria-label={t('common.moreOptions')}
           onMouseEnter={() => setIsMeatballHovered(true)}
           onMouseLeave={() => setIsMeatballHovered(false)}
           onClick={(e) => {
@@ -124,20 +129,22 @@ function ArchivedChatItemMenu({
             </Text>
           </Flex>
         </DropdownMenu.Item>
-        <DropdownMenu.Item
-          color="red"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-        >
-          <Flex align="center" gap="2">
-            <MaterialIcon name="delete" size={16} color="var(--red-11)" />
-            <Text size="2" style={{ color: 'var(--red-11)' }}>
-              {t('workspace.archivedChats.permanentlyDelete')}
-            </Text>
-          </Flex>
-        </DropdownMenu.Item>
+        {isOwner !== false && (
+          <DropdownMenu.Item
+            color="red"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+          >
+            <Flex align="center" gap="2">
+              <MaterialIcon name="delete" size={16} color="var(--red-11)" />
+              <Text size="2" style={{ color: 'var(--red-11)' }}>
+                {t('workspace.archivedChats.permanentlyDelete')}
+              </Text>
+            </Flex>
+          </DropdownMenu.Item>
+        )}
       </DropdownMenu.Content>
     </DropdownMenu.Root>
   );
@@ -324,13 +331,14 @@ function AgentGroupSection({
                       fontWeight: isActive ? 500 : 400,
                     }}
                   >
-                    {conv.title}
+                    {chatExtension.formatConversationTitle(conv.title)}
                   </Text>
                 }
                 rightSlot={
                   <ArchivedChatItemMenu
                     isParentHovered={hoveredId === conv.id || openMenuId === conv.id}
                     isRestoring={restoringId === conv.id}
+                    isOwner={conv.isOwner}
                     onOpenChange={(open) => onMenuOpenChange(open ? conv.id : null)}
                     onRestore={() => onRestore(conv.id, group.agentKey)}
                     onDelete={() => onDeleteRequest(conv.id, group.agentKey)}
@@ -526,7 +534,7 @@ export function ArchivedChatsSidebar({
                             fontWeight: isActive ? 500 : 400,
                           }}
                         >
-                          {conversation.title}
+                          {chatExtension.formatConversationTitle(conversation.title)}
                         </Text>
                       }
                       rightSlot={
@@ -536,6 +544,7 @@ export function ArchivedChatsSidebar({
                             openMenuId === conversation.id
                           }
                           isRestoring={restoringId === conversation.id}
+                          isOwner={conversation.isOwner}
                           onOpenChange={(open) =>
                             setOpenMenuId(open ? conversation.id : null)
                           }

@@ -8,9 +8,11 @@ const authState = {
   isHydrated: true,
 };
 
-vi.mock('@/config', () => ({
+vi.mock('@/config', async () => ({
   useAuthStore: (fn: (s: typeof authState) => unknown) => fn(authState),
   logoutAndRedirect: vi.fn(),
+  notificationExtension: (await vi.importActual<typeof import('../notification-extension')>('../notification-extension'))
+    .defaultNotificationExtension,
 }));
 
 const connectMock = vi.fn(() => ({

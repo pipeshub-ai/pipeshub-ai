@@ -220,6 +220,8 @@ async def build_prior_routing_messages(
                         virtual_record_id=vrid,
                         logger=logger,
                         is_service_account=is_service_account,
+                        conversation_id=query_info.get("conversationId"),
+                        acl_version=query_info.get("aclVersion"),
                     ):
                         continue
                     try:

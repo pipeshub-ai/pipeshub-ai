@@ -258,9 +258,12 @@ export abstract class BaseKafkaConsumerConnection
     handler: (message: StreamMessage<T>) => Promise<void>,
   ): Promise<void> {
     await this.ensureConnection();
+    const manualCommit = this.config.manualCommit === true;
     try {
       await this.consumer.run({
+        autoCommit: !manualCommit,
         eachMessage: async ({ topic, partition, message }) => {
+          let handling = false;
           try {
             if (!message.value) {
               throw new BadRequestError('Empty message value');
@@ -278,6 +281,7 @@ export abstract class BaseKafkaConsumerConnection
               sanitizeRootId(envelope[ENVELOPE_REQUEST_ID] as string | undefined) ??
               newSystemRoot();
 
+            handling = true;
             await runWithRequestContext({ rootId }, () =>
               handler(parsedMessage),
             );
@@ -288,6 +292,15 @@ export abstract class BaseKafkaConsumerConnection
               messageKey: message.key?.toString(),
               error: (error as Error).message,
             });
+            // Uncommitted, so it comes back; an unreadable message is skipped.
+            if (manualCommit && handling) {
+              throw error;
+            }
+          }
+          if (manualCommit) {
+            await this.consumer.commitOffsets([
+              { topic, partition, offset: String(Number(message.offset) + 1) },
+            ]);
           }
         },
       });

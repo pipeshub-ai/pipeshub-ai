@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
+import React, { useContext, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -14,6 +14,7 @@ import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { useChatStore } from '../../store';
 import type { McpSignInServer } from '../../types';
+import { AnswerSlotContext, answerSlotIdNow, useAnswerSlotId } from './answer-slot-scope';
 
 /** When the server's current sign-in was made (0 for a record from before that was kept), or null without one. */
 async function signedInAt(server: McpSignInServer): Promise<number | null> {
@@ -37,8 +38,10 @@ interface McpSignInCardProps {
 export function McpSignInCard({ servers }: McpSignInCardProps) {
   const { t } = useTranslation();
   const access = useChatStore((s) => s.agentContextAccess);
+  const scopedSlotId = useContext(AnswerSlotContext);
+  const answerSlotId = useAnswerSlotId();
   // Someone viewing a conversation shared with them can't send in it.
-  const canSend = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null)) !== false;
+  const canSend = useChatStore((s) => (answerSlotId ? s.slots[answerSlotId]?.isOwner ?? null : null)) !== false;
   const [signedIn, setSignedIn] = useState<ReadonlySet<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -96,7 +99,7 @@ export function McpSignInCard({ servers }: McpSignInCardProps) {
   };
 
   const tryAgain = () => {
-    const slotId = useChatStore.getState().activeSlotId;
+    const slotId = answerSlotIdNow(scopedSlotId);
     if (!slotId) return;
     const text = t('chat.mcpSignIn.retryMessage', { servers: servers.map((s) => s.serverName).join(', ') });
     // MCP servers are only in agent mode.

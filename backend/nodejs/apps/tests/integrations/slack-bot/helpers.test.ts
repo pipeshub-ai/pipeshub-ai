@@ -40,6 +40,7 @@ import {
   truncateForSlackStreamMarkdown,
   truncateFromEnd,
   resolveThreadId,
+  slackClientMessageId,
   resolveSlackBotForEvent,
   splitByLengthPreferringNewlines,
   describeSlackFile,
@@ -875,6 +876,21 @@ describe('slack-bot/helpers', () => {
       it('falls back to ts when thread_ts is absent', () => {
         const msg = { ts: 'msg-1' } as SlackMessagePayload;
         expect(resolveThreadId(msg)).to.equal('msg-1');
+      });
+    });
+
+    describe('slackClientMessageId', () => {
+      it('is the same for the same Slack message, even in a thread, and fits the 64-character limit', () => {
+        const msg = { channel: 'C0123456789', ts: '1792183630.868055', thread_ts: '1792183000.000100' } as SlackMessagePayload;
+        expect(slackClientMessageId(msg)).to.equal('slack:C0123456789:1792183630.868055');
+        expect(slackClientMessageId({ ...msg })).to.equal(slackClientMessageId(msg));
+        expect(slackClientMessageId(msg).length).to.be.at.most(64);
+      });
+
+      it('differs between messages in the same thread', () => {
+        const a = { channel: 'C1', ts: '1.000001', thread_ts: '1.000000' } as SlackMessagePayload;
+        const b = { channel: 'C1', ts: '1.000002', thread_ts: '1.000000' } as SlackMessagePayload;
+        expect(slackClientMessageId(a)).to.not.equal(slackClientMessageId(b));
       });
     });
 

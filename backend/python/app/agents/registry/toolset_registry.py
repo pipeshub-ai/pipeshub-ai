@@ -412,7 +412,9 @@ class ToolsetRegistry:
 
     def auto_discover_toolsets(self) -> None:
         """Auto-discover toolsets from action files"""
-        self.discover_toolsets(list(STANDARD_TOOLSET_MODULES))
+        from app.modules.agents.chat_extension import get_chat_extension
+
+        self.discover_toolsets([*STANDARD_TOOLSET_MODULES, *get_chat_extension().toolset_modules()])
         logger.info(f"Auto-discovered {len(self._toolsets)} toolsets with in-memory registry")
 
     def get_toolset_metadata(self, toolset_name: str, serialize: bool = True) -> dict[str, Any] | None:

@@ -5,6 +5,8 @@ import { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { chatListScope, withListScope } from '../helpers/list-scope'
 
 const ORG = oid()
 const OTHER_ORG = oid()
@@ -37,8 +39,9 @@ async function call<T = Record<string, unknown>>(
 
 const pin = controller.pinConversation as Handler
 const unpin = controller.unpinConversation as Handler
-const list = controller.getAllConversations as Handler
-const archive = controller.archiveConversation as Handler
+// The list and archive read the access their route guard decided, so they run behind it.
+const list = withListScope(controller.getAllConversations as Handler, 'chat', chatListScope)
+const archive = behindGuard(realGuards(), 'archiveSelf', controller.archiveConversation as Handler)
 
 function fresh(): InMemoryChatStore {
   const store = new InMemoryChatStore()

@@ -12,6 +12,7 @@ import {
   PasswordSecuritySection,
   DemoDataSection,
 } from "./components";
+import { ProfileExtraSections } from "@/config";
 import { LottieLoader } from "@/app/components/ui/lottie-loader";
 import { useProfilePage } from "./hooks/use-profile-page";
 import { USER_ROLES } from "../constants";
@@ -116,6 +117,8 @@ export default function ProfilePage() {
 
         {/* ── Demo data section (only while the Acme Corp demo exists) ── */}
         <DemoDataSection isAdmin={role === USER_ROLES.ADMIN} />
+
+        <ProfileExtraSections />
 
         {/* ── Password & Security section ── */}
         {/* Extra bottom padding so save bar doesn't overlap last section */}

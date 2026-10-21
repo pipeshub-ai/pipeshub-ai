@@ -44,12 +44,14 @@ export interface UpstreamAbortHandle {
    * it keeps draining the upstream stream and saves its own result. */
   isClientDisconnected(): boolean;
   /** True only once we tore the upstream down ourselves (the detached-run cap
-   * expired). Lets `stream.on('error')` tell that apart from a genuine
-   * upstream failure. */
+   * expired, or `abort()` ran). Lets `stream.on('error')` tell that apart from
+   * a genuine upstream failure. */
   isAborted(): boolean;
   /** Bind the `Readable` returned by `executeStream()` so the detached-run cap
    * can destroy it and stops counting once the stream ends. */
   bindStream(stream: Readable): void;
+  /** Stops the upstream on the server's initiative (a lost lease), not the client's. */
+  abort(): void;
 }
 
 /**
@@ -113,12 +115,21 @@ export function attachUpstreamAbort(
     signal: controller.signal,
     isClientDisconnected: () => clientDisconnected,
     isAborted: () => controller.signal.aborted,
+    abort() {
+      clearAbandonTimer();
+      controller.abort();
+      boundStream?.destroy();
+    },
     bindStream(stream: Readable) {
       boundStream = stream;
       stream.once('close', () => {
         streamClosed = true;
         clearAbandonTimer();
       });
+      // `abort()` may have run while `executeStream()` was still resolving.
+      if (controller.signal.aborted && !stream.destroyed) {
+        stream.destroy();
+      }
     },
   };
 }

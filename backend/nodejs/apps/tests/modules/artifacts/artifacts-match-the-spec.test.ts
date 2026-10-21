@@ -6,6 +6,8 @@ import { join } from 'path'
 import yaml from 'js-yaml'
 import { createArtifactsRouter } from '../../../src/modules/artifacts/routes/artifacts.routes'
 import { ForbiddenError } from '../../../src/libs/errors/http.errors'
+import { CONVERSATION_TYPES } from '../../../src/modules/enterprise_search/services/conversation/conversation.types'
+import { markingGuards } from '../enterprise_search/helpers/guarded-chat'
 
 /**
  * Every artifact route the gateway serves is in the published spec, and the
@@ -25,10 +27,12 @@ type Spec = { paths: Record<string, Record<string, Operation>> }
 
 function router(): any {
   const container: any = {
-    get: sinon.stub().callsFake((key: string) =>
+    get: sinon.stub().callsFake((key: string | symbol) =>
       key === 'AuthMiddleware'
         ? { authenticate: (_req: unknown, _res: unknown, next: () => void) => next() }
-        : { connectorBackend: 'http://localhost:8088' },
+        : key === CONVERSATION_TYPES.ConversationGuards
+          ? markingGuards()
+          : { connectorBackend: 'http://localhost:8088' },
     ),
   }
   return createArtifactsRouter(container)

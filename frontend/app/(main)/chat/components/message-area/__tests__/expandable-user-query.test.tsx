@@ -6,6 +6,7 @@ import {
   ExpandableUserQuery,
   QUESTION_CHAR_LIMIT,
   EXPANDED_MAX_HEIGHT_PX,
+  headlineSize,
 } from '../expandable-user-query';
 
 afterEach(() => cleanup());
@@ -145,5 +146,25 @@ describe('ExpandableUserQuery', () => {
     const actions = container.querySelector('[data-testid="user-query-actions"]') as HTMLElement;
     expect(actions.contains(screen.getByRole('button', { name: /copy/i }))).toBe(true);
     expect(actions.contains(screen.getByRole('button', { name: /edit/i }))).toBe(true);
+  });
+
+  it('as a headline, sits with no space above it, at 28 px for a short question', () => {
+    renderQuery({ question: 'How do I reset my password?', headline: { compact: false } });
+    const heading = screen.getByTestId('user-query-heading');
+    expect(heading.className).toContain('rt-r-size-7');
+    expect(heading.style.paddingTop).toBe('0px');
+  });
+
+  it('as a headline, steps down 28, 24, 20, 18 px as the question grows, and is 18 px when compact', () => {
+    const size = (n: number, compact = false) => headlineSize('x'.repeat(n), compact).size;
+    expect([size(160), size(161), size(240), size(241), size(340), size(341)]).toEqual(['7', '6', '6', '5', '5', '4']);
+    expect(size(10, true)).toBe('4');
+  });
+
+  it('keeps its 12 px above and 20 px size when it is not a headline', () => {
+    renderQuery({ question: 'How do I reset my password?' });
+    const heading = screen.getByTestId('user-query-heading');
+    expect(heading.className).toContain('rt-r-size-5');
+    expect(heading.style.paddingTop).toBe('var(--space-3)');
   });
 });

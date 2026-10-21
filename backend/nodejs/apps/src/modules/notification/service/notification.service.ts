@@ -1,10 +1,16 @@
 import { Server as HttpServer } from 'http';
-import { DefaultEventsMap, Server, Socket } from 'socket.io';
+import { DefaultEventsMap, Server, ServerOptions, Socket } from 'socket.io';
+import { createAdapter, createShardedAdapter } from '@socket.io/redis-adapter';
+import type { Cluster } from 'ioredis';
 import { Logger } from '../../../libs/services/logger.service';
 import { inject, injectable } from 'inversify';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TYPES } from '../../../libs/types/container.types';
+import type {
+  IRedisConnectionProvider,
+  RedisClient,
+} from '../../../libs/services/redis/connectionProvider.interface';
 
 interface CustomSocketData {
   userId: string;
@@ -19,27 +25,17 @@ type CustomSocket = Socket<
   CustomSocketData
 >;
 
-interface QueuedNotification {
-  userId: string;
-  event: string;
-  data: any;
-  timestamp: number;
-  retryCount: number;
-}
-
 @injectable()
 export class NotificationService {
   private io: Server | null = null;
   private logger: Logger;
   private connectedUsers: Set<string> = new Set();
-  private notificationQueue: Map<string, QueuedNotification[]> = new Map();
-  private queueProcessingInterval: NodeJS.Timeout | null = null;
-  private readonly MAX_RETRY_COUNT = 3;
-  private readonly QUEUE_PROCESSING_INTERVAL_MS = 5000; // Process queue every 5 seconds
-  private readonly MAX_QUEUE_SIZE_PER_USER = 100; // Maximum notifications per user to prevent memory issues
+  private subClient: RedisClient | null = null;
 
   constructor(
     @inject(TYPES.AuthTokenService) private authTokenService: AuthTokenService,
+    @inject('RedisConnectionProvider')
+    private redisProvider: IRedisConnectionProvider,
   ) {
     this.logger = new Logger({ service: 'NotificationService' });
   }
@@ -55,6 +51,7 @@ export class NotificationService {
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
       },
+      adapter: this.redisAdapter(),
     });
 
     this.io.use(async (socket: CustomSocket, next) => {
@@ -116,9 +113,6 @@ export class NotificationService {
           `User connected: userId: ${userId} & socketId: ${socket.id}`,
         );
 
-        // Process any queued notifications for this user immediately upon connection
-        this.processQueuedNotificationsForUser(userId);
-
         // You can also join organization room if needed
         if (orgId) {
           socket.join(`org:${orgId}`);
@@ -145,157 +139,29 @@ export class NotificationService {
       });
     });
 
-    // Start queue processing interval
-    this.startQueueProcessing();
-
     this.logger.info('Socket.IO server initialized successfully');
   }
 
   /**
-   * Check if a user is currently connected via Socket.IO
+   * Pushes travel through Redis pub/sub, so they reach a user's sockets on
+   * every replica. Redis Cluster uses sharded pub/sub, which keeps each
+   * message on the shard that owns its channel.
    */
-  private isUserConnected(userId: string): boolean {
-    if (!this.io) {
-      return false;
-    }
-    const room = this.io.sockets.adapter.rooms.get(userId);
-    return room !== undefined && room.size > 0;
-  }
-
-  /**
-   * Queue a notification for later delivery when user connects
-   */
-  private queueNotification(userId: string, event: string, data: any): void {
-    if (!this.notificationQueue.has(userId)) {
-      this.notificationQueue.set(userId, []);
-    }
-
-    const queue = this.notificationQueue.get(userId)!;
-    
-    // Prevent queue from growing unbounded
-    if (queue.length >= this.MAX_QUEUE_SIZE_PER_USER) {
-      // Remove oldest notification (FIFO)
-      const removed = queue.shift();
-      this.logger.warn('Notification queue full, dropping oldest notification', {
-        userId,
-        event: removed?.event,
-        queueSize: queue.length,
-        maxSize: this.MAX_QUEUE_SIZE_PER_USER,
+  private redisAdapter(): ServerOptions['adapter'] {
+    const pubClient = this.redisProvider.getClient();
+    if (this.redisProvider.isCluster) {
+      this.subClient = (pubClient as Cluster).duplicate([], {
+        shardedSubscribers: true,
       });
+      return createShardedAdapter(pubClient, this.subClient);
     }
-
-    queue.push({
-      userId,
-      event,
-      data,
-      timestamp: Date.now(),
-      retryCount: 0,
-    });
-
-    this.logger.debug('Notification queued for user', {
-      userId,
-      event,
-      queueSize: queue.length,
-    });
+    this.subClient = this.redisProvider.createPubSubClient();
+    return createAdapter(pubClient, this.subClient);
   }
 
   /**
-   * Process queued notifications for a specific user
-   */
-  private processQueuedNotificationsForUser(userId: string): void {
-    const queue = this.notificationQueue.get(userId);
-    if (!queue || queue.length === 0) {
-      return;
-    }
-
-    if (!this.isUserConnected(userId)) {
-      return;
-    }
-
-    const processed: QueuedNotification[] = [];
-    const remaining: QueuedNotification[] = [];
-
-    for (const notification of queue) {
-      try {
-        const sent = this.sendToUserDirect(userId, notification.event, notification.data);
-        if (sent) {
-          processed.push(notification);
-          this.logger.debug('Queued notification delivered', {
-            userId,
-            event: notification.event,
-            queuedAt: notification.timestamp,
-            deliveryDelay: Date.now() - notification.timestamp,
-          });
-        } else {
-          // If send failed, increment retry count
-          notification.retryCount += 1;
-          if (notification.retryCount < this.MAX_RETRY_COUNT) {
-            remaining.push(notification);
-          } else {
-            this.logger.warn('Notification exceeded max retry count, dropping', {
-              userId,
-              event: notification.event,
-              retryCount: notification.retryCount,
-            });
-          }
-        }
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        this.logger.error('Error processing queued notification', {
-          userId,
-          event: notification.event,
-          error: err.message,
-        });
-        notification.retryCount += 1;
-        if (notification.retryCount < this.MAX_RETRY_COUNT) {
-          remaining.push(notification);
-        }
-      }
-    }
-
-    if (remaining.length > 0) {
-      this.notificationQueue.set(userId, remaining);
-    } else {
-      this.notificationQueue.delete(userId);
-    }
-  }
-
-  /**
-   * Start periodic processing of notification queue
-   */
-  private startQueueProcessing(): void {
-    if (this.queueProcessingInterval) {
-      return;
-    }
-
-    this.queueProcessingInterval = setInterval(() => {
-      const userIds = Array.from(this.notificationQueue.keys());
-      for (const userId of userIds) {
-        if (this.isUserConnected(userId)) {
-          this.processQueuedNotificationsForUser(userId);
-        }
-      }
-    }, this.QUEUE_PROCESSING_INTERVAL_MS);
-
-    this.logger.info('Notification queue processing started', {
-      intervalMs: this.QUEUE_PROCESSING_INTERVAL_MS,
-    });
-  }
-
-  /**
-   * Direct send to user (internal method, no queuing)
-   */
-  private sendToUserDirect(userId: string, event: string, data: any): boolean {
-    if (!this.io) {
-      return false;
-    }
-    this.io.to(userId).emit(event, data);
-    return true;
-  }
-
-  /**
-   * Force-logout a connected user. Does not queue — queuing would log them out
-   * again after a successful re-login.
+   * Force-logout a user on every replica. Nothing is held for later: a held
+   * sign-out would log them out again after their next sign-in.
    */
   emitForceLogout(
     userId: string,
@@ -304,22 +170,16 @@ export class NotificationService {
     if (!this.io || !userId) {
       return false;
     }
-    if (!this.isUserConnected(userId)) {
-      this.logger.debug('force_logout skipped; user not connected', {
-        userId,
-        reason,
-      });
-      return false;
-    }
-    this.sendToUserDirect(userId, 'force_logout', { reason });
+    this.io.to(userId).emit('force_logout', { reason });
     this.logger.info('force_logout emitted', { userId, reason });
     return true;
   }
 
   /**
-   * Send a message to a specific user.
-   * If user is not connected, the notification is queued for delivery when they connect.
-   * Returns true if sent immediately, false if queued or failed.
+   * Send a message to a user's sockets, on whichever replica they are.
+   * Nothing is held for a user who is offline: the stored notification is the
+   * durable copy, and the client fetches it when it connects.
+   * Returns false only when the Socket.IO server is not initialized.
    */
   sendToUser(userId: string, event: string, data: any): boolean {
     if (!this.io) {
@@ -329,25 +189,8 @@ export class NotificationService {
       });
       return false;
     }
-
-    // Check if user is connected
-    if (this.isUserConnected(userId)) {
-      // User is connected, send immediately
-      this.sendToUserDirect(userId, event, data);
-      this.logger.debug('Notification sent immediately to connected user', {
-        userId,
-        event,
-      });
-      return true;
-    } else {
-      // User is not connected, queue for later delivery
-      this.queueNotification(userId, event, data);
-      this.logger.debug('User not connected, notification queued', {
-        userId,
-        event,
-      });
-      return false; // Indicates notification was queued, not sent immediately
-    }
+    this.io.to(userId).emit(event, data);
+    return true;
   }
 
   // Method to send a message to all users in an organization
@@ -368,25 +211,20 @@ export class NotificationService {
 
   // Method to shutdown the Socket.IO server
   shutdown(): void {
-    if (this.queueProcessingInterval) {
-      clearInterval(this.queueProcessingInterval);
-      this.queueProcessingInterval = null;
-    }
-
     if (this.io) {
-      this.logger.info('Shutting down Socket.IO server', {
-        queuedNotifications: Array.from(this.notificationQueue.values()).reduce(
-          (sum, queue) => sum + queue.length,
-          0,
-        ),
-      });
-      this.io.disconnectSockets(true);
+      this.logger.info('Shutting down Socket.IO server');
+      // Local: through the adapter it would drop every replica's sockets.
+      this.io.local.disconnectSockets(true);
       this.io.close();
       this.io = null;
     }
+    if (this.subClient) {
+      this.redisProvider.release(this.subClient);
+      void this.subClient.quit().catch(() => undefined);
+      this.subClient = null;
+    }
 
     this.connectedUsers.clear();
-    this.notificationQueue.clear();
   }
 
   private extractToken(token: string): string | null {

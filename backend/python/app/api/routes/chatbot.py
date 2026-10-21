@@ -15,11 +15,11 @@ from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from app.agents.agent_loop.cancellation.policy import CancelRequester
 from app.agents.agent_loop.cancellation.registry import (
     RunCancellationRegistry,
-    RunOwner,
 )
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
@@ -41,6 +41,7 @@ from app.models.blocks import (
     CitationMetadata,
     DataFormat,
 )
+from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pdf_rasterizer import (
     count_chars_per_page_from_bytes_sync,
@@ -135,6 +136,9 @@ class ChatQuery(BaseModel):
     # that predate this field or don't need cancellation (the agent loop
     # generates one itself — see `stream_bridge.py`/`bridge.py`).
     runId: str | None = None
+    # The chat's ACL version from Node (always present on Node requests).
+    # Keys the chat-content access cache; absent means "do not cache".
+    aclVersion: int | None = None
     # Set by Node for a project-scoped chat (see `applyProjectScope`,
     # project-context.ts). When true and the effective `filters` carry no
     # apps/kb, `get_accessible_virtual_record_ids` returns no records instead
@@ -1476,6 +1480,16 @@ async def _generate_chat_stream_via_agent_loop(
     user_id = user.get("userId")
     protocol = resolve_protocol(query_info.protocol, request)
 
+    chat_extension = get_chat_extension()
+    preflight = await chat_extension.preflight(
+        query_info, graph_provider=graph_provider, config_service=config_service,
+        user_id=user_id, org_id=org_id, logger=logger_,
+    )
+    if preflight is not None:
+        async for chunk in preflight:
+            yield chunk
+        return
+
     # LLM init, system prompts, user/org enrichment, and the entity vector
     # store are independent of each other and all sit before the first
     # streamed byte, so they run as one wave instead of serial round trips.
@@ -1546,14 +1560,18 @@ async def _generate_chat_stream_via_agent_loop(
     if query_info.strictScope:
         effective_filters["strictScope"] = True
 
+    extension_fields = chat_extension.query_fields(query_info)
     attachments, previous_conversations = await keep_accessible_attachments(
         graph_provider,
         org_id=org_id,
         user_id=user_id,
         is_service_account=bool(user.get("isServiceAccount")),
         attachments=query_info.attachments,
-        previous_conversations=query_info.previousConversations,
+        # The edition may rewrite the history the run reads (shared-chat rows): filter that copy.
+        previous_conversations=extension_fields.pop("previous_conversations", query_info.previousConversations),
         logger=logger_,
+        conversation_id=query_info.conversationId,
+        acl_version=query_info.aclVersion,
     )
     query_dict = {
         "query": query_info.query,
@@ -1573,8 +1591,10 @@ async def _generate_chat_stream_via_agent_loop(
         "includeRetrievalContext": query_info.includeRetrievalContext,
         "keywordSearchBudget": query_info.keywordSearchBudget,
         "runId": query_info.runId,
+        "aclVersion": query_info.aclVersion,
         "is_service_account": bool(user.get("isServiceAccount")),
     }
+    query_dict.update(extension_fields)
     user_info = {
         "userId": user_id,
         "orgId": org_id,
@@ -1643,6 +1663,13 @@ async def _generate_chat_stream_via_agent_loop(
             yield event
 
 
+def _invalid_parameters(e: Exception) -> HTTPException:
+    """A 400 that names no field or value; the reason goes to the server log, without the values sent."""
+    reason = e.errors(include_url=False, include_input=False) if isinstance(e, ValidationError) else type(e).__name__
+    logger.warning("Invalid request parameters: %s", reason)
+    return HTTPException(status_code=400, detail="Invalid request parameters")
+
+
 async def _parse_chat_query(
     request: Request,
     cancellation_registry: RunCancellationRegistry,
@@ -1657,9 +1684,12 @@ async def _parse_chat_query(
         raise HTTPException(status_code=400, detail="Invalid JSON in request body")
 
     try:
-        query_info = ChatQuery(**body)
+        query_info = get_chat_extension().chat_query_model(ChatQuery)(**body)
+    except HTTPException:
+        # The request model refused the body with a status and code of its own.
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+        raise _invalid_parameters(e) from e
 
     # A real HTTP 409 is only possible HERE, before `StreamingResponse` is
     # returned — once the SSE generator below starts, Starlette has already
@@ -1778,10 +1808,10 @@ async def cancel_chat_stream(
     try:
         cancel_request = CancelRunRequest(**body)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+        raise _invalid_parameters(e) from e
 
     user = getattr(request.state, "user", {}) or {}
-    requester = RunOwner(
+    requester = CancelRequester(
         user_id=user.get("userId", ""),
         org_id=user.get("orgId", ""),
         conversation_id=cancel_request.conversationId,

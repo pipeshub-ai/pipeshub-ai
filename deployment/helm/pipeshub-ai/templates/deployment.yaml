@@ -178,6 +178,8 @@ spec:
               value: {{ .Values.config.indexingConcurrencyRedisMaxConnections | quote }}
             - name: SHUTDOWN_TASK_TIMEOUT
               value: {{ .Values.config.shutdownTaskTimeout | quote }}
+            - name: SHUTDOWN_DRAIN_MS
+              value: {{ .Values.config.shutdownDrainMs | quote }}
             - name: STALE_INDEXING_RECOVERY_STARTUP_GRACE_SECONDS
               value: {{ .Values.config.staleIndexingRecoveryStartupGraceSeconds | quote }}
             - name: STALE_INDEXING_RECOVERY_INTERVAL_SECONDS
@@ -384,6 +386,8 @@ spec:
             # REPLICA_SET_AVAILABLE=true and crash the API at first transaction.
             - name: REPLICA_SET_AVAILABLE
               value: {{ ternary "true" "false" $isReplicaSet | quote }}
+            - name: MONGO_AUTO_INDEX
+              value: {{ .Values.config.mongoAutoIndex | quote }}
             
             # Qdrant config
             - name: QDRANT_API_KEY

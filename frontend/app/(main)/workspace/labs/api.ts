@@ -21,6 +21,8 @@ export interface AvailableFlag {
   key: string;
   label: string;
   description: string;
+  /** Translation key of the description, shown instead of it; its text can include `{{description}}`. */
+  descriptionKey?: string;
   defaultEnabled: boolean;
   /** Labs shows these only after "Show advanced feature flags" is opened. */
   advanced?: boolean;

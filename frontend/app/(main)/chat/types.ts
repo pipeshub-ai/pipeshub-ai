@@ -640,6 +640,8 @@ export interface SSEConnectedEvent {
    * If the backend later async-refines titles, `complete` still refreshes list/title state.
    */
   title?: string;
+  /** The run's id as the server knows it (same value as the `X-Run-Id` header), when it sends one. */
+  runId?: string;
 }
 
 /** Backend status phases (planning / tools / generation); keep open-ended for forward compatibility */
@@ -871,6 +873,8 @@ export interface ConversationCompleteData {
   __v: number;
   projectId?: string;
   projectVisibility?: 'private' | 'project';
+  /** `'turn'`: `messages` holds only this turn's rows, to merge by id into the rows already loaded. */
+  frame?: 'turn';
 }
 
 export interface SSECompleteEvent {
@@ -1064,7 +1068,13 @@ export interface AvailableLlmModel {
  */
 export type ActiveMessageAction =
   | null
-  | { type: 'regenerate'; messageId: string; appliedFilters?: AppliedFilters }
+  | {
+      type: 'regenerate';
+      messageId: string;
+      appliedFilters?: AppliedFilters;
+      /** The answer's slot, when it is not the active one. */
+      slotId?: string;
+    }
   | { type: 'editQuery'; messageId: string; text: string };
 
 // ── Multi-Chat Slot Types ──
