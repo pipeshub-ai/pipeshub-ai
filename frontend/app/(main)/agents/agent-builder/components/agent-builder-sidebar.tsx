@@ -18,14 +18,12 @@ import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/
 import {
   useFeatureFlagsStore,
   selectMcpEnabled,
-  selectApiToolsetsEnabled,
   selectActionsEnabled,
   selectSkillsEnabled,
 } from '@/lib/store/feature-flags-store';
 import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
 import { AgentBuilderMcpSection } from './sidebar-mcp-section';
-import { AgentBuilderApiToolsetsSection } from './sidebar-api-toolsets-section';
 import { AgentBuilderSkillsSection } from './sidebar-skills-section';
 import { SidebarCategoryRow } from './sidebar-category-row';
 import { DraggableRow } from './sidebar-draggable-row';
@@ -83,9 +81,6 @@ export function AgentBuilderSidebar(props: {
   toolsetsOrgCredentialLocked?: boolean;
   /** Web-search provider currently attached to the agent (null if none). */
   webSearchAttached: AgentWebSearchAttachment | null;
-  /** API toolset operations attached to the agent (`"<toolsetId>:<toolName>"`). */
-  apiToolsetTools: string[];
-  onApiToolsetToolsChange: (entries: string[]) => void;
 }) {
   const {
     open,
@@ -110,13 +105,10 @@ export function AgentBuilderSidebar(props: {
     paletteDragBlockedMessage = '',
     toolsetsOrgCredentialLocked = false,
     webSearchAttached,
-    apiToolsetTools,
-    onApiToolsetToolsChange,
   } = props;
 
   const { t } = useTranslation();
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
-  const apiToolsetsEnabled = useFeatureFlagsStore(selectApiToolsetsEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
   const onPaletteDragBlocked = useCallback(() => {
@@ -130,7 +122,6 @@ export function AgentBuilderSidebar(props: {
     'knowledge-collections': true,
     tools: true,
     mcpServers: true,
-    apiToolsets: true,
     skills: true,
   });
 
@@ -537,27 +528,6 @@ export function AgentBuilderSidebar(props: {
                     onNotify={onNotify}
                     structureLocked={paletteStructureLocked}
                     onPaletteStructureDragBlocked={onPaletteDragBlocked}
-                  />
-                </Box>
-              ) : null}
-            </>
-          ) : null}
-
-          {apiToolsetsEnabled ? (
-            <>
-              <SectionHeader
-                title={t('agentBuilder.apiToolsets.section')}
-                icon="api"
-                open={expanded.apiToolsets}
-                onToggle={() => toggle('apiToolsets')}
-              />
-              {expanded.apiToolsets ? (
-                <Box className="agent-builder-palette-nest" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  <AgentBuilderApiToolsetsSection
-                    attached={apiToolsetTools}
-                    onChange={onApiToolsetToolsChange}
-                    isServiceAccount={isServiceAccount}
-                    structureLocked={paletteStructureLocked}
                   />
                 </Box>
               ) : null}

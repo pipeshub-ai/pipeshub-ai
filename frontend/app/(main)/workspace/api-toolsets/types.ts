@@ -28,6 +28,8 @@ export interface ApiOperationSummary {
   path: string;
   summary: string;
   kind: ApiOperationKind;
+  /** False when the spec lets anyone call it (`security: []`). */
+  requiresAuth: boolean;
 }
 
 export interface ApiCompiledOperation extends ApiOperationSummary {
@@ -35,7 +37,6 @@ export interface ApiCompiledOperation extends ApiOperationSummary {
   description: string;
   bodyRequired: boolean;
   inputSchema: Record<string, unknown>;
-  requiresAuth: boolean;
 }
 
 export interface ApiCompiledSpec {

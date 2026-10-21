@@ -104,4 +104,4 @@ export const selectSoftDeleteEnabled = (s: FeatureFlagsStore) =>
 export const selectUserContextEnabled = (s: FeatureFlagsStore) =>
   s.flags?.ENABLE_USER_CONTEXT !== false;
 
-export type FeatureFlagGate = 'mcp' | 'apiToolsets' | 'actions' | 'skills';
+export type FeatureFlagGate = 'mcp' | 'actions' | 'skills';

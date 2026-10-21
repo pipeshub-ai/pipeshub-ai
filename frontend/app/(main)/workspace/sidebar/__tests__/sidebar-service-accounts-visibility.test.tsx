@@ -20,7 +20,6 @@ vi.mock('@/lib/store/feature-flags-store', () => ({
   useFeatureFlagsStore: (selector: (s: typeof flagsState) => unknown) => selector(flagsState),
   selectFeatureFlagsLoaded: (s: typeof flagsState) => s.flags !== null,
   selectMcpEnabled: (s: typeof flagsState) => s.flags?.ENABLE_MCP !== false,
-  selectApiToolsetsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_API_TOOLSETS === true,
   selectActionsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_ACTIONS !== false,
   selectSkillsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_SKILLS !== false,
 }));

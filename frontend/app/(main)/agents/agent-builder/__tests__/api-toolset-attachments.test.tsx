@@ -4,120 +4,224 @@ import { cleanup, fireEvent, renderHook, screen } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from './agent-builder-harness';
 import { toolset } from '../../../workspace/api-toolsets/__tests__/fixtures';
+import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { AgentDetail } from '../../types';
 
-const api = vi.hoisted(() => ({ listInstances: vi.fn() }));
-vi.mock('../../../workspace/api-toolsets/api', () => ({ ApiToolsetsApi: api }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+vi.mock('../components/sidebar-web-search-section', () => ({ AgentBuilderWebSearchSection: () => null }));
 
-import { attachedToolNames, changedAttachments, toggleAttachment } from '../api-toolset-attachments';
+import {
+  API_TOOLSET_CATEGORY,
+  API_TOOLSET_TYPE,
+  apiToolsetSidebarRow,
+  changedAttachments,
+  isApiToolsetRow,
+} from '../api-toolset-attachments';
+import {
+  buildToolDragPayload,
+  buildToolsetDragPayload,
+  collectActiveToolsetTypeKeysFromNodes,
+} from '../sidebar-toolset-utils';
 import { extractAgentConfigFromFlow } from '../extract-agent-config';
 import { useAgentBuilderReconstruction } from '../hooks/use-flow-reconstruction';
-import { AgentBuilderApiToolsetsSection } from '../components/sidebar-api-toolsets-section';
+import { AgentBuilderToolsetsSection } from '../components/sidebar-toolsets-section';
 
 const A = 'a'.repeat(32);
 const B = 'b'.repeat(32);
 const orders = toolset({ id: A, isConnected: true });
 
-beforeEach(() => {
-  installBrowserShims();
-  api.listInstances.mockReset();
-});
+beforeEach(installBrowserShims);
 afterEach(cleanup);
 
-/** Opens the first collapsed toolset row. */
-const expandNext = () => fireEvent.click(screen.getAllByRole('button', { expanded: false })[0]);
+/** A canvas toolset node as the drop handler builds it from a sidebar row. */
+const nodeFrom = (id: string, row: BuilderSidebarToolset, toolNames: string[]) => {
+  const payload = buildToolsetDragPayload(row);
+  return {
+    id,
+    data: {
+      type: payload['application/reactflow'],
+      config: {
+        instanceId: row.instanceId,
+        toolsetName: payload.toolsetName,
+        category: payload.category,
+        tools: row.tools.filter((tool) => toolNames.includes(tool.name)),
+      },
+    },
+  };
+};
+const core = { id: 'agent-core-1', data: { type: 'agent-core', config: {} } };
+const toCore = (source: string) => ({ source, target: 'agent-core-1', targetHandle: 'toolsets' });
 
-describe('attachment list', () => {
-  it('reads the tool names attached from one toolset', () => {
-    expect(attachedToolNames([`${A}:listOrders`, `${B}:x`], A)).toEqual(new Set(['listOrders']));
+describe('an API toolset in the sidebar', () => {
+  it('is an action row whose tools are named "<toolsetId>:<toolName>"', () => {
+    const row = apiToolsetSidebarRow(orders);
+    expect(isApiToolsetRow(row)).toBe(true);
+    expect(row).toMatchObject({
+      instanceId: A,
+      instanceName: 'Orders',
+      toolsetType: API_TOOLSET_TYPE,
+      category: API_TOOLSET_CATEGORY,
+      isConfigured: true,
+      isAuthenticated: true,
+    });
+    expect(row.tools.map((tool) => tool.fullName)).toEqual([`${A}:listOrders`, `${A}:createOrder`]);
+    expect(apiToolsetSidebarRow(toolset()).isAuthenticated).toBe(false);
   });
 
-  it('attaches and detaches, dropping entries for toolsets or operations that no longer exist', () => {
-    const stale = [`${B}:gone`, `${A}:removedOp`];
-    expect(toggleAttachment(stale, [orders], A, 'listOrders', true)).toEqual([`${A}:listOrders`]);
-    expect(toggleAttachment([`${A}:listOrders`, `${A}:createOrder`], [orders], A, 'listOrders', false)).toEqual([
+  it('drags with its own tool names, never the "<type>.<tool>" fallback', () => {
+    const row = apiToolsetSidebarRow(orders);
+    const whole = buildToolsetDragPayload(row);
+    expect(whole.category).toBe(API_TOOLSET_CATEGORY);
+    expect(JSON.parse(whole.allTools).map((tool: { fullName: string }) => tool.fullName)).toEqual([
+      `${A}:listOrders`,
       `${A}:createOrder`,
     ]);
-    expect(toggleAttachment([], [orders], A, 'notOffered', true)).toEqual([]);
+    expect(buildToolDragPayload(row.tools[0], row).fullName).toBe(`${A}:listOrders`);
   });
 
-  it('is sent only when it differs from what the agent has stored', () => {
-    expect(changedAttachments([`${A}:x`], [`${A}:x`])).toEqual({});
-    expect(changedAttachments(undefined, [`${A}:x`])).toEqual({});
-    expect(changedAttachments([], [`${A}:x`])).toEqual({ apiToolsetTools: [] });
-    expect(changedAttachments([`${A}:x`], undefined)).toEqual({ apiToolsetTools: [`${A}:x`] });
-  });
-});
-
-describe('saving and restoring an agent', () => {
-  const core = (config: Record<string, unknown>) => ({ id: 'agent-core-1', data: { type: 'agent-core', config } });
-
-  it('sends the list from the agent core on create and only changes on update', () => {
-    const created = extractAgentConfigFromFlow('A', [core({ apiToolsetTools: [`${A}:listOrders`] })], [], null);
-    expect(created.apiToolsetTools).toEqual([`${A}:listOrders`]);
-
-    const stored = { apiToolsetTools: [`${A}:listOrders`] } as AgentDetail;
-    expect(extractAgentConfigFromFlow('A', [core({ apiToolsetTools: [`${A}:listOrders`] })], [], stored)).not.toHaveProperty(
-      'apiToolsetTools',
-    );
-    expect(extractAgentConfigFromFlow('A', [core({ apiToolsetTools: [] })], [], stored).apiToolsetTools).toEqual([]);
-  });
-
-  it("puts the agent's stored list on the rebuilt agent core", () => {
-    const { result } = renderHook(() => useAgentBuilderReconstruction());
-    const agent = {
-      name: 'A',
-      toolsets: [],
-      knowledge: [],
-      models: [],
-      apiToolsetTools: [`${A}:listOrders`],
-    } as unknown as AgentDetail;
-    const { nodes } = result.current.reconstructFlowFromAgent(agent, [], [], []);
-    const coreNode = nodes.find((n) => n.data.type === 'agent-core');
-    expect(coreNode?.data.config?.apiToolsetTools).toEqual([`${A}:listOrders`]);
+  it('never counts as a duplicate type, so two toolsets can sit on one canvas', () => {
+    const nodes = [
+      nodeFrom('n1', apiToolsetSidebarRow(orders), ['listOrders']),
+      nodeFrom('n2', apiToolsetSidebarRow(toolset({ id: B })), ['listOrders']),
+    ];
+    expect(collectActiveToolsetTypeKeysFromNodes(nodes).size).toBe(0);
   });
 });
 
-describe('AgentBuilderApiToolsetsSection', () => {
-  const renderSection = (props: Partial<React.ComponentProps<typeof AgentBuilderApiToolsetsSection>> = {}) => {
-    const onChange = vi.fn();
-    renderInTheme(
-      <AgentBuilderApiToolsetsSection attached={[]} onChange={onChange} isServiceAccount={false} structureLocked={false} {...props} />,
-    );
-    return onChange;
+describe('saving an agent', () => {
+  const jira = {
+    id: 'jira-1',
+    data: {
+      type: 'toolset-jira',
+      config: { toolsetName: 'jira', instanceId: 'j1', tools: [{ name: 'search', fullName: 'jira.search' }] },
+    },
   };
 
-  it('attaches an operation when its box is ticked', async () => {
-    api.listInstances.mockResolvedValue([orders]);
-    const onChange = renderSection();
-    await screen.findByText('Orders');
-    expandNext();
-    fireEvent.click(screen.getByText('/createOrder').closest('label')!.querySelector('[role="checkbox"]')!);
-    expect(onChange).toHaveBeenCalledWith([`${A}:createOrder`]);
+  it('sends connected API toolset nodes as apiToolsetTools, not as toolsets', () => {
+    const nodes = [
+      core,
+      jira,
+      nodeFrom('api-1', apiToolsetSidebarRow(orders), ['listOrders', 'createOrder']),
+      nodeFrom('api-2', apiToolsetSidebarRow(toolset({ id: B })), ['listOrders']),
+    ];
+    const payload = extractAgentConfigFromFlow('A', nodes, [toCore('jira-1'), toCore('api-1')], null);
+    expect(payload.apiToolsetTools).toEqual([`${A}:listOrders`, `${A}:createOrder`]);
+    expect(payload.toolsets.map((ts) => ts.instanceId)).toEqual(['j1']);
   });
 
-  it('says when a toolset is not connected', async () => {
-    api.listInstances.mockResolvedValue([toolset({ id: A })]);
-    renderSection({ attached: [`${A}:listOrders`] });
-    expect(await screen.findByText(/Not connected\. The agent skips this toolset/)).toBeTruthy();
+  it('leaves the list out of an update that did not change it', () => {
+    const stored = { apiToolsetTools: [`${A}:listOrders`] } as AgentDetail;
+    const nodes = [core, nodeFrom('api-1', apiToolsetSidebarRow(orders), ['listOrders'])];
+    expect(extractAgentConfigFromFlow('A', nodes, [toCore('api-1')], stored)).not.toHaveProperty('apiToolsetTools');
+    expect(extractAgentConfigFromFlow('A', [core], [], stored).apiToolsetTools).toEqual([]);
   });
 
-  it('blocks per-member toolsets on a service-account agent but allows shared ones', async () => {
-    api.listInstances.mockResolvedValue([toolset({ id: A, name: 'Mine' }), toolset({ id: B, name: 'Shared', useSharedCredential: true })]);
-    renderSection({ isServiceAccount: true });
-    await screen.findByText('Mine');
-    expandNext();
-    expect(screen.getByText('Service-account agents can only use toolsets with a shared credential.')).toBeTruthy();
-    const mineBoxes = screen.getAllByRole('checkbox');
-    expect(mineBoxes.every((box) => box.hasAttribute('disabled'))).toBe(true);
-    expandNext();
-    expect(screen.getAllByRole('checkbox').some((box) => !box.hasAttribute('disabled'))).toBe(true);
+  it('compares lists ignoring order and repeats', () => {
+    expect(changedAttachments([`${B}:x`, `${A}:x`, `${A}:x`], [`${A}:x`, `${B}:x`])).toEqual({});
+    expect(changedAttachments([`${A}:x`], undefined)).toEqual({ apiToolsetTools: [`${A}:x`] });
+    expect(changedAttachments([], [`${A}:x`])).toEqual({ apiToolsetTools: [] });
+  });
+});
+
+describe('opening a saved agent', () => {
+  const agent = {
+    name: 'A',
+    toolsets: [],
+    knowledge: [],
+    models: [],
+    apiToolsetTools: [`${A}:listOrders`, `${B}:gone`],
+  } as unknown as AgentDetail;
+
+  const rebuild = () => {
+    const { result } = renderHook(() => useAgentBuilderReconstruction());
+    return result.current.reconstructFlowFromAgent(agent, [], [], [], [orders]);
+  };
+
+  it('draws one toolset node per API toolset, connected to the agent', () => {
+    const { nodes, edges } = rebuild();
+    const apiNodes = nodes.filter((n) => n.data.config?.category === API_TOOLSET_CATEGORY);
+    expect(apiNodes.map((n) => n.data.label)).toEqual(['Orders', 'API actions']);
+    expect(apiNodes.every((n) => n.data.type === `toolset-${API_TOOLSET_TYPE}`)).toBe(true);
+
+    const [known, missing] = apiNodes.map((n) => n.data.config!);
+    expect(known.instanceId).toBe(A);
+    expect(known.selectedTools).toEqual(['listOrders']);
+    expect((known.availableTools as { name: string }[]).map((tool) => tool.name)).toEqual(['listOrders', 'createOrder']);
+    // A toolset that's gone keeps its entry, so saving doesn't drop it unseen.
+    expect(missing.selectedTools).toEqual(['gone']);
+
+    const linked = edges.filter((e) => e.target === 'agent-core-1' && e.targetHandle === 'toolsets').map((e) => e.source);
+    expect(apiNodes.every((n) => linked.includes(n.id))).toBe(true);
+    expect(nodes.find((n) => n.data.type === 'agent-core')?.data.config).not.toHaveProperty('apiToolsetTools');
   });
 
-  it('says so when the organization has no API toolsets', async () => {
-    api.listInstances.mockResolvedValue([]);
-    renderSection();
-    expect(await screen.findByText(/No API toolsets yet/)).toBeTruthy();
+  it('saves back unchanged', () => {
+    const { nodes, edges } = rebuild();
+    const payload = extractAgentConfigFromFlow('A', nodes, edges, agent);
+    expect(payload).not.toHaveProperty('apiToolsetTools');
+    expect(payload.toolsets).toEqual([]);
+  });
+});
+
+describe('API toolsets in the Tools section', () => {
+  const renderPalette = (rows: BuilderSidebarToolset[], isServiceAccount = false) => {
+    const onNotify = vi.fn();
+    renderInTheme(
+      <AgentBuilderToolsetsSection
+        toolsets={rows}
+        loading={false}
+        refreshToolsets={async () => {}}
+        activeToolsetTypeKeys={new Set()}
+        toolsetMergeCheckNodes={[]}
+        isServiceAccount={isServiceAccount}
+        agentKey={null}
+        onNotify={onNotify}
+        webSearchAttached={null}
+      />,
+    );
+    const drag = (label: string) => {
+      const row = screen.getByText(label).closest('[draggable]') as HTMLElement;
+      fireEvent.dragStart(row, { dataTransfer: { setData: vi.fn(), effectAllowed: '' } });
+    };
+    return { onNotify, drag };
+  };
+
+  it('groups them under one heading', () => {
+    renderPalette([apiToolsetSidebarRow(orders), apiToolsetSidebarRow(toolset({ id: B, name: 'Billing' }))]);
+    expect(screen.getAllByText('API actions')).toHaveLength(1);
+    expect(screen.getByText('Orders')).toBeTruthy();
+    expect(screen.getByText('Billing')).toBeTruthy();
+  });
+
+  it('drags a connected one and says a toolset is not connected yet', () => {
+    const { onNotify, drag } = renderPalette([
+      apiToolsetSidebarRow(orders),
+      apiToolsetSidebarRow(toolset({ id: B, name: 'Billing' })),
+    ]);
+    drag('Orders');
+    expect(onNotify).not.toHaveBeenCalled();
+    drag('Billing');
+    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('Billing is not authenticated'));
+  });
+
+  it('keeps per-member toolsets off a service-account agent but allows shared ones', () => {
+    const { onNotify, drag } = renderPalette(
+      [
+        apiToolsetSidebarRow(orders),
+        apiToolsetSidebarRow(toolset({ id: B, name: 'Shared', isConnected: true, useSharedCredential: true })),
+      ],
+      true,
+    );
+    drag('Shared');
+    expect(onNotify).not.toHaveBeenCalled();
+    drag('Orders');
+    expect(onNotify).toHaveBeenCalledWith('Service-account agents can only use API actions with a shared credential or no sign-in.');
+  });
+
+  it('filters them by the search box', () => {
+    renderPalette([apiToolsetSidebarRow(orders), apiToolsetSidebarRow(toolset({ id: B, name: 'Billing' }))]);
+    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: 'bill' } });
+    expect(screen.queryByText('Orders')).toBeNull();
+    expect(screen.getByText('Billing')).toBeTruthy();
   });
 });

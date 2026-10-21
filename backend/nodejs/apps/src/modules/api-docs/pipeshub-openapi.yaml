@@ -1758,6 +1758,9 @@ components:
         kind:
           type: string
           enum: [read, write, destructive]
+        requiresAuth:
+          type: boolean
+          description: 'False when the spec lets anyone call it (`security: []`).'
         inputSchema:
           type: object
           description: The JSON Schema agents fill (single toolset reads only).

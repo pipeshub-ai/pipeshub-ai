@@ -9,7 +9,7 @@ import type {
   ToolsetReference,
 } from './types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
-import { changedAttachments } from './api-toolset-attachments';
+import { changedAttachments, isApiToolsetNode } from './api-toolset-attachments';
 
 interface ToolsetDataInternal {
   name: string;
@@ -42,6 +42,7 @@ export function extractAgentConfigFromFlow(
   const toolsetsInternal: ToolsetDataInternal[] = [];
   const knowledgeInternal: KnowledgeDataInternal[] = [];
   const models: { provider: string; modelName: string; isReasoning: boolean; modelKey: string }[] = [];
+  const apiToolsetTools: string[] = [];
 
   const addToolsetWithTools = (
     toolsetName: string,
@@ -165,7 +166,9 @@ export function extractAgentConfigFromFlow(
         }
       });
     }
-    if (toolsFromConfig.length > 0) {
+    if (isApiToolsetNode(toolsetConfig)) {
+      apiToolsetTools.push(...toolsFromConfig.map((tool) => tool.fullName));
+    } else if (toolsFromConfig.length > 0) {
       addToolsetWithTools(toolsetName, productDisplayName, toolsetType, toolsFromConfig, instanceId, instanceName);
     }
   });
@@ -394,7 +397,7 @@ export function extractAgentConfigFromFlow(
     // When the server couldn't read them, the canvas never showed the agent's MCP servers:
     // sending the empty list would detach them all. Left out, the save keeps what is stored.
     ...(currentAgent?.mcpServersUnavailable ? {} : { mcpServers }),
-    ...changedAttachments(coreCfg.apiToolsetTools, currentAgent?.apiToolsetTools),
+    ...changedAttachments(apiToolsetTools, currentAgent?.apiToolsetTools),
     models,
     webSearch,
     tags: currentAgent?.tags?.length ? currentAgent.tags : ['flow-based', 'visual-workflow'],

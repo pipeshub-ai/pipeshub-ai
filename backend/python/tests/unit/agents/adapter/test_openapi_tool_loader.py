@@ -98,7 +98,7 @@ class TestLoading:
         registry = await _load(context)
         assert _tools(registry) == []
         assert context.toolset_load_failures == {
-            "Acme Helpdesk (API toolset; connect it under Workspace → API Toolsets)": "not_authenticated",
+            "Acme Helpdesk (API action; connect it under Workspace → Your actions)": "not_authenticated",
         }
 
     async def test_a_removed_toolset_is_skipped(self, config: InMemoryConfigService) -> None:
@@ -121,7 +121,7 @@ class TestLoading:
         registry = await _load(context)
 
         assert [t.name for t in _tools(registry)] == ["api_wiki_list_tickets"]
-        assert list(context.toolset_load_failures) == ["Acme Helpdesk (API toolset; connect it under Workspace → API Toolsets)"]
+        assert list(context.toolset_load_failures) == ["Acme Helpdesk (API action; connect it under Workspace → Your actions)"]
 
     async def test_toolsets_with_the_same_name_get_distinct_tool_names(self, config: InMemoryConfigService) -> None:
         first = await _add_toolset(config, scheme="none")
@@ -198,7 +198,7 @@ class TestCalls:
     async def test_a_refused_credential_says_where_to_fix_it(self, config: InMemoryConfigService, acme: tuple[str, Any]) -> None:
         tools = await self._tools(config, acme[0], api_key="wrong")
         output = await tools["list_tickets"].execute()
-        assert not output.success and "HTTP 401" in output.error and "Workspace → API Toolsets" in output.error
+        assert not output.success and "HTTP 401" in output.error and "Workspace → Your actions" in output.error
 
     async def test_a_write_reaches_the_api(self, config: InMemoryConfigService, acme: tuple[str, Any]) -> None:
         tools = await self._tools(config, acme[0])

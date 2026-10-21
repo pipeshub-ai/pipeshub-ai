@@ -2,25 +2,29 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Badge, Box, Button, Callout, Dialog, Flex, Text } from '@radix-ui/themes';
+import { Badge, Box, Button, Callout, Flex, Separator, Text } from '@radix-ui/themes';
 import { toast } from '@/lib/store/toast-store';
 import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { LoadingButton } from '@/app/components/ui/loading-button';
-import { FormField } from '../../components';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { FormField, WorkspaceRightPanel } from '../../components';
 import { mcpOAuthFailureMessage, useMcpOAuthPopup } from '../../mcp-servers/hooks/use-mcp-oauth-popup';
 import { ApiToolsetsApi } from '../api';
 import {
   buildCredentials,
   connectionMode,
+  connectionStatus,
   credentialFields,
   isSecretField,
   usesSignIn,
   type CredentialField,
 } from '../toolset-form';
 import type { ApiToolset, ApiToolsetTestResult } from '../types';
+import { ApiOperationsChecklist } from './api-operations-checklist';
 import { LabeledTextField } from './labeled-controls';
+import { PanelSection } from './panel-section';
 
-interface ApiToolsetConnectDialogProps {
+interface ApiActionConnectionPanelProps {
   toolset: ApiToolset | null;
   isAdmin: boolean;
   onOpenChange: (open: boolean) => void;
@@ -28,8 +32,8 @@ interface ApiToolsetConnectDialogProps {
   onChanged: () => void;
 }
 
-/** Connect, disconnect and test one toolset: the viewer's own credential, or the shared one for an admin. */
-export function ApiToolsetConnectDialog({ toolset, isAdmin, onOpenChange, onChanged }: ApiToolsetConnectDialogProps) {
+/** Connect, test and disconnect one API action: the viewer's own credential, or the shared one for an admin. */
+export function ApiActionConnectionPanel({ toolset, isAdmin, onOpenChange, onChanged }: ApiActionConnectionPanelProps) {
   const { t } = useTranslation();
   const [values, setValues] = useState<Partial<Record<CredentialField, string>>>({});
   const [busy, setBusy] = useState<'save' | 'disconnect' | 'test' | null>(null);
@@ -62,6 +66,8 @@ export function ApiToolsetConnectDialog({ toolset, isAdmin, onOpenChange, onChan
   const fields = credentialFields(toolset.authType);
   const credentials = buildCredentials(toolset.authType, values);
   const canManage = mode === 'own' || mode === 'shared';
+  const canSave = canManage && fields.length > 0;
+  const status = connectionStatus(toolset);
 
   const run = async (kind: 'save' | 'disconnect' | 'test', action: () => Promise<void>) => {
     setBusy(kind);
@@ -99,21 +105,67 @@ export function ApiToolsetConnectDialog({ toolset, isAdmin, onOpenChange, onChan
     });
 
   return (
-    <Dialog.Root open onOpenChange={(v) => busy === null && onOpenChange(v)}>
-      <Dialog.Content style={{ maxWidth: '32rem' }}>
-        <Dialog.Title>{t('workspace.apiToolsets.connect.title', { name: toolset.name })}</Dialog.Title>
-        <Dialog.Description size="2" style={{ color: 'var(--gray-11)' }}>
-          {t(`workspace.apiToolsets.connect.mode.${mode}`)}
-        </Dialog.Description>
-
-        <Flex direction="column" gap="4" mt="4">
-          <Flex align="center" gap="2">
-            <Text size="2" weight="medium">
-              {t('workspace.apiToolsets.connect.status')}
-            </Text>
-            <Badge color={toolset.isConnected ? 'jade' : 'gray'}>
-              {t(toolset.isConnected ? 'workspace.apiToolsets.status.connected' : 'workspace.apiToolsets.status.notConnected')}
+    <WorkspaceRightPanel
+      open
+      onOpenChange={(v) => busy === null && onOpenChange(v)}
+      title={t('workspace.apiToolsets.connect.panelTitle')}
+      icon={<MaterialIcon name="api" size={20} color="var(--accent-11)" />}
+      hideFooter={!canSave}
+      primaryLabel={t('common.save')}
+      secondaryLabel={t('common.close')}
+      primaryDisabled={!credentials || busy !== null}
+      primaryLoading={busy === 'save'}
+      onPrimaryClick={() => void save()}
+      onSecondaryClick={() => onOpenChange(false)}
+    >
+      <Flex direction="column" gap="6" style={{ minWidth: 0, padding: '4px 0' }}>
+        <Box>
+          <Text as="div" size="4" weight="bold" style={{ color: 'var(--slate-12)', overflowWrap: 'anywhere' }}>
+            {toolset.name}
+          </Text>
+          <Text as="div" size="2" color="gray" mt="1" style={{ lineHeight: 1.5 }}>
+            {toolset.description || toolset.specTitle}
+          </Text>
+          <Flex gap="2" mt="3" wrap="wrap">
+            <Badge variant="soft" color="gray">
+              {t(`workspace.apiToolsets.authType.${toolset.authType}`)}
             </Badge>
+            {toolset.useSharedCredential ? (
+              <Badge variant="soft" color="blue">
+                {t('workspace.apiToolsets.status.shared')}
+              </Badge>
+            ) : null}
+          </Flex>
+        </Box>
+
+        <Separator size="4" />
+
+        <PanelSection
+          title={t('workspace.apiToolsets.connect.connectionHeading')}
+          description={t(`workspace.apiToolsets.connect.mode.${mode}`)}
+        >
+          <Flex align="center" justify="between" gap="2" wrap="wrap">
+            <Flex align="center" gap="2">
+              <Text size="2" weight="medium">
+                {t('workspace.apiToolsets.connect.status')}
+              </Text>
+              <Badge color={status === 'notConnected' ? 'amber' : status === 'connected' ? 'jade' : 'gray'}>
+                {t(`workspace.apiToolsets.status.${status}`)}
+              </Badge>
+            </Flex>
+            {canManage && toolset.isConnected ? (
+              <LoadingButton
+                size="1"
+                variant="ghost"
+                color="red"
+                disabled={busy !== null}
+                loading={busy === 'disconnect'}
+                loadingLabel={t('workspace.apiToolsets.connect.disconnecting')}
+                onClick={() => void disconnect()}
+              >
+                {t('workspace.apiToolsets.connect.disconnect')}
+              </LoadingButton>
+            ) : null}
           </Flex>
 
           {canManage && usesSignIn(toolset.authType) ? (
@@ -126,38 +178,45 @@ export function ApiToolsetConnectDialog({ toolset, isAdmin, onOpenChange, onChan
                 void startOAuthPopup(toolset.id);
               }}
             >
+              <MaterialIcon name="login" size={16} />
               {t(toolset.isConnected ? 'workspace.apiToolsets.connect.signInAgain' : 'workspace.apiToolsets.connect.signIn')}
             </LoadingButton>
           ) : null}
 
-          {canManage && fields.length > 0 ? (
-            <Flex direction="column" gap="3">
-              {fields.map((field, index) => (
+          {canSave
+            ? fields.map((field, index) => (
                 <FormField key={field} label={t(`workspace.apiToolsets.connect.fields.${field}`)} required>
                   <LabeledTextField
                     size="2"
                     type={isSecretField(field) ? 'password' : 'text'}
                     autoComplete="off"
-                    autoFocus={index === 0}
+                    autoFocus={index === 0 && !toolset.isConnected}
+                    placeholder={toolset.isConnected ? t('workspace.apiToolsets.connect.replaceHint') : undefined}
                     value={values[field] ?? ''}
                     onChange={(e) => setValues((v) => ({ ...v, [field]: e.target.value }))}
                   />
                 </FormField>
-              ))}
-              {toolset.isConnected ? (
-                <Text size="1" style={{ color: 'var(--gray-11)' }}>
-                  {t('workspace.apiToolsets.connect.replaceHint')}
-                </Text>
-              ) : null}
-            </Flex>
-          ) : null}
+              ))
+            : null}
+        </PanelSection>
 
-          {error ? (
-            <Callout.Root color="red" variant="surface" size="1">
-              <Callout.Text>{error}</Callout.Text>
-            </Callout.Root>
-          ) : null}
-
+        <PanelSection
+          title={t('workspace.apiToolsets.connect.testHeading')}
+          description={t('workspace.apiToolsets.connect.testHint')}
+          aside={
+            <Button
+              size="1"
+              variant="soft"
+              color="gray"
+              disabled={busy !== null || status === 'notConnected'}
+              onClick={() => void test()}
+              style={{ cursor: 'pointer' }}
+            >
+              <MaterialIcon name="play_arrow" size={16} />
+              {t(busy === 'test' ? 'workspace.apiToolsets.connect.testing' : 'workspace.apiToolsets.connect.test')}
+            </Button>
+          }
+        >
           {testResult ? (
             <Flex direction="column" gap="2">
               <Flex align="center" gap="2">
@@ -170,11 +229,12 @@ export function ApiToolsetConnectDialog({ toolset, isAdmin, onOpenChange, onChan
                 <Box
                   asChild
                   style={{
-                    maxHeight: 200,
+                    maxHeight: 220,
                     overflow: 'auto',
                     margin: 0,
-                    padding: 'var(--space-2)',
-                    background: 'var(--gray-a2)',
+                    padding: 'var(--space-3)',
+                    background: 'var(--color-surface)',
+                    border: '1px solid var(--olive-4)',
                     borderRadius: 'var(--radius-2)',
                     fontFamily: 'var(--code-font-family)',
                     fontSize: 12,
@@ -191,56 +251,29 @@ export function ApiToolsetConnectDialog({ toolset, isAdmin, onOpenChange, onChan
                 </Text>
               ) : null}
             </Flex>
-          ) : null}
-        </Flex>
+          ) : (
+            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              {t(status === 'notConnected' ? 'workspace.apiToolsets.connect.testNeedsConnection' : 'workspace.apiToolsets.connect.testIdle')}
+            </Text>
+          )}
+        </PanelSection>
 
-        <Flex justify="between" gap="2" mt="5" wrap="wrap">
-          <Flex gap="2">
-            <LoadingButton
-              size="2"
-              variant="outline"
-              color="gray"
-              disabled={busy !== null}
-              loading={busy === 'test'}
-              loadingLabel={t('workspace.apiToolsets.connect.testing')}
-              onClick={() => void test()}
-            >
-              {t('workspace.apiToolsets.connect.test')}
-            </LoadingButton>
-            {canManage && toolset.isConnected ? (
-              <LoadingButton
-                size="2"
-                variant="soft"
-                color="red"
-                disabled={busy !== null}
-                loading={busy === 'disconnect'}
-                loadingLabel={t('workspace.apiToolsets.connect.disconnecting')}
-                onClick={() => void disconnect()}
-              >
-                {t('workspace.apiToolsets.connect.disconnect')}
-              </LoadingButton>
-            ) : null}
-          </Flex>
-          <Flex gap="2">
-            <Dialog.Close>
-              <Button variant="soft" color="gray" size="2" disabled={busy !== null}>
-                {t('common.close')}
-              </Button>
-            </Dialog.Close>
-            {canManage && fields.length > 0 ? (
-              <LoadingButton
-                size="2"
-                disabled={!credentials || busy !== null}
-                loading={busy === 'save'}
-                loadingLabel={t('common.saving')}
-                onClick={() => void save()}
-              >
-                {t('common.save')}
-              </LoadingButton>
-            ) : null}
-          </Flex>
+        {error ? (
+          <Callout.Root color="red" variant="surface" size="1">
+            <Callout.Icon>
+              <MaterialIcon name="error_outline" size={16} />
+            </Callout.Icon>
+            <Callout.Text>{error}</Callout.Text>
+          </Callout.Root>
+        ) : null}
+
+        <Flex direction="column" gap="3">
+          <Text size="2" weight="bold" style={{ color: 'var(--slate-12)' }}>
+            {t('workspace.apiToolsets.connect.operationsHeading', { count: toolset.operations.length })}
+          </Text>
+          <ApiOperationsChecklist operations={toolset.operations} />
         </Flex>
-      </Dialog.Content>
-    </Dialog.Root>
+      </Flex>
+    </WorkspaceRightPanel>
   );
 }

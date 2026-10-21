@@ -163,7 +163,8 @@ class TestInstances:
         config = api.call("GET", f"/instances/{created['id']}/config", user=ADMIN).json()
         assert config["baseUrl"] == "https://helpdesk.acme.test" and config["authScheme"]["name"] == "apiKeyAuth"
         assert member_view["operations"][0] == {"toolName": "list_tickets", "method": "GET", "path": "/tickets",
-                                                "summary": "List helpdesk tickets, optionally filtered.", "kind": "read"}
+                                                "summary": "List helpdesk tickets, optionally filtered.", "kind": "read",
+                                                "requiresAuth": True}
 
     def test_get_one_includes_input_schemas(self, api: Harness) -> None:
         created = api.create()
@@ -380,6 +381,12 @@ class TestTestCall:
         assert resp.status_code == 200, resp.text
         assert resp.json()["ok"] is True and "ACME-7311" in resp.json()["body"]
 
+    def test_no_auth_toolset_tests_with_an_operation_that_needs_no_credentials(self, api: Harness, acme_url: str) -> None:
+        created = api.create(baseUrl=acme_url, authSchemeName="none", operations=["list_tickets", "list_announcements"])
+        resp = api.call("POST", f"/instances/{created['id']}/test", json={})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["ok"] is True and "AN-41" in resp.json()["body"]
+
     def test_named_operation_and_wrong_key(self, api: Harness, acme_url: str) -> None:
         created = api.create(baseUrl=acme_url)
         api.call("PUT", f"/instances/{created['id']}/credentials", json={"apiKey": "wrong"})
@@ -394,6 +401,6 @@ class TestTestCall:
         assert resp.status_code == 400 and "changes data" in resp.json()["detail"]
 
     def test_unreachable_api_is_a_502(self, api: Harness, acme_url: str) -> None:
-        created = api.create(baseUrl="http://127.0.0.1:9", authSchemeName="none")
+        created = api.create(baseUrl="http://127.0.0.1:9", authSchemeName="none", operations=["list_announcements"])
         resp = api.call("POST", f"/instances/{created['id']}/test", json={})
         assert resp.status_code == 502 and "Could not reach the API" in resp.json()["detail"]

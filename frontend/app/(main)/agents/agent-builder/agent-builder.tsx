@@ -44,6 +44,7 @@ import {
 } from './sidebar-toolset-utils';
 import { findMcpServersWithoutTools, type McpInstanceIdFlowNode } from './sidebar-mcp-utils';
 import { McpLiveServersContext } from './mcp-live-servers';
+import { apiToolsetSidebarRow, isApiToolsetNode } from './api-toolset-attachments';
 
 /** Palette width: comfortable for labels; chrome matches `SecondaryPanel` / chat sidebars. */
 const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
@@ -89,6 +90,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     activeAgentConnectors,
     configuredConnectors,
     toolsets,
+    apiToolsets,
     mcpServers,
     mcpServersLoaded,
     loading,
@@ -325,7 +327,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         { ...agentSrc, knowledge: (agentSrc.knowledge as unknown[]) || [] },
         availableModels,
         availableTools,
-        availableKnowledgeBases
+        availableKnowledgeBases,
+        apiToolsets
       );
       setNodes(n);
       setEdges(e);
@@ -432,6 +435,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     availableModels,
     availableKnowledgeBases,
     availableTools,
+    apiToolsets,
     loadedAgent,
     nodes.length,
     reconstructFlowFromAgent,
@@ -474,8 +478,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     [isAgentStructureLocked, setEdgeDeleteDialogOpen, setEdgeToDelete]
   );
 
+  // API toolsets don't block a service account: the backend checks they use a shared credential.
   const hasToolsets = useMemo(
-    () => nodes.some((n) => String(n.data?.type ?? '').startsWith('toolset-')),
+    () =>
+      nodes.some(
+        (n) => String(n.data?.type ?? '').startsWith('toolset-') && !isApiToolsetNode(n.data?.config)
+      ),
     [nodes]
   );
 
@@ -579,21 +587,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     };
   }, [webSearchNode]);
 
-  const apiToolsetTools = useMemo(() => {
-    const value = nodes.find((n) => n.data?.type === 'agent-core')?.data.config?.apiToolsetTools;
-    return Array.isArray(value) ? (value as string[]) : [];
-  }, [nodes]);
-
-  const setApiToolsetTools = useCallback(
-    (entries: string[]) =>
-      setNodes((nds) =>
-        nds.map((n) =>
-          n.data?.type === 'agent-core'
-            ? { ...n, data: { ...n.data, config: { ...n.data.config, apiToolsetTools: entries } } }
-            : n
-        )
-      ),
-    [setNodes]
+  const sidebarToolsets = useMemo(
+    () => [...toolsets, ...apiToolsets.map(apiToolsetSidebarRow)],
+    [toolsets, apiToolsets]
   );
 
   const saveRef = useRef(false);
@@ -990,7 +986,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             nodeTemplates={nodeTemplates}
             availableSkills={availableSkills}
             configuredConnectors={configuredConnectors}
-            toolsets={toolsets}
+            toolsets={sidebarToolsets}
             activeToolsetTypeKeys={activeToolsetTypeKeys}
             toolsetMergeCheckNodes={nodes as ToolsetTypeKeyFlowNode[]}
             refreshToolsets={refreshToolsets}
@@ -1005,8 +1001,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             paletteDragBlockedMessage={paletteDragBlockedMessage}
             toolsetsOrgCredentialLocked={isServiceAccountToolsetOrgLocked}
             webSearchAttached={webSearchAttached}
-            apiToolsetTools={apiToolsetTools}
-            onApiToolsetToolsChange={setApiToolsetTools}
             onManageAgentToolsetCredentials={
               isServiceAccountToolsetOrgLocked
                 ? undefined

@@ -9,7 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+import app.edition_config  # noqa: F401  (binds the edition seams before the router loads)
+from app.agents.constants.api_toolset_constants import SHARED_CREDENTIAL_OWNER
 from app.agents.openapi import service
+from app.agents.openapi.models import ApiToolsetCredentials
 from app.agents.openapi.store import ApiToolsetStore
 from app.api.routes.agent import create_agent, update_agent
 from tests.support.in_memory_config import InMemoryConfigService
@@ -111,3 +114,45 @@ async def test_becoming_a_service_account_rechecks_what_is_attached() -> None:
         await _call(update_agent, services, _request({"isServiceAccount": True}), "a1")
     assert raised.value.status_code == 400 and "shared credential" in str(raised.value.detail)
     services["graph_provider"].update_agent.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("chat_tools", "kept"),
+    [
+        (None, [f"{PER_MEMBER}:list_tickets", f"{SHARED}:list_tickets"]),
+        ([f"{SHARED}:list_tickets", "jira.search"], [f"{SHARED}:list_tickets"]),
+        ([], []),
+    ],
+)
+def test_the_chat_selection_narrows_the_attached_operations(chat_tools: list[str] | None, kept: list[str]) -> None:
+    from app.api.routes.agent import _api_toolset_tools_for_chat
+
+    assert _api_toolset_tools_for_chat([f"{PER_MEMBER}:list_tickets", f"{SHARED}:list_tickets"], chat_tools) == kept
+
+
+class TestAssistant:
+    async def _assistant(self, services: dict[str, Any], *, enabled: bool = True) -> dict[str, Any]:
+        from app.api.routes.agent import get_assistant_agent
+
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        graph.list_user_knowledge_bases = AsyncMock(return_value=([], 0, None))
+        graph.get_user_apps = AsyncMock(return_value=[])
+        with patch("app.services.featureflag.platform_settings.is_api_toolsets_enabled", new_callable=AsyncMock, return_value=enabled):
+            agent, _ = await get_assistant_agent(
+                "u1", "o1", services["config_service"], graph, None, MagicMock(), actions_enabled=False, mcp_enabled=False,
+            )
+        return agent
+
+    async def test_it_offers_every_operation_of_the_toolsets_i_have_connected(self) -> None:
+        services = await _services()
+        store = ApiToolsetStore(services["config_service"])
+        await store.save_credentials(SHARED, SHARED_CREDENTIAL_OWNER, ApiToolsetCredentials(api_key="k"))
+
+        assert (await self._assistant(services))["apiToolsetTools"] == [f"{SHARED}:list_tickets"]
+
+    async def test_nothing_with_the_labs_flag_off(self) -> None:
+        services = await _services()
+        await ApiToolsetStore(services["config_service"]).save_credentials(PER_MEMBER, "u1", ApiToolsetCredentials(api_key="k"))
+
+        assert (await self._assistant(services, enabled=False))["apiToolsetTools"] == []

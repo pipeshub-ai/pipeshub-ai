@@ -14,7 +14,6 @@ import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import {
   useFeatureFlagsStore,
   selectMcpEnabled,
-  selectApiToolsetsEnabled,
   selectActionsEnabled,
   selectSkillsEnabled,
   type FeatureFlagGate,
@@ -82,8 +81,6 @@ const PERSONAL_ITEMS: NavItem[] = [
   { icon: '', labelKey: 'workspace.sidebar.nav.yourConnectors', route: '/workspace/connectors/personal', customIcon: <YourConnectorsIcon size={ICON_SIZE_DEFAULT} color="var(--slate-11)" /> },
   { icon: 'bolt', labelKey: 'workspace.sidebar.nav.yourActions', route: '/workspace/actions/personal', requiresFlag: 'actions' },
   { icon: 'device_hub', labelKey: 'workspace.sidebar.nav.yourMcpServers', route: '/workspace/mcp-servers/personal', requiresFlag: 'mcp' },
-  // One page for everyone: admins add and change toolsets there, members connect to them.
-  { icon: 'api', labelKey: 'workspace.sidebar.nav.apiToolsets', route: '/workspace/api-toolsets', requiresFlag: 'apiToolsets' },
   { icon: 'psychology', labelKey: 'workspace.sidebar.nav.yourSkills', route: '/workspace/skills/personal', requiresFlag: 'skills', beta: true },
   { icon: 'archive', labelKey: 'workspace.sidebar.nav.archivedChats', route: '/workspace/archived-chats' },
 ];
@@ -105,7 +102,6 @@ export default function WorkspaceSidebar() {
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
-  const apiToolsetsEnabled = useFeatureFlagsStore(selectApiToolsetsEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
 
@@ -120,7 +116,6 @@ export default function WorkspaceSidebar() {
 
   const flagEnabled: Record<FeatureFlagGate, boolean> = {
     mcp: mcpEnabled,
-    apiToolsets: apiToolsetsEnabled,
     actions: actionsEnabled,
     skills: skillsEnabled,
   };

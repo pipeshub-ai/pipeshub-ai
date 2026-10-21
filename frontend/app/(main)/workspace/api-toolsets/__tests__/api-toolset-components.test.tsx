@@ -20,7 +20,9 @@ vi.mock('../api', () => ({ ApiToolsetsApi: api }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
 import { ApiToolsetEditorPanel } from '../components/api-toolset-editor-panel';
-import { ApiToolsetConnectDialog } from '../components/api-toolset-connect-dialog';
+import { ApiActionConnectionPanel } from '../components/api-action-connection-panel';
+import { ApiActionCard } from '../components/api-action-card';
+import { operation } from './fixtures';
 
 beforeEach(() => {
   installBrowserShims();
@@ -40,7 +42,7 @@ describe('ApiToolsetEditorPanel', () => {
     renderInTheme(<ApiToolsetEditorPanel open editingId={null} onOpenChange={() => {}} onSaved={onSaved} />);
 
     fireEvent.change(screen.getByPlaceholderText(/openapi: 3.1.0/), { target: { value: 'openapi: 3.1.0' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Preview operations' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Read spec' }));
 
     expect(await screen.findByText('Skipped GET /legacy: no responses')).toBeTruthy();
     expect(screen.getByText('Operations (1 of 3 selected)')).toBeTruthy();
@@ -50,7 +52,7 @@ describe('ApiToolsetEditorPanel', () => {
     expect(screen.getByDisplayValue('https://orders.internal/v1')).toBeTruthy();
 
     fireEvent.click(checkbox(/^\/createOrder$/));
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add API action' }));
 
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(api.createInstance).toHaveBeenCalledWith(
@@ -63,11 +65,27 @@ describe('ApiToolsetEditorPanel', () => {
     );
   });
 
+  it('without authentication, warns about selected operations that need credentials and deselects them', async () => {
+    const open = { ...operation('listNews', 'read'), requiresAuth: false };
+    api.validateSpec.mockResolvedValue(compiledSpec({ authSchemes: [], operations: [operation('listOrders', 'read'), open] }));
+    renderInTheme(<ApiToolsetEditorPanel open editingId={null} onOpenChange={() => {}} onSaved={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/openapi: 3.1.0/), { target: { value: 'openapi: 3.1.0' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Read spec' }));
+
+    // Only the public read is preselected when the spec offers no sign-in.
+    expect(await screen.findByText('Operations (1 of 2 selected)')).toBeTruthy();
+    fireEvent.click(checkbox(/^\/listOrders$/));
+    expect(screen.getByText('1 selected operation needs credentials, so it fails without authentication.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Deselect them' }));
+    expect(screen.getByText('Operations (1 of 2 selected)')).toBeTruthy();
+    expect(checkbox(/^\/listOrders$/).getAttribute('aria-checked')).toBe('false');
+  });
+
   it("shows the backend's reason when the spec is refused", async () => {
     api.validateSpec.mockRejectedValue({ type: 'VALIDATION_ERROR', message: 'Swagger 2.0 specs are not supported.', statusCode: 400 });
     renderInTheme(<ApiToolsetEditorPanel open editingId={null} onOpenChange={() => {}} onSaved={() => {}} />);
     fireEvent.change(screen.getByPlaceholderText(/openapi: 3.1.0/), { target: { value: 'swagger: "2.0"' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Preview operations' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Read spec' }));
     expect(await screen.findByText('Swagger 2.0 specs are not supported.')).toBeTruthy();
   });
 
@@ -87,9 +105,9 @@ describe('ApiToolsetEditorPanel', () => {
   });
 });
 
-describe('ApiToolsetConnectDialog', () => {
+describe('ApiActionConnectionPanel', () => {
   const render = (overrides: Parameters<typeof toolset>[0], isAdmin = false) =>
-    renderInTheme(<ApiToolsetConnectDialog toolset={toolset(overrides)} isAdmin={isAdmin} onOpenChange={() => {}} onChanged={() => {}} />);
+    renderInTheme(<ApiActionConnectionPanel toolset={toolset(overrides)} isAdmin={isAdmin} onOpenChange={() => {}} onChanged={() => {}} />);
 
   it("asks for username and password for basic auth and saves the member's own credential", async () => {
     api.saveCredentials.mockResolvedValue(undefined);
@@ -114,7 +132,7 @@ describe('ApiToolsetConnectDialog', () => {
     expect(screen.getByText('Every member uses the credential you set here.')).toBeTruthy();
     cleanup();
     render({ authType: 'oauth2_client_credentials', useSharedCredential: true, isConnected: true }, false);
-    expect(screen.getByText('Your admin manages the credential for this toolset.')).toBeTruthy();
+    expect(screen.getByText('Your admin manages the credential for this API action.')).toBeTruthy();
     expect(screen.queryByLabelText(/Client ID/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull();
   });
@@ -127,5 +145,37 @@ describe('ApiToolsetConnectDialog', () => {
     expect(screen.getByText('The API answered with an error.')).toBeTruthy();
     expect(screen.getByText('{"error":"bad key"}')).toBeTruthy();
     expect(screen.getByText('Only the start of the response is shown.')).toBeTruthy();
+  });
+});
+
+describe('ApiActionCard', () => {
+  const render = (overrides: Parameters<typeof toolset>[0], admin = false) => {
+    const handlers = { onOpen: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn() };
+    renderInTheme(
+      <ApiActionCard toolset={toolset(overrides)} isAdmin={admin} onOpen={handlers.onOpen}
+        onEdit={admin ? handlers.onEdit : undefined} onDelete={admin ? handlers.onDelete : undefined} />,
+    );
+    return handlers;
+  };
+
+  it('asks a member to connect their own credential and opens the connection panel', () => {
+    const { onOpen } = render({ authType: 'api_key', isConnected: false });
+    expect(screen.getByText('Not connected')).toBeTruthy();
+    expect(screen.getByText('1 read · 1 write')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it('says an API without authentication needs no sign-in, and shows members only the details', () => {
+    render({ authType: 'none', isConnected: true });
+    expect(screen.getByText('No sign-in needed')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Details' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'More options for Orders' })).toBeNull();
+  });
+
+  it('gives admins a menu to edit and delete', () => {
+    render({ authType: 'api_key', isConnected: true, useSharedCredential: true }, true);
+    expect(screen.getByRole('button', { name: 'Manage connection' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'More options for Orders' })).toBeTruthy();
   });
 });

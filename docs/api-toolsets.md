@@ -1,18 +1,18 @@
-# API Toolsets
+# API actions
 
-API Toolsets let an organization give its agents tools for its own REST APIs. An administrator
+API actions (called API toolsets in the code) let an organization give its agents tools for its own REST APIs. An administrator
 uploads the API's OpenAPI spec, picks the operations agents may call and says how PipesHub
 authenticates. Each operation becomes one tool. No code runs inside PipesHub: calls go out over
 plain HTTP to the API the admin configured.
 
-API Toolsets are separate from MCP servers. Use an MCP server when the tool already speaks the
-Model Context Protocol; use an API Toolset when it is an ordinary REST API.
+API actions are separate from MCP servers. Use an MCP server when the tool already speaks the
+Model Context Protocol; use an API action when it is an ordinary REST API.
 
 ## Turning it on
 
-API Toolsets sit behind the `ENABLE_API_TOOLSETS` Labs flag, off by default. An administrator
-turns it on in **Workspace → Labs**. With the flag off, the routes answer 403, the page is
-hidden and agents load none of these tools.
+API actions sit behind the `ENABLE_API_TOOLSETS` Labs flag, off by default. An administrator
+turns it on in **Workspace → Labs**. With the flag off, the routes answer 403, the API actions
+section is hidden and agents load none of these tools.
 
 The PipesHub backend must be able to reach the API. Base URLs on the deployment's own network
 (RFC1918, ULA, CGNAT) are allowed unless the operator sets
@@ -20,12 +20,15 @@ The PipesHub backend must be able to reach the API. Base URLs on the deployment'
 
 ## Adding an API
 
-In **Workspace → API Toolsets**, an administrator:
+In **Workspace → Actions**, under **API actions**, an administrator chooses **Add API action** and:
 
-1. Pastes or picks the spec (OpenAPI 3.0 or 3.1, JSON or YAML, up to 5 MB). PipesHub shows the
+1. Drops, picks or pastes the spec (OpenAPI 3.0 or 3.1, JSON or YAML, up to 5 MB). PipesHub shows the
    operations it can offer and warns about the ones it can't.
-2. Selects the operations agents may call (up to 200).
-3. Sets the name, the base URL (prefilled from the spec's `servers`), the security scheme and,
+2. Selects the operations agents may call (up to 200). Reads are preselected. With **No
+   authentication**, operations the spec marks as needing credentials are flagged, and the
+   connection test only calls ones it doesn't.
+3. Sets the name, the base URL (prefilled from the spec's `servers`; a `localhost` address is
+   flagged, since it means the PipesHub server itself), the security scheme and,
    for OAuth, the scopes and the OAuth app.
 4. Chooses whether every member connects their own credential or the admin stores one shared
    credential. OAuth client credentials are always shared: such a token is the client's, not a
@@ -50,12 +53,17 @@ the answer.
 
 ### Agents
 
-In Agent Builder, pick operations from any API toolset. A service-account agent acts as no
-particular person, so it can only use toolsets with a shared credential (or no auth).
+In Agent Builder, API actions are listed under **Tools** next to the other actions. Drag one onto
+the canvas like any action, then keep or drop its operations on the node. A service-account agent
+acts as no particular person, so it can only use API actions with a shared credential (or no
+auth).
+
+In chat, the **Actions** filter lists the agent's API actions, so a turn can be limited to some
+of them. The global agent offers every operation of every API action the member has connected.
 
 When a member chats with the agent, each toolset loads with that member's credential (or the
 shared one). A toolset the member hasn't connected is left out, and the agent tells them to
-connect it under **Workspace → API Toolsets**.
+connect it under **Workspace → Your actions**.
 
 Every call goes through the tool approval gate:
 
@@ -132,7 +140,8 @@ private address (in the integration compose stack it is the `openapi-fixture` se
 ## Known limitations
 
 - No admin screen yet to change the approval rule of one operation.
-- A chat's tool picker doesn't filter API toolset tools.
+- An OAuth sign-in URL in the spec is used as written (a relative one resolves against the base
+  URL), so it must be an address the member's browser can open.
 - Swagger 2.0, form and multipart bodies, file uploads, OpenID Connect and mutual TLS are not
   supported.
 

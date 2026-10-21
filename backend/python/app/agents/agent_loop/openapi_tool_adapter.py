@@ -112,7 +112,7 @@ class OpenAPIToolAdapter(SchemaShallowValidationMixin, Tool):
         except (RequestBuildError, ApiCallError) as e:
             return ToolOutput(success=False, error=str(e))
         except ApiToolsetAuthError as e:
-            return ToolOutput(success=False, error=f"{e} Connect it under Workspace → API Toolsets.")
+            return ToolOutput(success=False, error=f"{e} Connect it under Workspace → Your actions.")
         except Exception as e:
             logger.warning("API toolset call %s failed: %s", self.name, type(e).__name__, exc_info=True)
             return ToolOutput(success=False, error=f"The call to {self._instance.name} failed ({type(e).__name__}).")
@@ -130,5 +130,5 @@ class OpenAPIToolAdapter(SchemaShallowValidationMixin, Tool):
         if 300 <= response.status < 400:
             error += " (a redirect, which PipesHub doesn't follow)"
         if response.status == 401:
-            error += ". The stored credential was refused; it may need updating under Workspace → API Toolsets"
+            error += ". The stored credential was refused; it may need updating under Workspace → Your actions"
         return ToolOutput(success=False, error=f"{error}: {text[:_MAX_ERROR_BODY_CHARS]}" if text else f"{error}.")

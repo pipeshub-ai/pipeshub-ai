@@ -26,7 +26,7 @@ from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.openapi import attachments as api_toolset_attachments
-from app.agents.openapi.service import ApiToolsetError
+from app.agents.openapi.service import ApiToolsetError, connected_tool_refs
 from app.agents.openapi.store import ApiToolsetStore
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import require_scopes
@@ -4483,7 +4483,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "toolsets": agent_toolsets,
                     "mcpServers": agent_mcp_servers,
                     "mcpServerConfigs": mcp_server_configs,
-                    "apiToolsetTools": agent.get("apiToolsetTools") or [],
+                    "apiToolsetTools": _api_toolset_tools_for_chat(agent.get("apiToolsetTools") or [], chat_query.tools),
                     "knowledge": agent_knowledge,
                     "skills": [s["name"] for s in agent.get("skills", []) if isinstance(s, dict) and s.get("name")] or None,
                     "connector_configs": connector_configs,
@@ -4589,6 +4589,29 @@ def _stream_error_frame(
         evt = frame(AGUIEventType.RUN_ERROR, message=message, code=code, **extra)
         return f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
     return f"event: error\ndata: {json.dumps({'message': message, 'type': code, **extra})}\n\n"
+
+
+def _api_toolset_tools_for_chat(attached: list[str], chat_tools: list[str] | None) -> list[str]:
+    """`chat_tools` narrows the attached operations the same way it narrows toolsets; None keeps all."""
+    if chat_tools is None:
+        return attached
+    wanted = set(chat_tools)
+    return [ref for ref in attached if ref in wanted]
+
+
+async def _assistant_api_toolset_tools(
+    config_service: ConfigurationService, org_id: str, user_id: str, logger: Logger,
+) -> list[str]:
+    from app.services.featureflag.platform_settings import is_api_toolsets_enabled
+
+    if not await is_api_toolsets_enabled(config_service):
+        return []
+    try:
+        return await connected_tool_refs(ApiToolsetStore(config_service), org_id, user_id)
+    except Exception as e:
+        # The assistant still answers without them, like it does without toolsets above.
+        logger.error(f"Error fetching API toolsets for the assistant: {e}", exc_info=True)
+        return []
 
 
 async def get_assistant_agent(
@@ -4757,5 +4780,6 @@ async def get_assistant_agent(
         "tags": ["assistant", "general-purpose"],
         "toolsets": authenticated_toolsets_list,
         "mcpServers": authenticated_mcp_servers_list,
+        "apiToolsetTools": await _assistant_api_toolset_tools(config_service, org_id, user_id, logger),
         "knowledge": knowledge_sources,
     }, toolset_auth_by_instance

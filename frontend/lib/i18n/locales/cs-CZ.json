@@ -2248,8 +2248,7 @@
         "tenants": "Tenanti",
         "superOrgs": "Organizace",
         "oauthApps": "OAuth aplikace",
-        "serviceAccounts": "Servisní účty",
-        "apiToolsets": "API sady nástrojů"
+        "serviceAccounts": "Servisní účty"
       }
     },
     "actions": {
@@ -2424,7 +2423,8 @@
       "enterprise": {
         "userActionsTitle": "Vlastní akce uživatelů",
         "userActionsDescription": "Zkontrolujte a odeberte akce, které si lidé ve vaší organizaci přidali sami."
-      }
+      },
+      "appsHeading": "Akce aplikací"
     },
     "rightPanel": {
       "primaryDisabledHint": "Pro pokračování posuňte stránku nahoru a vyplňte povinná pole (označená *).",
@@ -4351,13 +4351,14 @@
       }
     },
     "apiToolsets": {
-      "title": "API sady nástrojů",
-      "subtitle": "Interní API, která váš správce zpřístupnil agentům. Tam, kde to sada nástrojů vyžaduje, připojte vlastní přihlašovací údaje.",
-      "subtitleAdmin": "Přidejte interní REST API z jeho specifikace OpenAPI, vyberte, které operace smějí agenti volat, a určete, jak se k němu PipesHub přihlásí.",
-      "loading": "Načítání API sad nástrojů…",
-      "emptyTitle": "Zatím žádné API sady nástrojů",
-      "emptyAdmin": "Přidejte ji ze specifikace OpenAPI 3.0 nebo 3.1.",
-      "emptyMember": "Váš správce zatím nepřidal žádné API sady nástrojů.",
+      "title": "API akce",
+      "subtitle": "Interní API, která váš správce zpřístupnil agentům. Tam, kde je to vyžadováno, připojte vlastní přihlašovací údaje.",
+      "subtitleAdmin": "Vytvořte z interního REST API akce podle jeho specifikace OpenAPI. Vyberte, které operace smějí agenti volat a jak se PipesHub přihlásí.",
+      "emptyTitle": "Přidejte svou první API akci",
+      "emptyAdmin": "Nahrajte specifikaci OpenAPI 3.0 nebo 3.1 libovolného interního REST API.",
+      "card": {
+        "fallbackDescription": "Interní REST API přidané ze specifikace OpenAPI."
+      },
       "operationCount_one": "{{count}} operace",
       "operationCount_few": "{{count}} operace",
       "operationCount_many": "{{count}} operace",
@@ -4378,52 +4379,54 @@
       "status": {
         "connected": "Připojeno",
         "notConnected": "Nepřipojeno",
+        "open": "Bez přihlášení",
         "shared": "Sdílené přihlašovací údaje"
       },
       "cta": {
-        "add": "Přidat API sadu nástrojů",
-        "connection": "Připojení",
+        "add": "Přidat API akci",
+        "connect": "Připojit",
+        "manageConnection": "Spravovat připojení",
         "details": "Podrobnosti",
         "edit": "Upravit",
-        "delete": "Smazat"
+        "delete": "Smazat",
+        "more": "Další možnosti pro {{name}}"
       },
       "toasts": {
-        "loadError": "API sady nástrojů se nepodařilo načíst",
-        "created": "API sada nástrojů byla přidána",
-        "updated": "API sada nástrojů byla aktualizována",
-        "saveError": "API sadu nástrojů se nepodařilo uložit",
-        "deleted": "API sada nástrojů byla smazána",
-        "deleteError": "API sadu nástrojů se nepodařilo smazat",
+        "loadError": "API akce se nepodařilo načíst",
+        "created": "API akce byla přidána",
+        "updated": "API akce byla aktualizována",
+        "saveError": "API akci se nepodařilo uložit",
+        "deleted": "API akce byla smazána",
+        "deleteError": "API akci se nepodařilo smazat",
         "connected": "Připojeno",
         "disconnected": "Odpojeno"
       },
       "deleteDialog": {
-        "title": "Smazat API sadu nástrojů",
-        "body": "Smazat {{name}}? Všechny uložené přihlašovací údaje k ní budou odstraněny. Sadu nástrojů, kterou používá agent, nelze smazat."
+        "title": "Smazat API akci",
+        "body": "Smazat {{name}}? Všechny uložené přihlašovací údaje k ní budou odstraněny. API akci, kterou používá agent, nelze smazat."
       },
       "editor": {
-        "addTitle": "Přidat API sadu nástrojů",
-        "editTitle": "Upravit API sadu nástrojů",
+        "addTitle": "Přidat API akci",
+        "editTitle": "Upravit API akci",
         "spec": "Specifikace OpenAPI",
-        "specHint": "Vložte specifikaci OpenAPI 3.0 nebo 3.1 ve formátu JSON nebo YAML, nebo vyberte soubor, a pak si prohlédněte její operace.",
+        "specHint": "Nahrajte nebo vložte specifikaci OpenAPI 3.0 nebo 3.1 daného API ve formátu JSON nebo YAML. PipesHub z ní načte operace a způsoby přihlášení.",
         "specEditHint": "Ponechte prázdné, chcete-li zachovat současnou specifikaci. Nahrajte novou, chcete-li vybírat z jejích operací a způsobů ověření.",
         "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
-        "chooseFile": "Vybrat soubor",
-        "preview": "Zobrazit operace",
+        "preview": "Načíst specifikaci",
         "previewing": "Čtení specifikace…",
         "validateError": "Specifikaci se nepodařilo přečíst",
         "warnings": "Některé části specifikace byly přeskočeny:",
         "operations": "Operace (vybráno {{selected}} z {{total}})",
-        "operationsHint": "Agenti mohou volat jen operace, které vyberete. Operace pro čtení jsou vybrané předem.",
+        "operationsHint": "Agenti mohou volat jen operace, které vyberete.",
         "name": "Název",
         "description": "Popis",
         "baseUrl": "Základní URL",
         "baseUrlHint": "Kam PipesHub posílá požadavky. Cesty operací se připojují za ni.",
+        "loopbackHint": "localhost je samotný server PipesHub. Použijte adresu, na které PipesHub API dosáhne, například jeho název hostitele ve vaší síti.",
         "authScheme": "Ověření",
         "authSchemeLocked": "Chcete-li změnit, jak se PipesHub ověřuje, nahrajte specifikaci znovu.",
         "scopes": "Rozsahy",
         "oauthClientId": "ID klienta aplikace OAuth",
-        "oauthRedirectHint": "Zaregistrujte v aplikaci OAuth tuto adresu přesměrování: {{url}}",
         "oauthClientSecret": "Tajný klíč klienta aplikace OAuth",
         "keepSecret": "Ponechte prázdné, chcete-li zachovat uložený tajný klíč",
         "sharedCredential": "Jedny sdílené přihlašovací údaje",
@@ -4437,15 +4440,40 @@
           "operations": "Vyberte alespoň jednu operaci.",
           "timeout": "Zadejte časový limit od 1 do 120 sekund.",
           "oauthClientId": "Zadejte ID klienta aplikace OAuth."
-        }
+        },
+        "create": "Přidat API akci",
+        "specLoadedHint": "Specifikace, ze které tato API akce vychází. Nahraďte ji, chcete-li vybírat z novější verze.",
+        "replaceSpec": "Nahradit specifikaci",
+        "specSummary_one": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operace",
+        "specSummary_few": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operace",
+        "specSummary_many": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operace",
+        "specSummary_other": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operací",
+        "dropFile": "Přetáhněte sem soubor se specifikací, nebo klikněte a vyberte ho",
+        "dropFileHint": "JSON nebo YAML. Specifikaci můžete také vložit níže.",
+        "detailsHeading": "Podrobnosti",
+        "descriptionHint": "Agenti podle tohoto textu rozhodují, kdy API použít.",
+        "authSchemeHint": "Jak se PipesHub přihlásí, když agent volá API.",
+        "redirectUrl": "Adresa přesměrování",
+        "redirectUrlHint": "Zaregistrujte tuto adresu v aplikaci OAuth jako povolené přesměrování.",
+        "noAuthHint": "PipesHub volá API bez přihlašovacích údajů, takže fungují jen operace, které specifikace označuje jako veřejné.",
+        "selectReads": "Jen čtení",
+        "selectAll": "Vše",
+        "selectNone": "Nic",
+        "unreachableWarning_one": "{{count}} vybraná operace vyžaduje přihlašovací údaje, takže bez ověření selže.",
+        "unreachableWarning_few": "{{count}} vybrané operace vyžadují přihlašovací údaje, takže bez ověření selžou.",
+        "unreachableWarning_many": "{{count}} vybrané operace vyžaduje přihlašovací údaje, takže bez ověření selže.",
+        "unreachableWarning_other": "{{count}} vybraných operací vyžaduje přihlašovací údaje, takže bez ověření selžou.",
+        "deselectUnreachable": "Zrušit jejich výběr",
+        "needsCredentials": "Vyžaduje přihlašovací údaje",
+        "needsCredentialsHint": "Podle specifikace tato operace vyžaduje přihlašovací údaje. Bez ověření ji API odmítne.",
+        "advancedHeading": "Pokročilé"
       },
       "connect": {
-        "title": "Připojení {{name}}",
         "mode": {
           "none": "Toto API nepotřebuje žádné přihlašovací údaje.",
           "own": "Agenti volají toto API s vašimi vlastními přihlašovacími údaji.",
           "shared": "Všichni členové používají přihlašovací údaje, které zde nastavíte.",
-          "managed": "Přihlašovací údaje k této sadě nástrojů spravuje váš správce."
+          "managed": "Přihlašovací údaje k této API akci spravuje váš správce."
         },
         "status": "Stav",
         "signIn": "Přihlásit se",
@@ -4459,7 +4487,7 @@
           "clientId": "ID klienta",
           "clientSecret": "Tajný klíč klienta"
         },
-        "replaceHint": "Uložením nahradíte přihlašovací údaje, které jsou teď uložené.",
+        "replaceHint": "Uloženo. Chcete-li hodnotu nahradit, zadejte novou.",
         "error": "Nepovedlo se. Zkuste to znovu.",
         "test": "Otestovat připojení",
         "testing": "Testování…",
@@ -4467,7 +4495,37 @@
         "testFailed": "API odpovědělo chybou.",
         "testTruncated": "Zobrazuje se jen začátek odpovědi.",
         "disconnect": "Odpojit",
-        "disconnecting": "Odpojování…"
+        "disconnecting": "Odpojování…",
+        "panelTitle": "API akce",
+        "connectionHeading": "Připojení",
+        "testHeading": "Otestovat připojení",
+        "testHint": "Zavolá jednu operaci pro čtení, která nevyžaduje žádný vstup.",
+        "testIdle": "Spusťte testovací volání a podívejte se, co API vrátí.",
+        "testNeedsConnection": "Nejprve se připojte, pak spusťte testovací volání.",
+        "operationsHeading_one": "{{count}} operace, kterou mohou agenti volat",
+        "operationsHeading_few": "{{count}} operace, které mohou agenti volat",
+        "operationsHeading_many": "{{count}} operace, které mohou agenti volat",
+        "operationsHeading_other": "{{count}} operací, které mohou agenti volat"
+      },
+      "sectionTitle": "API akce",
+      "kindCount": {
+        "read_one": "{{count}} čtení",
+        "read_few": "{{count}} čtení",
+        "read_many": "{{count}} čtení",
+        "read_other": "{{count}} čtení",
+        "write_one": "{{count}} zápis",
+        "write_few": "{{count}} zápisy",
+        "write_many": "{{count}} zápisu",
+        "write_other": "{{count}} zápisů",
+        "destructive_one": "{{count}} smazání",
+        "destructive_few": "{{count}} smazání",
+        "destructive_many": "{{count}} smazání",
+        "destructive_other": "{{count}} smazání"
+      },
+      "kindPolicy": {
+        "read": "spustí se hned",
+        "write": "nejprve se zeptá uživatele",
+        "destructive": "blokováno, pokud to pravidla akcí agenta nepovolí"
       }
     }
   },
@@ -4837,11 +4895,9 @@
     "limitSourceCount": "Omezeno na vybrané položky: {{count}}",
     "toolsetPersonalOnSharedAgentNotify": "{{name}} je vaše osobní akce. Nelze ji přidat k agentovi sdílenému s vaší organizací ani k agentovi běžícímu jako servisní účet.",
     "apiToolsets": {
-      "section": "API sady nástrojů",
-      "none": "Zatím žádné API sady nástrojů. Správci je přidávají v části Pracovní prostor > API sady nástrojů.",
-      "connectTooltip": "Připojte na stránce API sad nástrojů",
-      "notConnected": "Nepřipojeno. Agent tuto sadu nástrojů vynechá u každého, kdo ji nepřipojil.",
-      "serviceAccountBlocked": "Agenti se servisním účtem mohou používat jen sady nástrojů se sdílenými přihlašovacími údaji."
+      "section": "API akce",
+      "connectTooltip": "Připojte ji v části Akce",
+      "serviceAccountBlocked": "Agenti se servisním účtem mohou používat jen API akce se sdílenými přihlašovacími údaji nebo bez přihlášení."
     }
   },
   "recordView": {

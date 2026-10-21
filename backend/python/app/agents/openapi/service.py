@@ -156,7 +156,10 @@ def _check_url_allowed(url: str, what: str) -> None:
         check_mcp_url_at_save(url, allow_private=private_network_allowed())
     except MCPUrlBlockedError as e:
         where = "a loopback, link-local or cloud metadata address" if private_network_allowed() else "a private address"
-        raise ApiToolsetError(f"The {what} is not allowed: it must not point to {where}.") from e
+        raise ApiToolsetError(
+            f"The {what} is not allowed: it must not point to {where}. "
+            "Use the address PipesHub's server reaches the API at, such as its host name on your network.",
+        ) from e
 
 
 def _check_oauth_urls(scheme: AuthScheme, base_url: str) -> None:
@@ -240,6 +243,16 @@ async def is_connected(store: ApiToolsetStore, instance: ApiToolsetInstance, use
     return creds.oauth is not None if instance.auth_scheme.type is AuthType.OAUTH2_AUTHORIZATION_CODE else True
 
 
+async def connected_tool_refs(store: ApiToolsetStore, org_id: str, user_id: str) -> list[str]:
+    """Every operation of every toolset `user_id` can call now, as `"<instanceId>:<toolName>"`:
+    what the assistant, which has no attachments of its own, offers."""
+    refs: list[str] = []
+    for instance in await store.list_instances(org_id):
+        if await is_connected(store, instance, user_id):
+            refs += [f"{instance.id}:{op.tool_name}" for op in instance.operations]
+    return refs
+
+
 async def build_executor(
     store: ApiToolsetStore,
     instance: ApiToolsetInstance,
@@ -288,8 +301,9 @@ async def test_call(
         if op.kind != "read":
             raise ApiToolsetError(f"{tool_name} changes data, so it can't be used to test the connection. Choose a read.")
     else:
+        anonymous = instance.auth_scheme.type is AuthType.NONE
         op = next((o for o in instance.operations
-                   if o.kind == "read" and not o.input_schema.get("required")), None)
+                   if o.kind == "read" and not o.input_schema.get("required") and not (anonymous and o.requires_auth)), None)
         if op is None:
             raise ApiToolsetError("Choose an operation to test: none of the selected reads runs without arguments.")
     return await executor.call(op, arguments or {})

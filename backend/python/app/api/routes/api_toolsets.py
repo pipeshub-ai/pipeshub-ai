@@ -103,7 +103,8 @@ async def _oauth_redirect_uri(config_service: ConfigurationService) -> str:
 
 
 def _operation_summary(op: Any) -> dict[str, Any]:  # noqa: ANN401
-    return {"toolName": op.tool_name, "method": op.method, "path": op.path, "summary": op.summary, "kind": op.kind}
+    return {"toolName": op.tool_name, "method": op.method, "path": op.path, "summary": op.summary, "kind": op.kind,
+            "requiresAuth": op.requires_auth}
 
 
 async def _view(store: ApiToolsetStore, instance: ApiToolsetInstance, user_id: str, *, full: bool = False) -> dict[str, Any]:

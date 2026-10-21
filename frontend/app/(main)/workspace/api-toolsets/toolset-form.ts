@@ -67,13 +67,46 @@ export function connectionMode(toolset: Pick<ApiToolset, 'authType' | 'useShared
   return isAdmin ? 'shared' : 'managed';
 }
 
+/** What a card says about the viewer's access: `open` needs no credential at all. */
+export type ConnectionStatus = 'connected' | 'open' | 'notConnected';
+
+export function connectionStatus(toolset: Pick<ApiToolset, 'authType' | 'isConnected'>): ConnectionStatus {
+  if (toolset.authType === 'none') return 'open';
+  return toolset.isConnected ? 'connected' : 'notConnected';
+}
+
+/** The i18n key of a card's button: connect when the viewer can and hasn't, else look at the details. */
+export function connectionCta(toolset: Pick<ApiToolset, 'authType' | 'useSharedCredential' | 'isConnected'>, isAdmin: boolean): string {
+  const mode = connectionMode(toolset, isAdmin);
+  if (mode === 'own' || mode === 'shared') {
+    return toolset.isConnected ? 'workspace.apiToolsets.cta.manageConnection' : 'workspace.apiToolsets.cta.connect';
+  }
+  return 'workspace.apiToolsets.cta.details';
+}
+
+export function kindCounts(operations: Pick<ApiOperationSummary, 'kind'>[]): Record<ApiOperationSummary['kind'], number> {
+  const counts = { read: 0, write: 0, destructive: 0 };
+  for (const op of operations) counts[op.kind] += 1;
+  return counts;
+}
+
 /** A service-account agent runs as nobody, so it can only use toolsets that don't need a member's credential. */
 export const usableByServiceAccount = (toolset: Pick<ApiToolset, 'authType' | 'useSharedCredential'>) =>
   toolset.authType === 'none' || toolset.useSharedCredential;
 
+/** Selected operations the spec says need credentials, which fail when the toolset sends none. */
+export const operationsNeedingAuth = (
+  operations: ApiOperationSummary[],
+  selected: string[],
+  authType: ApiToolsetAuthType,
+): ApiOperationSummary[] =>
+  authType === 'none' ? operations.filter((op) => op.requiresAuth && selected.includes(op.toolName)) : [];
+
 /** Reads are safe to offer an agent by default; writes and deletes are opt-in. */
-export const defaultOperationSelection = (operations: ApiOperationSummary[]) =>
-  operations.filter((op) => op.kind === 'read').map((op) => op.toolName);
+export const defaultOperationSelection = (operations: ApiOperationSummary[], authType: ApiToolsetAuthType) =>
+  operations
+    .filter((op) => op.kind === 'read' && !(authType === 'none' && op.requiresAuth))
+    .map((op) => op.toolName);
 
 /** The selection with one operation added or removed, kept in the spec's order. */
 export function toggleOperation(
@@ -102,7 +135,7 @@ export function formFromSpec(spec: ApiCompiledSpec): ToolsetForm {
     timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
     oauthClientId: '',
     oauthClientSecret: '',
-    operations: defaultOperationSelection(spec.operations),
+    operations: defaultOperationSelection(spec.operations, spec.authSchemes[0]?.type ?? 'none'),
   };
 }
 
@@ -188,4 +221,30 @@ export function buildCredentials(
     body[field] = field === 'password' ? raw : raw.trim();
   }
   return fields.length > 0 ? body : null;
+}
+
+/** Which API actions a catalog tab shows. Constants, so a page can pass one without memoizing. */
+export type ApiActionFilter = (toolset: ApiToolset) => boolean;
+
+export const API_ACTION_FILTERS = {
+  all: () => true,
+  none: () => false,
+  connected: (toolset) => toolset.isConnected,
+  notConnected: (toolset) => !toolset.isConnected,
+} satisfies Record<string, ApiActionFilter>;
+
+/** The catalog search, over what a card shows. */
+export function matchesSearch(toolset: Pick<ApiToolset, 'name' | 'description' | 'specTitle'>, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  return !q || [toolset.name, toolset.description, toolset.specTitle].some((text) => text.toLowerCase().includes(q));
+}
+
+/** True for an address that, seen from PipesHub's server, is the server itself; the backend refuses those. */
+export function isLoopbackUrl(url: string): boolean {
+  try {
+    const host = new URL(url.trim()).hostname.replace(/^\[|\]$/g, '');
+    return host === 'localhost' || host.endsWith('.localhost') || host.startsWith('127.') || host === '::1' || host === '0.0.0.0';
+  } catch {
+    return false;
+  }
 }

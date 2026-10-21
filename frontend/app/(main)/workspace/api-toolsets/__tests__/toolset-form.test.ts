@@ -4,11 +4,19 @@ import {
   authSchemeOptions,
   buildCredentials,
   buildPayload,
+  API_ACTION_FILTERS,
+  connectionCta,
   connectionMode,
+  connectionStatus,
   credentialFields,
+  defaultOperationSelection,
+  kindCounts,
+  matchesSearch,
+  operationsNeedingAuth,
   formFromConfig,
   formFromSpec,
   formProblems,
+  isLoopbackUrl,
   rebaseFormOnSpec,
   toggleOperation,
   usableByServiceAccount,
@@ -173,5 +181,67 @@ describe('who connects', () => {
     expect(usableByServiceAccount(toolset())).toBe(false);
     expect(usableByServiceAccount(toolset({ useSharedCredential: true }))).toBe(true);
     expect(usableByServiceAccount(toolset({ authType: 'none' }))).toBe(true);
+  });
+});
+
+describe('no-auth operations', () => {
+  const open = { ...operation('listNews', 'read'), requiresAuth: false };
+  const ops = [operation('listOrders', 'read'), open, operation('createOrder', 'write')];
+
+  it('preselects only reads the chosen auth can call', () => {
+    expect(defaultOperationSelection(ops, 'none')).toEqual(['listNews']);
+    expect(defaultOperationSelection(ops, 'api_key')).toEqual(['listOrders', 'listNews']);
+  });
+
+  it('names selected operations that need credentials only when none are sent', () => {
+    expect(operationsNeedingAuth(ops, ['listOrders', 'listNews'], 'none').map((op) => op.toolName)).toEqual(['listOrders']);
+    expect(operationsNeedingAuth(ops, ['listOrders'], 'http_bearer')).toEqual([]);
+  });
+});
+
+describe('cards', () => {
+  it('says whether the viewer can use the API now', () => {
+    expect(connectionStatus({ authType: 'none', isConnected: true })).toBe('open');
+    expect(connectionStatus({ authType: 'api_key', isConnected: true })).toBe('connected');
+    expect(connectionStatus({ authType: 'api_key', isConnected: false })).toBe('notConnected');
+  });
+
+  it('offers to connect only to whoever holds the credential', () => {
+    const shared = { authType: 'api_key' as const, useSharedCredential: true, isConnected: false };
+    expect(connectionCta(shared, true)).toBe('workspace.apiToolsets.cta.connect');
+    expect(connectionCta(shared, false)).toBe('workspace.apiToolsets.cta.details');
+    expect(connectionCta({ ...shared, useSharedCredential: false, isConnected: true }, false)).toBe(
+      'workspace.apiToolsets.cta.manageConnection',
+    );
+  });
+
+  it('counts operations by kind', () => {
+    expect(kindCounts([{ kind: 'read' }, { kind: 'read' }, { kind: 'destructive' }])).toEqual({ read: 2, write: 0, destructive: 1 });
+  });
+
+  it('searches name, description and spec title, ignoring case', () => {
+    const t = toolset({ name: 'Orders', description: 'Fulfilment desk', specTitle: 'Orders API' });
+    expect(matchesSearch(t, '  FULFIL ')).toBe(true);
+    expect(matchesSearch(t, '')).toBe(true);
+    expect(matchesSearch(t, 'billing')).toBe(false);
+  });
+
+  it('filters by connection for the personal tabs', () => {
+    expect(API_ACTION_FILTERS.connected(toolset({ isConnected: true }))).toBe(true);
+    expect(API_ACTION_FILTERS.notConnected(toolset({ isConnected: true }))).toBe(false);
+    expect(API_ACTION_FILTERS.none(toolset())).toBe(false);
+  });
+});
+
+describe('isLoopbackUrl', () => {
+  it.each([
+    ['http://localhost:8098', true],
+    ['http://127.0.0.1', true],
+    ['http://[::1]:80', true],
+    ['http://acme-helpdesk:8080', false],
+    ['https://api.example.com', false],
+    ['not a url', false],
+  ])('%s → %s', (url, expected) => {
+    expect(isLoopbackUrl(url)).toBe(expected);
   });
 });

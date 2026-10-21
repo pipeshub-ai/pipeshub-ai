@@ -31,7 +31,10 @@ import {
   useFeatureFlagsStore,
   selectMcpEnabled,
   selectActionsEnabled,
+  selectApiToolsetsEnabled,
 } from '@/lib/store/feature-flags-store';
+import { ApiToolsetsApi } from '@/app/(main)/workspace/api-toolsets/api';
+import type { ApiToolset } from '@/app/(main)/workspace/api-toolsets/types';
 import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
@@ -39,9 +42,11 @@ import { toast } from '@/lib/store/toast-store';
 import { CollectionsTab } from './connectors-collections/collections-tab';
 import { McpConnectRows, mcpServersToConnect } from './mcp-connect-rows';
 import { ToolsetConnectRows, actionName, actionsToConnect } from './toolset-connect-rows';
+import { ApiActionConnectRows, apiActionsToConnect } from './api-action-connect-rows';
 import type { CollectionScopeSelection } from './connectors-collections/collections-tab';
 import {
   bareToolFullName,
+  buildApiActionGroups,
   buildCatalogMcpGroups,
   buildCatalogToolGroups,
   type CatalogToolGroupRow,
@@ -261,7 +266,9 @@ let _actionsPageCache: {
   lastFetchedAt: number;
   /** The person's actions not signed in to yet, listed with a Connect button. */
   toConnect: BuilderSidebarToolset[];
-} = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0, toConnect: [] };
+  /** API actions, connected or not; not paginated, so reloaded with page 1. */
+  apiActions: ApiToolset[];
+} = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0, toConnect: [], apiActions: [] };
 
 /** Without this list the tab still shows the connected actions, so a failure only hides Connect. */
 async function loadActionsToConnect(): Promise<BuilderSidebarToolset[]> {
@@ -314,11 +321,13 @@ export function UniversalAgentResourcesPanel({
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
+  const apiActionsEnabled = useFeatureFlagsStore(selectApiToolsetsEnabled);
   const isAdmin = useUserStore(selectIsAdmin) ?? false;
   const [mcpInstances, setMcpInstances] = useState<McpMyServerEntry[]>(() => _mcpCache.instances);
   const [unconnectedActions, setUnconnectedActions] = useState<BuilderSidebarToolset[]>(
     () => _actionsPageCache.toConnect
   );
+  const [apiActions, setApiActions] = useState<ApiToolset[]>(() => _actionsPageCache.apiActions);
 
   const settings = useChatStore((s) => s.settings);
   const setFilters = useChatStore((s) => s.setFilters);
@@ -377,7 +386,14 @@ export function UniversalAgentResourcesPanel({
 
       if (page === 1) {
         if (!quiet) {
-          _actionsPageCache = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0, toConnect: [] };
+          _actionsPageCache = {
+            toolsets: [],
+            page: 0,
+            hasMore: false,
+            lastFetchedAt: 0,
+            toConnect: [],
+            apiActions: [],
+          };
           setToolsLoading(true);
         }
       } else {
@@ -386,7 +402,7 @@ export function UniversalAgentResourcesPanel({
 
       const lastPage = quiet ? Math.max(page, _actionsPageCache.page) : page;
       try {
-        const [results, toConnect] = await Promise.all([
+        const [results, toConnect, apiActions] = await Promise.all([
           Promise.all(
             Array.from({ length: lastPage - page + 1 }, (_, i) =>
               ToolsetsApi.getMyToolsets({
@@ -397,6 +413,10 @@ export function UniversalAgentResourcesPanel({
             )
           ),
           page === 1 ? loadActionsToConnect() : Promise.resolve(_actionsPageCache.toConnect),
+          // Any failure (the labs flag off on the server, too) means no API actions.
+          page === 1 && apiActionsEnabled
+            ? ApiToolsetsApi.listInstances().catch(() => [])
+            : Promise.resolve(_actionsPageCache.apiActions),
         ]);
         const result = results[results.length - 1]!;
 
@@ -406,11 +426,16 @@ export function UniversalAgentResourcesPanel({
           hasMore: result.hasNext,
           lastFetchedAt: page === 1 ? Date.now() : _actionsPageCache.lastFetchedAt,
           toConnect,
+          apiActions,
         };
         setUnconnectedActions(toConnect);
+        setApiActions(apiActions);
 
         // Rebuild from full accumulated list so instanceId-based discriminators are stable.
-        const groups = buildCatalogToolGroups(_actionsPageCache.toolsets);
+        const groups = [
+          ...buildCatalogToolGroups(_actionsPageCache.toolsets),
+          ...buildApiActionGroups(apiActions.filter((action) => action.isConnected)),
+        ];
         const catalogFullNames = groups.flatMap((g) => g.fullNames);
         hydrateResources({ toolGroups: groups, toolCatalogFullNames: catalogFullNames });
         setHasNextPage(result.hasNext);
@@ -435,7 +460,7 @@ export function UniversalAgentResourcesPanel({
         isFetchingPageRef.current = false;
       }
     },
-    [hydrateResources, setToolsLoading, setToolsError, t]
+    [apiActionsEnabled, hydrateResources, setToolsLoading, setToolsError, t]
   );
 
   // Initial load — skips re-fetch when the module cache has a fresh page-1 result
@@ -671,6 +696,14 @@ export function UniversalAgentResourcesPanel({
     const q = search.trim().toLowerCase();
     return q ? toolsetsToConnect.filter((ts) => actionName(ts).toLowerCase().includes(q)) : toolsetsToConnect;
   }, [toolsetsToConnect, search]);
+
+  const apiActionsNotConnected = useMemo(() => apiActionsToConnect(apiActions), [apiActions]);
+  const filteredApiActionsToConnect = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q
+      ? apiActionsNotConnected.filter((action) => action.name.toLowerCase().includes(q))
+      : apiActionsNotConnected;
+  }, [apiActionsNotConnected, search]);
 
   const handleActionConnected = useCallback(
     async (instanceId: string) => {
@@ -1068,7 +1101,8 @@ export function UniversalAgentResourcesPanel({
             keyPrefix: 'toolset',
             loading: toolsLoading,
             error: toolsError,
-            hasAnyBeforeFilter: toolGroups.length > 0 || toolsetsToConnect.length > 0,
+            hasAnyBeforeFilter:
+              toolGroups.length > 0 || toolsetsToConnect.length > 0 || apiActionsNotConnected.length > 0,
             loadingText: t('chat.universalAgent.loadingTools', { defaultValue: 'Loading actions…' }),
             noDataText: t('chat.universalAgent.noActions', {
               defaultValue: 'No authenticated actions found. Connect integrations in Workspace → Actions.',
@@ -1120,19 +1154,28 @@ export function UniversalAgentResourcesPanel({
               </Flex>
             ) : null,
             extraRows:
-              filteredToolsetsToConnect.length > 0 ? (
-                <ToolsetConnectRows
-                  toolsets={filteredToolsetsToConnect}
-                  rowStyle={OLIVE_ROW}
-                  renderIcon={(ts) => (
-                    <UniversalToolsetRowIcon
-                      toolsetSlug={ts.toolsetType ?? ts.name}
-                      label={actionName(ts)}
-                      iconPath={ts.iconPath || undefined}
-                    />
-                  )}
-                  onConnected={(id) => void handleActionConnected(id)}
-                />
+              filteredToolsetsToConnect.length > 0 || filteredApiActionsToConnect.length > 0 ? (
+                <>
+                  <ToolsetConnectRows
+                    toolsets={filteredToolsetsToConnect}
+                    rowStyle={OLIVE_ROW}
+                    renderIcon={(ts) => (
+                      <UniversalToolsetRowIcon
+                        toolsetSlug={ts.toolsetType ?? ts.name}
+                        label={actionName(ts)}
+                        iconPath={ts.iconPath || undefined}
+                      />
+                    )}
+                    onConnected={(id) => void handleActionConnected(id)}
+                  />
+                  <ApiActionConnectRows
+                    actions={filteredApiActionsToConnect}
+                    isAdmin={isAdmin}
+                    rowStyle={OLIVE_ROW}
+                    showHeading={filteredToolsetsToConnect.length === 0}
+                    onConnected={(id) => void handleActionConnected(id)}
+                  />
+                </>
               ) : undefined,
           })}
 

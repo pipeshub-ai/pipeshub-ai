@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["OpenAPIToolProvider"]
 
 _TOOL_PREFIX = "api_"
-WHERE_TO_CONNECT = "connect it under Workspace → API Toolsets"
+WHERE_TO_CONNECT = "connect it under Workspace → Your actions"
 
 
 class OpenAPIToolProvider:
@@ -61,7 +61,7 @@ class OpenAPIToolProvider:
         tool_names: list[str],
         key: str,
     ) -> None:
-        failure_key = f"{instance.name} (API toolset; {WHERE_TO_CONNECT})"
+        failure_key = f"{instance.name} (API action; {WHERE_TO_CONNECT})"
         needs_own_credential = not instance.use_shared_credential and instance.auth_scheme.type is not AuthType.NONE
         if context.is_service_account and needs_own_credential:
             # Caught when the agent is saved; an older attachment can still get here.
