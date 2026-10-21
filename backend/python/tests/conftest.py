@@ -33,11 +33,32 @@ with open(_EMPTY_OPIK_CONFIG, "w", encoding="utf-8") as _opik_config:
 os.environ["OPIK_CONFIG_PATH"] = _EMPTY_OPIK_CONFIG
 
 
+def pytest_collection_modifyitems(items):
+    """xdist refuses to run unless every worker collected the same node ids
+    in the same order. Parametrize over a set (hash-seeded per process)
+    shuffles that order, so sort once after collection."""
+    items.sort(key=lambda item: item.nodeid)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Remember the real status for the force-exit below. Nothing else sets
+    ``config._exitcode``, so without this an xdist run os._exit(0) even when
+    collection or the tests failed."""
+    session.config._exitcode = int(exitstatus)
+
+
 def pytest_unconfigure(config):
     """Force-exit the process when running under xdist to prevent hangs
     caused by unawaited async coroutines keeping worker threads alive."""
     if os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None):
-        os._exit(getattr(config, "_exitcode", 0))
+        # os._exit skips the normal flush, which drops the coverage report
+        # and the failure summary when stdout is a pipe, as it is in CI.
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except Exception:
+                pass
+        os._exit(int(getattr(config, "_exitcode", 0) or 0))
 
 # ---------------------------------------------------------------------------
 # Auto-mock optional third-party modules that may not be installed in the

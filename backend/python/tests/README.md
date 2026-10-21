@@ -53,8 +53,9 @@ pytest --cov=app --cov-report=term-missing
 # Generate HTML coverage report
 pytest --cov=app --cov-report=html
 
-# Run tests in parallel (requires pytest-xdist)
-pytest -n auto
+# Run tests in parallel (requires pytest-xdist). Pin the worker count;
+# -n auto follows physical cores and is 2 on many CI runners.
+pytest -n 4 --dist load
 ```
 
 ## Directory Structure

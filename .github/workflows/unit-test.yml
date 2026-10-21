@@ -23,7 +23,7 @@ on:
     inputs:
       # Only ever raise the Python minimum; never lower it to make a PR pass. Add tests instead.
       # It lives in three places that must move together: this default, the `|| 89.8`
-      # fallback on the `coverage report --fail-under` line (the one pull_request runs use),
+      # fallback on the `--cov-fail-under` line (the one pull_request runs use),
       # and weekly-coverage.yml (its input and its Slack text).
       python-coverage-threshold:
         description: 'Minimum Python coverage percentage'
@@ -136,7 +136,7 @@ jobs:
       - name: Install dependencies
         run: |
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout coverage
+          uv pip install --system pytest pytest-asyncio pytest-timeout pytest-xdist pytest-cov coverage
           # `.[dev]`, not a bare `.`: the dev extra already declares
           # fakeredis[lua], which the FakeClusterRedis contract suites (the
           # CROSSSLOT/multi-key guards for MemoryDB readiness) need. Without
@@ -147,8 +147,15 @@ jobs:
       - name: Run unit tests with coverage
         run: |
           cd backend/python
-          coverage run -m pytest tests/unit -v
-          coverage report --fail-under=${{ inputs.python-coverage-threshold || 89.8 }}
+          # Four workers, one per vCPU on the hosted runner. `-n auto` follows
+          # physical cores, so on that runner it often starts two, and on a
+          # large dev box it starts enough to exhaust memory. `--dist load`
+          # gives the next test to a free worker. tests/conftest.py sorts the
+          # collected node ids; without that, workers disagree and xdist
+          # aborts before running anything.
+          pytest tests/unit -n 4 --dist load --tb=short \
+            --cov=app --cov-config=.coveragerc --cov-report=term \
+            --cov-fail-under=${{ inputs.python-coverage-threshold || 89.8 }}
 
       # The only automated check on agent behaviour: six golden properties the
       # prompt and loop must hold (tool choice, no placeholder write params, a
