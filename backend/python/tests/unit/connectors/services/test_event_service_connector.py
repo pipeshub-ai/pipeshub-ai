@@ -121,6 +121,90 @@ class TestUpdateAppStatus:
         assert call_args["isLocked"] is False
 
 
+# What ArangoDB raised when the sync task wrote the app document at the same
+# moment as the full-sync prep released its lock (nightly run, 20 Oct 2026).
+_ARANGO_WRITE_CONFLICT = (
+    "Batch insert failed with 1 error(s): Item 0: [1200] write-write conflict"
+)
+
+
+def _arango_conflicts(gp) -> None:
+    """Classify errors as the real ArangoDB provider does."""
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+
+    gp.is_write_conflict = ArangoHTTPProvider.__new__(ArangoHTTPProvider).is_write_conflict
+
+
+def _locks_written(gp) -> list:
+    return [
+        args[0][0]["isLocked"]
+        for name, args, _kwargs in gp.mock_calls
+        if name == "batch_upsert_nodes" and "isLocked" in args[0][0]
+    ]
+
+
+class TestUpdateAppStatusWriteConflict:
+    @pytest.mark.asyncio
+    async def test_a_write_conflict_is_retried_until_the_write_lands(self, service):
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(
+            side_effect=[Exception(_ARANGO_WRITE_CONFLICT), True]
+        )
+        with patch("app.connectors.services.event_service.asyncio.sleep", new_callable=AsyncMock):
+            await service._update_app_status("conn1", is_locked=False)
+
+        assert gp.batch_upsert_nodes.await_count == 2
+        assert gp.batch_upsert_nodes.call_args[0][0][0]["isLocked"] is False
+
+    @pytest.mark.asyncio
+    async def test_any_other_failure_is_raised_without_a_retry(self, service):
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("connection refused"))
+        with patch("app.connectors.services.event_service.asyncio.sleep", new_callable=AsyncMock), \
+             pytest.raises(Exception, match="connection refused"):
+            await service._update_app_status("conn1", is_locked=False)
+
+        assert gp.batch_upsert_nodes.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_that_never_clears_is_raised_in_the_end(self, service):
+        from app.connectors.services import event_service as module
+
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        with patch("app.connectors.services.event_service.asyncio.sleep", new_callable=AsyncMock), \
+             pytest.raises(Exception, match="write-write conflict"):
+            await service._update_app_status("conn1", is_locked=False)
+
+        assert gp.batch_upsert_nodes.await_count == module._APP_STATUS_WRITE_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_full_sync_lock_is_released_when_the_release_collides_with_the_sync(self, service):
+        """The release lost a write-write conflict to the sync task's own start
+        write. The lock stayed set after the sync ended, and every toggle,
+        filter change and delete of the connector answered 409."""
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(
+            side_effect=[True, Exception(_ARANGO_WRITE_CONFLICT), True]
+        )
+        mock_conn = AsyncMock()
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
+             patch.object(service, "_get_connector", return_value=mock_conn), \
+             patch("app.connectors.services.event_service.asyncio.sleep", new_callable=AsyncMock), \
+             current_coordinator() as mock_stm:
+            mock_stm.spawn = AsyncMock(side_effect=spawned)
+            result = await service._handle_start_sync("gmail", {
+                "orgId": "org1", "connectorId": "c1", "fullSync": True
+            })
+
+        assert result is True
+        assert _locks_written(gp) == [True, False, False]
+
+
 # ===========================================================================
 # _get_connector / _store_connector
 # ===========================================================================

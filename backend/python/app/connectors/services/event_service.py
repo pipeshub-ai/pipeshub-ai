@@ -112,6 +112,14 @@ _evict_tasks: set = set()
 #: Its intent, recorded before the graph delete, covers a process that dies mid-run.
 _storage_release_tasks: set[asyncio.Task] = set()
 
+# The sync task writes the app document the moment it starts, the same instant
+# the full-sync prep releases its lock. On ArangoDB one of the two writes loses
+# with a write-write conflict; a lost release left isLocked set after the sync
+# ended, and every toggle, filter change and delete answered 409 until restart.
+# The other writer is a single-document write, so short waits clear it.
+_APP_STATUS_WRITE_ATTEMPTS = 5
+_APP_STATUS_RETRY_DELAY = 0.1
+
 
 class EventService:
     """Event service for handling connector-specific events"""
@@ -147,9 +155,24 @@ class EventService:
             payload["status"] = status
         if is_locked is not None:
             payload["isLocked"] = is_locked
-        await self.graph_provider.batch_upsert_nodes(
-            [payload], CollectionNames.APPS.value
-        )
+        for attempt in range(1, _APP_STATUS_WRITE_ATTEMPTS + 1):
+            try:
+                await self.graph_provider.batch_upsert_nodes(
+                    [payload], CollectionNames.APPS.value
+                )
+                return
+            except Exception as e:
+                # `is not True`: a mocked provider answers with a truthy mock.
+                if (
+                    attempt == _APP_STATUS_WRITE_ATTEMPTS
+                    or self.graph_provider.is_write_conflict(e) is not True
+                ):
+                    raise
+                self.logger.warning(
+                    f"Status write for connector {connector_id} collided with another "
+                    f"writer (attempt {attempt}/{_APP_STATUS_WRITE_ATTEMPTS}); retrying"
+                )
+                await asyncio.sleep(_APP_STATUS_RETRY_DELAY * attempt)
 
     def _get_connector(self, connector_id: str) -> BaseConnector | None:
         """
