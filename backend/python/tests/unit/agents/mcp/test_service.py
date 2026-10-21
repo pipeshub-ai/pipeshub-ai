@@ -324,7 +324,7 @@ class TestGetAuthenticatedMcpServers:
 class TestIsMcpEnabled:
     """No env override exists anymore — resolution is `config_service` (via
     the shared `read_platform_feature_flag` helper) -> `FeatureFlagService`
-    fallback -> default False."""
+    fallback -> default True."""
 
     @pytest.mark.asyncio
     async def test_reads_platform_settings_flag(self) -> None:
@@ -335,16 +335,24 @@ class TestIsMcpEnabled:
         assert await is_mcp_enabled(cfg) is True
 
     @pytest.mark.asyncio
-    async def test_platform_settings_flag_absent_defaults_false(self) -> None:
+    async def test_stored_false_disables(self) -> None:
         cfg = MagicMock()
-        cfg.get_config = AsyncMock(return_value={"featureFlags": {}})
+        cfg.get_config = AsyncMock(
+            return_value={"featureFlags": {"ENABLE_MCP": False}}
+        )
         assert await is_mcp_enabled(cfg) is False
 
     @pytest.mark.asyncio
-    async def test_platform_settings_read_failure_disables(self) -> None:
+    async def test_platform_settings_flag_absent_defaults_true(self) -> None:
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(return_value={"featureFlags": {}})
+        assert await is_mcp_enabled(cfg) is True
+
+    @pytest.mark.asyncio
+    async def test_platform_settings_read_failure_stays_enabled(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
-        assert await is_mcp_enabled(cfg) is False
+        assert await is_mcp_enabled(cfg) is True
 
     @pytest.mark.asyncio
     async def test_falls_back_to_feature_flag_service(self) -> None:
@@ -357,12 +365,12 @@ class TestIsMcpEnabled:
             assert await is_mcp_enabled(None) is True
 
     @pytest.mark.asyncio
-    async def test_feature_flag_service_unavailable_defaults_false(self) -> None:
+    async def test_feature_flag_service_unavailable_defaults_true(self) -> None:
         with patch(
             "app.services.featureflag.featureflag.FeatureFlagService.get_service",
             side_effect=RuntimeError("unwired"),
         ):
-            assert await is_mcp_enabled(None) is False
+            assert await is_mcp_enabled(None) is True
 
 
 class TestPrefixReadsAreBounded:

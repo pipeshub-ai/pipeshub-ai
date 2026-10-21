@@ -97,8 +97,7 @@ async def _platform_flag(
 async def is_actions_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
     """Deployment-level gate for Actions: agents may only load/use toolset
     (connector) tools when this is true. Source of truth is the
-    ``ENABLE_ACTIONS`` platform feature flag. Defaults to ENABLED — unlike
-    ``ENABLE_MCP``, toolsets/actions are pre-existing functionality; admins
+    ``ENABLE_ACTIONS`` platform feature flag. Defaults to ENABLED; admins
     may opt out from Labs.
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_ACTIONS, default=True)
@@ -108,7 +107,7 @@ async def is_skills_enabled(config_service: Optional["ConfigurationService"] = N
     """Org-level gate for the whole Skills subsystem: UI, REST, agent-runtime
     skill tools, and builtin seeding. Source of truth is the ``ENABLE_SKILLS``
     platform feature flag. Defaults to ENABLED (Beta) — mirrors
-    ``is_actions_enabled``, not ``is_mcp_enabled``.
+    ``is_actions_enabled``.
 
     This is layered *under* the deployment-level ``PIPESHUB_ENABLE_SKILLS`` env
     kill-switch (see ``skills_wiring.skills_enabled()``); both must be true for

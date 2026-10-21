@@ -441,7 +441,7 @@ async def get_authenticated_mcp_servers(
 async def is_mcp_enabled(config_service: Optional[ConfigurationService] = None) -> bool:
     """Deployment-level gate for MCP: agents may only load/use MCP servers when
     this is true. Source of truth is the ``ENABLE_MCP`` platform feature flag.
-    Defaults to DISABLED — admins must opt in from Labs.
+    Defaults to ENABLED — admins may opt out from Labs.
 
     Resolution order (first hit wins):
     1. ``config_service`` — live read of the platform settings the Labs UI writes,
@@ -449,14 +449,14 @@ async def is_mcp_enabled(config_service: Optional[ConfigurationService] = None) 
     2. ``FeatureFlagService`` — only reachable in services that wire an
        ``EtcdProvider`` (the connectors service); the query service does not, which
        is why the ``config_service`` read above is the primary path
-    3. Default: ``False``
+    3. Default: ``True``
 
     Reads with ``use_cache=False`` (like `load_org_instances`) so flipping the flag
     in Labs takes effect on the next chat instead of after a service restart.
     """
     if config_service is not None:
         return await read_platform_feature_flag(
-            CONFIG.ENABLE_MCP, config_service, default=False,
+            CONFIG.ENABLE_MCP, config_service, default=True,
         )
 
     try:
@@ -464,9 +464,9 @@ async def is_mcp_enabled(config_service: Optional[ConfigurationService] = None) 
 
         return bool(
             FeatureFlagService.get_service().is_feature_enabled(
-                CONFIG.ENABLE_MCP, default=False
+                CONFIG.ENABLE_MCP, default=True
             )
         )
     except Exception as e:
-        logger.warning(f"FeatureFlagService unavailable for ENABLE_MCP, treating MCP as disabled: {e}")
-        return False
+        logger.warning(f"FeatureFlagService unavailable for ENABLE_MCP, treating MCP as enabled: {e}")
+        return True
