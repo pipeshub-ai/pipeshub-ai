@@ -10555,9 +10555,14 @@ components:
           type: string
           description: |
             For a block of source code, the symbol it holds, written `kind:Scope.name` (for example
-            `method:Outer.Inner.run`), or `kind:Lstart-end` for a span with no name (`imports:L1-5`).
-            An empty string for any other block. Set on a code hit and on each passage of an expanded
-            section; absent on other hits.
+            `method:Outer.Inner.run`). A span with no name is addressed by its lines instead:
+            `kind:L{line}` for one line (`statements:L1`), `kind:L{start}-{end}` for several
+            (`imports:L1-5`), or `kind:anonymous` when it has no line numbers. An empty string for a
+            block that is not code.
+            Present on a hit that is a code block, and on each passage of a list, thread, text
+            section or code group brought back whole because of a match inside it. Absent on any
+            other hit that matched directly, on the rows of a table brought back whole, and on an
+            image split out of a section.
         distanceFromMatch:
           type: integer
           minimum: 0
