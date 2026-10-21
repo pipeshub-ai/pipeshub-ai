@@ -6,7 +6,8 @@ Sync pipeline (in order):
   2. UserGroups  → AppUserGroup nodes with resolved AppUser members
   3. Channels    → RecordGroup nodes (public/private/DM/MPIM) + HAS_PERMISSION edges,
                    plus READ for the user who authenticated the connector on each one
-                   (the token reads it, so they can; a bot token has no account to link)
+                   (the token reads it, so they can; a bot token has no account to link),
+                   and the app membership those grants need when they are not a member
   4. Messages    → MessageRecord / FileRecord / LinkRecord per channel (incremental,
                    per-channel checkpoint via messages_sync_point)
   5. Thread-growth → detects threads with new replies since last run.
@@ -684,6 +685,10 @@ class SlackConnector(BaseConnector):
             # Phase 3 — Channels → RecordGroups + HAS_PERMISSION
             channels = await self._sync_channels()
 
+            # Phase 3a — App membership for the authenticator's grants, judged against
+            # the channels Phase 3 committed
+            await self._sync_authenticator_membership()
+
             # Phase 4 — Messages per channel (per-RecordGroup sync point).
             # Channels are independent (separate sync-point keys, separate
             # transactions), so we fan out under a bounded semaphore. The
@@ -1223,6 +1228,29 @@ class SlackConnector(BaseConnector):
         ):
             return perms
         return [*perms, grant]
+
+    async def _sync_authenticator_membership(self) -> None:
+        """Let the authenticator reach the channels _with_authenticator() granted them.
+
+        A connector's records open only to members of its app, and the user sync makes
+        only Slack members members. An authenticator outside the workspace holds the
+        grants alone, so they get the membership an external collaborator gets, which
+        never touches a member's own. A former authenticator's goes once a sync has
+        taken their last grant. Non-fatal: the next sync tries both again."""
+        grant = self._authenticator_permission
+        if grant and grant.email:
+            try:
+                await self.data_entities_processor.on_external_app_users([grant.email], self.connector_id)
+            except Exception as exc:
+                self.logger.warning(
+                    f"Connector {self.connector_id}: could not make the authenticator a member: {exc}"
+                )
+        try:
+            await self.data_entities_processor.reap_external_app_users(self.connector_id)
+        except Exception as exc:
+            self.logger.warning(
+                f"Connector {self.connector_id}: could not remove a former authenticator's membership: {exc}"
+            )
 
     async def _channel_permissions(
         self,

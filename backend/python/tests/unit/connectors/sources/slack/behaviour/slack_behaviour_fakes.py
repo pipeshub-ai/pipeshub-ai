@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from app.models.entities import MessageRecord, Record, RecordGroup
+from app.models.permission import EntityType
 from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
@@ -419,6 +420,11 @@ class FakeSlackStore:
         # (email, source user id) per link the connector asked for, and how often it unlinked.
         self.links: list[tuple[str | None, str | None]] = []
         self.unlinks = 0
+        # Lowercased emails holding the membership an external collaborator gets on the app.
+        # A member's own comes from on_new_app_users.
+        self.external_members: set[str] = set()
+        # What the connector wrote, in order: (method, external ids of the groups it saved).
+        self.events: list[tuple[str, tuple[str, ...]]] = []
         self.records: dict[str, Record] = {}
         self.record_groups: dict[str, Any] = {}
         self.group_access: dict[str, list[Any]] = {}
@@ -453,6 +459,24 @@ class FakeSlackStore:
     async def unlink_authenticator(self, connector_id: str) -> None:
         self.unlinks += 1
 
+    async def on_external_app_users(self, emails: list[str], connector_id: str) -> None:
+        """Create-only, as the processor's: a member keeps the edge the user sync gave them."""
+        self.events.append(("on_external_app_users", ()))
+        members = {(user.email or "").lower() for user in self.app_users.values()}
+        self.external_members |= {email.lower() for email in emails if email.lower() not in members}
+
+    async def reap_external_app_users(self, connector_id: str) -> int:
+        """Drops an external membership once no channel grants its holder anything, as the
+        processor's does. Returns the people it removed, of which the fake keeps none."""
+        self.events.append(("reap_external_app_users", ()))
+        granted = {
+            (p.email or "").lower()
+            for permissions in self.group_access.values() for p in permissions
+            if p.entity_type == EntityType.USER
+        }
+        self.external_members &= granted
+        return 0
+
     async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
         for role, members in roles:
             self.roles[role.source_role_id] = (role, list(members))
@@ -462,6 +486,7 @@ class FakeSlackStore:
             self.user_groups[group.source_user_group_id] = (group, list(members))
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+        self.events.append(("on_new_record_groups", tuple(group.external_group_id for group, _ in groups)))
         for group, permissions in groups:
             existing = self.record_groups.get(group.external_group_id)
             if existing:

@@ -4,6 +4,10 @@ A bot token belongs to no Slack account the authenticator could be linked to, as
 connectors link theirs. They hold the token, though, so Slack already shows them every channel
 it fetches: each channel's access list carries a grant for them, rebuilt with the list on every
 sync. A user token does name a Slack account, and that account is linked as usual.
+
+A connector's records open only to members of its app. An authenticator outside the workspace
+is not one through the user sync, so the grants come with the membership an external
+collaborator gets, and it goes with them.
 """
 
 import pytest
@@ -119,3 +123,86 @@ class TestUserToken:
         assert store.links == [("bob@acme.com", BOB)]
         assert store.unlinks == 0
         assert len(grants_for(store, SECRET, ADMIN)) == 1
+        assert store.external_members == {ADMIN}
+
+
+def calls(store) -> list[str]:
+    return [method for method, _ in store.events]
+
+
+class TestMembership:
+    async def test_an_authenticator_outside_the_workspace_becomes_a_member_of_the_app(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        store.authenticator_email = ADMIN
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert store.external_members == {ADMIN}
+
+    async def test_an_authenticator_in_the_workspace_keeps_the_membership_the_user_sync_gave(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        store.authenticator_email = "Alice@Acme.com"
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert store.external_members == set()
+
+    async def test_the_membership_is_judged_once_every_channel_is_written(self, workspace, store, checkpoints) -> None:
+        store.authenticator_email = ADMIN
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        channel_writes = [
+            i for i, (method, ids) in enumerate(store.events)
+            if method == "on_new_record_groups" and set(ids) & set(CHANNELS)
+        ]
+        assert channel_writes
+        assert calls(store).index("on_external_app_users") > max(channel_writes)
+        assert calls(store).index("reap_external_app_users") > calls(store).index("on_external_app_users")
+
+    async def test_a_former_authenticator_loses_the_membership_with_the_grants(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        store.authenticator_email = ADMIN
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+
+        store.authenticator_email = "new-admin@acme.com"
+        await connector.run_sync()
+
+        assert store.external_members == {"new-admin@acme.com"}
+
+    async def test_an_authenticator_the_graph_cannot_name_gets_none_and_a_former_one_loses_theirs(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        store.authenticator_email = ADMIN
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+
+        store.authenticator_email = None
+        store.events.clear()
+        await connector.run_sync()
+
+        assert "on_external_app_users" not in calls(store)
+        assert store.external_members == set()
+
+    async def test_a_membership_that_cannot_be_written_does_not_stop_the_sync(
+        self, workspace, store, checkpoints, monkeypatch,
+    ) -> None:
+        async def _unavailable(*_: object) -> None:
+            raise RuntimeError("graph unavailable")
+
+        monkeypatch.setattr(store, "on_external_app_users", _unavailable)
+        monkeypatch.setattr(store, "reap_external_app_users", _unavailable)
+        store.authenticator_email = ADMIN
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com", ADMIN}
+        assert workspace.calls_to("conversations.history"), "the messages were still read"
