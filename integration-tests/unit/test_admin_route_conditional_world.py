@@ -13,7 +13,8 @@ import json
 
 import pytest
 
-from helper.admin_route_conditional_world import World, oauth_state
+import helper.admin_route_conditional_world as world_module
+from helper.admin_route_conditional_world import CREATOR, Reply, World, oauth_state
 from helper.connector_service import CONNECTOR_URL_ENV, connector_service_url
 
 pytestmark = pytest.mark.unit
@@ -104,6 +105,35 @@ def test_closing_undoes_the_newest_first_and_reports_what_failed() -> None:
     # A second close has nothing left to undo, so nothing is undone twice.
     world.close()
     assert undone == ["third", "second", "first"]
+
+
+@pytest.mark.parametrize(("found", "deletes"), [(200, True), (404, False)])
+def test_a_personal_toolset_is_deleted_by_its_owner_only_while_it_is_there(
+    monkeypatch: pytest.MonkeyPatch, found: int, deletes: bool,
+) -> None:
+    # The owner's own delete case removes it first, and deleting it again is a 403, not a 404.
+    world = _CountingWorld()
+    looked: list[tuple[str, str, str]] = []
+    deleted: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        world_module, "send",
+        lambda method, url, token, **_: looked.append((method, url, token)) or Reply(found, ""),
+    )
+    monkeypatch.setattr(
+        world, "_json", lambda caller, method, path, what, **_: deleted.append((caller, method, path)) or {},
+    )
+
+    world._delete_personal_toolset("toolset-1", CREATOR)
+
+    assert looked == [("GET", "http://gateway.test:3000/api/v1/toolsets/instances/toolset-1", "member-token")]
+    assert deleted == ([(CREATOR, "DELETE", "/api/v1/toolsets/instances/toolset-1")] if deletes else [])
+
+
+def test_a_personal_toolset_that_cannot_be_looked_up_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = _CountingWorld()
+    monkeypatch.setattr(world_module, "send", lambda *_, **__: Reply(403, "refused"))
+    with pytest.raises(RuntimeError, match="HTTP 403: refused"):
+        world._delete_personal_toolset("toolset-1", CREATOR)
 
 
 def test_the_oauth_state_carries_the_connector_id() -> None:
