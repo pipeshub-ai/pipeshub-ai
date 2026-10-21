@@ -1458,6 +1458,7 @@ async def revoke_artifact_permissions(
 @router.delete(
     "/chat/attachments/{record_id}",
     status_code=204,
+    response_model=None,
     dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT, OAuthScopes.AGENT_EXECUTE))],
 )
 @inject
