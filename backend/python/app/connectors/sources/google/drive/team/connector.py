@@ -2424,7 +2424,20 @@ class GoogleDriveTeamConnector(BaseConnector):
             # individual shares on them are layered on via shared_with_me_record_group_ids below,
             # not by detaching them from the drive.
             if is_shared_with_me and not is_shared_drive:
-                file_record.external_record_group_id = None
+                # The admin drive listing can miss a drive this run (a new drive, or a
+                # short listing) while a member's pass has already filed the item under
+                # it. Detaching it here stuck: no feed reports the unchanged item again.
+                grant_drive_id = metadata.get("driveId")
+                keeps_its_drive = (
+                    bool(grant_drive_id)
+                    and existing_record is not None
+                    and existing_record.external_record_group_id == grant_drive_id
+                    and self._pass_drive_ids_filter(grant_drive_id)
+                )
+                file_record.external_record_group_id = grant_drive_id if keeps_its_drive else None
+                if keeps_its_drive and parent_external_record_id == grant_drive_id:
+                    file_record.parent_external_record_id = None
+                    file_record.parent_record_type = None
 
             # Handle Permissions - fetch new permissions
             new_permissions = []
