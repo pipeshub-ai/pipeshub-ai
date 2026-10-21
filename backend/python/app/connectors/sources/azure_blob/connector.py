@@ -39,6 +39,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
+    listing_checkpoint,
 )
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.folder_scope import (
@@ -47,7 +48,7 @@ from app.connectors.core.registry.folder_scope import (
     listed_record_ids,
     path_in_container,
     recorded_record_ids,
-    remove_containers,
+    remove_container,
     remove_deselected_containers,
     remove_recorded_not_listed,
     stored_containers,
@@ -107,10 +108,6 @@ DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
 
 # Download links are only used server-side, right away; a leaked one should die quickly.
 _SAS_LIFETIME = timedelta(minutes=15)
-
-# Azure stamps LastModified with its own clock; a checkpoint this far before the run
-# started still catches a blob overwritten early in a long listing.
-_CHECKPOINT_SAFETY_MS = 5 * 60 * 1000
 
 # Containers listed at once in one sync.
 _CONTAINER_CONCURRENCY = 3
@@ -712,10 +709,11 @@ class AzureBlobConnector(BaseConnector):
             )
             if gone:
                 self.logger.info(f"Containers deleted in Azure: {sorted(gone)}")
-                await remove_containers(
-                    self.data_entities_processor, self.connector_id, gone, "deleted",
-                    "now that {name} is deleted in Azure", self.logger,
-                )
+                for name in sorted(gone):
+                    await remove_container(
+                        self.data_entities_processor, self.connector_id, name,
+                        f"now that {name} is deleted in Azure", self.logger,
+                    )
                 containers_to_sync = [n for n in containers_to_sync if n not in gone]
 
             # Create record groups for containers first
@@ -1121,7 +1119,6 @@ class AzureBlobConnector(BaseConnector):
 
         user_date_filters = self._get_date_filters()
         modified_after_ms, modified_before_ms, created_after_ms, created_before_ms = user_date_filters
-        run_start_ms = get_epoch_timestamp_in_ms()
 
         # Each listed prefix keeps its own last sync time.
         sync_point_key = generate_record_sync_point_key(
@@ -1129,6 +1126,7 @@ class AzureBlobConnector(BaseConnector):
         )
         sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
         last_sync_time = sync_point.get("last_sync_time") if sync_point else None
+        listing_started_at = get_epoch_timestamp_in_ms()
 
         if last_sync_time:
             user_modified_after_ms = modified_after_ms
@@ -1275,9 +1273,7 @@ class AzureBlobConnector(BaseConnector):
             )
         if listing_failed:
             raise ConnectionError(f"Listing blobs in {container_name} failed: {listing_failed}") from listing_failed
-        # Not past the run's start: a blob overwritten after its name was listed has an
-        # older LastModified than a blob listed later in the same run.
-        checkpoint = min(failed.checkpoint(max_timestamp), run_start_ms - _CHECKPOINT_SAFETY_MS)
+        checkpoint = listing_checkpoint(failed.checkpoint(max_timestamp), listing_started_at)
         if checkpoint and checkpoint > 0:
             await self.record_sync_point.update_sync_point(
                 sync_point_key, {

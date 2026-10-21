@@ -205,7 +205,8 @@ class BaseConnector(ABC):
         Every lookup is defensive: this feeds error messages, so it must never
         raise and mask the failure it is describing.
         """
-        instance_name = getattr(self, "instance_name", None)
+        # instance_name is set by the stream route, connector_instance_name by ConnectorFactory.
+        instance_name = getattr(self, "instance_name", None) or getattr(self, "connector_instance_name", None)
         if instance_name:
             return str(instance_name)
         metadata = getattr(type(self), "_connector_metadata", None)
@@ -217,6 +218,10 @@ class BaseConnector(ABC):
         if connector_name is None:
             return "the source"
         return getattr(connector_name, "value", None) or str(connector_name)
+
+    def _notification_title(self, event: str) -> str:
+        """A notification title that says which connector instance it is about."""
+        return f"{self.display_name}: {event}"
 
     @abstractmethod
     async def init(self) -> bool:

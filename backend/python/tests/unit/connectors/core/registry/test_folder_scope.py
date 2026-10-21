@@ -364,6 +364,32 @@ class TestRemoveRecordsNotListed:
         assert result == CleanupResult(removed=1, failed=0)
 
 
+    @pytest.mark.asyncio
+    async def test_a_record_gone_at_the_source_has_its_vectors_deleted(self, monkeypatch) -> None:
+        """PP-103: the removal pass reaches the processor's delete, which asks indexing to drop the vectors."""
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled",
+            AsyncMock(return_value=False),
+        )
+        gone = MagicMock(id="gone", external_record_id="b1/q2.pdf", mime_type="application/pdf", is_deleted=False)
+        processor = TestCleanUpScope.real_processor(pages=[[gone]])
+        del processor.on_record_deleted  # the processor's own delete, not the helper's stand-in
+        tx = await processor.data_store_provider.transaction().__aenter__()
+        tx.get_record_by_key = AsyncMock(return_value={"_key": "gone", "isDeleted": False})
+        tx.delete_single_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {"payloads": [{"recordId": "gone", "virtualRecordId": "vr-gone", "orgId": "org-1"}]},
+        })
+
+        result = await remove_records_not_listed(processor, "c", "b1", [""], set(), logging.getLogger("t"))
+
+        assert result == CleanupResult(removed=1, failed=0)
+        tx.delete_single_record.assert_awaited_once_with("gone")
+        event = processor.messaging_producer.send_message.await_args[0][1]
+        assert event["eventType"] == "deleteRecord"
+        assert event["payload"]["virtualRecordId"] == "vr-gone"
+
+
 class TestFilterField:
     def test_is_a_free_text_list_defaulting_to_include(self):
         from app.connectors.core.registry.connector_builder import CommonFields

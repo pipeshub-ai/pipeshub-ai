@@ -884,6 +884,9 @@ class MockTransactionStore:
             connector_id=doc.get("connectorId", ""),
             mime_type=doc.get("mimeType", MimeTypes.UNKNOWN.value),
             indexing_status=doc.get("indexingStatus", ProgressStatus.QUEUED.value),
+            # Read back as the graph providers do; a move carries both onto the reused vertex.
+            virtual_record_id=doc.get("virtualRecordId"),
+            md5_hash=doc.get("md5Checksum"),
             **Record.delete_state_from_arango(doc),
         )
 
@@ -3044,3 +3047,55 @@ class TestEdgeCasesAndDataIntegrity:
         entity_edges = graph_store.edges.get(CollectionNames.ENTITY_RELATIONS.value, [])
         lead_edges = [e for e in entity_edges if e.get("edgeType") == EntityRelations.LEAD_BY.value]
         assert len(lead_edges) == 1
+
+
+class TestObjectStoreMoveWorkflow:
+    """An S3/MinIO rename reuses the record id with the same bucket/etag revision (PP-116)."""
+
+    @staticmethod
+    def _object(key: str) -> FileRecord:
+        record = make_file_record(
+            connector_id="s3-1", connector_name=ConnectorsEnum.S3, external_id=f"bucket-1/{key}",
+            name=key.rsplit("/", 1)[-1], record_group_ext_id="bucket-1", record_group_type=RecordGroupType.BUCKET,
+        )
+        record.external_revision_id = "bucket-1/etag-1"
+        return record
+
+    async def _indexed(self, processor, graph_store, key: str) -> FileRecord:
+        record = self._object(key)
+        await processor.on_new_records([(record, [])])
+        doc = graph_store.get_node(CollectionNames.RECORDS.value, record.id)
+        doc.update(indexingStatus=ProgressStatus.COMPLETED.value, md5Checksum="md5-1", virtualRecordId="vr-1")
+        processor.messaging_producer.reset_mock()
+        return record
+
+    @staticmethod
+    def _events(processor) -> list[str]:
+        return [m["eventType"] for call in processor.messaging_producer.send_messages.await_args_list for _k, m in call.args[1]]
+
+    @pytest.mark.asyncio
+    async def test_a_rename_keeps_the_indexed_content(self, processor, graph_store) -> None:
+        stored = await self._indexed(processor, graph_store, "a.txt")
+        moved = self._object("z.txt")
+        moved.id = stored.id
+
+        await processor.on_records_moved([(stored.external_record_id, moved, [])])
+
+        doc = graph_store.get_node(CollectionNames.RECORDS.value, stored.id)
+        assert doc["externalRecordId"] == "bucket-1/z.txt"
+        assert (doc["indexingStatus"], doc["md5Checksum"]) == (ProgressStatus.COMPLETED.value, "md5-1")
+        # The existing vectors only get their membership refreshed, under the same virtual record.
+        assert self._events(processor) == ["syncVectorMembership"]
+        _topic, [(vrid, _event)] = processor.messaging_producer.send_messages.await_args.args
+        assert vrid == "vr-1"
+
+    @pytest.mark.asyncio
+    async def test_a_rename_to_another_file_type_is_indexed_again(self, processor, graph_store) -> None:
+        stored = await self._indexed(processor, graph_store, "a.txt")
+        moved = self._object("a.md")
+        moved.id = stored.id
+
+        await processor.on_records_moved([(stored.external_record_id, moved, [])])
+
+        assert graph_store.get_node(CollectionNames.RECORDS.value, stored.id)["indexingStatus"] == ProgressStatus.QUEUED.value
+        assert self._events(processor) == ["updateRecord"]

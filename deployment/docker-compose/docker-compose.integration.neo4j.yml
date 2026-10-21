@@ -483,6 +483,7 @@ services:
       /bin/sh -c "
       mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-pipeshubtest} ${MINIO_ROOT_PASSWORD:-pipeshubtest123} &&
       mc mb --ignore-existing local/${MINIO_TEST_BUCKET:-pipeshub-connector-test} &&
+      mc mb --ignore-existing local/${MINIO_SECOND_TEST_BUCKET:-pipeshub-connector-test-2} &&
       echo 'minio bucket ready'
       "
 

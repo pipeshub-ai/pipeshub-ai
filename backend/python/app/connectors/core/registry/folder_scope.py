@@ -21,7 +21,7 @@ from app.services.graph_db.common.record_visibility import RecordVisibility
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import AsyncIterator, Callable, Container, Iterable
+    from collections.abc import AsyncIterator, Callable, Container
 
     from app.config.configuration_service import ConfigurationService
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -372,11 +372,12 @@ async def remove_deselected_containers(
     except Exception as e:  # retried on the next sync
         logger.warning(f"Not removing de-selected {filter_name}: the stored ones could not be read: {e}")
         return
-    stale = {name for name in stored if not name_passes_filter(saved, filter_name, name)}
-    await remove_containers(
-        data_entities_processor, connector_id, stale, "de-selected",
-        f"now that the {filter_name} filter leaves {{name}} out", logger,
-    )
+    stale = sorted(name for name in stored if not name_passes_filter(saved, filter_name, name))
+    for container_name in stale:
+        await remove_container(
+            data_entities_processor, connector_id, container_name,
+            f"now that the {filter_name} filter leaves {container_name} out", logger,
+        )
 
 
 async def stored_containers(data_entities_processor: DataSourceEntitiesProcessor, connector_id: str) -> set[str]:
@@ -391,35 +392,27 @@ async def stored_containers(data_entities_processor: DataSourceEntitiesProcessor
     return {g.get("externalGroupId") for g in groups if isinstance(g, dict)} - {None, ""}
 
 
-async def remove_containers(
+async def remove_container(
     data_entities_processor: DataSourceEntitiesProcessor,
     connector_id: str,
-    names: Iterable[str],
-    label: str,
+    container_name: str,
     reason: str,
     logger: logging.Logger,
 ) -> None:
-    """Delete the records, then the record group, of each named bucket or container.
-
-    ``label`` names them in warnings ("de-selected"); ``reason`` ("... {name} ...")
-    says why their records go. A container whose records could not all be removed
-    keeps its group, so the next sync tries again.
-    """
-    for container_name in sorted(names):
-        try:
-            result = await _remove_records(
-                data_entities_processor, connector_id, container_name, lambda record, path: True,
-                reason.format(name=container_name), logger,
-            )
-        except Exception as e:  # retried on the next sync
-            logger.warning(f"Could not read the records of {label} {container_name}: {e}")
-            continue
-        if result.failed:
-            logger.warning(f"{result.failed} records of {label} {container_name} could not be removed; retrying next sync")
-            continue
-        # The group goes last: while it stays, the next sync finds the container again.
-        if not await data_entities_processor.on_record_group_deleted(container_name, connector_id):
-            logger.warning(f"Could not remove the record group of {label} {container_name}; retrying next sync")
+    """Delete every record of ``container_name``, then its record group; what fails is retried next sync."""
+    try:
+        result = await _remove_records(
+            data_entities_processor, connector_id, container_name, lambda record, path: True, reason, logger,
+        )
+    except Exception as e:  # retried on the next sync
+        logger.warning(f"Could not read the records of {container_name} to remove: {e}")
+        return
+    if result.failed:
+        logger.warning(f"{result.failed} records of {container_name} could not be removed; retrying next sync")
+        return
+    # The group goes last: while it stays, the next sync finds the container again.
+    if not await data_entities_processor.on_record_group_deleted(container_name, connector_id):
+        logger.warning(f"Could not remove the record group of {container_name}; retrying next sync")
 
 
 async def clean_up_scope(

@@ -14752,6 +14752,7 @@ components:
         - BEARER_TOKEN
         - BASIC_AUTH
         - ACCESS_KEY
+        - IAM_ROLE
         - ACCOUNT_KEY
         - CONNECTION_STRING
         - CUSTOM
