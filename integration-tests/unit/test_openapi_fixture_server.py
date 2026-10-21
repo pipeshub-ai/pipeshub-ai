@@ -410,3 +410,9 @@ def test_an_unknown_refresh_token_is_refused(fixture: OpenApiFixture) -> None:
     resp = requests.post(f"{fixture.test_url}/oauth/token", timeout=5, auth=DEMO_CLIENT,
                          data={"grant_type": "refresh_token", "refresh_token": "made-up"})
     assert resp.status_code == 400 and resp.json() == {"error": "invalid_grant"}
+
+
+def test_the_home_page_lists_the_spec_and_routes(fixture: OpenApiFixture) -> None:
+    resp = requests.get(f"{fixture.test_url}/", timeout=5)
+    assert resp.status_code == 200 and "text/html" in resp.headers["Content-Type"]
+    assert 'href="/openapi.yaml"' in resp.text and "/tickets/{ticketId}" in resp.text

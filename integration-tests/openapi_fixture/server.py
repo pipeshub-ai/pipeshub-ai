@@ -14,6 +14,7 @@ agent that has it attached should call these endpoints when a question needs the
     GET    /oauth/authorize            OAuth2 sign-in page (authorization code, PKCE)
     POST   /oauth/token                OAuth2 tokens: client credentials, authorization code, refresh
     GET    /openapi.yaml               the spec for this API
+    GET    /                           a page listing all of the above, for a person in a browser
 
     GET    /__fixture__/health         200 once serving
     GET    /__fixture__/calls          every API call received, oldest first
@@ -311,6 +312,23 @@ def finish_sign_in(form: dict[str, str], state: State) -> tuple[int, Any]:
     return 302, _with_query(redirect, {"code": code, "state": app_state})
 
 
+def home_page() -> bytes:
+    rows = "".join(
+        f"<tr><td><code>{m}</code></td><td><code>{html.escape(t)}</code></td></tr>" for m, t, _ in ROUTES
+    )
+    return _page("Acme Helpdesk API", f"""
+<p>A test API for PipesHub API Toolsets. It is running.</p>
+<ul>
+  <li><a href="/openapi.yaml">The OpenAPI spec</a></li>
+  <li><a href="/announcements">Announcements</a> (needs no credentials)</li>
+  <li><a href="/__fixture__/calls">Every call received so far</a></li>
+</ul>
+<table>{rows}</table>
+<p>Credentials: API key <code>acme-demo-key</code>, bearer token <code>acme-demo-token</code>, basic
+<code>acme</code> / <code>acme-demo-password</code>, OAuth client <code>acme-client</code> /
+<code>acme-client-secret</code>.</p>""")
+
+
 def _with_query(url: str, params: dict[str, str]) -> str:
     return f"{url}{'&' if '?' in url else '?'}{urlencode(params)}"
 
@@ -547,6 +565,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             url = urlsplit(self.path)
             raw = self._read_body()
             if self._fixture(method, url.path):
+                return
+            if (method, url.path) == ("GET", "/"):
+                self._send(200, home_page(), "text/html; charset=utf-8")
                 return
             if (method, url.path) == ("GET", "/openapi.yaml"):
                 self._send(200, served_spec(state), "application/yaml")
