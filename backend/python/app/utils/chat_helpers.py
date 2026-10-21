@@ -2056,12 +2056,120 @@ async def status_summaries_by_id(
     return summaries
 
 
+# Linked records shown with a line of their own text, across one response.
+# Each one not already in hand costs a stored-record read, so only the first few.
+MAX_LINKED_RECORD_PREVIEWS = 5
+# Longest such line. A record's indexed summary opens with a sentence that only
+# frames it ("A team message about two GitHub issues ..."); what the record
+# says comes after, often 200 to 330 characters in. Most summaries run about
+# 300 to 550 characters, so this shows the whole of a typical one.
+MAX_LINKED_PREVIEW_CHARS = 400
+# A linked record stored larger than this is not downloaded for one line.
+_MAX_LINKED_PREVIEW_BLOB_BYTES = 2 * 1024 * 1024
+# The lines are optional: past this, the links are shown by name only.
+_LINKED_PREVIEW_TIMEOUT_S = 5.0
+
+
+def _clip_linked_preview(text: str) -> str:
+    """One line of at most ``MAX_LINKED_PREVIEW_CHARS``, cut at a word."""
+    text = " ".join(text.split())
+    if len(text) <= MAX_LINKED_PREVIEW_CHARS:
+        return text
+    cut = text[:MAX_LINKED_PREVIEW_CHARS - 1]
+    space = cut.rfind(" ")
+    if space > MAX_LINKED_PREVIEW_CHARS // 2:
+        cut = cut[:space]
+    return cut.rstrip(" ,;:") + "…"
+
+
+def linked_record_preview(record: dict[str, Any] | None) -> str | None:
+    """A stored record's own text in one short line: its indexed summary, or
+    its first text block when it has none. None when it has neither."""
+    if not isinstance(record, dict):
+        return None
+    semantic = record.get("semantic_metadata")
+    summary = semantic.get("summary") if isinstance(semantic, dict) else getattr(semantic, "summary", None)
+    if isinstance(summary, str) and summary.strip():
+        return _clip_linked_preview(summary)
+    containers = record.get("block_containers")
+    blocks = containers.get("blocks") if isinstance(containers, dict) else None
+    for block in blocks or []:
+        if not isinstance(block, dict) or block.get("type") != BlockType.TEXT.value:
+            continue
+        data = block.get("data")
+        if isinstance(data, str) and data.strip():
+            return _clip_linked_preview(data)
+    return None
+
+
+async def linked_record_previews(
+    record_ids: list[str],
+    docs: dict[str, dict[str, Any]],
+    blob_store: Any,  # noqa: ANN401
+    org_id: str,
+    *,
+    in_hand: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """A line of text for each of the first ``MAX_LINKED_RECORD_PREVIEWS`` of
+    ``record_ids``, by id. The caller has already cleared every id for the user.
+
+    ``docs`` are their graph documents. A record whose content is ``in_hand``
+    (a hit, or a record read in the same call) is not read again; the others
+    are read from storage together, after one mapping query. The lines are
+    optional: a record with no text, or a read that fails or takes too long,
+    leaves its link by name only.
+    """
+    chosen = list(dict.fromkeys(record_ids))[:MAX_LINKED_RECORD_PREVIEWS]
+    previews: dict[str, str] = {}
+    to_read: dict[str, str] = {}
+    for rid in chosen:
+        preview = linked_record_preview((in_hand or {}).get(rid))
+        if preview:
+            previews[rid] = preview
+            continue
+        vrid = (docs.get(rid) or {}).get("virtualRecordId")
+        if isinstance(vrid, str) and vrid:
+            to_read[rid] = vrid
+    if not to_read or not blob_store or not org_id:
+        return previews
+
+    async def _read() -> dict[str, str]:
+        lookups = await blob_store.get_document_ids_by_virtual_record_ids(list(to_read.values()))
+        if not isinstance(lookups, dict):
+            return {}
+        wanted = {
+            rid: vrid for rid, vrid in to_read.items()
+            if isinstance(lookups.get(vrid), dict)
+            and (lookups[vrid].get("fileSizeBytes") or 0) <= _MAX_LINKED_PREVIEW_BLOB_BYTES
+        }
+        stored = await asyncio.gather(
+            *[
+                blob_store.get_record_from_storage(vrid, org_id, lookup_result=lookups[vrid])
+                for vrid in wanted.values()
+            ],
+            return_exceptions=True,
+        )
+        return {
+            rid: preview
+            for rid, record in zip(wanted, stored)
+            if not isinstance(record, BaseException)
+            and (preview := linked_record_preview(record))
+        }
+
+    try:
+        previews.update(await asyncio.wait_for(_read(), _LINKED_PREVIEW_TIMEOUT_S))
+    except Exception as e:
+        logger.warning("Linked record previews skipped: %s", e)
+    return previews
+
+
 async def enrich_records_with_address_links(
     virtual_record_id_to_result: dict[str, dict[str, Any]],
     graph_provider: IGraphDBProvider | None,
     org_id: str,
     *,
     user_id: str,
+    blob_store: Any = None,  # noqa: ANN401
 ) -> None:
     """Attach to each hit the records that name it, and that it names, by web
     address or issue key: a Slack thread that pasted a pull request's link, the
@@ -2075,6 +2183,11 @@ async def enrich_records_with_address_links(
     ``{"record_id", "record_name", "connector_name", "record_type"}`` and,
     for a ticket, pull request or project, ``"status"``: "the pull request
     this thread links was merged on X" needs no second search.
+
+    With ``blob_store``, the first ``MAX_LINKED_RECORD_PREVIEWS`` linked
+    records also carry ``"preview"``, a line of their own text: a name such as
+    "tech_2025-12-01_18-04-44" does not say that the reply under it holds the
+    answer. Previews are only of records the check above cleared.
     """
     if not graph_provider or not user_id or not org_id:
         return
@@ -2143,6 +2256,9 @@ async def enrich_records_with_address_links(
         (doc.get("id") or doc.get("_key")): doc for doc in docs or [] if isinstance(doc, dict)
     }
     statuses = await status_summaries_by_id(graph_provider, by_id)
+    previews = await linked_record_previews(
+        [rid for rid in shown if rid in by_id], by_id, blob_store, org_id, in_hand=hits,
+    ) if blob_store else {}
 
     def _row(rid: str) -> dict[str, Any]:
         row = {
@@ -2155,6 +2271,8 @@ async def enrich_records_with_address_links(
         }
         if rid in statuses:
             row["status"] = statuses[rid]
+        if rid in previews:
+            row["preview"] = previews[rid]
         return row
 
     for record_id, record in hits.items():
@@ -2178,6 +2296,7 @@ async def enrich_read_records_with_address_links(
     org_id: str | None,
     *,
     user_id: str | None,
+    blob_store: Any = None,  # noqa: ANN401
 ) -> None:
     """``enrich_records_with_address_links`` for records read by id (a fetch,
     the record-content API), which do not pass through the search pipeline:
@@ -2189,6 +2308,7 @@ async def enrich_read_records_with_address_links(
         graph_provider,
         org_id or "",
         user_id=user_id or "",
+        blob_store=blob_store,
     )
 
 
@@ -2202,6 +2322,7 @@ async def describe_search_records(
     org_id: str,
     *,
     user_id: str,
+    blob_store: Any = None,  # noqa: ANN401
 ) -> None:
     """Add to each record document the search API returns where it stands
     and what it links to, so an API caller sees what the assistant sees.
@@ -2209,8 +2330,10 @@ async def describe_search_records(
     Sets ``statusSummary`` on a ticket, pull request or project ("Merged
     2026-09-25 by alice"), and ``linkedRecords`` on a record that names, or
     is named by, records the user may read: each ``{relation, recordId,
-    recordName, recordType, connector, status?}``. Both keys are left out
-    when there is nothing to say.
+    recordName, recordType, connector, status?, preview?}``, where
+    ``preview`` is a line of the linked record's own text (the first few
+    linked records of the response, with ``blob_store``). Both keys are left
+    out when there is nothing to say.
     """
     docs: dict[str, dict[str, Any]] = {}
     for record in records:
@@ -2226,7 +2349,9 @@ async def describe_search_records(
     for rid, summary in (await status_summaries_by_id(graph_provider, docs)).items():
         docs[rid]["statusSummary"] = summary
     holders = {rid: {"id": rid} for rid in docs}
-    await enrich_records_with_address_links(holders, graph_provider, org_id, user_id=user_id)
+    await enrich_records_with_address_links(
+        holders, graph_provider, org_id, user_id=user_id, blob_store=blob_store,
+    )
     for rid, holder in holders.items():
         links = holder.get("address_links") or {}
         linked = [
@@ -2237,6 +2362,7 @@ async def describe_search_records(
                 "recordType": row.get("record_type") or "",
                 "connector": row.get("connector_name") or "",
                 **({"status": row["status"]} if row.get("status") else {}),
+                **({"preview": row["preview"]} if row.get("preview") else {}),
             }
             for direction, relation in _SEARCH_LINK_RELATIONS.items()
             for row in links.get(direction) or []
@@ -2270,9 +2396,14 @@ def build_address_links_info(record: dict[str, Any]) -> str:
                 extra += f' type="{html.escape(str(row["record_type"]), quote=True)}"'
             if row.get("status"):
                 extra += f' status="{html.escape(str(row["status"]), quote=True)}"'
+            # A line of the linked record's own text, when one was attached:
+            # what the record says, so the agent knows whether to open it.
+            preview = ""
+            if row.get("preview"):
+                preview = f"<preview>{html.escape(str(row['preview']), quote=False)}</preview>"
             lines.append(
                 f'  <linked_record record_id="{record_id}" source="{source}"{extra}>'
-                f"<record_name>{name}</record_name></linked_record>"
+                f"<record_name>{name}</record_name>{preview}</linked_record>"
             )
     return "\n".join(lines) + "\n" if lines else ""
 

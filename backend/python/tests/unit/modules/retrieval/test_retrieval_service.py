@@ -2235,7 +2235,9 @@ class TestSearchWithFilters:
         """An API caller gets each record's status and the records it links to,
         as the assistant does in its record headers, read for the asking user."""
 
-        async def describe(records: list, graph: object, org_id: str, *, user_id: str) -> None:
+        async def describe(
+            records: list, graph: object, org_id: str, *, user_id: str, blob_store: object = None,
+        ) -> None:
             for record in records:
                 record["statusSummary"] = f"seen by {user_id} in {org_id}"
 
@@ -2249,6 +2251,8 @@ class TestSearchWithFilters:
 
         described.assert_awaited_once()
         assert described.await_args.args[1] is mock_graph_provider
+        # Linked records get a line of their own text, read from storage.
+        assert described.await_args.kwargs["blob_store"] is retrieval_service.blob_store
         assert result["records"][0]["statusSummary"] == "seen by u1 in o1"
 
     @pytest.mark.asyncio

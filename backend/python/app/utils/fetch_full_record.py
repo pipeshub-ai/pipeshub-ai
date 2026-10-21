@@ -471,6 +471,8 @@ async def _fetch_multiple_records_impl(
         # id, a record does not pass through the search pipeline that adds them.
         await enrich_read_records_with_address_links(
             found_records, graph_provider, org_id, user_id=user_id,
+            # A line of each linked record's own text comes from storage too.
+            blob_store=await resolver._ensure_blob_store() if graph_provider is not None else None,
         )
         result["ok"] = True
         result["records"] = found_records

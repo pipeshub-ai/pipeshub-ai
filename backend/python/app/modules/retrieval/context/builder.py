@@ -101,5 +101,6 @@ class KnowledgeContextBuilder:
             )
             await enrich_records_with_address_links(
                 records, self._graph_provider, self._org_id, user_id=self._user_id,
+                blob_store=self._blob_store,
             )
         return KnowledgeContext(ranked=ranked, virtual_record_id_to_result=records)
