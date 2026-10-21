@@ -1569,7 +1569,8 @@ class TestPartialStreamIsNeverReplayed:
     reads is `TransportError.retryable`, which was computed from the
     exception type alone. A retryable-looking error arriving mid-stream
     therefore let the middleware re-run the whole call and stream the same
-    text to the user twice.
+    text to the user twice. It is now flagged `partial_output` and held back
+    until the caller retracts that output.
     """
 
     async def test_mid_stream_failure_is_marked_non_retryable(self) -> None:
@@ -1590,6 +1591,34 @@ class TestPartialStreamIsNeverReplayed:
         assert exc_info.value.retryable is False, (
             "retrying after partial output would replay it to the user"
         )
+        assert exc_info.value.partial_output is True
+
+    async def test_a_drop_mid_stream_becomes_retryable_once_the_output_is_discarded(self) -> None:
+        """`Agent.step()` retracts what the client was shown, then retries."""
+        import httpx
+
+        model = _FailsMidStreamModel(
+            httpx.RemoteProtocolError("incomplete chunked read"), emit_before_failing=2,
+        )
+        transport = LangChainTransport(model)
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+
+        exc_info.value.discard_partial_output()
+        assert exc_info.value.retryable is True
+
+    async def test_a_non_transient_failure_mid_stream_stays_non_retryable_after_discard(self) -> None:
+        exc = RuntimeError("Bad request")
+        exc.status_code = 400
+        transport = LangChainTransport(_FailsMidStreamModel(exc, emit_before_failing=1))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+
+        assert exc_info.value.partial_output is True
+        exc_info.value.discard_partial_output()
+        assert exc_info.value.retryable is False
 
     async def test_a_timeout_mid_stream_is_also_not_replayed(self) -> None:
         """`readtimeout` IS in the network hints, so this is the case that
@@ -1656,7 +1685,9 @@ class TestRetryabilityFollowsWhatTheClientSaw:
         model = _EmitsThenFailsModel(
             self._protocol_error(), [AIMessageChunk(content="")],
         )
-        assert (await self._stream_error(model)).retryable is True
+        error = await self._stream_error(model)
+        assert error.retryable is True
+        assert error.partial_output is False
 
     async def test_several_empty_chunks_then_disconnect_is_retryable(self) -> None:
         model = _EmitsThenFailsModel(
