@@ -15,6 +15,7 @@ from object_store_behaviour_fakes import (
     make_connector,
     run_full_sync_task,
     runner_graph,
+    sync_with_failed_listing,
 )
 
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -25,17 +26,6 @@ PAGED = ["s3", "minio", "gcs"]
 
 def path(key: str) -> str:
     return f"{BUCKET}/{key}"
-
-
-async def sync_with_failed_listing(connector: BaseConnector) -> None:
-    """Azure Blob fails the run when a listing fails, so it shows as failed (PP-334); the others return."""
-    from app.connectors.sources.azure_blob.connector import AzureBlobConnector
-
-    if isinstance(connector, AzureBlobConnector):
-        with pytest.raises(RuntimeError, match="sync failed"):
-            await connector.run_incremental_sync()
-    else:
-        await connector.run_incremental_sync()
 
 
 @pytest.fixture(params=ALL)
