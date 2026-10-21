@@ -145,7 +145,7 @@ def _locks_written(gp) -> list:
 
 class TestUpdateAppStatusWriteConflict:
     @pytest.mark.asyncio
-    async def test_a_write_conflict_is_retried_until_the_write_lands(self, service):
+    async def test_a_write_conflict_is_retried_until_the_write_lands(self, service) -> None:
         gp = service.graph_provider
         _arango_conflicts(gp)
         gp.batch_upsert_nodes = AsyncMock(
@@ -158,7 +158,7 @@ class TestUpdateAppStatusWriteConflict:
         assert gp.batch_upsert_nodes.call_args[0][0][0]["isLocked"] is False
 
     @pytest.mark.asyncio
-    async def test_any_other_failure_is_raised_without_a_retry(self, service):
+    async def test_any_other_failure_is_raised_without_a_retry(self, service) -> None:
         gp = service.graph_provider
         _arango_conflicts(gp)
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("connection refused"))
@@ -169,7 +169,7 @@ class TestUpdateAppStatusWriteConflict:
         assert gp.batch_upsert_nodes.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_a_conflict_that_never_clears_is_raised_in_the_end(self, service):
+    async def test_a_conflict_that_never_clears_is_raised_in_the_end(self, service) -> None:
         from app.connectors.services import event_service as module
 
         gp = service.graph_provider
@@ -182,7 +182,7 @@ class TestUpdateAppStatusWriteConflict:
         assert gp.batch_upsert_nodes.await_count == module._APP_STATUS_WRITE_ATTEMPTS
 
     @pytest.mark.asyncio
-    async def test_full_sync_lock_is_released_when_the_release_collides_with_the_sync(self, service):
+    async def test_full_sync_lock_is_released_when_the_release_collides_with_the_sync(self, service) -> None:
         """The release lost a write-write conflict to the sync task's own start
         write. The lock stayed set after the sync ended, and every toggle,
         filter change and delete of the connector answered 409."""
