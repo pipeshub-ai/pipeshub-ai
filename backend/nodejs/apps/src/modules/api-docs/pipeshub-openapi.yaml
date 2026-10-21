@@ -10232,9 +10232,11 @@ components:
 
         **Date bounds** (`createdAfter`, `createdBefore`, `modifiedAfter`, `modifiedBefore`)
         match when a record was written or last changed, not when an event it describes
-        happened. With any of them set, the same search also runs once without dates, and its
-        best matches that the bounds left out come back apart from the results, in
-        `searchResponse.outsideDates`.
+        happened. With any of them set, and while the server's `DATE_FILTER_SAFETY_NET` setting
+        is on (the default), the same search also runs once without dates, and its best matches
+        that the bounds left out come back apart from the results, in
+        `searchResponse.outsideDates`. With the setting off, no such search runs and
+        `outsideDates` is omitted.
       required:
         - query
       properties:
