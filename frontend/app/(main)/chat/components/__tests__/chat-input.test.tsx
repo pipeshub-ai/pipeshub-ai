@@ -1396,3 +1396,178 @@ describe('ChatInput — keeping an unsent message', () => {
     expect(composer().value).toBe('Summarise the handbook');
   });
 });
+
+describe('ChatInput — a sent message is not kept as a draft', () => {
+  const KEY_NEW = 'pipeshub-chat-draft:u1:-:new';
+  const pause = () => act(() => void vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS + 50));
+  const settleHost = () => act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+  // The first message of a new chat moves the composer to another place in the page,
+  // so the old composer is unmounted and a new one is mounted as the message is sent.
+  function MovingHost({ answer }: { answer: 'now' | 'later' | 'refused-later' }) {
+    const [moved, setMoved] = React.useState(false);
+    const onSend = () => {
+      setMoved(true);
+      if (answer === 'later') return Promise.resolve(true);
+      if (answer === 'refused-later') return Promise.resolve(false);
+      return undefined;
+    };
+    return (
+      <Theme>
+        {moved ? (
+          <section data-testid="message-list-layout">
+            <ChatInput key="after" onSend={onSend} persistDraft />
+          </section>
+        ) : (
+          <ChatInput key="before" onSend={onSend} persistDraft />
+        )}
+      </Theme>
+    );
+  }
+
+  function StayingHost({ answer }: { answer: 'now' | 'refused' | 'rejected' | 'later' }) {
+    const onSend = () => {
+      if (answer === 'refused') return false;
+      if (answer === 'rejected') return Promise.reject(new Error('network'));
+      if (answer === 'later') return Promise.resolve(true);
+      return undefined;
+    };
+    return (
+      <Theme>
+        <ChatInput onSend={onSend} persistDraft />
+      </Theme>
+    );
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    allowChatDraftWrites();
+    useAuthStore.setState({ user: { id: 'u1' } });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    useAuthStore.setState({ user: null, accessToken: null });
+    window.localStorage.clear();
+  });
+
+  it('does not bring the first message back when the composer moves as it is sent', async () => {
+    render(<MovingHost answer="now" />);
+    type('hiii, what are u doing');
+    pause();
+
+    fireEvent.click(sendButton());
+    await settleHost();
+    pause();
+
+    expect(composer().value).toBe('');
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('does not bring it back either when the host only answers after the composer has moved', async () => {
+    render(<MovingHost answer="later" />);
+    type('hiii, what are u doing');
+    pause();
+
+    fireEvent.click(sendButton());
+    await settleHost();
+    pause();
+
+    expect(composer().value).toBe('');
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('does not bring it back when the message is sent before the draft was ever saved', async () => {
+    render(<MovingHost answer="later" />);
+    type('sent before the pause ended');
+
+    fireEvent.click(sendButton());
+    await settleHost();
+    pause();
+
+    expect(composer().value).toBe('');
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('removes the stored draft the moment the message is sent', () => {
+    render(<StayingHost answer="later" />);
+    type('about to be sent');
+    pause();
+    expect(loadDraft(KEY_NEW)).toBe('about to be sent');
+
+    fireEvent.click(sendButton());
+
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('does not save the sent text while the host is still answering', async () => {
+    render(<StayingHost answer="later" />);
+    type('about to be sent');
+    fireEvent.click(sendButton());
+
+    pause();
+    window.dispatchEvent(new Event('pagehide'));
+
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+    await settleHost();
+  });
+
+  it('keeps the text, and saves it again, when the host refuses the message', async () => {
+    render(<StayingHost answer="refused" />);
+    type('refused message');
+
+    fireEvent.click(sendButton());
+    pause();
+
+    expect(composer().value).toBe('refused message');
+    expect(loadDraft(KEY_NEW)).toBe('refused message');
+  });
+
+  it('keeps the text, and saves it again, when sending fails', async () => {
+    render(<StayingHost answer="rejected" />);
+    type('failed message');
+
+    fireEvent.click(sendButton());
+    await settleHost();
+    pause();
+
+    expect(composer().value).toBe('failed message');
+    expect(loadDraft(KEY_NEW)).toBe('failed message');
+  });
+
+  it('brings a refused message back after a reload', async () => {
+    const first = render(<StayingHost answer="refused" />);
+    type('refused message');
+    fireEvent.click(sendButton());
+    first.unmount();
+
+    render(<StayingHost answer="refused" />);
+
+    expect(composer().value).toBe('refused message');
+  });
+
+  it('saves what is typed after a send again', async () => {
+    render(<StayingHost answer="now" />);
+    type('first message');
+    fireEvent.click(sendButton());
+    pause();
+
+    type('the next question');
+    pause();
+
+    expect(loadDraft(KEY_NEW)).toBe('the next question');
+  });
+
+  it('saves what is typed while the host is still answering', async () => {
+    render(<StayingHost answer="later" />);
+    type('first message');
+    fireEvent.click(sendButton());
+    type('the next question, typed during the answer');
+
+    pause();
+    await settleHost();
+
+    expect(loadDraft(KEY_NEW)).toBe('the next question, typed during the answer');
+  });
+});

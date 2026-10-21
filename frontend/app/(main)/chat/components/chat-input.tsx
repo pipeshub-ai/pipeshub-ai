@@ -289,7 +289,7 @@ export function ChatInput({
   const draftConvId = useChatStore((s) =>
     s.activeSlotId ? (s.slots[s.activeSlotId]?.convId ?? null) : null,
   );
-  useComposerDraft({
+  const draft = useComposerDraft({
     draftKey: persistDraft
       ? buildDraftKey({ userId: draftUserId, convId: draftConvId, agentId })
       : null,
@@ -1085,6 +1085,8 @@ export function ChatInput({
           textareaRef.current.style.height = 'auto';
         }
       };
+      const sentText = message;
+      draft.markSent();
       const sending = onSend(
         stripMentionPads(message, kept),
         refs.length > 0 ? refs : undefined,
@@ -1092,9 +1094,17 @@ export function ChatInput({
       );
       if (sending instanceof Promise) {
         // The host said why it refused (or failed); the draft stays for another try.
-        void sending.then((ok) => { if (ok !== false) clearDraft(); }, () => {});
+        void sending.then(
+          (ok) => {
+            if (ok !== false) clearDraft();
+            else draft.unmarkSent(sentText);
+          },
+          () => draft.unmarkSent(sentText),
+        );
       } else if (sending !== false) {
         clearDraft();
+      } else {
+        draft.unmarkSent(sentText);
       }
     }
   };
