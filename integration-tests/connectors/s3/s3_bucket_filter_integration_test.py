@@ -9,14 +9,11 @@ S3 Connector – Bucket Names filter integration test
 
 Needs a second pre-provisioned bucket the suite's S3 key can read and write, named
 in ``S3_SECOND_TEST_BUCKET``; tests never create buckets. Without it the module skips.
-The connector has no fixed bucket (``auth.bucket``), since a fixed bucket ignores
-the Bucket Names filter.
+The MinIO suite runs the same case on every CI run (``minio_bucket_filter_integration_test.py``).
 """
 
-import logging
 import os
 import sys
-import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict
 
@@ -27,32 +24,21 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from connector_lifecycle import (  # noqa: E402
-    RESOURCE_NAME,
-    create_connector_and_await_sync,
-    destructor,
-    ensure_resource_exists,
-)
+from connector_lifecycle import RESOURCE_NAME  # noqa: E402
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
-from helper.graph_provider_utils import apply_filter_full_sync, wait_until_graph_condition  # noqa: E402
-from helper.run_folder import folder_filter, new_run_folder  # noqa: E402
 from connectors.s3.conftest import s3_connector_config  # noqa: E402
+from connectors.s3.s3_bucket_filter import (  # noqa: E402
+    assert_deselected_bucket_leaves_the_index,
+    two_bucket_connector,
+)
 from connectors.s3.s3_storage_helper import S3StorageHelper  # type: ignore[import-not-found]  # noqa: E402
-
-logger = logging.getLogger("s3-bucket-filter-test")
 
 SECOND_BUCKET_ENV = "S3_SECOND_TEST_BUCKET"
 
 
-def _filters(folder: str, buckets: list[str]) -> dict:
-    filters = folder_filter(folder)
-    filters["sync"]["values"]["buckets"] = {"operator": "in", "type": "multiselect", "value": buckets}
-    return filters
-
-
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
-async def two_bucket_connector(
+async def s3_two_bucket_connector(
     s3_storage: S3StorageHelper,
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
@@ -60,35 +46,11 @@ async def two_bucket_connector(
     second = os.getenv(SECOND_BUCKET_ENV)
     if not second:
         pytest.skip(f"{SECOND_BUCKET_ENV} is not set: TC-ACCESS-REVOKE-001 needs a second pre-provisioned bucket")
-    ensure_resource_exists(s3_storage, RESOURCE_NAME)
-    ensure_resource_exists(s3_storage, second)
-
-    folder = new_run_folder()
-    token = uuid.uuid4().hex[:8]
-    keys = {RESOURCE_NAME: f"{folder}revoke-kept-{token}.txt", second: f"{folder}revoke-dropped-{token}.txt"}
-    state: Dict[str, Any] = {"resource_name": RESOURCE_NAME, "folder": folder, "second_bucket": second, "keys": keys}
-    try:
-        for bucket, key in keys.items():
-            s3_storage.upload_object(bucket, key, f"{bucket} {token}".encode(), content_type="text/plain")
-
-        config = s3_connector_config()
-        config["auth"].pop("bucket", None)
-        await create_connector_and_await_sync(
-            pipeshub_client,
-            graph_provider,
-            state,
-            connector_type="S3",
-            connector_name=f"s3-bucket-filter-test-{token}",
-            connector_config={**config, "filters": _filters(folder, [RESOURCE_NAME, second])},
-            expected_records=len(keys),
-        )
+    async with two_bucket_connector(
+        s3_storage, pipeshub_client, graph_provider,
+        connector_type="S3", config=s3_connector_config(), kept=RESOURCE_NAME, second=second,
+    ) as state:
         yield state
-    finally:
-        if "connector_id" in state:
-            await destructor(s3_storage, pipeshub_client, graph_provider, state, connector_type="S3")
-        else:
-            s3_storage.clear_objects(RESOURCE_NAME, folder)
-        s3_storage.clear_objects(second, folder)
 
 
 @pytest.mark.integration
@@ -97,35 +59,8 @@ async def two_bucket_connector(
 class TestS3BucketFilter:
     async def test_tc_access_revoke_001_a_deselected_bucket_leaves_the_index(
         self,
-        two_bucket_connector: Dict[str, Any],
+        s3_two_bucket_connector: Dict[str, Any],
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        state = two_bucket_connector
-        connector_id, second = state["connector_id"], state["second_bucket"]
-        kept_name = Path(state["keys"][RESOURCE_NAME]).name
-        dropped_name = Path(state["keys"][second]).name
-
-        async def _both_synced() -> bool:
-            return await graph_provider.record_paths_or_names_contain(connector_id, [kept_name, dropped_name])
-
-        await wait_until_graph_condition(
-            connector_id, check=_both_synced, timeout=180, poll_interval=10, description="both buckets synced",
-        )
-        assert {RESOURCE_NAME, second} <= set(await graph_provider.fetch_record_group_names(connector_id))
-
-        await apply_filter_full_sync(pipeshub_client, graph_provider, connector_id, _filters(state["folder"], [RESOURCE_NAME]))
-
-        async def _second_gone() -> bool:
-            return (
-                await graph_provider.get_record_by_name(connector_id, dropped_name) is None
-                and second not in await graph_provider.fetch_record_group_names(connector_id)
-            )
-
-        await wait_until_graph_condition(
-            connector_id, check=_second_gone, timeout=180, poll_interval=10, description="de-selected bucket removed",
-        )
-        await graph_provider.assert_record_not_exists(connector_id, dropped_name)
-        assert await graph_provider.get_record_by_name(connector_id, kept_name) is not None
-        assert RESOURCE_NAME in await graph_provider.fetch_record_group_names(connector_id)
-        logger.info("TC-ACCESS-REVOKE-001 passed: %s removed, %s kept (connector %s)", second, RESOURCE_NAME, connector_id)
+        await assert_deselected_bucket_leaves_the_index(s3_two_bucket_connector, pipeshub_client, graph_provider)
