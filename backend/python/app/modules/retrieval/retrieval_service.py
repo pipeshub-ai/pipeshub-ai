@@ -275,9 +275,14 @@ class _QueryPlan:
     narrow_shortfall: bool = False
     # Set when the search reads a deeper pool than the caller's limit (source
     # diversity): the per-query limit of the plain search, and the points the
-    # plain search would have kept, marked as each attempt cuts them.
+    # plain search would have kept, marked as each attempt cuts them. The
+    # container path fetches each query uncut and cuts after the access check:
+    # it sets `plain_fetch`, the depth its plain search would fetch each query
+    # to, and `_run_searches` marks those points as `plain_fetched` instead.
     plain_limit: int | None = None
     plain_points: set[Any] = field(default_factory=set)
+    plain_fetch: int | None = None
+    plain_fetched: set[Any] = field(default_factory=set)
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -942,6 +947,8 @@ class RetrievalService:
                     # stands.
                     adjudicated = (search_results, accessible_virtual_id_to_record_id)
                     kept_failed, kept_searched = plan.failed_collections, plan.collections_searched
+                    # The record-id search marks its own plain points.
+                    kept_plain, plan.plain_points = plan.plain_points, set()
                     try:
                         replacement = await self._search_by_record_ids(
                             queries, search_limit, org_id, user_id, user_key, filters, time_range,
@@ -968,6 +975,8 @@ class RetrievalService:
                         )
                         replacement = None
                         plan.failed_collections, plan.collections_searched = kept_failed, kept_searched
+                    if replacement is None or not replacement.results:
+                        plan.plain_points = kept_plain
                     if replacement is None:
                         search_results, accessible_virtual_id_to_record_id = adjudicated
                     elif replacement.empty_scope:
@@ -1927,6 +1936,14 @@ class RetrievalService:
         plan = plan if plan is not None else _QueryPlan()
         plan.narrow_shortfall = False
         fetch_limit = self._overfetch_limit(limit, containers)
+        if plan.plain_limit is not None:
+            # How deep the plain search would read each query on this path.
+            plain_fetch = self._overfetch_limit(plan.plain_limit, containers)
+            plan.plain_fetch = (
+                record_cut.fused_limit(plain_fetch, _OVERFETCH_ABSOLUTE_CAP)
+                if record_cut is not None
+                else plain_fetch
+            )
         # `limit` is per query — `_run_searches` issues one request per expanded
         # query and concatenates the deduped batches — so every comparison below
         # is against the whole fan-out, not one query's share.
@@ -2075,14 +2092,21 @@ class RetrievalService:
         ]
         admitted.sort(key=lambda r: r.get("score") or 0, reverse=True)
         if plan.plain_limit is not None:
-            # What this cut would have kept at the caller's own limit.
+            # What this cut would have kept at the caller's own limit, from
+            # what the plain search would have read.
             plain_budget = plan.plain_limit * max(1, len(queries))
+            fetched = [
+                hit for hit in admitted
+                if (hit.get("metadata") or {}).get("point_id") in plan.plain_fetched
+            ]
             plain = (
-                record_cut.cut(admitted, plain_budget, hit_record_id)
+                record_cut.cut(fetched, plain_budget, hit_record_id)
                 if record_cut is not None
-                else admitted[:plain_budget]
+                else fetched[:plain_budget]
             )
             plan.plain_points = {(hit.get("metadata") or {}).get("point_id") for hit in plain}
+            plan.plain_fetch = None
+            plan.plain_fetched = set()
         if record_cut is not None:
             return record_cut.cut(admitted, budget, hit_record_id), best_accessible, best_degraded
         return admitted[:budget], best_accessible, best_degraded
@@ -2584,12 +2608,18 @@ class RetrievalService:
         if plan is not None:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
-            if plan.plain_limit is not None:
-                plan.plain_points.update(
-                    point.id
-                    for batch in search_results
-                    for point in _plain_cut(batch, plan.plain_limit, record_cut)
-                )
+        # Per query, the points the plain search would have read: under source
+        # diversity each query is read deeper than the caller asked.
+        plain_ids: list[set[Any]] = []
+        if plan is not None and plan.plain_limit is not None:
+            for batch in search_results:
+                if plan.plain_fetch is not None:
+                    ids = {point.id for point in batch[: plan.plain_fetch]}
+                    plan.plain_fetched.update(ids)
+                else:
+                    ids = {point.id for point in _plain_cut(batch, plan.plain_limit, record_cut)}
+                    plan.plain_points.update(ids)
+                plain_ids.append(ids)
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
         # Measured after the cut, so "exhausted" still means a query came back
@@ -2598,9 +2628,19 @@ class RetrievalService:
             plan.max_batch = max((len(batch) for batch in search_results), default=0)
 
         seen_points: set = set()
-        for batch in search_results:
+        # A point several queries found keeps the first query's score; with
+        # a deeper read, the first query whose plain read had it, as the plain
+        # search would.
+        stored_at: dict[Any, int] = {}
+        stored_plain: set[Any] = set()
+        for index, batch in enumerate(search_results):
+            batch_plain = plain_ids[index] if index < len(plain_ids) else set()
             for point in batch:
                 if point.id in seen_points:
+                    if point.id in batch_plain and point.id not in stored_plain:
+                        doc, _ = all_results[stored_at[point.id]]
+                        all_results[stored_at[point.id]] = (doc, point.score)
+                        stored_plain.add(point.id)
                     continue
                 seen_points.add(point.id)
                 metadata = point.payload.get("metadata") or {}
@@ -2609,6 +2649,9 @@ class RetrievalService:
                     page_content=point.payload.get("page_content", ""),
                     metadata=metadata,
                 )
+                stored_at[point.id] = len(all_results)
+                if point.id in batch_plain:
+                    stored_plain.add(point.id)
                 all_results.append((doc, point.score))
 
         return self._format_results(all_results)

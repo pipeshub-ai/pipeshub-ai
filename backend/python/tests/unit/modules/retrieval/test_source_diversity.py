@@ -28,6 +28,10 @@ from app.modules.retrieval.source_diversity import (
     record_source,
     source_diversity_from_env,
 )
+from app.services.graph_db.interface.graph_db_provider import (
+    AccessCheck,
+    AccessibleContainers,
+)
 from app.services.vector_db.const.const import CONNECTOR_IDS_FIELD
 from app.services.vector_db.models import (
     HybridSearchRequest,
@@ -195,7 +199,12 @@ _CORPUS: list[tuple[str, str]] = [
 # A second query's own best matches: Slack threads that score below every
 # match of the first query.
 _CORPUS_B: list[tuple[str, str]] = [(f"chat{i}", "SLACK") for i in range(8)]
-_CONNECTOR = dict(_CORPUS + _CORPUS_B)
+# Records the two-query tests below rank by hand.
+_HAND: list[tuple[str, str]] = [
+    *((f"gh{i}", "GITHUB") for i in range(4)),
+    ("shared", "SLACK"), ("chat-a", "SLACK"), ("chat-b", "SLACK"),
+]
+_CONNECTOR = dict(_CORPUS + _CORPUS_B + _HAND)
 _APP = {"GITHUB": "app-gh", "SLACK": "app-slack", "CONFLUENCE": "app-wiki", "JIRA": "app-jira"}
 
 
@@ -212,6 +221,18 @@ def _points(corpus: list[tuple[str, str]] = _CORPUS, top: float = 1.0) -> list[S
         )
         for rank, (vrid, connector) in enumerate(corpus)
     ]
+
+
+def _point(vrid: str, score: float) -> SearchResult:
+    return SearchResult(
+        id=f"{vrid}#0",
+        score=score,
+        payload={
+            "page_content": f"{vrid} text",
+            "metadata": {"virtualRecordId": vrid, "orgId": ORG, "blockId": "b0"},
+            CONNECTOR_IDS_FIELD: [_APP[_CONNECTOR[vrid]]],
+        },
+    )
 
 
 @dataclass
@@ -232,9 +253,15 @@ class _FakeStore:
         self.requests.extend(requests)
         out = []
         for req in requests:
-            allowed = set(req.filter["must"].get("virtualRecordId") or [])
+            must, should = req.filter["must"], req.filter["should"]
             ranked = self.by_query.get(req.text_query or "", self.points)
-            out.append([p for p in ranked if p.payload["metadata"]["virtualRecordId"] in allowed][: req.limit])
+            if "virtualRecordId" in must:
+                allowed = set(must["virtualRecordId"])
+                ranked = [p for p in ranked if p.payload["metadata"]["virtualRecordId"] in allowed]
+            elif should.get(CONNECTOR_IDS_FIELD):
+                apps = set(should[CONNECTOR_IDS_FIELD])
+                ranked = [p for p in ranked if set(p.payload[CONNECTOR_IDS_FIELD]) & apps]
+            out.append(ranked[: req.limit])
         return out
 
 
@@ -266,6 +293,11 @@ def _graph() -> AsyncMock:
 
     async def user(user_id: str, **_: object) -> dict[str, str]:
         return {"_key": user_id, "email": f"{user_id}@example.test"}
+
+    async def check(user_key: str, org_id: str, *, virtual_record_ids=(), **_: object) -> AccessCheck:
+        return AccessCheck(records_by_vrid={v: f"rec-{v}" for v in virtual_record_ids if v in readable})
+
+    graph.check_access = AsyncMock(side_effect=check)
 
     graph.get_accessible_virtual_record_ids = AsyncMock(side_effect=accessible)
     graph.filter_accessible_virtual_record_ids = AsyncMock(side_effect=verify)
@@ -317,10 +349,26 @@ def _on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(POOL_ENV_VAR, "20")
 
 
-async def _search(store: _FakeStore, queries: tuple[str, ...] = ("q",), **kwargs: object) -> dict:
+async def _search(
+    store: _FakeStore, queries: tuple[str, ...] = ("q",), *, containers: bool = False, **kwargs: object
+) -> dict:
     kwargs.setdefault("limit", 6)
     kwargs.setdefault("knowledge_search", True)
-    return await _service(store).search_with_filters(list(queries), "alice", ORG, **kwargs)
+    service = _service(store)
+    if containers:
+        apps = frozenset(_APP.values())
+        service._container_filter_enabled = AsyncMock(return_value=True)
+        service.graph_provider.get_accessible_containers = AsyncMock(
+            return_value=AccessibleContainers(app_ids=apps, app_ids_trusted=apps)
+        )
+    return await service.search_with_filters(list(queries), "alice", ORG, **kwargs)
+
+
+def _knobs(monkeypatch: pytest.MonkeyPatch, *, window: int, per_source: int, pool: int) -> None:
+    monkeypatch.setenv(SOURCE_DIVERSITY_ENV_VAR, "true")
+    monkeypatch.setenv(WINDOW_ENV_VAR, str(window))
+    monkeypatch.setenv(PER_SOURCE_ENV_VAR, str(per_source))
+    monkeypatch.setenv(POOL_ENV_VAR, str(pool))
 
 
 def _order(response: dict) -> list[str]:
@@ -421,6 +469,45 @@ class TestTheSearchApi:
         if queries == ("q",):
             # Four plain records, all pull requests: one place goes to Slack.
             assert page == ["pr0", "pr1", "pr2", "thread"]
+
+    @pytest.mark.parametrize("containers", [False, True])
+    async def test_on_a_second_query_below_the_first_querys_pool_still_comes_back(
+        self, monkeypatch: pytest.MonkeyPatch, containers: bool
+    ) -> None:
+        """Query A reads four pull requests that outscore everything of query
+        B; the plain search reads two of each query, so B's two Slack records
+        are in its result and must be in this one."""
+        def store() -> _FakeStore:
+            return _FakeStore(by_query={
+                "a": [_point(f"gh{i}", 0.99 - i / 100) for i in range(4)],
+                "b": [_point("chat-a", 0.50), _point("chat-b", 0.40)],
+            })
+
+        plain = await _search(store(), ("a", "b"), containers=containers, limit=2)
+        _knobs(monkeypatch, window=10, per_source=4, pool=4)
+        varied = await _search(store(), ("a", "b"), containers=containers, limit=2)
+
+        assert set(_order(plain)) == {"gh0", "gh1", "chat-a", "chat-b"}
+        assert _order(varied) == _order(plain)
+
+    async def test_a_point_two_queries_found_keeps_the_score_the_plain_search_gives_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`shared` is past query 1's top two and first for query 2. Read
+        deeper, query 1 sees it too, at a low score; the plain search stores
+        query 2's."""
+        def store() -> _FakeStore:
+            return _FakeStore(by_query={
+                "a": [_point("gh0", 0.99), _point("gh1", 0.98), _point("shared", 0.40)],
+                "b": [_point("shared", 0.90), _point("chat-a", 0.70)],
+            })
+
+        _knobs(monkeypatch, window=2, per_source=1, pool=4)
+        varied = await _search(store(), ("a", "b"), limit=2)
+
+        assert _order(varied)[:2] == ["gh0", "shared"]
+        shared = [h for h in varied["searchResults"] if h["metadata"]["virtualRecordId"] == "shared"]
+        assert [h["score"] for h in shared] == [0.90]
 
     async def test_on_a_search_scoped_to_one_connector_is_left_alone(
         self, monkeypatch: pytest.MonkeyPatch
