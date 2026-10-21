@@ -14,6 +14,10 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from app.connectors.sources.atlassian.core.adf_markdown import (
+    adf_to_markdown,
+    apply_adf_marks,
+)
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -394,43 +398,8 @@ class ConfluenceBlockParser:
         return " ".join(text_parts).strip()
 
     def _apply_marks(self, text: str, marks: list[dict[str, Any]]) -> str:
-        """
-        Apply markdown formatting based on ADF text marks.
-
-        Args:
-            text: Base text
-            marks: List of mark objects (strong, em, code, link, etc.)
-
-        Returns:
-            Text with markdown formatting applied
-        """
-        if not marks:
-            return text
-
-        for mark in reversed(marks):
-            mark_type = mark.get("type", "")
-            attrs = mark.get("attrs", {})
-
-            if mark_type == "strong":
-                text = f"**{text}**"
-            elif mark_type == "em":
-                text = f"*{text}*"
-            elif mark_type == "code":
-                text = f"`{text}`"
-            elif mark_type == "strike":
-                text = f"~~{text}~~"
-            elif mark_type == "link":
-                href = attrs.get("href", "")
-                if href:
-                    text = f"[{text}]({href})"
-            elif mark_type == "underline":
-                text = f"<u>{text}</u>"
-            elif mark_type == "textColor":
-                color = attrs.get("color", "")
-                if color:
-                    text = f'<span style="color: {color}">{text}</span>'
-
-        return text
+        """Apply markdown formatting based on ADF text marks (see ``apply_adf_marks``)."""
+        return apply_adf_marks(text, marks)
 
     # ============================================================================
     # Text Block Parsers
@@ -2287,84 +2256,8 @@ class ConfluenceBlockParser:
             return None
 
     def _adf_to_markdown_simple(self, adf_content: dict[str, Any]) -> str:
-        """
-        Convert ADF to simple markdown text (for comments).
-
-        This is a simplified version that extracts text without creating blocks.
-
-        Args:
-            adf_content: ADF document
-
-        Returns:
-            Markdown text
-        """
-        if not adf_content or not isinstance(adf_content, dict):
-            return ""
-
-        text_parts: list[str] = []
-
-        def extract_text_recursive(node: dict[str, Any]) -> str:
-            """Recursively extract text from ADF nodes."""
-            if not isinstance(node, dict):
-                return ""
-
-            node_type = node.get("type", "")
-
-            if node_type == "text":
-                text = node.get("text", "")
-                marks = node.get("marks", [])
-                return self._apply_marks(text, marks)
-
-            elif node_type == "paragraph":
-                content = node.get("content", [])
-                para_text = "".join(extract_text_recursive(child) for child in content).strip()
-                return f"{para_text}\n\n" if para_text else ""
-
-            elif node_type == "heading":
-                level = node.get("attrs", {}).get("level", 1)
-                content = node.get("content", [])
-                heading_text = "".join(extract_text_recursive(child) for child in content).strip()
-                return f"{'#' * level} {heading_text}\n\n" if heading_text else ""
-
-            elif node_type in ["bulletList", "orderedList"]:
-                content = node.get("content", [])
-                is_numbered = node_type == "orderedList"
-                items = []
-                for i, child in enumerate(content, 1):
-                    item_text = extract_text_recursive(child).strip()
-                    if item_text:
-                        prefix = f"{i}. " if is_numbered else "- "
-                        items.append(f"{prefix}{item_text}")
-                return "\n".join(items) + "\n\n" if items else ""
-
-            elif node_type == "listItem":
-                content = node.get("content", [])
-                return "".join(extract_text_recursive(child) for child in content).strip()
-
-            elif node_type == "codeBlock":
-                content = node.get("content", [])
-                code_text = "".join(child.get("text", "") for child in content if child.get("type") == "text")
-                language = node.get("attrs", {}).get("language", "")
-                return f"```{language}\n{code_text}\n```\n\n" if code_text else ""
-
-            elif node_type == "hardBreak":
-                return "\n"
-
-            elif node_type == "rule":
-                return "---\n\n"
-
-            elif "content" in node:
-                content = node.get("content", [])
-                return "".join(extract_text_recursive(child) for child in content)
-
-            return ""
-
-        if "content" in adf_content:
-            text_parts.extend(
-                extract_text_recursive(node) for node in adf_content["content"]
-            )
-
-        return "".join(text_parts).strip()
+        """Convert ADF to simple markdown text (for comments). See ``adf_to_markdown``."""
+        return adf_to_markdown(adf_content)
 
     def _parse_confluence_timestamp(self, timestamp_str: str | None) -> datetime | None:
         """

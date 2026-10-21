@@ -35,7 +35,12 @@ def transform_bbox_to_corners(bbox: dict) -> list[list[float]]:
 
     return corners
 
-def normalize_corner_coordinates(corners: list[list[float]], page_width: float, page_height: float) -> list[list[float]]:
+def normalize_corner_coordinates(
+    corners: list[list[float]],
+    page_width: float,
+    page_height: float,
+    coord_origin: str | None = "BOTTOMLEFT",
+) -> list[list[float]]:
     """
     Normalize corner coordinates to [0, 1] range using page dimensions.
 
@@ -43,15 +48,21 @@ def normalize_corner_coordinates(corners: list[list[float]], page_width: float, 
         corners (list): Corner coordinates as [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
         page_width (float): Width of the page/canvas
         page_height (float): Height of the page/canvas
+        coord_origin (str | None): Where the corners' y axis starts, as Docling tags it.
+            "TOPLEFT" corners keep their y; anything else is read as "BOTTOMLEFT"
+            and flipped.
 
     Returns:
-        list: Normalized corner coordinates where each coordinate is in [0, 1] range
+        list: Normalized corner coordinates in [0, 1], with y measured from the top
     """
     # Validate input
 
     if page_width <= 0 or page_height <= 0:
         raise ValueError(f"page_width and page_height must be positive, got {page_width}, {page_height}")
 
+    # Docling's PPTX backend tags its boxes TOPLEFT since 2.133; flipping those
+    # as if they were BOTTOMLEFT turned slide highlights upside down.
+    from_top = str(getattr(coord_origin, "value", coord_origin) or "").upper() == "TOPLEFT"
     normalized_corners = []
     CORNERS_COUNT = 2
     for i, corner in enumerate(corners):
@@ -59,7 +70,7 @@ def normalize_corner_coordinates(corners: list[list[float]], page_width: float, 
             raise ValueError(f"corner {i} must be a list with at least 2 elements, got {corner}")
         x, y = corner
         normalized_x = x / page_width
-        normalized_y = (page_height - y) / page_height
+        normalized_y = y / page_height if from_top else (page_height - y) / page_height
         normalized_corners.append([normalized_x, normalized_y])
 
     return normalized_corners

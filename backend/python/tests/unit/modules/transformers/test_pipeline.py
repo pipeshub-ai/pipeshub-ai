@@ -1,24 +1,26 @@
-"""Unit tests for app.modules.transformers.pipeline.IndexingPipeline."""
+"""Unit tests for app.modules.transformers.pipeline.IndexingPipeline.
 
-import asyncio
-import time
-from unittest.mock import AsyncMock, MagicMock, patch
+The pipeline validates and indexes a record, then hands the searchable record to the
+stage runtime; classification is a pipeline stage and never runs inline.
+"""
+
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.config.constants.arangodb import EventTypes, ProgressStatus
 from app.models.blocks import (
     Block,
     BlockGroup,
     BlockType,
     DataFormat,
     GroupType,
-    SemanticMetadata,
 )
 from app.modules.transformers.pipeline import IndexingPipeline
-from app.modules.transformers.transformer import ReconciliationContext, TransformContext
-from app.utils import indexing_timing as timing
+from app.modules.transformers.transformer import (
+    ENRICHMENT_FOLLOWS,
+    ReconciliationContext,
+)
 
 _SENTINEL = object()
 
@@ -31,25 +33,8 @@ def _valid_text_section_group(index: int = 0) -> BlockGroup:
     return BlockGroup(index=index, type=GroupType.TEXT_SECTION)
 
 
-def _make_semantic_metadata(summary: str | None = "A concise summary") -> SemanticMetadata:
-    return SemanticMetadata(
-        summary=summary,
-        departments=["Engineering"],
-        languages=["en"],
-        topics=["testing"],
-        categories=["Software"],
-        sub_category_level_1="Backend",
-        sub_category_level_2="Indexing",
-        sub_category_level_3="Pipeline",
-    )
-
-
 def _make_record(blocks=_SENTINEL, block_groups=_SENTINEL, record_id="rec-123"):
-    """Create a mock Record with the given blocks/block_groups.
-
-    By default (sentinel), blocks and block_groups are set to empty lists.
-    Pass None explicitly to set them to None.
-    """
+    """A mock Record; blocks and block_groups default to empty lists, None is kept as None."""
     record = MagicMock()
     record.id = record_id
     record.org_id = "org-1"
@@ -62,12 +47,11 @@ def _make_record(blocks=_SENTINEL, block_groups=_SENTINEL, record_id="rec-123"):
     return record
 
 
-def _make_ctx(record):
-    """Wrap a record in a mock TransformContext."""
+def _make_ctx(record, event_type=None):
     ctx = MagicMock()
     ctx.record = record
     ctx.settings = {}
-    ctx.event_type = None
+    ctx.event_type = event_type
     ctx.reconciliation_context = None
     ctx.prev_virtual_record_id = None
     return ctx
@@ -90,14 +74,20 @@ def sink_orchestrator():
     sink.blob_storage.apply = AsyncMock()
     sink.vector_store = MagicMock()
     sink.vector_store.index_record_summary = AsyncMock()
-    sink.resolve_entities = AsyncMock()
     return sink
 
 
 @pytest.fixture
-def pipeline(doc_extraction, sink_orchestrator):
-    pipe = IndexingPipeline(doc_extraction, sink_orchestrator)
-    pipe.logger = MagicMock()  # Replace real logger with mock for assertion support
+def stage_ingress() -> MagicMock:
+    ingress = MagicMock()
+    ingress.on_indexed = AsyncMock(return_value=["vrid-1:rev:classify@1"])
+    return ingress
+
+
+@pytest.fixture
+def pipeline(doc_extraction, sink_orchestrator, stage_ingress):
+    pipe = IndexingPipeline(doc_extraction, sink_orchestrator, stage_ingress=stage_ingress)
+    pipe.logger = MagicMock()
     return pipe
 
 
@@ -106,9 +96,8 @@ def pipeline(doc_extraction, sink_orchestrator):
 # ---------------------------------------------------------------------------
 class TestApplyEmpty:
     @pytest.mark.asyncio
-    async def test_empty_blocks_marks_empty_and_returns(self, pipeline, doc_extraction, sink_orchestrator):
-        record = _make_record(blocks=[], block_groups=[], record_id="rec-1")
-        ctx = _make_ctx(record)
+    async def test_empty_blocks_marks_empty_and_returns(self, pipeline, doc_extraction, sink_orchestrator, stage_ingress) -> None:
+        ctx = _make_ctx(_make_record(blocks=[], block_groups=[], record_id="rec-1"))
 
         await pipeline.apply(ctx)
 
@@ -117,45 +106,40 @@ class TestApplyEmpty:
         assert fields["indexingStatus"] == ProgressStatus.EMPTY.value
         assert fields["isDirty"] is False
         assert fields["extractionStatus"] == ProgressStatus.NOT_STARTED.value
-
-        # Should NOT call document_extraction or sink index/enrich
-        doc_extraction.apply.assert_not_awaited()
+        # The in-process path has no other write that ends the parse step.
+        assert fields["parsingStatus"] == ProgressStatus.COMPLETED.value
+        # An empty record has nothing left to serve from an earlier version.
+        assert fields["hasIndexedCopy"] is False
         sink_orchestrator.index.assert_not_awaited()
-        sink_orchestrator.enrich.assert_not_awaited()
+        stage_ingress.on_indexed.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_blocks_update_failure_logs_and_returns(
-        self, pipeline, doc_extraction, sink_orchestrator
-    ):
+        self, pipeline, doc_extraction, sink_orchestrator, stage_ingress
+    ) -> None:
         doc_extraction.graph_provider.update_node = AsyncMock(return_value=False)
-        record = _make_record(blocks=[], block_groups=[], record_id="rec-fail")
-        ctx = _make_ctx(record)
+        ctx = _make_ctx(_make_record(blocks=[], block_groups=[], record_id="rec-fail"))
 
         await pipeline.apply(ctx)
 
         pipeline.logger.warning.assert_called()
         assert "Failed to update indexing status" in pipeline.logger.warning.call_args.args[0]
-        doc_extraction.apply.assert_not_awaited()
         sink_orchestrator.index.assert_not_awaited()
-        sink_orchestrator.enrich.assert_not_awaited()
+        stage_ingress.on_indexed.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_blocks_none_does_not_take_empty_path(self, pipeline, doc_extraction, sink_orchestrator):
-        """When blocks is None (not an empty list), the empty check should not trigger."""
-        record = _make_record(blocks=None, block_groups=None)
-        ctx = _make_ctx(record)
+    async def test_blocks_none_does_not_take_empty_path(self, pipeline, sink_orchestrator, stage_ingress) -> None:
+        """None is not an empty list: the record takes the normal path."""
+        ctx = _make_ctx(_make_record(blocks=None, block_groups=None))
         ctx.reconciliation_context = ReconciliationContext(new_metadata={})
 
         await pipeline.apply(ctx)
 
-        # Should go through the normal path since None != len==0
         sink_orchestrator.index.assert_awaited_once_with(ctx)
-        doc_extraction.apply.assert_awaited_once_with(ctx)
-        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
+        stage_ingress.on_indexed.assert_awaited_once_with(ctx.record, trigger=None)
 
     @pytest.mark.asyncio
-    async def test_block_containers_none_skips_validation(self, pipeline, doc_extraction, sink_orchestrator):
-        """When block_containers is None, apply should not crash before extraction."""
+    async def test_block_containers_none_skips_validation(self, pipeline, sink_orchestrator, stage_ingress) -> None:
         record = _make_record()
         record.block_containers = None
         ctx = _make_ctx(record)
@@ -163,8 +147,89 @@ class TestApplyEmpty:
         await pipeline.apply(ctx)
 
         sink_orchestrator.index.assert_awaited_once_with(ctx)
-        doc_extraction.apply.assert_awaited_once_with(ctx)
-        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
+        stage_ingress.on_indexed.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# apply -- non-empty records are indexed, then handed to the stage runtime
+# ---------------------------------------------------------------------------
+class TestApplyNonEmpty:
+    @pytest.mark.parametrize(
+        ("blocks", "groups"),
+        [
+            ([_valid_text_block()], []),
+            ([], [_valid_text_section_group()]),
+            ([_valid_text_block()], [_valid_text_section_group()]),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_indexes_then_hands_off(self, pipeline, sink_orchestrator, stage_ingress, blocks, groups) -> None:
+        ctx = _make_ctx(_make_record(blocks=blocks, block_groups=groups))
+
+        await pipeline.apply(ctx)
+
+        sink_orchestrator.index.assert_awaited_once_with(ctx)
+        stage_ingress.on_indexed.assert_awaited_once_with(ctx.record, trigger=None)
+
+    @pytest.mark.asyncio
+    async def test_classification_never_runs_inline(self, pipeline, doc_extraction, sink_orchestrator) -> None:
+        ctx = _make_ctx(_make_record(blocks=[_valid_text_block()], block_groups=[]))
+
+        await pipeline.apply(ctx)
+
+        doc_extraction.apply.assert_not_awaited()
+        sink_orchestrator.write_blob.assert_not_awaited()
+        sink_orchestrator.vector_store.index_record_summary.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_index_runs_before_the_hand_off(self, pipeline, sink_orchestrator, stage_ingress) -> None:
+        call_order = []
+
+        async def track_index(ctx) -> None:
+            call_order.append("index")
+
+        async def track_hand_off(record, *, trigger) -> list[str]:
+            call_order.append("hand-off")
+            return []
+
+        sink_orchestrator.index = track_index
+        stage_ingress.on_indexed = track_hand_off
+        await pipeline.apply(_make_ctx(_make_record(blocks=[_valid_text_block()], block_groups=[])))
+
+        assert call_order == ["index", "hand-off"]
+
+    @pytest.mark.asyncio
+    async def test_the_hand_off_carries_the_event_type(self, pipeline, stage_ingress) -> None:
+        ctx = _make_ctx(_make_record(blocks=[_valid_text_block()], block_groups=[]), event_type="reindexRecord")
+
+        await pipeline.apply(ctx)
+
+        assert stage_ingress.on_indexed.await_args.kwargs == {"trigger": "reindexRecord"}
+
+    @pytest.mark.asyncio
+    async def test_an_index_failure_propagates_and_hands_nothing_off(self, pipeline, sink_orchestrator, stage_ingress) -> None:
+        sink_orchestrator.index = AsyncMock(side_effect=RuntimeError("index boom"))
+
+        with pytest.raises(RuntimeError, match="index boom"):
+            await pipeline.apply(_make_ctx(_make_record(blocks=[_valid_text_block()], block_groups=[])))
+
+        stage_ingress.on_indexed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_hand_off_failure_propagates(self, pipeline, stage_ingress) -> None:
+        stage_ingress.on_indexed = AsyncMock(side_effect=ConnectionError("graph unavailable"))
+
+        with pytest.raises(ConnectionError, match="graph unavailable"):
+            await pipeline.apply(_make_ctx(_make_record(blocks=[_valid_text_block()], block_groups=[])))
+
+    @pytest.mark.asyncio
+    async def test_without_a_stage_runtime_the_pipeline_refuses(self, doc_extraction, sink_orchestrator) -> None:
+        pipe = IndexingPipeline(doc_extraction, sink_orchestrator)
+
+        with pytest.raises(RuntimeError, match="stage runtime is not wired"):
+            await pipe.apply(_make_ctx(_make_record(blocks=[_valid_text_block()], block_groups=[])))
+
+        sink_orchestrator.index.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -172,18 +237,13 @@ class TestApplyEmpty:
 # ---------------------------------------------------------------------------
 class TestApplyEmptyMetadataPath:
     @pytest.mark.asyncio
-    async def test_saves_metadata_at_content_actual_current_path(
-        self, pipeline, doc_extraction, sink_orchestrator
-    ):
+    async def test_saves_metadata_at_content_actual_current_path(self, pipeline, sink_orchestrator) -> None:
         """document_path passed to save_reconciliation_metadata must come
-        from content's actual current location, not be omitted (which would
-        silently default metadata to the flat records/<vrid> form regardless
-        of where content really lives)."""
+        from content's actual current location, not be omitted."""
         record = _make_record(blocks=[], block_groups=[], record_id="rec-1")
         record.virtual_record_id = "vr-1"
         record.org_id = "org-1"
-        ctx = _make_ctx(record)
-        ctx.event_type = EventTypes.UPDATE_RECORD.value
+        ctx = _make_ctx(record, event_type=EventTypes.UPDATE_RECORD.value)
         ctx.prev_virtual_record_id = "vr-1"
 
         sink_orchestrator.vector_store.purge_record_vectors = AsyncMock()
@@ -194,25 +254,16 @@ class TestApplyEmptyMetadataPath:
 
         await pipeline.apply(ctx)
 
-        sink_orchestrator.blob_storage.get_actual_content_path.assert_awaited_once_with(
-            "org-1", "vr-1"
-        )
-        sink_orchestrator.blob_storage.save_reconciliation_metadata.assert_awaited_once()
+        sink_orchestrator.blob_storage.get_actual_content_path.assert_awaited_once_with("org-1", "vr-1")
         call_args = sink_orchestrator.blob_storage.save_reconciliation_metadata.call_args
         assert call_args.kwargs["document_path"] == "records/conn-1/Finance/doc.pdf"
 
     @pytest.mark.asyncio
-    async def test_passes_none_path_when_no_existing_content(
-        self, pipeline, doc_extraction, sink_orchestrator
-    ):
-        """When content doesn't exist yet (or the path can't be determined),
-        document_path is passed as None -- save_reconciliation_metadata's own
-        existing fallback (flat records/<vrid>) handles that safely."""
+    async def test_passes_none_path_when_no_existing_content(self, pipeline, sink_orchestrator) -> None:
         record = _make_record(blocks=[], block_groups=[], record_id="rec-2")
         record.virtual_record_id = "vr-2"
         record.org_id = "org-1"
-        ctx = _make_ctx(record)
-        ctx.event_type = EventTypes.REINDEX_RECORD.value
+        ctx = _make_ctx(record, event_type=EventTypes.REINDEX_RECORD.value)
         ctx.prev_virtual_record_id = "vr-2"
 
         sink_orchestrator.vector_store.purge_record_vectors = AsyncMock()
@@ -225,243 +276,18 @@ class TestApplyEmptyMetadataPath:
         assert call_args.kwargs["document_path"] is None
 
 
-# ---------------------------------------------------------------------------
-# apply -- non-empty blocks
-# ---------------------------------------------------------------------------
-class TestApplyNonEmpty:
-    @pytest.mark.asyncio
-    async def test_the_index_phase_is_told_enrichment_follows(self, pipeline, sink_orchestrator) -> None:
-        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
-        ctx = _make_ctx(record)
-        seen: dict = {}
+@pytest.mark.asyncio
+async def test_the_index_phase_is_told_enrichment_follows(pipeline, sink_orchestrator) -> None:
+    """The indexed write marks extraction QUEUED in the same write, so no reader sees the
+    record indexed with an extractionStatus a duplicate would copy as final."""
+    ctx = _make_ctx(_make_record(blocks=[_valid_text_block()], block_groups=[]))
+    seen: dict = {}
 
-        async def index(c: TransformContext) -> None:
-            seen.update(c.settings)
+    async def index(c) -> None:
+        seen.update(c.settings)
 
-        sink_orchestrator.index = AsyncMock(side_effect=index)
+    sink_orchestrator.index = AsyncMock(side_effect=index)
 
-        await pipeline.apply(ctx)
+    await pipeline.apply(ctx)
 
-        assert seen.get("enrichment_follows") is True
-
-    @pytest.mark.asyncio
-    async def test_non_empty_calls_extraction_then_sink(self, pipeline, doc_extraction, sink_orchestrator):
-        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
-        ctx = _make_ctx(record)
-
-        await pipeline.apply(ctx)
-
-        sink_orchestrator.index.assert_awaited_once_with(ctx)
-        doc_extraction.apply.assert_awaited_once_with(ctx)
-        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
-
-    @pytest.mark.asyncio
-    async def test_non_empty_block_groups_calls_extraction_then_sink(self, pipeline, doc_extraction, sink_orchestrator):
-        record = _make_record(blocks=[], block_groups=[_valid_text_section_group()])
-        ctx = _make_ctx(record)
-
-        await pipeline.apply(ctx)
-
-        sink_orchestrator.index.assert_awaited_once_with(ctx)
-        doc_extraction.apply.assert_awaited_once_with(ctx)
-        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
-
-    @pytest.mark.asyncio
-    async def test_both_blocks_and_groups_calls_extraction_then_sink(self, pipeline, doc_extraction, sink_orchestrator):
-        record = _make_record(
-            blocks=[_valid_text_block()],
-            block_groups=[_valid_text_section_group()],
-        )
-        ctx = _make_ctx(record)
-
-        await pipeline.apply(ctx)
-
-        sink_orchestrator.index.assert_awaited_once_with(ctx)
-        doc_extraction.apply.assert_awaited_once_with(ctx)
-        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
-
-    @pytest.mark.asyncio
-    async def test_index_called_before_enrich(self, pipeline, doc_extraction, sink_orchestrator):
-        """Verify ordering: index runs before extraction and enrich."""
-        call_order = []
-
-        async def track_index(ctx):
-            call_order.append("index")
-
-        async def track_extraction(ctx):
-            call_order.append("extraction")
-
-        async def track_enrich(ctx):
-            call_order.append("enrich")
-
-        sink_orchestrator.index = track_index
-        doc_extraction.apply = track_extraction
-        sink_orchestrator.enrich = track_enrich
-
-        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
-        ctx = _make_ctx(record)
-
-        await pipeline.apply(ctx)
-
-        assert call_order == ["index", "extraction", "enrich"]
-
-    @pytest.mark.asyncio
-    async def test_exception_in_extraction_propagates(self, pipeline, doc_extraction, sink_orchestrator):
-        doc_extraction.apply = AsyncMock(side_effect=RuntimeError("extraction boom"))
-        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
-        ctx = _make_ctx(record)
-
-        with pytest.raises(RuntimeError, match="extraction boom"):
-            await pipeline.apply(ctx)
-
-        sink_orchestrator.index.assert_awaited_once_with(ctx)
-        sink_orchestrator.enrich.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_exception_in_enrich_propagates(self, pipeline, doc_extraction, sink_orchestrator):
-        sink_orchestrator.enrich = AsyncMock(side_effect=RuntimeError("enrich boom"))
-        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
-        ctx = _make_ctx(record)
-
-        with pytest.raises(RuntimeError, match="enrich boom"):
-            await pipeline.apply(ctx)
-
-
-# ---------------------------------------------------------------------------
-# _enrich -- blob rewrite + summary indexing after extraction
-# ---------------------------------------------------------------------------
-class TestEnrich:
-    @pytest.mark.asyncio
-    async def test_enrich_with_summary_rewrites_blob_and_indexes_summary(
-        self, pipeline, doc_extraction, sink_orchestrator
-    ):
-        metadata = _make_semantic_metadata(summary="Ticket summary text")
-
-        async def set_metadata(ctx):
-            ctx.record.semantic_metadata = metadata
-
-        doc_extraction.apply = AsyncMock(side_effect=set_metadata)
-        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
-        ctx = _make_ctx(record)
-
-        await pipeline._enrich(ctx)
-
-        doc_extraction.apply.assert_awaited_once_with(ctx)
-        sink_orchestrator.blob_storage.apply.assert_awaited_once_with(ctx)
-        # The record is passed too: the summary's target collection is resolved
-        # from its connector, so omitting it would strand summaries in the
-        # default collection under a multi-collection strategy.
-        sink_orchestrator.vector_store.index_record_summary.assert_awaited_once_with(
-            "rec-123",
-            "vrid-1",
-            "org-1",
-            metadata,
-            ctx.record,
-        )
-        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
-
-    @pytest.mark.asyncio
-    async def test_enrich_with_empty_summary_rewrites_blob_skips_summary_vector(
-        self, pipeline, doc_extraction, sink_orchestrator
-    ):
-        metadata = _make_semantic_metadata(summary="   ")
-
-        async def set_metadata(ctx):
-            ctx.record.semantic_metadata = metadata
-
-        doc_extraction.apply = AsyncMock(side_effect=set_metadata)
-        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
-        ctx = _make_ctx(record)
-
-        await pipeline._enrich(ctx)
-
-        sink_orchestrator.blob_storage.apply.assert_awaited_once_with(ctx)
-        sink_orchestrator.vector_store.index_record_summary.assert_not_awaited()
-        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
-
-    @pytest.mark.asyncio
-    async def test_enrich_without_semantic_metadata_skips_blob_and_summary(
-        self, pipeline, doc_extraction, sink_orchestrator
-    ):
-        async def clear_metadata(ctx):
-            ctx.record.semantic_metadata = None
-
-        doc_extraction.apply = AsyncMock(side_effect=clear_metadata)
-        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
-        ctx = _make_ctx(record)
-
-        await pipeline._enrich(ctx)
-
-        sink_orchestrator.blob_storage.apply.assert_not_awaited()
-        sink_orchestrator.vector_store.index_record_summary.assert_not_awaited()
-        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
-
-    @pytest.mark.asyncio
-    async def test_enrich_call_order_matches_service_path(
-        self, pipeline, doc_extraction, sink_orchestrator
-    ):
-        """extraction → blob rewrite → summary vector → graph enrich."""
-        metadata = _make_semantic_metadata(summary="Ordered summary")
-        call_order = []
-
-        async def track_extraction(ctx):
-            call_order.append("extraction")
-            ctx.record.semantic_metadata = metadata
-
-        async def track_blob(ctx):
-            call_order.append("blob")
-
-        async def track_summary(*_args, **_kwargs):
-            call_order.append("summary")
-
-        async def track_enrich(ctx):
-            call_order.append("enrich")
-
-        doc_extraction.apply = AsyncMock(side_effect=track_extraction)
-        sink_orchestrator.blob_storage.apply = AsyncMock(side_effect=track_blob)
-        sink_orchestrator.vector_store.index_record_summary = AsyncMock(
-            side_effect=track_summary
-        )
-        sink_orchestrator.enrich = AsyncMock(side_effect=track_enrich)
-
-        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
-        ctx = _make_ctx(record)
-
-        await pipeline._enrich(ctx)
-
-        assert call_order == ["extraction", "blob", "summary", "enrich"]
-
-    @pytest.mark.asyncio
-    async def test_summary_embedding_time_is_counted_once(
-        self, pipeline, doc_extraction, sink_orchestrator
-    ) -> None:
-        """index_record_summary times its own embed and upsert steps, so a
-        stage wrapped around the whole call would count that time twice."""
-        metadata = _make_semantic_metadata(summary="Timed summary")
-
-        async def set_metadata(ctx) -> None:
-            ctx.record.semantic_metadata = metadata
-
-        async def embed_summary(*_args, **_kwargs) -> None:
-            with timing.stage("embed.dense"):
-                await asyncio.sleep(0.05)
-
-        doc_extraction.apply = AsyncMock(side_effect=set_metadata)
-        sink_orchestrator.vector_store.index_record_summary = AsyncMock(
-            side_effect=embed_summary
-        )
-        ctx = _make_ctx(_make_record(blocks=[_valid_text_block()], block_groups=[]))
-
-        timeline, token = timing.begin_record("rec-123")
-        started = time.perf_counter()
-        try:
-            await pipeline._enrich(ctx)
-        finally:
-            wall = time.perf_counter() - started
-            timing.end_record(timeline, token, outcome="ok")
-
-        # Every step here runs one after another, so busy time cannot
-        # exceed the wall time of the call.
-        busy = sum(total for _count, total, _max in timeline.stage_totals().values())
-        assert busy <= wall
-        assert timeline.stage_totals()["embed.dense"][0] == 1
+    assert seen.get(ENRICHMENT_FOLLOWS) is True

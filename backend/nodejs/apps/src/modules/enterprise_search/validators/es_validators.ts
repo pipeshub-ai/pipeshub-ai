@@ -1183,8 +1183,9 @@ export const enterpriseSearchSearchSchema = z.object({
     // Set, the AI service searches the span the matching date bounds give
     // period by period, as the assistant's timeline tool does, and returns
     // the matches in date order, each labelled with its period. The value is
-    // the date records are placed by. Left out, a plain ranked search.
-    timeline: z.enum(['created', 'modified']).optional(),
+    // the date records are placed by. Left out, bounds on one date over more
+    // than a month run as a timeline on it; 'off' is always a plain ranked search.
+    timeline: z.enum(['created', 'modified', 'off']).optional(),
   }),
 });
 

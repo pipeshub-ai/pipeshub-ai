@@ -26,7 +26,6 @@ for _p in (_ROOT, _RV_HELPER):
 
 from ai_models_setup import SeededAIModel
 from helper.agui_sse import (
-    decode_sse_envelope,
     AGUI,
     answer_from_completion,
     conversation_created_value,
@@ -174,7 +173,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in iter_sse_envelopes(resp):
-                assert_matches_component_schema(decode_sse_envelope(envelope), "ConversationStreamSSEEvent")
+                assert_matches_component_schema(envelope, "ConversationStreamSSEEvent")
                 if envelope["event"] == AGUI.CUSTOM:
                     payload = json.loads(envelope["data"])
                     if not is_conversation_created(payload):
@@ -223,7 +222,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in iter_sse_envelopes(resp):
-                assert_matches_component_schema(decode_sse_envelope(envelope), "ConversationStreamSSEEvent")
+                assert_matches_component_schema(envelope, "ConversationStreamSSEEvent")
                 payload = json.loads(envelope["data"])
                 if is_root_error(envelope["event"], payload):
                     raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
@@ -283,7 +282,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             saw_finished = False
 
             for envelope in iter_sse_envelopes(resp):
-                assert_matches_component_schema(decode_sse_envelope(envelope), "ConversationStreamSSEEvent")
+                assert_matches_component_schema(envelope, "ConversationStreamSSEEvent")
 
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
@@ -331,7 +330,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             saw_finished = False
 
             for envelope in iter_sse_envelopes(resp):
-                assert_matches_component_schema(decode_sse_envelope(envelope), "ConversationStreamSSEEvent")
+                assert_matches_component_schema(envelope, "ConversationStreamSSEEvent")
 
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
@@ -1131,7 +1130,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             saw_finished = False
             for envelope in iter_sse_envelopes(resp):
                 assert_matches_component_schema(
-                    decode_sse_envelope(envelope), "ConversationMessageStreamSSEEvent"
+                    envelope, "ConversationMessageStreamSSEEvent"
                 )
                 payload = json.loads(envelope["data"])
                 if is_root_error(envelope["event"], payload):
@@ -1234,7 +1233,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
 
             saw_finished = False
             for envelope in iter_sse_envelopes(resp):
-                assert_matches_component_schema(decode_sse_envelope(envelope), "SSEEvent")
+                assert_matches_component_schema(envelope, "SSEEvent")
                 payload = json.loads(envelope["data"])
                 if is_root_error(envelope["event"], payload):
                     raise AssertionError(f"regenerate stream emitted RUN_ERROR: {payload!r}")

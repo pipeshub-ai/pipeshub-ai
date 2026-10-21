@@ -9,7 +9,9 @@
       "reindexFailedStart": "Přeindexování neúspěšných záznamů…",
       "reindexFailedError": "Nepodařilo se přeindexovat neúspěšné záznamy",
       "manualIndexStart": "Indexování záznamů s ručním indexováním…",
-      "manualIndexError": "Nepodařilo se spustit ruční indexování"
+      "manualIndexError": "Nepodařilo se spustit ruční indexování",
+      "retryClassificationStart": "Opakování klasifikace zařazeno do fronty",
+      "retryClassificationError": "Klasifikaci se nepodařilo zopakovat"
     },
     "trash": {
       "menuLabel": "Nedávno smazané",
@@ -720,7 +722,21 @@
     "chatSelectionLimit": "Chat může pracovat nejvýše s {{max}} vybranými položkami. Zrušte výběr některých z nich a zkuste to znovu.",
     "chatTooManyCollections": "Chat může najednou prohledávat nejvýše {{max}} kolekcí a vy jich máte více. Otevřete jednu kolekci, nebo zaškrtněte ty, na které se chcete ptát.",
     "chatCollectionsLoadFailed": "Nepodařilo se načíst vaše kolekce pro chat. Zkuste to znovu.",
-    "chatNoCollections": "Zatím nemáte žádné kolekce, na které byste se mohli ptát."
+    "chatNoCollections": "Zatím nemáte žádné kolekce, na které byste se mohli ptát.",
+    "indexingStatus": {
+      "completed": "Dokončeno",
+      "inProgress": "Probíhá",
+      "failed": "Selhalo",
+      "fileTypeNotSupported": "Nepodporovaný typ souboru",
+      "notStarted": "Nezahájeno",
+      "queued": "Ve frontě",
+      "manualIndexing": "Ruční indexování",
+      "empty": "Prázdné",
+      "paused": "Pozastaveno",
+      "needsMultimodalModel": "Vyžaduje multimodální model",
+      "skipped": "Přeskočeno",
+      "pending": "Čeká"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -2827,6 +2843,11 @@
         "noRecordTypes": "Nejsou k dispozici žádné typy záznamů",
         "localWatcherLabel": "MÍSTNÍ SLEDOVÁNÍ",
         "localWatcherStatus": "{{state}} · {{pending}} čeká · {{failed}} selhalo",
+        "classification": "Klasifikace",
+        "classificationSkipped": "Přeskočeno",
+        "retryFailedClassification": "Zopakovat neúspěšnou klasifikaci",
+        "retryClassificationSuccess": "Opakování klasifikace zařazeno do fronty",
+        "retryClassificationError": "Klasifikaci se nepodařilo zopakovat",
         "lastRun": {
           "title": "Poslední synchronizace",
           "outcome": {
@@ -4721,6 +4742,12 @@
       "noRecordMetadata": "K této položce nejsou k dispozici žádná další metadata záznamu."
     },
     "indexingReasonAria": "Podrobnosti o selhání indexování",
+    "stageTrackLabel": "Zpracování",
+    "stageParsed": "Parsováno",
+    "stageSearchable": "Prohledávatelné",
+    "stageClassified": "Klasifikováno",
+    "stageAttempt": "Pokus {{n}}",
+    "stageDetailsAria": "Podrobnosti fází",
     "tabRecordInformation": "Informace o záznamu",
     "tabDocumentDetails": "Podrobnosti dokumentu",
     "chat": "Chat",

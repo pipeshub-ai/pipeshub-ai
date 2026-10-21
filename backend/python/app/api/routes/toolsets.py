@@ -1430,15 +1430,11 @@ async def create_toolset_instance(
                     base_url=base_url,
                 )
 
-                if oauth_config_id:
-                    logger.debug(
-                        f"Successfully created OAuth config"
-                        f"for toolset instance '{instance_name}'"
-                    )
-                else:
-                    logger.error(
-                        f"Failed to create OAuth config for instance '{instance_name}'. "
-                        f"Proceeding without OAuth config."
+                if not oauth_config_id:
+                    # Saving the instance anyway would leave its client secret inline in the shared instance list.
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail="Failed to save the OAuth app. Please try again.",
                     )
             else:
                 logger.debug(
@@ -1470,7 +1466,7 @@ async def create_toolset_instance(
         )
         if inherited:
             new_instance["inheritedFromOrgId"] = inherited
-    else:
+    elif auth_type != "OAUTH":
         new_instance["auth"] = auth_config
     instances.append(new_instance)
 
@@ -1843,14 +1839,18 @@ async def update_toolset_instance(
                 base_url=base_url,
                 oauth_config_id=current_oauth_config_id,
             )
-            if new_oauth_id:
-                if new_oauth_id != instance.get("oauthConfigId"):
-                    instance["oauthConfigId"] = new_oauth_id
-                oauth_credentials_changed = True
+            if not new_oauth_id:
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Failed to save the OAuth app. Please try again.",
+                )
+            if new_oauth_id != instance.get("oauthConfigId"):
+                instance["oauthConfigId"] = new_oauth_id
+            oauth_credentials_changed = True
 
     elif (auth_type or "").upper() not in ("", "NONE") and "authConfig" in body:
         # Match create_toolset_instance: validated body authConfig is stored on instance["auth"]
-        # when not using oauthConfigId (see create branch `else: new_instance["auth"] = auth_config`).
+        # for non-OAuth types (see create branch `elif auth_type != "OAUTH": new_instance["auth"] = auth_config`).
         auth_config = _validate_dict(
             value=body.get("authConfig"), field_name="authConfig", allow_empty=True
         )

@@ -30,7 +30,13 @@ from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.modules.agents.qna.chat_state import ChatState
 from app.sandbox.artifact_upload import infer_artifact_type
-from app.services.artifact_registry import Actor, ArtifactMetadata, ArtifactVisibility, VersionConflictError
+from app.services.artifact_registry import (
+    Actor,
+    ArtifactMetadata,
+    ArtifactVisibility,
+    VersionConflictError,
+    artifact_owner,
+)
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
 from app.utils.conversation_tasks import register_task
 
@@ -112,6 +118,11 @@ class ArtifactManager:
         return ArtifactRegistryService(graph_provider, blob_store)
 
     def _actor(self) -> Actor:
+        """Who this chat's artifacts are made and read as."""
+        return artifact_owner(self.chat_state)
+
+    def _record_actor(self) -> Actor:
+        """Who knowledge records are read as: the run's user, whose access the agent has."""
         return Actor(org_id=self.chat_state.get("org_id", ""), user_id=self.chat_state.get("user_id", ""))
 
     def _decode(self, content: str, is_base64: bool) -> bytes | str:
@@ -547,7 +558,7 @@ class ArtifactManager:
         # A signed URL needs no bearer token, so this is the only permission
         # check between the caller and the bytes.
         try:
-            await TieredRecordAuthorizer(graph_provider).authorize(self._actor(), record)
+            await TieredRecordAuthorizer(graph_provider).authorize(self._record_actor(), record)
         except RecordNotFoundError:
             return _result(False, {"success": False, "error": f"Record {record_id!r} was deleted, so it can no longer be downloaded"})
         except RecordAccessDeniedError:

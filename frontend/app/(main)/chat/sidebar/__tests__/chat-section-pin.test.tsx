@@ -66,6 +66,12 @@ async function choose(name: 'Pin' | 'Unpin') {
   await act(async () => {
     fireEvent.click(screen.getByRole('menuitem', { name }));
   });
+  // Closing hands focus back to the menu button a moment later. A menu reopened before that
+  // loses focus to the button and closes again, so let the close finish first.
+  await waitFor(() => {
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement?.getAttribute('aria-haspopup')).toBe('menu');
+  });
 }
 
 beforeEach(() => {

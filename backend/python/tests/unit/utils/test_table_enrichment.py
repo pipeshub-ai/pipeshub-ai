@@ -192,6 +192,17 @@ class TestRowDescriptionAlignment:
         assert texts["BackToSchool"] != "DESC<Onboarding>"
 
 
+@pytest.mark.asyncio
+async def test_a_table_whose_model_call_failed_still_gets_a_plain_summary() -> None:
+    failing = AsyncMock(side_effect=RuntimeError("provider down"))
+    with patch.object(table_enrichment, "invoke_with_count_validation_and_reflection", failing):
+        result = await table_enrichment.enrich_table_grid(
+            MagicMock(), [["Name", "Age"], ["a", "1"], ["b", "2"]], logger=MagicMock(), known_header_row_count=1
+        )
+    assert result.summary == "A table with 2 rows and columns: Name, Age."
+    assert result.degraded
+
+
 class TestCaptionsSurviveEnrichment:
     @pytest.mark.asyncio
     async def test_sibling_tables_keep_their_captions_in_the_summary(self) -> None:

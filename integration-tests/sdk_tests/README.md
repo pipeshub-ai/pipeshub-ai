@@ -36,9 +36,12 @@ also a FLAG. After an SDK release, change its tag in `.github/sdk-test-matrix.ya
 
 - **Generated tests:** `backend/nodejs/apps/src/modules/api-docs/tests.arazzo.yaml`.
   One workflow there becomes one test in each SDK.
-- **Hand-written tests:** `handwritten/<language>/`. For operations Speakeasy cannot
-  generate a test for: anything that answers with a stream, and anything that needs
-  an item read out of a list. `generate_sdks.sh` copies them into the generated SDK.
+- **Hand-written tests:** `handwritten/<language>/`. For what Speakeasy cannot generate
+  a test for: anything that answers with a stream, anything that needs an item read out
+  of a list or a response header, waiting for a connector sync, and every expected error
+  status (a generated test calls the operation and fails on any error). The three
+  languages have the same tests, and `handwritten/operations.txt` lists the operations
+  they call. `generate_sdks.sh` copies them into the generated SDK.
 
 ## Rules for a test
 
@@ -47,7 +50,15 @@ The three suites run at the same time against one app.
 - Check only what the test created, by ID. Never check a count, or a position in a
   list another suite can write to.
 - Delete what the test created.
-- Do not change organization settings or the AI model setup.
+- Do not change organization settings or the AI model setup. For an operation that
+  changes them, test only requests the server refuses or that change nothing.
+- Some names are unique in an org (connectors, OAuth configurations). A hand-written test
+  adds a random suffix; a workflow uses `x-env: PIPESHUB_SDK_TEST_NAME`, which
+  `run_sdk_tests.sh` sets per suite, once per workflow.
+- The OAuth app and personal access token routes accept only an interactive session. A
+  workflow for them sets `x-speakeasy-test-security` to `bearerAuth: "x-env:
+  PIPESHUB_SESSION_TOKEN"` (`with_oauth_app.py` signs in and sets it). A step's own
+  `x-speakeasy-test-security` stays in force for the steps after it.
 - In `tests.arazzo.yaml`: a step whose output a later step uses needs a
   response-body condition; conditions support only `==` and `!=`; a condition value
   cannot contain spaces or refer to a step output; do not read a list item by
@@ -81,7 +92,7 @@ python provision_sdk_test_env.py
 ./generate_sdks.sh ~/open-api /tmp/sdk-work
 
 # 3. Current run, then the previous run for the SDKs that passed. with_oauth_app.py
-#    gives each run an OAuth app (the PIPESHUB_* variables).
+#    gives each run an OAuth app and a session JWT (the PIPESHUB_* variables).
 ./with_oauth_app.py ./run_sdk_tests.sh current /tmp/sdk-work /tmp/sdk-reports
 ./checkout_released_sdks.sh ../../.github/sdk-test-matrix.yaml /tmp/sdk-released
 ./with_oauth_app.py ./run_sdk_tests.sh previous /tmp/sdk-released /tmp/sdk-reports

@@ -54,7 +54,7 @@ from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
     RetrieveArtifactContentTool,
 )
-
+from app.services.artifact_registry.models import Actor
 
 # ─── Helpers ───
 
@@ -463,6 +463,7 @@ class TestSandboxBridgeResolution:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
 
         ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
@@ -487,6 +488,7 @@ class TestSandboxBridgeResolution:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
 
         ctx = FakeContext()
         fake_id = "00000000-0000-0000-0000-000000000099"
@@ -508,6 +510,7 @@ class TestSandboxBridgeResolution:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
 
         fake_missing = "00000000-0000-0000-0000-missing00000"
         ctx = FakeContext()
@@ -529,6 +532,7 @@ class TestSandboxBridgeResolution:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
 
         ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
@@ -550,6 +554,7 @@ class TestSandboxBridgeResolution:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
 
         ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
@@ -573,6 +578,7 @@ class TestSandboxBridgeResolution:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
 
         ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
@@ -841,6 +847,7 @@ class TestEndToEndArtifactFlow:
             org_id: str = "org1"
             user_id: str = "user1"
             conversation_id: str = "conv1"
+            artifact_actor = Actor(org_id="org1", user_id="user1")
 
         fake_ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(

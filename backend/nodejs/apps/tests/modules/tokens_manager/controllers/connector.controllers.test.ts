@@ -36,9 +36,11 @@ import {
   testConnectorConnection,
   getConnectorEgressIps,
   getActiveAgentInstances,
+  reindexConnector,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
 
 describe('tokens_manager/controllers/connector.controllers', () => {
   let mockAppConfig: any
@@ -1972,6 +1974,43 @@ describe('tokens_manager/controllers/connector.controllers', () => {
     })
   })
 
+  describe('reindexConnector', () => {
+    it('forwards statusFilters and stages to the connector service', async () => {
+      const handler = reindexConnector(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.body = { statusFilters: ['FAILED'], stages: ['classify'] }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { success: true },
+      })
+
+      await handler(req, res, next)
+
+      expect(execStub.firstCall.args[0]).to.equal(
+        `${mockAppConfig.connectorBackend}/api/v1/connectors/conn-1/reindex`,
+      )
+      expect(execStub.firstCall.args[1]).to.equal(HttpMethod.POST)
+      expect(execStub.firstCall.args[3]).to.deep.equal({
+        statusFilters: ['FAILED'],
+        stages: ['classify'],
+      })
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('omits stages from the forwarded body when not provided', async () => {
+      const handler = reindexConnector(mockAppConfig)
+      req.params = { connectorId: 'conn-1' }
+      req.body = { statusFilters: ['FAILED'] }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { success: true },
+      })
+
+      await handler(req, res, next)
+
+      expect(execStub.firstCall.args[3]).to.deep.equal({ statusFilters: ['FAILED'] })
+    })
+  })
 })
 
 type StubbedResponse = Response & {

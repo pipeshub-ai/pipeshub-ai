@@ -33,11 +33,30 @@ with open(_EMPTY_OPIK_CONFIG, "w", encoding="utf-8") as _opik_config:
 os.environ["OPIK_CONFIG_PATH"] = _EMPTY_OPIK_CONFIG
 
 
+@pytest.fixture(autouse=True)
+def _fresh_lane_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The lane maps producers share are process-wide. One a test left behind
+    # made every later stale-recovery pass run lane upkeep against a Redis
+    # that is not there, seconds per pass.
+    from app.services.messaging.lanes import assignment
+
+    monkeypatch.setattr(assignment, "_shared", {})
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    # The forced exit below must report the run's own outcome.
+    session.config._exitcode = int(exitstatus)
+
+
 def pytest_unconfigure(config):
     """Force-exit the process when running under xdist to prevent hangs
     caused by unawaited async coroutines keeping worker threads alive."""
     if os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None):
-        os._exit(getattr(config, "_exitcode", 0))
+        # os._exit skips the interpreter's own flush, which dropped the summary.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # A run that never reached sessionfinish did not pass.
+        os._exit(getattr(config, "_exitcode", pytest.ExitCode.INTERNAL_ERROR))
 
 # ---------------------------------------------------------------------------
 # Auto-mock optional third-party modules that may not be installed in the

@@ -45,6 +45,7 @@ from app.services.cache.interface import (
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.redis.loop_clients import LoopBoundClients
+from app.utils.loop_local import LoopLocal
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -128,8 +129,9 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         # stays empty when a raw `redis_client` is injected directly without
         # a namespace (mostly tests), same as an unset namespace.
         self._key_namespace = key_namespace
-        self._locks: tuple[asyncio.Lock, ...] = tuple(
-            asyncio.Lock() for _ in range(self.LOCK_STRIPES)
+        # Per loop, as a Lock binds to its first waiter's loop: a stripe excludes misses within one loop only.
+        self._lock_stripes: LoopLocal[tuple[asyncio.Lock, ...]] = LoopLocal(
+            lambda: tuple(asyncio.Lock() for _ in range(self.LOCK_STRIPES))
         )
 
     @classmethod
@@ -297,7 +299,8 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
     def _lock_for(self, lock_key: str) -> asyncio.Lock:
         """Stripe for this key. crc32 rather than hash() so the mapping is
         stable across processes and test runs."""
-        return self._locks[zlib.crc32(lock_key.encode()) % len(self._locks)]
+        stripes = self._lock_stripes.get()
+        return stripes[zlib.crc32(lock_key.encode()) % len(stripes)]
 
     async def _read(self, key: str, field: str | None) -> dict[str, str] | None:
         try:

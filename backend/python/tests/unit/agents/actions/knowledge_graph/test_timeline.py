@@ -22,6 +22,9 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
     RECORD_SCOPED_ENTITY_CACHE_KEY,
 )
 from app.agents.actions.knowledge_graph.ops.entity_records import EntitySearchScope
+from app.agents.actions.knowledge_graph.ops.outside_dates import (
+    DATE_FILTER_SAFETY_NET_ENV_VAR,
+)
 from app.agents.actions.knowledge_graph.ops.timeline import (
     DEFAULT_LOOKBACK_DAYS,
     MAX_PERIODS,
@@ -37,6 +40,13 @@ from app.agents.actions.knowledge_graph.ops.timeline import (
 from app.models.blocks import BlockType
 
 _BUILDER = "app.modules.retrieval.context.builder"
+
+
+@pytest.fixture(autouse=True)
+def _period_searches_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These count and read a timeline's own searches; the one search without
+    # dates beside them is tested in test_outside_dates.py.
+    monkeypatch.setenv(DATE_FILTER_SAFETY_NET_ENV_VAR, "false")
 
 
 def _ms(day: str) -> int:
@@ -612,3 +622,212 @@ async def test_a_period_searched_over_part_of_the_index_is_not_called_empty() ->
     april = text.split("### April 2026", 1)[1].split("###", 1)[0]
     assert "No matching records." not in april
     assert notice in april and "Search it again" in april
+
+
+# ── knowledgegraph__search over a wide span ───────────────────────────────
+
+
+def _range(after: str, before: str | None = None, field: str = "created") -> dict[str, int]:
+    keys = timeline._DATE_FIELDS[field][2:4]
+    bounds = {keys[0]: _ms(after)}
+    if before is not None:
+        bounds[keys[1]] = _end_of(before)
+    return bounds
+
+
+class TestAutoTimelineField:
+    @pytest.mark.parametrize(("after", "before", "field"), [
+        # 31 days (all of March) stays ranked; one day more is a timeline.
+        ("2026-03-01", "2026-03-31", None),
+        ("2026-03-01", "2026-04-01", "created"),
+        ("2026-02-01", "2026-02-28", None),
+        ("2026-01-01", "2026-06-30", "created"),
+    ])
+    def test_more_than_a_months_whole_days_is_a_timeline(self, after: str, before: str, field: str | None) -> None:
+        assert timeline.AUTO_TIMELINE_MIN_DAYS == 31
+        assert timeline.auto_timeline_field(_range(after, before)) == field
+
+    def test_the_modified_date_counts_too(self) -> None:
+        assert timeline.auto_timeline_field(_range("2026-03-01", "2026-05-31", "modified")) == "modified"
+
+    def test_a_start_alone_runs_to_today_and_a_future_end_is_today(self) -> None:
+        with patch.object(timeline, "_now_ms", return_value=_TODAY):
+            assert timeline.auto_timeline_field(_range("2026-06-01")) is None
+            assert timeline.auto_timeline_field(_range("2026-05-01")) == "created"
+            assert timeline.auto_timeline_field(_range("2026-06-01", "2026-12-31")) is None
+
+    def test_an_end_alone_or_no_range_stays_ranked(self) -> None:
+        assert timeline.auto_timeline_field({"source_created_before_ms": _ms("2026-05-31")}) is None
+        assert timeline.auto_timeline_field(None) is None
+        assert timeline.auto_timeline_field({}) is None
+
+    def test_switched_off_it_stays_ranked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "false")
+        assert timeline.auto_timeline_field(_range("2026-01-01", "2026-06-30")) is None
+
+
+async def _run_search(corpus: _Corpus, state: dict[str, Any] | None = None, **kwargs: Any) -> Any:  # noqa: ANN401
+    from app.agents.actions.knowledge_graph.ops import search as search_op
+
+    ranked = AsyncMock(return_value="ranked")
+
+    async def flatten(results, _blob, _org, _mm, vr_map, *_a, **_kw) -> list[dict[str, Any]]:
+        vr_map.update({r["virtual_record_id"]: _record(r["virtual_record_id"]) for r in results})
+        return corpus.units(results)
+
+    with patch.object(search_op, "_execute_search", ranked), \
+            patch(f"{_BUILDER}.get_flattened_results", side_effect=flatten), \
+            patch(f"{_BUILDER}.enrich_records_with_graph_context", new_callable=AsyncMock), \
+            patch(f"{_BUILDER}.enrich_records_with_address_links", new_callable=AsyncMock), \
+            patch("app.modules.transformers.blob_storage.BlobStorage"):
+        return await search_op.execute_search(state or _state(corpus), "slack bot problems", **kwargs), ranked
+
+
+class TestTheSearchToolOverAWideSpan:
+    @pytest.mark.asyncio
+    async def test_a_quarter_is_searched_period_by_period_and_says_why(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+
+        text, ranked = await _run_search(corpus, created_after="2026-03-01", created_before="2026-05-31")
+
+        ranked.assert_not_awaited()
+        assert text.startswith('Timeline for "slack bot problems": 3 periods from 2026-03-01 to 2026-05-31')
+        assert "Note: This date range covers more than 31 days, so it was searched period by period." in text
+        assert "keep the dates to 31 days or less" in text
+        assert len(corpus.calls) == 4
+
+    @pytest.mark.asyncio
+    async def test_modified_dates_place_records_by_their_last_update(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+
+        await _run_search(corpus, modified_after="2026-03-01", modified_before="2026-05-31")
+
+        assert set(corpus.calls[0]["time_range"]) == {"source_updated_after_ms", "source_updated_before_ms"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kwargs", [
+        {"created_after": "2026-03-01", "created_before": "2026-03-31"},
+        {"created_before": "2026-05-31"},
+        {},
+        # The timeline bounds one date only, so bounds on both stay ranked.
+        {"created_after": "2026-03-01", "created_before": "2026-05-31", "modified_after": "2026-04-01"},
+        {"created_after": "March"},
+    ])
+    async def test_otherwise_it_is_the_ranked_search(self, kwargs: dict[str, str]) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+
+        result, ranked = await _run_search(corpus, **kwargs)
+
+        assert result == "ranked"
+        ranked.assert_awaited_once()
+        assert corpus.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_search_inside_a_resolved_scope_stays_ranked(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+
+        result, _ = await _run_search(
+            corpus, created_after="2026-03-01", created_before="2026-05-31", scope_virtual_record_ids=["mar"],
+        )
+
+        assert result == "ranked"
+
+    @pytest.mark.asyncio
+    async def test_switched_off_it_stays_ranked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "false")
+        corpus = _Corpus(_THREE_MONTHS)
+
+        result, _ = await _run_search(corpus, created_after="2026-03-01", created_before="2026-05-31")
+
+        assert result == "ranked"
+
+    def test_its_activity_line_reads_as_a_timeline(self) -> None:
+        instance = KnowledgeGraph(state={})
+        declared = ToolsetBuilder(instance, name="knowledgegraph", description="", path_prefix="/tools/knowledgegraph").tools
+        tool = next(t for t in declared if t.name == "knowledgegraph__search")
+        text = 'Timeline for "q": 2 periods from 2026-03-01 to 2026-04-30, oldest first.\nName: Thread a\n'
+
+        summary = tool.summarize_result({"query": "q"}, MagicMock(content=text, is_error=False))
+
+        assert summary.startswith("Searched 2 periods")
+
+
+class TestEverySearchKeepsTheTurnsScope:
+    """A selection below app level and an agent's or project's allow-list
+    reach every search of a timeline, as they reach knowledgegraph__search."""
+
+    _SCOPES = [
+        pytest.param(
+            {"apps": [], "kb": ["kb-1"], "recordGroups": ["proj-a"], "allowedRecordGroups": ["proj-a"],
+             "strictScope": True},
+            {"kb": ["kb-1"], "recordGroups": ["proj-a"], "allowedRecordGroups": ["proj-a"], "strictScope": True},
+            id="record-group",
+        ),
+        pytest.param(
+            {"apps": ["whole-app", "beta"], "kb": [], "records": ["beta-root"], "allowedRecords": ["beta-root"]},
+            {"apps": ["whole-app", "beta"], "records": ["beta-root"], "allowedRecords": ["beta-root"]},
+            id="records",
+        ),
+        pytest.param(
+            {"apps": [], "kb": [], "records": ["folder-1"], "allowedRecordGroups": ["proj-a"], "strictScope": True},
+            {"records": ["folder-1"], "allowedRecordGroups": ["proj-a"], "strictScope": True},
+            id="folder",
+        ),
+    ]
+
+    @staticmethod
+    def _assert_kept(corpus: _Corpus, kept: dict[str, Any]) -> None:
+        assert len(corpus.calls) == 4
+        for call in corpus.calls:
+            for key, value in kept.items():
+                assert call["filter_groups"][key] == value, key
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("filters", "kept"), _SCOPES)
+    async def test_an_automatic_timeline(self, filters: dict[str, Any], kept: dict[str, Any]) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+
+        await _run_search(
+            corpus, _state(corpus, filters=filters), created_after="2026-03-01", created_before="2026-05-31",
+        )
+
+        self._assert_kept(corpus, kept)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("filters", "kept"), _SCOPES)
+    async def test_the_timeline_tool(self, filters: dict[str, Any], kept: dict[str, Any]) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+
+        await _run(corpus, _state(corpus, filters=filters), start="2026-03-01", end="2026-05-31")
+
+        self._assert_kept(corpus, kept)
+
+    @pytest.mark.asyncio
+    async def test_naming_a_source_does_not_drop_a_selection(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+        filters = {"apps": ["whole-app", "beta"], "kb": [], "records": ["beta-root"], "allowedRecords": ["beta-root"]}
+
+        await _run(corpus, _state(corpus, filters=filters), start="2026-03-01", end="2026-05-31", source_ids=["beta"])
+
+        for call in corpus.calls:
+            assert call["filter_groups"]["records"] == ["beta-root"]
+            assert call["filter_groups"]["allowedRecords"] == ["beta-root"]
+
+    @pytest.mark.asyncio
+    async def test_a_placeholder_agent_keeps_its_own_sources_only_without_a_selection(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+        bare = _state(corpus, is_placeholder_agent=True, apps=["drive-1"], kb=["kb-9"],
+                      filters={"apps": ["synthetic"], "kb": []})
+        await _run(corpus, bare, start="2026-03-01", end="2026-05-31")
+        assert {(tuple(c["filter_groups"]["apps"]), tuple(c["filter_groups"]["kb"])) for c in corpus.calls} == {
+            (("drive-1",), ("kb-9",)),
+        }
+
+        corpus.calls.clear()
+        selected = _state(corpus, is_placeholder_agent=True, apps=["drive-1"], kb=["kb-9"],
+                          filters={"apps": ["drive-1"], "kb": [], "recordGroups": ["folder-x"]})
+        await _run(corpus, selected, start="2026-03-01", end="2026-05-31")
+        for call in corpus.calls:
+            assert call["filter_groups"]["apps"] == ["drive-1"]
+            assert call["filter_groups"]["kb"] == []
+            assert call["filter_groups"]["recordGroups"] == ["folder-x"]

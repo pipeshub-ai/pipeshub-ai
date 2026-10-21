@@ -32,6 +32,7 @@ from app.modules.named_entities.strategies.single_call import (
     SingleCallExtractionStrategy,
 )
 from app.modules.named_entities.text import TextUnit
+from app.services.llm_gateway.gateway import ProviderUnavailableError
 from app.utils.concurrency import indexing_llm_slots_remaining
 from tests.unit.agents.adapter.support.scripted_transport import (
     ScriptedStep,
@@ -172,15 +173,27 @@ async def test_an_error_every_mode_shares_does_not_step_down(monkeypatch) -> Non
     assert calls[0] == "strict"
 
 
-async def test_a_timed_out_call_does_not_step_down(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A starved worker times strict out; the tool call that then answers is a
-    retry, not proof that strict output is broken for the model."""
+@pytest.mark.parametrize(
+    "unavailable",
+    [
+        TimeoutError,
+        # The gateway's answer while the model's circuit is open.
+        ProviderUnavailableError("p:m is failing", provider="p:m", retry_after=30.0),
+    ],
+    ids=["timeout", "circuit_open"],
+)
+async def test_an_unserved_call_does_not_step_down(
+    monkeypatch: pytest.MonkeyPatch, unavailable: BaseException | type[BaseException]
+) -> None:
+    """A starved worker times strict out, or the provider cannot serve it; the
+    tool call that then answers is a retry, not proof that strict output is
+    broken for the model."""
     calls: list[str] = []
 
     async def strict(llm: object, prompt: str) -> single_call.EntitySubmission:
         calls.append("strict")
         if calls.count("strict") == 1:
-            raise TimeoutError
+            raise unavailable
         return single_call.EntitySubmission(entities=[])
 
     async def function_call(llm: object, prompt: str) -> single_call.EntitySubmission:

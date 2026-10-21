@@ -20,9 +20,12 @@ then shared by reference across every tool call for the life of the request.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+
+if TYPE_CHECKING:
+    from app.services.artifact_registry.models import Actor
 
 
 def _tool_approval_answer(raw: Any) -> Any:  # noqa: ANN401
@@ -59,6 +62,8 @@ class AgentContext(BaseModel):
     org_id: str
     user_id: str
     user_email: str
+    # Who owns the artifacts the run makes; see `chat_state.ChatState`.
+    artifact_owner_user_id: str = ""
     user_info: dict[str, Any] = Field(default_factory=dict)
     org_info: dict[str, Any] = Field(default_factory=dict)
     is_service_account: bool = False
@@ -388,6 +393,17 @@ class AgentContext(BaseModel):
         return AGUI_FORMATTER if self.protocol == "agui" else LEGACY_FORMATTER
 
     @property
+    def artifact_actor(self) -> Actor:
+        """The `Actor` artifacts are created and read as; see `artifact_owner`."""
+        from app.services.artifact_registry.models import artifact_owner
+
+        return artifact_owner({
+            "org_id": self.org_id,
+            "user_id": self.user_id,
+            "artifact_owner_user_id": self.artifact_owner_user_id,
+        })
+
+    @property
     def artifact_registry(self) -> Any:
         """`ArtifactRegistryService` for this request — `None` when either
         `graph_provider` or `blob_store` isn't wired (background/test runs
@@ -427,6 +443,7 @@ class AgentContext(BaseModel):
         return cls(
             org_id=state.get("org_id", ""),
             user_id=state.get("user_id", ""),
+            artifact_owner_user_id=state.get("artifact_owner_user_id") or state.get("user_id", ""),
             user_email=state.get("user_email", ""),
             user_info=state.get("user_info") or {},
             org_info=state.get("org_info") or {},
@@ -564,6 +581,7 @@ class AgentContext(BaseModel):
             "blob_store": self.blob_store,
             "org_id": self.org_id,
             "user_id": self.user_id,
+            "artifact_owner_user_id": self.artifact_owner_user_id or self.user_id,
             "user_email": self.user_email,
             "user_info": self.user_info,
             "org_info": self.org_info,
