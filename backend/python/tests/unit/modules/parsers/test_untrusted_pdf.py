@@ -321,6 +321,19 @@ class TestRealFilesInThreads:
         assert open_pdf(result.content).page_count == 1
 
 
+# Long enough for several whole probe bursts to fall inside the stall. One
+# file read once is not: a fast runner finished it before any burst did.
+PDFMINER_BUSY_SECONDS = 1.0
+
+
+def _keep_pdfminer_busy(seconds: float) -> None:
+    """Read a damaged file with pdfminer, again and again, for at least *seconds*."""
+    content = broken_xref_pdf(256 * 1024)
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        open_pdf(content)
+
+
 def _governor() -> MagicMock:
     governor = MagicMock()
     governor.ceilings = SimpleNamespace(heavy=4)
@@ -372,7 +385,7 @@ class TestRealFilesInWorkers:
         """Without this, a probe that measured nothing would pass the test above."""
         with IoProbe() as io_probe:
             await asyncio.sleep(0.1)
-            await asyncio.to_thread(open_pdf, broken_xref_pdf(1 * MIB))
+            await asyncio.to_thread(_keep_pdfminer_busy, PDFMINER_BUSY_SECONDS)
             await asyncio.sleep(0.1)
 
         assert io_probe.worst > 0.25
