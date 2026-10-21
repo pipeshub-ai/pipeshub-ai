@@ -58,6 +58,7 @@ def provider() -> AsyncMock:
         "gated_app_ids": ["app1", "kb-1"],
         "by_connector": {"app1": [], "kb-1": []},
     }
+    graph.get_hidden_app_ids.return_value = []
     return graph
 
 
@@ -131,6 +132,47 @@ async def test_a_root_listing_uses_the_root_query(service, provider) -> None:
     assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["user_app_ids"] == [
         "app1", "kb-1",
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_root_listing_leaves_out_a_hidden_collection(service, provider) -> None:
+    """A project's own file collection is not listed at the top level."""
+    provider.get_hidden_app_ids.return_value = ["kb-1"]
+    provider.get_knowledge_hub_root_nodes_v2.return_value = envelope(
+        [row("app1", "App One", node_type="app")]
+    )
+    await service.get_nodes(user_id="u1", org_id="o1")
+
+    provider.get_hidden_app_ids.assert_awaited_once_with(["app1", "kb-1"])
+    assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["user_app_ids"] == ["app1"]
+
+
+@pytest.mark.asyncio
+async def test_a_global_search_leaves_out_a_hidden_collection(service, provider) -> None:
+    provider.get_hidden_app_ids.return_value = ["kb-1"]
+    page = SearchPage(rows=[], total=0, counts_by_type={}, start_index=0, end_index=0,
+                      next_cursor=None, prev_cursor=None)
+    with patch(
+        "app.connectors.sources.localKB.handlers.knowledge_hub_service.search_page",
+        AsyncMock(return_value=page),
+    ) as searched:
+        await service.get_nodes(user_id="u1", org_id="o1", q="report")
+
+    access = searched.call_args.kwargs["access"]
+    assert access["gated_app_ids"] == ["app1"]
+    assert "kb-1" not in access.get("by_connector", {})
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_collection_is_still_browsed_by_id(service, provider) -> None:
+    """Its project opens it by id, so a browse inside it is not filtered."""
+    provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
+        [row("r1", "Record")], scope=admitted_scope("kb-1", "app")
+    )
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="kb-1", parent_type="app")
+
+    assert [item.id for item in result.items] == ["r1"]
+    provider.get_hidden_app_ids.assert_not_called()
 
 
 @pytest.mark.asyncio

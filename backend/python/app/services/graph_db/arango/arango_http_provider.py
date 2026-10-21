@@ -17154,6 +17154,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         """
 
+    async def get_hidden_app_ids(
+        self, app_ids: list[str], transaction: str | None = None,
+    ) -> list[str]:
+        if not app_ids:
+            return []
+        keys = await self.execute_query(
+            f"""
+            FOR app IN {CollectionNames.APPS.value}
+                FILTER app._key IN @app_ids AND app.isHidden == true
+                RETURN app._key
+            """,
+            bind_vars={"app_ids": list(app_ids)},
+            transaction=transaction,
+        )
+        return [k for k in keys or [] if k]
+
     async def get_knowledge_hub_access_context_v2(
         self,
         user_key: str,

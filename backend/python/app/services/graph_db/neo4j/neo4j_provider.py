@@ -17208,6 +17208,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for r in results or [] if r.get("app")
         ]
 
+    async def get_hidden_app_ids(
+        self, app_ids: list[str], transaction: str | None = None,
+    ) -> list[str]:
+        if not app_ids:
+            return []
+        rows = await self.client.execute_query(
+            "MATCH (a:App) WHERE a.id IN $app_ids AND a.isHidden = true RETURN a.id AS id",
+            parameters={"app_ids": list(app_ids)},
+            txn_id=transaction,
+        )
+        return [r["id"] for r in rows or [] if r.get("id")]
+
     async def get_knowledge_hub_access_context_v2(
         self,
         user_key: str,

@@ -713,6 +713,12 @@ class KnowledgeHubService:
                 ),
                 excluded,
             )
+            if parent_id is None:
+                # A project's own file collection is opened from its project, by id;
+                # the top-level listing, global search and filter options leave it out.
+                hidden = frozenset(await self.graph_provider.get_hidden_app_ids(access["gated_app_ids"]))
+                access = _without_apps(access, hidden)
+                excluded = excluded | hidden
             # The filter options and the context permissions read neither the
             # page nor each other, so they run beside it rather than after it.
             if include and 'availableFilters' in include:

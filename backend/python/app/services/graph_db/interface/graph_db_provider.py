@@ -5716,6 +5716,14 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def get_hidden_app_ids(
+        self, app_ids: list[str], transaction: str | None = None,
+    ) -> list[str]:
+        """The Apps among ``app_ids`` marked ``isHidden`` (a project's own file
+        collection): left out of top-level listings and unscoped search, still
+        reachable by id."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_knowledge_hub_access_context_v2(
         self,
