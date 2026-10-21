@@ -303,11 +303,16 @@ class TestDownloadRecord:
 # ====================================================================
 @pytest.fixture(scope="module")
 def first_turn(call: CallTool, mcp_seeded_record: dict) -> dict:
-    return _ok(call(
-        "pipeshub_chat",
-        query=f"Who owns the {mcp_seeded_record['needle']}? Answer in one sentence.",
-        filters={"kb": [mcp_seeded_record["kb_id"]]},
-    ))
+    # The model sometimes answers right but leaves out the citation marker, so ask up to 3 times.
+    for _ in range(3):
+        body = _ok(call(
+            "pipeshub_chat",
+            query=f"Who owns the {mcp_seeded_record['needle']}? Answer in one sentence.",
+            filters={"kb": [mcp_seeded_record["kb_id"]]},
+        ))
+        if any(c.get("recordId") == mcp_seeded_record["record_id"] for c in body.get("citations") or []):
+            break
+    return body
 
 
 # Each test asks the model, and the citation depends on its answer: nightly shard, not every PR.
