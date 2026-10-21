@@ -40,7 +40,7 @@ Facts that shape every design choice:
 | Register type | service start | `ConnectorFactory` registry (a fixed dict) and the `@ConnectorBuilder` metadata on each class. The UI reads this to list connector types and render their settings form. |
 | Create | admin or user adds it in the UI | Node proxies to the connector service, which creates the App node and the config entry (`create_connector_instance` in `app/connectors/api/router.py`). Scope is team (org-wide, set up by an admin) or personal (one user's own account). |
 | Configure and authenticate | settings form, OAuth | Config lands at `/services/connectors/{connector_id}/config`. OAuth runs through the connector service's authorize and callback routes; tokens are stored in the same config and refreshed by `TokenRefreshService`. |
-| Initialise | `<connector>.init` event, or lazily on first use | `create_connector()` builds the instance and `init()` builds the API client from config. `test_connection_and_access()` is a separate call on that same setup path, and on the test route: it proves the credentials can read the source. |
+| Initialise | `<connector>.init` event, or lazily on first use | `create_connector()` builds the instance and `init()` builds the API client from config. The init event stores that instance and does not call `test_connection_and_access()` (`event_service.py`). That call runs after `init()` only inside `_build_and_store_connector` (`router.py`), which toggle-enable, filter options, and a stream with no live instance use. The setup-form route `POST /api/v1/connectors/registry/{connector_type}/test-connection` calls `check_connection`. |
 | Sync | `<connector>.start` / `.resync` event: enable, the Sync button, or the scheduler | `SyncTaskManager` starts `run_sync()` as a task. One sync per connector at a time; a new request while one runs is declined or deferred. |
 | Index | `newRecord` / `updateRecord` on `record-events`, published by the processor | The indexing service fetches content (signed URL first, else the connector's internal stream route, which calls `stream_record()`), parses, chunks and embeds. |
 | Open a citation | user clicks a result | The stream route checks the user's access, then calls `stream_record(record)`. |
@@ -56,8 +56,7 @@ sequenceDiagram
   participant Idx as Indexing
   Admin->>Node: create, configure, OAuth
   Node->>Conn: create instance and store config
-  Conn->>Conn: init
-  Conn->>Src: test_connection_and_access
+  Conn->>Conn: init event stores the instance
   Node->>Conn: start or resync
   Conn->>Src: list users, groups, containers, items
   Conn->>Conn: processor writes nodes and publishes record-events
