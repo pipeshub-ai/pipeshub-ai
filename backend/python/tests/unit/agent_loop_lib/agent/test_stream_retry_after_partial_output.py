@@ -205,6 +205,27 @@ class TestRetryAfterPartialOutput:
         assert agent.last_stream_result.success is False
         assert _shown_text(events) == ""
 
+    async def test_no_retry_when_the_client_could_not_be_told_to_discard(self) -> None:
+        """A retry the client was not told about would show the fragment twice."""
+        transport = _DroppingStream([
+            [TextDeltaEvent(delta="The dep"), _dropped()],
+            [TextDeltaEvent(delta=_ANSWER), _done()],
+        ])
+        agent = _agent(transport)
+        original_emit = agent.emit
+
+        async def _emit(event_type: EventType, payload: dict) -> None:
+            if payload.get("discarded"):
+                raise RuntimeError("client gone")
+            await original_emit(event_type, payload)
+
+        agent.emit = _emit  # type: ignore[method-assign]
+
+        await _collect(agent)
+
+        assert transport.calls == 1
+        assert agent.last_stream_result.success is False
+
     async def test_a_drop_before_any_output_still_retries_up_to_the_wrapper_limit(self) -> None:
         """Failures with nothing streamed were already retryable; the bound on
         retries after partial output must not tighten them."""

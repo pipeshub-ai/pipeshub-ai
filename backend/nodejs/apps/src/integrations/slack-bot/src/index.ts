@@ -897,6 +897,12 @@ async function processSlackMessage(
         // A table in the failed attempt paused streaming; its retry may have none.
         if (tablePauseHintSent) {
           resetAnswerStream();
+          // With no stream open yet, the hint replaced the activity message.
+          queuedStreamAppend = queuedStreamAppend
+            .then(async () => updateActivityMessage(activityBuilder.format()))
+            .catch((error) => {
+              console.error("Error restoring Slack activity after a discard:", error);
+            });
         }
         tableStreamingDisabled = false;
         streamTableProbeText = "";

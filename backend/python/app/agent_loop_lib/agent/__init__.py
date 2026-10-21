@@ -388,12 +388,13 @@ class Agent:
         if alias is not None:
             await emitter.emit(AgentEvent(event_type=alias, run_context=self._run_ctx, payload=payload))
 
-    async def _discard_streamed_attempt(self, turn_index: int, reasoning_open: bool) -> None:
+    async def _discard_streamed_attempt(self, turn_index: int, reasoning_open: bool) -> bool:
         """Close a model call that raised mid-stream with `discarded: True`.
 
         None of what it streamed reaches the conversation history, so
         consumers drop this attempt's text and reasoning rather than leave a
-        fragment on screen, or show it twice when the call is retried."""
+        fragment on screen, or show it twice when the call is retried.
+        Returns whether every consumer was told."""
         discarded = {"turn_index": turn_index, "discarded": True}
         try:
             if reasoning_open:
@@ -402,6 +403,8 @@ class Agent:
         except Exception:
             # The model call's own error is the one the caller must see.
             logger.warning("Could not discard the failed model call's streamed output", exc_info=True)
+            return False
+        return True
 
     # ---- composition primitives for LoopStrategy implementations ----
 
@@ -855,10 +858,10 @@ class Agent:
                     elif isinstance(event, StreamCompleteEvent):
                         final_response = event.response
             except Exception as exc:
-                await self._discard_streamed_attempt(turn_index, reasoning_open)
+                discarded = await self._discard_streamed_attempt(turn_index, reasoning_open)
                 if isinstance(exc, TransportError) and exc.partial_output:
                     failures_after_partial_output += 1
-                    if failures_after_partial_output <= _MAX_RETRIES_AFTER_PARTIAL_OUTPUT:
+                    if discarded and failures_after_partial_output <= _MAX_RETRIES_AFTER_PARTIAL_OUTPUT:
                         exc.discard_partial_output()
                     logger.warning(
                         "Model stream failed after partial output (turn %d, failure %d, retryable=%s): %s",
