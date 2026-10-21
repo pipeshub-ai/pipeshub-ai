@@ -5186,3 +5186,70 @@ class TestOnMessageAbandoned:
         )
 
         assert handler.logger.error.called
+
+
+# ---------------------------------------------------------------------------
+# on_recovery_exhausted: stale recovery gave up on a record
+# ---------------------------------------------------------------------------
+
+
+class TestRecoveryExhausted:
+    """The record ends, and the copies parked behind it are moved on rather than stranded."""
+
+    @staticmethod
+    def _stuck_handler(record: dict | None) -> tuple:
+        handler = _make_handler()
+        graph = handler.event_processor.graph_provider
+        graph.get_document = AsyncMock(return_value=record)
+        graph.update_node = AsyncMock(return_value=True)
+        return handler, graph
+
+    async def test_a_record_that_never_indexed_fails_and_its_next_copy_is_triggered(self) -> None:
+        record = {
+            "_key": "r1",
+            "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+            "parsingStatus": ProgressStatus.IN_PROGRESS.value,
+            "extractionStatus": ProgressStatus.NOT_STARTED.value,
+            "virtualRecordId": "vr-1",
+        }
+        handler, graph = self._stuck_handler(record)
+
+        with patch.object(handler, "_trigger_next_queued_duplicate", new=AsyncMock()) as trigger:
+            await handler.on_recovery_exhausted("r1", resume_enrichment=False)
+
+        written = graph.update_node.await_args.args[2]
+        assert written["indexingStatus"] == ProgressStatus.FAILED.value
+        assert written["parsingStatus"] == ProgressStatus.FAILED.value
+        assert written["reason"] == user_errors.RETRIES_EXHAUSTED
+        assert written["processingStartedAt"] is None
+        trigger.assert_awaited_once_with("r1", "vr-1")
+
+    async def test_a_searchable_record_only_fails_its_enrichment_and_releases_its_copies(self) -> None:
+        handler, graph = self._stuck_handler({"_key": "r1", "indexingStatus": ProgressStatus.COMPLETED.value})
+
+        with patch.object(handler, "_fail_resumed_enrichment", new=AsyncMock()) as fail_enrichment, \
+             patch.object(handler, "_trigger_next_queued_duplicate", new=AsyncMock()) as trigger:
+            await handler.on_recovery_exhausted("r1", resume_enrichment=True)
+
+        fail_enrichment.assert_awaited_once_with("r1")
+        trigger.assert_not_awaited()
+        graph.update_node.assert_not_awaited()
+
+    async def test_a_status_write_that_fails_raises_so_recovery_tries_again(self) -> None:
+        handler, graph = self._stuck_handler({"_key": "r1", "indexingStatus": ProgressStatus.IN_PROGRESS.value})
+        graph.update_node = AsyncMock(return_value=False)
+
+        with patch.object(handler, "_trigger_next_queued_duplicate", new=AsyncMock()) as trigger, \
+             pytest.raises(IndexingError):
+            await handler.on_recovery_exhausted("r1", resume_enrichment=False)
+
+        trigger.assert_not_awaited()
+
+    async def test_a_record_that_is_gone_is_left_alone(self) -> None:
+        handler, graph = self._stuck_handler(None)
+
+        with patch.object(handler, "_trigger_next_queued_duplicate", new=AsyncMock()) as trigger:
+            await handler.on_recovery_exhausted("r1", resume_enrichment=False)
+
+        graph.update_node.assert_not_awaited()
+        trigger.assert_not_awaited()

@@ -55,6 +55,11 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
     from app.agent_loop_lib.tools.base import ToolOutput
 
+# Opik's SDK reports its own errors to Opik's Sentry, with local variables, and
+# formatting those reports blocks the event loop. Every opik import goes through
+# this module, so set before any of them; an operator can still turn it on.
+os.environ.setdefault("OPIK_SENTRY_ENABLE", "false")
+
 __all__ = [
     "OpikTracingTransport",
     "is_opik_configured",

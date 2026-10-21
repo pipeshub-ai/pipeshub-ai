@@ -818,10 +818,10 @@ class TestPyMuPDFOpenCVProcessorExtended:
         mock_cm.__exit__.return_value = None
 
         with patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.pdfplumber.open",
+            "app.modules.parsers.pdf.layout_pages.pdfplumber.open",
             return_value=mock_cm,
         ), patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.extract_layout_regions",
+            "app.modules.parsers.pdf.layout_pages.extract_layout_regions",
             return_value=[],
         ):
             result = await proc.parse_document("test.pdf", BytesIO(b"fake-pdf-bytes"))
@@ -845,13 +845,13 @@ class TestPyMuPDFOpenCVProcessorExtended:
         mock_cm.__exit__.return_value = None
 
         with patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.pdfplumber.open",
+            "app.modules.parsers.pdf.layout_pages.pdfplumber.open",
             return_value=mock_cm,
         ), patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.extract_layout_regions",
+            "app.modules.parsers.pdf.layout_pages.extract_layout_regions",
             return_value=[],
         ), patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.os.unlink",
+            "app.modules.parsers.pdf.layout_pages.os.unlink",
             side_effect=OSError("permission denied"),
         ):
             result = await proc.parse_document("test.pdf", b"fake-pdf-bytes")
@@ -866,10 +866,10 @@ class TestPyMuPDFOpenCVProcessorExtended:
         proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
         with patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.tempfile.NamedTemporaryFile",
+            "app.modules.parsers.pdf.layout_pages.tempfile.NamedTemporaryFile",
             side_effect=OSError("disk full"),
         ), patch(
-            "app.modules.parsers.pdf.pdfplumber_opencv_processor.os.unlink",
+            "app.modules.parsers.pdf.layout_pages.os.unlink",
         ) as mock_unlink:
             with pytest.raises(OSError, match="disk full"):
                 await proc.parse_document("test.pdf", b"fake-pdf-bytes")

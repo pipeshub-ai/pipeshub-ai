@@ -309,6 +309,39 @@ class RecordEventHandler(BaseEventService):
                 exc_info=True,
             )
 
+    async def on_recovery_exhausted(self, record_id: str, *, resume_enrichment: bool) -> None:
+        """End a record stale recovery has given up on, and move its queued copies on.
+
+        Implements ``ExhaustedRecordSink``. The copies are parked behind this
+        record with their messages acknowledged, and the stranded sweep skips
+        them, so this is what releases them. Raises when the record could not
+        be marked, so the next recovery pass tries again.
+        """
+        if resume_enrichment:
+            # Searchable already: only the enrichment fails, and the copies
+            # take the record's indexing with it.
+            await self._fail_resumed_enrichment(record_id)
+            return
+        record = await self.event_processor.graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value, raise_on_error=True
+        )
+        if record is None:
+            return
+        updated = await self.__update_document_status(
+            record_id=record_id,
+            indexing_status=ProgressStatus.FAILED.value,
+            extraction_status=ProgressStatus.FAILED.value,
+            reason=RETRIES_EXHAUSTED,
+        )
+        if updated is None:
+            raise IndexingError(
+                f"Could not mark record {record_id} failed after recovery gave up",
+                details={"record_id": record_id},
+            )
+        self.logger.error("Record %s marked FAILED: stale recovery gave up on it", record_id)
+        # Retried transient failures, not the file: the next copy gets its turn.
+        await self._trigger_next_queued_duplicate(record_id, record.get("virtualRecordId"))
+
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
         record_id: str,

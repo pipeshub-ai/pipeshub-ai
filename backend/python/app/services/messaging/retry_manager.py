@@ -39,6 +39,8 @@ class RetryManager(IRetryTracker):
 
     KEY_PREFIX = "messaging:retry"
     DELIVERY_KEY_PREFIX = "messaging:deliveries"
+    HANDBACK_KEY_PREFIX = "messaging:handbacks"
+    _COUNTER_PREFIXES = (KEY_PREFIX, DELIVERY_KEY_PREFIX, HANDBACK_KEY_PREFIX)
     DEFAULT_TTL_SECONDS = 86400  # 24 hours
 
     def __init__(
@@ -120,6 +122,10 @@ class RetryManager(IRetryTracker):
             return self._registry.client()
         raise RuntimeError("RetryManager is not initialized")
 
+    def _keys_of(self, message_id: str) -> list[str]:
+        """Every counter kept for *message_id*, the failure counter first."""
+        return [self._build_key(message_id, prefix=prefix) for prefix in self._COUNTER_PREFIXES]
+
     def _build_key(self, message_id: str, prefix: str | None = None) -> str:
         """Build Redis key for a message.
 
@@ -184,6 +190,19 @@ class RetryManager(IRetryTracker):
         key = self._build_key(message_id, prefix=self.DELIVERY_KEY_PREFIX)
         return await self._incr_with_ttl(key)
 
+    async def record_handback(self, message_id: str) -> int:
+        """Count one hand-back of *message_id*; see ``IRetryTracker``."""
+        if self._redis is None and self._registry is None:
+            raise RuntimeError("RetryManager not initialized. Call initialize() first.")
+        return await self._incr_with_ttl(self._build_key(message_id, prefix=self.HANDBACK_KEY_PREFIX))
+
+    async def get_handbacks(self, message_id: str) -> int:
+        """Hand-backs counted for *message_id*; see ``IRetryTracker``."""
+        if self._redis is None and self._registry is None:
+            raise RuntimeError("RetryManager not initialized. Call initialize() first.")
+        value = await self._client().get(self._build_key(message_id, prefix=self.HANDBACK_KEY_PREFIX))
+        return int(value) if value else 0
+
     async def _incr_with_ttl(self, key: str) -> int:
         """INCR *key* and (re)set its TTL atomically; returns the new count.
 
@@ -234,14 +253,14 @@ class RetryManager(IRetryTracker):
         if self._redis is None and self._registry is None:
             raise RuntimeError("RetryManager not initialized. Call initialize() first.")
 
-        # The delivery counter goes with the failure counter: a record that
-        # completed (or was dead-lettered) must not carry its deliveries into
-        # the next time its stable id is seen. Two single-key DELs, not one
+        # The delivery and hand-back counters go with the failure counter: a
+        # record that completed (or was dead-lettered) must not carry them into
+        # the next time its stable id is seen. Single-key DELs, not one
         # multi-key DEL, so each routes to its own slot on a cluster.
         async with self._client().pipeline(transaction=False) as pipe:
-            pipe.delete(self._build_key(message_id))
-            pipe.delete(self._build_key(message_id, prefix=self.DELIVERY_KEY_PREFIX))
-            deleted, _ = await pipe.execute()
+            for key in self._keys_of(message_id):
+                pipe.delete(key)
+            deleted, *_ = await pipe.execute()
 
         if deleted:
             self.logger.debug("RetryManager: Cleared retry tracking for %s", message_id)
@@ -271,12 +290,12 @@ class RetryManager(IRetryTracker):
         # standalone this is still one round trip.
         async with self._client().pipeline(transaction=False) as pipe:
             for msg_id in message_ids:
-                pipe.delete(self._build_key(msg_id))
-                pipe.delete(self._build_key(msg_id, prefix=self.DELIVERY_KEY_PREFIX))
+                for key in self._keys_of(msg_id):
+                    pipe.delete(key)
             results = await pipe.execute()
-        # Count cleared messages by their failure counter; the delivery
-        # counter alongside it is housekeeping.
-        deleted = sum(1 for r in results[0::2] if r)
+        # Count cleared messages by their failure counter; the counters
+        # alongside it are housekeeping.
+        deleted = sum(1 for r in results[0::len(self._COUNTER_PREFIXES)] if r)
 
         self.logger.debug(
             "RetryManager: Cleared retry tracking for %d/%d messages",

@@ -27,6 +27,7 @@ from app.api.middlewares.auth import (
     service_token_org,
 )
 from app.config.constants.service import TokenScopes
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import BlocksContainer  # noqa: TC001  # pydantic field type
 from app.modules.named_entities.domain.config import (
     NamedEntityBudgets,  # noqa: TC001  # pydantic field type
@@ -99,6 +100,14 @@ async def classify(
             record_type=body.record_type,
         )
         metadata = None if classification is None else semantic_metadata_from_classification(classification)
+    except NonRetryableError as exc:
+        # Not a 5xx: the client resends those, and this would refuse the
+        # whole document again.
+        logger.warning("Classification for org '%s' was refused: %s", org_id, exc)
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content=ClassifyResponse(success=False, error=str(exc)).model_dump(),
+        )
     except Exception as exc:
         logger.exception(
             "Unexpected error during classification for org '%s'", org_id

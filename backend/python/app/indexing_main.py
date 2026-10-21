@@ -41,6 +41,12 @@ from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
 from app.modules.indexing.rate_limit_deferral import deferral_due
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.record_republish import is_parked_duplicate, record_event
+from app.modules.indexing.recovery_budget import (
+    ExhaustedRecordSink,
+    record_handback,
+    recovery_exhausted,
+    recovery_tracking_id,
+)
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
 )
@@ -163,7 +169,7 @@ async def recover_in_progress_records(
     # Semaphore to limit concurrent processing to 5 records
     semaphore = asyncio.Semaphore(5)
     # Track results for final summary
-    results = {"requeued": 0, "skipped": 0, "error": 0}
+    results = {"requeued": 0, "skipped": 0, "exhausted": 0, "error": 0}
     total_records = 0
     recovery_owner = f"recovery:{uuid4().hex}"
     recovery_renewal_task: asyncio.Task[None] | None = None
@@ -183,11 +189,18 @@ async def recover_in_progress_records(
         # container by the time recovery runs) so recovery events go out on the
         # same producer as live retries.
         retry_producer = None
+        retry_tracker = None
+        exhausted_sink: ExhaustedRecordSink | None = None
         read_backlog: Callable[[], Awaitable[LaneBacklog]] | None = None
         consumers = getattr(app_container, "kafka_consumers", [])
         if consumers and len(consumers[0]) > 2:
             retry_producer = consumers[0][2]
             record_consumer = consumers[0][1]
+            retry_tracker = getattr(record_consumer, "retry_manager", None)
+            # The record handler, which the consumer reports abandoned messages to.
+            sink = getattr(record_consumer, "disposition_sink", None)
+            if callable(getattr(sink, "on_recovery_exhausted", None)):
+                exhausted_sink = sink
             lane_backlog = getattr(record_consumer, "lane_backlog", None)
             if lane_backlog is not None:
                 # Not through run_coordination: the consumer hops to the loop
@@ -362,6 +375,24 @@ async def recover_in_progress_records(
                             results["skipped"] += 1
                             return True
 
+                    tracking_id = recovery_tracking_id(record_id, record.get("version", 0))
+                    # Without a sink to end it (and move its queued copies on),
+                    # the record is recovered with no budget, as before.
+                    if exhausted_sink is not None and await recovery_exhausted(
+                        retry_tracker, tracking_id, logger
+                    ):
+                        await exhausted_sink.on_recovery_exhausted(
+                            record_id, resume_enrichment=resume_enrichment
+                        )
+                        logger.warning(
+                            "Gave up recovering record %s (%s): it kept failing or "
+                            "being cut off after it was re-queued",
+                            record_id,
+                            record_name,
+                        )
+                        results["exhausted"] += 1
+                        return True
+
                     # Reconstruct the payload from the record data. With the
                     # connector id the event goes to its connector's own lane;
                     # without it every recovered record shared the default lane.
@@ -377,6 +408,8 @@ async def recover_in_progress_records(
                         "origin": record.get("origin"),
                         "recordType": record.get("recordType"),
                         "virtualRecordId": record.get("virtualRecordId"),
+                        # Failures of every recovery of this version share one budget.
+                        "_retry_tracking_id": tracking_id,
                     }
 
                     # Determine event type - default to NEW_RECORD for recovery
@@ -420,6 +453,9 @@ async def recover_in_progress_records(
                             )
                         )
                         published = True
+                        # Counted here, not after the status write: an event
+                        # in the broker is a hand-back even if that write fails.
+                        await record_handback(retry_tracker, tracking_id, logger)
 
                     if concurrency_manager is not None:
                         # The per-record lease keeps the consumer out until the
@@ -678,7 +714,7 @@ async def recover_in_progress_records(
         logger.info(
             f"✅ Recovery complete. Processed {total_records} stale record(s): "
             f"{results['requeued']} re-queued, {results['skipped']} skipped, "
-            f"{results['error']} errors"
+            f"{results['exhausted']} given up, {results['error']} errors"
         )
 
     except Exception as e:
@@ -2039,16 +2075,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await config_service.close()
     except Exception as e:
         logger.error(f"❌ Error closing configuration service: {e}")
-
-    # Shut down the PDF OCR process-pool (no-op if it was never initialised).
-    # atexit registered inside the pool factory is the safety net for unclean
-    # exits; this call handles the normal graceful shutdown path.
-    try:
-        from app.events.events import shutdown_pdf_ocr_pool
-        if shutdown_pdf_ocr_pool():
-            logger.info("✅ PDF OCR detection process pool shut down")
-    except Exception as e:
-        logger.error(f"❌ Error shutting down PDF OCR detection pool: {e}")
 
     try:
         from app.modules.parsers.pdf.pdf_rasterizer import shutdown_pdf_raster_pool

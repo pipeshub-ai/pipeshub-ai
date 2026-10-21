@@ -22,8 +22,17 @@ from app.utils.aimodels import (
     get_generator_model,
     is_multimodal_llm,
 )
+from app.utils.env_config import env_int
 from app.utils.llm import get_llm_for_role
 from app.utils.opik import get_llm_invoke_config
+
+# Every page is one model call, so a longer scan is refused rather than read at any cost.
+MAX_PAGES_ENV = "VLM_OCR_MAX_PAGES"
+DEFAULT_MAX_PAGES = 500
+
+
+def vlm_ocr_max_pages() -> int:
+    return max(1, env_int(MAX_PAGES_ENV, DEFAULT_MAX_PAGES))
 
 
 class VLMOCRStrategy(OCRStrategy):
@@ -450,7 +459,14 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 tmp.close()
             self._pdf_path = tmp.name
             self.doc = pdfplumber.open(self._pdf_path)
-            self.logger.info(f"📚 Loaded PDF with {len(self.doc.pages)} pages")
+            page_count = len(self.doc.pages)
+            self.logger.info(f"📚 Loaded PDF with {page_count} pages")
+            max_pages = vlm_ocr_max_pages()
+            if page_count > max_pages:
+                raise DocumentProcessingError(
+                    f"The file is too large for OCR: {page_count} pages, more than the "
+                    f"{max_pages} read with OCR ({MAX_PAGES_ENV})"
+                )
 
             self.logger.debug("🤖 Getting multimodal LLM")
             self.llm = await self._get_multimodal_llm()

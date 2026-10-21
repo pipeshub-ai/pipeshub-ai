@@ -1,20 +1,13 @@
 import asyncio
-import atexit
 import hashlib
 import json
 import logging
-import math
-import multiprocessing
 import os
 from collections.abc import AsyncGenerator, Mapping
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
-from functools import lru_cache
-from io import BytesIO
 from typing import Any
 from uuid import uuid4
 
-import pdfplumber
 from bs4 import BeautifulSoup
 
 from app.config.configuration_service import ConfigurationService
@@ -45,12 +38,13 @@ from app.exceptions.indexing_exceptions import (
 )
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
-from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
+from app.services.docling.client import within_docling_size_limit
 from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
     is_live_record,
@@ -78,73 +72,10 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import ENRICHMENT_FAILED
 
 
-def _get_pdf_ocr_detection_worker_count() -> int:
-    raw_value = os.getenv("PDF_OCR_DETECTION_WORKERS")
-    if raw_value:
-        try:
-            return max(1, int(raw_value))
-        except ValueError:
-            return 1
-
-    return 1
-
-PDF_OCR_DETECTION_WORKERS = _get_pdf_ocr_detection_worker_count()
-
-
-@lru_cache(maxsize=1)
-def _get_pdf_ocr_detection_pool() -> ProcessPoolExecutor:
-    pool = ProcessPoolExecutor(
-        max_workers=PDF_OCR_DETECTION_WORKERS,
-        mp_context=multiprocessing.get_context("spawn"),
-    )
-    # Ensure spawned processes are reaped when the interpreter exits.
-    # The explicit shutdown_pdf_ocr_pool() call in indexing_main.lifespan is
-    # the primary cleanup path; atexit is the safety net for unclean exits.
-    atexit.register(pool.shutdown, wait=False, cancel_futures=True)
-    return pool
-
-
 def _record_key(doc: dict[str, Any] | None) -> str | None:
     """Record id from either Arango (_key) or generic graph (id) document format."""
     return (doc.get("_key") or doc.get("id")) if doc is not None else None
 
-
-def shutdown_pdf_ocr_pool() -> bool:
-    """Shut down the PDF OCR detection process pool if it was initialised.
-
-    Returns True if a pool existed and was shut down, False if no pool had
-    been created during this process's lifetime (so there was nothing to
-    clean up). Safe to call multiple times.
-    """
-    if _get_pdf_ocr_detection_pool.cache_info().currsize == 0:
-        return False
-    _get_pdf_ocr_detection_pool().shutdown(wait=False, cancel_futures=True)
-    _get_pdf_ocr_detection_pool.cache_clear()
-    return True
-
-
-def _detect_pdf_needs_ocr(file_content: bytes) -> bool:
-    logger = logging.getLogger(__name__)
-
-    with pdfplumber.open(BytesIO(file_content)) as pdf:
-        page_count = len(pdf.pages)
-        if page_count == 0:
-            return False
-
-        threshold = math.ceil(page_count * 0.5)
-        ocr_pages = 0
-
-        for page_index, page in enumerate(pdf.pages):
-            if OCRStrategy.needs_ocr(page, logger):
-                ocr_pages += 1
-                if ocr_pages >= threshold:
-                    return True
-
-            remaining_pages = page_count - (page_index + 1)
-            if ocr_pages + remaining_pages < threshold:
-                return False
-
-        return ocr_pages >= threshold
 
 class EventProcessor:
     def __init__(
@@ -269,19 +200,6 @@ class EventProcessor:
                         virtual_record_id, max_attempts, e,
                     )
 
-    async def _pdf_needs_ocr(self, file_content: bytes) -> bool:
-        if PDF_OCR_DETECTION_WORKERS <= 1:
-            return await asyncio.to_thread(_detect_pdf_needs_ocr, file_content)
-
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            _get_pdf_ocr_detection_pool(),
-            _detect_pdf_needs_ocr,
-            file_content,
-        )
-
-
-
     async def _dispatch_pdf_binary(
         self,
         record_name: str,
@@ -298,12 +216,11 @@ class EventProcessor:
         existing PDF pipeline would pick for a native PDF.
         """
         self.logger.info("🔍 Checking if PDF needs OCR processing")
-        try:
-            needs_ocr = await self._pdf_needs_ocr(pdf_binary)
-            self.logger.info("📊 OCR requirement: %s", 'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser')
-        except Exception as e:
-            self.logger.warning("⚠️ Error checking OCR need: %s, defaulting to layout parser", str(e))
-            needs_ocr = False
+        inspected = await inspect_untrusted_pdf(pdf_binary, label=record_name)
+        # Every parser below reads the bytes that passed inspection.
+        pdf_binary = inspected.content
+        needs_ocr = inspected.needs_ocr
+        self.logger.info("📊 OCR requirement: %s", 'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser')
 
         if needs_ocr:
             # Skip docling and use OCR handler directly
@@ -322,38 +239,33 @@ class EventProcessor:
                 yield event
             return
 
+        # A PDF with a text layer is never sent to OCR, which costs one model
+        # call per page: when Docling is not used or cannot read the file, the
+        # local layout parser reads it instead.
         use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
         if use_pdfplumber:
             self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
-            try:
-                async for event in self.processor.process_pdf_with_pdf_plumber(
-                    recordName=record_name,
-                    recordId=record_id,
-                    pdf_binary=pdf_binary,
-                    virtual_record_id=virtual_record_id,
-                    event_type=event_type,
-                    prev_virtual_record_id=prev_virtual_record_id,
-                ):
+        elif not within_docling_size_limit(len(pdf_binary)):
+            self.logger.info("📄 PDF is larger than Docling accepts; using the PdfPlumber+OpenCV processor")
+        else:
+            docling_failed = False
+            async for event in self.processor.process_pdf_with_docling(
+                recordName=record_name,
+                recordId=record_id,
+                pdf_binary=pdf_binary,
+                virtual_record_id=virtual_record_id,
+                event_type=event_type,
+                prev_virtual_record_id=prev_virtual_record_id,
+            ):
+                if event.event == IndexingEvent.DOCLING_FAILED:
+                    docling_failed = True
+                else:
                     yield event
-            except Exception as e:
-                self.logger.warning(f"⚠️ PdfPlumber+OpenCV processing failed, falling back to OCR: {e}")
-                async for event in self.processor.process_pdf_document_with_ocr(
-                    recordName=record_name,
-                    recordId=record_id,
-                    version=record_version,
-                    source=connector,
-                    orgId=org_id,
-                    pdf_binary=pdf_binary,
-                    virtual_record_id=virtual_record_id,
-                    event_type=event_type,
-                    prev_virtual_record_id=prev_virtual_record_id,
-                ):
-                    yield event
-            return
+            if not docling_failed:
+                return
+            self.logger.warning("⚠️ Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
 
-        # Use docling for PDFs that don't need OCR
-        docling_failed = False
-        async for event in self.processor.process_pdf_with_docling(
+        async for event in self.processor.process_pdf_with_pdf_plumber(
             recordName=record_name,
             recordId=record_id,
             pdf_binary=pdf_binary,
@@ -361,24 +273,7 @@ class EventProcessor:
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
         ):
-            if event.event == IndexingEvent.DOCLING_FAILED:
-                docling_failed = True
-            else:
-                yield event
-
-        if docling_failed:
-            async for event in self.processor.process_pdf_document_with_ocr(
-                recordName=record_name,
-                recordId=record_id,
-                version=record_version,
-                source=connector,
-                orgId=org_id,
-                pdf_binary=pdf_binary,
-                virtual_record_id=virtual_record_id,
-                event_type=event_type,
-                prev_virtual_record_id=prev_virtual_record_id,
-            ):
-                yield event
+            yield event
 
     @staticmethod
     def _reads_as_code_file(
