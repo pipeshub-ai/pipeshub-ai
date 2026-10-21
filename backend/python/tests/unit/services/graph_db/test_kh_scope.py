@@ -160,6 +160,44 @@ async def test_an_origin_filter_that_splits_a_connector_falls_back() -> None:
     assert out["path"] == "excluded" and out["page"] == [] and out["total"] == 0
 
 
+async def test_reset_leaves_a_flag_marked_after_the_snapshot() -> None:
+    """A sync that starts while startup is still reading leases bumps generation.
+    The clear only matches the pairs the read saw, so that flag stays."""
+
+    class _Client:
+        def __init__(self) -> None:
+            self.flags = {"crashed": 2}
+            self.cleared: list[str] = []
+
+        async def execute_query(self, query: str, parameters: dict | None = None) -> list[dict]:
+            if "RETURN m.connectorId" in query:
+                # mark_stale for a sync that started during the await, and a
+                # replacement of the crashed row. Neither pair is in the snapshot.
+                self.flags["live"] = 1
+                self.flags["crashed"] = 3
+                return [{"id": "crashed", "generation": 2}]
+            if "SET m.syncing = false" in query:
+                params = parameters or {}
+                guards_generation = "m.generation = row.generation" in query
+                for row in params.get("seen") or []:
+                    if row["id"] in set(params.get("keep") or []):
+                        continue
+                    current = self.flags.get(row["id"])
+                    if current is None:
+                        continue
+                    if guards_generation and current != row["generation"]:
+                        continue
+                    self.cleared.append(row["id"])
+                    del self.flags[row["id"]]
+                return []
+            raise AssertionError(query[:80])
+
+    client = _Client()
+    await ks.reset_syncing(client)
+    assert client.cleared == []
+    assert client.flags == {"crashed": 3, "live": 1}
+
+
 async def test_a_restamp_during_the_read_falls_back() -> None:
     client = FakeClient(meta(), rows=[{"id": "a", "sortKey": "a"}], metas_after=[meta(stampedAt=2)])
     with pytest.raises(ks.Fallback, match="restamped"):
