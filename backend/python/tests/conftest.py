@@ -52,11 +52,21 @@ def pytest_collection_modifyitems(config, items) -> None:
         return
     # Parsing every module does not fit in 30s once the workers share the runner.
     longer = pytest.mark.timeout(120)
+    # A local coding sandbox shares the runner with the workers, so the
+    # typescript run exceeds the 30s body timeout.
+    sandbox_contract = {
+        "test_execute_success",
+        "test_failure_is_data_not_an_exception",
+        "test_timeout_reports_exit_code_minus_one",
+        "test_execute_stream_ends_with_exactly_one_result",
+        "test_stream_result_matches_execute",
+    }
     # The probe needs a thread to hold the GIL. A busy runner does not
     # schedule that thread, so the burst stays under the stall threshold.
     skip_probe = pytest.mark.skip(reason="GIL stall is not measurable while xdist has the cores")
     for item in items:
-        if item.name == "test_no_production_code_writes_anyone_documents":
+        name = getattr(item, "originalname", item.name)
+        if item.name == "test_no_production_code_writes_anyone_documents" or name in sandbox_contract:
             item.add_marker(longer)
         elif item.name == "test_the_probe_sees_the_stall_a_pdfminer_thread_causes":
             item.add_marker(skip_probe)
