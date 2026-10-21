@@ -42,7 +42,7 @@ import re
 import secrets
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -170,7 +170,7 @@ class Credentials:
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, message: str, details: Any = None) -> None:
+    def __init__(self, status: int, message: str, details: object = None) -> None:
         super().__init__(message)
         self.status = status
         self.body: dict[str, Any] = {"error": message}
@@ -205,7 +205,7 @@ class State:
 # ---------------------------------------------------------------------------
 
 
-def authenticate(headers: Any, query: dict[str, list[str]], state: State) -> str:
+def authenticate(headers: Mapping[str, str], query: dict[str, list[str]], state: State) -> str:
     """Return the name of the scheme that accepted the request, or raise 401."""
     creds = state.credentials
     if headers.get("X-API-Key") == creds.api_key or query.get("api_key") == [creds.api_key]:
@@ -230,7 +230,7 @@ def _basic_pair(encoded: str) -> tuple[str, str] | None:
     return user, password
 
 
-def issue_token(form: dict[str, list[str]], headers: Any, state: State) -> dict[str, Any]:
+def issue_token(form: dict[str, list[str]], headers: Mapping[str, str], state: State) -> dict[str, Any]:
     """The token endpoint (RFC 6749): client credentials, authorization code with PKCE, refresh."""
     grant = _first(form, "grant_type")
     if grant not in ("client_credentials", "authorization_code", "refresh_token"):
@@ -347,7 +347,7 @@ button{{margin:.75rem .5rem 0 0;padding:.5rem 1rem}}.error{{color:#b42318}}</sty
 # ---------------------------------------------------------------------------
 
 
-def list_tickets(state: State, _p: dict[str, str], query: dict[str, list[str]], _b: Any) -> tuple[int, Any]:
+def list_tickets(state: State, _p: dict[str, str], query: dict[str, list[str]], _b: object) -> tuple[int, Any]:
     status = _first(query, "status")
     if status is not None and status not in STATUSES:
         raise ApiError(422, "Invalid query parameter", {"status": f"must be one of {list(STATUSES)}"})
@@ -364,7 +364,7 @@ def list_tickets(state: State, _p: dict[str, str], query: dict[str, list[str]], 
     return 200, {"tickets": found[:limit], "total": len(found)}
 
 
-def create_ticket(state: State, _p: dict[str, str], _q: dict[str, list[str]], body: Any, *, idempotency_key: str | None = None) -> tuple[int, Any]:
+def create_ticket(state: State, _p: dict[str, str], _q: dict[str, list[str]], body: object, *, idempotency_key: str | None = None) -> tuple[int, Any]:
     if idempotency_key and idempotency_key in state.idempotency:
         return 200, state.tickets[state.idempotency[idempotency_key]]
     data = _require_object(body)
@@ -395,11 +395,11 @@ def create_ticket(state: State, _p: dict[str, str], _q: dict[str, list[str]], bo
     return 201, ticket
 
 
-def get_ticket(state: State, params: dict[str, str], _q: dict[str, list[str]], _b: Any) -> tuple[int, Any]:
+def get_ticket(state: State, params: dict[str, str], _q: dict[str, list[str]], _b: object) -> tuple[int, Any]:
     return 200, _ticket(state, params["ticketId"])
 
 
-def update_ticket(state: State, params: dict[str, str], _q: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+def update_ticket(state: State, params: dict[str, str], _q: dict[str, list[str]], body: object) -> tuple[int, Any]:
     ticket = _ticket(state, params["ticketId"])
     data = _require_object(body)
     allowed = {"status": STATUSES, "priority": PRIORITIES}
@@ -415,7 +415,7 @@ def update_ticket(state: State, params: dict[str, str], _q: dict[str, list[str]]
     return 200, ticket
 
 
-def add_comment(state: State, params: dict[str, str], _q: dict[str, list[str]], body: Any) -> tuple[int, Any]:
+def add_comment(state: State, params: dict[str, str], _q: dict[str, list[str]], body: object) -> tuple[int, Any]:
     ticket = _ticket(state, params["ticketId"])
     text = _require_object(body).get("body")
     if not isinstance(text, str) or not text.strip():
@@ -426,11 +426,11 @@ def add_comment(state: State, params: dict[str, str], _q: dict[str, list[str]], 
     return 201, comment
 
 
-def current_user(_s: State, _p: dict[str, str], _q: dict[str, list[str]], _b: Any) -> tuple[int, Any]:
+def current_user(_s: State, _p: dict[str, str], _q: dict[str, list[str]], _b: object) -> tuple[int, Any]:
     return 200, {"username": "api", "displayName": "Acme API user", "team": "Support Platform"}
 
 
-def list_announcements(_s: State, _p: dict[str, str], _q: dict[str, list[str]], _b: Any) -> tuple[int, Any]:
+def list_announcements(_s: State, _p: dict[str, str], _q: dict[str, list[str]], _b: object) -> tuple[int, Any]:
     return 200, {"announcements": ANNOUNCEMENTS}
 
 
@@ -485,12 +485,12 @@ def _int_param(query: dict[str, list[str]], key: str, default: int, low: int, hi
     return int(raw)
 
 
-def _check_enum(field: str, value: Any, allowed: tuple[str, ...]) -> None:
+def _check_enum(field: str, value: object, allowed: tuple[str, ...]) -> None:
     if value not in allowed:
         raise ApiError(422, "Invalid body", {field: f"must be one of {list(allowed)}"})
 
 
-def _require_object(body: Any) -> dict[str, Any]:
+def _require_object(body: object) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise ApiError(422, "Invalid body", {"body": "must be a JSON object"})
     return body
@@ -516,11 +516,11 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
     class RequestHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
         def _send(
-            self, status: int, body: Any = None, content_type: str = "application/json", location: str | None = None,
+            self, status: int, body: object = None, content_type: str = "application/json", location: str | None = None,
         ) -> None:
             if body is None:
                 data = b""
@@ -607,25 +607,25 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                 return
             self._send(status, payload)
 
-        def do_GET(self) -> None:  # noqa: N802 - stdlib name
+        def do_GET(self) -> None:
             self._dispatch("GET")
 
-        def do_POST(self) -> None:  # noqa: N802 - stdlib name
+        def do_POST(self) -> None:
             self._dispatch("POST")
 
-        def do_PATCH(self) -> None:  # noqa: N802 - stdlib name
+        def do_PATCH(self) -> None:
             self._dispatch("PATCH")
 
-        def do_PUT(self) -> None:  # noqa: N802 - stdlib name
+        def do_PUT(self) -> None:
             self._dispatch("PUT")
 
-        def do_DELETE(self) -> None:  # noqa: N802 - stdlib name
+        def do_DELETE(self) -> None:
             self._dispatch("DELETE")
 
     return RequestHandler
 
 
-def _parse_json(raw: bytes) -> Any:
+def _parse_json(raw: bytes) -> object:
     if not raw:
         return None
     try:

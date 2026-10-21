@@ -8,8 +8,7 @@ Assertions are on stream events, the call log and one seeded fact, never on word
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -18,7 +17,11 @@ from helper.agui_run import RunTrace
 from helper.clients.agents_client import AgentsClient
 from helper.clients.conversations_client import AgentConversationsClient
 from helper.openapi_fixture import OpenApiFixture
-from pipeshub_client import PipeshubClient
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from pipeshub_client import PipeshubClient
 
 pytestmark = [pytest.mark.integration, pytest.mark.ai_agents]
 
@@ -71,14 +74,14 @@ class TestTheToolset:
 
 
 class TestTicketQuestion:
-    def test_it_calls_the_api_tool(self, ticket_turn) -> None:
+    def test_it_calls_the_api_tool(self, ticket_turn: tuple[RunTrace, list[dict[str, Any]]]) -> None:
         trace, _calls = ticket_turn
         assert trace.finished and not trace.error, trace.describe()
         lookups = trace.calls_ending_with("get_ticket") + trace.calls_ending_with("list_tickets")
         assert lookups, f"no Acme Helpdesk call in the stream: {trace.describe()}"
         assert any(call.status == "completed" for call in lookups), [(c.name, c.status, c.result) for c in lookups]
 
-    def test_the_api_received_the_call_with_the_shared_key(self, ticket_turn) -> None:
+    def test_the_api_received_the_call_with_the_shared_key(self, ticket_turn: tuple[RunTrace, list[dict[str, Any]]]) -> None:
         _trace, calls = ticket_turn
         assert calls, "the Acme Helpdesk API received no call"
         assert {c["auth"] for c in calls} == {"apiKey"}, calls
@@ -86,7 +89,7 @@ class TestTicketQuestion:
             c["path"] == f"/tickets/{_TICKET}" or (c["path"] == "/tickets" and c["method"] == "GET") for c in calls
         ), calls
 
-    def test_the_answer_uses_what_only_the_api_knows(self, ticket_turn) -> None:
+    def test_the_answer_uses_what_only_the_api_knows(self, ticket_turn: tuple[RunTrace, list[dict[str, Any]]]) -> None:
         trace, _calls = ticket_turn
         answer = (trace.answer or "").lower()
         assert all(part in answer for part in _ASSIGNEE_PARTS), trace.describe()

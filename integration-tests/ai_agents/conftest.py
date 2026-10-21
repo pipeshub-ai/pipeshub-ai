@@ -15,13 +15,11 @@ import asyncio
 import logging
 import os
 import uuid
-from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import requests
 from ai_models_setup import llm_configuration
-from pipeshub_client import PipeshubClient
 
 from ai_agents.support import (
     API_TOOLSETS,
@@ -43,6 +41,11 @@ from helper.mcp_fixture import ORDER_TOOL, McpFixture
 from helper.openapi_fixture import DEMO_API_KEY, OpenApiFixture
 from helper.source_credentials import secrets_required, source_unavailable
 from helper.stored_names import stored_name
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from pipeshub_client import PipeshubClient
 
 logger = logging.getLogger("ai-agents-it")
 
@@ -129,7 +132,7 @@ def it_document(kb_client: KBClient, ai_models_configured) -> Iterator[dict[str,
     finally:
         try:
             kb_client.delete_kb(kb_id)
-        except Exception as e:  # noqa: BLE001 - teardown must not mask test results
+        except Exception as e:
             logger.warning("could not delete KB %s: %s", kb_id, e)
 
 
@@ -280,7 +283,7 @@ def openapi_fixture() -> OpenApiFixture:
 
 @pytest.fixture(scope="session")
 def api_toolset(
-    pipeshub_client: PipeshubClient, openapi_fixture: OpenApiFixture, api_toolsets_enabled
+    pipeshub_client: PipeshubClient, openapi_fixture: OpenApiFixture, api_toolsets_enabled: None
 ) -> Iterator[dict[str, Any]]:
     """The Acme Helpdesk API added as an API Toolset from its own spec, with one shared API key,
     the way an admin adds it. Its connection is tested through PipesHub before anything uses it."""
@@ -368,5 +371,5 @@ def personal_access_token(pipeshub_client: PipeshubClient) -> Iterator[str]:
             # 404: already revoked. Anything else unsuccessful leaves a 30-day token live.
             if revoked.status_code >= 300 and revoked.status_code != 404:
                 logger.warning("could not revoke personal access token %s: HTTP %s", token["id"], revoked.status_code)
-        except Exception:  # noqa: BLE001 - teardown must not mask test results
+        except Exception:
             logger.warning("could not revoke personal access token %s", token["id"])

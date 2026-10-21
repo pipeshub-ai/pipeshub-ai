@@ -13,9 +13,8 @@ import hashlib
 import importlib.util
 import sys
 import threading
-from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -32,6 +31,9 @@ from helper.openapi_fixture import (
     DEMO_CLIENT,
     OpenApiFixture,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 pytestmark = pytest.mark.unit
 
@@ -83,7 +85,7 @@ def _assert_matches_spec(resp: requests.Response, method: str, path: str) -> Non
     Draft202012Validator(schema, registry=_REGISTRY).validate(resp.json())
 
 
-def _collect_refs(node: Any) -> Iterator[str]:
+def _collect_refs(node: object) -> Iterator[str]:
     if isinstance(node, dict):
         for key, value in node.items():
             if key == "$ref":
@@ -159,7 +161,7 @@ def test_wrong_credentials_are_refused(fixture: OpenApiFixture) -> None:
         assert requests.get(f"{fixture.test_url}/users/me", timeout=5, **kwargs).status_code == 401
 
 
-def _client_credentials_token(fixture: OpenApiFixture, **kwargs: Any) -> requests.Response:
+def _client_credentials_token(fixture: OpenApiFixture, **kwargs: object) -> requests.Response:
     return requests.post(f"{fixture.test_url}/oauth/token", timeout=5, **kwargs)
 
 
@@ -249,7 +251,7 @@ def test_create_ticket_is_idempotent_with_a_key(fixture: OpenApiFixture) -> None
 
 
 @pytest.mark.parametrize("body", [{}, {"title": "  "}, {"title": "x", "priority": "asap"}, {"title": "x", "tags": "one"}, ["title"]])
-def test_create_ticket_rejects_bad_body(fixture: OpenApiFixture, body: Any) -> None:
+def test_create_ticket_rejects_bad_body(fixture: OpenApiFixture, body: object) -> None:
     resp = requests.post(f"{fixture.test_url}/tickets", json=body, headers=API_KEY, timeout=5)
     assert resp.status_code == 422
     _assert_matches_spec(resp, "POST", "/tickets")
