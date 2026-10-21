@@ -19,6 +19,7 @@ from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.sources.localKB.api.knowledge_hub_models import BreadcrumbItem
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType, Status, TicketRecord
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
 def _short_id_for(state: dict, full_id: str) -> str:
@@ -31,14 +32,12 @@ def _short_id_for(state: dict, full_id: str) -> str:
     return shortener.get_or_create_short_id(full_id)
 
 
-def _grant_asked(_user_key, _org_id, node_ids=(), **_kwargs) -> "AccessCheck":
+def _grant_asked(_user_key, _org_id, node_ids=(), **_kwargs) -> AccessCheck:
     """The hub already returned these nodes, so the default graph grants them.
 
     A test that distinguishes permission from the conversation limit replaces
     this.
     """
-    from app.services.graph_db.interface.graph_db_provider import AccessCheck
-
     ids = frozenset(node_id for node_id in (node_ids or ()) if node_id)
     return AccessCheck(node_ids=ids, node_ids_in_scope=ids)
 
@@ -854,9 +853,7 @@ class TestNavigateRemembersRecordIds:
         gp.check_record_access_with_details = AsyncMock(return_value=None)
         unknown = "deadbeef-0000-4000-8000-000000000000"
 
-        def check_access(_user_key, _org_id, node_ids=(), **_kwargs) -> "AccessCheck":
-            from app.services.graph_db.interface.graph_db_provider import AccessCheck
-
+        def check_access(_user_key, _org_id, node_ids=(), **_kwargs) -> AccessCheck:
             ids = frozenset(node_id for node_id in (node_ids or ()) if node_id != unknown)
             return AccessCheck(node_ids=ids, node_ids_in_scope=ids)
 
@@ -914,9 +911,7 @@ class TestNavigateRemembersRecordIds:
         gp.check_record_access_with_details = AsyncMock(return_value=None)
         unknown = "8a2cfb7d-04fc-4647-8d43-5d0527800009"
 
-        def check_access(_user_key, _org_id, node_ids=(), **_kwargs) -> "AccessCheck":
-            from app.services.graph_db.interface.graph_db_provider import AccessCheck
-
+        def check_access(_user_key, _org_id, node_ids=(), **_kwargs) -> AccessCheck:
             ids = frozenset(node_id for node_id in (node_ids or ()) if node_id != unknown)
             return AccessCheck(node_ids=ids, node_ids_in_scope=ids)
 
