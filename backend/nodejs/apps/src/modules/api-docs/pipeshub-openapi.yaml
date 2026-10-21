@@ -10561,8 +10561,9 @@ components:
             block that is not code.
             Present on a hit that is a code block, and on each passage of a list, thread, text
             section or code group brought back whole because of a match inside it. Absent on any
-            other hit that matched directly, on the rows of a table brought back whole, and on an
-            image split out of a section.
+            other hit that matched directly, on the rows of a table brought back whole, and on
+            every piece of a section split around an image: its text, the image, and the text that
+            stands in for the image when it is not sent as an image.
         distanceFromMatch:
           type: integer
           minimum: 0
