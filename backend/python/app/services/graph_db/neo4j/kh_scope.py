@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import logging
+    from collections.abc import Collection
 
     from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 
@@ -261,10 +262,28 @@ async def _still_current(client: Neo4jClient, connector_id: str, generation: int
     return bool(rows)
 
 
-async def reset_syncing(client: Neo4jClient) -> None:
-    """At startup, before any sync of this process starts, no sync is running: a flag left by a crash would block
-    stamping for ever. It must not run once syncs have started, or it clears their flags too."""
-    await _q(client, "MATCH (m:KhScopeMeta) WHERE m.syncing SET m.syncing = false")
+async def syncing_connector_ids(client: Neo4jClient) -> list[str]:
+    rows = await _q(client, """
+        MATCH (m:KhScopeMeta) WHERE coalesce(m.syncing, false)
+        RETURN m.connectorId AS id
+    """)
+    return [r["id"] for r in rows if r.get("id")]
+
+
+async def reset_syncing(client: Neo4jClient, keep: Collection[str] | None = None) -> None:
+    """At startup, before any sync of this process starts, a flag left by a crash would block stamping for ever.
+    ``keep`` names connectors whose flag must stay. Called with no list, the running build decides which of the
+    syncing connectors those are. It must not run once syncs of this process have started, or it clears their
+    flags too."""
+    if keep is None:
+        from app.edition_services import bootstrap_leased_ids
+
+        keep = await bootstrap_leased_ids(await syncing_connector_ids(client))
+    await _q(client, """
+        MATCH (m:KhScopeMeta)
+        WHERE coalesce(m.syncing, false) AND NOT m.connectorId IN $keep
+        SET m.syncing = false
+    """, {"keep": list(keep or ())})
 
 
 async def stale_connectors(client: Neo4jClient) -> list[str]:
