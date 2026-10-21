@@ -6518,6 +6518,13 @@ class IGraphDBProvider(ABC):
         """
         raise NotImplementedError
 
+    # A name search over a whole connector starts from the nodes whose name
+    # matches and walks up from each, instead of listing every visible node and
+    # filtering last. Past this many matches in the org (counted before access
+    # is decided) it is not selective, and the full listing is the cheaper way
+    # to the same rows.
+    _KH_NAME_FIRST_MAX = 20000
+
     # A filter on what a node is or holds: a placeholder stub has no content, so
     # it never matches one.
     _KH_CONTENT_FILTERS = (

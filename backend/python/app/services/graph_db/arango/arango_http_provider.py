@@ -457,6 +457,8 @@ class _Visible:
     nodes: list[str]
     member_groups: list[str] = field(default_factory=list)
     collection: bool = False
+    # A name search's matches: the records the two BELONGS_TO arms may add.
+    only: list[str] | None = None
 
 
 def _kh_v3_ordered(slim: list[list[Any]], *, descending: bool) -> list[tuple[str, str, str, Any]]:
@@ -17413,7 +17415,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             visible = _Visible(nodes=list(dict.fromkeys([*walked, *placed])))
         elif flatten:
-            visible = await self._kh_v3_flatten(app, bind, granted_ids, transaction)
+            matches = None
+            if (filters or {}).get("search_query"):
+                search = filters["search_query"]
+                # Shared: a global search runs one page per connector at once, and
+                # the names are matched across the org.
+                matches = await (
+                    self._kh_v3_shared(("name-matches", org_id, search.lower()),
+                                       lambda: self._kh_v3_name_matches(org_id, search, None))
+                    if transaction is None else self._kh_v3_name_matches(org_id, search, transaction)
+                )
+            visible = await self._kh_v3_flatten(app, bind, granted_ids, transaction, matches=matches)
         else:
             walked = await self._kh_v3_walk(
                 [app["handle"]], "step_app", {**bind, "kh_declared_stop": False}, 1, transaction,
@@ -17436,17 +17448,41 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             access=access, name_parents=name_parents,
         )
 
+    async def _kh_v3_name_matches(self, org_id: str, search: str, transaction: str | None) -> list[str] | None:
+        """The org's live records and groups whose name holds ``search``, read as
+        the listing's name filter reads it, or None past ``_KH_NAME_FIRST_MAX``.
+        Any connector may list them: the walks, not the connectorId, place a node."""
+        found = await self._kh_v3_run("name_matches", {
+            "org_id": org_id, "kh_search": search.lower(), "kh_cap": self._KH_NAME_FIRST_MAX + 1,
+        }, transaction)
+        return None if len(found) > self._KH_NAME_FIRST_MAX else found
+
     async def _kh_v3_flatten(
         self, app: dict[str, Any], bind: dict[str, Any], granted_ids: list[str], transaction: str | None,
+        *, matches: list[str] | None = None,
     ) -> "_Visible":
         """The whole connector, arm by arm as the Neo4j listing's. The walk from
         the App does not descend a RECORD_GROUP_LEVEL group; the declared arms
         supply what is under one. The two arms that can hold a whole connector,
         a declared scope's records and a collection's, are read by the final
-        query rather than brought back here."""
+        query rather than brought back here.
+
+        With ``matches`` (a name search's) only those can be listed. A path from
+        the App or from a seed to a match runs through the match's ancestors, and
+        a declaration bears on a match only from above the groups it, or one of
+        those ancestors, belongs to. So the walks are kept to the matches, their
+        ancestors, those groups and theirs, and reach each node at the level the
+        whole walk would."""
         groups = CollectionNames.RECORD_GROUPS.value
+        within: set[str] | None = None
+        if matches is not None:
+            if not matches:
+                return _Visible(nodes=[], only=[])
+            near = [*matches, *await self._kh_v3_walk(matches, "step_up", {}, 50, transaction)]
+            own = await self._kh_v3_run("own_groups", {"kh_frontier": near}, transaction)
+            within = {*near, *own, *await self._kh_v3_walk(own, "step_up", {}, 50, transaction)}
         region = await self._kh_v3_walk(
-            [app["handle"]], "step_app", {**bind, "kh_declared_stop": True}, 50, transaction,
+            [app["handle"]], "step_app", {**bind, "kh_declared_stop": True}, 50, transaction, within=within,
         )
         region_groups = {h.split("/", 1)[1] for h in region if h.startswith(f"{groups}/")}
         declared = await self._kh_v3_run("declared", {
@@ -17465,18 +17501,24 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         candidates = [
             k for k in granted_ids
             if f"{CollectionNames.RECORDS.value}/{k}" not in taken and f"{groups}/{k}" not in taken
+            and (within is None or f"{CollectionNames.RECORDS.value}/{k}" in within or f"{groups}/{k}" in within)
         ]
         if candidates:
             seeds = [s for s in await self._kh_v3_run("seeds", {
                 "app_id": bind["app_id"], "kh_keys": candidates, "kh_member_groups": member_groups,
             }, transaction) if s not in taken]
         below = await self._kh_v3_walk(
-            seeds, "step_open", {"granted": bind["granted"]}, 50, transaction,
+            seeds, "step_open", {"granted": bind["granted"]}, 50, transaction, within=within,
         ) if seeds else []
+        nodes = list(dict.fromkeys([*region, *scope_handles, *seeds, *below]))
+        if matches is not None:
+            listed = set(matches)
+            nodes = [h for h in nodes if h in listed]
         return _Visible(
-            nodes=list(dict.fromkeys([*region, *scope_handles, *seeds, *below])),
+            nodes=nodes,
             member_groups=member_groups,
             collection=bool(app["opens"]),
+            only=matches,
         )
 
     async def _kh_v3_chain_top_groups(
@@ -17511,16 +17553,27 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _kh_v3_walk(
         self, starts: list[str], step: str, bind: dict[str, Any], depth: int, transaction: str | None,
+        *, within: set[str] | None = None,
     ) -> list[str]:
         """Breadth first from ``starts`` (handles), one query per level: the
-        nodes some passing path of at most ``depth`` hops reaches, starts excluded."""
+        nodes some passing path of at most ``depth`` hops reaches, starts excluded.
+        With ``within``, only those nodes, each found from its own parents
+        (``step`` + ``_within``) rather than by reading every child of the frontier."""
         seen = set(starts)
         found: list[str] = []
         frontier = list(starts)
         for _ in range(depth):
             if not frontier:
                 break
-            children = await self._kh_v3_run(step, {**bind, "kh_frontier": frontier}, transaction)
+            if within is None:
+                children = await self._kh_v3_run(step, {**bind, "kh_frontier": frontier}, transaction)
+            else:
+                remaining = [h for h in within if h not in seen]
+                if not remaining:
+                    break
+                children = await self._kh_v3_run(f"{step}_within", {
+                    **bind, "kh_front": dict.fromkeys(frontier, True), "kh_within": remaining,
+                }, transaction)
             frontier = [c for c in dict.fromkeys(children) if c not in seen]
             seen.update(frontier)
             found.extend(frontier)
@@ -17562,13 +17615,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             placeholders_prefiltered=True,
         )
         slim: list[list[Any]] = []
-        if visible.nodes or visible.member_groups or visible.collection:
+        restricted = visible.only is not None
+        if (visible.nodes or visible.member_groups or visible.collection) and visible.only != []:
             slim = await self.http_client.execute_aql(
-                self._kh_v3_slim_aql(tuple(conditions), sort_field),
+                self._kh_v3_slim_aql(tuple(conditions), sort_field, restricted=restricted),
                 bind_vars={
                     **params, "kh_nodes": visible.nodes, "kh_member_groups": visible.member_groups,
                     "kh_collection": visible.collection, "org_id": org_id, "app_id": app_id,
                     "kh_placeholders": lists_placeholders,
+                    **({"kh_only": visible.only} if restricted else {}),
                 },
                 txn_id=transaction,
                 batch_size=_KH_V3_BATCH,
@@ -17744,13 +17799,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     @staticmethod
     @functools.cache
-    def _kh_v3_slim_aql(conditions: tuple[str, ...], sort_field: str) -> str:
+    def _kh_v3_slim_aql(conditions: tuple[str, ...], sort_field: str, *, restricted: bool = False) -> str:
         """What the filters and the sort read, for every visible node: the
         filters see the same fields as Neo4j's slim map. The declared scope's
         records and a collection's are read here from the edge index, once.
         Each collection is joined through its primary index rather than read by
         ``DOCUMENT()``, which lets the optimizer read only the fields used:
-        99k records in ~1.0 s instead of ~1.7 s."""
+        99k records in ~1.0 s instead of ~1.7 s. ``restricted`` reads those two
+        arms from the edges of ``@kh_only`` (a name search's matches) instead of
+        every record of the scope or the collection."""
         records, groups, apps = (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
                                  CollectionNames.APPS.value)
         belongs = CollectionNames.BELONGS_TO.value
@@ -17789,6 +17846,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN [kh_h, node.nodeType, sortKey]
             )"""
 
+        if restricted:
+            belonging = f"""(FOR kh_h IN @kh_only
+                    FILTER STARTS_WITH(kh_h, "{records}/")
+                    FOR kh_be IN {belongs}
+                        FILTER kh_be._from == kh_h
+                            AND (kh_be._to IN @kh_member_groups OR (@kh_collection AND kh_be._to == kh_app._id))
+                        RETURN kh_be._from)"""
+            return f"""
+            LET kh_app = DOCUMENT("{apps}", @app_id)
+            LET kh_handles = UNION_DISTINCT(@kh_nodes, {belonging})
+            FOR kh_row IN UNION({rows(records)}, {rows(groups)})
+                RETURN kh_row
+        """
         return f"""
             LET kh_app = DOCUMENT("{apps}", @app_id)
             LET kh_handles = UNION_DISTINCT(
@@ -17829,6 +17899,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN DISTINCT kh_c._id
             """
 
+        def children_within(parent_filter: str, child_filter: str) -> str:
+            """``children`` for the nodes of ``@kh_within`` alone, each read from
+            its parents: the same passing children of the frontier."""
+            return f"""
+            FOR kh_ch IN @kh_within
+                LET kh_c = DOCUMENT(kh_ch)
+                FILTER kh_c != null AND {listable}
+                FOR kh_p, kh_e IN 1..1 INBOUND kh_c {relations}
+                    FILTER HAS(@kh_front, kh_p._id){parent_filter}
+                    FILTER kh_e.relationshipType IN {hierarchy}
+                    FILTER {child_filter}
+                    RETURN DISTINCT kh_c._id
+            """
+
         def own_line(v: str) -> str:
             """``v``'s own record groups and their hierarchy ancestors."""
             return f"""(
@@ -17856,6 +17940,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                            RETURN kh_og))"""
 
         hop = _aql_granted_hop("kh_c", "kh_p", "c", navigation=True)
+        declared_stop = f"""
+                FILTER NOT (@kh_declared_stop AND IS_SAME_COLLECTION("{groups}", kh_p)
+                    AND kh_p.permissionModel == "RECORD_GROUP_LEVEL" AND kh_p.connectorId == @app_id)"""
+        open_parent = "\n                FILTER kh_p.hideChildren != true"
         open_hop = (
             f'kh_c.isDeleted != true AND {_aql_access_rule("kh_c")} == "OPEN"'
             f' AND (HAS(@granted, kh_c._key) ? true : {_aql_inherits("kh_c", "kh_p", "o")})'
@@ -17874,12 +17962,37 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """,
             # The walk from the App; in the flatten it stops at this connector's
             # RECORD_GROUP_LEVEL groups.
-            "step_app": "LET kh_opens = @kh_opens" + children(
-                f"""
-                FILTER NOT (@kh_declared_stop AND IS_SAME_COLLECTION("{groups}", kh_p)
-                    AND kh_p.permissionModel == "RECORD_GROUP_LEVEL" AND kh_p.connectorId == @app_id)""",
-                hop,
-            ),
+            "step_app": "LET kh_opens = @kh_opens" + children(declared_stop, hop),
+            "step_app_within": "LET kh_opens = @kh_opens" + children_within(declared_stop, hop),
+            "step_open_within": children_within(open_parent, open_hop),
+            # The hierarchy parents of the frontier, to bound a name search's walks.
+            "step_up": f"""
+            FOR kh_ch IN @kh_frontier
+                FOR kh_p, kh_e IN 1..1 INBOUND kh_ch {relations}
+                    FILTER kh_e.relationshipType IN {hierarchy}
+                    RETURN DISTINCT kh_p._id
+            """,
+            "own_groups": f"""
+            FOR kh_h IN @kh_frontier
+                FOR kh_g IN 1..1 OUTBOUND kh_h {belongs}
+                    FILTER IS_SAME_COLLECTION("{groups}", kh_g)
+                    RETURN DISTINCT kh_g._id
+            """,
+            # As the slim query's name and node filters read them.
+            "name_matches": f"""
+            FOR kh_n IN UNION(
+                (FOR x IN {records} FILTER x.orgId == @org_id AND x.isDeleted != true
+                    FILTER CONTAINS(LOWER(NOT_NULL(x.name, x.recordName, x.groupName)), @kh_search)
+                    LIMIT @kh_cap
+                    RETURN x._id),
+                (FOR x IN {groups} FILTER x.orgId == @org_id AND x.isDeleted != true
+                    FILTER CONTAINS(LOWER(NOT_NULL(x.name, x.recordName, x.groupName)), @kh_search)
+                    LIMIT @kh_cap
+                    RETURN x._id)
+            )
+                LIMIT @kh_cap
+                RETURN kh_n
+            """,
             "declared": f"""
             FOR g IN {groups}
                 FILTER g._key IN @kh_keys AND g.connectorId == @app_id
@@ -17922,7 +18035,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """,
             # Below a seed only OPEN nodes pass: something above the seed is not
             # accessible.
-            "step_open": children("\n                FILTER kh_p.hideChildren != true", open_hop),
+            "step_open": children(open_parent, open_hop),
             # Granted nodes that could be chain-tops, by own groups (``_kh_v3_chain_top_groups``).
             "chain_top_groups": f"""
             LET kh_app = DOCUMENT("{apps}", @app_id)

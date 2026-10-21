@@ -17992,6 +17992,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         state = await self._kh_listing_state_ready()
         lists_placeholders = self._kh_lists_placeholders(flatten=flatten, filters=filters)
+        name_matches: list[str] | None = None
+        if start_is_app and flatten and filters.get("search_query"):
+            search = filters["search_query"]
+            # Shared: a global search runs one page per connector at once, and the
+            # names are matched across the org.
+            name_matches = await (
+                self._kh_v3_shared(("name-matches", org_id, search.lower(), state),
+                                   lambda: self._kh_v3_name_matches(org_id, search, state=state, transaction=None))
+                if transaction is None else self._kh_v3_name_matches(org_id, search, state=state, transaction=transaction)
+            )
 
         def placeholder_test(v: str) -> str:
             return "" if lists_placeholders else f"AND NOT {self._kh_placeholder(v, state=state)}"
@@ -18038,7 +18048,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (kh_x:Record|RecordGroup {id: kh_pid})
             RETURN collect(kh_x) AS kh_placed
         }"""
-        if start_is_app and flatten:
+        if name_matches is not None:
+            scope = self._kh_v3_name_first_scope(state=state)
+        elif start_is_app and flatten:
             # A RECORD_GROUP_LEVEL group wins inside its scope. The walk still
             # reaches it (that is what admits it below) but does not descend it;
             # the declared arms supply what is under it. Both coalesces are
@@ -18335,7 +18347,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         filter_clause = ""
         if conditions:
             filter_clause = "WHERE " + "\n          AND ".join(conditions)
-        if include_total:
+        if include_total and name_matches is not None:
+            # At most _KH_NAME_FIRST_MAX rows reach here, so they are all sorted
+            # and the page sliced off. The ORDER BY + LIMIT below is charged the
+            # whole row list for every row it keeps (745 MB for 201 rows of 5650
+            # matches); the sort is charged each row once.
+            sort = self._kh_v2_sort_cypher(
+                sort_field, sort_dir, where=keyset, reverse=direction == "prev",
+                lowered=state,
+            )
+            tail = f"""
+        {filter_clause}
+        {sort}
+        WITH collect({{id: node.id, nodeType: node.nodeType,
+                       sortKey: sortKey, nullRank: nullRank}}) AS rows
+        WITH rows[0..$kh_limit] AS page, size(rows) AS total,
+             size([n IN rows WHERE n.nodeType = 'record' | 1]) AS nRecord,
+             size([n IN rows WHERE n.nodeType = 'folder' | 1]) AS nFolder,
+             size([n IN rows WHERE n.nodeType = 'recordGroup' | 1]) AS nGroup
+            """
+        elif include_total:
             sort_key = self._kh_v2_sort_cypher(
                 sort_field, sort_dir, where=keyset, reverse=direction == "prev",
                 lowered=state, order=False,
@@ -18552,6 +18583,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "admittedAncestors": admitted_ancestors,
             "declaredScope": declared_scope,
             "kh_placed": placed_ids,
+            "kh_candidates": name_matches or [],
         })
         if probe and listing_by_probe:
             del params["grantedIds"]
@@ -18648,6 +18680,114 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "by_connector": {app_id: granted_ids}, "probe": probe},
             name_parents=name_parents,
         )
+
+    async def _kh_v3_name_matches(
+        self, org_id: str, search: str, *, state: bool, transaction: str | None,
+    ) -> list[str] | None:
+        """The org's live records and groups whose name holds ``search``, read as
+        the listing's name filter reads it, or None past ``_KH_NAME_FIRST_MAX``.
+        Any connector may list them: the walks, not the connectorId, place a node."""
+        name = "kh_c.khSortName" if state else "coalesce(kh_c.name, kh_c.recordName, kh_c.groupName)"
+        rows = await self._kh_query(f"""
+        MATCH (kh_c:Record|RecordGroup)
+        WHERE kh_c.orgId = $org_id
+          AND NOT {self._kh_deleted("kh_c", state=state)}
+          AND toLower({name}) CONTAINS $kh_search
+        WITH kh_c.id AS kh_name_matches LIMIT $kh_cap
+        RETURN collect(kh_name_matches) AS ids
+        """, parameters={
+            "org_id": org_id, "kh_search": search.lower(), "kh_cap": self._KH_NAME_FIRST_MAX + 1,
+        }, txn_id=transaction)
+        ids = (rows or [{}])[0].get("ids") or []
+        return None if len(ids) > self._KH_NAME_FIRST_MAX else ids
+
+    def _kh_v3_name_first_scope(self, *, state: bool) -> str:
+        """``allNodes`` for a name search over the whole connector: the arms of the
+        global flatten, decided for each name match (``$kh_candidates``) by walking
+        up from it, where the flatten walks down from the App to every node.
+
+        A forward path of the flatten, reversed, is a path up from the node it
+        reaches, step for step under the same predicate, so each arm admits the
+        same nodes. The declared groups are few and are found as the flatten finds
+        them. Every walk up ends at an unbound node compared after: with ``(app)``
+        bound in the pattern the planner may start from the App and search its
+        whole tree.
+        """
+        deleted, hides = self._kh_deleted, self._kh_hides
+        hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
+
+        def from_app(v: str, tag: str) -> str:
+            c, p, r, top = (f"kh_w{x}{tag}" for x in ("c", "p", "r", "t"))
+            hop = self._kh_v3_granted_hop(c, p, state=state)
+            declared_stop = (f"NOT ({p}:RecordGroup AND coalesce({p}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
+                             f" AND coalesce({p}.connectorId, '') = app.id)")
+            return (f"EXISTS {{ MATCH ({v}) (({c})<-[{r}:NODE_RELATION]-({p})"
+                    f" WHERE {r}.relationshipType {hierarchy} AND {hop} AND {declared_stop}){{1,50}} ({top})"
+                    f" WHERE {top} = app }}")
+
+        def below_declared(v: str, tag: str) -> str:
+            mg = f"kh_bm{tag}"
+            return (f"({v}:Record AND NOT {deleted(v, state=state)}"
+                    f" AND EXISTS {{ MATCH ({v})-[:BELONGS_TO]->({mg})"
+                    f" WHERE {mg} IN declaredScope AND NOT {hides(mg, state=state)} }})")
+
+        def seed(v: str, tag: str) -> str:
+            return (f"(({v}:Record OR {v}:RecordGroup) AND {v}.connectorId = app.id"
+                    f" AND NOT {deleted(v, state=state)}"
+                    f" AND coalesce({v}.accessRule, 'OPEN') = 'OPEN'"
+                    f" AND {v}.id IN $grantedIds"
+                    f" AND NOT {v} IN declaredScope"
+                    f" AND NOT {below_declared(v, tag)}"
+                    f" AND NOT {from_app(v, tag)}"
+                    f" AND NOT {self._kh_v3_hidden_above(v, tag + 's')}"
+                    f" AND NOT {self._kh_v3_in_hidden_group(v, tag + 'm')})")
+
+        def below_seed(v: str, tag: str) -> str:
+            c, p, r, s = (f"kh_s{x}{tag}" for x in ("c", "p", "r", "s"))
+            return (f"EXISTS {{ MATCH ({v}) (({c})<-[{r}:NODE_RELATION]-({p})"
+                    f" WHERE {r}.relationshipType {hierarchy}"
+                    f" AND NOT {deleted(c, state=state)} AND NOT {hides(p, state=state)}"
+                    f" AND coalesce({c}.accessRule, 'OPEN') = 'OPEN'"
+                    f" AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds)){{1,50}} ({s})"
+                    f" WHERE {seed(s, tag + 'x')} }}")
+
+        return f"""
+        CALL (app, appOpensEverything) {{
+            MATCH (dg:RecordGroup)
+            WHERE dg.connectorId = app.id
+              AND NOT {deleted("dg", state=state)}
+              AND NOT {hides("dg", state=state)}
+              AND dg.permissionModel = 'RECORD_GROUP_LEVEL'
+              AND (dg.id IN $grantedIds OR {from_app("dg", "g")})
+              AND NOT {self._kh_v3_hidden_above("dg", "d")}
+            RETURN collect(DISTINCT dg) AS declared
+        }}
+
+        CALL (declared) {{
+            UNWIND declared AS db
+            MATCH (db)
+                  ((pb)-[kh_rb:NODE_RELATION]->(cb:RecordGroup)
+                   WHERE kh_rb.relationshipType {hierarchy}
+                     AND NOT {deleted("cb", state=state)}
+                     AND NOT {hides("pb", state=state)}
+                  ){{0,50}} (nb:RecordGroup)
+            RETURN collect(DISTINCT nb) AS declaredScope
+        }}
+
+        CALL (app, appOpensEverything, declaredScope) {{
+            UNWIND $kh_candidates AS kh_cid
+            MATCH (kh_n:Record|RecordGroup {{id: kh_cid}})
+            WHERE (appOpensEverything AND kh_n:Record AND NOT {deleted("kh_n", state=state)}
+                   AND EXISTS {{ (kh_n)-[:BELONGS_TO]->(app) }})
+               OR {from_app("kh_n", "a")}
+               OR kh_n IN declaredScope
+               OR {below_declared("kh_n", "b")}
+               OR {seed("kh_n", "c")}
+               OR {below_seed("kh_n", "e")}
+            RETURN collect(DISTINCT kh_n) AS allNodes
+        }}
+        WITH app, allNodes
+            """
 
     async def _kh_scope_mode(self) -> str:
         """``on``, ``verify`` (run both, log any difference, answer with the full query) or ``off``.
