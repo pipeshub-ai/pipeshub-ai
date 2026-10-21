@@ -730,7 +730,7 @@ cases:
 
   # --- The 2026 pricing strategy ----------------------------------------------------
   - id: pricing-platform-plus-usage
-    about: Bob's agent on 2026-10-19 says "platform-plus-usage model", "base price" and "usage bands"
+    about: Bob's agent's answer on 2026-10-19, as the nightly logged it (bold markers removed)
     answer: |
       In the Acme Corp demo data, the 2026 enterprise pricing strategy is:
       - Shift from per-seat pricing to a platform-plus-usage model.
@@ -739,6 +739,15 @@ cases:
     claims:
       - state: "Enterprise pricing for 2026 moves from per-seat pricing to a platform fee plus usage bands."
         expect: supported
+      - state: "Enterprise pricing for 2026 starts at $48,000 a year."
+        expect: supported
+
+  - id: pricing-ten-times-the-fee
+    about: "$480,000 holds \"$48\" but is not the fee"
+    answer: "Enterprise moves to a platform fee of $480,000 a year plus usage bands."
+    claims:
+      - state: "Enterprise pricing for 2026 starts at $48,000 a year."
+        expect: contradicted
 
   - id: pricing-seat-discounts
     about: the same seat counts as volume discounts on per-seat pricing

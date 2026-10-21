@@ -135,7 +135,11 @@ def test_the_installer_is_scored_on_its_own_groups_not_alices(fx: dict, qid: str
         "Enterprise moves to a $48,000 annual platform fee.",
         "A $48k platform fee covering 250 seats.",
         # Bob's agent on 2026-10-19: right, without the words "platform fee".
-        "Shift from per-seat pricing to a platform-plus-usage model. Base price: $48,000 annually.",
+        (
+            "Shift from per-seat pricing to a platform-plus-usage model. Base price: $48,000 annually, "
+            "covering up to 250 seats. Usage bands: pricing tiers are structured around 250, 1,000, "
+            "and 5,000 seats."
+        ),
     ],
 )
 def test_q5_takes_any_wording_of_the_pricing_model_the_judge_confirms(fx: dict, answer: str) -> None:

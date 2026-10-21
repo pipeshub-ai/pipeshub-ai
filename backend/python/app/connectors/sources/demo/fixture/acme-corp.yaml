@@ -1625,10 +1625,13 @@ questions:
     must_not_cite: [gh-pr-482]
     # "$48", not "48": a bare "48" matches PR #482, the distractor above.
     answer_must_mention: ["$48"]
-    # A fact, not the phrase: on 2026-10-19 Bob's agent answered "a platform-plus-usage model,
-    # base price $48,000 annually" and failed only for not saying "platform fee".
+    # Facts, not phrases: on 2026-10-19 Bob's agent answered "Shift from per-seat pricing to a
+    # platform-plus-usage model. Base price: $48,000 annually, covering up to 250 seats. Usage
+    # bands: pricing tiers are structured around 250, 1,000, and 5,000 seats." and failed only
+    # for not saying "platform fee". The amount is judged too: "$48" alone also matches "$480".
     answer_must_state:
       - "Enterprise pricing for 2026 moves from per-seat pricing to a platform fee plus usage bands."
+      - "Enterprise pricing for 2026 starts at $48,000 a year."
     # For Alice, "none" means: no restricted record cited and the answer says it found nothing.
     # Citing an unrestricted near-miss (the release notes) while saying so is correct behaviour.
     restricted: [drive-pricing-2026, slack-pricing-0402]
