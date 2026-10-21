@@ -113,6 +113,39 @@ class TestNormalizeCornerCoordinates:
         assert result[2] == pytest.approx([1.0, 0.0])
         assert result[3] == pytest.approx([0.0, 0.0])
 
+    def test_topleft_corners_keep_their_y(self):
+        # A Docling PPTX box: top edge 200 and bottom edge 400 from the slide's top.
+        corners = transform_bbox_to_corners(
+            {"l": 100, "t": 200, "r": 300, "b": 400, "coord_origin": "TOPLEFT"}
+        )
+        result = normalize_corner_coordinates(corners, 1000.0, 800.0, "TOPLEFT")
+        assert result == [pytest.approx(c) for c in [[0.1, 0.25], [0.3, 0.25], [0.3, 0.5], [0.1, 0.5]]]
+
+    def test_topleft_and_bottomleft_boxes_for_one_region_agree(self):
+        # The same region tagged both ways: 200..400 from the top of an 800-high page
+        # is 600..400 from its bottom.
+        top_left = normalize_corner_coordinates(
+            transform_bbox_to_corners({"l": 100, "t": 200, "r": 300, "b": 400}),
+            1000.0, 800.0, "TOPLEFT",
+        )
+        bottom_left = normalize_corner_coordinates(
+            transform_bbox_to_corners({"l": 100, "t": 600, "r": 300, "b": 400}),
+            1000.0, 800.0, "BOTTOMLEFT",
+        )
+        assert top_left == [pytest.approx(c) for c in bottom_left]
+
+    def test_origin_enum_member_is_read_by_value(self):
+        class _Origin:
+            value = "TOPLEFT"
+
+        result = normalize_corner_coordinates([[0, 200]], 100.0, 800.0, _Origin())
+        assert result[0] == pytest.approx([0.0, 0.25])
+
+    @pytest.mark.parametrize("origin", [None, "", "BOTTOMLEFT", "bottomleft", "unknown"])
+    def test_missing_or_other_origin_is_read_as_bottomleft(self, origin):
+        result = normalize_corner_coordinates([[0, 200]], 100.0, 800.0, origin)
+        assert result[0] == pytest.approx([0.0, 0.75])
+
 
 # ---------------------------------------------------------------------------
 # denormalize_corner_coordinates

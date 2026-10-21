@@ -182,7 +182,9 @@ class DoclingDocToBlocksConverter():
                         if page_bbox and page_width > 0 and page_height > 0:
                             try:
                                 page_corners = transform_bbox_to_corners(page_bbox)
-                                normalized_corners = normalize_corner_coordinates(page_corners, page_width, page_height)
+                                normalized_corners = normalize_corner_coordinates(
+                                    page_corners, page_width, page_height, page_bbox.get("coord_origin")
+                                )
                                 # Convert normalized corners to Point objects
                                 bounding_boxes = [Point(x=corner[0], y=corner[1]) for corner in normalized_corners]
                                 block.citation_metadata.bounding_boxes = bounding_boxes

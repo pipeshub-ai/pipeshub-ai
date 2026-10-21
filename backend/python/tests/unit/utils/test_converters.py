@@ -491,6 +491,34 @@ class TestEnrichMetadata:
         assert len(block.citation_metadata.bounding_boxes) == 4
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bbox",
+        [
+            # PDF pages: y counts up from the bottom, so the top edge is the larger t.
+            {"l": 61.2, "t": 594.0, "r": 306.0, "b": 396.0, "coord_origin": "BOTTOMLEFT"},
+            # PPTX slides since Docling 2.133: y counts down from the top.
+            {"l": 61.2, "t": 198.0, "r": 306.0, "b": 396.0, "coord_origin": "TOPLEFT"},
+        ],
+    )
+    async def test_box_lands_top_first_whichever_origin_docling_uses(self, converter, bbox):
+        """Both origins give the same top-left-origin box, top corners first."""
+        doc_dict = {
+            "body": {"children": [{DOCLING_REF_NODE: "#/texts/0"}]},
+            "texts": [
+                {
+                    "self_ref": "#/texts/0",
+                    "text": "Upper half, left of centre",
+                    "prov": [{"page_no": 1, "bbox": bbox}],
+                }
+            ],
+            "pages": {"1": {"size": {"width": 612, "height": 792}}},
+        }
+        result = await converter._process_content_in_order(_make_doc(doc_dict))
+
+        points = [(p.x, p.y) for p in result.blocks[0].citation_metadata.bounding_boxes]
+        assert points == [pytest.approx(p) for p in [(0.1, 0.25), (0.5, 0.25), (0.5, 0.5), (0.1, 0.5)]]
+
+    @pytest.mark.asyncio
     async def test_default_page_number_fallback(self, converter):
         """When prov has no page_no, default_page_number is used."""
         doc_dict = {
