@@ -881,6 +881,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Connector OAuth app repair failed: {e}", exc_info=True)
 
+    # Before syncs resume: S3 and MinIO no longer read the created filter, so a saved one must move first.
+    try:
+        from app.migrations.s3_created_date_filter_migration import (
+            run_s3_created_date_filter_migration,
+        )
+
+        await run_s3_created_date_filter_migration(
+            app_container.config_service(), graph_provider, logger
+        )
+    except Exception as e:
+        logger.error(f"❌ S3 created date filter migration failed: {e}", exc_info=True)
+
     # Before any connector reads its settings, so none crawls with a value the form doesn't show.
     try:
         from app.migrations.web_browser_identity_migration import (

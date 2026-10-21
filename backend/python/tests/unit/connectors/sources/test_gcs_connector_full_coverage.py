@@ -1589,7 +1589,8 @@ class TestFolderFilter:
         assert [c.args[0]["Key"] for c in connector._process_gcs_object.await_args_list] == ["b.pdf"]
         saved = connector.record_sync_point.saved
         assert not any("last_sync_time" in v for v in saved.values())
-        assert {"page_token": "t1"} in saved.values()
+        assert saved["FILE/bucket/b1"]["page_token"] == "t1"
+        assert isinstance(saved["FILE/bucket/b1"]["listing_started_at"], int)
 
     @pytest.mark.asyncio
     async def test_a_failed_object_clears_the_resume_token(self, connector):
@@ -1599,7 +1600,8 @@ class TestFolderFilter:
         await connector._sync_bucket("b1")
 
         saved = connector.record_sync_point.saved
-        assert saved["FILE/bucket/b1"] == {"page_token": None}
+        assert saved["FILE/bucket/b1"]["page_token"] is None
+        assert "last_sync_time" not in saved["FILE/bucket/b1"]
 
     @pytest.mark.asyncio
     async def test_exclude_skips_the_folder(self, connector):
@@ -1732,7 +1734,9 @@ class TestFailedObjectCheckpoint:
         with pytest.raises(RuntimeError, match="db"):
             await self._sync(connector)
 
-        assert connector.record_sync_point.saved["FILE/bucket/b1"] == {"page_token": None}
+        saved = connector.record_sync_point.saved["FILE/bucket/b1"]
+        assert saved["page_token"] is None
+        assert "last_sync_time" not in saved
 
     @pytest.mark.asyncio
     async def test_a_failed_token_clear_does_not_hide_the_save_error(self, connector):

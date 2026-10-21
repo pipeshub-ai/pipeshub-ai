@@ -328,3 +328,143 @@ class TestS3Client:
                 await S3Client.build_from_services(
                     logger, mock_config_service, "inst-1"
                 )
+
+
+# ---------------------------------------------------------------------------
+# IAM role (STS AssumeRole) auth
+# ---------------------------------------------------------------------------
+
+
+class _FakeSTS:
+    """STS client stand-in: hands out numbered temporary credentials."""
+
+    def __init__(self, expiration) -> None:
+        self.expiration = expiration
+        self.calls = []
+
+    async def __aenter__(self) -> "_FakeSTS":
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+    async def assume_role(self, **kwargs) -> dict:
+        self.calls.append(kwargs)
+        n = len(self.calls)
+        return {
+            "Credentials": {
+                "AccessKeyId": f"ASIA{n}",
+                "SecretAccessKey": f"TMPSECRET{n}",
+                "SessionToken": f"TOKEN{n}",
+                "Expiration": self.expiration,
+            }
+        }
+
+
+def _patch_sts(fake_sts) -> tuple:
+    """Route only the base-key session (the STS caller) to the fake; keep real sessions otherwise."""
+    from app.sources.client.s3 import s3 as s3_module
+
+    real_create = s3_module.create_aio_session
+
+    def factory(access_key_id, secret_access_key, region_name) -> object:
+        if not access_key_id:
+            return real_create(access_key_id, secret_access_key, region_name)
+        base = MagicMock()
+        base.base_args = (access_key_id, secret_access_key, region_name)
+        base.create_client.return_value = fake_sts
+        factory.base_sessions.append(base)
+        return base
+
+    factory.base_sessions = []
+    return patch("app.sources.client.s3.s3.create_aio_session", side_effect=factory), factory
+
+
+class TestS3AssumeRole:
+    ROLE_CONFIG = {
+        "auth": {
+            "authType": "IAM_ROLE",
+            "accessKey": "AKIDBASE",
+            "secretKey": "BASESECRET",
+            "roleArn": "arn:aws:iam::123456789012:role/pipeshub-reader",
+            "externalId": "ext-123",
+            "region": "eu-west-1",
+        }
+    }
+
+    @pytest.mark.asyncio
+    async def test_build_from_services_assumes_role_and_uses_temporary_credentials(
+        self, logger, mock_config_service
+    ) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        mock_config_service.get_config = AsyncMock(return_value=self.ROLE_CONFIG)
+        fake_sts = _FakeSTS(datetime.now(timezone.utc) + timedelta(hours=1))
+        patcher, factory = _patch_sts(fake_sts)
+        with patcher:
+            client = await S3Client.build_from_services(logger, mock_config_service, "conn-42")
+            session = client.get_session()
+            frozen = await (await session.get_credentials()).get_frozen_credentials()
+
+        assert fake_sts.calls == [{
+            "RoleArn": "arn:aws:iam::123456789012:role/pipeshub-reader",
+            "RoleSessionName": "pipeshub-s3-conn-42",
+            "ExternalId": "ext-123",
+        }]
+        # STS is called with the base key only; S3 calls sign with the temporary credentials.
+        assert factory.base_sessions[0].base_args[0] == "AKIDBASE"
+        assert factory.base_sessions[0].create_client.call_args.args == ("sts",)
+        assert (frozen.access_key, frozen.secret_key, frozen.token) == ("ASIA1", "TMPSECRET1", "TOKEN1")
+        assert session.get_config_variable("region") == "eu-west-1"
+
+    @pytest.mark.asyncio
+    async def test_assume_role_without_external_id_omits_it(self, logger, mock_config_service) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        auth = {k: v for k, v in self.ROLE_CONFIG["auth"].items() if k != "externalId"}
+        mock_config_service.get_config = AsyncMock(return_value={"auth": auth})
+        fake_sts = _FakeSTS(datetime.now(timezone.utc) + timedelta(hours=1))
+        patcher, _ = _patch_sts(fake_sts)
+        with patcher:
+            client = await S3Client.build_from_services(logger, mock_config_service, "conn-42")
+            await (await client.get_session().get_credentials()).get_frozen_credentials()
+
+        assert "ExternalId" not in fake_sts.calls[0]
+
+    @pytest.mark.asyncio
+    async def test_credentials_near_expiry_are_refreshed_on_next_call(
+        self, logger, mock_config_service
+    ) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        t0 = datetime.now(timezone.utc)
+        mock_config_service.get_config = AsyncMock(return_value=self.ROLE_CONFIG)
+        fake_sts = _FakeSTS(t0 + timedelta(hours=1))
+        patcher, _ = _patch_sts(fake_sts)
+        with patcher:
+            client = await S3Client.build_from_services(logger, mock_config_service, "conn-42")
+            creds = await client.get_session().get_credentials()
+            creds._time_fetcher = lambda: t0
+            first = await creds.get_frozen_credentials()
+            again = await creds.get_frozen_credentials()
+            # 5 minutes before expiry is inside botocore's mandatory refresh window.
+            creds._time_fetcher = lambda: t0 + timedelta(minutes=55)
+            refreshed = await creds.get_frozen_credentials()
+
+        assert first.access_key == again.access_key == "ASIA1"
+        assert refreshed.access_key == "ASIA2"
+        assert len(fake_sts.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_build_from_services_iam_role_requires_role_arn(self, logger, mock_config_service) -> None:
+        auth = {k: v for k, v in self.ROLE_CONFIG["auth"].items() if k != "roleArn"}
+        mock_config_service.get_config = AsyncMock(return_value={"auth": auth})
+        with pytest.raises(ValueError, match="Role ARN"):
+            await S3Client.build_from_services(logger, mock_config_service, "conn-42")
+
+    @pytest.mark.asyncio
+    async def test_build_from_services_iam_role_requires_base_key(self, logger, mock_config_service) -> None:
+        auth = {k: v for k, v in self.ROLE_CONFIG["auth"].items() if k != "secretKey"}
+        mock_config_service.get_config = AsyncMock(return_value={"auth": auth})
+        with pytest.raises(ValueError, match="Access key ID and secret"):
+            await S3Client.build_from_services(logger, mock_config_service, "conn-42")

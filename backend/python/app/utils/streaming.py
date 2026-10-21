@@ -43,6 +43,7 @@ from app.utils.llm import LLMUnavailableError
 from app.utils.logger import create_logger
 from app.utils.message_chunks import merge_message_chunks_off_loop
 from app.utils.opik import get_llm_invoke_config, get_opik_tracer
+from app.utils.url_redaction import redact_urls_in_text
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
 INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
@@ -158,8 +159,7 @@ async def stream_content(
     log_parts.append(f"File path: {file_path_info}")
     log_prefix = " | ".join(log_parts)
 
-    # Log truncated presigned URL for debugging (first 150 chars to see structure)
-    logger.debug(f"Fetching presigned URL (truncated): {signed_url[:150]}...")
+    logger.debug(f"Fetching presigned URL: {file_path_info}")
 
     try:
         # Use a timeout to prevent hanging requests
@@ -179,8 +179,8 @@ async def stream_content(
                     try:
                         error_body = await response.text()
                         if error_body:
-                            # Truncate long error messages
-                            error_details = f" | Error details: {error_body[:500]}"
+                            # A source may echo the presigned URL, whose query is a credential.
+                            error_details = f" | Error details: {redact_urls_in_text(error_body)[:500]}"
                     except Exception:
                         pass
 

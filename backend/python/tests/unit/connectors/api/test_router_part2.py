@@ -2094,6 +2094,30 @@ class TestGetConnectorInstanceFilters:
         assert result["success"] is True
         assert "filterOptions" in result
 
+    async def test_basic_auth_passes_the_saved_settings(self) -> None:
+        from app.connectors.api.router import get_connector_instance_filters
+
+        req = _make_request(is_admin=True)
+        instance = _make_instance(scope="team", created_by="u1", auth_type="BASIC_AUTH")
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(return_value=instance)
+        req.app.state.connector_registry.get_connector_metadata = AsyncMock(
+            return_value={"config": {"filters": {"endpoints": {}}}}
+        )
+        config_service = req.app.container.config_service()
+        config_service.get_config = AsyncMock(return_value={"auth": {"server": "fs01", "username": "u"}})
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router.resolve_config_service", return_value=config_service), \
+             patch(
+                 "app.connectors.api.router._get_connector_filter_options_from_config",
+                 new_callable=AsyncMock,
+                 return_value={},
+             ) as options:
+            result = await get_connector_instance_filters("c1", req, graph_provider=AsyncMock())
+
+        assert result["success"] is True
+        assert options.await_args.args[2] == {"server": "fs01", "username": "u"}
+
 
 # ===========================================================================
 # Route handler tests: save_connector_instance_filters

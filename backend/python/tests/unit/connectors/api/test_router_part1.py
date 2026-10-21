@@ -3560,6 +3560,24 @@ class TestCreateConnectorInstance:
             await create_connector_instance(request, gp)
         assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
+    @pytest.mark.parametrize("auth", ["secret", ["a"], 5])
+    async def test_auth_that_is_not_an_object_is_a_400_before_oauth_checks(self, auth: object) -> None:
+        from app.connectors.api.router import create_connector_instance
+
+        gp = AsyncMock()
+        container = MagicMock()
+        container.logger = MagicMock(return_value=MagicMock())
+        container.config_service = MagicMock(return_value=AsyncMock())
+        request = _mock_request(
+            container=container,
+            body={"connectorType": "GOOGLE_DRIVE", "instanceName": "drive", "authType": "OAUTH", "config": {"auth": auth}},
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await create_connector_instance(request, gp)
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert exc_info.value.detail == "Auth configuration must be an object."
+
     async def test_invalid_scope_raises_400(self):
         from app.connectors.api.router import create_connector_instance
 

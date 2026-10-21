@@ -356,7 +356,7 @@ async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[
             deployment's network.
     """
     # model_egress imports this module.
-    from app.utils.model_egress import address_refusal, parse_answers
+    from app.utils.model_egress import parse_answers
 
     allow_private = not private_addresses_blocked()
     private_reason = (
@@ -368,10 +368,7 @@ async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[
         if not allow_private:
             raise HostCheckError(private_reason)
         return []
-    if host.lower().removesuffix(".") == "metadata.google.internal":
-        raise HostCheckError(f'"{host}" is a cloud metadata address, which is never allowed.')
-    if not allow_private and _hostname_is_blocked(host):
-        raise HostCheckError(private_reason)
+    _check_hostname(host, allow_private=allow_private)
 
     ip = literal_ip(host)
     if ip is not None:
@@ -389,9 +386,50 @@ async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[
         addresses = parse_answers(infos)
         if not addresses:
             raise HostCheckError(f'Could not find a server named "{host}". Check the host name.')
+    check_addresses(host, addresses)
+    return addresses
+
+
+def check_addresses(host: str, addresses: list[IPAddress]) -> None:
+    """Apply ``vetted_addresses``' rule to addresses already looked up for ``host``.
+
+    Raises:
+        HostCheckError: when any of them may not be connected to.
+    """
+    # model_egress imports this module.
+    from app.utils.model_egress import address_refusal
+
+    allow_private = not private_addresses_blocked()
+    _check_hostname(host, allow_private=allow_private)
     reason = address_refusal(addresses, allow_private=allow_private)
     if reason is not None:
         raise HostCheckError(f'"{host}" is {reason}.')
+
+
+def _check_hostname(host: str, *, allow_private: bool) -> None:
+    if host.lower().removesuffix(".") == "metadata.google.internal":
+        raise HostCheckError(f'"{host}" is a cloud metadata address, which is never allowed.')
+    if not allow_private and _hostname_is_blocked(host):
+        raise HostCheckError(
+            f'"{host}" is a private or internal address, which this deployment does not allow '
+            f"({PRIVATE_ADDRESS_SWITCH_ENV})."
+        )
+
+
+def resolved_addresses(host: str) -> list[IPAddress]:
+    """Every address ``host`` resolves to; empty when it doesn't resolve."""
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError):
+        return []
+    addresses: list[IPAddress] = []
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if ip not in addresses:
+            addresses.append(ip)
     return addresses
 
 

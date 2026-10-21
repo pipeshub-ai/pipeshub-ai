@@ -635,7 +635,7 @@ class TestGraphTransactionStore:
     @pytest.mark.asyncio
     async def test_get_user_by_user_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_user_by_user_id("user1")
-        mock_graph_provider.get_user_by_user_id.assert_awaited_once_with("user1")
+        mock_graph_provider.get_user_by_user_id.assert_awaited_once_with("user1", raise_on_error=False)
 
     @pytest.mark.asyncio
     async def test_delete_record_by_external_id(self, tx_store, mock_graph_provider) -> None:

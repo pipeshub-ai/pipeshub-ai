@@ -259,6 +259,118 @@ class TestSmbConnectorInit:
         assert smb_connector.creator_email == "user@test.com"
 
 
+CHECK_AUTH = {"server": "fs01.example", "port": "445", "username": "u", "password": "p", "share": SHARE}
+
+
+class TestSmbConnectorPorts:
+    """Members create personal connectors; only admins create team ones."""
+
+    @patch("app.connectors.sources.smb.connector.SmbClient.build_from_services", new_callable=AsyncMock)
+    async def test_a_personal_connector_on_another_port_is_refused_before_connecting(self, mock_build, smb_connector):
+        smb_connector.config_service.get_config = AsyncMock(
+            return_value={"auth": {"server": "h", "username": "u", "password": "p", "port": "3000", "share": SHARE}}
+        )
+
+        assert await smb_connector.init() is False
+
+        mock_build.assert_not_awaited()
+        assert smb_connector.notify.await_args.kwargs["title"] == "SMB: Port not allowed"
+
+    @pytest.mark.parametrize("port", ["445", "139", "", None])
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    @patch("app.connectors.sources.smb.connector.SmbClient.build_from_services", new_callable=AsyncMock)
+    async def test_a_personal_connector_on_a_standard_port_connects(self, mock_build, mock_filters, port, smb_connector):
+        mock_filters.return_value = _empty_filters()
+        smb_connector.config_service.get_config = AsyncMock(
+            return_value={"auth": {"server": "h", "username": "u", "password": "p", "port": port, "share": SHARE}}
+        )
+
+        assert await smb_connector.init() is True
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    @patch("app.connectors.sources.smb.connector.SmbClient.build_from_services", new_callable=AsyncMock)
+    async def test_a_team_connector_may_use_any_port(
+        self, mock_build, mock_filters, mock_logger, mock_processor, mock_data_store_provider, mock_config_service
+    ):
+        mock_filters.return_value = _empty_filters()
+        subject = _connector(
+            mock_logger, mock_processor, mock_data_store_provider, mock_config_service, scope=ConnectorScope.TEAM.value
+        )
+        subject.config_service.get_config = AsyncMock(
+            return_value={"auth": {"server": "h", "username": "u", "password": "p", "port": "2445", "share": SHARE}}
+        )
+
+        assert await subject.init() is True
+
+
+CHECK_AUTH = {"server": "fs01.example", "port": "445", "username": "u", "password": "p", "share": SHARE}
+
+
+class TestSmbConnectionCheck:
+    def test_smb_offers_a_connection_check(self):
+        assert SmbConnector.supports_connection_check()
+
+    def test_auth_settings_are_checked_before_a_save(self):
+        assert SmbConnector.auth_config_problems({**CHECK_AUTH, "port": "99999"}) == [
+            "Port must be a whole number from 1 to 65535."
+        ]
+
+    async def test_lists_the_share_and_closes_the_connection(self, mock_logger):
+        with patch.object(SmbClient, "list_directory", return_value=[]) as listing, patch.object(
+            SmbClient, "close"
+        ) as close:
+            result = await SmbConnector.check_connection(CHECK_AUTH, mock_logger)
+
+        assert result.success
+        listing.assert_called_once_with(SHARE, "")
+        close.assert_called_once()
+
+    async def test_a_login_failure_is_reported(self, mock_logger):
+        with patch.object(SmbClient, "list_directory", side_effect=NetworkShareAuthError("STATUS_LOGON_FAILURE")), patch.object(
+            SmbClient, "close"
+        ):
+            result = await SmbConnector.check_connection(CHECK_AUTH, mock_logger)
+
+        assert not result.success
+        assert "STATUS_LOGON_FAILURE" in result.message
+
+    async def test_a_protocol_error_outside_our_types_is_reported(self, mock_logger):
+        # smbprotocol's LogonFailure, raised by register_session for a wrong password, is one.
+        class LogonFailure(Exception):
+            pass
+
+        with patch.object(SmbClient, "list_directory", side_effect=LogonFailure("STATUS_LOGON_FAILURE")), patch.object(
+            SmbClient, "close"
+        ):
+            result = await SmbConnector.check_connection(CHECK_AUTH, mock_logger)
+
+        assert not result.success
+        assert result.message.startswith(f"Could not open share {SHARE}")
+
+    async def test_a_server_that_cannot_be_reached_is_reported(self, mock_logger):
+        with patch.object(SmbClient, "list_directory", side_effect=ValueError("Failed to connect: timed out")), patch.object(
+            SmbClient, "close"
+        ):
+            result = await SmbConnector.check_connection(CHECK_AUTH, mock_logger)
+
+        assert not result.success
+
+    async def test_invalid_settings_are_not_tried(self, mock_logger):
+        with patch.object(SmbClient, "list_directory") as listing:
+            result = await SmbConnector.check_connection({**CHECK_AUTH, "server": ""}, mock_logger)
+
+        assert result.message == "Server is required."
+        listing.assert_not_called()
+
+    async def test_only_standard_ports_are_tried(self, mock_logger):
+        with patch.object(SmbClient, "list_directory") as listing:
+            result = await SmbConnector.check_connection({**CHECK_AUTH, "port": "3000"}, mock_logger)
+
+        assert not result.success
+        assert "445 or 139" in result.message
+        listing.assert_not_called()
+
+
 class TestSmbConnectorConnection:
     async def test_test_connection_success(self, smb_connector):
         ds = _ds(tree={(SHARE, ""): [_entry("a.txt")]})

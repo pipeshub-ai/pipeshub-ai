@@ -5015,9 +5015,9 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_users(self.org_id, active=True)
 
-    async def get_user_by_user_id(self, user_id: str) -> User | None:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> User | None:
         async with self.data_store_provider.transaction() as tx_store:
-            raw = await tx_store.get_user_by_user_id(user_id)
+            raw = await tx_store.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
         if not raw:
             return None
         return User.from_arango_user(raw) if isinstance(raw, dict) else raw
