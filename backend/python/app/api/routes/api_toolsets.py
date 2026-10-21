@@ -80,7 +80,7 @@ def _store(request: Request) -> ApiToolsetStore:
 async def _instance_or_404(store: ApiToolsetStore, org_id: str, instance_id: str) -> ApiToolsetInstance:
     instance = await store.get_instance(org_id, instance_id)
     if instance is None:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="API toolset not found.")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="API action not found.")
     return instance
 
 
@@ -153,7 +153,7 @@ class SpecUpload(ApiToolsetModel):
 async def validate_api_toolset_spec(request: Request, body: SpecUpload) -> dict[str, Any]:
     """Compile an uploaded spec without saving anything: the operations, auth schemes and warnings."""
     _get_user_context(request)
-    await _require_admin(request, "add API toolsets")
+    await _require_admin(request, "add API actions")
     try:
         compiled = compile_spec(body.spec.encode())
     except SpecError as e:
@@ -207,7 +207,7 @@ async def get_api_toolset(request: Request, instance_id: str) -> dict[str, Any]:
 @router.get("/instances/{instance_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_api_toolset_config(request: Request, instance_id: str) -> dict[str, Any]:
     """The toolset's settings, for the admin page."""
-    await _require_admin(request, "see an API toolset's settings")
+    await _require_admin(request, "see an API action's settings")
     user_id, org_id = _get_user_context(request)
     store = _store(request)
     return await _admin_view(store, await _instance_or_404(store, org_id, instance_id), user_id)
@@ -239,13 +239,13 @@ async def _save(request: Request, body: InstanceRequest, instance_id: str, exist
 
 @router.post("/instances", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def create_api_toolset(request: Request, body: InstanceRequest) -> dict[str, Any]:
-    await _require_admin(request, "add API toolsets")
+    await _require_admin(request, "add API actions")
     return await _save(request, body, uuid.uuid4().hex, None)
 
 
 @router.put("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def update_api_toolset(request: Request, instance_id: str, body: InstanceRequest) -> dict[str, Any]:
-    await _require_admin(request, "change API toolsets")
+    await _require_admin(request, "change API actions")
     _, org_id = _get_user_context(request)
     existing = await _instance_or_404(_store(request), org_id, instance_id)
     return await _save(request, body, instance_id, existing)
@@ -253,7 +253,7 @@ async def update_api_toolset(request: Request, instance_id: str, body: InstanceR
 
 @router.delete("/instances/{instance_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
 async def delete_api_toolset(request: Request, instance_id: str) -> dict[str, Any]:
-    await _require_admin(request, "delete API toolsets")
+    await _require_admin(request, "delete API actions")
     _, org_id = _get_user_context(request)
     store = _store(request)
     instance = await _instance_or_404(store, org_id, instance_id)
@@ -275,7 +275,7 @@ async def _assert_not_in_use(request: Request, instance: ApiToolsetInstance) -> 
         logger.error("Could not check which agents use API toolset %s: %s", instance.id, e)
         raise HTTPException(
             status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-            detail="Couldn't check which agents use this toolset, so it wasn't deleted. Try again.",
+            detail="Couldn't check which agents use this API action, so it wasn't deleted. Try again.",
         ) from e
     if agent_names:
         shown = ", ".join(f"'{name}'" for name in agent_names[:_MAX_AGENT_NAMES_SHOWN])
@@ -297,13 +297,13 @@ async def _own_credential_toolset(request: Request, instance_id: str) -> tuple[A
     store = _store(request)
     instance = await _instance_or_404(store, org_id, instance_id)
     if instance.use_shared_credential:
-        raise _bad_request(service.ApiToolsetError("An administrator manages this toolset's shared credential."))
+        raise _bad_request(service.ApiToolsetError("An administrator manages this API action's shared credential."))
     return store, instance, user_id
 
 
 async def _shared_credential_toolset(request: Request, instance_id: str) -> tuple[ApiToolsetStore, ApiToolsetInstance, str]:
     """A toolset whose one shared credential an administrator manages."""
-    await _require_admin(request, "manage a toolset's shared credential")
+    await _require_admin(request, "manage an API action's shared credential")
     user_id, org_id = _get_user_context(request)
     store = _store(request)
     instance = await _instance_or_404(store, org_id, instance_id)

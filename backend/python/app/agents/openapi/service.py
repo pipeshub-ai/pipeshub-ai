@@ -89,7 +89,7 @@ def build_instance(
     """A validated instance record. Raises `ApiToolsetError` with what to fix."""
     name = data.name.strip()
     if not name:
-        raise ApiToolsetError("Give the toolset a name.")
+        raise ApiToolsetError("Give the API action a name.")
     if data.spec is not None:
         try:
             compiled = compile_spec(data.spec)
@@ -230,8 +230,8 @@ def checked_credentials(scheme: AuthScheme, submitted: ApiToolsetCredentials) ->
         return ApiToolsetCredentials(client_id=need(submitted.client_id, "client ID"),
                                      client_secret=(submitted.client_secret or "").strip() or None)
     if scheme.type is AuthType.OAUTH2_AUTHORIZATION_CODE:
-        raise ApiToolsetError("This toolset uses OAuth sign-in. Sign in instead of entering credentials.")
-    raise ApiToolsetError("This toolset needs no credentials.")
+        raise ApiToolsetError("This API action uses OAuth sign-in. Sign in instead of entering credentials.")
+    raise ApiToolsetError("This API action needs no credentials.")
 
 
 async def is_connected(store: ApiToolsetStore, instance: ApiToolsetInstance, user_id: str) -> bool:
@@ -297,7 +297,7 @@ async def test_call(
     if tool_name:
         op = next((o for o in instance.operations if o.tool_name == tool_name), None)
         if op is None:
-            raise ApiToolsetError(f"The toolset has no operation {tool_name}.")
+            raise ApiToolsetError(f"The API action has no operation {tool_name}.")
         if op.kind != "read":
             raise ApiToolsetError(f"{tool_name} changes data, so it can't be used to test the connection. Choose a read.")
     else:
@@ -324,7 +324,7 @@ async def start_sign_in(
     """The URL to send the browser to. The sign-in is remembered for 10 minutes."""
     scheme = instance.auth_scheme
     if scheme.type is not AuthType.OAUTH2_AUTHORIZATION_CODE:
-        raise ApiToolsetError("This toolset doesn't use OAuth sign-in.")
+        raise ApiToolsetError("This API action doesn't use OAuth sign-in.")
     oauth_app = await store.get_oauth_client(instance.id)
     if oauth_app is None:
         raise ApiToolsetError("An administrator has to add the OAuth app's client ID first.")
@@ -372,7 +372,7 @@ async def finish_sign_in(
     instance = await store.get_instance(org_id, str(record["instanceId"]))
     oauth_app = await store.get_oauth_client(str(record["instanceId"])) if instance else None
     if instance is None or oauth_app is None:
-        raise ApiToolsetError("The toolset was changed or removed during sign-in. Start the sign-in again.")
+        raise ApiToolsetError("The API action was changed or removed during sign-in. Start the sign-in again.")
     token_url = resolve_url(instance.base_url, instance.auth_scheme.token_url)
     try:
         tokens = await exchange_code_for_token(

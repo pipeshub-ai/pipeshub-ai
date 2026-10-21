@@ -117,7 +117,7 @@ class OAuthTokenSource:
                 fresh = await self._obtain(tokens)
             except MCPOAuthError as e:
                 raise ApiToolsetAuthError(
-                    "Couldn't get an access token from the API's OAuth server. Check the toolset's "
+                    "Couldn't get an access token from the API's OAuth server. Check the API action's "
                     "OAuth settings, or sign in again."
                 ) from e
             self._credentials = self._credentials.model_copy(update={"oauth": fresh})
@@ -129,14 +129,14 @@ class OAuthTokenSource:
         creds = self._credentials
         if self._scheme.type is AuthType.OAUTH2_CLIENT_CREDENTIALS:
             if not creds.client_id:
-                raise ApiToolsetAuthError("No OAuth client ID is stored for this toolset.")
+                raise ApiToolsetAuthError("No OAuth client ID is stored for this API action.")
             return await request_client_credentials_token(
                 self._token_url, creds.client_id, creds.client_secret,
                 allow_private=self._allow_private, scopes=self._scopes,
                 auth_method=tokens.token_endpoint_auth_method if tokens else None,
             )
         if tokens is None or not tokens.refresh_token:
-            raise ApiToolsetAuthError("The sign-in for this toolset has expired. Sign in again.")
+            raise ApiToolsetAuthError("The sign-in for this API action has expired. Sign in again.")
         return await refresh_access_token(
             tokens.token_url or self._token_url, tokens.client_id or creds.client_id or "", creds.client_secret,
             tokens.refresh_token, allow_private=self._allow_private, auth_method=tokens.token_endpoint_auth_method,
@@ -182,7 +182,7 @@ def build_auth(
 
 def _need(value: Optional[str], what: str) -> str:
     if not value:
-        raise ApiToolsetAuthError(f"No {what} is stored for this toolset.")
+        raise ApiToolsetAuthError(f"No {what} is stored for this API action.")
     return value
 
 

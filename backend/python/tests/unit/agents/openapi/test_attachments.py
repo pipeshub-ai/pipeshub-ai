@@ -36,9 +36,9 @@ async def test_valid_attachments_are_kept_once_in_order(store: ApiToolsetStore) 
     ("raw", "message"),
     [
         ("x", "must be a list"),
-        (["list_tickets"], "is not an API toolset operation"),
-        ([f"{PER_MEMBER}:bad name"], "is not an API toolset operation"),
-        ([7], "is not an API toolset operation"),
+        (["list_tickets"], "is not an API action operation"),
+        ([f"{PER_MEMBER}:bad name"], "is not an API action operation"),
+        ([7], "is not an API action operation"),
         ([f"{'d' * 32}:list_tickets"], "doesn't exist"),
         ([f"{PER_MEMBER}:create_ticket"], "Acme has no operation create_ticket"),
     ],

@@ -42,21 +42,21 @@ async def checked_attachments(
         raise ApiToolsetError(f"{AGENT_FIELD} must be a list.")
     entries = list(dict.fromkeys(raw))
     if len(entries) > MAX_ATTACHED_TOOLS:
-        raise ApiToolsetError(f"An agent can use at most {MAX_ATTACHED_TOOLS} API toolset operations.")
+        raise ApiToolsetError(f"An agent can use at most {MAX_ATTACHED_TOOLS} API action operations.")
     for entry in entries:
         if not isinstance(entry, str) or not _ENTRY.match(entry):
-            raise ApiToolsetError(f"{entry!r} is not an API toolset operation (expected '<toolsetId>:<operation>').")
+            raise ApiToolsetError(f"{entry!r} is not an API action operation (expected '<actionId>:<operation>').")
     for instance_id, tool_names in by_instance(entries).items():
         instance = await store.get_instance(org_id, instance_id)
         if instance is None:
-            raise ApiToolsetError(f"API toolset {instance_id} doesn't exist.")
+            raise ApiToolsetError(f"API action {instance_id} doesn't exist.")
         offered = {op.tool_name for op in instance.operations}
         missing = [name for name in tool_names if name not in offered]
         if missing:
             raise ApiToolsetError(f"{instance.name} has no operation {missing[0]}.")
         if service_account and not instance.use_shared_credential and instance.auth_scheme.type is not AuthType.NONE:
             raise ApiToolsetError(
-                f"A service-account agent can only use API toolsets with a shared credential, and {instance.name} "
+                f"A service-account agent can only use API actions with a shared credential, and {instance.name} "
                 "has one credential per member."
             )
     return entries
