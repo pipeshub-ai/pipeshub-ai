@@ -4,7 +4,9 @@ import type { Pipeshub } from "../../index.js";
 import { createClient } from "./client.js";
 import { expectStatus } from "./errors.js";
 
-const FEED_URL = "https://feeds.bbci.co.uk/news/rss.xml";
+// CI points this at the stack's web-fixtures feed, so the sync does not depend on the internet.
+const FEED_URL =
+  process.env["PIPESHUB_SDK_TEST_RSS_FEED_URL"] ?? "https://feeds.bbci.co.uk/news/rss.xml";
 const SYNC_TIMEOUT_MS = 300_000;
 
 async function waitForIdle(pipeshub: Pipeshub, connectorId: string): Promise<void> {

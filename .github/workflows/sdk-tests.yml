@@ -39,6 +39,8 @@ env:
   # under test equals the published one. Move it when open-api changes them.
   OPEN_API_REF: 11f2c863fb3ec8fb591ccd98baaa26b83f548603
   COMPOSE_FILE: docker-compose.integration.neo4j.yml
+  # The connector sync tests read the compose stack's local feed, not one on the internet.
+  PIPESHUB_SDK_TEST_RSS_FEED_URL: http://web-fixtures:8080/feeds/news.xml
   SDK_WORK_DIR: ${{ github.workspace }}/sdk-work
   SDK_RELEASED_DIR: ${{ github.workspace }}/sdk-released
   SDK_REPORTS_DIR: ${{ github.workspace }}/sdk-reports

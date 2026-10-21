@@ -1,5 +1,6 @@
 """Enable an RSS connector, wait for its sync, then use what it indexed."""
 
+import os
 import time
 import uuid
 
@@ -7,7 +8,10 @@ from pipeshub_sdk import Pipeshub
 
 from .errors import raises_status
 
-FEED_URL = "https://feeds.bbci.co.uk/news/rss.xml"
+# CI points this at the stack's web-fixtures feed, so the sync does not depend on the internet.
+FEED_URL = os.environ.get(
+    "PIPESHUB_SDK_TEST_RSS_FEED_URL", "https://feeds.bbci.co.uk/news/rss.xml"
+)
 SYNC_TIMEOUT_SECONDS = 300
 
 

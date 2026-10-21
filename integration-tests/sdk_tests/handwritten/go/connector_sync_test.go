@@ -2,6 +2,7 @@ package handwritten
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -12,10 +13,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const (
-	feedURL     = "https://feeds.bbci.co.uk/news/rss.xml"
-	syncTimeout = 5 * time.Minute
-)
+const syncTimeout = 5 * time.Minute
+
+// feedURL is the feed the sync test reads. CI points it at the stack's web-fixtures feed,
+// so the sync does not depend on the internet.
+func feedURL() string {
+	if url := os.Getenv("PIPESHUB_SDK_TEST_RSS_FEED_URL"); url != "" {
+		return url
+	}
+	return "https://feeds.bbci.co.uk/news/rss.xml"
+}
 
 func waitForIdle(t *testing.T, s *pipeshub.Pipeshub, connectorID string) {
 	t.Helper()
@@ -49,7 +56,7 @@ func TestHandwritten_ConnectorSync(t *testing.T) {
 		AuthType:     pipeshub.Pointer(components.ConnectorAuthTypeNone),
 		Config: &components.CreateConnectorRequestConfig{
 			Sync: &components.ConnectorSyncConfig{AdditionalProperties: map[string]any{
-				"feed_urls":             feedURL,
+				"feed_urls":             feedURL(),
 				"max_articles_per_feed": 1,
 				"fetch_full_content":    false,
 			}},
