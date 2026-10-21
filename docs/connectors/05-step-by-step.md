@@ -57,7 +57,7 @@ pytest tests/unit/connectors/test_connector_contract.py tests/unit/connectors/te
 ## Phase 3: init and connection
 
 1. `init()`: read config, build the client, create the `SyncPoint`s, acquire the thread lease if needed. Personal scope: `await self._load_creator_email()`. Raise `ConnectorInitError` with a user-facing reason for bad credentials or missing scopes.
-2. `test_connection_and_access()`: one cheap authenticated call that checks the scopes or permissions this connector needs. A missing grant fails the test, and the message names it.
+2. `test_connection_and_access()`: one cheap authenticated call that checks the scopes or permissions this connector needs. Raise `ConnectorInitError` and name the missing grant. Returning `False` shows only "Connection test failed. Please verify your credentials have proper access."
 3. Optional `check_connection()` for the setup form.
 4. `cleanup()`: close the client, release the lease.
 

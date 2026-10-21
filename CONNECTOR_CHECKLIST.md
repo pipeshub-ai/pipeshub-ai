@@ -22,7 +22,7 @@ Copy this list into the PR description and tick each item, or say why it does no
 ## 2. Authentication
 
 - [ ] Every declared auth method connects end to end. Every secret auth field has `is_secret=True` (or a `PASSWORD` field type), so the API returns it masked.
-- [ ] `test_connection_and_access()` checks the granted scopes or permissions, and a missing one fails with a message that names it.
+- [ ] `test_connection_and_access()` checks the granted scopes or permissions. A missing one raises `ConnectorInitError` and the message names it. Returning `False` shows only "Connection test failed. Please verify your credentials have proper access."
 - [ ] Wrong credentials raise `ConnectorInitError` with a message the user can act on, and the log has the vendor's reason.
 - [ ] A sync that outlives an OAuth token keeps working: the token is re-read from config before each batch, and a 401 mid-sync calls `TokenRefreshService.refresh_now` with the refresh token already held, then retries, instead of failing the sync. Re-reading config and passing the new refresh token rotates a rotating token a second time (`02-low-level-design.md`). A static API token or bot token has no refresh: a 401 stops the sync and notifies the user, and is not retried.
 

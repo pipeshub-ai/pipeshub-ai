@@ -96,7 +96,7 @@ A scheduled run does not set `fullSync`. Cleanup of nodes the run did not write 
 
 - Files: `get_signed_url()` if the source gives temporary download URLs, and `stream_record()` streaming from it; otherwise stream the download yourself. Never buffer a whole file.
 - Structured items (issues, tickets, pages from a JSON API): stream `MimeTypes.BLOCKS` JSON. Rich text the source gives as HTML or Markdown can go as that mime type.
-- Content the source cannot export (a native format with no export) is `not_downloadable` (HTTP 422 from `stream_record`). Set `indexing_status` to `ProgressStatus.FILE_TYPE_NOT_SUPPORTED` so it is not left `QUEUED`.
+- Content the source cannot export (a native format with no export) is `not_downloadable` (HTTP 422 from `stream_record`). Indexing stores that 422 as `FAILED`. Do not set `indexing_status` to `ProgressStatus.FILE_TYPE_NOT_SUPPORTED`: the record is still published, and the 422 overwrites that status (`02-low-level-design.md`).
 - Do not store `signed_url` when it expires before indexing. Fetch a fresh URL when the bytes are requested (`02-low-level-design.md`).
 
 ## 10. Rate limits and concurrency
