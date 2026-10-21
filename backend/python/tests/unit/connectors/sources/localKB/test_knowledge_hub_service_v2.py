@@ -523,7 +523,11 @@ def _sorted_listing(names: list[str]) -> tuple[list[dict], Callable[..., Awaitab
         if after is not None:
             start = next(i for i, r in enumerate(rows) if r["id"] == after["id"]) + 1
         window = rows[start:start + limit + 1]
-        return envelope(window[:limit], total=len(rows), has_more=len(window) > limit)
+        page = envelope(window[:limit], total=len(rows), has_more=len(window) > limit)
+        # Only the first page counts; later ones carry the total in the cursor.
+        if after is not None:
+            page["partitions"][0]["total"] = None
+        return page
 
     return rows, listing
 
