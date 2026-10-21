@@ -49251,7 +49251,7 @@ paths:
         - oauth2: []
       requestBody:
         required: true
-        description: MCP JSON-RPC 2.0 request object with method, params, and id.
+        description: MCP JSON-RPC 2.0 request object with method, params, and id. The body can be at most 5 MB.
         content:
           application/json:
             schema:
@@ -49299,6 +49299,52 @@ paths:
                         type: string
         '401':
           description: Unauthorized
+        '413':
+          description: |
+            The request body is larger than 5 MB, the most `/mcp` accepts. The
+            answer is a JSON-RPC 2.0 error whose `id` is null, because the
+            request was refused before it was read. `error.data.requestId`
+            identifies the request for support.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc:
+                    type: string
+                    enum: ["2.0"]
+                  id:
+                    type: string
+                    nullable: true
+                    enum: [null]
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: integer
+                        enum: [-32000]
+                      message:
+                        type: string
+                      data:
+                        type: object
+                        properties:
+                          requestId:
+                            type: string
+                    required:
+                      - code
+                      - message
+                required:
+                  - jsonrpc
+                  - id
+                  - error
+              example:
+                jsonrpc: "2.0"
+                id: null
+                error:
+                  code: -32000
+                  message: This request is too large for PipesHub. One MCP request can be at most 5 MB. Send less in one call, such as a shorter question or fewer IDs, and try again.
+                  data:
+                    requestId: 7f3c2a10-5b1e-4c8e-9a43-2d6f0e8b1c55
         '500':
           description: Internal server error
     get:
