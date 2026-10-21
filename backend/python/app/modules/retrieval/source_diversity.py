@@ -27,7 +27,7 @@ changes ranking for every search, so it stays off until measured.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Generator, Hashable, Sequence
+from collections.abc import Callable, Collection, Generator, Hashable, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -67,32 +67,42 @@ class SourceDiversity:
         self,
         records: Sequence[R],
         *,
-        shown: int,
+        plain: Collection[R],
         source_of: Callable[[R], Hashable | None],
     ) -> list[R]:
         """The records to return, first page first.
 
-        ``records`` are best first, and the first ``shown`` of them are what
-        the plain search returns. The first page has as many records as that
-        (at most ``window``), at most ``per_source`` from any one source, taken
-        best first from all of ``records``. The other records of the first
-        ``shown`` follow, best first. Records past ``shown`` that did not make
-        the first page are left out, as the plain search leaves them out.
+        ``records`` are the pool's records, best first; ``plain`` are the ones
+        the plain search returns. The first page holds as many records as
+        that (at most ``window``): the best of ``plain``, at most
+        ``per_source`` from any one source, and when a source had more, the
+        next best records of other sources in their place. The other records
+        of ``plain`` follow, best first. A record of the pool that is neither
+        in ``plain`` nor on the first page is left out, as the plain search
+        leaves it out. With no source over its share, this is ``plain`` in
+        rank order.
         """
-        size = min(self.window, shown)
-        page: list[R] = []
+        size = min(self.window, len(plain))
         per_source: dict[Hashable, int] = {}
-        for record in records:
-            if len(page) >= size:
-                break
-            source = source_of(record)
-            if source is not None:
-                if per_source.get(source, 0) >= self.per_source:
+        chosen: set[R] = set()
+
+        def take(candidates: Sequence[R]) -> None:
+            for record in candidates:
+                if len(chosen) >= size:
+                    return
+                if record in chosen:
                     continue
-                per_source[source] = per_source.get(source, 0) + 1
-            page.append(record)
-        on_page = set(page)
-        return page + [record for record in records[:shown] if record not in on_page]
+                source = source_of(record)
+                if source is not None:
+                    if per_source.get(source, 0) >= self.per_source:
+                        continue
+                    per_source[source] = per_source.get(source, 0) + 1
+                chosen.add(record)
+
+        take([record for record in records if record in plain])
+        take([record for record in records if record not in plain])
+        page = [record for record in records if record in chosen]
+        return page + [record for record in records if record in plain and record not in chosen]
 
 
 def source_diversity_from_env() -> SourceDiversity:

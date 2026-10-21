@@ -57,7 +57,7 @@ class TestTheRule:
     def test_the_excess_is_demoted_below_the_first_page_not_dropped(self) -> None:
         records = ["g1", "g2", "g3", "g4", "s1", "c1", "g5", "s2"]
 
-        order = self.rule.order(records, shown=6, source_of=_source)
+        order = self.rule.order(records, plain=set(records[:6]), source_of=_source)
 
         assert order == ["g1", "g2", "s1", "c1", "s2", "g3", "g4"]
         # Every record the plain search returned is still there.
@@ -66,7 +66,7 @@ class TestTheRule:
     def test_records_of_one_source_keep_their_order(self) -> None:
         records = ["g1", "s1", "g2", "g3", "s2", "g4", "s3", "s4", "c1"]
 
-        order = self.rule.order(records, shown=6, source_of=_source)
+        order = self.rule.order(records, plain=set(records[:6]), source_of=_source)
 
         for source in "gsc":
             assert [r for r in order if r[0] == source] == [r for r in records if r[0] == source and r in order]
@@ -74,7 +74,7 @@ class TestTheRule:
     def test_a_record_below_the_plain_results_comes_in_only_on_the_first_page(self) -> None:
         records = ["g1", "g2", "g3", "s1", "g4", "s2", "s3", "s4", "c1"]
 
-        order = self.rule.order(records, shown=4, source_of=_source)
+        order = self.rule.order(records, plain=set(records[:4]), source_of=_source)
 
         # A page of four (what the plain search showed): two of each source,
         # then the GitHub record it pushed down. s3, s4 and c1 stay out.
@@ -83,19 +83,35 @@ class TestTheRule:
     def test_one_source_keeps_the_plain_order(self) -> None:
         records = [f"g{i}" for i in range(12)]
 
-        assert self.rule.order(records, shown=10, source_of=_source) == records[:10]
+        assert self.rule.order(records, plain=set(records[:10]), source_of=_source) == records[:10]
 
     def test_a_record_of_unknown_source_is_never_held_back(self) -> None:
         records = ["?a", "?b", "?c", "g1", "g2", "g3", "s1"]
 
-        order = self.rule.order(records, shown=6, source_of=_source)
+        order = self.rule.order(records, plain=set(records[:6]), source_of=_source)
 
         assert order == ["?a", "?b", "?c", "g1", "g2", "s1", "g3"]
 
     def test_nothing_to_vary_keeps_the_plain_order(self) -> None:
         records = ["g1", "s1", "c1", "g2", "s2", "c2", "g3"]
 
-        assert self.rule.order(records, shown=7, source_of=_source) == records
+        assert self.rule.order(records, plain=set(records), source_of=_source) == records
+
+    def test_plain_records_need_not_lead_the_pool(self) -> None:
+        """Several queries: a plain record can rank below pool records another
+        query read deeper. It is still returned, and the deeper ones are not."""
+        records = ["g1", "g2", "g3", "g4", "g5", "s1", "g6", "c1"]
+        plain = {"g1", "g2", "g3", "s1", "c1"}
+
+        order = self.rule.order(records, plain=plain, source_of=_source)
+
+        assert order == ["g1", "g2", "s1", "c1", "g3"]
+
+    def test_with_no_source_over_its_share_the_plain_records_come_back_in_rank_order(self) -> None:
+        records = ["g1", "x1", "s1", "x2", "c1", "g2"]
+        plain = {"g1", "s1", "c1", "g2"}
+
+        assert self.rule.order(records, plain=plain, source_of=_source) == ["g1", "s1", "c1", "g2"]
 
     def test_the_pool_never_reads_fewer_than_the_caller_asked(self) -> None:
         assert self.rule.fetch_limit(10) == 50
@@ -176,22 +192,25 @@ _CORPUS: list[tuple[str, str]] = [
     *((f"pr{i}", "GITHUB") for i in range(7, 12)),
     ("issue", "JIRA"),
 ]
-_CONNECTOR = dict(_CORPUS)
+# A second query's own best matches: Slack threads that score below every
+# match of the first query.
+_CORPUS_B: list[tuple[str, str]] = [(f"chat{i}", "SLACK") for i in range(8)]
+_CONNECTOR = dict(_CORPUS + _CORPUS_B)
 _APP = {"GITHUB": "app-gh", "SLACK": "app-slack", "CONFLUENCE": "app-wiki", "JIRA": "app-jira"}
 
 
-def _points() -> list[SearchResult]:
+def _points(corpus: list[tuple[str, str]] = _CORPUS, top: float = 1.0) -> list[SearchResult]:
     return [
         SearchResult(
             id=f"{vrid}#0",
-            score=1.0 - rank / 100,
+            score=top - rank / 100,
             payload={
                 "page_content": f"{vrid} text",
                 "metadata": {"virtualRecordId": vrid, "orgId": ORG, "blockId": "b0"},
                 CONNECTOR_IDS_FIELD: [_APP[connector]],
             },
         )
-        for rank, (vrid, connector) in enumerate(_CORPUS)
+        for rank, (vrid, connector) in enumerate(corpus)
     ]
 
 
@@ -199,6 +218,8 @@ def _points() -> list[SearchResult]:
 class _FakeStore:
     points: list[SearchResult] = field(default_factory=_points)
     requests: list[HybridSearchRequest] = field(default_factory=list)
+    # Each query's own ranking; a query not named here ranks `points`.
+    by_query: dict[str, list[SearchResult]] = field(default_factory=dict)
 
     async def filter_collection(
         self, must: dict[str, Any] | None = None, should: dict[str, Any] | None = None
@@ -212,13 +233,14 @@ class _FakeStore:
         out = []
         for req in requests:
             allowed = set(req.filter["must"].get("virtualRecordId") or [])
-            out.append([p for p in self.points if p.payload["metadata"]["virtualRecordId"] in allowed][: req.limit])
+            ranked = self.by_query.get(req.text_query or "", self.points)
+            out.append([p for p in ranked if p.payload["metadata"]["virtualRecordId"] in allowed][: req.limit])
         return out
 
 
 def _graph() -> AsyncMock:
     graph = AsyncMock()
-    readable = {vrid for vrid, _ in _CORPUS}
+    readable = set(_CONNECTOR)
 
     async def accessible(user_id: str, org_id: str, filters: dict | None = None, **_: object) -> dict[str, str]:
         apps = set((filters or {}).get("apps") or [])
@@ -295,10 +317,10 @@ def _on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(POOL_ENV_VAR, "20")
 
 
-async def _search(store: _FakeStore, **kwargs: object) -> dict:
+async def _search(store: _FakeStore, queries: tuple[str, ...] = ("q",), **kwargs: object) -> dict:
     kwargs.setdefault("limit", 6)
     kwargs.setdefault("knowledge_search", True)
-    return await _service(store).search_with_filters(["q"], "alice", ORG, **kwargs)
+    return await _service(store).search_with_filters(list(queries), "alice", ORG, **kwargs)
 
 
 def _order(response: dict) -> list[str]:
@@ -341,6 +363,64 @@ class TestTheSearchApi:
         ]
         assert {r["virtualRecordId"] for r in response["records"]} == set(_order(response))
         assert set(response["virtual_to_record_map"]) == set(_order(response))
+
+    async def test_on_every_record_a_query_returns_at_its_own_limit_is_kept(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two queries (the search API's rewrite runs several): the second
+        query's own top matches score below the first query's deeper ones,
+        and still come back, with the passages they had."""
+        def store() -> _FakeStore:
+            return _FakeStore(by_query={"b": _points(_CORPUS_B, top=0.5)})
+
+        plain = await _search(store(), queries=("q", "b"))
+        _on(monkeypatch)
+        varied = await _search(store(), queries=("q", "b"))
+
+        assert set(_order(plain)) == {*(f"pr{i}" for i in range(6)), *(f"chat{i}" for i in range(6))}
+        assert set(_order(varied)) == set(_order(plain))
+        assert _order(varied)[:6] == ["pr0", "pr1", "pr2", "chat0", "chat1", "chat2"]
+        assert {h["metadata"]["point_id"] for h in varied["searchResults"]} == {
+            h["metadata"]["point_id"] for h in plain["searchResults"]
+        }
+
+    @pytest.mark.parametrize("queries", [("q",), ("q", "b")])
+    async def test_on_with_the_record_cut_the_plain_records_all_come_back(
+        self, monkeypatch: pytest.MonkeyPatch, queries: tuple[str, ...]
+    ) -> None:
+        """The record cut keeps places for lower-scoring records; with the
+        deeper pool those records must not be lost."""
+        monkeypatch.setenv("FUSION_RECORD_CUT", "true")
+        long_pr = [
+            SearchResult(
+                id=f"pr0#long{block}", score=1.0 - block / 1000,
+                payload={
+                    "page_content": f"pr0 block {block}",
+                    "metadata": {"virtualRecordId": "pr0", "orgId": ORG, "blockId": f"b{block}"},
+                    CONNECTOR_IDS_FIELD: ["app-gh"],
+                },
+            )
+            for block in range(12)
+        ]
+
+        def store() -> _FakeStore:
+            return _FakeStore(
+                points=long_pr + _points(top=0.9),
+                by_query={"b": _points(_CORPUS_B, top=0.5)},
+            )
+
+        plain = await _search(store(), queries=queries)
+        _on(monkeypatch)
+        varied = await _search(store(), queries=queries)
+
+        assert set(_order(plain)) <= set(_order(varied))
+        # The first page is as long as the plain result, up to the window of 6.
+        page = _order(varied)[: min(6, len(_order(plain)))]
+        sources = [_CONNECTOR[vrid] for vrid in page]
+        assert max(sources.count(source) for source in set(sources)) <= 3
+        if queries == ("q",):
+            # Four plain records, all pull requests: one place goes to Slack.
+            assert page == ["pr0", "pr1", "pr2", "thread"]
 
     async def test_on_a_search_scoped_to_one_connector_is_left_alone(
         self, monkeypatch: pytest.MonkeyPatch

@@ -273,6 +273,11 @@ class _QueryPlan:
     # the page because the access check denied too much of it: the caller
     # searches again with the record-id filter.
     narrow_shortfall: bool = False
+    # Set when the search reads a deeper pool than the caller's limit (source
+    # diversity): the per-query limit of the plain search, and the points the
+    # plain search would have kept, marked as each attempt cuts them.
+    plain_limit: int | None = None
+    plain_points: set[Any] = field(default_factory=set)
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -346,14 +351,13 @@ def _vary_sources(
     diversity: SourceDiversity,
     hits: list[dict[str, Any]],
     virtual_to_record_map: dict[str, Any],
-    *,
-    shown: int,
+    plain_points: set[Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, int]]:
     """Cut the deeper pool back to what the search returns, first page first.
 
-    ``hits`` are the pool's matches; the best ``shown`` of them are what the
-    plain search would have read. A record the plain search returns keeps the
-    matches it had there; a record brought up to the first page brings its
+    ``hits`` are the pool's matches; ``plain_points`` the point ids of those
+    the plain search would have kept. A record the plain search returns keeps
+    the matches it had there; a record brought up to the first page brings its
     matches from the pool. Returns those hits (in their order), the record map
     narrowed to the records kept, and each kept record's place by record id.
     """
@@ -362,25 +366,32 @@ def _vary_sources(
         key=lambda hit: hit.get("score") or 0.0,
         reverse=True,
     )
-    in_plain = {id(hit) for hit in ranked[:shown]}
+    in_plain = {
+        id(hit) for hit in ranked
+        if (hit.get("metadata") or {}).get("point_id") in plain_points
+    }
     vids: list[str] = []
     known: set[str] = set()
-    plain_records = 0
+    plain_vids: set[str] = set()
     for hit in ranked:
         vid = hit_record_id(hit)
-        if vid is None or vid in known or not virtual_to_record_map.get(vid):
+        if vid is None or not virtual_to_record_map.get(vid):
             continue
-        known.add(vid)
-        vids.append(vid)
         if id(hit) in in_plain:
-            plain_records = len(vids)
+            plain_vids.add(vid)
+        if vid not in known:
+            known.add(vid)
+            vids.append(vid)
+    if not plain_vids:
+        # Nothing marked as the plain search's: keep the pool as it came.
+        return hits, virtual_to_record_map, {}
     order = diversity.order(
         vids,
-        shown=plain_records,
+        plain=plain_vids,
         source_of=lambda vid: record_source(virtual_to_record_map[vid]),
     )
     kept_vids = set(order)
-    brought_up = kept_vids.difference(vids[:plain_records])
+    brought_up = kept_vids - plain_vids
 
     def keep(hit: Any) -> bool:  # noqa: ANN401
         if not isinstance(hit, dict):
@@ -389,7 +400,7 @@ def _vary_sources(
         if vid not in known:
             # No record to show it under: dropped further on, as before.
             return True
-        return vid in brought_up or (id(hit) in in_plain and vid in kept_vids)
+        return vid in brought_up or id(hit) in in_plain
 
     record_rank: dict[str, int] = {}
     for vid in order:
@@ -398,6 +409,15 @@ def _vary_sources(
         [hit for hit in hits if keep(hit)],
         {vid: record for vid, record in virtual_to_record_map.items() if vid in kept_vids},
         record_rank,
+    )
+
+
+def _plain_cut(batch: list, limit: int, record_cut: RecordCut | None) -> list:
+    """The points of one query's batch the plain search keeps at ``limit``."""
+    if record_cut is None:
+        return batch[:limit]
+    return record_cut.cut(
+        batch[: record_cut.fused_limit(limit, _OVERFETCH_ABSOLUTE_CAP)], limit, point_record_id,
     )
 
 
@@ -888,7 +908,10 @@ class RetrievalService:
                 if knowledge_search
                 else None
             )
-            search_limit = diversity.fetch_limit(limit) if diversity is not None else limit
+            search_limit = limit
+            if diversity is not None:
+                search_limit = diversity.fetch_limit(limit)
+                plan.plain_limit = limit
             if use_containers:
                 (
                     search_results,
@@ -1072,7 +1095,7 @@ class RetrievalService:
             record_rank: dict[str, int] | None = None
             if diversity is not None:
                 search_results, virtual_to_record_map, record_rank = _vary_sources(
-                    diversity, search_results, virtual_to_record_map, shown=limit * len(queries),
+                    diversity, search_results, virtual_to_record_map, plan.plain_points,
                 )
 
             unique_record_ids = {r.get("_key") for r in virtual_to_record_map.values() if r}
@@ -2051,6 +2074,15 @@ class RetrievalService:
             and (result.get("metadata") or {}).get("virtualRecordId") in best_accessible
         ]
         admitted.sort(key=lambda r: r.get("score") or 0, reverse=True)
+        if plan.plain_limit is not None:
+            # What this cut would have kept at the caller's own limit.
+            plain_budget = plan.plain_limit * max(1, len(queries))
+            plain = (
+                record_cut.cut(admitted, plain_budget, hit_record_id)
+                if record_cut is not None
+                else admitted[:plain_budget]
+            )
+            plan.plain_points = {(hit.get("metadata") or {}).get("point_id") for hit in plain}
         if record_cut is not None:
             return record_cut.cut(admitted, budget, hit_record_id), best_accessible, best_degraded
         return admitted[:budget], best_accessible, best_degraded
@@ -2552,6 +2584,12 @@ class RetrievalService:
         if plan is not None:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
+            if plan.plain_limit is not None:
+                plan.plain_points.update(
+                    point.id
+                    for batch in search_results
+                    for point in _plain_cut(batch, plan.plain_limit, record_cut)
+                )
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
         # Measured after the cut, so "exhausted" still means a query came back
