@@ -89,7 +89,9 @@ async def notion_oauth_connector(pipeshub_client, graph_provider) -> AsyncGenera
             inject_access_token(connector_id, access_token)
         pipeshub_client.toggle_sync(connector_id, enable=True)
         await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=SYNC_TIMEOUT)
-        yield {"connector_id": connector_id, "access_token": access_token}
+        # The token stays here: the tests need only whom it belongs to, and a value read
+        # from a dict that holds a token counts as secret wherever it is logged.
+        yield {"connector_id": connector_id, "owner": _token_owner(access_token)}
     finally:
         try:
             pipeshub_client.toggle_sync(connector_id, enable=False)
@@ -115,7 +117,7 @@ class TestNotionOAuthShadowAccess:
     async def test_tc_auth_002_creator_is_linked_to_the_user_who_approved(
         self, notion_oauth_connector: dict[str, Any], graph_provider,
     ) -> None:
-        owner = _token_owner(notion_oauth_connector["access_token"])
+        owner = notion_oauth_connector["owner"]
         assert owner.get("id"), "an OAuth bot is owned by the user who approved it"
         email = (owner.get("person") or {}).get("email")
         if not email:
