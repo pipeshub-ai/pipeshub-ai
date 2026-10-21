@@ -500,7 +500,7 @@ class TestEnrichMetadata:
             {"l": 61.2, "t": 198.0, "r": 306.0, "b": 396.0, "coord_origin": "TOPLEFT"},
         ],
     )
-    async def test_box_lands_top_first_whichever_origin_docling_uses(self, converter, bbox):
+    async def test_box_lands_top_first_whichever_origin_docling_uses(self, converter, bbox) -> None:
         """Both origins give the same top-left-origin box, top corners first."""
         doc_dict = {
             "body": {"children": [{DOCLING_REF_NODE: "#/texts/0"}]},
