@@ -130,19 +130,35 @@ def test_the_installer_is_scored_on_its_own_groups_not_alices(fx: dict, qid: str
 
 
 @pytest.mark.parametrize(
-    ("answer", "ok"),
+    "answer",
     [
-        ("Enterprise moves to a $48,000 annual platform fee.", True),
-        ("A $48k platform fee covering 250 seats.", True),
-        ("Move to a platform-fee model: $48k a year.", True),
-        ("A platform‑fee of $48,000.", True),
-        ("Per-seat pricing stays at $48 a seat.", False),
+        "Enterprise moves to a $48,000 annual platform fee.",
+        "A $48k platform fee covering 250 seats.",
+        # Bob's agent on 2026-10-19: right, without the words "platform fee".
+        "Shift from per-seat pricing to a platform-plus-usage model. Base price: $48,000 annually.",
     ],
 )
-def test_q5_still_accepts_the_pricing_documents_own_wording(fx: dict, answer: str, ok: bool) -> None:
-    # The chat landing's questions are scored as on main: plain substrings.
+def test_q5_takes_any_wording_of_the_pricing_model_the_judge_confirms(fx: dict, answer: str) -> None:
     q = _question(fx, "q5")
-    assert kb_harness.score(q, "cites", {"drive-pricing-2026"}, answer)[0] is ok
+    client = _OneVerdictClient(q, "supported")
+    ok, verdict = kb_harness.score(q, "cites", {"drive-pricing-2026"}, answer, judge=AnswerJudge(client))
+    assert ok, verdict
+    assert q["answer_must_state"][0] in client.prompts[0]
+
+
+def test_q5_fails_an_answer_the_judge_says_gets_the_pricing_model_wrong(fx: dict) -> None:
+    q = _question(fx, "q5")
+    client = _OneVerdictClient(q, "contradicted")
+    ok, verdict = kb_harness.score(q, "cites", {"drive-pricing-2026"}, "Per-seat pricing stays at $48 a seat.", judge=AnswerJudge(client))
+    assert not ok
+    assert "FAIL contradicted" in verdict
+
+
+def test_q5_still_needs_the_fee_amount_exactly(fx: dict) -> None:
+    q = _question(fx, "q5")
+    client = _OneVerdictClient(q, "supported")
+    answer = "Enterprise moves from per-seat pricing to a platform fee plus usage bands."
+    assert kb_harness.score(q, "cites", {"drive-pricing-2026"}, answer, judge=AnswerJudge(client))[0] is False
 
 
 @pytest.mark.parametrize(
