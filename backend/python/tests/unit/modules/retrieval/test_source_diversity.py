@@ -203,6 +203,8 @@ _CORPUS_B: list[tuple[str, str]] = [(f"chat{i}", "SLACK") for i in range(8)]
 _HAND: list[tuple[str, str]] = [
     *((f"gh{i}", "GITHUB") for i in range(4)),
     ("shared", "SLACK"), ("chat-a", "SLACK"), ("chat-b", "SLACK"),
+    # Readable when checked by id, but missing from the user's record list.
+    ("unlisted", "SLACK"),
 ]
 _CONNECTOR = dict(_CORPUS + _CORPUS_B + _HAND)
 _APP = {"GITHUB": "app-gh", "SLACK": "app-slack", "CONFLUENCE": "app-wiki", "JIRA": "app-jira"}
@@ -273,7 +275,7 @@ def _graph() -> AsyncMock:
         apps = set((filters or {}).get("apps") or [])
         return {
             vrid: f"rec-{vrid}" for vrid in readable
-            if not apps or _APP[_CONNECTOR[vrid]] in apps
+            if vrid != "unlisted" and (not apps or _APP[_CONNECTOR[vrid]] in apps)
         }
 
     async def records(record_ids: list[str], org_id: str) -> list[dict[str, Any]]:
@@ -525,6 +527,46 @@ class TestTheSearchApi:
         assert _order(varied)[:2] == ["gh0", "shared"]
         shared = [h for h in varied["searchResults"] if h["metadata"]["virtualRecordId"] == "shared"]
         assert [h["score"] for h in shared] == [0.90]
+
+    async def test_on_a_plain_result_as_deep_as_the_pool_is_varied_without_a_second_read(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _knobs(monkeypatch, window=6, per_source=3, pool=20)
+        store = _FakeStore()
+
+        response = await _search(store, limit=20)
+
+        assert [req.limit for req in store.requests] == [20]
+        assert _order(response)[:6] == ["pr0", "pr1", "pr2", "thread", "page", "issue"]
+        assert set(_order(response)) == {vrid for vrid, _ in _CORPUS}
+
+    async def test_after_the_narrow_access_fallback_candidates_come_from_the_record_id_search(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The container page is replaced by the record-id search; the deeper
+        read must not bring back a record only the container read returns."""
+        mod.narrow_access_memo.clear()
+        _knobs(monkeypatch, window=4, per_source=2, pool=10)
+        store = _FakeStore(points=[
+            *(_point(f"gh{i}", 0.99 - i / 100) for i in range(4)),
+            _point("unlisted", 0.60), _point("chat-a", 0.50),
+        ])
+        service = _service(store)
+        apps = frozenset(_APP.values())
+        service._container_filter_enabled = AsyncMock(return_value=True)
+        service.graph_provider.get_accessible_containers = AsyncMock(
+            return_value=AccessibleContainers(app_ids=apps, app_ids_trusted=apps)
+        )
+        service._narrow_shortfall = MagicMock(return_value=True)
+        try:
+            response = await service.search_with_filters(
+                ["q"], "alice", ORG, limit=4, knowledge_search=True,
+            )
+        finally:
+            mod.narrow_access_memo.clear()
+
+        assert "unlisted" not in _order(response)
+        assert _order(response) == ["gh0", "gh1", "chat-a", "gh2", "gh3"]
 
     async def test_on_a_search_scoped_to_one_connector_is_left_alone(
         self, monkeypatch: pytest.MonkeyPatch

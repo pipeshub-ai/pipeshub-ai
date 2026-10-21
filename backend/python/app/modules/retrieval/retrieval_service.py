@@ -4,7 +4,7 @@ import math
 import os
 import time
 import traceback
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -895,6 +895,8 @@ class RetrievalService:
                 else None
             )
             enumerated_map: dict[str, str] | None = None
+            # The narrow-access fallback replaced the container page.
+            replaced_by_record_ids = False
             if use_containers:
                 (
                     search_results,
@@ -975,6 +977,7 @@ class RetrievalService:
                     else:
                         search_results = replacement.results
                         accessible_virtual_id_to_record_id = replacement.accessible
+                        replaced_by_record_ids = True
                         narrow_access_memo.mark(memo_key)
                         self.logger.info(
                             "container search denied too much (user=%s org=%s); "
@@ -1014,19 +1017,33 @@ class RetrievalService:
                 return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
 
             plain_points: set[Any] = set()
-            if diversity is not None and diversity.fetch_limit(limit) > limit:
+            if diversity is not None:
                 plain_points = {
                     (hit.get("metadata") or {}).get("point_id")
                     for hit in search_results if isinstance(hit, dict)
                 }
+            candidates: list[dict[str, Any]] = []
+            candidate_map: dict[str, str] = {}
+            if diversity is not None and diversity.fetch_limit(limit) > limit:
+                # Read deeper only when the caller asked for less than the pool;
+                # otherwise the plain result is the pool.
+
+                async def read_by_record_ids(depth: int, candidate_plan: _QueryPlan) -> "_RecordIdSearch":
+                    return await self._search_by_record_ids(
+                        queries, depth, org_id, user_id, user_key, filters, time_range,
+                        virtual_record_ids_from_tool, selection, scopes, candidate_plan,
+                    )
+
                 candidates, candidate_map = await self._diversity_candidates(
                     queries, filter, diversity.fetch_limit(limit), org_id, user_id, plan,
-                    containers=containers if use_containers else None,
+                    containers=containers if use_containers and not replaced_by_record_ids else None,
                     enumerated=enumerated_map,
+                    by_record_ids=read_by_record_ids if replaced_by_record_ids else None,
                     user_key=user_key,
                     scope_connector_ids=requested_scope_ids(filters),
                     scopes=scopes,
                 )
+            if candidates:
                 search_results = [
                     *search_results,
                     *(
@@ -1495,6 +1512,7 @@ class RetrievalService:
         *,
         containers: "AccessibleContainers | None",
         enumerated: dict[str, str] | None,
+        by_record_ids: "Callable[[int, _QueryPlan], Awaitable[_RecordIdSearch]] | None" = None,
         user_key: str | None,
         scope_connector_ids: "tuple[str, ...] | None",
         scopes: Sequence[SelectionScope],
@@ -1510,7 +1528,11 @@ class RetrievalService:
             dense=plan.dense, sparse=plan.sparse, collections=plan.collections,
         )
         try:
-            if containers is not None:
+            if by_record_ids is not None:
+                # The page came from the record-id search: read deeper the same way.
+                found = await by_record_ids(depth, candidate_plan)
+                hits, accessible = found.results, found.accessible
+            elif containers is not None:
                 hits, accessible, degraded = await self._search_and_adjudicate(
                     queries, filter, depth, org_id, user_id, containers,
                     allow_requery=False,
