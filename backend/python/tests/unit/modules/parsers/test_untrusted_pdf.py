@@ -334,6 +334,20 @@ def _keep_pdfminer_busy(seconds: float) -> None:
         open_pdf(content)
 
 
+def _hold_the_gil(seconds: float) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        pass
+
+
+async def _worst_burst_while(busy: Callable[[float], None]) -> float:
+    with IoProbe() as io_probe:
+        await asyncio.sleep(0.1)
+        await asyncio.to_thread(busy, PDFMINER_BUSY_SECONDS)
+        await asyncio.sleep(0.1)
+    return io_probe.worst
+
+
 def _governor() -> MagicMock:
     governor = MagicMock()
     governor.ceilings = SimpleNamespace(heavy=4)
@@ -383,12 +397,15 @@ class TestRealFilesInWorkers:
 
     async def test_the_probe_sees_the_stall_a_pdfminer_thread_causes(self) -> None:
         """Without this, a probe that measured nothing would pass the test above."""
-        with IoProbe() as io_probe:
-            await asyncio.sleep(0.1)
-            await asyncio.to_thread(_keep_pdfminer_busy, PDFMINER_BUSY_SECONDS)
-            await asyncio.sleep(0.1)
-
-        assert io_probe.worst > 0.25
+        worst = await _worst_burst_while(_keep_pdfminer_busy)
+        if worst > 0.25:
+            return
+        # The convoy needs a free core for the busy thread: on a CPU-starved
+        # runner it barely gets the GIL, so no thread can stall the loop and
+        # there is nothing to see. A thread that only holds the GIL tells which.
+        if await _worst_burst_while(_hold_the_gil) <= 0.25:
+            pytest.skip("CPUs too busy for a GIL convoy to form, so no stall to see")
+        pytest.fail(f"A pdfminer thread stalled the probe for {worst:.3f} s, under 0.25 s")
 
     async def test_the_pool_keeps_working_after_a_worker_was_stopped(self, pool: None) -> None:
         await inspect_untrusted_pdf(garbage_tail_pdf(32 * MIB))
