@@ -45,7 +45,7 @@ import { attachmentErrorMessage } from '@/chat/utils/attachment-error';
 import { showRemoteRunInProgressToast } from '@/chat/utils/remote-run-toast';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { getUserIdFromToken } from '@/lib/utils/jwt';
 import { useComposerDraft } from '@/chat/hooks/use-composer-draft';
 import { buildDraftKey } from '@/chat/utils/composer-draft';
