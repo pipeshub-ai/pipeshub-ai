@@ -8,7 +8,6 @@ import os
 import sys
 import tempfile
 from collections.abc import Iterator
-from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -43,6 +42,7 @@ def _fresh_lane_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(assignment, "_shared", {})
 
 
+
 def pytest_collection_modifyitems(items) -> None:
     """xdist refuses to run unless every worker collected the same node ids
     in the same order. Parametrize over a set (hash-seeded per process)
@@ -55,19 +55,15 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     session.config._exitcode = int(exitstatus)
 
 
-def pytest_unconfigure(config):
+def pytest_unconfigure(config) -> None:
     """Force-exit the process when running under xdist to prevent hangs
     caused by unawaited async coroutines keeping worker threads alive."""
     if os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None):
         # os._exit skips the interpreter's own flush, which dropped the summary.
         sys.stdout.flush()
         sys.stderr.flush()
-        # Configure and session-start failures never call pytest_sessionfinish.
-        # pytest then returns that status itself; os._exit here would replace it.
-        # Force-exit only after a finished run, where leftover tasks can keep
-        # the process alive.
-        if hasattr(config, "_exitcode"):
-            os._exit(int(config._exitcode))
+        # A run that never reached sessionfinish did not pass.
+        os._exit(getattr(config, "_exitcode", pytest.ExitCode.INTERNAL_ERROR))
 
 # ---------------------------------------------------------------------------
 # Auto-mock optional third-party modules that may not be installed in the
@@ -94,25 +90,25 @@ class _MockFinder(importlib.abc.MetaPathFinder):
                 return True
         return False
 
-    def find_spec(self, fullname, path, target=None):
+    def find_spec(self, fullname, path, target=None) -> importlib.machinery.ModuleSpec | None:
         if not self._matches(fullname):
             return None
         # Ensure mock is installed in sys.modules
         self.load_module(fullname)
         return importlib.machinery.ModuleSpec(fullname, self, is_package=True)
 
-    def create_module(self, spec):
+    def create_module(self, spec) -> object | None:
         return sys.modules.get(spec.name)
 
-    def exec_module(self, module):
+    def exec_module(self, module) -> None:
         pass
 
-    def find_module(self, fullname, path=None):
+    def find_module(self, fullname, path=None) -> "_MockFinder | None":
         if self._matches(fullname):
             return self
         return None
 
-    def load_module(self, fullname):
+    def load_module(self, fullname) -> object:
         if fullname in sys.modules:
             return sys.modules[fullname]
         mod = MagicMock()
@@ -258,7 +254,7 @@ except Exception:
 class _DocumentStub:
     """Minimal langchain_core Document stub for tests."""
 
-    def __init__(self, page_content: str = "", metadata=None, **kwargs):
+    def __init__(self, page_content: str = "", metadata=None, **kwargs) -> None:
         self.page_content = page_content
         self.metadata = metadata if metadata is not None else {}
 
@@ -289,7 +285,7 @@ _inject_document_stub()
 
 
 @pytest.fixture(autouse=True)
-def _reset_default_backpressure_coordinator():
+def _reset_default_backpressure_coordinator() -> None:
     """ParsingClient/DoclingClient default to a process-wide
     BackpressureCoordinator singleton when the caller doesn't pass one
     explicitly (see app.services.messaging.backpressure) — without a reset,
@@ -315,7 +311,7 @@ def _reset_narrow_access_memo() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _no_dns_for_model_endpoints(monkeypatch):
+def _no_dns_for_model_endpoints(monkeypatch) -> None:
     """A model health check looks its endpoint's name up before calling it; unit tests must
     not reach a resolver, so every name resolves to a public address. Tests of the lookup
     set their own answers."""
@@ -325,7 +321,7 @@ def _no_dns_for_model_endpoints(monkeypatch):
 
 
 @pytest.fixture
-def logger():
+def logger() -> logging.Logger:
     """Provide a silent logger for tests."""
     log = logging.getLogger("test")
     previous_level = log.level
@@ -337,7 +333,7 @@ def logger():
 
 
 @pytest.fixture
-def mock_graph_provider():
+def mock_graph_provider() -> AsyncMock:
     """Mock IGraphDBProvider with common async methods."""
     from app.services.graph_db.interface.graph_db_provider import (
         AccessCheck,
@@ -364,7 +360,7 @@ def mock_graph_provider():
 
 
 @pytest.fixture
-def mock_vector_db_service():
+def mock_vector_db_service() -> AsyncMock:
     """Mock IVectorDBService."""
     from unittest.mock import MagicMock as _MagicMock
     service = AsyncMock()
@@ -388,7 +384,7 @@ def mock_vector_db_service():
 
 
 @pytest.fixture
-def mock_config_service():
+def mock_config_service() -> AsyncMock:
     """Mock ConfigurationService."""
     service = AsyncMock()
     service.get_config = AsyncMock(return_value={
@@ -399,6 +395,9 @@ def mock_config_service():
 
 
 @pytest.fixture
-def mock_blob_store():
+def mock_blob_store() -> MagicMock:
     """Mock BlobStorage."""
     return MagicMock()
+
+# Records the real exit status for the force-exit in pytest_unconfigure.
+pytest_plugins = ("tests.xdist_exit",)
