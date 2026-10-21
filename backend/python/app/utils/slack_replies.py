@@ -102,6 +102,6 @@ def replies_note(record: dict[str, Any], read_thread: str) -> str:
     )
 
 
-def corrected_has_replies(has_replies: bool | None, record: dict[str, Any]) -> bool:
+def corrected_has_replies(record: dict[str, Any], *, has_replies: bool | None) -> bool:
     """The record's ``hasReplies`` flag, set when any of its messages shows replies."""
     return bool(has_replies) or bool(message_reply_counts(record))

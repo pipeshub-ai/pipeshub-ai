@@ -3652,7 +3652,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                     # record of a thread, were stored with hasReplies False; the
                     # messages' own "Reply Count" lines say otherwise.
                     record_instance.has_replies = corrected_has_replies(
-                        record_instance.has_replies, record,
+                        record, has_replies=record_instance.has_replies,
                     )
                 if record_instance:
                     if isinstance(record_instance, DealRecord):

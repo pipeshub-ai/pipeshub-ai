@@ -102,10 +102,10 @@ class TestReplyCounts:
         assert replies_note(other, API_HINT) == ""
 
     def test_the_flag_is_set_when_a_message_shows_replies(self) -> None:
-        assert corrected_has_replies(False, CHANNEL_BURST_ONE_PARENT) is True
-        assert corrected_has_replies(None, FIRST_THREAD_BURST) is True
-        assert corrected_has_replies(False, SINGLE_WITHOUT_REPLIES) is False
-        assert corrected_has_replies(True, SINGLE_WITHOUT_REPLIES) is True
+        assert corrected_has_replies(CHANNEL_BURST_ONE_PARENT, has_replies=False) is True
+        assert corrected_has_replies(FIRST_THREAD_BURST, has_replies=None) is True
+        assert corrected_has_replies(SINGLE_WITHOUT_REPLIES, has_replies=False) is False
+        assert corrected_has_replies(SINGLE_WITHOUT_REPLIES, has_replies=True) is True
 
 
 class TestRepliesNote:
