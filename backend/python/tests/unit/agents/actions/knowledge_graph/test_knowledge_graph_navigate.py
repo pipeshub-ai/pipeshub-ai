@@ -31,7 +31,7 @@ def _short_id_for(state: dict, full_id: str) -> str:
     return shortener.get_or_create_short_id(full_id)
 
 
-def _grant_asked(_user_key, _org_id, node_ids=(), **_kwargs):
+def _grant_asked(_user_key, _org_id, node_ids=(), **_kwargs) -> "AccessCheck":
     """The hub already returned these nodes, so the default graph grants them.
 
     A test that distinguishes permission from the conversation limit replaces
@@ -216,7 +216,7 @@ class TestNavigateIssueKeyUnderASelection:
     conversation is the one navigate opens."""
 
     @staticmethod
-    def _match(record_id: str, name: str, connector: str):
+    def _match(record_id: str, name: str, connector: str) -> MagicMock:
         match = MagicMock()
         match.id = record_id
         match.name = name
@@ -224,7 +224,7 @@ class TestNavigateIssueKeyUnderASelection:
         return match
 
     @pytest.mark.asyncio
-    async def test_an_in_scope_copy_is_opened_ahead_of_another_connectors(self):
+    async def test_an_in_scope_copy_is_opened_ahead_of_another_connectors(self) -> None:
         state = _make_state()
         gp = state["graph_provider"]
         gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
@@ -259,7 +259,7 @@ class TestNavigateIssueKeyUnderASelection:
         assert "PP-1 Launch" in text
 
     @pytest.mark.asyncio
-    async def test_an_out_of_scope_key_names_the_other_copy_and_succeeds(self):
+    async def test_an_out_of_scope_key_names_the_other_copy_and_succeeds(self) -> None:
         state = _make_state()
         gp = state["graph_provider"]
         gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
@@ -286,7 +286,7 @@ class TestNavigateIssueKeyUnderASelection:
         get_nodes.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_folder_selection_does_not_narrow_children_to_other_connectors(self):
+    async def test_a_folder_selection_does_not_narrow_children_to_other_connectors(self) -> None:
         state = _make_state(
             has_knowledge=True,
             filters={
@@ -340,7 +340,7 @@ class TestNavigateStaysInsideTheLimit:
         WIKI: "Wiki page", TICKET: "In-scope ticket",
     }
 
-    def _rows(self):
+    def _rows(self) -> dict:
         return {
             self.APP: {"id": self.APP, "connectorId": self.APP, "groupIds": []},
             self.PARENT: {"id": self.PARENT, "connectorId": self.APP, "groupIds": [self.PARENT]},
@@ -352,17 +352,17 @@ class TestNavigateStaysInsideTheLimit:
             self.TICKET: {"id": self.TICKET, "connectorId": self.APP, "groupIds": [self.SELECTED]},
         }
 
-    def _state(self, filters):
+    def _state(self, filters) -> dict:
         from app.modules.retrieval import selection_scope
         from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
         selection_scope._memo.clear()
         rows = self._rows()
 
-        async def accessible(_user_key, _org_id, node_ids, _virtual_record_ids, **_kwargs):
+        async def accessible(_user_key, _org_id, node_ids, _virtual_record_ids, **_kwargs) -> list:
             return [rows[node_id] for node_id in node_ids if node_id in self.READABLE]
 
-        async def selection_nodes(_org_id, group_ids=(), record_ids=(), exact_record_ids=(), limit=200):
+        async def selection_nodes(_org_id, group_ids=(), record_ids=(), exact_record_ids=(), limit=200) -> dict:
             groups, records = [], []
             if self.SELECTED in group_ids:
                 groups.append({"id": self.SELECTED, "connectorId": self.APP})
@@ -387,7 +387,7 @@ class TestNavigateStaysInsideTheLimit:
         gp.get_linked_records = AsyncMock(return_value=[])
         gp.get_record_by_id = AsyncMock(return_value=None)
 
-        async def node_access(node_id, **_kwargs):
+        async def node_access(node_id, **_kwargs) -> dict | None:
             if node_id not in self.READABLE:
                 return None
             if node_id == self.APP:
@@ -404,7 +404,7 @@ class TestNavigateStaysInsideTheLimit:
         gp.get_knowledge_hub_node_access = AsyncMock(side_effect=node_access)
         return state
 
-    def _response(self, items, crumbs):
+    def _response(self, items, crumbs) -> MagicMock:
         resp = _make_knowledge_hub_response(items=items, total=len(items))
         resp.typed_records = None
         resp.breadcrumbs = [
@@ -418,7 +418,7 @@ class TestNavigateStaysInsideTheLimit:
         ]
         return resp
 
-    async def _open(self, filters, node_id, items, crumbs, linked=None):
+    async def _open(self, filters, node_id, items, crumbs, linked=None) -> tuple:
         state = self._state(filters)
         if linked is not None:
             state["graph_provider"].get_linked_records = AsyncMock(return_value=linked)
@@ -429,7 +429,7 @@ class TestNavigateStaysInsideTheLimit:
             return await KnowledgeGraph(state=state).navigate(node_id=node_id)
 
     @pytest.mark.asyncio
-    async def test_the_path_stops_at_the_selected_group_and_unreadable_children_are_omitted(self):
+    async def test_the_path_stops_at_the_selected_group_and_unreadable_children_are_omitted(self) -> None:
         filters = {
             "apps": [], "kb": [], "recordGroups": [self.SELECTED],
             "records": [], "recordsExact": [],
@@ -453,7 +453,7 @@ class TestNavigateStaysInsideTheLimit:
         assert "fetch_record" not in text
 
     @pytest.mark.asyncio
-    async def test_a_child_of_the_selection_names_the_selected_group_and_not_its_parent(self):
+    async def test_a_child_of_the_selection_names_the_selected_group_and_not_its_parent(self) -> None:
         filters = {
             "apps": [], "kb": [], "recordGroups": [self.SELECTED],
             "records": [], "recordsExact": [],
@@ -477,7 +477,7 @@ class TestNavigateStaysInsideTheLimit:
         assert self.NAMES[self.SECRET] not in text
 
     @pytest.mark.asyncio
-    async def test_without_a_limit_an_unreadable_child_is_omitted_and_the_path_stays(self):
+    async def test_without_a_limit_an_unreadable_child_is_omitted_and_the_path_stays(self) -> None:
         from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
         state = _make_state(has_knowledge=True, filters={})
@@ -487,7 +487,7 @@ class TestNavigateStaysInsideTheLimit:
             "id": "folder", "name": "Folder", "nodeType": "recordGroup", "connector": "KB",
         })
 
-        def check_access(_user_key, _org_id, node_ids=(), **_kwargs):
+        def check_access(_user_key, _org_id, node_ids=(), **_kwargs) -> AccessCheck:
             ids = frozenset(node_id for node_id in node_ids if node_id != self.SECRET)
             return AccessCheck(node_ids=ids, node_ids_in_scope=ids)
 
@@ -854,7 +854,7 @@ class TestNavigateRemembersRecordIds:
         gp.check_record_access_with_details = AsyncMock(return_value=None)
         unknown = "deadbeef-0000-4000-8000-000000000000"
 
-        def check_access(_user_key, _org_id, node_ids=(), **_kwargs):
+        def check_access(_user_key, _org_id, node_ids=(), **_kwargs) -> "AccessCheck":
             from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
             ids = frozenset(node_id for node_id in (node_ids or ()) if node_id != unknown)
@@ -914,7 +914,7 @@ class TestNavigateRemembersRecordIds:
         gp.check_record_access_with_details = AsyncMock(return_value=None)
         unknown = "8a2cfb7d-04fc-4647-8d43-5d0527800009"
 
-        def check_access(_user_key, _org_id, node_ids=(), **_kwargs):
+        def check_access(_user_key, _org_id, node_ids=(), **_kwargs) -> "AccessCheck":
             from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
             ids = frozenset(node_id for node_id in (node_ids or ()) if node_id != unknown)

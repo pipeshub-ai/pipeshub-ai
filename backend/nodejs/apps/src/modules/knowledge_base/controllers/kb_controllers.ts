@@ -73,11 +73,22 @@ function knowledgeHubQueryText(raw: unknown): string | undefined {
     return undefined;
   }
   // Express turns `?q=a&q=b` into an array. The connector sees one string,
-  // the same join URLSearchParams used to forward.
+  // the same join URLSearchParams used to forward. An object would stringify
+  // to "[object Object]" and pass the length check.
   if (Array.isArray(raw)) {
-    return raw.map((part) => String(part)).join(',');
+    const parts: string[] = [];
+    for (const part of raw) {
+      if (typeof part !== 'string') {
+        throw new BadRequestError('Search query must be text');
+      }
+      parts.push(part);
+    }
+    return parts.join(',');
   }
-  return typeof raw === 'string' ? raw : String(raw);
+  if (typeof raw !== 'string') {
+    throw new BadRequestError('Search query must be text');
+  }
+  return raw;
 }
 
 export function knowledgeHubSearchQuery(raw: unknown): string | undefined {

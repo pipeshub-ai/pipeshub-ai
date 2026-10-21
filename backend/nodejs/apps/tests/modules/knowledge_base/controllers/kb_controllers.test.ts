@@ -1308,6 +1308,18 @@ describe('Knowledge Base Controller', () => {
       expect(uri).to.include('q=ab%2Ccd')
     })
 
+    it('rejects a query that is not text', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      const next = createMockNext()
+      await handler(
+        createMockRequest({ query: { q: { bad: '1' } }, params: {} }),
+        createMockResponse(),
+        next,
+      )
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Search query must be text')
+    })
+
     it('rejects a query longer than 500 characters', async () => {
       const handler = getKnowledgeHubNodes(createMockAppConfig())
       const req = createMockRequest({ query: { q: 'x'.repeat(501) }, params: {} })
