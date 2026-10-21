@@ -227,7 +227,7 @@ async def get_knowledge_hub_root_nodes(
     size: Optional[str] = Query(None, description="Size range: gte:bytes,lte:bytes"),
     flattened: Optional[bool] = Query(None, description="Force flattened/recursive search (true) or direct listing (false). When omitted, computed from which filters are present."),
     include: Optional[str] = Query(None, description="Comma-separated includes: breadcrumbs, counts, availableFilters, permissions"),
-    cursor: Optional[str] = Query(None, description="Opaque page cursor from a previous response; when set it decides sort, filters and parent context"),
+    cursor: Optional[str] = Query(None, description="Opaque page cursor from a previous response. When set it decides listing mode, sort, filters and parent; only include comes from this request. A parent in the URL that disagrees is refused."),
     knowledge_hub_service: KnowledgeHubService = Depends(get_knowledge_hub_service),
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
     """
@@ -290,7 +290,7 @@ async def get_knowledge_hub_children_nodes(
     size: Optional[str] = Query(None, description="Size range: gte:bytes,lte:bytes"),
     flattened: Optional[bool] = Query(None, description="Force flattened/recursive search (true) or direct listing (false). When omitted, computed from which filters are present."),
     include: Optional[str] = Query(None, description="Comma-separated includes: breadcrumbs, counts, availableFilters, permissions"),
-    cursor: Optional[str] = Query(None, description="Opaque page cursor from a previous response; when set it decides sort, filters and parent context"),
+    cursor: Optional[str] = Query(None, description="Opaque page cursor from a previous response. When set it decides listing mode, sort, filters and parent; only include comes from this request. A parent in the URL that disagrees is refused."),
     knowledge_hub_service: KnowledgeHubService = Depends(get_knowledge_hub_service),
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
     """

@@ -136,6 +136,7 @@ from app.agents.agent_loop.hooks import (
     retrieval_context_emission,
     retry_with_status,
     seed_visible_tools_from_history,
+    selected_nodes_prompt,
     shape_image_injection,
     shape_retrieved_image_injection,
     stash_tool_call_metadata,
@@ -1134,6 +1135,7 @@ class PipesHubAgentFactory:
 
         # Answers an approval card: settles the stopped call before the loop starts.
         hooks.on(HookEvent.PRE_AGENT).use(resume_parked_call(context))
+        hooks.on(HookEvent.PRE_AGENT).use(selected_nodes_prompt(context))
         hooks.on(HookEvent.PRE_AGENT).use(period_summary_hint(context))
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))

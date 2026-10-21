@@ -512,6 +512,7 @@ function KnowledgeBasePageContent() {
     recordDetails?: RecordDetailsResponse;
     webUrl?: string;
     previewRenderable?: boolean;
+    connector?: string;
   } | null>(null);
   const [previewMode, setPreviewMode] = useState<'sidebar' | 'fullscreen'>('sidebar');
 
@@ -2039,6 +2040,7 @@ function KnowledgeBasePageContent() {
         return;
       }
 
+      const connector = item.connector ?? '';
       try {
         // 1. Show loading state immediately
         setPreviewFile({
@@ -2049,6 +2051,7 @@ function KnowledgeBasePageContent() {
           size: item.sizeInBytes || undefined,
           isLoading: true,
           webUrl: item.webUrl,
+          connector,
         });
         setPreviewMode('sidebar');
 
@@ -2072,6 +2075,7 @@ function KnowledgeBasePageContent() {
             recordDetails,
             webUrl: record.webUrl || undefined,
             previewRenderable: false,
+            connector,
           });
           return;
         }
@@ -2119,6 +2123,7 @@ function KnowledgeBasePageContent() {
           recordDetails,
           webUrl: record.webUrl || undefined,
           previewRenderable: record.previewRenderable,
+          connector,
         });
 
       } catch (error) {
@@ -2211,6 +2216,7 @@ function KnowledgeBasePageContent() {
           recordDetails,
           webUrl: record.webUrl || undefined,
           previewRenderable: record.previewRenderable,
+          connector: '',
         });
 
       } catch (error) {
@@ -2224,6 +2230,24 @@ function KnowledgeBasePageContent() {
       }
     }
   }, [getPreviewErrorMessage]);
+
+  // The preview dialog covers the selection bar, so Chat for this record lives on the preview.
+  const handlePreviewChat = useCallback(() => {
+    if (!previewFile) return;
+    usePendingChatStore.getState().setPending({
+      message: '',
+      pageContext: {
+        selectedNodes: [{
+          id: previewFile.id,
+          name: previewFile.name,
+          nodeType: 'record',
+          connector: previewFile.connector ?? '',
+        }],
+      },
+      referrerPage: '/knowledge-base',
+    });
+    router.push('/chat');
+  }, [previewFile, router]);
 
   // Search and filter results come from anywhere below the current place: open a row's
   // parent as plain navigation, without the search or the filters that found the row.
@@ -3248,6 +3272,7 @@ function KnowledgeBasePageContent() {
           isLoading={previewFile.isLoading}
           error={previewFile.error}
           recordDetails={previewFile.recordDetails}
+          onChat={handlePreviewChat}
           onToggleFullscreen={() => setPreviewMode('fullscreen')}
           onOpenChange={(open) => {
             if (!open) {
@@ -3278,6 +3303,7 @@ function KnowledgeBasePageContent() {
           isLoading={previewFile.isLoading}
           error={previewFile.error}
           recordDetails={previewFile.recordDetails}
+          onChat={handlePreviewChat}
           onExitFullscreen={() => setPreviewMode('sidebar')}
           onClose={() => {
             // Clean up blob URL (only PDF/image/html/etc. paths allocate one)

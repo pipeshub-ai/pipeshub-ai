@@ -550,7 +550,8 @@ async def test_a_cursor_issued_for_one_folder_is_refused_on_another(service, pro
 
 
 @pytest.mark.asyncio
-async def test_a_browse_cursor_is_refused_on_a_flatten_of_the_same_folder(service, provider) -> None:
+async def test_a_browse_cursor_stays_a_browse_when_the_request_asks_to_flatten(service, provider) -> None:
+    """The cursor chose browse. flattened=true on the next request does not retarget it."""
     provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
         [row("r1", "Record")], total=5, has_more=True, scope=admitted_scope()
     )
@@ -558,31 +559,48 @@ async def test_a_browse_cursor_is_refused_on_a_flatten_of_the_same_folder(servic
     first = await service.get_nodes(**browse)
 
     result = await service.get_nodes(**browse, flattened=True, cursor=first.pagination.nextCursor)
-    assert (result.success, result.errorCode) == (False, 400)
-    assert result.error == "Invalid cursor: issued for a different location"
+    assert result.success is True
+    assert provider.get_knowledge_hub_connector_page_v3.call_args.kwargs["flatten"] is False
 
 
 @pytest.mark.asyncio
-async def test_a_search_cursor_is_refused_on_a_listing(service, provider) -> None:
+async def test_a_search_cursor_pages_alone_and_is_refused_on_another_parent(service, provider) -> None:
+    """Sending nextCursor by itself continues the search. A different parent is another location."""
     provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
         [row("r1", "Report")], total=5, has_more=True, scope=admitted_scope()
     )
     searched = await service.get_nodes(user_id="u1", org_id="o1", q="report", limit=1)
     assert searched.pagination.nextCursor
-    asked = provider.get_knowledge_hub_connector_page_v3.await_count
 
-    for listing in ({}, {"parent_id": "p1", "parent_type": "recordGroup", "flattened": True}):
-        result = await service.get_nodes(
-            user_id="u1", org_id="o1", limit=1, cursor=searched.pagination.nextCursor, **listing
-        )
-        assert (result.success, result.errorCode) == (False, 400), listing
-        assert result.error == "Invalid cursor: issued for a different location"
+    alone = await service.get_nodes(
+        user_id="u1", org_id="o1", q="other", limit=1, cursor=searched.pagination.nextCursor,
+    )
+    assert alone.success is True
+    assert provider.get_knowledge_hub_connector_page_v3.call_args.kwargs["filters"]["search_query"] == "report"
+    assert alone.filters.applied.q == "report"
+    assert alone.filters.applied.sortBy == "updatedAt"
+    assert alone.filters.applied.sortOrder == "desc"
     provider.get_knowledge_hub_root_nodes_v2.assert_not_called()
-    assert provider.get_knowledge_hub_connector_page_v3.await_count == asked
+
+    bare = await service.get_nodes(
+        user_id="u1", org_id="o1", limit=1, cursor=searched.pagination.nextCursor, flattened=False,
+    )
+    assert bare.success is True
+    assert bare.filters.applied.q == "report"
+    assert provider.get_knowledge_hub_connector_page_v3.call_args.kwargs["flatten"] is True
+    assert provider.get_knowledge_hub_connector_page_v3.call_args.kwargs["filters"]["search_query"] == "report"
+
+    elsewhere = await service.get_nodes(
+        user_id="u1", org_id="o1", limit=1, cursor=searched.pagination.nextCursor,
+        parent_id="p1", parent_type="recordGroup", flattened=True,
+    )
+    assert (elsewhere.success, elsewhere.errorCode) == (False, 400)
+    assert elsewhere.error == "Invalid cursor: issued for a different location"
 
 
 @pytest.mark.asyncio
-async def test_a_listing_cursor_is_refused_on_a_search(service, provider) -> None:
+async def test_a_listing_cursor_stays_a_listing_when_the_request_has_a_query(service, provider) -> None:
+    """q on the next request does not turn a root listing into a search."""
     provider.get_knowledge_hub_root_nodes_v2.return_value = envelope(
         [row("app1", "App One", node_type="app")], total=5, has_more=True
     )
@@ -591,8 +609,8 @@ async def test_a_listing_cursor_is_refused_on_a_search(service, provider) -> Non
     result = await service.get_nodes(
         user_id="u1", org_id="o1", q="report", limit=1, cursor=first.pagination.nextCursor
     )
-    assert (result.success, result.errorCode) == (False, 400)
-    assert result.error == "Invalid cursor: issued for a different location"
+    assert result.success is True
+    assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["search_query"] is None
     provider.get_knowledge_hub_connector_page_v3.assert_not_called()
 
 

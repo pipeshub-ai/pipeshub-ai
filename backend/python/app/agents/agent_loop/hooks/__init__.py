@@ -45,6 +45,7 @@ from app.agents.agent_loop.hooks.result_accumulation import (
 )
 from app.agents.agent_loop.hooks.retrieval_context import retrieval_context_emission
 from app.agents.agent_loop.hooks.retry_with_status import retry_with_status
+from app.agents.agent_loop.hooks.selected_nodes import selected_nodes_prompt
 from app.agents.agent_loop.hooks.tool_blocking import ToolErrorTracker
 
 __all__ = [
@@ -71,5 +72,6 @@ __all__ = [
     "result_accumulation",
     "retrieval_context_emission",
     "retry_with_status",
+    "selected_nodes_prompt",
     "stash_tool_call_metadata",
 ]

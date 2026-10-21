@@ -30345,8 +30345,10 @@ paths:
           required: false
           description: |
             Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
-            response. Send it with the same path, filters and sort as the request that returned
-            it; a cursor issued for another place, user or listing mode is refused with 400.
+            response. It decides the listing mode, parent, filters and sort; only `include`
+            comes from this request. Sending it alone returns the next page. A cursor whose
+            parent disagrees with the URL, or that was issued for another user, is refused
+            with 400.
           schema:
             type: string
         - name: limit
@@ -30863,8 +30865,10 @@ paths:
           required: false
           description: |
             Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
-            response. Send it with the same path, filters and sort as the request that returned
-            it; a cursor issued for another place, user or listing mode is refused with 400.
+            response. It decides the listing mode, parent, filters and sort; only `include`
+            comes from this request. Sending it alone returns the next page. A cursor whose
+            parent disagrees with the URL, or that was issued for another user, is refused
+            with 400.
           schema:
             type: string
         - name: limit

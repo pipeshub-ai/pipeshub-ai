@@ -2422,10 +2422,14 @@ class RetrievalService:
             virtual_record_ids=hits.keys(), indexed_only=True,
             connector_ids=connector_ids,
         )
+        # A placeholder is in node_ids so navigate can open it. It is not a
+        # citation: a stub has no content, and a real copy of the same virtual
+        # record id is the one to name.
+        citable = check.node_ids - check.placeholder_ids
         return {
-            vrid: record_id if record_id in check.node_ids else check.records_by_vrid[vrid]
+            vrid: record_id if record_id in citable else check.records_by_vrid[vrid]
             for vrid, record_id in hits.items()
-            if record_id in check.node_ids or vrid in check.records_by_vrid
+            if record_id in citable or vrid in check.records_by_vrid
         }
 
     async def _get_accessible_virtual_ids_task(

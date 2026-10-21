@@ -1266,6 +1266,78 @@ describe('Knowledge Base Controller', () => {
   // Happy-path tests that exercise the actual handler logic
   // -----------------------------------------------------------------------
 
+  describe('getKnowledgeHubNodes search query', () => {
+    it('rejects whitespace and a one-character query with the minimum-length error', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      for (const q of ['   ', '\t\n', 'a']) {
+        const req = createMockRequest({ query: { q }, params: {} })
+        const res = createMockResponse()
+        const next = createMockNext()
+        await handler(req, res, next)
+        expect(next.calledOnce, q).to.be.true
+        const err = next.firstCall.args[0]
+        expect(err).to.be.instanceOf(BadRequestError)
+        expect(err.message).to.equal('Search query must be at least 2 characters')
+      }
+    })
+
+    it('checks a repeated query as one string', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      const next = createMockNext()
+      await handler(
+        createMockRequest({ query: { q: ['a'] }, params: {} }),
+        createMockResponse(),
+        next,
+      )
+      expect(next.firstCall.args[0].message).to.equal(
+        'Search query must be at least 2 characters',
+      )
+
+      let uri = ''
+      sinon.stub(ConnectorServiceCommand.prototype, 'execute').callsFake(async function (this: { uri: string }) {
+        uri = this.uri
+        return { statusCode: 200, data: { nodes: [] } }
+      })
+      const forwarded = createMockNext()
+      await handler(
+        createMockRequest({ query: { q: ['ab', 'cd'] }, params: {} }),
+        createMockResponse(),
+        forwarded,
+      )
+      expect(forwarded.called).to.be.false
+      expect(uri).to.include('q=ab%2Ccd')
+    })
+
+    it('rejects a query longer than 500 characters', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      const req = createMockRequest({ query: { q: 'x'.repeat(501) }, params: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await handler(req, res, next)
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal(
+        'Search query too long (max: 500 characters)',
+      )
+    })
+
+    it('forwards a trimmed query of 500 characters', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      let uri = ''
+      sinon.stub(ConnectorServiceCommand.prototype, 'execute').callsFake(async function (this: { uri: string }) {
+        uri = this.uri
+        return { statusCode: 200, data: { nodes: [] } }
+      })
+      const req = createMockRequest({ query: { q: `  ${'ab'.repeat(250)}  ` }, params: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await handler(req, res, next)
+      expect(next.called, next.firstCall?.args?.[0]?.message).to.be.false
+      expect(uri).to.include(`q=${'ab'.repeat(250)}`)
+      expect(uri).to.not.include('q=%20')
+    })
+  })
+
   describe('getKnowledgeHubNodes (happy path)', () => {
     it('should return nodes from connector backend', async () => {
       const handler = getKnowledgeHubNodes(createMockAppConfig())
