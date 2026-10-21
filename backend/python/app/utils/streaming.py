@@ -44,6 +44,7 @@ from app.utils.indexing_metrics import note_llm_call, note_rate_limit_retry
 from app.utils.logger import create_logger
 from app.utils.message_chunks import merge_message_chunks_off_loop
 from app.utils.opik import get_llm_invoke_config, get_opik_tracer
+from app.utils.url_redaction import redact_urls_in_text
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
 INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
@@ -208,8 +209,8 @@ async def stream_content(
                     try:
                         error_body = await response.text()
                         if error_body:
-                            # Truncate long error messages
-                            error_details = f" | Error details: {error_body[:500]}"
+                            # A source may echo the presigned URL, whose query is a credential.
+                            error_details = f" | Error details: {redact_urls_in_text(error_body)[:500]}"
                     except Exception:
                         pass
 
