@@ -1,5 +1,5 @@
 import * as promClient from 'prom-client';
-import { isTelemetryEnabled } from './flag';
+import { isCollecting, isTelemetryEnabled } from './flag';
 
 export type MetricLabels = Record<string, string | number>;
 
@@ -51,6 +51,7 @@ export class PrometheusBackend implements MetricsBackend {
     });
     return {
       inc: (labels, value) => {
+        if (!isCollecting()) return;
         if (labels) {
           counter.inc(labels, value ?? 1);
         } else {
@@ -69,6 +70,7 @@ export class PrometheusBackend implements MetricsBackend {
     });
     return {
       set: (labels, value) => {
+        if (!isCollecting()) return;
         gauge.set(labels, value);
       },
       reset: () => {
@@ -87,6 +89,7 @@ export class PrometheusBackend implements MetricsBackend {
     });
     return {
       observe: (labels, value) => {
+        if (!isCollecting()) return;
         histogram.observe(labels, value);
       },
     };

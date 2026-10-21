@@ -2781,7 +2781,8 @@
         "message": "若捨棄，您的編輯內容將不會被儲存",
         "confirm": "捨棄",
         "cancel": "繼續編輯"
-      }
+      },
+      "dataCollectionActive": "Usage data from this workspace is being collected and sent to PipesHub. Turn this off to stop it."
     },
     "mcpAccess": {
       "title": "MCP 存取",

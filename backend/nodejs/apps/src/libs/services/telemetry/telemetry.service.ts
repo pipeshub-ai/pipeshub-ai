@@ -6,6 +6,8 @@ import { Logger } from '../logger.service';
 import { KeyValueStoreService } from '../keyValueStore.service';
 import { keyValues, SERVICE_NAME } from './constants';
 import { eventBuffer } from './event-buffer';
+import { setCollectionConsent } from './flag';
+import { METRICS_CONSENT_DEFAULT } from '../../../edition';
 import {
   HEADER_REQUEST_ID,
   newSystemRoot,
@@ -63,7 +65,7 @@ export class TelemetryService implements ITelemetryService {
   private instanceId: string = '';
   private appVersion: string = DEFAULTS.APP_VERSION;
   private pushIntervalMs: number = DEFAULTS.PUSH_INTERVAL;
-  private enableMetricCollection: boolean = true;
+  private enableMetricCollection: boolean = METRICS_CONSENT_DEFAULT;
   private pushInterval: NodeJS.Timeout | null = null;
   private isStarting: boolean = false;
   private mutex: Mutex = new Mutex();
@@ -112,8 +114,17 @@ export class TelemetryService implements ITelemetryService {
           ? parsedInterval
           : DEFAULTS.PUSH_INTERVAL;
       this.enableMetricCollection = parseBoolean(
-        firstNonEmpty(config[keyValues.ENABLE_METRIC_COLLECTION], 'true'),
+        firstNonEmpty(
+          config[keyValues.ENABLE_METRIC_COLLECTION],
+          String(METRICS_CONSENT_DEFAULT),
+        ),
       );
+      setCollectionConsent(this.enableMetricCollection);
+      if (!this.enableMetricCollection) {
+        // Switched off: what was gathered before must never be sent later.
+        metricsBackend.reset();
+        eventBuffer.drain();
+      }
 
       this.logConfig();
       await this.startOrStopMetricCollection();
@@ -141,7 +152,7 @@ export class TelemetryService implements ITelemetryService {
       [keyValues.INSTALL_ID, () => this.generateInstallId()],
       [keyValues.APP_VERSION, () => DEFAULTS.APP_VERSION],
       [keyValues.PUSH_INTERVAL, () => String(DEFAULTS.PUSH_INTERVAL)],
-      [keyValues.ENABLE_METRIC_COLLECTION, () => 'true'],
+      [keyValues.ENABLE_METRIC_COLLECTION, () => String(METRICS_CONSENT_DEFAULT)],
     ];
     let changed = false;
     for (const [key, makeDefault] of defaults) {

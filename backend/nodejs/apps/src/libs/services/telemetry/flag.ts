@@ -1,4 +1,4 @@
-import { TELEMETRY_DEFAULT_ENABLED } from '../../../edition';
+import { METRICS_CONSENT_DEFAULT, TELEMETRY_DEFAULT_ENABLED } from '../../../edition';
 
 /**
  * Master switch for telemetry. `TELEMETRY_COLLECTION_FLAG` decides whether any
@@ -15,4 +15,20 @@ export function isTelemetryEnabled(): boolean {
     return TELEMETRY_DEFAULT_ENABLED;
   }
   return raw.toLowerCase() === 'true';
+}
+
+let consentGiven = METRICS_CONSENT_DEFAULT;
+
+/** The admin's Data Collection switch, as the telemetry service last read it. */
+export function setCollectionConsent(given: boolean): void {
+  consentGiven = given;
+}
+
+/**
+ * Whether anything may be recorded right now: the deployment allows telemetry
+ * and an admin has switched Data Collection on, so the admin can always see and
+ * stop whatever is collected.
+ */
+export function isCollecting(): boolean {
+  return isTelemetryEnabled() && consentGiven;
 }

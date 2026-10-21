@@ -10,6 +10,7 @@ import time
 from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.telemetry.flag import telemetry_collecting
 from app.telemetry.identity import domain_from_email
 from app.telemetry.modules.http_metrics import (
     HTTP_REQUEST_DURATION,
@@ -30,7 +31,8 @@ class MetricsMiddleware:
         self.service_name = service_name
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        # Nothing is collected while the flag or the admin's switch is off.
+        if scope["type"] != "http" or not telemetry_collecting():
             await self.app(scope, receive, send)
             return
         start = time.perf_counter()

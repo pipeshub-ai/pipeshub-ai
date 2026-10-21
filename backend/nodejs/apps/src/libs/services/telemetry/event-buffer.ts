@@ -1,4 +1,4 @@
-import { isTelemetryEnabled } from './flag';
+import { isCollecting } from './flag';
 
 export interface BufferedEvent {
   event: string;
@@ -33,7 +33,7 @@ export function recordEvent(
   event: string,
   props?: Record<string, unknown>,
 ): void {
-  if (!isTelemetryEnabled()) {
+  if (!isCollecting()) {
     return;
   }
   eventBuffer.enqueue({ event, timestamp: new Date().toISOString(), props });
