@@ -7,6 +7,7 @@ from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
 from app.config.configuration_service import ConfigurationService
+from app.modules.code_graph.connectors import agent_knowledge_has_code_connector
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
@@ -225,6 +226,8 @@ class ChatState(TypedDict):
     has_sql_knowledge: bool  # True when agent_knowledge contains a SQL connector (POSTGRESQL/SNOWFLAKE/MARIADB)
     has_slack_connector: bool  # True when org has at least one configured Slack connector
     has_slack_knowledge: bool  # True when agent_knowledge contains a Slack connector
+    has_code_connector: bool  # True when org has at least one configured repo connector (GitLab/GitHub)
+    has_code_knowledge: bool  # True when agent_knowledge contains a repo connector
     has_ui_client: bool  # True when client-name header was present; gates UI-only tools like ask_user_question
     # Per-tool approvals (`app/agents/agent_loop/tool_approvals.py`).
     client_name: str | None
@@ -511,7 +514,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, has_code_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -573,6 +576,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     
     has_sql_knowledge = agent_knowledge_has_sql_connector(agent_knowledge)
     has_slack_knowledge = agent_knowledge_has_slack_connector(agent_knowledge)
+    has_code_knowledge = agent_knowledge_has_code_connector(agent_knowledge)
 
     logger.debug(f"toolsets: {len(toolsets)} loaded")
     logger.debug(f"knowledge: {len(knowledge)} sources")
@@ -744,6 +748,8 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "has_sql_knowledge": has_sql_knowledge,
         "has_slack_connector": has_slack_connector,
         "has_slack_knowledge": has_slack_knowledge,
+        "has_code_connector": has_code_connector,
+        "has_code_knowledge": has_code_knowledge,
         "has_ui_client": bool(client_name),
         "client_name": client_name,
         "agent_key": chat_query.get("agentKey"),

@@ -660,6 +660,13 @@
     "message": "這會從頭重新索引文件，並可能產生額外費用。當搜尋結果過時，或索引完成後文件仍無法被搜尋時，請使用此功能。",
     "confirm": "確認"
   },
+  "reindexBlocked": {
+    "title": "此記錄無法單獨重新索引",
+    "message": "來自 GitHub 和 GitLab 的檔案會作為整個儲存庫的同一個程式碼圖譜一起索引。單獨重新索引某個檔案會使其版本比儲存庫其餘部分更新,並破壞檔案之間的關聯。如需重新整理，請在知識中心對整個儲存庫重新建立索引——這樣所有檔案會一起重新建立索引。連接器同步只會擷取有變更的檔案。",
+    "folderTitle": "此資料夾無法單獨重新索引",
+    "folderMessage": "來自 GitHub 和 GitLab 的檔案會作為整個儲存庫的同一個程式碼圖譜一起索引。單獨重新索引某個資料夾只會更新其中的檔案，使其版本比儲存庫其餘部分更新，並破壞檔案之間的關聯。如需重新整理，請在知識中心對整個儲存庫重新建立索引——這樣所有檔案會一起重新建立索引。連接器同步只會擷取有變更的檔案。",
+    "goToConnectors": "前往連接器"
+  },
   "kb": {
     "viewToggle": "檢視切換",
     "collectionsView": "集合檢視",
@@ -2765,6 +2772,20 @@
         "retryFailedClassification": "重試失敗的分類",
         "retryClassificationSuccess": "分類重試已加入佇列",
         "retryClassificationError": "重試分類失敗",
+        "codeGraph": {
+          "title": "程式碼圖",
+          "status": {
+            "never_built": "尚未建立",
+            "building": "建立中",
+            "ready": "就緒",
+            "stale": "更新中",
+            "waiting_on_indexing": "等待索引",
+            "retrying": "重試中",
+            "failed": "失敗",
+            "too_large": "過大",
+            "unknown": "未知"
+          }
+        },
         "lastRun": {
           "title": "上次同步",
           "outcome": {

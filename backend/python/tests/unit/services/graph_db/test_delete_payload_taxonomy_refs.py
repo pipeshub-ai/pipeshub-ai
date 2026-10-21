@@ -308,6 +308,8 @@ def _neo4j(calls: list[str], *, deleted_rows: list[dict] | None = None, inventor
         return []
 
     provider.client.execute_query = AsyncMock(side_effect=execute_query)
+    # Code blocks go in their own statements; these records have none.
+    provider.delete_blocks_for_records = AsyncMock(return_value=0)
     return provider
 
 

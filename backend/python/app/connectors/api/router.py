@@ -76,6 +76,8 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.config.redaction import REDACTED_PLACEHOLDER
+from app.connectors.core.registry.code_indexing_flags import code_indexing_filters_changed
+from app.connectors.services.reindex_events import build_reindex_event
 from app.edition_config import (
     allowed_connector_list_scopes,
     annotate_oauth_inheritance,
@@ -2710,7 +2712,7 @@ async def reindex_record_group(
             connector_normalized = connector_name.replace(" ", "").lower()
             event_type = f"{connector_normalized}.reindex"
 
-            event_data = _build_reindex_event(
+            event_data = build_reindex_event(
                 event_type=event_type,
                 org_id=org_id,
                 connector_id=connector_id,
@@ -3007,7 +3009,7 @@ async def reindex_connector(
             f"status_filters={status_filters}"
         )
 
-        event_data = _build_reindex_event(
+        event_data = build_reindex_event(
             event_type=event_type,
             org_id=org_id,
             connector_id=connector_id,
@@ -5563,6 +5565,7 @@ async def update_connector_instance_filters_sync_config(
 
         # Snapshot old sync filters before merge
         old_sync_filters = existing_config.get("filters", {}).get("sync", {})
+        old_indexing_filters = existing_config.get("filters", {}).get("indexing", {})
 
         # Update sync section if provided
         if "sync" in body and isinstance(body["sync"], dict):
@@ -5592,7 +5595,12 @@ async def update_connector_instance_filters_sync_config(
         new_sync_filters = new_config.get("filters", {}).get("sync", {})
         first_time_sync_filters = not old_sync_filters and bool(new_sync_filters)
         sync_filters_changed = old_sync_filters != new_sync_filters
-        needs_full_resync = sync_filters_changed or first_time_sync_filters
+        # Turning "Index Test Files" on applies to files already synced only if
+        # they are synced again: a record's indexing status is set at sync time (P-6).
+        code_filters_changed = code_indexing_filters_changed(
+            old_indexing_filters, new_config.get("filters", {}).get("indexing", {}),
+        )
+        needs_full_resync = sync_filters_changed or first_time_sync_filters or code_filters_changed
         secret_auth_fields = await _secret_auth_field_names(connector_registry, instance.get("type", ""))
         # Save configuration
         await config_service.set_config(config_path, new_config)

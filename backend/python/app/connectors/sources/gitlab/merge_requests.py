@@ -40,6 +40,7 @@ from app.models.blocks import (
     GroupType,
     IndexRange,
 )
+from app.modules.parsers.code_parser.secret_scan import redact_secrets
 from app.utils.time_conversion import datetime_to_epoch_ms, parse_timestamp, string_to_datetime
 
 from app.models.blocks import wire_block_group_parent_children
@@ -346,7 +347,7 @@ class MergeRequestsSync:
                 sub_type=BlockSubType.COMMIT.value,
                 weburl=commit_web_url,
                 format=DataFormat.MARKDOWN,
-                data=commit_message,
+                data=redact_secrets(commit_message or "").text,
                 source_id=commit_id,
                 name=commit_title,
                 source_creation_date=string_to_datetime(commit_committed_date),

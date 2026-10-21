@@ -20,6 +20,7 @@ import {
   DeleteConfirmationDialog,
   FolderDetailsSidebar,
   ReindexScopeDialog,
+  ReindexBlockedDialog,
   ChatWidgetWrapper,
 } from './components';
 import type { MentionNode } from '@/chat/utils/node-mentions';
@@ -94,6 +95,7 @@ import {
   requiresForceReindexConfirmation,
   supportsBulkReindex,
   isKbCollectionNode,
+  isRecordReindexBlocked,
 } from './utils/reindex-label';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import type { ReindexMenuLabelKey } from './utils/reindex-label';
@@ -490,6 +492,9 @@ function KnowledgeBasePageContent() {
     statusFilters?: string[];
   } | null>(null);
   const [isReindexSubmitting, setIsReindexSubmitting] = useState(false);
+  const [isReindexBlockedOpen, setIsReindexBlockedOpen] = useState(false);
+  const [blockedReindexConnector, setBlockedReindexConnector] = useState<string>();
+  const [blockedReindexNodeType, setBlockedReindexNodeType] = useState<string>();
 
   // Bulk delete confirmation dialog state
   const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false);
@@ -2521,6 +2526,13 @@ function KnowledgeBasePageContent() {
         subType: hubItem.subType,
       });
 
+      if (isRecordReindexBlocked(reindexNode)) {
+        setBlockedReindexConnector(reindexNode.connector);
+        setBlockedReindexNodeType(reindexNode.nodeType);
+        setIsReindexBlockedOpen(true);
+        return;
+      }
+
       if (requiresForceReindexConfirmation(reindexNode, statusFilters)) {
         setForceReindexPending({ item: hubItem, statusFilters });
         return;
@@ -2852,6 +2864,13 @@ function KnowledgeBasePageContent() {
         subType: hubItem?.subType,
       };
     });
+    const blockedItem = items.find(isRecordReindexBlocked);
+    if (blockedItem) {
+      setBlockedReindexConnector(blockedItem.connector);
+      setBlockedReindexNodeType(blockedItem.nodeType);
+      setIsReindexBlockedOpen(true);
+      return;
+    }
     await bulkReindexSelected(items, refreshData);
   }, [tickedRows, bulkReindexSelected, refreshData]);
 
@@ -3172,6 +3191,13 @@ function KnowledgeBasePageContent() {
         confirmVariant="primary"
         isLoading={isReindexSubmitting}
         onConfirm={() => void handleForceReindexConfirm()}
+      />
+
+      <ReindexBlockedDialog
+        open={isReindexBlockedOpen}
+        onOpenChange={setIsReindexBlockedOpen}
+        connector={blockedReindexConnector}
+        nodeType={blockedReindexNodeType}
       />
 
       {reindexScopePending && (

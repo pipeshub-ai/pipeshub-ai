@@ -23,11 +23,13 @@ import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import {
   canShowReindexMenu,
   getReindexNodeFromHubItem,
+  isRecordReindexBlocked,
   requiresForceReindexConfirmation,
 } from '@/app/(main)/knowledge-base/utils/reindex-label';
 import { toast } from '@/lib/store/toast-store';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
 import { DeleteConfirmationDialog } from '@/app/(main)/knowledge-base/components/dialogs/delete-confirmation-dialog';
+import { ReindexBlockedDialog } from '@/app/(main)/knowledge-base/components/dialogs/reindex-blocked-dialog';
 import { RecordMetadataPanel } from './record-metadata-panel';
 import { ZoomActionBar } from './zoom-action-bar';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
@@ -96,6 +98,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [isForceReindexOpen, setIsForceReindexOpen] = useState(false);
   const [isReindexing, setIsReindexing] = useState(false);
+  const [isReindexBlockedOpen, setIsReindexBlockedOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
   const blobUrlRef = useRef<string | null>(null);
@@ -312,7 +315,12 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
       nodeType: 'record',
       indexingStatus,
       hasChildren: false,
+      connector: recordDetails?.record?.connectorName,
     });
+    if (isRecordReindexBlocked(reindexNode)) {
+      setIsReindexBlockedOpen(true);
+      return;
+    }
     if (requiresForceReindexConfirmation(reindexNode)) {
       setIsForceReindexOpen(true);
     } else {
@@ -794,6 +802,12 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
           </Flex>
         </AlertDialog.Content>
       </AlertDialog.Root>
+
+      <ReindexBlockedDialog
+        open={isReindexBlockedOpen}
+        onOpenChange={setIsReindexBlockedOpen}
+        connector={recordDetails?.record?.connectorName}
+      />
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog

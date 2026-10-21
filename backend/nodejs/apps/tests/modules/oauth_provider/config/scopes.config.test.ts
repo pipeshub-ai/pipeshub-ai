@@ -8,7 +8,9 @@ import {
   OAuthScopes,
   ScopeCategories,
   DefaultMcpScopes,
+  AgentMcpScopes,
   AdminOnlyScopes,
+  getAllowedScopeNamesForRole,
 } from '../../../../src/modules/oauth_provider/config/scopes.config'
 import { OAuthScopeNames } from '../../../../src/libs/enums/oauth-scopes.enum'
 
@@ -25,6 +27,14 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     expect(DefaultMcpScopes).to.include('usergroup:read')
     expect(DefaultMcpScopes.filter((s) => AdminOnlyScopes.has(s))).to.deep.equal([])
     expect(DefaultMcpScopes.every((s) => isValidScope(s))).to.be.true
+  })
+
+  // The code-graph routes and MCP code tools need code:read; the stock presets
+  // grant it so new PATs and agent logins reach them without extra setup.
+  it('code:read is in the stock presets and open to non-admins', () => {
+    expect(DefaultMcpScopes).to.include('code:read')
+    expect(AgentMcpScopes).to.include('code:read')
+    expect(getAllowedScopeNamesForRole(false)).to.include('code:read')
   })
 
   it('getScopesGroupedByCategoryForRole filters admin-only scopes for non-admin', () => {

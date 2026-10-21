@@ -696,6 +696,13 @@
     "message": "Dokument se znovu zaindexuje od začátku, což může znamenat dodatečné náklady. Použijte to, když jsou výsledky vyhledávání zastaralé nebo když dokument nelze vyhledat ani po dokončení indexování.",
     "confirm": "Potvrdit"
   },
+  "reindexBlocked": {
+    "title": "Tento záznam nelze přeindexovat samostatně",
+    "message": "Soubory z GitHubu a GitLabu tvoří jeden graf kódu pro celý repozitář. Přeindexováním jediného souboru by se tento soubor dostal před zbytek repozitáře a vazby mezi soubory by se porušily. Chcete-li jej obnovit, přeindexujte celý repozitář ze znalostní báze – tím se všechny soubory přeindexují společně. Synchronizace konektoru zachytí jen změněné soubory.",
+    "folderTitle": "Tuto složku nelze přeindexovat samostatně",
+    "folderMessage": "Soubory z GitHubu a GitLabu tvoří jeden graf kódu pro celý repozitář. Přeindexováním složky by se aktualizovaly jen její soubory, které by se tak dostaly před zbytek repozitáře, a vazby mezi soubory by se porušily. Chcete-li ji obnovit, přeindexujte celý repozitář ze znalostní báze – tím se všechny soubory přeindexují společně. Synchronizace konektoru zachytí jen změněné soubory.",
+    "goToConnectors": "Přejít na konektory"
+  },
   "kb": {
     "viewToggle": "Přepínač zobrazení",
     "collectionsView": "Zobrazení kolekcí",
@@ -2849,6 +2856,20 @@
         "retryFailedClassification": "Zopakovat neúspěšnou klasifikaci",
         "retryClassificationSuccess": "Opakování klasifikace zařazeno do fronty",
         "retryClassificationError": "Klasifikaci se nepodařilo zopakovat",
+        "codeGraph": {
+          "title": "Graf kódu",
+          "status": {
+            "never_built": "Zatím nevytvořen",
+            "building": "Vytváří se",
+            "ready": "Připraven",
+            "stale": "Aktualizuje se",
+            "waiting_on_indexing": "Čeká na indexaci",
+            "retrying": "Nový pokus",
+            "failed": "Selhalo",
+            "too_large": "Příliš velký",
+            "unknown": "Neznámý"
+          }
+        },
         "lastRun": {
           "title": "Poslední synchronizace",
           "outcome": {

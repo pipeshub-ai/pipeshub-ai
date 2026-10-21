@@ -660,6 +660,13 @@
     "message": "이 작업은 문서를 처음부터 다시 인덱싱하며 추가 비용이 발생할 수 있습니다. 검색 결과가 오래되었거나, 인덱싱이 완료된 후에도 문서가 검색되지 않을 때 사용하세요.",
     "confirm": "확인"
   },
+  "reindexBlocked": {
+    "title": "이 레코드는 단독으로 재인덱싱할 수 없습니다",
+    "message": "GitHub 및 GitLab의 파일은 저장소 전체에 대한 하나의 코드 그래프로 함께 인덱싱됩니다. 파일 하나만 재인덱싱하면 해당 파일이 저장소의 나머지 부분보다 최신 버전이 되어 파일 간 연결이 끊어집니다. 최신 상태로 만들려면 지식 허브에서 저장소 전체를 다시 인덱싱하세요. 그러면 모든 파일이 함께 다시 인덱싱됩니다. 커넥터 동기화는 변경된 파일만 가져옵니다.",
+    "folderTitle": "이 폴더는 단독으로 재인덱싱할 수 없습니다",
+    "folderMessage": "GitHub 및 GitLab의 파일은 저장소 전체에 대한 하나의 코드 그래프로 함께 인덱싱됩니다. 폴더만 재인덱싱하면 해당 파일들이 저장소의 나머지 부분보다 최신 버전이 되어 파일 간 연결이 끊어집니다. 최신 상태로 만들려면 지식 허브에서 저장소 전체를 다시 인덱싱하세요. 그러면 모든 파일이 함께 다시 인덱싱됩니다. 커넥터 동기화는 변경된 파일만 가져옵니다.",
+    "goToConnectors": "커넥터로 이동"
+  },
   "kb": {
     "viewToggle": "보기 전환",
     "collectionsView": "컬렉션 보기",
@@ -2765,6 +2772,20 @@
         "retryFailedClassification": "실패한 분류 재시도",
         "retryClassificationSuccess": "분류 재시도가 대기열에 추가되었습니다",
         "retryClassificationError": "분류 재시도에 실패했습니다",
+        "codeGraph": {
+          "title": "코드 그래프",
+          "status": {
+            "never_built": "아직 생성되지 않음",
+            "building": "생성 중",
+            "ready": "준비됨",
+            "stale": "업데이트 중",
+            "waiting_on_indexing": "인덱싱 대기 중",
+            "retrying": "재시도 중",
+            "failed": "실패",
+            "too_large": "너무 큼",
+            "unknown": "알 수 없음"
+          }
+        },
         "lastRun": {
           "title": "마지막 동기화",
           "outcome": {

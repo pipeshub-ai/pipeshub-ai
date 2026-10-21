@@ -245,3 +245,4 @@ class SyncTaskManager:
 # keeps a separate registry here — and separate is the point: reindex must
 # never cancel an in-flight sync.
 reindex_task_manager = SyncTaskManager(label="Reindex")
+code_edge_build_task_manager = SyncTaskManager(label="Code edge build")

@@ -421,6 +421,23 @@ def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
     return types
 
 
+@dataclass(frozen=True)
+class CodeFileInfo:
+    """Code file metadata returned by get_code_file_info_for_records.
+
+    file_path: repo-relative path (from codeFiles.filePath or records.recordName)
+    referenced_names: symbol names the file references (calls, imports, type refs)
+    changed_names: names whose definitions the file added, removed or changed
+        in recent projections, so a build re-resolves the files referencing them
+    has_code_file: False for a source file with no codeFiles node (a .py
+        uploaded to a KB), which records neither list
+    """
+    file_path: str
+    referenced_names: tuple[str, ...] = ()
+    changed_names: tuple[str, ...] = ()
+    has_code_file: bool = True
+
+
 class IGraphDBProvider(ABC):
     """
     Comprehensive interface for graph database operations.
@@ -678,6 +695,7 @@ class IGraphDBProvider(ABC):
         *,
         raise_on_error: bool = False,
         after_key: str | None = None,
+        return_fields: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Fetch a single page of documents from a collection using database-level
@@ -700,6 +718,15 @@ class IGraphDBProvider(ABC):
             transaction:  Optional transaction ID.
             raise_on_error: Propagate database errors instead of returning an
                             empty page.
+            after_key:    Keyset cursor: only documents whose `_key` sorts
+                          after this value are returned. Pass the last `_key`
+                          of the previous page together with
+                          `sort_field="_key"` and `skip=0` to sweep a large
+                          collection without the O(n^2) cost of a growing
+                          offset.
+            return_fields: Optional list of fields to project (None = whole
+                           document). `_key` is always spelled `_key` in the
+                           result, whichever backend serves it.
 
         Returns:
             List of document dicts for the requested page (may be shorter than
@@ -896,6 +923,32 @@ class IGraphDBProvider(ABC):
         existing edge's properties. For a repair or a re-run that must not reset what
         a live edge already carries (a sync state, a role). Raises on failure.
         *edges* take the same generic format.
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_node_relations(
+        self,
+        edges: list[dict],
+        transaction: str | None = None,
+    ) -> bool:
+        """
+        Batch upsert record relation edges.
+
+        Upserts rather than inserts, matching on _from, _to, relationshipType
+        and constraintName, so the same edge written twice is one edge while
+        two relation types (or two constraints) between the same pair coexist.
+
+        Args:
+            edges: Edge documents with _from, _to, relationshipType and
+                optionally constraintName
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+
+        Raises:
+            Exception: propagated from the database on failure
         """
         pass
 
@@ -1402,6 +1455,74 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_neighbors_by_relationship_types(
+        self,
+        node_key: str,
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 25,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Walk one hop from a node along edges of the given relationship types.
+
+        Endpoints may live in a different collection than the anchor -- a code
+        symbol can call a whole file -- so each result names its own collection
+        rather than assuming the anchor's.
+
+        Args:
+            node_key (str): Anchor node key
+            node_collection (str): Anchor node collection name
+            relationship_types (List[str]): Relationship type values to follow
+            direction (str): "outbound" (anchor is _from) or "inbound" (anchor is _to)
+            limit (int): Maximum neighbours to return
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: One dict per neighbour with keys ``collection``, ``key``,
+                ``relationshipType``, ``sourceLineNumber``, ``sourceColumnNumber``
+                and ``provenance``.
+        """
+        pass
+
+    @abstractmethod
+    async def get_neighbors_for_nodes_by_relationship_types(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 5000,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        """
+        Walk one hop from many nodes at once along the given relationship types.
+
+        The batched sibling of ``get_neighbors_by_relationship_types``, for
+        breadth-first search: one query per frontier level instead of one per
+        node. Each row names the anchor it came from and the direction it was
+        traversed, which a caller reconstructing a path needs.
+
+        Args:
+            node_keys (List[str]): Anchor node keys (one frontier)
+            node_collection (str): Collection the anchors live in
+            relationship_types (List[str]): Relationship type values to follow
+            direction (str): "outbound", "inbound", or "any"
+            limit (int): Maximum rows to return across the whole frontier
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: One dict per edge with keys ``anchorKey``, ``collection``,
+                ``key``, ``direction`` ("outbound" / "inbound", relative to the
+                anchor), ``relationshipType``, ``sourceLineNumber``,
+                ``sourceColumnNumber`` and ``provenance``.
+        """
+        pass
+
+    @abstractmethod
     async def get_related_node_field(
         self,
         node_id: str,
@@ -1510,6 +1631,144 @@ class IGraphDBProvider(ABC):
         Returns:
             List[Dict]: List of matching node documents
         """
+        pass
+
+    @abstractmethod
+    async def get_nodes_by_field_prefix(
+        self,
+        collection: str,
+        field_name: str,
+        prefix: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        """Get nodes whose field starts with a prefix."""
+        pass
+
+    @abstractmethod
+    async def search_nodes_by_field_terms(
+        self,
+        collection: str,
+        field_name: str,
+        terms: list[str],
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        """Get nodes whose field contains any search term."""
+        pass
+
+    @abstractmethod
+    async def delete_edges_touching_nodes(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        edge_collection: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete edges whose source or target is one of the given nodes."""
+        pass
+
+    @abstractmethod
+    async def get_edge_rollup_by_file_prefix(
+        self,
+        org_id: str,
+        file_path_prefix: str,
+        relationship_types: list[str],
+        direction: str,
+        connector_id: str,
+        limit: int = 100000,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Aggregate code-graph edges between files under a path prefix.
+
+        ``connector_id`` is required: file paths are repo-relative, so an
+        unscoped rollup would merge ``backend/`` from two repos into one bucket.
+        """
+        pass
+
+    @abstractmethod
+    async def get_file_paths_for_records(
+        self,
+        org_id: str,
+        record_ids: list[str],
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> dict[str, CodeFileInfo]:
+        """Return code-file info (path + referencedNames) for each requested record."""
+        pass
+
+    @abstractmethod
+    async def get_edges_by_target_keys(
+        self,
+        target_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        return_field: str = "_from",
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[str]:
+        """Return distinct edge fields for edges targeting the given nodes."""
+        pass
+
+    @abstractmethod
+    async def delete_edges_by_source_keys(
+        self,
+        source_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        transaction: str | None = None,
+        exclude: dict[str, Any] | None = None,
+    ) -> int:
+        """Delete filtered edges originating from any requested node.
+
+        ``exclude`` keeps the edges whose field holds that value; an edge
+        without the field is not kept.
+        """
+        pass
+
+    @abstractmethod
+    async def count_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        """Count nodes matching equality and membership filters."""
+        pass
+
+    @abstractmethod
+    async def has_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """Return whether any node matches equality and membership filters."""
+        pass
+
+    @abstractmethod
+    async def get_nodes_updated_since(
+        self,
+        collection: str,
+        timestamp_field: str,
+        since: int,
+        filters: dict[str, Any] | None = None,
+        return_fields: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        """Get nodes whose timestamp field is greater than the given value."""
         pass
 
 
@@ -4445,6 +4704,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def backfill_block_name_folded(self, limit: int = 5000) -> int:
+        """Set ``nameFolded`` (lower-cased ``name``) on up to ``limit`` code blocks lacking it.
+
+        Returns how many were updated; 0 means none is left.
+        """
+        pass
+
+    @abstractmethod
+    async def update_sync_point_if(
+        self,
+        sync_point_key: str,
+        expected: dict[str, Any],
+        sync_point_data: dict,
+        collection: str,
+    ) -> bool:
+        """Update an existing sync point only if every ``expected`` field still holds its value.
+
+        A compare-and-set: ``None`` matches a missing or null field. Returns
+        whether the update was applied; False when the sync point is missing
+        or any expected field has changed since the caller read it.
+        """
+        pass
+
+    @abstractmethod
     async def remove_sync_point(
         self,
         key: str,
@@ -5204,6 +5487,23 @@ class IGraphDBProvider(ABC):
         isOfType type doc, records vertex, optional deleteRecord payload) but
         inventory is only the given record. Children stay. Missing/empty id is a
         no-op success.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_blocks_for_records(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the blocks projected from the given records, and their edges.
+
+        Blocks hang off their record by ``recordId`` alone, so a record vertex
+        can be removed without any of them going with it. Cross-file code edges
+        point straight at a block, never at its record, and outlive the record
+        sweep too -- both halves have to be removed here.
+
+        Returns the number of block nodes removed.
         """
         raise NotImplementedError
 

@@ -10,6 +10,7 @@ import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
+import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
 import { registerOAuthTokenService } from './libs/services/oauth-token-service.provider';
@@ -659,6 +660,12 @@ export class Application {
     this.app.use(
       '/api/v1/search',
       createSemanticSearchRouter(this.esAgentContainer),
+    );
+
+    // code-graph status for the dashboard (repos and their graph status)
+    this.app.use(
+      '/api/v1/code-graph',
+      createCodeGraphRouter(this.esAgentContainer),
     );
 
     // enterprise search connectors routes — pass the crawling container

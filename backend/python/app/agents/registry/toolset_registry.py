@@ -24,6 +24,10 @@ STANDARD_TOOLSET_MODULES = (
     'app.agents.actions.calculator.date_calculator',
     'app.agents.actions.knowledge_hub.knowledge_hub',
     'app.agents.actions.knowledge_graph.knowledge_graph',
+    # Listed even though `tool_loader` gates it on has_code_connector/has_code_knowledge:
+    # this list is the only thing that imports it, so omitting it skips the toolset
+    # before the gate runs, and the tools are silently absent.
+    'app.agents.actions.code_graph.code_graph',
     'app.agents.actions.coding_sandbox.coding_sandbox',
     'app.agents.actions.database_sandbox.database_sandbox',
     'app.agents.actions.image_generator.image_generator',

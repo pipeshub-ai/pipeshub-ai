@@ -528,6 +528,7 @@ components:
             connector:write: Create and update connectors
             connector:sync: Trigger connector synchronization
             connector:delete: Delete connectors
+            code:read: Read indexed code repositories and their code graph
             config:read: Read system configuration
             config:write: Update system configuration
             crawl:read: Read crawling jobs
@@ -571,6 +572,7 @@ components:
             connector:write: Create and update connectors
             connector:sync: Trigger connector synchronization
             connector:delete: Delete connectors
+            code:read: Read indexed code repositories and their code graph
             config:read: Read system configuration
             config:write: Update system configuration
             crawl:read: Read crawling jobs
@@ -29667,7 +29669,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/reIndexRecordResponseSchema'
         '400':
-          description: Invalid request body or parameters
+          description: >-
+            Invalid request body or parameters, or the record belongs to a
+            GitHub/GitLab repository-wide code graph and cannot be reindexed
+            on its own. Reindex the whole repository with
+            `POST /knowledgeBase/reindex/record-group/{recordGroupId}`, or run
+            a connector sync to pick up changes from the repository.
           content:
             application/json:
               schema:

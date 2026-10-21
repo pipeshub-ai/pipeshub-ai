@@ -1001,3 +1001,24 @@ class TestOnNewRecordsDeadlockRetry:
         flushed = [move for flush in proc._flush_pending_blob_moves.await_args_list for move in flush.args[0]]
         assert flushed == [move_a, move_b]
         assert proc.data_store_provider.transaction.call_count == 2
+
+
+def test_a_renamed_code_file_is_reindexed_even_with_the_same_bytes() -> None:
+    """Its path is in what was embedded: block headers and the summary name it (P-8)."""
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.models.entities import CodeFileRecord, FileRecord, RecordType
+
+    def code(path: str) -> CodeFileRecord:
+        return CodeFileRecord(record_name=path.rsplit("/", 1)[-1], record_type=RecordType.CODE_FILE,
+                              external_record_id=path, version=0, origin="CONNECTOR",
+                              connector_name="GITHUB", connector_id="c", file_path=path)
+
+    changed = DataSourceEntitiesProcessor._code_path_changed
+    assert changed(code("src/new.py"), code("src/old.py"))
+    assert not changed(code("src/same.py"), code("src/same.py"))
+    plain = FileRecord(record_name="a.txt", record_type=RecordType.FILE, external_record_id="a",
+                       version=0, origin="CONNECTOR", connector_name="GITHUB", connector_id="c",
+                       is_file=True)
+    assert not changed(plain, plain)

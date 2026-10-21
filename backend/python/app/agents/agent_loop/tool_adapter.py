@@ -473,6 +473,12 @@ class PipesHubStructuredToolAdapter(Tool):
     def short_description(self) -> str:
         if self._short_description:
             return self._short_description
+        # Code-graph tools carry their one-liner in the StructuredTool's metadata.
+        meta = getattr(self._structured_tool, "metadata", None) or {}
+        if isinstance(meta, dict):
+            short = meta.get("short_description")
+            if isinstance(short, str) and short.strip():
+                return short.strip()
         return _derive_short_description(self._structured_tool.description, self.name)
 
     @property
