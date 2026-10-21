@@ -14,14 +14,17 @@ WINDOW=${3:-60}
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 detect_docker || exit 1
 
-proj=$($DOCKER inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$CONTAINER" 2>/dev/null)
+# docker.exe on Git Bash writes CRLF and command substitution drops only the \n,
+# so every value from docker is stripped of \r before it is used as a filter, a
+# path or an exec argument.
+proj=$($DOCKER inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$CONTAINER" 2>/dev/null | tr -d '\r')
 
 # Rediscovered every window, so a container replaced mid-wait is followed.
 list_ids() {
     if [ -n "$proj" ]; then
-        $DOCKER ps -q --no-trunc --filter "label=com.docker.compose.project=$proj" 2>/dev/null
+        $DOCKER ps -q --no-trunc --filter "label=com.docker.compose.project=$proj" 2>/dev/null | tr -d '\r'
     else
-        $DOCKER inspect "$CONTAINER" --format '{{.Id}}' 2>/dev/null
+        $DOCKER inspect "$CONTAINER" --format '{{.Id}}' 2>/dev/null | tr -d '\r'
     fi
 }
 
@@ -32,38 +35,64 @@ list_ids() {
 usage_usec() {
     local id=$1 d
     for d in "/sys/fs/cgroup/system.slice/docker-$id.scope" "/sys/fs/cgroup/docker/$id"; do
-        [ -r "$d/cpu.stat" ] && { awk '/^usage_usec/{print $2}' "$d/cpu.stat"; return; }
+        [ -r "$d/cpu.stat" ] && { awk '/^usage_usec/{print $2}' "$d/cpu.stat" | tr -d '\r'; return; }
     done
-    $DOCKER exec "$id" cat /sys/fs/cgroup/cpu.stat 2>/dev/null | awk '/^usage_usec/{print $2}'
+    $DOCKER exec "$id" cat /sys/fs/cgroup/cpu.stat 2>/dev/null | tr -d '\r' | awk '/^usage_usec/{print $2}'
 }
 
-declare -A A B
+# Reads every listed container's counter into S[id]; N is how many were listed.
+sample() {
+    local id v
+    S=(); N=0
+    for id in $(list_ids); do
+        N=$((N + 1)); v=$(usage_usec "$id")
+        [ -n "$v" ] && S[$id]=$v
+    done
+}
+
+declare -A A B S
+N=0; seen=0; blind=0
 start=$(date +%s)
 while :; do
-    A=(); B=()
-    ids=$(list_ids)
-    for id in $ids; do v=$(usage_usec "$id"); [ -n "$v" ] && A[$id]=$v; done
+    sample
+    A=(); for id in "${!S[@]}"; do A[$id]=${S[$id]}; done
+    listed=$N
     if [ "${#A[@]}" -eq 0 ]; then
-        echo "   WARN: no container CPU counter is readable (needs cgroup v2), not waiting for idle"
-        exit 0
+        waited=$(( $(date +%s) - start ))
+        # Nothing readable before any counter has ever been read (cgroup v1, or
+        # docker not answering yet) cannot be waited out; after one has been
+        # read, an empty sample is a hiccup and the stack is sampled again.
+        if [ "$seen" -eq 0 ] && [ "$blind" -ge 2 ]; then
+            echo "   WARN: no container CPU counter is readable (needs cgroup v2), not waiting for idle"
+            exit 0
+        fi
+        blind=$((blind + 1))
+        echo "   no container CPU counter readable, sampling again (waited ${waited}s)"
+        [ "$waited" -ge "$TIMEOUT" ] && { echo "   gave up after ${TIMEOUT}s"; exit 1; }
+        sleep 2
+        continue
     fi
+    seen=1
     t0=$(date +%s.%N)
     sleep "$WINDOW"
-    for id in "${!A[@]}"; do v=$(usage_usec "$id"); [ -n "$v" ] && B[$id]=$v; done
+    sample
+    B=(); for id in "${!S[@]}"; do B[$id]=${S[$id]}; done
     t1=$(date +%s.%N)
     waited=$(( $(date +%s) - start ))
-    unread=$(( $(wc -w <<< "$ids") - ${#A[@]} ))
+    unread=$(( listed - ${#A[@]} ))
     note=""; [ "$unread" -gt 0 ] && note=", $unread container(s) unreadable and skipped"
 
-    # A container that vanished or whose counter went backwards (restart) says
-    # nothing about load: sample again, as resource_sampler.sh does.
+    # A container that vanished, appeared, became readable or unreadable, or
+    # whose counter went backwards (restart) says nothing about load: sample
+    # again, as resource_sampler.sh does. One unreadable at both ends stays out.
     reset=0; used=0
     for id in "${!A[@]}"; do
         if [ -z "${B[$id]:-}" ] || [ "${B[$id]}" -lt "${A[$id]}" ]; then reset=1; break; fi
         used=$(( used + B[$id] - A[$id] ))
     done
+    for id in "${!B[@]}"; do [ -z "${A[$id]:-}" ] && reset=1; done
     if [ "$reset" -eq 1 ]; then
-        echo "   container restarted or stopped during the window, sampling again (waited ${waited}s)"
+        echo "   container restarted, stopped or changed readability during the window, sampling again (waited ${waited}s)"
     else
         cpu=$(awk -v u="$used" -v t0="$t0" -v t1="$t1" 'BEGIN{printf "%.0f", u / ((t1 - t0) * 1e6) * 100}')
         if [ "$cpu" -le "$MAX" ]; then
