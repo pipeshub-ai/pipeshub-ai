@@ -107,9 +107,9 @@ def test_closing_undoes_the_newest_first_and_reports_what_failed() -> None:
     assert undone == ["third", "second", "first"]
 
 
-@pytest.mark.parametrize(("found", "deletes"), [(200, True), (404, False)])
+@pytest.mark.parametrize(("found", "deletions"), [(200, 1), (404, 0)])
 def test_a_personal_toolset_is_deleted_by_its_owner_only_while_it_is_there(
-    monkeypatch: pytest.MonkeyPatch, found: int, deletes: bool,
+    monkeypatch: pytest.MonkeyPatch, found: int, deletions: int,
 ) -> None:
     # The owner's own delete case removes it first, and deleting it again is a 403, not a 404.
     world = _CountingWorld()
@@ -126,7 +126,7 @@ def test_a_personal_toolset_is_deleted_by_its_owner_only_while_it_is_there(
     world._delete_personal_toolset("toolset-1", CREATOR)
 
     assert looked == [("GET", "http://gateway.test:3000/api/v1/toolsets/instances/toolset-1", "member-token")]
-    assert deleted == ([(CREATOR, "DELETE", "/api/v1/toolsets/instances/toolset-1")] if deletes else [])
+    assert deleted == [(CREATOR, "DELETE", "/api/v1/toolsets/instances/toolset-1")] * deletions
 
 
 def test_a_personal_toolset_that_cannot_be_looked_up_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
