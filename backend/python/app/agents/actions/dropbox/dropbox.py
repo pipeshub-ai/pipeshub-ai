@@ -4,6 +4,8 @@ import logging
 import threading
 from typing import Optional, Tuple, List
 
+from dropbox.files import SearchOptions
+
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
@@ -521,10 +523,11 @@ class Dropbox:
         """
         try:
             # Use DropboxDataSource method
+            # The SDK's files_search_v2 takes path and max_results inside SearchOptions.
+            options = SearchOptions(path=path, max_results=max_results)
             response = self._run_async(self.client.files_search_v2(
                 query=query,
-                path=path,
-                max_results=max_results
+                options=options
             ))
 
             if response.success:
