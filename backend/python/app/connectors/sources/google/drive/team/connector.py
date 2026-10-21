@@ -2438,6 +2438,24 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if keeps_its_drive and parent_external_record_id == grant_drive_id:
                     file_record.parent_external_record_id = None
                     file_record.parent_record_type = None
+                elif keeps_its_drive and not metadata.get("parents"):
+                    # Drive leaves out `parents` when the grantee cannot see the folder;
+                    # that is not a move to the drive's root.
+                    file_record.parent_external_record_id = existing_record.parent_external_record_id
+                    file_record.parent_record_type = existing_record.parent_record_type
+
+            # Filing an item under its shared drive is a placement change the permission
+            # path never writes: once the grantee's 0S: edge exists it skips the record,
+            # so an item a grantee stored standalone stayed out of its drive.
+            item_shared_drive_id = metadata.get("driveId")
+            if (
+                existing_record is not None
+                and item_shared_drive_id
+                and file_record.external_record_group_id == item_shared_drive_id
+                and existing_record.external_record_group_id != item_shared_drive_id
+            ):
+                is_updated = True
+                metadata_changed = True
 
             # Handle Permissions - fetch new permissions
             new_permissions = []
