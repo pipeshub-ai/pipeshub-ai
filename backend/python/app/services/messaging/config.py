@@ -299,6 +299,25 @@ class MessagingEnvConfig:
         return _env_seconds("RECORD_PROCESSING_TIMEOUT", 1800.0)
 
     @property
+    def pdf_record_processing_timeout(self) -> float:
+        """Budget for PDF records. Docling parses them a page batch at a time,
+        so a 200+ page filing under load outlasts the general budget and, with
+        no checkpoint, re-parses from page 1 on every retry."""
+        return _env_seconds("PDF_RECORD_PROCESSING_TIMEOUT", 5400.0)
+
+    def record_processing_timeout_for(self, extension: object, mime_type: object) -> float:
+        """The processing budget for a record with this extension/mimeType."""
+        ext = str(extension or "").lower().lstrip(".")
+        mime = str(mime_type or "").lower()
+        if ext == "pdf" or mime == "application/pdf":
+            return self.pdf_record_processing_timeout
+        return self.record_processing_timeout
+
+    @property
+    def max_record_processing_timeout(self) -> float:
+        return max(self.record_processing_timeout, self.pdf_record_processing_timeout)
+
+    @property
     def max_pending_indexing_tasks(self) -> int:
         """Static legacy fallback — prefer
         ``consumer_concurrency.pending_task_ceiling(host)``, which derives
@@ -329,8 +348,29 @@ class MessagingEnvConfig:
         )
 
     @property
+    def parse_admission_wait_seconds(self) -> float:
+        """How long a record may queue for a parse slot before it is handed
+        back to the broker. The processing budget, reused: long enough that a
+        queue behind a few Docling conversions drains, and one number fewer to
+        tune. ``consumer_concurrency.parse_admission_wait_seconds`` reads it."""
+        return self.record_processing_timeout
+
+    @property
     def stale_recovery_after_seconds(self) -> float:
-        default = self.record_processing_timeout + self.concurrency_lease_seconds
+        # Sized to the longest a record can legitimately sit IN_PROGRESS, so
+        # the age-based cutoff cannot republish one that is still working.
+        # That is not just the budget: `processingStartedAt` is stamped when
+        # the consumer picks the message up, while `parse_admission_wait`
+        # *pauses* the budget for the queue ahead of it, so a record that
+        # waited for a slot and then used its whole budget is older than the
+        # budget by the length of that wait. With leases this cutoff is unused
+        # (`is_stale` applies one lease interval, backed by ownership); without
+        # them it is the only guard, so it has to cover the worst case.
+        default = (
+            self.max_record_processing_timeout
+            + self.parse_admission_wait_seconds
+            + self.concurrency_lease_seconds
+        )
         return float(os.getenv("STALE_INDEXING_RECOVERY_AFTER_SECONDS", str(default)))
 
     @property

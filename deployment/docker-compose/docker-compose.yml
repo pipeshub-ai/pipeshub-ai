@@ -293,6 +293,8 @@ services:
       # only — the shrink brake always reads true cgroup occupancy.
       - GOVERNOR_BASELINE_MEMORY_MB=${GOVERNOR_BASELINE_MEMORY_MB:-}
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-}
+      - RECORD_PROCESSING_TIMEOUT=${RECORD_PROCESSING_TIMEOUT:-}
+      - PDF_RECORD_PROCESSING_TIMEOUT=${PDF_RECORD_PROCESSING_TIMEOUT:-}
       - QUERY_UVICORN_WORKERS=${QUERY_UVICORN_WORKERS:-}
       # Query-service runtime tuning. Defaults reproduce current behaviour:
       # langchain transport, accessible-records cache on, signed-URL cache off.
