@@ -223,7 +223,9 @@ async def test_a_failed_hand_off_fails_the_attempt() -> None:
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
 async def test_the_content_revision_is_written_with_in_progress() -> None:
-    ep = _make_event_processor(parsing_client=_service_parsing_client(), sink_orchestrator=_indexing_sink())
+    ep = _make_event_processor(
+        parsing_client=_service_parsing_client(), extraction_client=MagicMock(), sink_orchestrator=_indexing_sink()
+    )
 
     async for _ in ep.on_event(_make_event_data()):
         pass
@@ -241,7 +243,10 @@ async def test_a_forced_reindex_is_scoped_to_its_event() -> None:
     stage_ingress = MagicMock()
     stage_ingress.on_indexed = AsyncMock(return_value=[])
     ep = _make_event_processor(
-        parsing_client=_service_parsing_client(), sink_orchestrator=_indexing_sink(), stage_ingress=stage_ingress
+        parsing_client=_service_parsing_client(),
+        extraction_client=MagicMock(),
+        sink_orchestrator=_indexing_sink(),
+        stage_ingress=stage_ingress,
     )
     event_data = _make_event_data()
     event_data["payload"]["forceReindex"] = True
