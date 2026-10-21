@@ -3225,7 +3225,8 @@ export function isAskUserQuestionAnswer(
   query: string | undefined | null,
 ): boolean {
   return (
-    typeof query === 'string' && query.trimStart().startsWith('User selections:')
+    typeof query === 'string' &&
+    query.trimStart().startsWith('User selections:')
   );
 }
 
@@ -3268,12 +3269,17 @@ export function sameAttachmentFiles(
   b: Array<{ recordId: string }> | undefined | null,
 ): boolean {
   const key = (list: Array<{ recordId: string }> | undefined | null): string =>
-    (list ?? []).map((file) => file.recordId).sort().join('\n');
+    (list ?? [])
+      .map((file) => file.recordId)
+      .sort()
+      .join('\n');
   return key(a) === key(b);
 }
 
 /** The files of a request once each file appears only once, in the order first named. */
-export function uniqueAttachmentFiles<T extends { recordId: string }>(files: T[]): T[] {
+export function uniqueAttachmentFiles<T extends { recordId: string }>(
+  files: T[],
+): T[] {
   const seen = new Set<string>();
   return files.filter((file) => {
     if (seen.has(file.recordId)) return false;
@@ -3461,8 +3467,10 @@ async function regenerateAnswersInternal(
     }
     existingConversation = validationResult.conversation;
     const userQuery = validationResult.userQuery;
+    // Only an edit carries these two; their types are not trusted until read.
+    const editBody = req.body as { query?: unknown; attachments?: unknown };
     const requestedQuery =
-      typeof req.body.query === 'string' ? req.body.query.trim() : '';
+      typeof editBody.query === 'string' ? editBody.query.trim() : '';
     if (
       requestedQuery &&
       (isToolApprovalAnswer(requestedQuery) ||
@@ -3473,13 +3481,13 @@ async function regenerateAnswersInternal(
     // The question the chat shows: for a card turn, the first one, not the card's answers.
     const cardEdit = validationResult.cardEdit;
     const shownQuestion = cardEdit?.question ?? userQuery;
-    const requestedAttachments: IChatAttachmentRef[] | undefined = Array.isArray(
-      req.body.attachments,
-    )
-      ? uniqueAttachmentFiles<IChatAttachmentRef>(req.body.attachments)
-      : undefined;
+    const requestedAttachments: IChatAttachmentRef[] | undefined =
+      Array.isArray(editBody.attachments)
+        ? uniqueAttachmentFiles(editBody.attachments as IChatAttachmentRef[])
+        : undefined;
     const textChanged =
-      Boolean(requestedQuery) && requestedQuery !== shownQuestion.content.trim();
+      Boolean(requestedQuery) &&
+      requestedQuery !== shownQuestion.content.trim();
     const attachmentsChanged =
       requestedAttachments !== undefined &&
       !sameAttachmentFiles(requestedAttachments, shownQuestion.attachments);
@@ -3490,10 +3498,10 @@ async function regenerateAnswersInternal(
         'This question cannot be edited. Ask again instead.',
       );
     }
-    const editedQuery = isEdit
-      ? requestedQuery || shownQuestion.content
-      : null;
-    const editedAttachments = attachmentsChanged ? requestedAttachments : undefined;
+    const editedQuery = isEdit ? requestedQuery || shownQuestion.content : null;
+    const editedAttachments = attachmentsChanged
+      ? requestedAttachments
+      : undefined;
     const staleAskToolCallIds = validationResult.staleAskToolCallIds;
 
     // Format previous conversations up to this message (exclude last bot
@@ -3538,7 +3546,7 @@ async function regenerateAnswersInternal(
       const editedRow = await updateUserQueryContent(
         (shownQuestion as IMessage & { _id: mongoose.Types.ObjectId })._id,
         editedQuery,
-        existingConversation._id as mongoose.Types.ObjectId,
+        existingConversation._id,
         session,
         editedAttachments,
       );
@@ -3550,7 +3558,7 @@ async function regenerateAnswersInternal(
         await deleteMessagesById(
           cardEdit.intermediateIds,
           session,
-          existingConversation._id as mongoose.Types.ObjectId,
+          existingConversation._id,
         );
       }
       if (titleFollowsEdit) {
@@ -3632,6 +3640,7 @@ async function regenerateAnswersInternal(
         return;
       }
       streamSettled = true;
+      const abandoned = existingConversation;
       const partialText = contentAccumulator.getText();
       // A partial answer was shown for the edited question, so the question is saved with it.
       void (partialText ? saveEditedQuestion() : Promise.resolve())
@@ -3642,7 +3651,7 @@ async function regenerateAnswersInternal(
           });
         })
         .then(() =>
-          savePartialConversation(existingConversation!, partialText, null, {
+          savePartialConversation(abandoned, partialText, null, {
             replaceMessageId: messageId || undefined,
             parts: contentAccumulator.getParts(),
           }),
