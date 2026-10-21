@@ -10,7 +10,9 @@ agent that has it attached should call these endpoints when a question needs the
     PATCH  /tickets/{ticketId}         change status, assignee or priority
     POST   /tickets/{ticketId}/comments add a comment
     GET    /users/me                   who the credentials belong to
-    POST   /oauth/token                OAuth2 client-credentials token endpoint
+    GET    /announcements              helpdesk announcements; needs no credentials
+    GET    /oauth/authorize            OAuth2 sign-in page (authorization code, PKCE)
+    POST   /oauth/token                OAuth2 tokens: client credentials, authorization code, refresh
     GET    /openapi.yaml               the spec for this API
 
     GET    /__fixture__/health         200 once serving
@@ -19,7 +21,9 @@ agent that has it attached should call these endpoints when a question needs the
     POST   /__fixture__/expire-tokens  revoke every issued OAuth token (tests refresh)
 
 Every auth scheme in the spec is accepted at once, so one running server covers
-them all; the call log records which one a request used. The seed data holds facts
+them all; the call log records which one a request used. With ``--public-url``,
+the served spec's sign-in URL is that address, so a browser can open it while
+PipesHub calls the API by its internal name. The seed data holds facts
 no model could guess (ticket ids, assignees), so a test can tell from the call log
 that the agent really asked this server. Standard library only, so it runs on a
 stock Python image.
@@ -30,6 +34,8 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import hashlib
+import html
 import json
 import re
 import secrets
@@ -40,10 +46,11 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 SPEC_PATH = Path(__file__).resolve().parent / "openapi.yaml"
 TOKEN_TTL_SECONDS = 3600
+AUTH_CODE_TTL_SECONDS = 300
 
 STATUSES = ("open", "pending", "closed")
 PRIORITIES = ("low", "normal", "high", "urgent")
@@ -78,7 +85,75 @@ SEED_TICKETS: dict[str, dict[str, Any]] = {
         "tags": ["onboarding"],
         "comments": [],
     },
+    "ACME-7305": {
+        "id": "ACME-7305",
+        "title": "Laptop refresh for the Madrid design team arrives without docking stations",
+        "status": "pending",
+        "priority": "normal",
+        "assignee": "priya.nair",
+        "tags": ["hardware", "procurement"],
+        "comments": [
+            {"id": "C-2", "author": "priya.nair", "body": "Vendor confirmed 14 docks ship on Friday."},
+        ],
+    },
+    "ACME-7306": {
+        "id": "ACME-7306",
+        "title": "SSO login loops back to the sign-in page for contractors",
+        "status": "open",
+        "priority": "urgent",
+        "assignee": "lucas.ferreira",
+        "tags": ["sso", "access"],
+        "comments": [
+            {"id": "C-3", "author": "lucas.ferreira", "body": "Only accounts in the Contractors group are affected."},
+            {"id": "C-4", "author": "noor.rahimi", "body": "IdP shows a clock skew of 6 minutes on two servers."},
+        ],
+    },
+    "ACME-7307": {
+        "id": "ACME-7307",
+        "title": "Weekly payroll export to the bank fails on public holidays",
+        "status": "open",
+        "priority": "high",
+        "assignee": "priya.nair",
+        "tags": ["billing", "payroll"],
+        "comments": [],
+    },
+    "ACME-7308": {
+        "id": "ACME-7308",
+        "title": "Request: shared mailbox for the Lisbon support team",
+        "status": "closed",
+        "priority": "low",
+        "assignee": "lucas.ferreira",
+        "tags": ["onboarding", "email"],
+        "comments": [{"id": "C-5", "author": "lucas.ferreira", "body": "Created support-lisbon@ and added 6 members."}],
+    },
+    "ACME-7309": {
+        "id": "ACME-7309",
+        "title": "Printers on floor 3 print blank pages after the driver update",
+        "status": "pending",
+        "priority": "normal",
+        "assignee": None,
+        "tags": ["hardware"],
+        "comments": [],
+    },
+    "ACME-7310": {
+        "id": "ACME-7310",
+        "title": "Wi-Fi in the Pune office drops for guests in meeting rooms",
+        "status": "open",
+        "priority": "normal",
+        "assignee": "noor.rahimi",
+        "tags": ["network", "wifi"],
+        "comments": [],
+    },
 }
+
+ANNOUNCEMENTS: list[dict[str, Any]] = [
+    {"id": "AN-41", "date": "2026-10-20", "title": "Helpdesk hours over the Diwali weekend",
+     "body": "The Pune desk is closed on 1 and 2 November; Lisbon covers urgent tickets."},
+    {"id": "AN-40", "date": "2026-10-14", "title": "New SSO provider for contractors",
+     "body": "Contractors sign in through the new identity provider from 28 October."},
+    {"id": "AN-39", "date": "2026-10-02", "title": "Laptop refresh, phase two",
+     "body": "Madrid and Lisbon design teams get new laptops this month."},
+]
 
 
 @dataclass(frozen=True)
@@ -105,16 +180,21 @@ class ApiError(Exception):
 class State:
     """Tickets, issued OAuth tokens and the call log, behind one lock."""
 
-    def __init__(self, credentials: Credentials) -> None:
+    def __init__(self, credentials: Credentials, *, token_ttl: int = TOKEN_TTL_SECONDS, public_url: str | None = None) -> None:
         self.credentials = credentials
+        self.token_ttl = token_ttl
+        self.public_url = public_url.rstrip("/") if public_url else None
         self.lock = threading.Lock()
         self.reset()
 
     def reset(self) -> None:
         self.tickets = copy.deepcopy(SEED_TICKETS)
         self.next_ticket = 7314
-        self.next_comment = 2
-        self.tokens: dict[str, float] = {}
+        self.next_comment = 6
+        # access token -> (expires at, the grant that issued it)
+        self.tokens: dict[str, tuple[float, str]] = {}
+        self.refresh_tokens: set[str] = set()
+        self.auth_codes: dict[str, dict[str, Any]] = {}
         self.idempotency: dict[str, str] = {}
         self.calls: list[dict[str, Any]] = []
 
@@ -133,9 +213,9 @@ def authenticate(headers: Any, query: dict[str, list[str]], state: State) -> str
     if scheme.lower() == "bearer":
         if value == creds.bearer_token:
             return "bearer"
-        expires_at = state.tokens.get(value)
-        if expires_at is not None and expires_at > time.time():
-            return "oauth2"
+        expires_at, grant = state.tokens.get(value, (0.0, ""))
+        if expires_at > time.time():
+            return "oauth2" if grant == "client_credentials" else "oauth2-signin"
     if scheme.lower() == "basic" and _basic_pair(value) == (creds.username, creds.password):
         return "basic"
     raise ApiError(401, "Missing or invalid credentials")
@@ -150,8 +230,9 @@ def _basic_pair(encoded: str) -> tuple[str, str] | None:
 
 
 def issue_token(form: dict[str, list[str]], headers: Any, state: State) -> dict[str, Any]:
-    """OAuth2 client-credentials grant (RFC 6749 section 4.4)."""
-    if form.get("grant_type") != ["client_credentials"]:
+    """The token endpoint (RFC 6749): client credentials, authorization code with PKCE, refresh."""
+    grant = _first(form, "grant_type")
+    if grant not in ("client_credentials", "authorization_code", "refresh_token"):
         raise ApiError(400, "unsupported_grant_type")
     client = (_first(form, "client_id"), _first(form, "client_secret"))
     scheme, _, value = (headers.get("Authorization") or "").partition(" ")
@@ -159,9 +240,87 @@ def issue_token(form: dict[str, list[str]], headers: Any, state: State) -> dict[
         client = _basic_pair(value) or ("", "")
     if client != (state.credentials.client_id, state.credentials.client_secret):
         raise ApiError(401, "invalid_client")
+    if grant == "client_credentials":
+        return _new_tokens(state, grant)
+    if grant == "refresh_token":
+        if _first(form, "refresh_token") not in state.refresh_tokens:
+            raise ApiError(400, "invalid_grant")
+        return _new_tokens(state, "authorization_code", refresh_token=_first(form, "refresh_token"))
+    code = state.auth_codes.pop(_first(form, "code") or "", None)
+    if (code is None or code["expires_at"] < time.time() or code["client_id"] != client[0]
+            or code["redirect_uri"] != _first(form, "redirect_uri")
+            or (code["challenge"] and _pkce_challenge(_first(form, "code_verifier") or "") != code["challenge"])):
+        raise ApiError(400, "invalid_grant")
+    return _new_tokens(state, grant, refresh_token=secrets.token_urlsafe(24))
+
+
+def _new_tokens(state: State, grant: str, *, refresh_token: str | None = None) -> dict[str, Any]:
     token = secrets.token_urlsafe(24)
-    state.tokens[token] = time.time() + TOKEN_TTL_SECONDS
-    return {"access_token": token, "token_type": "Bearer", "expires_in": TOKEN_TTL_SECONDS}
+    state.tokens[token] = (time.time() + state.token_ttl, grant)
+    issued: dict[str, Any] = {"access_token": token, "token_type": "Bearer", "expires_in": state.token_ttl}
+    if refresh_token:
+        state.refresh_tokens.add(refresh_token)
+        issued["refresh_token"] = refresh_token
+    return issued
+
+
+def _pkce_challenge(verifier: str) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+
+
+_SIGN_IN_FIELDS = ("client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope")
+
+
+def sign_in_page(params: dict[str, str], state: State, *, error: str = "") -> tuple[int, bytes]:
+    """The page a person sees when an app asks to act for them (authorization code grant)."""
+    if params.get("response_type", "code") != "code" or params.get("client_id") != state.credentials.client_id:
+        return 400, _page("Unknown app", "<p>This sign-in link is not for an app Acme Helpdesk knows.</p>")
+    if not (params.get("redirect_uri") or "").startswith(("http://", "https://")):
+        return 400, _page("Unknown app", "<p>The sign-in link has no valid return address.</p>")
+    hidden = "".join(
+        f'<input type="hidden" name="{name}" value="{html.escape(params.get(name, ""))}">' for name in _SIGN_IN_FIELDS
+    )
+    scope = html.escape(params.get("scope") or "tickets:read tickets:write")
+    message = f'<p class="error">{html.escape(error)}</p>' if error else ""
+    return (401 if error else 200), _page("Sign in to Acme Helpdesk", f"""
+<p>An app wants to use Acme Helpdesk as you, with access to <code>{scope}</code>.</p>
+{message}
+<form method="post" action="/oauth/authorize">{hidden}
+  <label>Username <input name="username" value="{html.escape(state.credentials.username)}"></label>
+  <label>Password <input name="password" type="password" placeholder="acme-demo-password"></label>
+  <button name="decision" value="allow">Allow</button>
+  <button name="decision" value="deny">Deny</button>
+</form>""")
+
+
+def finish_sign_in(form: dict[str, str], state: State) -> tuple[int, Any]:
+    """Allow: a one-time code back to the app's redirect URI. Deny: access_denied."""
+    status, page = sign_in_page(form, state)
+    if status != 200:
+        return status, page
+    redirect, app_state = form["redirect_uri"], form.get("state", "")
+    if form.get("decision") != "allow":
+        return 302, _with_query(redirect, {"error": "access_denied", "state": app_state})
+    if (form.get("username"), form.get("password")) != (state.credentials.username, state.credentials.password):
+        return sign_in_page(form, state, error="Wrong username or password.")
+    code = secrets.token_urlsafe(24)
+    state.auth_codes[code] = {
+        "client_id": form["client_id"], "redirect_uri": redirect, "challenge": form.get("code_challenge", ""),
+        "expires_at": time.time() + AUTH_CODE_TTL_SECONDS,
+    }
+    return 302, _with_query(redirect, {"code": code, "state": app_state})
+
+
+def _with_query(url: str, params: dict[str, str]) -> str:
+    return f"{url}{'&' if '?' in url else '?'}{urlencode(params)}"
+
+
+def _page(title: str, body: str) -> bytes:
+    return f"""<!doctype html><html><head><meta charset="utf-8"><title>{title}</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:28rem;margin:3rem auto;padding:0 1rem}}
+label{{display:block;margin:.75rem 0}}input{{display:block;width:100%;padding:.4rem}}
+button{{margin:.75rem .5rem 0 0;padding:.5rem 1rem}}.error{{color:#b42318}}</style></head>
+<body><h1>{title}</h1>{body}</body></html>""".encode()
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +412,10 @@ def current_user(_s: State, _p: dict[str, str], _q: dict[str, list[str]], _b: An
     return 200, {"username": "api", "displayName": "Acme API user", "team": "Support Platform"}
 
 
+def list_announcements(_s: State, _p: dict[str, str], _q: dict[str, list[str]], _b: Any) -> tuple[int, Any]:
+    return 200, {"announcements": ANNOUNCEMENTS}
+
+
 Handler = Callable[..., tuple[int, Any]]
 
 # (method, path template, handler). The contract test checks this table against openapi.yaml.
@@ -263,7 +426,10 @@ ROUTES: list[tuple[str, str, Handler]] = [
     ("PATCH", "/tickets/{ticketId}", update_ticket),
     ("POST", "/tickets/{ticketId}/comments", add_comment),
     ("GET", "/users/me", current_user),
+    ("GET", "/announcements", list_announcements),
 ]
+# Operations the spec marks `security: []`.
+PUBLIC_HANDLERS: frozenset[Handler] = frozenset({list_announcements})
 
 _COMPILED = [
     (method, re.compile("^" + re.sub(r"\{(\w+)\}", r"(?P<\1>[^/]+)", template) + "$"), handler)
@@ -335,7 +501,9 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
             pass
 
-        def _send(self, status: int, body: Any = None, content_type: str = "application/json") -> None:
+        def _send(
+            self, status: int, body: Any = None, content_type: str = "application/json", location: str | None = None,
+        ) -> None:
             if body is None:
                 data = b""
             elif isinstance(body, bytes):
@@ -345,6 +513,8 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             self.send_response(status)
             if data:
                 self.send_header("Content-Type", content_type)
+            if location:
+                self.send_header("Location", location)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             if data:
@@ -366,6 +536,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                     state.reset()
                     self._send(200, {"status": "reset"})
                 elif (method, path) == ("POST", "/__fixture__/expire-tokens"):
+                    # Access tokens only: a refresh token still gets a new one.
                     state.tokens.clear()
                     self._send(200, {"status": "expired"})
                 else:
@@ -378,9 +549,19 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
             if self._fixture(method, url.path):
                 return
             if (method, url.path) == ("GET", "/openapi.yaml"):
-                self._send(200, SPEC_PATH.read_bytes(), "application/yaml")
+                self._send(200, served_spec(state), "application/yaml")
                 return
             query = parse_qs(url.query, keep_blank_values=True)
+            if url.path == "/oauth/authorize" and method in ("GET", "POST"):
+                fields = query if method == "GET" else parse_qs(raw.decode(errors="replace"), keep_blank_values=True)
+                with state.lock:
+                    status, result = (sign_in_page if method == "GET" else finish_sign_in)(
+                        {k: v[0] for k, v in fields.items()}, state)
+                if status == 302:
+                    self._send(302, None, location=result)
+                else:
+                    self._send(status, result, "text/html; charset=utf-8")
+                return
             try:
                 with state.lock:
                     if (method, url.path) == ("POST", "/oauth/token"):
@@ -388,7 +569,7 @@ def make_handler(state: State) -> type[BaseHTTPRequestHandler]:
                         self._send(200, issue_token(form, self.headers, state))
                         return
                     handler, params = match_route(method, url.path)
-                    scheme = authenticate(self.headers, query, state)
+                    scheme = "none" if handler in PUBLIC_HANDLERS else authenticate(self.headers, query, state)
                     body = _parse_json(raw)
                     state.calls.append({
                         "method": method,
@@ -432,8 +613,19 @@ def _parse_json(raw: bytes) -> Any:
         raise ApiError(400, "Body is not valid JSON") from err
 
 
-def serve(host: str, port: int, credentials: Credentials | None = None) -> ThreadingHTTPServer:
-    state = State(credentials or Credentials())
+def served_spec(state: State) -> bytes:
+    """The spec, with the sign-in page at the public address when one is set."""
+    spec = SPEC_PATH.read_text()
+    if state.public_url:
+        spec = spec.replace("authorizationUrl: /oauth/authorize", f"authorizationUrl: {state.public_url}/oauth/authorize")
+    return spec.encode()
+
+
+def serve(
+    host: str, port: int, credentials: Credentials | None = None, *,
+    token_ttl: int = TOKEN_TTL_SECONDS, public_url: str | None = None,
+) -> ThreadingHTTPServer:
+    state = State(credentials or Credentials(), token_ttl=token_ttl, public_url=public_url)
     server = ThreadingHTTPServer((host, port), make_handler(state))
     server.daemon_threads = True
     server.state = state  # type: ignore[attr-defined]  # tests reach the state through the server
@@ -445,11 +637,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Acme Helpdesk reference API")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--token-ttl", type=int, default=TOKEN_TTL_SECONDS, help="OAuth access token lifetime, seconds")
+    parser.add_argument("--public-url", help="Address a browser uses to reach this server (for the sign-in page)")
     for field, value in vars(defaults).items():
         parser.add_argument(f"--{field.replace('_', '-')}", default=value)
     args = parser.parse_args()
     credentials = Credentials(**{field: getattr(args, field) for field in vars(defaults)})
-    serve(args.host, args.port, credentials).serve_forever()
+    serve(args.host, args.port, credentials, token_ttl=args.token_ttl, public_url=args.public_url).serve_forever()
 
 
 if __name__ == "__main__":

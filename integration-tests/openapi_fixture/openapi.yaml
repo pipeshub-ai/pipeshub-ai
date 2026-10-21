@@ -15,6 +15,9 @@
 #   * Request bodies are application/json. Other body types are skipped in v1.
 #   * securitySchemes lists every way the API accepts credentials. The admin picks
 #     one when adding the toolset.
+#   * An operation anyone may call says `security: []` (see /announcements).
+#   * Relative OAuth URLs resolve against the server URL. The running server rewrites
+#     authorizationUrl to its --public-url, so a browser can open the sign-in page.
 openapi: 3.1.0
 info:
   title: Acme Helpdesk API
@@ -41,10 +44,12 @@ security:
   - bearerAuth: []
   - basicAuth: []
   - oauth2ClientCredentials: [tickets:read, tickets:write]
+  - oauth2SignIn: [tickets:read, tickets:write]
 
 tags:
   - name: tickets
   - name: users
+  - name: announcements
 
 paths:
   /tickets:
@@ -218,6 +223,21 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /announcements:
+    get:
+      operationId: list_announcements
+      tags: [announcements]
+      summary: Read the helpdesk's latest announcements.
+      description: Office hours, planned changes and outages, newest first. Needs no credentials.
+      security: []
+      responses:
+        "200":
+          description: Announcements, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnnouncementList"
+
 components:
   securitySchemes:
     apiKeyAuth:
@@ -240,6 +260,19 @@ components:
         clientCredentials:
           # Relative URLs resolve against the server URL the admin picks.
           tokenUrl: /oauth/token
+          scopes:
+            tickets:read: Read tickets.
+            tickets:write: Open and change tickets.
+    oauth2SignIn:
+      type: oauth2
+      description: >
+        A person signs in on Acme's page (user acme, password acme-demo-password) and
+        allows the app. Same OAuth app as above; PKCE is checked, and tokens refresh.
+      flows:
+        authorizationCode:
+          authorizationUrl: /oauth/authorize
+          tokenUrl: /oauth/token
+          refreshUrl: /oauth/token
           scopes:
             tickets:read: Read tickets.
             tickets:write: Open and change tickets.
@@ -382,6 +415,27 @@ components:
           type: string
         team:
           type: string
+    Announcement:
+      type: object
+      required: [id, date, title, body]
+      properties:
+        id:
+          type: string
+        date:
+          type: string
+          format: date
+        title:
+          type: string
+        body:
+          type: string
+    AnnouncementList:
+      type: object
+      required: [announcements]
+      properties:
+        announcements:
+          type: array
+          items:
+            $ref: "#/components/schemas/Announcement"
     Error:
       type: object
       required: [error]

@@ -166,7 +166,8 @@ class TestCalls:
     async def test_a_read_returns_the_apis_json(self, config: InMemoryConfigService, acme: tuple[str, Any]) -> None:
         tools = await self._tools(config, acme[0])
         output = await tools["list_tickets"].execute(status="open")
-        assert output.success and [t["id"] for t in output.data["tickets"]] == ["ACME-7311"]
+        assert output.success and "ACME-7311" in [t["id"] for t in output.data["tickets"]]
+        assert {t["status"] for t in output.data["tickets"]} == {"open"}
 
     async def test_the_model_sees_the_spec_and_where_the_call_goes(self, config: InMemoryConfigService, acme: tuple[str, Any]) -> None:
         update = (await self._tools(config, acme[0]))["update_ticket"]

@@ -246,3 +246,45 @@ async def test_path_traversal_stays_inside_one_segment(acme: tuple[str, Any]) ->
     response = await executor.call(op, {"ticketId": "../users/me"})
     assert response.status == 404
     assert state.calls[-1]["path"] == "/tickets/..%2Fusers%2Fme"
+
+
+async def test_oauth_sign_in_tokens_call_the_api_and_refresh(acme: tuple[str, Any]) -> None:
+    """The authorization-code path end to end: the person allows the app on Acme's page, PipesHub
+    exchanges the code with its PKCE verifier, calls the API, and refreshes once Acme forgets the
+    access token."""
+    import base64
+    import hashlib
+    from urllib.parse import parse_qs, urlsplit
+
+    base_url, state = acme
+    redirect, verifier = "https://pipeshub.test/api-toolsets/oauth/callback/", "v" * 64
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    async with httpx.AsyncClient() as browser:
+        allowed = await browser.post(f"{base_url}/oauth/authorize", data={
+            "client_id": "acme-client", "redirect_uri": redirect, "state": "s", "code_challenge": challenge,
+            "code_challenge_method": "S256", "username": "acme", "password": "acme-demo-password", "decision": "allow",
+        })
+    code = parse_qs(urlsplit(allowed.headers["location"]).query)["code"][0]
+    tokens = await oauth_client.exchange_code_for_token(
+        f"{base_url}/oauth/token", "acme-client", "acme-client-secret", code, redirect,
+        code_verifier=verifier, allow_private=True,
+    )
+
+    compiled = compile_spec((_FIXTURE_DIR / "openapi.yaml").read_bytes())
+    scheme = next(s for s in compiled.auth_schemes if s.name == "oauth2SignIn")
+    saved: list[ApiToolsetCredentials] = []
+
+    async def save(creds: ApiToolsetCredentials) -> None:
+        saved.append(creds)
+
+    creds = ApiToolsetCredentials(oauth=tokens, client_id="acme-client", client_secret="acme-client-secret")
+    executor = OpenAPIHttpExecutor(
+        base_url, build_auth(scheme, creds, base_url=base_url, allow_private=True, save_tokens=save),
+        allow_private=True, transport=httpx.AsyncHTTPTransport(),
+    )
+    me = next(op for op in compiled.operations if op.tool_name == "get_current_user")
+    assert (await executor.call(me, {})).ok
+    state.tokens.clear()
+    assert (await executor.call(me, {})).ok
+    assert len(saved) == 1 and saved[0].oauth.access_token != tokens.access_token
+    assert [c["auth"] for c in state.calls] == ["oauth2-signin", "oauth2-signin"]

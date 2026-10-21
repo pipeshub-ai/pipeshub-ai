@@ -8,12 +8,15 @@ schemas. Runs the real server in a thread; no stack needed.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import importlib.util
 import sys
 import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import requests
@@ -47,7 +50,7 @@ API_KEY = {"X-API-Key": DEMO_API_KEY}
 
 @pytest.fixture
 def fixture() -> Iterator[OpenApiFixture]:
-    server = server_module.serve("127.0.0.1", 0)
+    server = server_module.serve("127.0.0.1", 0, public_url="https://acme.example.test/")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{server.server_address[1]}"
@@ -118,8 +121,10 @@ def test_every_ref_points_inside_the_file() -> None:
             node = node[part]
 
 
-def test_the_server_serves_its_own_spec(fixture: OpenApiFixture) -> None:
-    assert fixture.spec() == (_DIR / "openapi.yaml").read_bytes()
+def test_the_server_serves_its_own_spec_with_its_public_sign_in_address(fixture: OpenApiFixture) -> None:
+    served = fixture.spec().decode()
+    assert "authorizationUrl: https://acme.example.test/oauth/authorize" in served
+    assert served.replace("https://acme.example.test/oauth/authorize", "/oauth/authorize") == (_DIR / "openapi.yaml").read_text()
 
 
 # ---------------------------------------------------------------------------
@@ -200,16 +205,16 @@ def test_list_tickets_filters_and_limits(fixture: OpenApiFixture) -> None:
 
     every = requests.get(base, headers=API_KEY, timeout=5)
     _assert_matches_spec(every, "GET", "/tickets")
-    assert every.json()["total"] == 3
+    assert every.json()["total"] == len(server_module.SEED_TICKETS)
 
     mine = requests.get(base, params={"assignee": "noor.rahimi", "status": "open"}, headers=API_KEY, timeout=5).json()
-    assert [t["id"] for t in mine["tickets"]] == ["ACME-7311"]
+    assert [t["id"] for t in mine["tickets"]] == ["ACME-7311", "ACME-7310"]
 
     tagged = requests.get(base, params=[("tag", "network"), ("tag", "vpn")], headers=API_KEY, timeout=5).json()
     assert [t["id"] for t in tagged["tickets"]] == ["ACME-7311"]
 
     limited = requests.get(base, params={"limit": 1}, headers=API_KEY, timeout=5).json()
-    assert len(limited["tickets"]) == 1 and limited["total"] == 3
+    assert len(limited["tickets"]) == 1 and limited["total"] == len(server_module.SEED_TICKETS)
 
 
 @pytest.mark.parametrize("params", [{"status": "lost"}, {"limit": 0}, {"limit": "many"}])
@@ -240,7 +245,7 @@ def test_create_ticket_is_idempotent_with_a_key(fixture: OpenApiFixture) -> None
     again = requests.post(url, json=body, headers=headers, timeout=5)
     assert again.status_code == 200
     assert again.json()["id"] == first.json()["id"] == "ACME-7314"
-    assert requests.get(url, headers=API_KEY, timeout=5).json()["total"] == 4
+    assert requests.get(url, headers=API_KEY, timeout=5).json()["total"] == len(server_module.SEED_TICKETS) + 1
 
 
 @pytest.mark.parametrize("body", [{}, {"title": "  "}, {"title": "x", "priority": "asap"}, {"title": "x", "tags": "one"}, ["title"]])
@@ -309,3 +314,99 @@ def test_reset_restores_seed_data_and_clears_calls(fixture: OpenApiFixture) -> N
 
 def test_health(fixture: OpenApiFixture) -> None:
     assert fixture.healthy()
+
+
+# ---------------------------------------------------------------------------
+# No credentials, and the OAuth sign-in (authorization code with PKCE)
+# ---------------------------------------------------------------------------
+
+
+def test_announcements_need_no_credentials(fixture: OpenApiFixture) -> None:
+    resp = requests.get(f"{fixture.test_url}/announcements", timeout=5)
+    assert resp.status_code == 200
+    _assert_matches_spec(resp, "GET", "/announcements")
+    assert fixture.calls()[-1]["auth"] == "none"
+
+
+REDIRECT = "https://pipeshub.test/api-toolsets/oauth/callback/"
+VERIFIER = "a-verifier-that-is-long-enough-for-pkce-0123456789"
+
+
+def _challenge(verifier: str) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+
+
+def _sign_in(fixture: OpenApiFixture, *, password: str = DEMO_BASIC[1], decision: str = "allow") -> requests.Response:
+    return requests.post(f"{fixture.test_url}/oauth/authorize", allow_redirects=False, timeout=5, data={
+        "client_id": DEMO_CLIENT[0], "redirect_uri": REDIRECT, "state": "s-1", "code_challenge": _challenge(VERIFIER),
+        "code_challenge_method": "S256", "username": DEMO_BASIC[0], "password": password, "decision": decision,
+    })
+
+
+def _exchange(fixture: OpenApiFixture, code: str, verifier: str = VERIFIER) -> requests.Response:
+    return requests.post(f"{fixture.test_url}/oauth/token", timeout=5, data={
+        "grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT, "code_verifier": verifier,
+        "client_id": DEMO_CLIENT[0], "client_secret": DEMO_CLIENT[1],
+    })
+
+
+def _code(resp: requests.Response) -> str:
+    assert resp.status_code == 302, resp.text
+    query = parse_qs(urlsplit(resp.headers["Location"]).query)
+    assert query["state"] == ["s-1"]
+    return query["code"][0]
+
+
+def test_the_sign_in_page_asks_the_person(fixture: OpenApiFixture) -> None:
+    resp = requests.get(f"{fixture.test_url}/oauth/authorize", timeout=5, params={
+        "response_type": "code", "client_id": DEMO_CLIENT[0], "redirect_uri": REDIRECT, "state": "s-1", "scope": "tickets:read",
+    })
+    assert resp.status_code == 200 and "text/html" in resp.headers["Content-Type"]
+    assert "Sign in to Acme Helpdesk" in resp.text and 'value="s-1"' in resp.text
+
+
+def test_an_unknown_app_gets_no_sign_in_page(fixture: OpenApiFixture) -> None:
+    resp = requests.get(f"{fixture.test_url}/oauth/authorize", timeout=5,
+                        params={"response_type": "code", "client_id": "someone-else", "redirect_uri": REDIRECT})
+    assert resp.status_code == 400
+
+
+def test_deny_and_a_wrong_password(fixture: OpenApiFixture) -> None:
+    denied = _sign_in(fixture, decision="deny")
+    assert denied.status_code == 302 and "error=access_denied" in denied.headers["Location"]
+    wrong = _sign_in(fixture, password="nope")
+    assert wrong.status_code == 401 and "Wrong username or password" in wrong.text
+
+
+def test_sign_in_code_exchange_and_refresh(fixture: OpenApiFixture) -> None:
+    tokens = _exchange(fixture, _code(_sign_in(fixture)))
+    assert tokens.status_code == 200, tokens.text
+    issued = tokens.json()
+    headers = {"Authorization": f"Bearer {issued['access_token']}"}
+    assert requests.get(f"{fixture.test_url}/users/me", headers=headers, timeout=5).status_code == 200
+    assert fixture.calls()[-1]["auth"] == "oauth2-signin"
+
+    fixture.expire_tokens()
+    assert requests.get(f"{fixture.test_url}/users/me", headers=headers, timeout=5).status_code == 401
+    refreshed = requests.post(f"{fixture.test_url}/oauth/token", timeout=5, data={
+        "grant_type": "refresh_token", "refresh_token": issued["refresh_token"],
+    }, auth=DEMO_CLIENT)
+    assert refreshed.status_code == 200
+    new_headers = {"Authorization": f"Bearer {refreshed.json()['access_token']}"}
+    assert requests.get(f"{fixture.test_url}/users/me", headers=new_headers, timeout=5).status_code == 200
+
+
+def test_a_code_is_single_use_and_bound_to_its_verifier(fixture: OpenApiFixture) -> None:
+    code = _code(_sign_in(fixture))
+    assert _exchange(fixture, code, verifier="a-different-verifier-that-is-long-enough-000000").json() == {"error": "invalid_grant"}
+    # A failed exchange used the code up too.
+    assert _exchange(fixture, code).status_code == 400
+    other = _code(_sign_in(fixture))
+    assert _exchange(fixture, other).status_code == 200
+    assert _exchange(fixture, other).status_code == 400
+
+
+def test_an_unknown_refresh_token_is_refused(fixture: OpenApiFixture) -> None:
+    resp = requests.post(f"{fixture.test_url}/oauth/token", timeout=5, auth=DEMO_CLIENT,
+                         data={"grant_type": "refresh_token", "refresh_token": "made-up"})
+    assert resp.status_code == 400 and resp.json() == {"error": "invalid_grant"}

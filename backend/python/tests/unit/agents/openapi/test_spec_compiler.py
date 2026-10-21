@@ -33,6 +33,7 @@ class TestAcmeReferenceSpec:
     def test_every_operation_compiles_without_warnings(self, compiled: CompiledSpec) -> None:
         assert [op.tool_name for op in compiled.operations] == [
             "list_tickets", "create_ticket", "get_ticket", "update_ticket", "add_ticket_comment", "get_current_user",
+            "list_announcements",
         ]
         assert compiled.warnings == []
         assert compiled.title == "Acme Helpdesk API" and compiled.openapi_version == "3.1.0"
@@ -49,6 +50,14 @@ class TestAcmeReferenceSpec:
         oauth = by_name["oauth2ClientCredentials"]
         assert oauth.type is AuthType.OAUTH2_CLIENT_CREDENTIALS and oauth.token_url == "/oauth/token"
         assert set(oauth.scopes) == {"tickets:read", "tickets:write"}
+        sign_in = by_name["oauth2SignIn"]
+        assert sign_in.type is AuthType.OAUTH2_AUTHORIZATION_CODE
+        assert (sign_in.authorization_url, sign_in.token_url) == ("/oauth/authorize", "/oauth/token")
+
+    def test_the_public_operation_is_called_without_credentials(self, compiled: CompiledSpec) -> None:
+        requires_auth = {op.tool_name: op.requires_auth for op in compiled.operations}
+        assert requires_auth.pop("list_announcements") is False
+        assert all(requires_auth.values())
 
     def test_kinds_follow_the_method(self, compiled: CompiledSpec) -> None:
         kinds = {op.tool_name: op.kind for op in compiled.operations}

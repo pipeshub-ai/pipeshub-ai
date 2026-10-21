@@ -137,7 +137,7 @@ class TestValidate:
         assert resp.status_code == 200
         body = resp.json()
         assert [op["toolName"] for op in body["operations"]][:2] == ["list_tickets", "create_ticket"]
-        assert {s["name"] for s in body["authSchemes"]} == {"apiKeyAuth", "bearerAuth", "basicAuth", "oauth2ClientCredentials"}
+        assert {s["name"] for s in body["authSchemes"]} == {"apiKeyAuth", "bearerAuth", "basicAuth", "oauth2ClientCredentials", "oauth2SignIn"}
         assert body["servers"] == [{"url": "http://localhost:8098", "description": "Any Acme Helpdesk deployment."}]
 
     def test_bad_spec_says_why(self, api: Harness) -> None:
