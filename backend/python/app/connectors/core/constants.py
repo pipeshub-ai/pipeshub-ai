@@ -166,13 +166,15 @@ _OBJECT_STORE_TEAM_ACCESS_INFO = (
 )
 CONNECTOR_S3_INFO = (
     "This connector only lists and reads objects, so give it a read-only key. Its IAM policy "
-    "needs s3:ListAllMyBuckets, plus s3:ListBucket, s3:GetBucketLocation and s3:GetObject on "
-    "the buckets to sync. For buckets encrypted with SSE-KMS, also allow kms:Decrypt on the KMS key."
+    "needs s3:ListBucket, s3:GetBucketLocation and s3:GetObject on the buckets to sync. It needs "
+    "s3:ListAllMyBuckets to discover the buckets and to load the Bucket Names options. For buckets "
+    "encrypted with SSE-KMS, also allow kms:Decrypt on the KMS key."
     "\n\n" + _OBJECT_STORE_TEAM_ACCESS_INFO
 )
 CONNECTOR_MINIO_INFO = (
     "This connector only lists and reads objects, so give it a read-only key. Its MinIO policy "
-    "needs s3:ListAllMyBuckets, plus s3:ListBucket and s3:GetObject on the buckets to sync."
+    "needs s3:ListBucket and s3:GetObject on the buckets to sync. It needs s3:ListAllMyBuckets "
+    "to discover the buckets and to load the Bucket Names options."
     "\n\n" + _OBJECT_STORE_TEAM_ACCESS_INFO
 )
 
