@@ -1,6 +1,7 @@
 import { Response, NextFunction } from 'express';
 import { AuthenticatedUserRequest } from './types';
 import { recordHttpRequest } from '../services/telemetry/modules/http-metrics';
+import { isCollecting } from '../services/telemetry/flag';
 import {
   domainFromEmail,
   normalizeOrgId,
@@ -50,7 +51,7 @@ export function metricsMiddleware(): (
     const metricsReq = req as MetricsRequest;
 
     // Attach once per request even if the middleware is added multiple times.
-    if (metricsReq.__metricsAttached === true) {
+    if (!isCollecting() || metricsReq.__metricsAttached === true) {
       next();
       return;
     }

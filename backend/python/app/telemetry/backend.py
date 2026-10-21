@@ -18,7 +18,7 @@ from prometheus_client import (
     generate_latest,
 )
 
-from app.telemetry.flag import telemetry_enabled
+from app.telemetry.flag import telemetry_collecting, telemetry_enabled
 
 
 class CounterHandle(Protocol):
@@ -64,6 +64,8 @@ class _PromCounter:
         self._metric = metric
 
     def inc(self, *labels: str, value: float = 1.0) -> None:
+        if not telemetry_collecting():
+            return
         self._metric.labels(*labels).inc(value)
 
 
@@ -72,6 +74,8 @@ class _PromGauge:
         self._metric = metric
 
     def set(self, *labels: str, value: float) -> None:
+        if not telemetry_collecting():
+            return
         self._metric.labels(*labels).set(value)
 
     def clear(self) -> None:
@@ -83,6 +87,8 @@ class _PromHistogram:
         self._metric = metric
 
     def observe(self, *labels: str, value: float) -> None:
+        if not telemetry_collecting():
+            return
         self._metric.labels(*labels).observe(value)
 
 

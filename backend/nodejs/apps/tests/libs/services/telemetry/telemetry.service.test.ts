@@ -11,6 +11,8 @@ import { configPaths } from '../../../../src/modules/configuration_manager/paths
 import { recordEvent, eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer';
 import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend';
 import { StoreType } from '../../../../src/libs/keyValueStore/constants/KeyValueStoreType';
+import { setCollectionConsent } from '../../../../src/libs/services/telemetry/flag';
+import { METRICS_CONSENT_DEFAULT } from '../../../../src/edition';
 
 const VALID_URL = 'http://localhost:3031/collect-metrics';
 
@@ -68,6 +70,8 @@ describe('TelemetryService', () => {
     (TelemetryService as any).instance = undefined;
     eventBuffer.drain();
     sandbox.restore();
+    // The stored configs above switch consent off; the rest of the suite collects.
+    setCollectionConsent(true);
   });
 
   describe('singleton behaviour', () => {
@@ -161,7 +165,8 @@ describe('TelemetryService', () => {
       );
       expect((svc as any).apiKey).to.have.length.greaterThan(0);
       expect((svc as any).pushIntervalMs).to.equal(300000);
-      expect((svc as any).enableMetricCollection).to.be.true;
+      // An empty store starts with the consent default.
+      expect((svc as any).enableMetricCollection).to.equal(METRICS_CONSENT_DEFAULT);
     });
 
     it('should seed the 5-minute default when the interval is missing from the stored config', async () => {
@@ -283,6 +288,8 @@ describe('TelemetryService', () => {
       const postStub = sandbox.stub(axios, 'post').resolves({ data: {} });
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
+      // An admin has switched collection on since the service read its config.
+      setCollectionConsent(true);
 
       recordEvent('consent_changed', { enabled: false });
       await svc.flush();
@@ -323,7 +330,6 @@ describe('TelemetryService', () => {
   describe('pushMetricsToServer', () => {
     it('should reset the metric registry when the collector responds 413', async () => {
       sandbox.stub(metricsBackend, 'serialize').resolves('x{a="b"} 1\n');
-      const resetStub = sandbox.stub(metricsBackend, 'reset');
       const err = Object.assign(new Error('Request failed with status code 413'), {
         isAxiosError: true,
         response: { status: 413 },
@@ -331,6 +337,8 @@ describe('TelemetryService', () => {
       sandbox.stub(axios, 'post').rejects(err);
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
+      // Starting with consent off discards held metrics; only the push's own reset counts here.
+      const resetStub = sandbox.stub(metricsBackend, 'reset');
 
       await (svc as any).pushMetricsToServer();
 
@@ -339,7 +347,6 @@ describe('TelemetryService', () => {
 
     it('should not reset the registry on other collector errors', async () => {
       sandbox.stub(metricsBackend, 'serialize').resolves('x{a="b"} 1\n');
-      const resetStub = sandbox.stub(metricsBackend, 'reset');
       const err = Object.assign(new Error('Request failed with status code 500'), {
         isAxiosError: true,
         response: { status: 500 },
@@ -347,6 +354,8 @@ describe('TelemetryService', () => {
       sandbox.stub(axios, 'post').rejects(err);
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
+      // Starting with consent off discards held metrics; only the push's own reset counts here.
+      const resetStub = sandbox.stub(metricsBackend, 'reset');
 
       await (svc as any).pushMetricsToServer();
 

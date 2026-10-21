@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -12,7 +13,11 @@ import aiohttp
 
 from app.telemetry.backend import METRICS_BACKEND
 from app.telemetry.event_buffer import event_buffer
-from app.telemetry.flag import TELEMETRY_COLLECTION_FLAG, telemetry_enabled
+from app.telemetry.flag import (
+    TELEMETRY_COLLECTION_FLAG,
+    set_collection_consent,
+    telemetry_enabled,
+)
 from app.telemetry.modules.collection_metrics import set_metric_collection_enabled
 from app.utils.request_context import (
     HEADER_REQUEST_ID,
@@ -121,8 +126,10 @@ class MetricsPusher:
             reset_context(token)
 
     async def _run(self) -> None:
+        # The admin's switch is read every few seconds so switching it off stops
+        # collection promptly; the push itself still waits for its own interval.
+        next_push = 0.0
         while True:
-            interval_s = float(CONFIG_POLL_INTERVAL_S)
             token = set_context(new_system_root())
             try:
                 cfg = await self._load_config()
@@ -135,19 +142,25 @@ class MetricsPusher:
                         )
                 else:
                     self._waiting_for_config_logged = False
-                    interval_s = cfg["interval_s"]
-                    # Reflect current consent locally each tick (not pushed while off).
+                    set_collection_consent(cfg["enabled"])
                     set_metric_collection_enabled(self._service_name, cfg["enabled"])
-                    if cfg["enabled"]:
-                        await self._push(cfg)
-                        await self._ship_events(cfg)
+                    if not cfg["enabled"]:
+                        # Switched off: what was gathered before must never be sent later.
+                        METRICS_BACKEND.reset()
+                        event_buffer.drain()
+                    else:
+                        now = time.monotonic()
+                        if now >= next_push:
+                            next_push = now + cfg["interval_s"]
+                            await self._push(cfg)
+                            await self._ship_events(cfg)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self._logger.warning(f"Failed to push telemetry: {e}")
             finally:
                 reset_context(token)
-            await asyncio.sleep(interval_s)
+            await asyncio.sleep(float(CONFIG_POLL_INTERVAL_S))
 
     async def _load_config(self) -> Optional[dict]:
         raw = _as_dict(await self._config_service.get_config(METRICS_CONFIG_KEY, default={}))
