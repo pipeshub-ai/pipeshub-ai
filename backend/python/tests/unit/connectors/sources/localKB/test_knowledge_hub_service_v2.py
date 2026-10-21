@@ -13,6 +13,7 @@ repeating that here would test the fixture, not the wiring.
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -508,6 +509,44 @@ async def test_the_page_walk_is_bounded_by_queries_not_items(service, provider) 
     allowed = await service.get_nodes(user_id="u1", org_id="o1", page=_MAX_PAGE_WALK, limit=1)
     assert allowed.success is True
     assert provider.get_knowledge_hub_root_nodes_v2.await_count == _MAX_PAGE_WALK
+
+
+def _sorted_listing(names: list[str]) -> tuple[list[dict], Callable[..., Awaitable[dict]]]:
+    """A root listing over these rows that honours limit and the keyset, as the
+    provider does (limit + 1 rows read to tell whether more follow)."""
+    rows = [row(f"r{i:03d}", name) for i, name in enumerate(names)]
+    rows.sort(key=lambda r: (r["sortKey"], r["id"]))
+
+    async def listing(*, limit: int, after: dict | None, direction: str, **_kwargs: object) -> dict:
+        assert direction == "next"
+        start = 0
+        if after is not None:
+            start = next(i for i, r in enumerate(rows) if r["id"] == after["id"]) + 1
+        window = rows[start:start + limit + 1]
+        return envelope(window[:limit], total=len(rows), has_more=len(window) > limit)
+
+    return rows, listing
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [1, 3, 7])
+async def test_numbered_pages_cover_the_listing_once_in_order(service, provider, limit) -> None:
+    rows, listing = _sorted_listing([f"Name {n % 5} {n}" for n in range(20)])
+    provider.get_knowledge_hub_root_nodes_v2.side_effect = listing
+    seen: list[str] = []
+    for page in range(1, 20 // limit + 3):
+        result = await service.get_nodes(user_id="u1", org_id="o1", page=page, limit=limit, sort_by="name",
+                                         sort_order="asc")
+        assert result.success is True
+        expected = rows[(page - 1) * limit:page * limit]
+        assert [i.id for i in result.items] == [r["id"] for r in expected]
+        assert result.pagination.totalItems == len(rows)
+        assert result.pagination.hasNext is (page * limit < len(rows))
+        if expected:
+            assert (result.pagination.startIndex, result.pagination.endIndex) == (
+                (page - 1) * limit + 1, (page - 1) * limit + len(expected))
+        seen.extend(i.id for i in result.items)
+    assert seen == [r["id"] for r in rows]
 
 
 @pytest.mark.asyncio
