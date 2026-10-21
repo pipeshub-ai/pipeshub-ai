@@ -4,12 +4,15 @@ One source can fill the top of a search: a run of near-identical records from
 one connector (pull requests written from one template, say) takes most of
 the first ten places and pushes the one message or page that answers the
 question to place 20 or lower, past what a caller reads. With the switch on,
-the search API reads a deeper pool of matches, lets no one source hold more
-than ``SEARCH_DIVERSITY_PER_SOURCE`` of the first ``SEARCH_DIVERSITY_WINDOW``
-records, and fills the places that frees with the next best records from other
-sources. The records it demoted are not dropped: they follow the first page,
-best first, so the response holds every record the plain search would have
-returned, plus those brought up.
+the search API runs the plain search exactly as before, lets no one source
+hold more than ``SEARCH_DIVERSITY_PER_SOURCE`` of its first
+``SEARCH_DIVERSITY_WINDOW`` records, and fills the places that frees with the
+next best records of other sources from a second, deeper read of the same
+search (``SEARCH_DIVERSITY_POOL`` matches, checked for access the same way).
+The records it demoted are not dropped: they follow the first page, best
+first, so the response holds every record and passage of the plain search,
+plus those brought up. With no source over its share, the response is the
+plain one.
 
 A source is the record's connector type (``connectorName``), so two instances
 of one connector count as one source. A record whose source is unknown is
@@ -60,7 +63,7 @@ class SourceDiversity:
     pool: int = 50
 
     def fetch_limit(self, limit: int) -> int:
-        """Matches to read: at least ``pool``, never fewer than the caller asked for."""
+        """Matches the deeper read asks for: at least ``pool``, never fewer than the caller's limit."""
         return max(limit, self.pool)
 
     def order(

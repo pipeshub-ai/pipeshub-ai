@@ -273,16 +273,6 @@ class _QueryPlan:
     # the page because the access check denied too much of it: the caller
     # searches again with the record-id filter.
     narrow_shortfall: bool = False
-    # Set when the search reads a deeper pool than the caller's limit (source
-    # diversity): the per-query limit of the plain search, and the points the
-    # plain search would have kept, marked as each attempt cuts them. The
-    # container path fetches each query uncut and cuts after the access check:
-    # it sets `plain_fetch`, the depth its plain search would fetch each query
-    # to, and `_run_searches` marks those points as `plain_fetched` instead.
-    plain_limit: int | None = None
-    plain_points: set[Any] = field(default_factory=set)
-    plain_fetch: int | None = None
-    plain_fetched: set[Any] = field(default_factory=set)
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -358,13 +348,14 @@ def _vary_sources(
     virtual_to_record_map: dict[str, Any],
     plain_points: set[Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, int]]:
-    """Cut the deeper pool back to what the search returns, first page first.
+    """The plain search's hits, first page varied across sources.
 
-    ``hits`` are the pool's matches; ``plain_points`` the point ids of those
-    the plain search would have kept. A record the plain search returns keeps
-    the matches it had there; a record brought up to the first page brings its
-    matches from the pool. Returns those hits (in their order), the record map
-    narrowed to the records kept, and each kept record's place by record id.
+    ``hits`` are the plain search's hits (point ids in ``plain_points``) and
+    the deeper candidates. Every record of the plain search is kept with the
+    hits it had; a candidate record is kept only when it fills a first-page
+    place a capped source gave up, and brings its own hits. Returns those hits
+    (in their order), the record map narrowed to the records kept, and each
+    kept record's place by record id.
     """
     ranked = sorted(
         (hit for hit in hits if isinstance(hit, dict)),
@@ -375,55 +366,44 @@ def _vary_sources(
         id(hit) for hit in ranked
         if (hit.get("metadata") or {}).get("point_id") in plain_points
     }
+    plain_vids = {
+        vid for hit in ranked
+        if id(hit) in in_plain and (vid := hit_record_id(hit)) is not None
+        and virtual_to_record_map.get(vid)
+    }
+    # Records best first: a plain record placed by its plain hits only.
     vids: list[str] = []
     known: set[str] = set()
-    plain_vids: set[str] = set()
     for hit in ranked:
         vid = hit_record_id(hit)
-        if vid is None or not virtual_to_record_map.get(vid):
+        if vid is None or vid in known or not virtual_to_record_map.get(vid):
             continue
-        if id(hit) in in_plain:
-            plain_vids.add(vid)
-        if vid not in known:
-            known.add(vid)
-            vids.append(vid)
-    if not plain_vids:
-        # Nothing marked as the plain search's: keep the pool as it came.
-        return hits, virtual_to_record_map, {}
+        if vid in plain_vids and id(hit) not in in_plain:
+            continue
+        known.add(vid)
+        vids.append(vid)
     order = diversity.order(
         vids,
         plain=plain_vids,
         source_of=lambda vid: record_source(virtual_to_record_map[vid]),
     )
-    kept_vids = set(order)
-    brought_up = kept_vids - plain_vids
-
-    def keep(hit: Any) -> bool:  # noqa: ANN401
-        if not isinstance(hit, dict):
-            return True
-        vid = hit_record_id(hit)
-        if vid not in known:
-            # No record to show it under: dropped further on, as before.
-            return True
-        return vid in brought_up or id(hit) in in_plain
-
+    brought_up = set(order) - plain_vids
+    plain_hit_vids = {hit_record_id(hit) for hit in ranked if id(hit) in in_plain}
+    dropped = {
+        hit_record_id(hit) for hit in ranked if id(hit) not in in_plain
+    } - plain_hit_vids - brought_up
+    kept_hits = [
+        hit for hit in hits
+        if not isinstance(hit, dict) or id(hit) in in_plain or hit_record_id(hit) in brought_up
+    ]
+    kept_map = {vid: record for vid, record in virtual_to_record_map.items() if vid not in dropped}
+    if order == [vid for vid in vids if vid in plain_vids]:
+        # No source over its share: the plain result, as it was.
+        return kept_hits, kept_map, {}
     record_rank: dict[str, int] = {}
     for vid in order:
         record_rank.setdefault(virtual_to_record_map[vid].get("_key"), len(record_rank))
-    return (
-        [hit for hit in hits if keep(hit)],
-        {vid: record for vid, record in virtual_to_record_map.items() if vid in kept_vids},
-        record_rank,
-    )
-
-
-def _plain_cut(batch: list, limit: int, record_cut: RecordCut | None) -> list:
-    """The points of one query's batch the plain search keeps at ``limit``."""
-    if record_cut is None:
-        return batch[:limit]
-    return record_cut.cut(
-        batch[: record_cut.fused_limit(limit, _OVERFETCH_ABSOLUTE_CAP)], limit, point_record_id,
-    )
+    return kept_hits, kept_map, record_rank
 
 
 def _graph_filters(filter_groups: dict[str, Any] | None) -> dict[str, Any]:
@@ -903,8 +883,9 @@ class RetrievalService:
             filter, scope_virtual_ids = permission_filter
 
             record_cut = _record_cut_for(scope_virtual_ids)
-            # The search API's first page, varied across sources: read a deeper
-            # pool to fill it from (SEARCH_SOURCE_DIVERSITY).
+            # The search API's first page, varied across sources: the plain
+            # search runs as always, and a deeper read supplies candidates for
+            # the places a capped source gives up (SEARCH_SOURCE_DIVERSITY).
             diversity = (
                 active_source_diversity(
                     scope_ids=requested_scope_ids(filters),
@@ -913,17 +894,14 @@ class RetrievalService:
                 if knowledge_search
                 else None
             )
-            search_limit = limit
-            if diversity is not None:
-                search_limit = diversity.fetch_limit(limit)
-                plan.plain_limit = limit
+            enumerated_map: dict[str, str] | None = None
             if use_containers:
                 (
                     search_results,
                     accessible_virtual_id_to_record_id,
                     verification_degraded,
                 ) = await self._search_and_adjudicate(
-                    queries, filter, search_limit, org_id, user_id, containers,
+                    queries, filter, limit, org_id, user_id, containers,
                     allow_requery=not virtual_record_ids_from_tool,
                     scope_connector_ids=containers.scope_connector_ids,
                     record_cut=record_cut,
@@ -947,11 +925,9 @@ class RetrievalService:
                     # stands.
                     adjudicated = (search_results, accessible_virtual_id_to_record_id)
                     kept_failed, kept_searched = plan.failed_collections, plan.collections_searched
-                    # The record-id search marks its own plain points.
-                    kept_plain, plan.plain_points = plan.plain_points, set()
                     try:
                         replacement = await self._search_by_record_ids(
-                            queries, search_limit, org_id, user_id, user_key, filters, time_range,
+                            queries, limit, org_id, user_id, user_key, filters, time_range,
                             virtual_record_ids_from_tool, selection, scopes, plan,
                         )
                     except Exception as exc:
@@ -975,8 +951,6 @@ class RetrievalService:
                         )
                         replacement = None
                         plan.failed_collections, plan.collections_searched = kept_failed, kept_searched
-                    if replacement is None or not replacement.results:
-                        plan.plain_points = kept_plain
                     if replacement is None:
                         search_results, accessible_virtual_id_to_record_id = adjudicated
                     elif replacement.empty_scope:
@@ -1009,10 +983,10 @@ class RetrievalService:
                         )
             if not use_containers:
                 search_results = await self._execute_parallel_searches(
-                    queries, filter, search_limit, org_id, user_id, plan=plan, record_cut=record_cut
+                    queries, filter, limit, org_id, user_id, plan=plan, record_cut=record_cut
                 )
                 try:
-                    enumerated = accessible_virtual_id_to_record_id
+                    enumerated = enumerated_map = accessible_virtual_id_to_record_id
                     accessible_virtual_id_to_record_id = await self._keep_permitted_hits(
                         search_results, enumerated, user_key, org_id,
                         scope_connector_ids=requested_scope_ids(filters),
@@ -1038,6 +1012,31 @@ class RetrievalService:
             if not search_results:
                 self.logger.debug("No search results found")
                 return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+
+            plain_points: set[Any] = set()
+            if diversity is not None and diversity.fetch_limit(limit) > limit:
+                plain_points = {
+                    (hit.get("metadata") or {}).get("point_id")
+                    for hit in search_results if isinstance(hit, dict)
+                }
+                candidates, candidate_map = await self._diversity_candidates(
+                    queries, filter, diversity.fetch_limit(limit), org_id, user_id, plan,
+                    containers=containers if use_containers else None,
+                    enumerated=enumerated_map,
+                    user_key=user_key,
+                    scope_connector_ids=requested_scope_ids(filters),
+                    scopes=scopes,
+                )
+                search_results = [
+                    *search_results,
+                    *(
+                        hit for hit in candidates
+                        if (hit.get("metadata") or {}).get("point_id") not in plain_points
+                        and hit_record_id(hit) in candidate_map
+                    ),
+                ]
+                for vid, record_id in candidate_map.items():
+                    accessible_virtual_id_to_record_id.setdefault(vid, record_id)
 
             self.logger.debug(f"Search results count: {len(search_results) if search_results else 0}")
 
@@ -1102,9 +1101,9 @@ class RetrievalService:
                 raise
 
             record_rank: dict[str, int] | None = None
-            if diversity is not None:
+            if plain_points:
                 search_results, virtual_to_record_map, record_rank = _vary_sources(
-                    diversity, search_results, virtual_to_record_map, plan.plain_points,
+                    diversity, search_results, virtual_to_record_map, plain_points,
                 )
 
             unique_record_ids = {r.get("_key") for r in virtual_to_record_map.values() if r}
@@ -1484,6 +1483,62 @@ class RetrievalService:
         except Exception as e:
             self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
+
+    async def _diversity_candidates(
+        self,
+        queries: list[str],
+        filter: Any,  # noqa: A002, ANN401
+        depth: int,
+        org_id: str,
+        user_id: str,
+        plan: "_QueryPlan",
+        *,
+        containers: "AccessibleContainers | None",
+        enumerated: dict[str, str] | None,
+        user_key: str | None,
+        scope_connector_ids: "tuple[str, ...] | None",
+        scopes: Sequence[SelectionScope],
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        """Hits from a deeper read of the same search, checked the same way.
+
+        Candidates for the first page only: the plain result is not changed by
+        them. Reuses the plain search's embeddings. Returns the hits the user
+        may read and their ``{vrid: recordId}``; nothing when the read or its
+        check fails, so the plain result stands.
+        """
+        candidate_plan = _QueryPlan(
+            dense=plan.dense, sparse=plan.sparse, collections=plan.collections,
+        )
+        try:
+            if containers is not None:
+                hits, accessible, degraded = await self._search_and_adjudicate(
+                    queries, filter, depth, org_id, user_id, containers,
+                    allow_requery=False,
+                    scope_connector_ids=containers.scope_connector_ids,
+                    plan=candidate_plan,
+                    user_key=user_key,
+                    scopes=scopes,
+                )
+                if degraded:
+                    return [], {}
+            elif enumerated is not None:
+                hits = await self._execute_parallel_searches(
+                    queries, filter, depth, org_id, user_id, plan=candidate_plan,
+                )
+                accessible = await self._keep_permitted_hits(
+                    hits, enumerated, user_key, org_id,
+                    scope_connector_ids=scope_connector_ids, scopes=scopes,
+                )
+            else:
+                return [], {}
+        except Exception as exc:
+            self.logger.warning("source diversity: deeper read failed, keeping the plain result: %s", exc)
+            return [], {}
+        kept = [
+            hit for hit in hits
+            if isinstance(hit, dict) and hit_record_id(hit) in accessible
+        ]
+        return kept, {vid: accessible[vid] for vid in {hit_record_id(hit) for hit in kept}}
 
     async def _entity_filter_virtual_ids(
         self,
@@ -1936,14 +1991,6 @@ class RetrievalService:
         plan = plan if plan is not None else _QueryPlan()
         plan.narrow_shortfall = False
         fetch_limit = self._overfetch_limit(limit, containers)
-        if plan.plain_limit is not None:
-            # How deep the plain search would read each query on this path.
-            plain_fetch = self._overfetch_limit(plan.plain_limit, containers)
-            plan.plain_fetch = (
-                record_cut.fused_limit(plain_fetch, _OVERFETCH_ABSOLUTE_CAP)
-                if record_cut is not None
-                else plain_fetch
-            )
         # `limit` is per query — `_run_searches` issues one request per expanded
         # query and concatenates the deduped batches — so every comparison below
         # is against the whole fan-out, not one query's share.
@@ -2091,22 +2138,6 @@ class RetrievalService:
             and (result.get("metadata") or {}).get("virtualRecordId") in best_accessible
         ]
         admitted.sort(key=lambda r: r.get("score") or 0, reverse=True)
-        if plan.plain_limit is not None:
-            # What this cut would have kept at the caller's own limit, from
-            # what the plain search would have read.
-            plain_budget = plan.plain_limit * max(1, len(queries))
-            fetched = [
-                hit for hit in admitted
-                if (hit.get("metadata") or {}).get("point_id") in plan.plain_fetched
-            ]
-            plain = (
-                record_cut.cut(fetched, plain_budget, hit_record_id)
-                if record_cut is not None
-                else fetched[:plain_budget]
-            )
-            plan.plain_points = {(hit.get("metadata") or {}).get("point_id") for hit in plain}
-            plan.plain_fetch = None
-            plan.plain_fetched = set()
         if record_cut is not None:
             return record_cut.cut(admitted, budget, hit_record_id), best_accessible, best_degraded
         return admitted[:budget], best_accessible, best_degraded
@@ -2608,18 +2639,6 @@ class RetrievalService:
         if plan is not None:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
-        # Per query, the points the plain search would have read: under source
-        # diversity each query is read deeper than the caller asked.
-        plain_ids: list[set[Any]] = []
-        if plan is not None and plan.plain_limit is not None:
-            for batch in search_results:
-                if plan.plain_fetch is not None:
-                    ids = {point.id for point in batch[: plan.plain_fetch]}
-                    plan.plain_fetched.update(ids)
-                else:
-                    ids = {point.id for point in _plain_cut(batch, plan.plain_limit, record_cut)}
-                    plan.plain_points.update(ids)
-                plain_ids.append(ids)
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
         # Measured after the cut, so "exhausted" still means a query came back
@@ -2628,19 +2647,9 @@ class RetrievalService:
             plan.max_batch = max((len(batch) for batch in search_results), default=0)
 
         seen_points: set = set()
-        # A point several queries found keeps the first query's score; with
-        # a deeper read, the first query whose plain read had it, as the plain
-        # search would.
-        stored_at: dict[Any, int] = {}
-        stored_plain: set[Any] = set()
-        for index, batch in enumerate(search_results):
-            batch_plain = plain_ids[index] if index < len(plain_ids) else set()
+        for batch in search_results:
             for point in batch:
                 if point.id in seen_points:
-                    if point.id in batch_plain and point.id not in stored_plain:
-                        doc, _ = all_results[stored_at[point.id]]
-                        all_results[stored_at[point.id]] = (doc, point.score)
-                        stored_plain.add(point.id)
                     continue
                 seen_points.add(point.id)
                 metadata = point.payload.get("metadata") or {}
@@ -2649,9 +2658,6 @@ class RetrievalService:
                     page_content=point.payload.get("page_content", ""),
                     metadata=metadata,
                 )
-                stored_at[point.id] = len(all_results)
-                if point.id in batch_plain:
-                    stored_plain.add(point.id)
                 all_results.append((doc, point.score))
 
         return self._format_results(all_results)

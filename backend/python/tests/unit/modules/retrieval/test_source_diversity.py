@@ -404,13 +404,30 @@ class TestTheSearchApi:
 
         response = await _search(store)
 
-        assert [req.limit for req in store.requests] == [20]
+        # The plain search as always, then the deeper read for candidates.
+        assert [req.limit for req in store.requests] == [6, 20]
         assert _order(response) == [
             "pr0", "pr1", "pr2", "thread", "page", "issue",  # the first page
             "pr3", "pr4", "pr5",                              # pushed down, still there
         ]
         assert {r["virtualRecordId"] for r in response["records"]} == set(_order(response))
         assert set(response["virtual_to_record_map"]) == set(_order(response))
+
+    @pytest.mark.parametrize("containers", [False, True])
+    async def test_on_with_no_source_over_its_share_the_response_is_the_plain_one(
+        self, monkeypatch: pytest.MonkeyPatch, containers: bool
+    ) -> None:
+        def store() -> _FakeStore:
+            return _FakeStore(points=[
+                _point("gh0", 0.99), _point("chat-a", 0.98), _point("gh1", 0.97),
+                _point("chat-b", 0.96), _point("gh2", 0.50), _point("gh3", 0.40),
+            ])
+
+        plain = await _search(store(), containers=containers, limit=4)
+        _knobs(monkeypatch, window=10, per_source=2, pool=6)
+        varied = await _search(store(), containers=containers, limit=4)
+
+        assert varied == plain
 
     async def test_on_every_record_a_query_returns_at_its_own_limit_is_kept(
         self, monkeypatch: pytest.MonkeyPatch
