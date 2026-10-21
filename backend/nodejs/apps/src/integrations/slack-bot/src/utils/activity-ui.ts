@@ -168,7 +168,7 @@ export class SlackActivityBuilder {
   /** A model call streams nothing else into the timeline, so the reasoning it
    * streamed is whatever trails it; its retry streams that reasoning again. */
   dropTrailingReasoning(): void {
-    while (this.timeline[this.timeline.length - 1]?.kind === "reasoning") {
+    while (this.timeline[this.timeline.length - 1]?.kind === 'reasoning') {
       this.timeline.pop();
     }
   }

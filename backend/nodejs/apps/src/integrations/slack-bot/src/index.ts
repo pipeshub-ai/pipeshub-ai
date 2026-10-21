@@ -867,12 +867,12 @@ async function processSlackMessage(
 
     const resetAnswerStream = (): void => {
       clearAnswerFlushTimer();
-      pendingAppendText = "";
+      pendingAppendText = '';
       streamedAnswerLength = 0;
       queuedStreamAppend = queuedStreamAppend
         .then(async () => deleteStreamMessages())
-        .catch((error) => {
-          console.error("Error clearing Slack answer preamble:", error);
+        .catch((error: unknown) => {
+          console.error('Error clearing Slack answer preamble:', error);
         });
     };
 
@@ -900,12 +900,15 @@ async function processSlackMessage(
           // With no stream open yet, the hint replaced the activity message.
           queuedStreamAppend = queuedStreamAppend
             .then(async () => updateActivityMessage(activityBuilder.format()))
-            .catch((error) => {
-              console.error("Error restoring Slack activity after a discard:", error);
+            .catch((error: unknown) => {
+              console.error(
+                'Error restoring Slack activity after a discard:',
+                error,
+              );
             });
         }
         tableStreamingDisabled = false;
-        streamTableProbeText = "";
+        streamTableProbeText = '';
         tablePauseHintSent = false;
       },
       onNarration: (text) => {
