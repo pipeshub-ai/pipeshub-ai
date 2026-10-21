@@ -30,6 +30,16 @@ The connector does `client = await AcmeClient.build_from_services(...)` and then
 - Re-read the token from config before each batch of calls, not once at `init()`. OAuth tokens are refreshed in the background and written back to config; a client built at `init()` holds an expired token an hour later. Linear's `_get_fresh_datasource()` is the pattern. For a 401 in the middle of a sync, refresh once and retry the call: `TokenRefreshService.refresh_now(connector_id, connector_type, refresh_token)` (get the service from `startup_service.get_token_refresh_service()`), single-flight as in `gitlab/runtime.py`. The shared HTTP retry does not retry a 401.
 - A user-supplied base URL (self-hosted sources) goes through `validate_public_http_url` (`app/utils/url_fetcher.py`) before the client uses it, and must be `https` unless the human agreed otherwise. The Web connector's `address_guard.py` is the reference for fetching arbitrary URLs.
 - A synchronous SDK must not run on the event loop. Submit its calls to the connector's share of the shared thread pool: acquire it in `init()` with `self._thread_lease(max_concurrency)`, then `await asyncio.wrap_future(lease.submit(fn, *args))`, and release it in `cleanup()` with `await self._release_thread_lease()`. Google Drive individual is the example.
+- `HTTPClient` takes `token_type` (default `"Bearer"`). A Discord-style bot token is `token_type="Bot"`. Do not build a second HTTP stack for that.
+- Before writing a client, search for one that already exists: `app/sources/client/<vendor>/`, `app/sources/external/<vendor>/`, and `app/agents/actions/<vendor>/`. The agent toolset may already call that client. Changing it is a shared change. Airtable is the case: the client exists, and the connector class in `registry/connector.py` is still a placeholder.
+
+OAuth is already implemented. Do not reimplement the token exchange in the client.
+
+- Authorization starts at `OAuthProvider.start_authorization()` (`oauth_service.py`). The connector route calls it with no arguments, and PKCE defaults to on.
+- The refresh posts to the same `token_url` registered on the builder. There is no separate refresh URL. A vendor that refreshes somewhere else needs that URL as `token_url`, or a change in shared code, which you ask for first.
+- Basic-auth at the token endpoint is a hostname list, `_BASIC_AUTH_ONLY_TOKEN_HOSTS` in `app/utils/oauth_config.py` (`airtable.com`, `zoom.us` today). A public client with no secret is already handled.
+- `TokenRefreshService` stores a rotated refresh token. A vendor that answers 409 to a second refresh in flight needs the single-flight retry in `gitlab/runtime.py` (`TokenRefreshService.refresh_now`), not a new lock.
+- A static API token or bot token has no refresh token. The refresh service skips it. A 401 on that connector is a revoked token: stop and `notify`. Retrying it only spends the vendor's invalid-request budget.
 
 ## `App`
 
@@ -121,7 +131,7 @@ Check every builder call against the code before you copy it: `CommonFields` hel
 | `.with_permission_model(PermissionModel.X)` | `RECORD_LEVEL` (default): the source has per-item access. `APP_LEVEL`: anyone who can reach the App can read everything in it. `RECORD_GROUP_LEVEL` is rejected here. See `06-permissions.md` before setting `APP_LEVEL`. |
 | `.with_auth([AuthBuilder...])` | One entry per supported auth type. OAuth entries register with the OAuth registry. The redirect URI is always `connectors/oauth/callback/<Name>` (`OAuthRedirectPaths` in `connectors/core/constants.py`); the Node callback route is generic. |
 | `.with_info(text)` | A note shown on the connector card. Use `CONNECTOR_EMAIL_IDENTITY_INFO` when users are matched by email. |
-| `.with_resilience_config(rate_limit=..., max_retries=3, base_delay=1.0, max_delay=60.0)` | `rate_limit` is the source's sustained requests per second, from its documentation; it is required because no default is right across APIs. `max_retries=3` means 4 attempts. Exposed as `self.resilience`. |
+| `.with_resilience_config(rate_limit=..., max_retries=3, base_delay=1.0, max_delay=60.0)` | One limiter for the whole connector, in this process. `rate_limit` is requests per second. `Retry-After` is honoured only as a number of seconds, and it is capped at `max_delay` (60 unless you set it): `ResiliencePolicy.backoff` in `app/sources/client/resilience.py`. An HTTP-date `Retry-After` is ignored and the policy falls back to jittered exponential backoff. A per-route bucket, a per-container limit, or a daily quota does not fit this one number. Ask before adding a second limiter. A daily `429` is not a short retry: stop, `notify`, and leave the checkpoint where it is. |
 | `.configure(lambda b: ...)` | `ConnectorConfigBuilder`: icon, sync strategies and schedule, realtime and agent support, documentation links, custom sync fields, filters, conditional display. |
 
 Register the class in `ConnectorFactory._connector_registry` (`connectors/core/factory/connector_factory.py`), keyed by the lower-cased, space-free name, with its import at the top of that file. Put connectors that are not ready for general use in `_beta_connector_definitions` instead.
@@ -158,11 +168,16 @@ Everything lives in one config document, read with `await self.config_service.ge
 | `source_created_at`, `source_updated_at` | From the source. |
 | `inherit_permissions`, `inherit_permissions_from_group`, `access_rule`, `rewrite_permissions` | Permission fields. See `06-permissions.md`. |
 | `signed_url`, `fetch_signed_url` | Only if the source gives a URL the indexing service can download from. |
-| `related_external_records` | Links to other records: a list of `RelatedExternalRecord(external_record_id, record_type, relation_type=RecordRelations.X)` (or `weburl` / `issue_key` to point at a record by link or key). Each write replaces the record's links. A missing target in the same connector becomes a placeholder. |
+| `related_external_records` | Links to other records: a list of `RelatedExternalRecord(external_record_id, record_type, relation_type=RecordRelations.X)` (or `weburl` / `issue_key` to point at a record by link or key). Each write replaces the record's links. A missing target in the same connector becomes a placeholder. An empty list is "no links", not "I could not read them": hold the record back, or update it through a path that does not replace links, when the association read failed. These edges do not grant access. If the source's id is unique only inside an object type, namespace it (`0-1:123` and `0-2:123`), or two objects collide. |
+| `is_dependent_node`, `parent_node_id` | Set on a child that should hang off a parent record in the knowledge hub (Slack's files, links and burst children). `parent_node_id` is the parent's internal id, not the external id. |
+| `shared_with_me_record_group_ids` | Extra record groups this record also belongs to, besides `external_record_group_id`. Use it when one item is in several containers and none of them is "the" parent. `shared_groups_complete` says the list is the full set, so groups left off it are dropped. |
+| `root_record_group_id` | Required for connectors in `ROOT_SCOPED_CONNECTOR_TYPES` (`app/services/graph_db/common/utils.py`, Slack today). Search then filters by the root group instead of every nested group. Adding a connector to that set is shared code: ask first. |
 | people fields | On `TicketRecord`: `assignee_email`, `reporter_email`, `creator_email`. On message records: `mentioned_user_ids`, `mentioned_group_ids`. The processor turns them into assigned-to, reported-by, created-by and mention edges. |
 | `indexing_status` | Leave the default unless an indexing filter excludes the record (`AUTO_INDEX_OFF`). |
 
-**`RecordGroup`**: `name`, `external_group_id`, `group_type` (`RecordGroupType`), `connector_name`, `connector_id`, `parent_external_group_id`, `web_url`, plus the permission fields `inherit_permissions` (defaults to `False`) and `access_rule`.
+**`RecordGroup`**: `name`, `external_group_id`, `group_type` (`RecordGroupType`), `connector_name`, `connector_id`, `parent_external_group_id`, `web_url`, plus the permission fields `inherit_permissions` (defaults to `False`) and `access_rule`. `hide_children` hides the group's children in the knowledge-base tree. `permission_model = RECORD_GROUP_LEVEL` is only for a group whose every nested group and record has that group's audience (see `06-permissions.md`).
+
+`record_type` on a record is `RecordType` in `app/models/entities.py`. `RecordTypes` in `app/config/constants/arangodb.py` is a second enum and the two have drifted. A new value is a change under `app/models/` or shared constants: ask first, and do not add it to only one of them. `RecordGroupType` is the same kind of change.
 
 **`AppUser`**: `app_name`, `connector_id`, `source_user_id`, `email`, `full_name`, `is_active` (defaults to `False`; set `True` for active users), `is_guest` (set `True` for guests and external accounts, see `06-permissions.md`). Users are matched to PipesHub users by email.
 
@@ -182,7 +197,7 @@ Everything lives in one config document, read with `await self.config_service.ge
 | `on_new_record_groups([(group, permissions or None)])` | Containers. `None` keeps the stored grants (you could not read them); `[]` clears them. |
 | `on_new_records([(record, permissions)], *, replace_permissions=False)` | New and changed records. Written in slices of 100, each in its own transaction; index events are published per committed slice. |
 | `on_record_content_update(record, permissions=None)` | Content changed. Publishes `updateRecord`. |
-| `on_record_metadata_update(record)` | Rename and other metadata. |
+| `on_record_metadata_update(record)` | Rename, parent change, and a link-only change. It publishes no indexing event (`publishes_event=False`) and keeps the stored indexing status. Use it when associations changed and the content hash did not. A failed association read must not be sent as an empty `related_external_records` list: that replaces the stored links. |
 | `on_updated_record_permissions(record, permissions)` | Access changed, content did not. Edges are keyed on `record.id`: pass the stored record from `get_record_by_external_id`, or set `record.id` to the stored id. A freshly built `Record` has a new id and the write goes nowhere. |
 | `on_records_moved([(old_external_id, new_record, permissions)], permissions_fetched=...)` | Only for sources whose external id changes on a rename or move (path-keyed: Local FS, GitHub, GitLab). With a stable id, re-send the moved record through `on_new_records` with its new parent and group ids. |
 | `delete_record_by_external_id(connector_id, external_id)` | A record gone at the source, by its source id. Attachments go with it; surviving children are re-pointed at what it hung under. |
@@ -244,3 +259,11 @@ When an admin narrows a sync filter, the platform queues a full sync and its cle
 ## Content: signed URL and streaming
 
 The indexing service first tries `record.signed_url` (sent as `signedUrl` in the index event); if absent or failing, it calls the connector's internal stream route, which runs `stream_record()` inside `streaming_for_indexing()` (`connectors/core/base/connector/stream_purpose.py`). Users opening a record go through the public stream route to the same method. Stream; do not read a large file into memory.
+
+`stream_content` (`app/utils/streaming.py`) GETs a URL and takes no headers and no token. Use it for a URL the indexing service can fetch by itself. A download that needs a bearer token is streamed from your own client, still in chunks. Do not put the token in the URL.
+
+Do not set `record.signed_url` when the URL expires before indexing runs. Airtable attachment URLs expire; some CDNs expire sooner. Resolve a fresh URL inside `get_signed_url` or `stream_record` on each fetch. Notion does this.
+
+Structured content is a `BlocksContainer` (`app/models/blocks.py`): `block_groups` and `blocks`, streamed as `MimeTypes.BLOCKS`. Hash the canonical blocks you would stream, not the raw payload, when the payload contains volatile fields (signed URLs, thumbnails, view counts). Include a comment signature when comments are folded into the parent, or a comment edit never re-indexes.
+
+Content the source cannot export is `not_downloadable` (`stream_errors.py`), which is HTTP 422 on the stream route. Set `indexing_status` to `ProgressStatus.FILE_TYPE_NOT_SUPPORTED` so the record is not left `QUEUED` and retried forever. `not_downloadable` is the response a user sees; it is not that status.

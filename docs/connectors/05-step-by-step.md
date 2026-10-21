@@ -9,8 +9,15 @@ Read `01-high-level-design.md` and `02-low-level-design.md` first. Pick a refere
 | File storage (drives, folders, files, per-file sharing) | Box (`box/`), Dropbox (`dropbox/`) |
 | Wiki or docs (spaces, nested pages) | Confluence Cloud (`atlassian/confluence_cloud/`) |
 | Ticketing (projects or teams, issues, comments, attachments) | Linear (`linear/`) |
-| Messaging (channels, threads, files) | Slack (`slack/`) |
+| Messaging (channels, threads, files) | Slack (`slack/`). Read the deviations below before copying it. |
+| Structured rows (tables, sheets) | Postgres (`postgres/`), MariaDB (`mariadb/`) for a table as one record. A row-per-record source still follows `03-decisions.md` §4. |
+| CRM objects linked to each other | No reference that stays inside the processor. Salesforce writes graph edges itself; do not copy that. Map associations with `related_external_records` (`03-decisions.md` §4). |
 | Self-hosted, API token, small API | BookStack (`bookstack/`), Zammad (`zammad/`) |
+
+Two references diverge from this guide. Do not copy the divergence.
+
+- Slack sets `permission_model=RECORD_GROUP_LEVEL` on channels (`slack/team/connector.py`). That opens every nested thread to the channel's audience. It also builds a burst id from an MD5 of message timestamps and sets `version=1`. A new messaging connector uses a stable segment id and `version=0` (`CONNECTOR_CHECKLIST.md`).
+- Linear's `_update_team_sync_checkpoint` stores the current time when no timestamp is passed, and Linear does not use `FailedItems`. Take the cursor before the listing and hold it with `FailedItems` (`02-low-level-design.md`).
 
 All under `backend/python/app/connectors/sources/`.
 
@@ -22,7 +29,9 @@ Do `04-intake-questions.md`: read the vendor API documentation, then ask the hum
 
 ## Phase 1: API client
 
-1. `backend/python/app/sources/client/<name>/<name>.py`: the auth-aware client with `build_from_services(logger, config_service, connector_instance_id)`, one branch per auth type you support.
+Search first. A client under `app/sources/client/<name>/`, a wrapper under `app/sources/external/<name>/`, an `app/agents/actions/<name>/` caller, a beta stub, or an icon may already exist. Reuse them. Airtable already has a client, an external wrapper, an agent action, a beta stub, and an icon (`frontend/app/components/ui/ConnectorIcon.tsx`). The class in `app/connectors/core/registry/connector.py` is the stub (`connect()` prints a line). It is registered in `ConnectorFactory._beta_connector_definitions`, and listed in `KNOWN_INCOMPLETE` (`tests/unit/connectors/test_connector_contract.py`) and in `PLACEHOLDERS` (`scripts/test_connector_coverage.py`). Converting that placeholder means: delete the stub class and its `_beta_connector_definitions` entry, implement `BaseConnector` and register it in `_connector_registry`, and remove the key from `KNOWN_INCOMPLETE` and `PLACEHOLDERS`. Keep the icon and the client the agent toolset already imports.
+
+1. `backend/python/app/sources/client/<name>/<name>.py`: the auth-aware client with `build_from_services(logger, config_service, connector_instance_id)`, one branch per auth type you support. Use the OAuth service that already exists (`02-low-level-design.md`). Do not exchange the token yourself.
 2. `backend/python/app/sources/external/<name>/<name>.py`: the endpoint wrapper. Generate it if the vendor publishes an OpenAPI spec (`backend/python/code-generator/`), then trim it to what you use.
 3. Wire the resilience policy into the HTTP client. Extract vendor error code, message and status into one helper (`07-errors-and-logging.md`).
 4. No synchronous network call on the event loop. If the vendor only has a sync SDK, plan to run it through the thread lease.

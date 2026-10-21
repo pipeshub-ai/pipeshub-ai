@@ -26,6 +26,7 @@ Decide from the documentation; ask only if both are possible and the use case do
 - Add an API token or basic auth option when self-hosted users commonly cannot register an OAuth app.
 - Never use OAuth `client_credentials` for anything that must act as a user.
 - If OAuth tokens do not come with a refresh token, say so in the PR: the token refresh service only refreshes connectors that have one, so such a connector needs the user to reconnect when it expires.
+- A static API token or bot token never refreshes. Do not retry a 401 as if a refresh would help. Say so in the PR, and see `02-low-level-design.md` for what the OAuth service already does (PKCE, Basic-auth hosts, refresh posted to `token_url`). Do not rebuild that in the client.
 
 ## 4. What becomes a record group, what becomes a record
 
@@ -37,13 +38,17 @@ Decide from the documentation; ask only if both are possible and the use case do
 | A searchable item (page, file, issue, message thread, ticket, article) | `Record` subclass that matches: `FileRecord`, `WebpageRecord`, `TicketRecord`, `MailRecord`, `ProjectRecord`, `PullRequestRecord`, ... |
 | An attachment of an item | its own `FileRecord`, with the item as parent |
 | Comments | follow the reference connector of the same shape: either part of the parent's streamed content, or `CommentRecord`s under it when they are searched or cited on their own |
+| A row of a table, list or sheet | one record streamed as `MimeTypes.BLOCKS`, or one `SQLTableRecord` when the table itself is the searchable item (Postgres, MariaDB). Ask which, when both are plausible. |
+| A container with no ACL of its own, but its own checkpoint, or whose deletion must remove everything under it | a nested `RecordGroup`, not a folder `Record`. `delete_record_by_external_id` deletes attachments and re-points other children at what the record hung under, so a table modeled as a folder leaves its rows behind when the table is deleted. `on_record_group_deleted` removes the subtree. |
+| A link to another item that is not its parent (a CRM association, a linked row) | `related_external_records`. Not `parent_external_record_id`. The link does not grant access. Do not pick one of several associations as the parent so the item inherits that parent's audience. |
+| Messages | one record per conversation segment (a channel or thread for a time window), with an id that stays put when a message is added. Not one record per message at chat volume. |
 
-Add a new `RecordType` or `RecordGroupType` only when no existing one fits, and say why in the PR.
+Adding a `RecordType` or `RecordGroupType` is a framework change (`app/models/entities.py`, and `RecordTypes` in `app/config/constants/arangodb.py`, which has drifted from `RecordType`). Ask first (`CONNECTOR.md`). Do not add the value to only one enum, and do not reuse a vendor-specific value (`DRIVE`, `SALESFORCE_ORG`) because the name is unused. `external_record_id` must be namespaced when the source's id is unique only inside an object type.
 
 ## 5. Identity, revisions and links
 
 - `external_record_id` is the source's immutable id. If the source has only paths, ask: a rename would delete and re-create the record, losing its history and re-indexing it.
-- `external_revision_id` changes exactly when the content changes: version number, etag, content hash, or `updated_at` as a last resort (it also changes on metadata-only edits, which re-indexes needlessly).
+- `external_revision_id` changes exactly when the content changes: version number, etag, content hash, or `updated_at` as a last resort (it also changes on metadata-only edits, which re-indexes needlessly). Hash the canonical content you index, not the raw payload. Leave out volatile fields (signed URLs, thumbnails, view counts). Include computed fields when they are part of what is indexed, and a comment signature when comments are folded into the parent. A listing timestamp that also moves on rename will re-index the item; say so in the PR if that is the only signal you have.
 - `weburl` opens the item in the source's UI, not its API.
 
 ## 6. Permissions
@@ -62,8 +67,11 @@ Map the source's sharing model with `06-permissions.md`, object type by object t
 | A `modified since` filter on listing | Store the latest modified time per container, held back by `FailedItems`. Detect deletions separately. |
 | An audit or events log | Use it for deletions and permission changes the listing does not show. |
 | Nothing | Full listing every run; rely on the full-sync cleanup for deletions. Tell the human the cost at their volume. |
+| Ids that increase with time (a Discord snowflake) and no modified-since | Store the last id you fully processed, taken before the listing starts, the same way as a delta cursor. `FailedItems` holds that cursor. Do not set it to "now" after the scan. |
 
 Every run writes through `on_new_records`; unchanged revisions are not re-indexed, so re-sending is cheap in a full sync and required there (see `01-high-level-design.md`).
+
+A scheduled run does not set `fullSync`. Cleanup of nodes the run did not write happens only on a full sync (`01-high-level-design.md`). If the source cannot report deletions, say how long a deletion waits, and do not describe the schedule as if it were that full sync. An id cursor and a `modified since` filter have the same rule: take the bound before the listing, and do not advance it past a failure. Linear's `_update_team_sync_checkpoint` stores the current time when no timestamp is passed, and Linear does not use `FailedItems`; do not copy that.
 
 ## 8. Deletions and moves
 
@@ -72,18 +80,23 @@ Every run writes through `on_new_records`; unchanged revisions are not re-indexe
 - A deleted container takes everything under it: `on_record_group_deleted`.
 - Otherwise the full-sync cleanup handles it, as long as `full_sync_coverage()` is honest. An incremental run alone will not notice a deletion; say how long a deletion can take to show up (until the next full sync).
 - A move is not a delete and re-create. With a stable id, re-send the record through `on_new_records` with its new parent; use `on_records_moved` only when the source's id changes on a move.
+- A branch, and a many-to-one merge, are not moves. Upsert the survivor and delete ids the source confirms were absorbed. Do not call `on_records_moved` for a merge.
+- When the source has no delete feed, an id-diff is allowed only after a listing of that container that finished with no error: compare stored ids with the ids you saw, and delete the ones that were absent. A partial page, a 429, a 5xx, or a 403 is not that listing. Name the lookup you use for the stored ids. A missing container is not automatically a deletion: lost access and a narrowed token look the same. Ask, and do not delete on that ambiguity.
+- A 200 with an empty body is not a deletion and not proof the container is empty. Discord's missing Message Content intent is the example: history comes back empty. Hold the checkpoint and do not write the empty result as "there are none" (`07-errors-and-logging.md`).
 
 ## 9. Content delivery
 
 - Files: `get_signed_url()` if the source gives temporary download URLs, and `stream_record()` streaming from it; otherwise stream the download yourself. Never buffer a whole file.
 - Structured items (issues, tickets, pages from a JSON API): stream `MimeTypes.BLOCKS` JSON. Rich text the source gives as HTML or Markdown can go as that mime type.
-- Content the source cannot export (a native format with no export) is `not_downloadable`; set its indexing status so it is not retried forever.
+- Content the source cannot export (a native format with no export) is `not_downloadable` (HTTP 422 from `stream_record`). Set `indexing_status` to `ProgressStatus.FILE_TYPE_NOT_SUPPORTED` so it is not left `QUEUED`.
+- Do not store `signed_url` when it expires before indexing. Fetch a fresh URL when the bytes are requested (`02-low-level-design.md`).
 
 ## 10. Rate limits and concurrency
 
-- Take the sustained rate limit from the documentation into `with_resilience_config(rate_limit=...)`. Honour `Retry-After`.
-- Bound concurrency: a semaphore around per-container work, or the thread lease's `max_concurrency` for a sync SDK.
+- Take the sustained rate limit from the documentation into `with_resilience_config(rate_limit=...)`. That is one limiter per connector in this process. `Retry-After` in seconds is capped at `max_delay`. A per-route bucket, a per-base limit, or a daily quota does not fit; ask before a second limiter. A daily 429 stops the run and keeps the checkpoint (`02-low-level-design.md`).
+- Bound concurrency: a semaphore around per-container work, or the thread lease's `max_concurrency` for a sync SDK. `gather_with_concurrency` in `app/utils/concurrency.py` is the existing helper.
 - A synchronous SDK never runs on the event loop.
+- Some vendors count 401 and 403 toward an invalid-request ban. Do not probe access by calling until you are rejected.
 
 ## 11. Filters
 
@@ -95,4 +108,4 @@ Scheduled sync is the supported path. Webhook handlers have no caller in the pla
 
 ## 13. Framework changes
 
-If the connector needs a change in shared code (`app/connectors/core/`, `app/models/`, the graph providers, the processor), stop and ask. Those changes affect every connector and need their own review and tests.
+If the connector needs a change in shared code (`app/connectors/core/`, `app/models/`, the graph providers, the processor), stop and ask. Those changes affect every connector and need their own review and tests. That includes a new `RecordType` or `RecordGroupType`, a new `SyncFilterKey`, and adding the connector to `ROOT_SCOPED_CONNECTOR_TYPES` (`app/services/graph_db/common/utils.py`). OAuth PKCE, Basic-auth token hosts, and refresh-token rotation are already there (`02-low-level-design.md`); extending the hostname list is still shared code.

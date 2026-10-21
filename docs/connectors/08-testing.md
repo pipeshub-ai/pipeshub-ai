@@ -62,6 +62,7 @@ Cover at least:
 9. **Pagination:** more than one page of users, groups, members, containers, items, comments, attachments and permissions.
 10. **Sync timing:** a change made in the fake while the first full listing runs arrives on the next sync; an expired cursor re-lists the container.
 11. **Corner cases:** an empty container, a very large file, unicode names, a deleted user, a restricted item, an archived container.
+12. **Ids and links:** two object types that reuse the same numeric id stay distinct; an association-only change and a permission-only change show up without a content re-index; a search or list cap does not skip the rest; a 200 with an empty body does not delete or count as an empty container; an expiring download URL is fetched again at stream time; a role set with a deny is not granted from another role.
 
 Run your tests, then the whole unit suite:
 
@@ -103,3 +104,5 @@ The connector type a suite asks for must match the name passed to `ConnectorBuil
 | Pyright | `main.yml` (`pyright-type-check-pr`) | non-fatal; read its output anyway |
 
 Do not add a new connector to `connector_coverage_baseline.json` to get past the coverage gate unless the human agreed that it ships without integration tests. Say so in the PR.
+
+With no credentials and no agreement to join that baseline, stop. A skip-only suite (`source_unavailable()`) passes a pull request when the secrets are absent and fails the nightly run, where `PIPESHUB_REQUIRE_CONNECTOR_SECRETS` is set. Do not add an empty `integration-tests/connectors/<key>/` to look done, and do not add the baseline entry yourself.

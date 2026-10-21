@@ -12,25 +12,20 @@ It does not parse, chunk, embed or answer questions. Those belong to the indexin
 
 ## Where a connector runs
 
-```text
-Frontend (Next.js) ──► Node API (Express :3000)
-                         │  auth, connector CRUD proxy, OAuth callback, scheduler (BullMQ)
-                         ▼
-                 Connector service (Python, app.connectors_main, :8088)
-                   ├─ HTTP API: registry, config, OAuth authorize/callback, filter options, stream
-                   ├─ consumers: sync-events, entity-events
-                   ├─ token refresh loops
-                   └─ every connector's sync, as an asyncio task
-                         │
-          ┌──────────────┼──────────────────┬───────────────────────┐
-          ▼              ▼                  ▼                       ▼
-     source API     graph DB           message broker          config store
-     (vendor)       (IGraphDBProvider)  (MessagingFactory)      (ConfigurationService)
-                                        record-events ─► Indexing service (:8091)
-                                                          │ fetches content back through
-                                                          ▼ the connector's stream route
-                                                     vector DB (IVectorDBService)
+```mermaid
+flowchart LR
+  FE[Frontend] --> N["Node API :3000<br/>auth, CRUD proxy, OAuth callback, BullMQ"]
+  N --> C["Connector service :8088<br/>one asyncio loop"]
+  C --> S[(Source API)]
+  C --> G["Graph<br/>via the processor"]
+  C --> B[[record-events]]
+  C --> K[(ConfigurationService)]
+  B --> I["Indexing :8091"]
+  I -->|"signedUrl, else stream_record"| C
+  I --> V[(Vector store)]
 ```
+
+The connector service's one loop also serves its HTTP API (registry, config, OAuth, filter options, stream), the sync-events and entity-events consumers, and token refresh. Indexing parses, chunks and embeds. The connector does not.
 
 Facts that shape every design choice:
 
@@ -52,6 +47,23 @@ Facts that shape every design choice:
 | Reindex | `<connector>.reindex` | `reindex_records()` re-sends chosen records for indexing. |
 | Disable or delete | UI | Sync stops; delete cascades the connector's nodes, vectors and config. |
 
+```mermaid
+sequenceDiagram
+  participant Admin
+  participant Node as Node API
+  participant Conn as Connector service
+  participant Src as Source
+  participant Idx as Indexing
+  Admin->>Node: create, configure, OAuth
+  Node->>Conn: create instance and store config
+  Conn->>Conn: init and test_connection_and_access
+  Node->>Conn: start or resync
+  Conn->>Src: list users, groups, containers, items
+  Conn->>Conn: processor writes nodes and publishes record-events
+  Idx->>Conn: stream route calls stream_record
+  Conn->>Src: fetch bytes or blocks
+```
+
 ### Full and incremental sync
 
 The platform calls only `run_sync()`. Whether a run is full or incremental is the connector's decision, made from its checkpoints:
@@ -68,18 +80,59 @@ During a full sync, the processor notes every node the connector writes. When th
 
 `run_incremental_sync()` and `handle_webhook_notification()` are abstract methods you must implement, but nothing in the platform calls them today. Do not rely on webhooks for freshness; scheduled sync is the supported path.
 
+A scheduled run is not a full sync. BullMQ publishes a resync with no `fullSync` field (`constructSyncConnectorEvent` in `backend/nodejs/apps/src/modules/crawling_manager/utils/utils.ts`). The connector service treats a missing flag as false (`event_service.py`) and deletes checkpoints only when the event sets `fullSync` or the connector still has `pendingFullSync` (a filter change, an enable that asked for one, or a full sync that was cut short). Deletions that exist only in the cleanup below wait until one of those happens.
+
+```mermaid
+flowchart TD
+  E[Sync event] --> F{fullSync set, or pendingFullSync?}
+  F -->|yes| D[Delete this connector's sync points]
+  D --> R[run_sync]
+  F -->|no| R
+  R --> W[Processor writes what the run saw]
+  W --> Q{This run was a full sync, wrote at least one node, and coverage is complete?}
+  Q -->|no window, complete| U[Unlink every node the run did not write]
+  Q -->|window_start_ms, complete| Win[Keep pre-window records and windowed groups, drop their direct grants, unlink the rest]
+  Q -->|complete is false| K[Unlink nothing]
+```
+
+`complete=false` is an error skip. Never use it for a date window: deletions would then never be cleaned up.
+
 ## The data model, in one picture
 
-```text
-App (the connector instance)
- └─ RecordGroup (space / drive / project / channel)          ← may nest
-     └─ Record (page / folder / issue)                        ← may nest
-         ├─ Record (child page / file in folder / sub-task)
-         └─ Record (attachment)
+```mermaid
+flowchart TD
+  A[App: one connector instance]
+  A --> RG[RecordGroup: space, base, guild]
+  RG --> RG2[RecordGroup, nested]
+  RG2 --> R[Record: page, row, file, message segment]
+  R --> C[Child record]
+  R --> AT[Attachment]
+  U[AppUser] -.->|grant or USER_APP_RELATION| A
+  UG[AppUserGroup] -.->|grant| R
+  U -.->|member| UG
+  R -.->|related_external_records, not a parent| R2[Another record]
+```
 
-AppUser   (a source account, matched to a PipesHub user by email)
-AppUserGroup (a source group, with its members)
-Permission edges: user / group / role / org ──► App, RecordGroup or Record
+A `related_external_records` link is not hierarchy and does not grant access. `06-permissions.md` is the access check. In short: the user must pass the App gate, the node must be live, and then `OPEN` is a readable parent or a direct grant, `STRICT` also needs every ancestor, and `RESTRICTED` needs both a readable parent and a direct grant. `APP_LEVEL`, or an ancestor with `RECORD_GROUP_LEVEL`, opens everything under it.
+
+```mermaid
+flowchart TD
+  S[User and node] --> G{Passes the App gate?}
+  G -->|no| X[Deny]
+  G -->|yes| L{Live, not a placeholder, same org?}
+  L -->|no| X
+  L -->|yes| M{APP_LEVEL, or under a RECORD_GROUP_LEVEL group?}
+  M -->|yes| Y[Allow]
+  M -->|no| Rr{access_rule}
+  Rr -->|OPEN| O{Readable parent or a direct grant}
+  Rr -->|STRICT| St{That, and every ancestor is readable}
+  Rr -->|RESTRICTED| Re{Readable parent and a direct grant}
+  O -->|yes| Y
+  St -->|yes| Y
+  Re -->|yes| Y
+  O -->|no| X
+  St -->|no| X
+  Re -->|no| X
 ```
 
 - Records are matched across syncs by `(connector_id, external_record_id)`. The external id must be stable for the life of the item in the source.
