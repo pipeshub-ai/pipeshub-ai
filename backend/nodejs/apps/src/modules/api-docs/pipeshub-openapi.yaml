@@ -10229,6 +10229,12 @@ components:
         **Filtering:**
 
         Use filters to narrow search scope to specific apps or knowledge bases.
+
+        **Date bounds** (`createdAfter`, `createdBefore`, `modifiedAfter`, `modifiedBefore`)
+        match when a record was written or last changed, not when an event it describes
+        happened. With any of them set, the same search also runs once without dates, and its
+        best matches that the bounds left out come back apart from the results, in
+        `searchResponse.outsideDates`.
       required:
         - query
       properties:
@@ -10276,10 +10282,6 @@ components:
             Only records last changed in the source on or before this date. Same format as
             `createdBefore`. Records with no source date are left out whenever a bound on
             that date is set.
-
-            With any date bound set, the same search also runs once without dates, and its best
-            matches that the bounds left out come back apart from the results, in
-            `searchResponse.outsideDates`.
           example: "2026-09-30T23:59:59Z"
         rewriteQuery:
           type: boolean
