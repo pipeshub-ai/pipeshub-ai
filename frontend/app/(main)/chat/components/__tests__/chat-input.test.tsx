@@ -583,6 +583,14 @@ describe('ChatInput — attachments', () => {
 });
 
 describe('ChatInput — regenerate and edit a previous message', () => {
+  function openActiveConversation(): string {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.updateSlot(slotId, { isInitialized: true });
+    store.setActiveSlot(slotId);
+    return slotId;
+  }
+
   it('regenerates the chosen answer with the filters it was first asked with', () => {
     const store = useChatStore.getState();
     const slotId = store.createSlot('conv-1');
@@ -656,7 +664,8 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     expect(screen.queryByText('Edit Query')).toBeNull();
   });
 
-  it('lets the user edit an earlier question, and says editing is not available yet on send', () => {
+  it('re-asks with the edited question when the user sends an edit', () => {
+    const slotId = openActiveConversation();
     const { onSend } = renderInput();
     act(() => {
       useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
@@ -670,8 +679,82 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     fireEvent.keyDown(composer(), { key: 'Enter' });
 
     expect(onSend).not.toHaveBeenCalled();
-    expect(toastTitles()).toEqual(['Coming Soon']);
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledTimes(1);
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+      slotId, 'msg-3', undefined, undefined, 'Edited question',
+    );
     expect(composer().value).toBe('');
+    expect(screen.queryByText('Edit Query')).toBeNull();
+  });
+
+  it('regenerates without a new question when the edit leaves the text unchanged', () => {
+    const slotId = openActiveConversation();
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
+    });
+
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(slotId, 'msg-3', undefined, undefined);
+  });
+
+  it('keeps the original filters when editing a question that was scoped', () => {
+    const slotId = openActiveConversation();
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'Original question',
+        appliedFilters: { apps: [{ id: 'app-drive', name: 'Drive' }], kb: [{ id: 'kb-legal', name: 'Legal' }] },
+      });
+    });
+
+    type('Edited question');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+      slotId, 'msg-3', undefined, { apps: ['app-drive'], kb: ['kb-legal'] }, 'Edited question',
+    );
+  });
+
+  it('turns @ mentions off while editing, so the question keeps the filters it was asked with', () => {
+    renderInput();
+    expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
+
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
+    });
+
+    expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
+    fireEvent.keyDown(composer(), { key: 'Escape' });
+    expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
+  });
+
+  it('does not send an edit that was cleared, and stays in edit mode', () => {
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
+    });
+
+    type('   ');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(streaming.streamRegenerateForSlot).not.toHaveBeenCalled();
+    expect(screen.getByText('Edit Query')).toBeTruthy();
+  });
+
+  it('leaves edit mode on Escape without re-asking', () => {
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
+    });
+
+    fireEvent.keyDown(composer(), { key: 'Escape' });
+
+    expect(screen.queryByText('Edit Query')).toBeNull();
+    expect(composer().value).toBe('');
+    expect(streaming.streamRegenerateForSlot).not.toHaveBeenCalled();
   });
 });
 

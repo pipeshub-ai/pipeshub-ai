@@ -917,6 +917,54 @@ describe('enterprise_search/validators/es_validators', () => {
       const result = regenerateAnswersParamsSchema.safeParse(data)
       expect(result.success).to.be.true
     })
+
+    const regenParams = {
+      conversationId: '507f1f77bcf86cd799439011',
+      messageId: '507f1f77bcf86cd799439012',
+    }
+
+    it('keeps an edited question on the regenerate body', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { query: 'Edited question', filters: {} },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.query).to.equal('Edited question')
+      }
+    })
+
+    it('still accepts a regenerate body without a question', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({ params: regenParams, body: {} })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.query).to.be.undefined
+      }
+    })
+
+    it('rejects an empty edited question', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({ params: regenParams, body: { query: '' } })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects an edited question over the length limit', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { query: 'a'.repeat(100001) },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('accepts an edited question on the agent regenerate body', () => {
+      const result = regenerateAgentAnswersParamsSchema.safeParse({
+        params: { agentKey: 'agent-1', ...regenParams },
+        body: { query: 'Edited question', chatMode: 'quick' },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.query).to.equal('Edited question')
+      }
+    })
   })
 
   describe('agentCapabilities — survives unknown-key stripping', () => {

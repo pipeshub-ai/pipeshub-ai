@@ -1014,8 +1014,6 @@
     "toasts": {
       "stopStreamTitle": "Zastavování…",
       "stopStreamDescription": "Odpověď se za okamžik zastaví. Případná částečná odpověď zůstane zachována.",
-      "editComingSoonTitle": "Již brzy",
-      "editComingSoonDescription": "Na podpoře úprav pracujeme",
       "deprecatedTools": "Tento agent má nástroje, které už nejsou k dispozici. Otevřete Tvůrce agentů a odeberte je.",
       "openAgentBuilder": "Otevřít Tvůrce agentů",
       "loadConversationFailed": "Tuto konverzaci se nepodařilo otevřít. Obnovte stránku a zkuste to znovu.",

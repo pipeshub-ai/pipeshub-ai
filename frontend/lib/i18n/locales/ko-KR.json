@@ -977,8 +977,6 @@
     "toasts": {
       "stopStreamTitle": "중지 중…",
       "stopStreamDescription": "응답이 곧 중지됩니다. 지금까지 생성된 답변은 유지됩니다.",
-      "editComingSoonTitle": "출시 예정",
-      "editComingSoonDescription": "편집 기능을 준비하고 있습니다",
       "deprecatedTools": "이 에이전트에 더 이상 사용할 수 없는 도구가 있습니다. Agent Builder를 열어 제거하세요.",
       "openAgentBuilder": "Agent Builder 열기",
       "loadConversationFailed": "이 대화를 열 수 없습니다. 페이지를 새로 고친 후 다시 시도해 주세요.",

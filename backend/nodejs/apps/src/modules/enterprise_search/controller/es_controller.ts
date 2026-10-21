@@ -13,6 +13,8 @@ import {
   sendSSECompleteEvent,
   handleRegenerationStreamData,
   handleRegenerationSuccess,
+  updateUserQueryContent,
+  deleteMessagesById,
   staleAskUserQuestionToolCallIds,
   handleRegenerationError,
 } from './../utils/utils';
@@ -3217,6 +3219,48 @@ export function isToolApprovalAnswer(
   );
 }
 
+/** The answers to a question card (Python `ASK_USER_QUESTION_RESUME_PREFIX`): saved as a question of their own, shown on the card's row. */
+export function isAskUserQuestionAnswer(
+  query: string | undefined | null,
+): boolean {
+  return (
+    typeof query === 'string' && query.trimStart().startsWith('User selections:')
+  );
+}
+
+/** The question a turn was first asked, and what the turn saved after it, when it went through a question card. */
+interface CardTurnQuestion {
+  question: IMessage & { _id: mongoose.Types.ObjectId };
+  /** Rows between that question and the turn's last answer: the card, its answers, earlier replies. */
+  intermediateIds: mongoose.Types.ObjectId[];
+}
+
+/**
+ * A card turn is saved as several rows: the question, a reply holding the card, the card's answers
+ * (a `user_query` of their own) and the reply to them. The chat shows them as one question, so an
+ * edit must reach the first row, not the answers.
+ *
+ * @param older the rows before the turn's last answer, newest first
+ * @returns null when no question of the turn is found, or the turn answered an approval card
+ */
+export function findQuestionBehindCard(
+  older: Array<IMessage & { _id: mongoose.Types.ObjectId }>,
+): CardTurnQuestion | null {
+  const intermediateIds: mongoose.Types.ObjectId[] = [];
+  for (const row of older) {
+    if (row.messageType === 'user_query') {
+      if (isAskUserQuestionAnswer(row.content)) {
+        intermediateIds.push(row._id);
+        continue;
+      }
+      if (isToolApprovalAnswer(row.content)) return null;
+      return { question: row, intermediateIds };
+    }
+    intermediateIds.push(row._id);
+  }
+  return null;
+}
+
 /** Whether a reply's transcript holds a tool call a person approved (`IMessagePart.approved`). */
 export function ranApprovedCall(
   parts: IMessagePart[] | undefined | null,
@@ -3260,6 +3304,7 @@ async function regenerateAnswersInternal(
     conversation: IChatSessionDocument;
     userQuery: IMessage;
     staleAskToolCallIds: mongoose.Types.ObjectId[];
+    cardEdit: CardTurnQuestion | null;
   }> {
     if (!conversationId) {
       throw new BadRequestError('Conversation ID is required');
@@ -3324,6 +3369,17 @@ async function regenerateAnswersInternal(
         'This reply came from your answer to an approval request, so it cannot be regenerated. Ask again instead.',
       );
     }
+    // The stored question here is the card's answers, which the chat shows as part of the question
+    // before it, so an edit goes to that question and the whole card turn is asked again.
+    let cardEdit: CardTurnQuestion | null = null;
+    if (req.body.query && isAskUserQuestionAnswer(userQuery.content)) {
+      cardEdit = findQuestionBehindCard(recentMessages.slice(lastBotIdx + 1));
+      if (!cardEdit) {
+        throw new BadRequestError(
+          'This question cannot be edited. Ask again instead.',
+        );
+      }
+    }
 
     logger.debug('Regenerate answers validation passed', {
       requestId,
@@ -3339,7 +3395,7 @@ async function regenerateAnswersInternal(
       lastBot._id,
     );
 
-    return { conversation, userQuery, staleAskToolCallIds };
+    return { conversation, userQuery, staleAskToolCallIds, cardEdit };
   }
 
   try {
@@ -3370,6 +3426,7 @@ async function regenerateAnswersInternal(
       conversation: IChatSessionDocument;
       userQuery: IMessage;
       staleAskToolCallIds: mongoose.Types.ObjectId[];
+      cardEdit: CardTurnQuestion | null;
     } | null = null;
     if (rsAvailable) {
       session = await mongoose.startSession();
@@ -3388,6 +3445,23 @@ async function regenerateAnswersInternal(
     }
     existingConversation = validationResult.conversation;
     const userQuery = validationResult.userQuery;
+    const requestedQuery =
+      typeof req.body.query === 'string' ? req.body.query.trim() : '';
+    if (
+      requestedQuery &&
+      (isToolApprovalAnswer(requestedQuery) ||
+        isAskUserQuestionAnswer(requestedQuery))
+    ) {
+      throw new BadRequestError('This question cannot be used as an edit.');
+    }
+    // The question the chat shows: for a card turn, the first one, not the card's answers.
+    const cardEdit = validationResult.cardEdit;
+    const shownQuestion = cardEdit?.question ?? userQuery;
+    // An unchanged edit is a plain regenerate; only a real change rewrites the stored question.
+    const editedQuery =
+      requestedQuery && requestedQuery !== shownQuestion.content.trim()
+        ? requestedQuery
+        : null;
     const staleAskToolCallIds = validationResult.staleAskToolCallIds;
 
     // Format previous conversations up to this message (exclude last bot
@@ -3410,11 +3484,46 @@ async function regenerateAnswersInternal(
     ) {
       regenUserIdx -= 1;
     }
+    if (editedQuery && cardEdit) {
+      const questionIdx = allMessagesForRegen.findIndex(
+        (msg) => msg._id?.toString() === cardEdit.question._id.toString(),
+      );
+      if (questionIdx >= 0) regenUserIdx = questionIdx;
+    }
     const previousConversations = formatPreviousConversations(
       regenUserIdx >= 0
         ? allMessagesForRegen.slice(0, regenUserIdx)
         : allMessagesForRegen.slice(0, -2),
     );
+
+    // The title of a chat is its first question, so editing that question moves the title too,
+    // unless the user already renamed the chat.
+    const titleFollowsEdit =
+      regenUserIdx === 0 &&
+      existingConversation.title === shownQuestion.content.slice(0, 100);
+    const saveEditedQuestion = async (): Promise<void> => {
+      if (!editedQuery || !existingConversation) return;
+      const editedRow = await updateUserQueryContent(
+        (shownQuestion as IMessage & { _id: mongoose.Types.ObjectId })._id,
+        editedQuery,
+        existingConversation._id as mongoose.Types.ObjectId,
+        session,
+      );
+      if (!editedRow) {
+        throw new InternalServerError('Failed to save the edited question');
+      }
+      // The new answer replaces the whole card turn, so its card and answers go.
+      if (cardEdit) {
+        await deleteMessagesById(
+          cardEdit.intermediateIds,
+          session,
+          existingConversation._id as mongoose.Types.ObjectId,
+        );
+      }
+      if (titleFollowsEdit) {
+        existingConversation.title = editedQuery.slice(0, 100);
+      }
+    };
 
     // For the assistant (non-agent-key) path, detect universal agent mode from chatMode
     // so the regenerate request is routed to the correct backend endpoint and carries tools.
@@ -3422,7 +3531,7 @@ async function regenerateAnswersInternal(
 
     // Prepare AI payload
     const aiPayload: Record<string, unknown> = {
-      query: userQuery.content,
+      query: editedQuery ?? userQuery.content,
       previousConversations: previousConversations || [],
       filters: req.body.filters || {},
       attachments: userQuery.attachments || [],
@@ -3486,15 +3595,21 @@ async function regenerateAnswersInternal(
         return;
       }
       streamSettled = true;
-      void savePartialConversation(
-        existingConversation,
-        contentAccumulator.getText(),
-        null,
-        {
-          replaceMessageId: messageId || undefined,
-          parts: contentAccumulator.getParts(),
-        },
-      )
+      const partialText = contentAccumulator.getText();
+      // A partial answer was shown for the edited question, so the question is saved with it.
+      void (partialText ? saveEditedQuestion() : Promise.resolve())
+        .catch((err: unknown) => {
+          logger.error('Failed to save the edited question on disconnect', {
+            requestId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        })
+        .then(() =>
+          savePartialConversation(existingConversation!, partialText, null, {
+            replaceMessageId: messageId || undefined,
+            parts: contentAccumulator.getParts(),
+          }),
+        )
         .catch((err: unknown) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
@@ -3554,6 +3669,8 @@ async function regenerateAnswersInternal(
         // Save the AI response to the conversation, replacing the existing message
         // A failed save is handled once, by the catch below: one error frame, one saved reason.
         if (completeData && existingConversation) {
+          // Only once an answer exists, so a failed run keeps the original question.
+          await saveEditedQuestion();
           const { conversation: responseConversation, savedCitations } =
             await handleRegenerationSuccess(
               completeData,

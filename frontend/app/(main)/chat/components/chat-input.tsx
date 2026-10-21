@@ -413,7 +413,8 @@ export function ChatInput({
   const projectStreamToolsSel = useChatStore((s) => s.projectStreamTools);
   const isProjectChat = !isAgentChat && projectScope !== null;
   // An agent's or project's sources can't be searched in one request, so @ offers nothing there.
-  const mentionsOff = isAgentChat || isProjectChat;
+  // Editing or regenerating re-asks with the filters the question was first sent with.
+  const mentionsOff = isAgentChat || isProjectChat || isActionMode;
   /**
    * The composer shows the scoped Connectors·Collections·Actions·MCP panel (agent or project
    * allow-list) instead of the org-wide pickers. Web search has no knowledge scope.
@@ -831,10 +832,14 @@ export function ChatInput({
       payload === null ||
       typeof (payload as Record<string, unknown>).messageId !== 'string'
     ) return;
-    const { messageId, text } = payload as { messageId: string; text: string };
+    const { messageId, text, appliedFilters } = payload as {
+      messageId: string;
+      text: string;
+      appliedFilters?: AppliedFilters;
+    };
     dismissExpansionPanels();
     setRegenModelOverride(null);
-    setActiveMessageAction({ type: 'editQuery', messageId, text });
+    setActiveMessageAction({ type: 'editQuery', messageId, text, appliedFilters });
     // Populate the textarea with the original question so the user can edit it
     setMessage(text ?? '');
     setTimeout(() => textareaRef.current?.focus(), 0);
@@ -868,37 +873,32 @@ export function ChatInput({
   const executeMessageAction = useCallback((_editedText?: string) => {
     if (!activeMessageAction) return;
 
-    if (activeMessageAction.type === 'regenerate') {
-      const modelOverride = regenModelOverride ?? undefined;
-      const af = activeMessageAction.appliedFilters;
-      const originalFilters = af
-        ? buildAssistantApiFilters({
-            apps: af.apps.map((a) => a.id),
-            kb: af.kb.map((k) => k.id),
-            recordGroups: (af.recordGroups ?? []).map((g) => g.id),
-            records: (af.records ?? []).map((r) => r.id),
-            recordsExact: (af.recordsExact ?? []).map((r) => r.id),
-          })
-        : undefined;
-      setActiveMessageAction(null);
-      setRegenModelOverride(null);
-      setMessage('');
-      if (activeSlotId) {
-        streamRegenerateForSlot(activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters);
-      }
-      return;
+    const isEdit = activeMessageAction.type === 'editQuery';
+    const af = activeMessageAction.appliedFilters;
+    const editedText = isEdit ? stripMentionPads(message, retainedMentions(message, mentions)).trim() : '';
+    // An empty edit has no question to answer; stay in edit mode so the text can be fixed.
+    if (isEdit && !editedText) return;
+    const modelOverride = regenModelOverride ?? undefined;
+    const originalFilters = af
+      ? buildAssistantApiFilters({
+          apps: af.apps.map((a) => a.id),
+          kb: af.kb.map((k) => k.id),
+          recordGroups: (af.recordGroups ?? []).map((g) => g.id),
+          records: (af.records ?? []).map((r) => r.id),
+          recordsExact: (af.recordsExact ?? []).map((r) => r.id),
+        })
+      : undefined;
+    const changedQuery =
+      isEdit && editedText !== activeMessageAction.text.trim() ? editedText : undefined;
+    setActiveMessageAction(null);
+    setRegenModelOverride(null);
+    setMessage('');
+    if (activeSlotId) {
+      const target = [activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters] as const;
+      if (changedQuery) streamRegenerateForSlot(...target, changedQuery);
+      else streamRegenerateForSlot(...target);
     }
-
-    if (activeMessageAction.type === 'editQuery') {
-      toast.info(t('chat.toasts.editComingSoonTitle'), {
-        description: t('chat.toasts.editComingSoonDescription'),
-      });
-      setActiveMessageAction(null);
-      setRegenModelOverride(null);
-      setMessage('');
-      return;
-    }
-  }, [activeMessageAction, regenModelOverride, activeSlotId, t]);
+  }, [activeMessageAction, regenModelOverride, activeSlotId, message, mentions]);
 
   const handleSubmit = (e: React.SyntheticEvent) => {
     e.preventDefault();

@@ -387,6 +387,8 @@ export const ChatApi = {
       agentCapabilities?: StreamChatRequest['agentCapabilities'];
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
       runId?: string;
+      /** The edited question; omitted to regenerate the stored one unchanged. */
+      query?: string;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -412,6 +414,9 @@ export const ChatApi = {
     if (request.runId) {
       body.runId = request.runId;
     }
+    if (request.query) {
+      body.query = request.query;
+    }
 
     await runChatStream(endpoint, body, callbacks);
   },
@@ -436,6 +441,8 @@ export const ChatApi = {
       agentCapabilities?: AgentCapabilities;
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
       runId?: string;
+      /** The edited question; omitted to regenerate the stored one unchanged. */
+      query?: string;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -460,6 +467,9 @@ export const ChatApi = {
     }
     if (model.runId) {
       agentRegenBody.runId = model.runId;
+    }
+    if (model.query) {
+      agentRegenBody.query = model.query;
     }
 
     await runChatStream(endpoint, agentRegenBody, callbacks);

@@ -286,6 +286,24 @@ export const updateMessageById = async (
   );
 };
 
+/**
+ * Rewrite the text of a stored `user_query` row, used when the user edits the
+ * last question and regenerates its answer. Only `content` changes; the row's
+ * attachments, mentions and seq stay as they were. Scoped to the conversation,
+ * so an id from anywhere else matches nothing.
+ */
+export const updateUserQueryContent = async (
+  messageId: mongoose.Types.ObjectId | string,
+  content: string,
+  sessionId: mongoose.Types.ObjectId | string,
+  mongoSession?: ClientSession | null,
+): Promise<IChatSessionMessageDocument | null> =>
+  ChatSessionMessage.findOneAndUpdate(
+    { _id: messageId, sessionId, messageType: 'user_query' },
+    { $set: { content } },
+    { new: true, session: mongoSession || undefined },
+  );
+
 const hasAskUserQuestionTool = (msg: IMessage | undefined): boolean =>
   Boolean(msg?.tools?.some((tool) => tool.toolName?.includes('ask_user_question')));
 
@@ -328,12 +346,13 @@ export const staleAskUserQuestionToolCallIds = (
 export const deleteMessagesById = async (
   messageIds: mongoose.Types.ObjectId[],
   mongoSession?: ClientSession | null,
+  sessionId?: mongoose.Types.ObjectId | string,
 ): Promise<number> => {
   if (messageIds.length === 0) {
     return 0;
   }
   const result = await ChatSessionMessage.deleteMany(
-    { _id: { $in: messageIds } },
+    { _id: { $in: messageIds }, ...(sessionId ? { sessionId } : {}) },
     mongoSession ? { session: mongoSession } : undefined,
   );
   return result.deletedCount ?? 0;

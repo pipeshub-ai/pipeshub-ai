@@ -1065,7 +1065,7 @@ export interface AvailableLlmModel {
 export type ActiveMessageAction =
   | null
   | { type: 'regenerate'; messageId: string; appliedFilters?: AppliedFilters }
-  | { type: 'editQuery'; messageId: string; text: string };
+  | { type: 'editQuery'; messageId: string; text: string; appliedFilters?: AppliedFilters };
 
 // ── Multi-Chat Slot Types ──
 

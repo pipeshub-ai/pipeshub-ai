@@ -854,8 +854,6 @@
     "toasts": {
       "stopStreamTitle": "Stopping…",
       "stopStreamDescription": "The response will stop shortly. Any partial answer will be kept.",
-      "editComingSoonTitle": "Coming Soon",
-      "editComingSoonDescription": "We're building out support for edit",
       "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
       "openAgentBuilder": "Open Agent Builder",
       "loadConversationFailed": "We couldn't open this conversation. Refresh the page to try again.",

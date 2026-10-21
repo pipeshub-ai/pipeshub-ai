@@ -1033,6 +1033,8 @@ export const messageIdParamsSchema = z.object({
 // ---------------------------------------------------------------------------
 
 const regenerateBodySchema = z.object({
+  // Present only when the user edited the question being regenerated.
+  query: chatQuerySchema.optional(),
   filters: filtersSchema,
   chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
   ...modelFieldsSchema,
