@@ -1483,6 +1483,7 @@ async def grant_record_access(
 @router.delete(
     "/chat/attachments/{record_id}",
     status_code=204,
+    response_model=None,
     dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT, OAuthScopes.AGENT_EXECUTE))],
 )
 @inject
