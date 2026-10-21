@@ -29,8 +29,7 @@ Run with:
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -49,6 +48,9 @@ from app.services.graph_db.common.record_visibility import (
     matches_visibility,
 )
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # Jira issue-type subTypes used by the seeded fixture below map to a real
 # `TicketRecord` (RecordType.TICKET + ItemType), same as production Jira
