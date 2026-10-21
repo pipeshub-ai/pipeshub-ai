@@ -29,6 +29,7 @@ Run with:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -151,7 +152,12 @@ class SeededGraphProvider:
         return {k: v for k, v in node.items() if not k.startswith("_")}
 
     async def check_access(
-        self, user_key: str, org_id: str, *, node_ids: Any = (), **_kwargs: Any,
+        self,
+        user_key: str,
+        org_id: str,
+        *,
+        node_ids: Iterable[str] = (),
+        **_kwargs: object,
     ) -> AccessCheck:
         """The seeded user can read a node in this org unless it is marked inaccessible."""
         admitted = frozenset(
