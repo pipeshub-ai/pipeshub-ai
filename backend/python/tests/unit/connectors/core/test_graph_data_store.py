@@ -747,6 +747,22 @@ class TestGraphTransactionStore:
         assert len(result) == 1
 
     @pytest.mark.asyncio
+    async def test_get_app_users_leaves_out_a_membership_the_source_names_no_user_for(
+        self, tx_store, mock_graph_provider,
+    ) -> None:
+        member = {"_key": "au1", "email": "member@test.com", "fullName": "Member", "orgId": "org1",
+                  "connectorId": "conn1", "sourceUserId": "src1", "appName": "UNKNOWN"}
+        # An external collaborator's membership (ensure_app_membership): both graph
+        # stores answer a null sourceUserId for it
+        external = {"_key": "u2", "email": "outsider@test.com", "fullName": "Outsider", "orgId": "org1",
+                    "connectorId": "conn1", "sourceUserId": None, "appName": "UNKNOWN"}
+        mock_graph_provider.get_app_users.return_value = [external, member]
+
+        result = await tx_store.get_app_users("org1", "conn1")
+
+        assert [u.email for u in result] == ["member@test.com"]
+
+    @pytest.mark.asyncio
     async def test_get_user_groups(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_user_groups("conn1", "org1")
         mock_graph_provider.get_user_groups.assert_awaited_once_with(
