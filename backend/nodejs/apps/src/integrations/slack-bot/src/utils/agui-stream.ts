@@ -75,6 +75,8 @@ export interface SlackAGUICallbacks {
   /** Full current answer text (caller diffs against last streamed length). */
   onAnswerAccumulated?: (accumulated: string) => void;
   onClearAnswerPreamble?: () => void;
+  /** A model call failed mid-stream and is retried: drop what it streamed. */
+  onModelCallDiscarded?: () => void;
   onAskUserQuestion?: (payload: AskUserQuestionEvent) => void;
   onArtifact?: (artifact: SlackArtifactPayload) => void;
   onConversationCreated?: (conversationId: string) => void;
@@ -438,6 +440,7 @@ export function createSlackAGUIEventHandler(
             textBuffer = "";
             rawTextReceived = 0;
             state = { ...state, normalizedAnswer: "", rawLength: 0 };
+            callbacks.onModelCallDiscarded?.();
             emitAnswer();
           }
         }

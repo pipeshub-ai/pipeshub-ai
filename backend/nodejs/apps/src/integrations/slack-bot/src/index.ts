@@ -880,6 +880,10 @@ async function processSlackMessage(
           scheduleActivityUpdate();
         }
       },
+      onModelCallDiscarded: () => {
+        activityBuilder.dropTrailingReasoning();
+        scheduleActivityUpdate();
+      },
       onNarration: (text) => {
         activityBuilder.appendNarration(text);
         scheduleActivityUpdate();

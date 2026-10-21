@@ -537,10 +537,12 @@ export function createAGUIEventHandler(
         }
         if (textOps.length === 0) break;
         state = applyStatePatch(state, textOps);
+        // rawLength 0 with nothing received this turn is a clear (a model call
+        // was discarded); it must win over a lagging snapshot adopted meanwhile.
         const normalizationCurrent =
           state.rawLength > 0
             ? state.rawLength >= rawTextReceived
-            : state.normalizedAnswer.length >= textBuffer.length;
+            : rawTextReceived === 0 || state.normalizedAnswer.length >= textBuffer.length;
         if (normalizationCurrent) {
           textBuffer = state.normalizedAnswer;
         }

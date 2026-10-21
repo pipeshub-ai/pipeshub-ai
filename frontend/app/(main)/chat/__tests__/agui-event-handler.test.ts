@@ -1184,4 +1184,27 @@ describe('createAGUIEventHandler — a model call discarded mid-stream', () => {
       .map((part: { content: string }) => part.content);
     expect(texts).toEqual(['Searching.', 'The deploy broke it.']);
   });
+
+  it('keeps the answer cleared when a snapshot of the discarded attempt lags behind the discard', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const patch = (normalizedAnswer: string, rawLength: number): SSEEvent =>
+      frame('STATE_DELTA', {
+        runId: 'root',
+        delta: [
+          { op: 'replace', path: '/citations', value: [] },
+          { op: 'replace', path: '/normalizedAnswer', value: normalizedAnswer },
+          { op: 'replace', path: '/rawLength', value: rawLength },
+        ],
+      });
+
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The dep' }));
+    handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
+    handle(frame('CUSTOM', { runId: 'root', name: 'message_discarded', value: { messageId: 'm1' } }));
+    handle(patch('The dep', 7));
+    handle(patch('', 0));
+
+    expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: '', citations: [] });
+  });
 });
