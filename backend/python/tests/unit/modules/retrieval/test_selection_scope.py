@@ -5,6 +5,7 @@ The hierarchy walk itself (`get_selection_nodes`) is tested against real graphs
 on both backends in `tests/integration/graph_permissions/`.
 """
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -598,3 +599,80 @@ class TestUnreadableScope:
         provider = _provider()
         provider.get_accessible_containers = AsyncMock(return_value=containers)
         assert await mod.unreadable_scope_error(provider, "u", "o", {"apps": ["a"]}) is None
+
+
+class TestConnectionLimit:
+    """A connected app (OAuth app or personal access token) keeps to what its user picked."""
+
+    def test_without_a_limit_only_client_sent_server_keys_go(self) -> None:
+        turn = mod.within_connection({"apps": ["a"], "connectionApps": ["x"], "allowedApps": ["y"]}, None)
+        assert turn == {"apps": ["a"]}
+
+    def test_a_request_that_picks_nothing_searches_the_whole_limit(self) -> None:
+        turn = mod.within_connection(
+            {"apps": [], "kb": []}, {"apps": ["a"], "recordGroups": ["g"], "records": []},
+        )
+        assert (turn["apps"], turn["recordGroups"], turn["records"]) == (["a"], ["g"], [])
+        assert turn["strictScope"] is True
+        assert (turn["connectionApps"], turn["connectionRecordGroups"]) == (["a"], ["g"])
+
+    def test_a_request_that_picks_something_keeps_its_pick_inside_the_bound(self) -> None:
+        """The pick may be anything; the bound drops every hit outside the limit."""
+        turn = mod.within_connection({"apps": ["other"]}, {"apps": ["a"]})
+        assert turn["apps"] == ["other"] and turn["connectionApps"] == ["a"]
+
+    def test_a_limited_turn_is_always_strict(self) -> None:
+        """An agent turn picks the agent's apps; with a limit of folders only, the
+        entity tools then had no whole app left and fell back to every app."""
+        turn = mod.within_connection({"apps": ["A"]}, {"apps": [], "recordGroups": [], "records": ["R"]})
+        assert turn["strictScope"] is True
+
+    def test_a_client_cannot_widen_the_limit(self) -> None:
+        turn = mod.within_connection({"connectionApps": ["everything"]}, {"apps": ["a"]})
+        assert turn["connectionApps"] == ["a"]
+
+    @pytest.mark.asyncio
+    async def test_the_limit_is_a_bound_on_every_cited_record(self) -> None:
+        provider = _provider()
+        _, scopes = await resolve_request_scopes(provider, "u", "o", {"connectionApps": ["a"]})
+        assert len(scopes) == 1
+        assert scopes[0].admits({"id": "r", "connectorId": "a", "groupIds": []})
+        assert not scopes[0].admits({"id": "r", "connectorId": "b", "groupIds": []})
+
+    @pytest.mark.asyncio
+    async def test_a_chat_turn_runs_inside_the_limit(self) -> None:
+        provider = _provider()
+        turn = await prepare_turn_scope(provider, "u", "o", {}, connection_sources={"apps": ["a"]})
+        assert turn["apps"] == ["a"] and turn["connectionApps"] == ["a"]
+
+    @pytest.mark.asyncio
+    async def test_no_limit_asks_the_graph_nothing(self) -> None:
+        provider = _provider()
+        provider.get_user_by_user_id = AsyncMock()
+        assert await mod.outside_connection(provider, "u", "o", ["r"], None) == set()
+        provider.get_user_by_user_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_record_outside_the_limit_is_named(self) -> None:
+        provider = _provider()
+        provider.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key"})
+        rows = {"in": {"id": "in", "connectorId": "a"}, "out": {"id": "out", "connectorId": "b"}}
+
+        async def check_access(
+            user_key: str, org_id: str, *, node_ids: Iterable[str],
+            scopes: Iterable[SelectionScope] = (), **_: object,
+        ) -> AccessCheck:
+            ids = frozenset(node_ids)
+            return AccessCheck(
+                node_ids=ids,
+                node_ids_in_scope=frozenset(i for i in ids if all(s.admits(rows[i]) for s in scopes)),
+            )
+
+        provider.check_access = AsyncMock(side_effect=check_access)
+        assert await mod.outside_connection(provider, "u", "o", ["in", "out"], {"apps": ["a"]}) == {"out"}
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_user_reaches_nothing(self) -> None:
+        provider = _provider()
+        provider.get_user_by_user_id = AsyncMock(return_value=None)
+        assert await mod.outside_connection(provider, "u", "o", ["r"], {"apps": ["a"]}) == {"r"}

@@ -6,6 +6,7 @@ from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
 
+from app.api.connection_limit import ids_outside_connection, keep_path_inside_connection
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes
@@ -106,7 +107,11 @@ HTTP_MIN_STATUS = 100
 HTTP_MAX_STATUS = 600
 HTTP_INTERNAL_SERVER_ERROR = 500
 
-kb_router = APIRouter(prefix="/api/v1/kb", tags=["Knowledge Base"])
+kb_router = APIRouter(
+    prefix="/api/v1/kb",
+    tags=["Knowledge Base"],
+    dependencies=[Depends(keep_path_inside_connection)],
+)
 
 
 def _listing_or_error(result: dict[str, Any]) -> dict[str, Any]:
@@ -238,6 +243,18 @@ async def list_user_knowledge_bases(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                 detail=error_reason
             )
+
+        if isinstance(result, dict) and result.get("knowledgeBases"):
+            # shortcut: hiding after paging can leave a page short and the totals
+            # high; filter in the listing query if that matters to a client.
+            outside = await ids_outside_connection(
+                request, request.app.state.graph_provider, org_id, user_id,
+                [kb.get("id") for kb in result["knowledgeBases"] if isinstance(kb, dict)],
+            )
+            if outside:
+                result["knowledgeBases"] = [
+                    kb for kb in result["knowledgeBases"] if not (isinstance(kb, dict) and kb.get("id") in outside)
+                ]
 
         return result
 

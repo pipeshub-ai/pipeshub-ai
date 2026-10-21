@@ -4925,6 +4925,20 @@
     "deniedTitle": "请求被拒绝",
     "deniedLine": "未授予该设备访问权限。"
   },
+  "knowledgeLimit": {
+    "title": "{{appName}} 可以看到什么？",
+    "help": "它只能搜索和读取您在此处允许的内容，永远不会超出您自己能看到的范围。",
+    "everything": "我能看到的所有内容",
+    "everythingHint": "包括您以后添加的来源。",
+    "only": "仅我选择的内容",
+    "onlyHint": "选择整个来源，或打开一个来源以选择空间、文件夹或文件。",
+    "pickOne": "请至少选择一个来源、空间、文件夹或文件。",
+    "tooMany": "最多选择 {{max}} 项，或改为选择整个来源。",
+    "selectedCount_other": "已选择 {{count}} 项",
+    "canSeeEverything": "可查看：您能看到的所有内容",
+    "canSeeSome_other": "可查看：所选的 {{count}} 项",
+    "thisToken": "此令牌"
+  },
   "validation": {
     "password": {
       "rules": "至少 8 个字符：小写字母、大写字母、数字、符号。",

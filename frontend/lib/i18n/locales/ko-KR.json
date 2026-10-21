@@ -4925,6 +4925,20 @@
     "deniedTitle": "요청이 거부되었습니다",
     "deniedLine": "기기에 접근 권한이 부여되지 않았습니다."
   },
+  "knowledgeLimit": {
+    "title": "{{appName}}에서 무엇을 볼 수 있나요?",
+    "help": "여기서 허용한 항목만 검색하고 읽을 수 있으며, 회원님이 볼 수 있는 것보다 더 많이 볼 수는 없습니다.",
+    "everything": "내가 볼 수 있는 모든 항목",
+    "everythingHint": "나중에 추가하는 소스도 포함됩니다.",
+    "only": "내가 선택한 항목만",
+    "onlyHint": "소스 전체를 선택하거나, 소스를 열어 스페이스, 폴더 또는 파일을 선택하세요.",
+    "pickOne": "소스, 스페이스, 폴더 또는 파일을 하나 이상 선택하세요.",
+    "tooMany": "최대 {{max}}개 항목을 선택하거나, 대신 소스 전체를 선택하세요.",
+    "selectedCount_other": "{{count}}개 항목 선택됨",
+    "canSeeEverything": "볼 수 있는 항목: 회원님이 볼 수 있는 모든 항목",
+    "canSeeSome_other": "볼 수 있는 항목: 선택한 {{count}}개 항목",
+    "thisToken": "이 토큰"
+  },
   "validation": {
     "password": {
       "rules": "8자 이상: 소문자, 대문자, 숫자, 기호.",

@@ -4925,6 +4925,20 @@
     "deniedTitle": "要求遭拒",
     "deniedLine": "未授予該裝置存取權。"
   },
+  "knowledgeLimit": {
+    "title": "{{appName}} 可以看到什麼？",
+    "help": "它只能搜尋和讀取您在此處允許的內容，永遠不會超出您自己能看到的範圍。",
+    "everything": "我能看到的所有內容",
+    "everythingHint": "包括您之後新增的來源。",
+    "only": "僅限我選擇的內容",
+    "onlyHint": "選擇整個來源，或開啟一個來源以選擇空間、資料夾或檔案。",
+    "pickOne": "請至少選擇一個來源、空間、資料夾或檔案。",
+    "tooMany": "最多選擇 {{max}} 項，或改為選擇整個來源。",
+    "selectedCount_other": "已選擇 {{count}} 項",
+    "canSeeEverything": "可檢視：您能看到的所有內容",
+    "canSeeSome_other": "可檢視：所選的 {{count}} 項",
+    "thisToken": "此權杖"
+  },
   "validation": {
     "password": {
       "rules": "至少 8 個字元：小寫字母、大寫字母、數字、符號。",

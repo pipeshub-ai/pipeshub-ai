@@ -2084,6 +2084,29 @@ components:
 
     # ==================== OAUTH PROVIDER SCHEMAS ====================
 
+    KnowledgeLimit:
+      type: object
+      additionalProperties: false
+      description: |
+        What a connected app (an OAuth app or a personal access token) may see,
+        as its user picked it. Search, chat, agent chat and every record read by
+        id stay inside it, and inside the user's own permissions. Omit it for
+        everything the user can see. Sent, it must name at least one id and at
+        most 50 in all, since it is signed into every token the app gets.
+      properties:
+        apps:
+          type: array
+          items: { type: string, format: uuid }
+          description: Whole connectors and collections.
+        recordGroups:
+          type: array
+          items: { type: string, format: uuid }
+          description: Record groups (a drive, space or project), with the groups nested in them.
+        records:
+          type: array
+          items: { type: string, format: uuid }
+          description: Folders or records, with everything under them.
+
     OAuthConsentRequest:
       type: object
       description: Request to submit user consent for OAuth authorization
@@ -2116,6 +2139,8 @@ components:
           type: string
           enum: [S256]
           description: PKCE challenge method. Only `S256` is accepted; `plain` is rejected with `400`. Defaults to `S256` when omitted.
+        knowledge_limit:
+          $ref: '#/components/schemas/KnowledgeLimit'
       required:
         - client_id
         - redirect_uri
@@ -3202,6 +3227,8 @@ components:
             no literal null option).
           default: 30
           example: 30
+        knowledgeLimit:
+          $ref: '#/components/schemas/KnowledgeLimit'
 
     PatListItem:
       type: object
@@ -3244,6 +3271,8 @@ components:
             Last time this token successfully authenticated a request.
             Throttled server-side to update at most once per 5 minutes per
             token; absent if the token has never been used.
+        knowledgeLimit:
+          $ref: '#/components/schemas/KnowledgeLimit'
 
     PatWithSecret:
       allOf:

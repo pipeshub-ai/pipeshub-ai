@@ -12,6 +12,12 @@ import { useAuthStore, switchToSignedInWorkspace } from '@/config';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LoadingButton } from '@/app/components/ui/loading-button';
+import {
+  KnowledgeLimitChoice,
+  isKnowledgeLimitValid,
+  knowledgeLimitForApi,
+  type KnowledgeLimitValue,
+} from '@/app/components/knowledge-limit';
 import { OAuthConnectionOutcome } from '@/app/(public)/oauth/components/oauth-connection-outcome';
 
 const OAUTH_AUTHORIZE_PATH = '/oauth/authorize';
@@ -159,6 +165,7 @@ export function OAuthAuthorizeView() {
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [knowledgeLimit, setKnowledgeLimit] = useState<KnowledgeLimitValue>(null);
   const [error, setError] = useState('');
   const [errorCode, setErrorCode] = useState('');
   const [outcome, setOutcome] = useState<ConsentOutcome>({ type: 'idle' });
@@ -314,6 +321,7 @@ export function OAuthAuthorizeView() {
           code_challenge: cc,
           code_challenge_method: ccm,
           consent,
+          knowledge_limit: consent === 'granted' ? knowledgeLimitForApi(knowledgeLimit) : undefined,
         },
         { suppressErrorToast: true }
       );
@@ -710,6 +718,15 @@ export function OAuthAuthorizeView() {
 
           <Separator size="4" />
 
+          <KnowledgeLimitChoice
+            appName={appName}
+            value={knowledgeLimit}
+            onChange={setKnowledgeLimit}
+            idPrefix="oauth-consent"
+          />
+
+          <Separator size="4" />
+
           <Text size="2" color="gray">
             {t('oauthConsent.legalNotice', { appName })}
             {consentData.app.privacyPolicyUrl ? (
@@ -744,6 +761,7 @@ export function OAuthAuthorizeView() {
               color="green"
               size="2"
               loading={submitting}
+              disabled={!isKnowledgeLimitValid(knowledgeLimit)}
               loadingLabel={t('oauthConsent.submitting')}
               style={{
                 flex: 1,

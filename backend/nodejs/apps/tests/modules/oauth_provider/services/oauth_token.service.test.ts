@@ -178,6 +178,29 @@ describe('OAuthTokenService', () => {
       })
     })
 
+    it('signs the knowledge limit into the token and stores it on the token row', async () => {
+      const create = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      const knowledgeLimit = { apps: ['app-1'], recordGroups: ['group-1'], records: [] }
+
+      const result = await service.generateTokens(
+        mockApp, new Types.ObjectId().toString(), new Types.ObjectId().toString(),
+        ['kb:read'], false, undefined, undefined, { knowledgeLimit },
+      )
+
+      expect((jwt.decode(result.accessToken) as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
+      expect(create.firstCall.args[0]).to.deep.include({ knowledgeLimit })
+    })
+
+    it('leaves the knowledge limit out of a token that may see everything', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+
+      const result = await service.generateTokens(
+        mockApp, null, new Types.ObjectId().toString(), ['kb:read'], false,
+      )
+
+      expect(jwt.decode(result.accessToken) as any).not.to.have.property('knowledgeLimit')
+    })
+
     it('should not generate refresh token without offline_access scope', async () => {
       sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
 
@@ -1324,6 +1347,26 @@ describe('OAuthTokenService - branch coverage', () => {
         expect(stored.save.calledOnce).to.be.true
         expect(accessCreate.calledOnce).to.be.true
         expect(refreshCreate.calledOnce).to.be.true
+      })
+
+      it('keeps the knowledge limit of the grant on the refreshed tokens', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+        const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
+        const refreshToken = jwt.sign(
+          { ...(jwt.decode(signRefreshToken('client-a')) as object), knowledgeLimit },
+          secret,
+        )
+
+        const result = await service.refreshTokens(app('client-a'), refreshToken)
+
+        expect((jwt.decode(result.accessToken) as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
+        expect((jwt.decode(result.refreshToken!) as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
+        expect(accessCreate.firstCall.args[0]).to.deep.include({ knowledgeLimit })
       })
 
       it('drops scopes the app no longer allows from the refreshed tokens', async () => {

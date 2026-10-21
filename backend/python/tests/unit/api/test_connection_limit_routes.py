@@ -1,0 +1,333 @@
+"""PP-7: every route a connected app reaches data through keeps to its limit.
+
+The limit rides on the request user as ``knowledgeLimit`` (see
+``app.api.middlewares.auth``). These call the handlers directly with a graph
+whose ``check_access`` applies the scopes it is given, so what is checked is
+the real ``outside_connection`` path, not a stub of it.
+"""
+
+from collections.abc import Iterable
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastapi import HTTPException
+
+import app.edition_config  # noqa: F401 - the search route module needs it imported first
+from app.agents.actions.knowledge_graph.models import (
+    LookupMatch,
+    LookupResult,
+    NavigationView,
+    NodeRow,
+)
+from app.api.connection_limit import (
+    ids_outside_connection,
+    keep_path_inside_connection,
+    refuse_outside_connection,
+)
+from app.api.routes.search import SearchQuery, search
+from app.connectors.api.router import (
+    get_record_by_id,
+    get_record_content,
+    knowledge_graph_lookup,
+    knowledge_graph_navigate,
+    stream_record,
+)
+from app.connectors.sources.localKB.api.knowledge_hub_router import _handle_get_nodes
+from app.modules.retrieval.selection_scope import (
+    CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
+    CONNECTION_OUTSIDE_MESSAGE,
+    SelectionScope,
+)
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+ROUTER = "app.connectors.api.router"
+
+#: Each node the fake graph knows, with the app it lives in.
+ROWS = {
+    "app-in": {"id": "app-in"},
+    "app-out": {"id": "app-out"},
+    "rec-in": {"id": "rec-in", "connectorId": "app-in", "groupIds": []},
+    "rec-out": {"id": "rec-out", "connectorId": "app-out", "groupIds": []},
+}
+LIMIT = {"apps": ["app-in"], "recordGroups": [], "records": []}
+
+
+def _graph() -> AsyncMock:
+    graph = AsyncMock()
+    graph.get_user_by_user_id = AsyncMock(return_value={"_key": "ukey-1"})
+
+    async def check_access(
+        user_key: str, org_id: str, *, node_ids: Iterable[str] = (),
+        scopes: Iterable[SelectionScope] = (), **_: object,
+    ) -> AccessCheck:
+        ids = frozenset(i for i in node_ids if i in ROWS)
+        return AccessCheck(
+            node_ids=ids,
+            node_ids_in_scope=frozenset(i for i in ids if all(s.admits(ROWS[i]) for s in scopes)),
+        )
+
+    graph.check_access = AsyncMock(side_effect=check_access)
+    return graph
+
+
+def _request(limit: dict | None = LIMIT, graph: AsyncMock | None = None) -> MagicMock:
+    user = {"userId": "user-1", "orgId": "org-1", "role": "member"}
+    if limit is not None:
+        user.update(isOAuth=True, knowledgeLimit=limit)
+    request = MagicMock()
+    request.state.user = user
+    request.app.state.graph_provider = graph
+    return request
+
+
+class TestTheSharedCheck:
+    @pytest.mark.asyncio
+    async def test_a_request_without_a_limit_asks_the_graph_nothing(self) -> None:
+        graph = _graph()
+        assert await ids_outside_connection(_request(None), graph, "org-1", "user-1", ["rec-out"]) == set()
+        graph.get_user_by_user_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_record_outside_the_limit_is_refused_with_its_reason(self) -> None:
+        with pytest.raises(HTTPException) as exc:
+            await refuse_outside_connection(_request(), _graph(), "org-1", "user-1", "rec-out")
+        assert exc.value.status_code == 403 and exc.value.detail == CONNECTION_OUTSIDE_MESSAGE
+        await refuse_outside_connection(_request(), _graph(), "org-1", "user-1", "rec-in")
+
+    @pytest.mark.asyncio
+    async def test_a_limit_too_large_to_resolve_is_a_422_not_a_500(self) -> None:
+        from app.modules.retrieval.selection_scope import SelectionTooLargeError
+
+        with patch("app.api.connection_limit.outside_connection", AsyncMock(side_effect=SelectionTooLargeError)):
+            with pytest.raises(HTTPException) as exc:
+                await refuse_outside_connection(_request(), _graph(), "org-1", "user-1", "rec-in")
+        assert exc.value.status_code == 422 and exc.value.detail == CONNECTION_LIMIT_TOO_LARGE_MESSAGE
+
+    @pytest.mark.asyncio
+    async def test_a_node_the_graph_does_not_know_is_outside(self) -> None:
+        """Deleted, or never there: never treated as inside."""
+        assert await ids_outside_connection(_request(), _graph(), "org-1", "user-1", ["gone"]) == {"gone"}
+
+
+class TestRecordsById:
+    @staticmethod
+    def _graph_with_access() -> AsyncMock:
+        graph = _graph()
+        graph.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})
+        graph.get_document = AsyncMock(return_value={"connectorId": "app-out", "_key": "org-1"})
+        return graph
+
+    @pytest.mark.asyncio
+    async def test_record_metadata(self) -> None:
+        request = _request()
+        request.app.container.config_service.return_value = AsyncMock()
+        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)):
+            with pytest.raises(HTTPException) as exc:
+                await get_record_by_id("rec-out", request, graph_provider=self._graph_with_access())
+            assert exc.value.status_code == 403
+            assert await get_record_by_id("rec-in", request, graph_provider=self._graph_with_access())
+
+    @pytest.mark.asyncio
+    async def test_record_content_is_never_fetched_outside_the_limit(self) -> None:
+        request = _request()
+        request.app.container.config_service.return_value = AsyncMock()
+        fetch = AsyncMock(return_value={"ok": True, "records": []})
+        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+             patch(f"{ROUTER}._fetch_multiple_records_impl", fetch):
+            with pytest.raises(HTTPException) as exc:
+                await get_record_content("rec-out", request, graph_provider=self._graph_with_access())
+        assert exc.value.status_code == 403
+        fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_streaming_a_file_outside_the_limit(self) -> None:
+        graph = self._graph_with_access()
+        graph.get_record_by_id = AsyncMock(return_value=SimpleNamespace(
+            id="rec-out", org_id="org-1", connector_id="app-out",
+        ))
+        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+             patch(f"{ROUTER}._resolve_record_content_response", AsyncMock()) as serve:
+            with pytest.raises(HTTPException) as exc:
+                await stream_record(_request(), "rec-out", graph_provider=graph, config_service=AsyncMock())
+        assert exc.value.status_code == 403
+        serve.assert_not_awaited()
+
+
+class TestBrowsing:
+    @staticmethod
+    async def _navigate(request: MagicMock, graph: AsyncMock, node_id: str | None = None,
+                        view: NavigationView | None = None) -> dict:
+        catalog = MagicMock(connector_ids=MagicMock(return_value=["app-in", "app-out"]), connectors=[])
+        with patch(f"{ROUTER}.ConnectorCatalog.build", AsyncMock(return_value=catalog)), \
+             patch(f"{ROUTER}.GraphNavigator") as navigator:
+            navigator.return_value.navigate = AsyncMock(return_value=view or NavigationView(
+                current=None, breadcrumbs=[], related=[], pagination=None, web_url=None,
+                indexing_status=None, connector=None,
+                rows=[
+                    NodeRow(id=i, name=i, node_type="app", sub_type=None, is_record=False,
+                            has_children=True, detail=None)
+                    for i in ("app-in", "app-out")
+                ],
+            ))
+            return await knowledge_graph_navigate(
+                request=request, graph_provider=graph, node_id=node_id, page=1, limit=50, depth=1,
+                node_types=None, created_after=None, created_before=None,
+                modified_after=None, modified_before=None,
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_root_lists_only_what_is_shared(self) -> None:
+        result = await self._navigate(_request(), _graph())
+        assert [row["id"] for row in result["rows"]] == ["app-in"]
+        assert "app-out" not in result["text"]
+
+    @pytest.mark.asyncio
+    async def test_opening_a_node_outside_the_limit_is_refused(self) -> None:
+        with pytest.raises(HTTPException) as exc:
+            await self._navigate(_request(), _graph(), node_id="app-out")
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_without_a_limit_the_listing_is_untouched(self) -> None:
+        result = await self._navigate(_request(None), _graph())
+        assert [row["id"] for row in result["rows"]] == ["app-in", "app-out"]
+
+    @pytest.mark.asyncio
+    async def test_lookup_answers_a_record_outside_the_limit_as_not_found(self) -> None:
+        catalog = MagicMock(connector_ids=MagicMock(return_value=["app-in", "app-out"]),
+                            is_empty=MagicMock(return_value=False), connectors=[])
+        matches = [
+            LookupMatch(id=i, name=i, record_type="FILE", connector_name="KB", web_url=None,
+                        indexing_status="COMPLETED", identifier_used=f"ref-{i}")
+            for i in ("rec-in", "rec-out")
+        ]
+        with patch(f"{ROUTER}.ConnectorCatalog.build", AsyncMock(return_value=catalog)), \
+             patch(f"{ROUTER}.RecordResolver") as resolver:
+            resolver.return_value.resolve_many = AsyncMock(return_value=LookupResult(
+                matches=matches, ambiguous=True, not_found_identifiers=[],
+            ))
+            result = await knowledge_graph_lookup(
+                request=_request(), graph_provider=_graph(),
+                identifiers=["ref-rec-in", "ref-rec-out"], connector_name=None,
+            )
+        assert [m["id"] for m in result["matches"]] == ["rec-in"]
+        assert result["not_found_identifiers"] == ["ref-rec-out"]
+        assert result["ambiguous"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_knowledge_hub_hides_nodes_and_refuses_parents_outside_the_limit(self) -> None:
+        graph = _graph()
+        service = AsyncMock()
+        service.get_nodes = AsyncMock(return_value=SimpleNamespace(
+            success=True, error=None, errorCode=None, typed_records={"rec-out": {}, "rec-in": {}},
+            items=[SimpleNamespace(id="rec-in"), SimpleNamespace(id="rec-out")],
+        ))
+        kwargs = {
+            "parent_type": None, "only_containers": False, "page": 1, "limit": 50, "sort_by": "updatedAt",
+            "sort_order": "desc", "q": None, "node_types": None, "record_types": None, "origins": None,
+            "connector_ids": None, "indexing_status": None, "created_at": None, "updated_at": None, "size": None,
+            "flattened": True, "include": None,
+        }
+        result = await _handle_get_nodes(
+            request=_request(graph=graph), knowledge_hub_service=service, parent_id=None, **kwargs,
+        )
+        assert [item.id for item in result.items] == ["rec-in"]
+        assert list(result.typed_records) == ["rec-in"]
+
+        outside_parent = "6f1c2b9e-0000-4000-8000-000000000000"
+        with pytest.raises(HTTPException) as exc:
+            await _handle_get_nodes(
+                request=_request(graph=graph), knowledge_hub_service=service,
+                parent_id=outside_parent, **kwargs,
+            )
+        assert exc.value.status_code == 403
+
+
+class TestSearchRoute:
+    @staticmethod
+    async def _search(request, filters) -> dict:
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value={"searchResults": [], "status_code": 200})
+        request.app.container.logger.return_value = MagicMock()
+        chain = MagicMock(ainvoke=AsyncMock(return_value=""))
+        with patch("app.api.routes.search.setup_query_transformation", return_value=(chain, chain)), \
+             patch("app.api.routes.search.resolve_llm_for_search", AsyncMock(return_value=MagicMock())):
+            await search(request=request, body=SearchQuery(query="q", filters=filters),
+                         retrieval_service=retrieval, graph_provider=MagicMock())
+        return retrieval.search_with_filters.call_args.kwargs["filter_groups"]
+
+    @pytest.mark.asyncio
+    async def test_a_limited_search_runs_inside_the_limit(self) -> None:
+        sent = await self._search(_request(), {})
+        assert sent["apps"] == ["app-in"] and sent["connectionApps"] == ["app-in"] and sent["strictScope"]
+
+    @pytest.mark.asyncio
+    async def test_a_client_sent_bound_is_dropped_and_cannot_widen(self) -> None:
+        sent = await self._search(_request(), {"kb": ["app-out"], "connectionApps": ["app-out"],
+                                               "allowedApps": ["app-out"]})
+        assert sent["connectionApps"] == ["app-in"] and "allowedApps" not in sent
+        assert sent["kb"] == ["app-out"]  # the pick stays; the bound drops every hit outside the limit
+
+    @pytest.mark.asyncio
+    async def test_an_unlimited_search_drops_client_sent_bounds_only(self) -> None:
+        sent = await self._search(_request(None), {"apps": ["a"], "connectionApps": ["x"]})
+        assert sent == {"apps": ["a"]}
+
+
+class TestKnowledgeBaseRoutes:
+    @staticmethod
+    def _path_request(limit=LIMIT, **path_params) -> MagicMock:
+        request = _request(limit, graph=_graph())
+        request.path_params = path_params
+        return request
+
+    @pytest.mark.asyncio
+    async def test_a_knowledge_base_folder_or_record_outside_the_limit_is_refused_by_id(self) -> None:
+        for params in ({"kb_id": "app-out"}, {"kb_id": "app-in", "folder_id": "rec-out"}, {"record_id": "rec-out"}):
+            with pytest.raises(HTTPException) as exc:
+                await keep_path_inside_connection(self._path_request(**params))
+            assert exc.value.status_code == 403, params
+        await keep_path_inside_connection(self._path_request(kb_id="app-in", record_id="rec-in"))
+
+    @pytest.mark.asyncio
+    async def test_routes_without_ids_and_unlimited_tokens_pass_untouched(self) -> None:
+        await keep_path_inside_connection(self._path_request())
+        request = self._path_request(None, kb_id="app-out")
+        await keep_path_inside_connection(request)
+        request.app.state.graph_provider.get_user_by_user_id.assert_not_awaited()
+
+    def test_every_knowledge_base_route_carries_the_check(self) -> None:
+        from app.connectors.sources.localKB.api.kb_router import kb_router
+
+        for route in kb_router.routes:
+            calls = [d.dependency for d in route.dependencies]
+            assert keep_path_inside_connection in calls, route.path
+
+    @pytest.mark.asyncio
+    async def test_the_knowledge_base_list_hides_what_is_not_shared(self) -> None:
+        from app.connectors.sources.localKB.api.kb_router import (
+            list_user_knowledge_bases,
+        )
+
+        service = AsyncMock()
+        service.list_user_knowledge_bases = AsyncMock(return_value={
+            "knowledgeBases": [{"id": "app-in"}, {"id": "app-out"}], "pagination": {}, "filters": {},
+        })
+        result = await list_user_knowledge_bases(
+            request=_request(graph=_graph()), page=1, limit=20, search=None, permissions=None,
+            sort_by="name", sort_order="asc", kb_service=service,
+        )
+        assert [kb["id"] for kb in result["knowledgeBases"]] == ["app-in"]
+
+    def test_record_delete_and_reindex_carry_the_check(self) -> None:
+        from app.connectors.api.router import router
+
+        guarded = {
+            (route.path, method)
+            for route in router.routes
+            for method in getattr(route, "methods", ())
+            if keep_path_inside_connection in [d.dependency for d in route.dependencies]
+        }
+        assert ("/api/v1/records/{record_id}", "DELETE") in guarded
+        assert ("/api/v1/records/{record_id}/reindex", "POST") in guarded

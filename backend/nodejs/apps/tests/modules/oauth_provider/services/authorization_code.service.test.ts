@@ -434,4 +434,36 @@ describe('AuthorizationCodeService', () => {
       expect(AuthorizationCodeService.validateCodeChallenge('ABCDEFGabcdefg0123456789-_' + 'a'.repeat(20))).to.be.true
     })
   })
+
+  describe('knowledge limit', () => {
+    it('stores the limit picked on the consent page and hands it to the token exchange', async () => {
+      const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
+      const createStub = sinon.stub(AuthorizationCode, 'create').resolves({} as any)
+      await service.generateCode(
+        'client-1', new Types.ObjectId().toString(), new Types.ObjectId().toString(),
+        'https://example.com/cb', ['kb:read'], undefined, undefined, knowledgeLimit,
+      )
+      expect((createStub.firstCall.args[0] as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
+
+      sinon.stub(AuthorizationCode, 'findOne').resolves({
+        _id: new Types.ObjectId(), code: 'c', clientId: 'client-1', userId: new Types.ObjectId(),
+        orgId: new Types.ObjectId(), redirectUri: 'https://example.com/cb', scopes: ['kb:read'],
+        expiresAt: new Date(Date.now() + 600000), isUsed: false, knowledgeLimit,
+        save: sinon.stub().resolves(),
+      } as any)
+      const result = await service.exchangeCode('c', 'client-1', 'https://example.com/cb', undefined, true)
+      expect(result.knowledgeLimit).to.deep.equal(knowledgeLimit)
+    })
+
+    it('hands no limit on for a consent that set none', async () => {
+      sinon.stub(AuthorizationCode, 'findOne').resolves({
+        _id: new Types.ObjectId(), code: 'c', clientId: 'client-1', userId: new Types.ObjectId(),
+        orgId: new Types.ObjectId(), redirectUri: 'https://example.com/cb', scopes: ['kb:read'],
+        expiresAt: new Date(Date.now() + 600000), isUsed: false,
+        save: sinon.stub().resolves(),
+      } as any)
+      const result = await service.exchangeCode('c', 'client-1', 'https://example.com/cb', undefined, true)
+      expect(result.knowledgeLimit).to.be.undefined
+    })
+  })
 })

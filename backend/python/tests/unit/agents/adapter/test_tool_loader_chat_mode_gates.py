@@ -212,6 +212,39 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
         assert tools == []
         mock_factory.assert_not_called()
 
+    def _sql_tool_for(self, filters: dict) -> MagicMock:
+        context = _make_context()
+        context.tool_state.update(
+            {
+                "config_service": MagicMock(),
+                "has_sql_connector": True,
+                "has_sql_knowledge": True,
+                "allowed_sql_connector_ids": frozenset({"pg-1", "pg-2"}),
+                "filters": filters,
+            }
+        )
+        with (
+            patch("app.utils.execute_query.create_execute_query_tool", return_value=MagicMock()) as factory,
+            patch(
+                "app.agents.agent_loop.tool_loader.split_original_tool_name",
+                return_value=("sql", "execute_sql_query"),
+            ),
+        ):
+            _build_dynamic_tools(context)
+        return factory
+
+    def test_a_connected_app_queries_only_the_sql_connectors_it_was_given_whole(self) -> None:
+        """PP-7: a query reads a whole database, so a limit that names only some
+        folders, or other sources, leaves the app no SQL connector at all."""
+        factory = self._sql_tool_for({"connectionApps": ["pg-2"]})
+        assert factory.call_args.kwargs["allowed_connector_ids"] == {"pg-2"}
+
+        assert self._sql_tool_for({"connectionApps": [], "connectionRecords": ["folder"]}).call_count == 0
+
+    def test_without_a_connection_limit_the_sql_allowlist_is_untouched(self) -> None:
+        factory = self._sql_tool_for({"apps": ["pg-1"]})
+        assert factory.call_args.kwargs["allowed_connector_ids"] == {"pg-1", "pg-2"}
+
     def test_slack_connector_without_knowledge_flag_yields_no_slack_tools(self) -> None:
         context = _make_context()
         context.tool_state.update(

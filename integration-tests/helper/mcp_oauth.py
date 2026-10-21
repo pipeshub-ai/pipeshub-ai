@@ -150,6 +150,7 @@ def authorization_code_token(
     app: OAuthApp,
     *,
     scopes: Optional[list[str]] = None,
+    knowledge_limit: Optional[dict[str, list[str]]] = None,
     timeout: int = 30,
 ) -> dict:
     """
@@ -157,6 +158,8 @@ def authorization_code_token(
 
     ``POST /api/v1/oauth2/authorize`` with a user session JWT and ``consent: granted``
     answers with ``{ redirectUrl }`` that carries the code, so no browser is needed.
+    ``knowledge_limit`` is what the user lets the app see on the consent page;
+    None lets it see everything the user can.
     """
     base_url = base_url.rstrip("/")
     scope = " ".join(scopes or app.scopes)
@@ -175,6 +178,7 @@ def authorization_code_token(
                 "consent": "granted",
                 "code_challenge": challenge,
                 "code_challenge_method": "S256",
+                **({"knowledge_limit": knowledge_limit} if knowledge_limit is not None else {}),
             },
             timeout=timeout,
         ),
@@ -204,6 +208,23 @@ def authorization_code_token(
             timeout=timeout,
         ),
         "OAuth token exchange (authorization_code)",
+    )
+
+
+def refresh_token_grant(base_url: str, app: OAuthApp, refresh_token: str, timeout: int = 30) -> dict:
+    """Trade a refresh token for a new access and refresh token (the old one is revoked)."""
+    return _check(
+        requests.post(
+            f"{base_url.rstrip('/')}/api/v1/oauth2/token",
+            json={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": app.client_id,
+                "client_secret": app.client_secret,
+            },
+            timeout=timeout,
+        ),
+        "OAuth token exchange (refresh_token)",
     )
 
 

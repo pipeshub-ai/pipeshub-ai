@@ -17,6 +17,7 @@ from app.config.constants.arangodb import CollectionNames
 from app.services.graph_db.interface.graph_db_provider import (
     AGENT_BOUND_FILTER_KEYS,
     ALLOWED_FILTER_KEYS,
+    CONNECTION_BOUND_FILTER_KEYS,
     CONTAINER_SCOPE_FILTER_KEYS,
     PROJECT_BOUND_FILTER_KEYS,
     SELECTION_APPS_FILTER_KEY,
@@ -53,6 +54,15 @@ AGENT_LIMIT_NOT_READY_MESSAGE = (
 SELECTION_EMPTY_MESSAGE = (
     "Nothing in your selection is available to search. The items may have been "
     "removed, or you may no longer have access to them."
+)
+# Written for the reader, like the messages above: Node passes it through.
+CONNECTION_OUTSIDE_MESSAGE = (
+    "This item is not shared with this connected app. To change what the app can "
+    "see, connect it again or create a new token."
+)
+CONNECTION_LIMIT_TOO_LARGE_MESSAGE = (
+    "This connected app is limited to folders that hold too many records to check "
+    "at once. Connect it again with fewer folders, or with whole sources."
 )
 
 #: Filter keys only the server may set. A client-sent copy is dropped.
@@ -166,11 +176,11 @@ def has_selection(filters: Mapping[str, Any] | None) -> bool:
 
 def allowed_filters(filters: Mapping[str, Any] | None) -> list[dict[str, list[str]]]:
     """Each server-set bound in ``filters`` (a saved agent's sources, a
-    project's), as selection filters. A bound that is present but lists
-    nothing admits nothing."""
+    project's, a connected app's), as selection filters. A bound that is
+    present but lists nothing admits nothing."""
     return [
         {target: _ids(filters, key) for key, target in keys.items()}
-        for keys in (AGENT_BOUND_FILTER_KEYS, PROJECT_BOUND_FILTER_KEYS)
+        for keys in (AGENT_BOUND_FILTER_KEYS, PROJECT_BOUND_FILTER_KEYS, CONNECTION_BOUND_FILTER_KEYS)
         if any(key in (filters or {}) for key in keys)
     ]
 
@@ -283,6 +293,60 @@ async def require_membership_ready(
             raise SelectionNotReadyError
 
 
+def _set_bound(
+    turn: dict[str, Any], keys: Mapping[str, str], sources: Mapping[str, Iterable[str]] | None,
+) -> None:
+    if sources is not None:
+        turn.update({key: sorted(set(sources.get(target) or ())) for key, target in keys.items()})
+
+
+def within_connection(
+    filters: Mapping[str, Any] | None, connection_sources: Mapping[str, Iterable[str]] | None,
+) -> dict[str, Any]:
+    """``filters`` as a client sent them, with every server-set key dropped and
+    a connected app's limit set as a bound. A request that picks nothing picks
+    the whole limit, so the vector search runs inside it rather than every hit
+    outside it being dropped after. The turn is always strict: a tool left with
+    no app to work on must reach nothing, never every app the user can read."""
+    turn = {key: value for key, value in (filters or {}).items() if key not in SERVER_SET_FILTER_KEYS}
+    if connection_sources is None:
+        return turn
+    _set_bound(turn, CONNECTION_BOUND_FILTER_KEYS, connection_sources)
+    picked = any(_ids(turn, key) for key in (*CONTAINER_SCOPE_FILTER_KEYS, *SELECTION_FILTER_KEYS))
+    if not picked:
+        turn.update({target: turn[key] for key, target in CONNECTION_BOUND_FILTER_KEYS.items()})
+    turn[STRICT_SCOPE_FILTER_KEY] = True
+    return turn
+
+
+async def outside_connection(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    node_ids: Iterable[str],
+    connection_sources: Mapping[str, Iterable[str]] | None,
+) -> set[str]:
+    """Of ``node_ids``, those a connected app limited to ``connection_sources``
+    may not reach by id; none when the app has no limit.
+
+    Raises:
+        SelectionTooLargeError, PermissionVerificationUnavailableError: see
+            ``resolve_selection_scope``.
+    """
+    ids = [i for i in dict.fromkeys(node_ids) if i]
+    if connection_sources is None or not ids:
+        return set()
+    user = await graph_provider.get_user_by_user_id(user_id=user_id)
+    user_key = (user.get("_key") or user.get("id")) if user else None
+    if not user_key:
+        return set(ids)
+    bound: dict[str, Any] = {}
+    _set_bound(bound, CONNECTION_BOUND_FILTER_KEYS, connection_sources)
+    _, scopes = await resolve_request_scopes(graph_provider, user_key, org_id, bound)
+    access = await graph_provider.check_access(user_key, org_id, node_ids=ids, scopes=scopes)
+    return set(ids) - set(access.node_ids_in_scope)
+
+
 async def prepare_turn_scope(
     graph_provider: IGraphDBProvider,
     user_id: str,
@@ -291,6 +355,7 @@ async def prepare_turn_scope(
     *,
     agent_sources: Mapping[str, Iterable[str]] | None = None,
     project_sources: Mapping[str, Iterable[str]] | None = None,
+    connection_sources: Mapping[str, Iterable[str]] | None = None,
 ) -> dict[str, Any]:
     """A chat turn's filters with the server-set keys in place.
 
@@ -301,14 +366,15 @@ async def prepare_turn_scope(
     is resolved once so that a selection that cannot be searched fails the
     turn before the model runs, the apps it touches are recorded for the tools
     that work per app, and ``project_sources`` (same shape, a project's) bound
-    it too.
+    it too. ``connection_sources`` (same shape, what the user let the connected
+    app making the request see) always bounds the turn; see ``within_connection``.
 
     Raises:
         SelectionTooLargeError, SelectionNotReadyError: see ``resolve_selection_scope``
             and ``require_membership_ready``.
         PermissionVerificationUnavailableError: the graph could not answer.
     """
-    turn = {key: value for key, value in (filters or {}).items() if key not in SERVER_SET_FILTER_KEYS}
+    turn = within_connection(filters, connection_sources)
 
     def bind(keys: Mapping[str, str], sources: Mapping[str, Iterable[str]] | None) -> None:
         if sources is not None:

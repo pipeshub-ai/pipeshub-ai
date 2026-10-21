@@ -1,3 +1,13 @@
+/** What a connected app (an OAuth app or a personal access token) may see,
+ * as its user picked it: whole apps and collections, record groups, and
+ * folders or records with everything under them. The Python services bound
+ * every search and every record reached by id to it. */
+export interface KnowledgeLimit {
+  apps: string[];
+  recordGroups: string[];
+  records: string[];
+}
+
 // Token Payload
 export interface OAuthTokenPayload {
   userId: string;
@@ -23,6 +33,8 @@ export interface OAuthTokenPayload {
    * calling.
    */
   act?: { sub: string };
+  /** Absent when the app may see everything its user can. */
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 // Generated Tokens Response
@@ -55,6 +67,7 @@ export interface GenerateTokensOptions {
    * on {@link OAuthTokenPayload}.
    */
   actorUserId?: string;
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 // Token Response (RFC 6749 compliant)
@@ -240,6 +253,7 @@ export interface AuthCodeExchangeResult {
   userId: string;
   orgId: string;
   scopes: string[];
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 // OAuth Error Response (RFC 6749)
@@ -314,6 +328,8 @@ export interface TokenListItem {
   isRevoked: boolean;
   name?: string;
   lastUsedAt?: Date;
+  /** Absent when the token may see everything its user can. */
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 // Personal Access Tokens
@@ -323,6 +339,8 @@ export interface CreatePatRequest {
   /** Days until expiry, or 'never' for a non-expiring token (stored as a
    * far-future expiresAt — the schema's expiresAt is required). */
   expiryDays?: 30 | 90 | 365 | 'never';
+  /** What the token may see; omit for everything the user can. */
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 export interface PatWithSecret {
@@ -332,6 +350,7 @@ export interface PatWithSecret {
   createdAt: Date;
   expiresAt: Date;
   accessToken: string;
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 export interface PatListItem {
@@ -341,6 +360,7 @@ export interface PatListItem {
   createdAt: Date;
   expiresAt: Date;
   lastUsedAt?: Date;
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 /**

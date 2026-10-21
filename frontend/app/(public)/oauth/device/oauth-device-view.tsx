@@ -12,6 +12,12 @@ import { useAuthStore } from '@/config';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LoadingButton } from '@/app/components/ui/loading-button';
+import {
+  KnowledgeLimitChoice,
+  isKnowledgeLimitValid,
+  knowledgeLimitForApi,
+  type KnowledgeLimitValue,
+} from '@/app/components/knowledge-limit';
 
 const OAUTH_DEVICE_PATH = '/oauth/device';
 const VERIFY_API = '/api/v1/oauth2/device/verify';
@@ -60,6 +66,7 @@ export function OAuthDeviceView() {
   const [userCode, setUserCode] = useState(initialCode);
   const [loading, setLoading] = useState(Boolean(initialCode));
   const [submitting, setSubmitting] = useState(false);
+  const [knowledgeLimit, setKnowledgeLimit] = useState<KnowledgeLimitValue>(null);
   const [error, setError] = useState('');
   const [consentData, setConsentData] = useState<ConsentData | null>(null);
   const [done, setDone] = useState<'granted' | 'denied' | null>(null);
@@ -116,7 +123,11 @@ export function OAuthDeviceView() {
     try {
       await apiClient.post(
         CONSENT_API,
-        { user_code: userCode, consent },
+        {
+          user_code: userCode,
+          consent,
+          knowledge_limit: consent === 'granted' ? knowledgeLimitForApi(knowledgeLimit) : undefined,
+        },
         { suppressErrorToast: true },
       );
       setDone(consent);
@@ -242,6 +253,14 @@ export function OAuthDeviceView() {
             </Text>
           ))}
         </Box>
+        <Box mt="4">
+          <KnowledgeLimitChoice
+            appName={consentData.app.name}
+            value={knowledgeLimit}
+            onChange={setKnowledgeLimit}
+            idPrefix="oauth-device"
+          />
+        </Box>
         {error ? (
           <Text as="p" size="2" color="red" mt="2">
             {error}
@@ -258,6 +277,7 @@ export function OAuthDeviceView() {
           </Button>
           <LoadingButton
             loading={submitting}
+            disabled={!isKnowledgeLimitValid(knowledgeLimit)}
             onClick={() => handleConsent('granted')}
           >
             {t('oauthConsent.allow')}

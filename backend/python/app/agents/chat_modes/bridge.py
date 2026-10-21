@@ -457,6 +457,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             graph_provider, user_info.get("userId", ""), user_info.get("orgId", ""),
             query_info.get("filters"),
             project_sources=project_sources if isinstance(project_sources, dict) else None,
+            connection_sources=query_info.get("connectionLimit"),
         )
         # A turn that can only search, over sources the user cannot read, would
         # otherwise retry its search tools until the run's time budget is spent.

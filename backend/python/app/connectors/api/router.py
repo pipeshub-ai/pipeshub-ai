@@ -44,6 +44,11 @@ from app.agents.actions.knowledge_graph.views import (
     render_lookup_result,
     render_navigation_view,
 )
+from app.api.connection_limit import (
+    ids_outside_connection,
+    keep_path_inside_connection,
+    refuse_outside_connection,
+)
 from app.api.middlewares.auth import is_request_admin, require_scopes, require_service_token
 from app.api.middlewares.token_policy import has_service_scope
 from app.config.configuration_service import ConfigurationService
@@ -1247,6 +1252,7 @@ async def get_signed_url(
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
                 )
+            await refuse_outside_connection(request, graph_provider, caller_org, mint_user, record_id)
 
         additional_claims = {
             "connector": connector,
@@ -1559,6 +1565,7 @@ async def stream_record(
                 detail="You do not have permission to access this record"
             )
         await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
+        await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
         if isinstance(record, ArtifactRecord):
             from app.services.artifact_registry.gallery import ArtifactDisplayPolicy
             if not ArtifactDisplayPolicy.is_user_visible_record(record):
@@ -1838,6 +1845,7 @@ async def get_record_by_id(
             await _refuse_hidden_demo_record(
                 graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
             )
+            await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
             record: object = cast("dict[str, object]", has_access).get("record")
             has_access["stageStates"] = await _stage_states_of(graph_provider, record)
             return has_access
@@ -1884,6 +1892,7 @@ async def get_record_content(
         await _refuse_hidden_demo_record(
             graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
         )
+        await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -2024,6 +2033,8 @@ async def knowledge_graph_navigate(
         resolved = await resolver.resolve_many([node_id])
         if resolved.matches:
             node_id = resolved.matches[0].id
+    if node_id:
+        await refuse_outside_connection(request, graph_provider, org_id, user_id, node_id)
 
     navigator = GraphNavigator(
         graph_provider=graph_provider,
@@ -2052,6 +2063,16 @@ async def knowledge_graph_navigate(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to navigate knowledge graph",
         ) from e
+
+    # shortcut: a limit to folders hides their apps at the root, so a connected
+    # app opens those folders by id (search finds them); list them at the root
+    # if apps limited to folders need to browse from the top.
+    outside = await ids_outside_connection(
+        request, graph_provider, org_id, user_id, [row.id for row in [*view.rows, *view.related]],
+    )
+    if outside:
+        view.rows = [row for row in view.rows if row.id not in outside]
+        view.related = [row for row in view.related if row.id not in outside]
 
     return {**view.model_dump(), "text": render_navigation_view(view, page)}
 
@@ -2134,10 +2155,28 @@ async def knowledge_graph_lookup(
             detail="Failed to resolve identifiers",
         ) from e
 
+    outside = await ids_outside_connection(
+        request, graph_provider, org_id, user_id, [match.id for match in result.matches],
+    )
+    if outside:
+        # Answers like a record the user cannot see: not-found and no-access stay alike.
+        hidden = [match for match in result.matches if match.id in outside]
+        result.matches = [match for match in result.matches if match.id not in outside]
+        result.not_found_identifiers = list(dict.fromkeys(
+            [*result.not_found_identifiers, *(match.identifier_used for match in hidden)]
+        ))
+        result.ambiguous = result.ambiguous and len(result.matches) > 1
+
     return {**result.model_dump(), "text": render_lookup_result(result)}
 
 
-@router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
+@router.delete(
+    "/api/v1/records/{record_id}",
+    dependencies=[
+        Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE)),
+        Depends(keep_path_inside_connection),
+    ],
+)
 @inject
 async def delete_record(
     record_id: str,
@@ -2461,7 +2500,13 @@ def _build_reindex_event(
     return {"eventType": event_type, "topic": "sync-events", "payload": payload}
 
 
-@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE))])
+@router.post(
+    "/api/v1/records/{record_id}/reindex",
+    dependencies=[
+        Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)),
+        Depends(keep_path_inside_connection),
+    ],
+)
 @inject
 async def reindex_single_record(
     record_id: str,

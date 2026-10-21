@@ -4986,6 +4986,24 @@
     "deniedTitle": "Solicitud denegada",
     "deniedLine": "No se ha concedido acceso al dispositivo."
   },
+  "knowledgeLimit": {
+    "title": "¿Qué puede ver {{appName}}?",
+    "help": "Solo puede buscar y leer lo que permitas aquí, y nunca más de lo que tú puedes ver.",
+    "everything": "Todo lo que puedo ver",
+    "everythingHint": "Incluye las fuentes que añadas más adelante.",
+    "only": "Solo lo que elija",
+    "onlyHint": "Elige fuentes completas, o abre una para elegir espacios, carpetas o archivos.",
+    "pickOne": "Elige al menos una fuente, espacio, carpeta o archivo.",
+    "tooMany": "Elige como máximo {{max}} elementos, o elige una fuente completa.",
+    "selectedCount_one": "{{count}} elemento elegido",
+    "selectedCount_other": "{{count}} elementos elegidos",
+    "selectedCount_many": "{{count}} de elementos elegidos",
+    "canSeeEverything": "Puede ver: todo lo que tú puedes",
+    "canSeeSome_one": "Puede ver: {{count}} elemento elegido",
+    "canSeeSome_other": "Puede ver: {{count}} elementos elegidos",
+    "canSeeSome_many": "Puede ver: {{count}} de elementos elegidos",
+    "thisToken": "este token"
+  },
   "validation": {
     "password": {
       "rules": "Al menos 8 caracteres: minúscula, mayúscula, número y símbolo.",

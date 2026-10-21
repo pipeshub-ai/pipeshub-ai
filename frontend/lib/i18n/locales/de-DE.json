@@ -4852,6 +4852,22 @@
     "deniedTitle": "Anfrage abgelehnt",
     "deniedLine": "Dem Gerät wurde kein Zugriff gewährt."
   },
+  "knowledgeLimit": {
+    "title": "Was darf {{appName}} sehen?",
+    "help": "Die App kann nur durchsuchen und lesen, was Sie hier erlauben, und nie mehr, als Sie selbst sehen.",
+    "everything": "Alles, was ich sehen kann",
+    "everythingHint": "Schließt Quellen ein, die Sie später hinzufügen.",
+    "only": "Nur, was ich auswähle",
+    "onlyHint": "Wählen Sie ganze Quellen, oder öffnen Sie eine, um Bereiche, Ordner oder Dateien zu wählen.",
+    "pickOne": "Wählen Sie mindestens eine Quelle, einen Bereich, einen Ordner oder eine Datei.",
+    "tooMany": "Wählen Sie höchstens {{max}} Elemente, oder wählen Sie stattdessen eine ganze Quelle.",
+    "selectedCount_one": "{{count}} Element ausgewählt",
+    "selectedCount_other": "{{count}} Elemente ausgewählt",
+    "canSeeEverything": "Sieht: alles, was Sie sehen",
+    "canSeeSome_one": "Sieht: {{count}} ausgewähltes Element",
+    "canSeeSome_other": "Sieht: {{count}} ausgewählte Elemente",
+    "thisToken": "dieses Token"
+  },
   "collections": {
     "stats": {
       "retryClassificationStart": "Klassifizierung erneut eingeplant",

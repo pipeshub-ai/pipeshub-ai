@@ -9,6 +9,7 @@ import {
   IOAuthAccessToken,
 } from '../schema/oauth.access_token.schema';
 import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema';
+import { toKnowledgeLimit } from '../schema/knowledge_limit.schema';
 import { IOAuthApp, OAuthApp } from '../schema/oauth.app.schema';
 import {
   InvalidGrantError,
@@ -126,6 +127,7 @@ export class OAuthTokenService {
       // Changing an app's identity revokes its outstanding tokens, so none
       // minted under the previous answer survives to be honoured.
       createdBy: (app.tokenIdentityUserId ?? app.createdBy)?.toString(),
+      knowledgeLimit: opts?.knowledgeLimit,
     };
 
     // A delegated token speaks as the person named in `userId`, so every
@@ -169,6 +171,7 @@ export class OAuthTokenService {
         opts?.actorUserId === undefined
           ? undefined
           : new Types.ObjectId(opts.actorUserId),
+      knowledgeLimit: opts?.knowledgeLimit,
     });
 
     const result: GeneratedTokens = {
@@ -209,6 +212,8 @@ export class OAuthTokenService {
         accountType,
         // Same resolved identity as the access token above.
         createdBy: (app.tokenIdentityUserId ?? app.createdBy)?.toString(),
+        // Read back on refresh, so every token of the grant keeps the limit.
+        knowledgeLimit: opts?.knowledgeLimit,
       };
 
       const refreshToken = jwt.sign(
@@ -472,7 +477,7 @@ export class OAuthTokenService {
       true, // Include new refresh token
       payload.fullName,
       payload.accountType,
-      { recheckAppScopes: true },
+      { recheckAppScopes: true, knowledgeLimit: payload.knowledgeLimit },
     );
 
     this.logger.info('Tokens refreshed', {
@@ -780,6 +785,7 @@ export class OAuthTokenService {
       isRevoked: t.isRevoked,
       name: t.name,
       lastUsedAt: t.lastUsedAt,
+      knowledgeLimit: toKnowledgeLimit(t.knowledgeLimit),
     }));
   }
 

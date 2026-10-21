@@ -7,6 +7,8 @@ import {
   deviceAuthorizationSchema,
   deviceConsentSchema,
   deviceUserCodeSchema,
+  knowledgeLimitSchema,
+  MAX_KNOWLEDGE_LIMIT_IDS,
   tokenSchema,
 } from '../../../../src/modules/oauth_provider/validators/oauth.validators'
 import { OAuthGrantType } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
@@ -118,5 +120,42 @@ describe('oauth_provider/validators/oauth.validators', () => {
       })
       expect(result.success).to.be.false
     })
+  })
+})
+
+describe('knowledgeLimitSchema', () => {
+  const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+
+  it('fills missing lists and drops repeated ids', () => {
+    expect(knowledgeLimitSchema.parse({ apps: [id(1), id(1)] })).to.deep.equal({
+      apps: [id(1)], recordGroups: [], records: [],
+    })
+  })
+
+  it('lowercases ids, since an upper-case copy would match no graph id', () => {
+    expect(knowledgeLimitSchema.parse({ apps: [id(1).toUpperCase()] }).apps).to.deep.equal([id(1)])
+  })
+
+  it('refuses a limit that names nothing, which would hide everything', () => {
+    expect(knowledgeLimitSchema.safeParse({ apps: [], records: [] }).success).to.be.false
+  })
+
+  it(`refuses more than ${MAX_KNOWLEDGE_LIMIT_IDS} ids, since the limit rides in every token`, () => {
+    const records = Array.from({ length: MAX_KNOWLEDGE_LIMIT_IDS + 1 }, (_, n) => id(n))
+    expect(knowledgeLimitSchema.safeParse({ records }).success).to.be.false
+  })
+
+  it('refuses ids that are not UUIDs and keys it does not know', () => {
+    expect(knowledgeLimitSchema.safeParse({ apps: ['not-an-id'] }).success).to.be.false
+    expect(knowledgeLimitSchema.safeParse({ apps: [id(1)], recordsExact: [id(2)] }).success).to.be.false
+  })
+
+  it('rides on the consent and device approval bodies', () => {
+    const limit = { apps: [id(1)] }
+    expect(authorizeConsentSchema.parse({ body: { ...baseConsent, knowledge_limit: limit } }).body.knowledge_limit)
+      .to.deep.equal({ apps: [id(1)], recordGroups: [], records: [] })
+    expect(deviceConsentSchema.safeParse({
+      body: { user_code: 'ABCD-EFGH', consent: 'granted', knowledge_limit: limit },
+    }).success).to.be.true
   })
 })

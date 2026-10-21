@@ -4797,6 +4797,22 @@
     "deniedTitle": "Request denied",
     "deniedLine": "The device was not granted access."
   },
+  "knowledgeLimit": {
+    "title": "What can {{appName}} see?",
+    "help": "It can search and read only what you allow here, and never more than you can see.",
+    "everything": "Everything I can see",
+    "everythingHint": "Includes sources you add later.",
+    "only": "Only what I pick",
+    "onlyHint": "Pick whole sources, or open one to pick spaces, folders or files.",
+    "pickOne": "Pick at least one source, space, folder or file.",
+    "tooMany": "Pick at most {{max}} items, or pick a whole source instead.",
+    "selectedCount_one": "{{count}} item picked",
+    "selectedCount_other": "{{count}} items picked",
+    "canSeeEverything": "Can see: everything you can",
+    "canSeeSome_one": "Can see: {{count}} picked item",
+    "canSeeSome_other": "Can see: {{count}} picked items",
+    "thisToken": "this token"
+  },
   "auth": {
     "titleSection": {
       "defaultTitle": "Welcome to Pipeshub",

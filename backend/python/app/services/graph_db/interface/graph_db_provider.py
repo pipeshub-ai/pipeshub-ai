@@ -162,7 +162,8 @@ SELECTION_FILTER_KEYS = ("recordGroups", "records", "recordsExact")
 
 #: Set by the server, never taken from a client: the apps a selection touches,
 #: and the bounds a cited record must lie in, each in the shape of a selection:
-#: a saved agent's sources, and a project's.
+#: a saved agent's sources, a project's, and what the user let a connected app
+#: (an OAuth app or a personal access token) see.
 SELECTION_APPS_FILTER_KEY = "selectionApps"
 AGENT_BOUND_FILTER_KEYS = {
     "allowedApps": "apps",
@@ -174,7 +175,15 @@ PROJECT_BOUND_FILTER_KEYS = {
     "projectRecordGroups": "recordGroups",
     "projectRecords": "records",
 }
-ALLOWED_FILTER_KEYS = {**AGENT_BOUND_FILTER_KEYS, **PROJECT_BOUND_FILTER_KEYS}
+CONNECTION_APPS_FILTER_KEY = "connectionApps"
+CONNECTION_BOUND_FILTER_KEYS = {
+    CONNECTION_APPS_FILTER_KEY: "apps",
+    "connectionRecordGroups": "recordGroups",
+    "connectionRecords": "records",
+}
+ALLOWED_FILTER_KEYS = {
+    **AGENT_BOUND_FILTER_KEYS, **PROJECT_BOUND_FILTER_KEYS, **CONNECTION_BOUND_FILTER_KEYS,
+}
 
 
 class RowScope(Protocol):
