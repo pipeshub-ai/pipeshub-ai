@@ -89,18 +89,28 @@ A path value is percent-encoded as a whole, so it can't change the path or the h
 
 ## Trying it with the reference API
 
-The repository ships Acme Helpdesk, a small API with tickets and comments that accepts every
-supported security scheme at once:
+The repository ships Acme Helpdesk, a small API with tickets, comments and announcements that
+accepts every supported security scheme at once:
 
 ```bash
-python integration-tests/openapi_fixture/server.py --port 8098
+python integration-tests/openapi_fixture/server.py --port 8098 --public-url http://localhost:8098
 curl -H 'X-API-Key: acme-demo-key' http://localhost:8098/tickets
+curl http://localhost:8098/announcements          # no credentials needed
 curl http://localhost:8098/openapi.yaml
 ```
 
-Demo credentials: API key `acme-demo-key`, bearer token `acme-demo-token`, basic
-`acme` / `acme-demo-password`, OAuth client `acme-client` / `acme-client-secret` (token URL
-`/oauth/token`). Override them with `--api-key`, `--bearer-token`, and so on.
+| Scheme in its spec | Demo credentials |
+| --- | --- |
+| `apiKeyAuth` (header `X-API-Key`) | `acme-demo-key` |
+| `bearerAuth` | `acme-demo-token` |
+| `basicAuth` | `acme` / `acme-demo-password` |
+| `oauth2ClientCredentials` | client `acme-client` / `acme-client-secret` |
+| `oauth2SignIn` (authorization code, PKCE, refresh) | same client; sign in on Acme's page as `acme` / `acme-demo-password` |
+| none (`GET /announcements` only) | nothing |
+
+Override any of them with `--api-key`, `--bearer-token`, and so on. `--token-ttl 60` makes OAuth
+access tokens expire quickly, to watch them refresh. `--public-url` is the address a browser uses
+for the sign-in page; PipesHub itself calls the API by whatever base URL the admin set.
 
 PipesHub refuses loopback addresses, so run the server where the backend reaches it by name or
 private address (in the integration compose stack it is the `openapi-fixture` service at
