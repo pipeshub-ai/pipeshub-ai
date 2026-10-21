@@ -80,7 +80,7 @@ During a full sync, the processor notes every node the connector writes. When th
 
 `run_incremental_sync()` and `handle_webhook_notification()` are abstract methods you must implement, but nothing in the platform calls them today. Do not rely on webhooks for freshness; scheduled sync is the supported path.
 
-A scheduled run is not a full sync. BullMQ publishes a resync with no `fullSync` field (`constructSyncConnectorEvent` in `backend/nodejs/apps/src/modules/crawling_manager/utils/utils.ts`). The connector service treats a missing flag as false (`event_service.py`) and deletes checkpoints only when the event sets `fullSync` or the connector still has `pendingFullSync` (a filter change, an enable that asked for one, or a full sync that was cut short). Deletions that exist only in the cleanup below wait until one of those happens.
+A scheduled run is not a full sync. BullMQ publishes a resync with no `fullSync` field (`constructSyncConnectorEvent` in `backend/nodejs/apps/src/modules/crawling_manager/utils/utils.ts`), so `run_sync` starts with the checkpoints still in place and the cleanup below does not run. The connector service treats a missing flag as false (`event_service.py`) and deletes checkpoints only when the event sets `fullSync` or the connector still has `pendingFullSync` (a filter change, an enable that asked for one, or a full sync that was cut short). A deletion the source never reports stays until one of those happens. A source with no delete feed may instead id-diff after a complete listing (`03-decisions.md`). A 404 deletes the one item that was requested, not whatever a failed listing failed to return.
 
 ```mermaid
 flowchart TD

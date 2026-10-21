@@ -205,6 +205,7 @@ Everything lives in one config document, read with `await self.config_service.ge
 | `on_records_deleted_cascade(record_ids, connector_id, cascade_children=True, ...)` | Deletes the records and, by default, their whole subtree. With `cascade_children=False` survivors are re-parented. Returns `success: False` on failure rather than raising. |
 | `on_record_group_deleted(...)` | Deletes the group's whole subtree. |
 | `get_record_by_external_id(...)`, `get_record_group_by_external_id(...)` | Look up what is stored, for incremental decisions. |
+| `get_records_in_record_group(connector_id, external_group_id, limit, after_key)` | Page this connector's stored records in one group. Pass the last record's id as `after_key`. `get_records_by_record_type` lists one type across the connector. An id-diff (`03-decisions.md`) uses these after a listing that finished with no error. |
 | `reindex_existing_records(records)` | Re-publish for indexing without changing the record. |
 
 How `on_new_records` decides between insert and update:
@@ -220,8 +221,8 @@ How `on_new_records` decides between insert and update:
 `connectors/core/base/sync_point/sync_point.py`. One `SyncPoint(connector_id, org_id, SyncDataPointType.X, data_store_provider)` per kind of checkpoint (`USERS`, `GROUPS`, `RECORDS`, `RECORD_GROUPS`), created in `init()`. Take `org_id` from `self.data_entities_processor.org_id`, as Linear does.
 
 - `read_sync_point(key)`, `update_sync_point(key, data)`, `delete_sync_point(key)`. Keys are stored as `{org}/{connector}/{type}/{key}`; build per-container keys with `generate_record_sync_point_key(record_type, entity_name, entity_id)`.
-- Save a checkpoint only after the items before it are written. Use `FailedItems` so a failed item holds the checkpoint before it: `failed.add(item_modified_ms)` for each failure, then save `failed.checkpoint(max_seen_ms)`.
-- Take the next incremental cursor (a delta token, a `start_page_token`, the sync start time) **before** a full listing starts, and save it after the listing finishes. A cursor taken at the end skips every change made while the listing ran. OneDrive, Google Drive team and Dropbox do this.
+- Save a checkpoint only after the items before it are written. Use `FailedItems` so a failed item holds a time cutoff before it: `failed.add(item_modified_ms)` for each failure, then save `failed.checkpoint(max_seen_ms)`. `add` takes milliseconds only. An id cursor (a snowflake) is a field on the sync point; leave it at the last id fully written when a page fails.
+- Take the next incremental cursor (a delta token, a `start_page_token`, an id cursor, the sync start time) **before** a full listing starts, and save it after the listing finishes. A cursor taken at the end skips every change made while the listing ran. OneDrive, Google Drive team and Dropbox do this.
 - When the source rejects a cursor as expired or invalid (Gmail's 404 on an old history id, a Graph delta `410`), drop that container's checkpoint and re-list it in full, and notify the user. Never reset the cursor to "now", which skips the changes in between.
 - Store times as UTC epoch milliseconds and send date filters to the source in UTC (or in the time zone the API says it expects).
 - Pass `encrypt_fields=[...]` to `update_sync_point` for any secret kept in checkpoint data.

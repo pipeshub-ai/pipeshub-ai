@@ -25,6 +25,7 @@ Do not ask the human these. Look them up, and cite the documentation page in the
 - The search or list cap (a maximum number of results per query, not only a page size).
 - Whether a successful response can be empty when the token lacks an intent or scope (a 200 with no content).
 - Whether 401 or 403 counts toward an invalid-request ban.
+- Whether the token is static (a bot or API token that never refreshes) or an OAuth token with a refresh token. A static token is not retried on 401 (`02-low-level-design.md`).
 
 ## Ask the human
 

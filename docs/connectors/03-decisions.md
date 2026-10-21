@@ -43,7 +43,15 @@ Decide from the documentation; ask only if both are possible and the use case do
 | A link to another item that is not its parent (a CRM association, a linked row) | `related_external_records`. Not `parent_external_record_id`. The link does not grant access. Do not pick one of several associations as the parent so the item inherits that parent's audience. |
 | Messages | one record per conversation segment (a channel or thread for a time window), with an id that stays put when a message is added. Not one record per message at chat volume. |
 
-Adding a `RecordType` or `RecordGroupType` is a framework change (`app/models/entities.py`, and `RecordTypes` in `app/config/constants/arangodb.py`, which has drifted from `RecordType`). Ask first (`CONNECTOR.md`). Do not add the value to only one enum, and do not reuse a vendor-specific value (`DRIVE`, `SALESFORCE_ORG`) because the name is unused. `external_record_id` must be namespaced when the source's id is unique only inside an object type.
+Adding a `RecordType` or `RecordGroupType` is a framework change. Ask first (`CONNECTOR.md`). Do not add the value to only one of the places that already mirror it, and do not reuse a vendor-specific value (`DRIVE`, `SALESFORCE_ORG`) because the name is unused:
+
+- `RecordType` in `app/models/entities.py`, which connectors set on records.
+- `RecordTypes` in `app/config/constants/arangodb.py`. Indexing (`app/services/messaging/kafka/handlers/record.py`) and the Neo4j and Arango providers switch on this one, not on `RecordType`.
+- `RecordTypeEnum` in `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml`, which the spec says mirrors `RecordType`.
+
+The two Python enums have already drifted. `RecordTypes` has `ATTACHMENT` and `WEBPAGE_COMMENT`, which `RecordType` does not. `RecordType` has `INLINE_COMMENT`, `CONFLUENCE_PAGE`, `CONFLUENCE_BLOGPOST`, `SHAREPOINT_LIST_ITEM`, `SHAREPOINT_DOCUMENT_LIBRARY`, `PROJECT`, `SQL_TABLE`, `SQL_VIEW` and `OTHERS`, which `RecordTypes` does not. `RecordGroupType` lives only in `entities.py` today; a new group type is still a framework change because the graph stores the string.
+
+`external_record_id` must be namespaced when the source's id is unique only inside an object type (`0-1:123` versus `0-2:123`).
 
 ## 5. Identity, revisions and links
 
@@ -67,7 +75,7 @@ Map the source's sharing model with `06-permissions.md`, object type by object t
 | A `modified since` filter on listing | Store the latest modified time per container, held back by `FailedItems`. Detect deletions separately. |
 | An audit or events log | Use it for deletions and permission changes the listing does not show. |
 | Nothing | Full listing every run; rely on the full-sync cleanup for deletions. Tell the human the cost at their volume. |
-| Ids that increase with time (a Discord snowflake) and no modified-since | Store the last id you fully processed, taken before the listing starts, the same way as a delta cursor. `FailedItems` holds that cursor. Do not set it to "now" after the scan. |
+| Ids that increase with time (a Discord snowflake) and no modified-since | Take the cursor before the listing starts, the same way as a delta token, and store the last id fully written on the sync point. Do not set it to "now" after the scan. `FailedItems` only holds a modified-time cutoff (`add(cutoff_ms)`); it cannot store a snowflake. On a failed page, leave the saved id where it was. |
 
 Every run writes through `on_new_records`; unchanged revisions are not re-indexed, so re-sending is cheap in a full sync and required there (see `01-high-level-design.md`).
 
@@ -76,12 +84,12 @@ A scheduled run does not set `fullSync`. Cleanup of nodes the run did not write 
 ## 8. Deletions and moves
 
 - Prefer the source's own signal (a delete event, a trash listing, a `deleted` flag in the delta).
-- Delete only on a confirmed signal. A 404 for one item can be a deletion; a timeout, 5xx, 429 or 403 is not, and must never delete records.
+- Delete only on a confirmed signal. A 404 deletes one item only when that item was requested directly. A 404 on a list, or on a parent, is not a deletion of what you did not ask for. A timeout, 5xx, 429 or 403 never deletes records.
 - A deleted container takes everything under it: `on_record_group_deleted`.
 - Otherwise the full-sync cleanup handles it, as long as `full_sync_coverage()` is honest. An incremental run alone will not notice a deletion; say how long a deletion can take to show up (until the next full sync).
 - A move is not a delete and re-create. With a stable id, re-send the record through `on_new_records` with its new parent; use `on_records_moved` only when the source's id changes on a move.
 - A branch, and a many-to-one merge, are not moves. Upsert the survivor and delete ids the source confirms were absorbed. Do not call `on_records_moved` for a merge.
-- When the source has no delete feed, an id-diff is allowed only after a listing of that container that finished with no error: compare stored ids with the ids you saw, and delete the ones that were absent. A partial page, a 429, a 5xx, or a 403 is not that listing. Name the lookup you use for the stored ids. A missing container is not automatically a deletion: lost access and a narrowed token look the same. Ask, and do not delete on that ambiguity.
+- When the source has no delete feed, an id-diff is allowed only after a listing of that container that finished with no error: page the stored records with `get_records_in_record_group` (or `get_records_by_record_type` when they are not in one group), and delete stored ids that were absent. A partial page, a 429, a 5xx, or a 403 is not that listing. A missing base is three different signals: the base was deleted, the grant was lost, or the token was narrowed. Do not treat them as one. Ask, and do not delete on that ambiguity.
 - A 200 with an empty body is not a deletion and not proof the container is empty. Discord's missing Message Content intent is the example: history comes back empty. Hold the checkpoint and do not write the empty result as "there are none" (`07-errors-and-logging.md`).
 
 ## 9. Content delivery

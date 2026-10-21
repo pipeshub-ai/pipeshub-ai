@@ -31,7 +31,7 @@ Copy this list into the PR description and tick each item, or say why it does no
 - [ ] Every source object maps to the right entity and record type ([03-decisions.md](./docs/connectors/03-decisions.md) §4).
 - [ ] Every record has external id, name, type, mime type, `weburl` that opens the item in the source, source timestamps in epoch milliseconds, and `version=0`.
 - [ ] `external_record_id` is immutable: renaming or moving an item does not create a second record. Ids that collide across object types are namespaced. A message segment id does not change when a message is added. (Behaviour test.) Do not copy Slack's burst id, which is an MD5 of message timestamps.
-- [ ] `external_revision_id` changes exactly when content changes: a title-only edit is not re-indexed; a content edit is. (Behaviour test.)
+- [ ] `external_revision_id` changes exactly when content changes: a title-only edit is not re-indexed; a content edit is. A wall-clock timestamp on every read is not that. (Behaviour test.) Do not copy Slack's burst revision, which is `get_epoch_timestamp_in_ms()`.
 - [ ] Containers are record groups with the right type and their real nesting.
 - [ ] Sync points: one per kind, keyed per container by the container's immutable id.
 - [ ] Composed content (tickets, threads, CRM objects) streams as `MimeTypes.BLOCKS`; each comment carries its own link.
