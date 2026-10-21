@@ -17,9 +17,10 @@ import type { StreamChatRequest, ConversationMessage, MessagePart } from '../typ
 
 installMemoryStorage();
 
-vi.mock('@/config', async () => {
+vi.mock('@/config', async (importOriginal) => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
-  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn() };
+  const { chatExtension, chatSlots } = await importOriginal<typeof import('@/config')>();
+  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn(), chatExtension, chatSlots };
 });
 
 const { useAuthStore } = await import('@/lib/store/auth-store');
@@ -30,6 +31,7 @@ const { CHAT_STREAM_ERROR_MESSAGES, busyStreamMessage } = await import('@/lib/ap
 const { getThreadMessagePlainText, loadHistoricalMessages } = await import('../runtime');
 const { apiClient } = await import('@/lib/api');
 const { useToastStore } = await import('@/lib/store/toast-store');
+const { chatExtension } = await import('@/config');
 
 const fetchMock = vi.fn<typeof fetch>();
 const initialState = useChatStore.getState();
@@ -167,7 +169,7 @@ describe('a new conversation, start to finish', () => {
     await streamMessageForSlot(slotId, Q, request({ filters: { apps: ['', 'app-1'], kb: [] } }));
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('/api/v1/conversations/stream');
+    expect(url).toBe('/api/v1/conversations/stream?frame=turn');
     const body = JSON.parse(String(init?.body));
     expect(body).toMatchObject({ query: 'What was Q3 revenue?', protocol: 'agui', filters: { apps: ['app-1'], kb: [] } });
     expect(body.runId).toMatch(/^[0-9a-f-]{36}$/);
@@ -215,7 +217,7 @@ describe('an existing conversation', () => {
 
     await streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-old' }));
 
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/conversations/conv-old/messages/stream');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/conversations/conv-old/messages/stream?frame=turn');
     expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['conv-old', 'conv-other']);
     expect(slot(slotId).isStreaming).toBe(false);
   });
@@ -1125,7 +1127,7 @@ describe('regenerating an answer', () => {
 
     await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
 
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/conversations/conv-1/message/a1/regenerate');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/conversations/conv-1/message/a1/regenerate?frame=turn');
     expect(get.mock.calls[0][0]).toBe('/api/v1/conversations/conv-1/');
     const s = slot(slotId);
     expect(s.isStreaming).toBe(false);
@@ -2042,6 +2044,18 @@ describe('an answer that finishes while another chat is open', () => {
     expect(unread()).toEqual([]);
   });
 
+  it('says nothing about a chat shown beside the one the user is watching', async () => {
+    const slotId = newSlot('conv-side');
+    viewAnotherChat();
+    vi.spyOn(chatExtension.slot, 'isOnScreen').mockImplementation((s) => s.convId === 'conv-side');
+    respondWith([frame('RUN_FINISHED', { result: { conversation: { ...finishedConversation('ok'), _id: 'conv-side' } } })]);
+
+    await streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-side' }));
+
+    expect(toasts()).toEqual([]);
+    expect(unread()).toEqual([]);
+  });
+
   it('says nothing about a regenerated answer the user is watching', async () => {
     const slotId = newSlot('conv-1');
     useChatStore.getState().updateSlot(slotId, {
@@ -2134,5 +2148,49 @@ describe('an answer that finishes while another chat is open', () => {
     expect(slot(slotId).isStreaming).toBe(false);
     expect(toasts()).toEqual([]);
     expect(unread()).toEqual([]);
+  });
+});
+
+describe('a slot shown beside the active one', () => {
+  /** A body the test feeds frame by frame, then closes. */
+  function openBody() {
+    const encoder = new TextEncoder();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    fetchMock.mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({ start: (c) => { controller = c; } })));
+    return {
+      push: (...frames: string[]) => frames.forEach((f) => controller.enqueue(encoder.encode(f))),
+      close: () => controller.close(),
+    };
+  }
+
+  /** Streams into a slot that is not the active one; its second chunk comes 20 ms after the first. */
+  async function streamBesideActive(onScreen: boolean) {
+    let now = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    vi.spyOn(chatExtension.slot, 'isOnScreen').mockImplementation((s) => onScreen && s.convId === 'conv-side');
+    newSlot('conv-active');
+    const side = useChatStore.getState().createSlot('conv-side');
+    const body = openBody();
+    const run = streamMessageForSlot(side, Q, request({ conversationId: 'conv-side' }));
+    body.push(frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'Revenue ' }));
+    await vi.waitFor(() => expect(slot(side).streamingContent).toBe('Revenue '));
+    now += 20;
+    body.push(frame('TEXT_MESSAGE_CONTENT', { delta: 'was $4.2M.' }));
+    return { side, finish: () => (body.close(), run) };
+  }
+
+  it('streams at the active slot\'s rate', async () => {
+    const { side, finish } = await streamBesideActive(true);
+
+    await vi.waitFor(() => expect(slot(side).streamingContent).toBe('Revenue was $4.2M.'), { timeout: 150 });
+    await finish();
+  });
+
+  it('a background slot keeps its slower rate', async () => {
+    const { side, finish } = await streamBesideActive(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(slot(side).streamingContent).toBe('Revenue ');
+    await finish();
   });
 });

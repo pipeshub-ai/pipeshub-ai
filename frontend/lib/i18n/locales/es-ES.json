@@ -826,6 +826,7 @@
     "showDiagramSource": "Mostrar código",
     "hideDiagramSource": "Ocultar código",
     "stoppedMarker": "Detenido",
+    "stoppedBeforeAnswer": "Detenido antes de que empezara una respuesta",
     "toolCard": {
       "arguments": "Argumentos",
       "result": "Resultado",
@@ -1309,7 +1310,8 @@
       "notice": {
         "expired": "{{tool}} en {{server}} no se ejecutó: la solicitud caducó. Vuelve a pedirlo si aún lo necesitas.",
         "passed": "{{tool}} en {{server}} no se aprobó, así que no se ejecutó.",
-        "waiting": "{{tool}} en {{server}} espera la aprobación del propietario de la conversación."
+        "waiting": "{{tool}} en {{server}} espera la aprobación del propietario de la conversación.",
+        "waitingFor": "{{tool}} en {{server}} espera la aprobación de {{name}}."
       },
       "receipt": {
         "allowed": "Permitiste {{tool}}",
@@ -1349,7 +1351,10 @@
       "download": "Descargar artefacto",
       "downloading": "Descargando artefacto"
     },
-    "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán."
+    "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán.",
+    "answerFailedTitle": "Esta respuesta ha fallado",
+    "answerFailedRetry": "Reintentar",
+    "cannotOpenSource": "No puedes abrir este documento. Es posible que se haya eliminado o que no tengas acceso a él."
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -5145,7 +5150,9 @@
     "back": "Atrás",
     "skip": "Omitir",
     "next": "Siguiente",
-    "submit": "Enviar"
+    "submit": "Enviar",
+    "unknownPerson": "Antiguo miembro",
+    "waitingFor": "Esperando la respuesta de {{name}}"
   },
   "collections": {
     "stats": {
@@ -5347,7 +5354,11 @@
     "team": "Equipo",
     "teamsNoRoles": "Los equipos no tienen roles",
     "invite": "Invitar a Pipeshub",
-    "memberCount_many": "{{count}} de miembros"
+    "memberCount_many": "{{count}} de miembros",
+    "removeSelection": "Quitar a {{name}}",
+    "peopleCanSee_one": "{{count}} persona puede ver este chat",
+    "peopleCanSee_many": "{{count}} de personas pueden ver este chat",
+    "peopleCanSee_other": "{{count}} personas pueden ver este chat"
   },
   "demoData": {
     "badge": {

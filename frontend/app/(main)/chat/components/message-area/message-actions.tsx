@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useContext } from 'react';
 import { useRouter } from 'next/navigation';
 import { Flex, Box, Text, IconButton, Popover, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -20,6 +20,7 @@ import { AgentsApi } from '@/app/(main)/agents/api';
 import { ChatApi, type FeedbackPayload } from '../../api';
 import { buildChatHref } from '../../build-chat-url';
 import { useChatStore } from '../../store';
+import { AnswerSlotContext, answerSlotIdNow, useAnswerSlotId } from './answer-slot-scope';
 
 // ========================================
 // Types & Constants
@@ -51,6 +52,8 @@ const DISLIKE_CATEGORIES: FeedbackCategory[] = [
 const OTHER_VALUE = 'other';
 
 interface MessageActionsProps {
+  /** Tighter bottom spacing, for a reply row that has a line under it. */
+  compact?: boolean;
   /** The raw markdown content of the message */
   content: string;
   /** Citation maps for resolving [N] markers in copied markdown */
@@ -71,6 +74,12 @@ interface MessageActionsProps {
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** False for a reply that ran an action a person approved: regenerating could run it again. */
   canRegenerate?: boolean;
+  /** Offer Regenerate on the last answer. Defaults to true. */
+  allowRegenerate?: boolean;
+  /** Offer Helpful and Not helpful. Defaults to true. */
+  allowFeedback?: boolean;
+  /** After the buttons above, before the model details. */
+  leadingActions?: React.ReactNode;
 }
 
 /**
@@ -93,11 +102,12 @@ function resolveMarkdownCitations(text: string, citationMaps?: CitationMaps): st
 }
 
 async function submitFeedbackToApi(
+  scopedSlotId: string | null,
   messageId: string,
   payload: FeedbackPayload,
 ): Promise<void> {
-  const state = useChatStore.getState();
-  const slot = state.activeSlotId ? state.slots[state.activeSlotId] : null;
+  const slotId = answerSlotIdNow(scopedSlotId);
+  const slot = slotId ? useChatStore.getState().slots[slotId] : null;
   const convId = slot?.convId;
   if (!convId) return;
 
@@ -124,6 +134,10 @@ export function MessageActions({
   appliedFilters,
   feedbackInfo,
   canRegenerate = true,
+  allowRegenerate = true,
+  allowFeedback = true,
+  leadingActions,
+  compact = false,
 }: MessageActionsProps) {
   const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
   const [copyPopoverOpen, setCopyPopoverOpen] = useState(false);
@@ -133,13 +147,15 @@ export function MessageActions({
   const [readAloudHovered, setReadAloudHovered] = useState(false);
   const [isForking, setIsForking] = useState(false);
   const { t, i18n } = useTranslation();
+  const scopedSlotId = useContext(AnswerSlotContext);
   const router = useRouter();
   const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
   const forkLabel = isLastMessage ? t('chat.fork') : t('chat.forkFromHere');
-  const canFork = useChatStore((s) => (s.activeSlotId ? s.slots?.[s.activeSlotId]?.isOwner : undefined) !== false);
+  const answerSlotId = useAnswerSlotId();
+  const canFork = useChatStore((s) => (answerSlotId ? s.slots?.[answerSlotId]?.isOwner : undefined) !== false);
   // Only the owner may rate or regenerate an agent chat (the server refuses a recipient with 404),
   // so a recipient of a shared agent chat is not offered those buttons.
-  const isAgentThread = useChatStore((s) => Boolean(s.activeSlotId && s.slots?.[s.activeSlotId]?.threadAgentId));
+  const isAgentThread = useChatStore((s) => Boolean(answerSlotId && s.slots?.[answerSlotId]?.threadAgentId));
   const canGiveFeedback = canFork || !isAgentThread;
 
   // ── Like popover state ──
@@ -197,18 +213,18 @@ export function MessageActions({
     setFeedbackGiven('like');
     setLikeOpen(false);
     try {
-      await submitFeedbackToApi(messageId, { isHelpful: true, categories: [cat.value] });
+      await submitFeedbackToApi(scopedSlotId, messageId, { isHelpful: true, categories: [cat.value] });
       toast.success(t('chat.thankYouForFeedback'), { description: t('chat.feedbackHelpsImprove') });
     } catch {
       toast.error(t('chat.feedbackError', 'Failed to submit feedback'));
     }
-  }, [messageId, t]);
+  }, [messageId, scopedSlotId, t]);
 
   const handleLikeOtherSubmit = useCallback(async () => {
     if (!messageId) return;
     setLikeSubmitting(true);
     try {
-      await submitFeedbackToApi(messageId, {
+      await submitFeedbackToApi(scopedSlotId, messageId, {
         isHelpful: true,
         categories: [OTHER_VALUE],
         ...(likeComment.trim() ? { comments: { positive: likeComment.trim() } } : {}),
@@ -221,7 +237,7 @@ export function MessageActions({
     } finally {
       setLikeSubmitting(false);
     }
-  }, [messageId, likeComment, t]);
+  }, [messageId, likeComment, scopedSlotId, t]);
 
   const handleLikePopoverClose = useCallback(() => {
     if (switchingRef.current) {
@@ -254,18 +270,18 @@ export function MessageActions({
     setFeedbackGiven('dislike');
     setDislikeOpen(false);
     try {
-      await submitFeedbackToApi(messageId, { isHelpful: false, categories: [cat.value] });
+      await submitFeedbackToApi(scopedSlotId, messageId, { isHelpful: false, categories: [cat.value] });
       toast.success(t('chat.thankYouForFeedback'), { description: t('chat.feedbackHelpsImprove') });
     } catch {
       toast.error(t('chat.feedbackError', 'Failed to submit feedback'));
     }
-  }, [messageId, t]);
+  }, [messageId, scopedSlotId, t]);
 
   const handleDislikeOtherSubmit = useCallback(async () => {
     if (!messageId) return;
     setDislikeSubmitting(true);
     try {
-      await submitFeedbackToApi(messageId, {
+      await submitFeedbackToApi(scopedSlotId, messageId, {
         isHelpful: false,
         categories: [OTHER_VALUE],
         ...(dislikeComment.trim() ? { comments: { negative: dislikeComment.trim() } } : {}),
@@ -278,7 +294,7 @@ export function MessageActions({
     } finally {
       setDislikeSubmitting(false);
     }
-  }, [messageId, dislikeComment, t]);
+  }, [messageId, dislikeComment, scopedSlotId, t]);
 
   const handleDislikePopoverClose = useCallback(() => {
     if (switchingRef.current) {
@@ -292,13 +308,18 @@ export function MessageActions({
 
   const handleRegenerate = useCallback(() => {
     if (!messageId) return;
-    useCommandStore.getState().dispatch('showRegenBar', { messageId, text: question, appliedFilters });
-  }, [messageId, question, appliedFilters]);
+    useCommandStore.getState().dispatch('showRegenBar', {
+      messageId,
+      text: question,
+      appliedFilters,
+      ...(scopedSlotId ? { slotId: scopedSlotId } : {}),
+    });
+  }, [messageId, question, appliedFilters, scopedSlotId]);
 
   const handleFork = useCallback(async () => {
     if (!messageId || isForking) return;
-    const state = useChatStore.getState();
-    const slot = state.activeSlotId ? state.slots[state.activeSlotId] : null;
+    const slotId = answerSlotIdNow(scopedSlotId);
+    const slot = slotId ? useChatStore.getState().slots[slotId] : null;
     const convId = slot?.convId;
     if (!convId) return;
 
@@ -322,7 +343,7 @@ export function MessageActions({
     } finally {
       setIsForking(false);
     }
-  }, [messageId, isForking, bumpConversationsVersion, router, t]);
+  }, [messageId, isForking, scopedSlotId, bumpConversationsVersion, router, t]);
 
   const copyToClipboard = useCallback(
     async (text: string, message: string) => {
@@ -362,12 +383,13 @@ export function MessageActions({
     <>
       <Flex
         data-testid="message-actions"
+        data-latest={isLastMessage ? 'true' : undefined}
         align="center"
         justify="between"
         style={{
           width: '100%',
           marginTop: 'var(--space-1)',
-          paddingBottom: 'var(--space-4)',
+          paddingBottom: compact ? 'var(--space-1)' : 'var(--space-4)',
           animation: 'msgActionsIn 150ms ease-out both',
           flexWrap: 'wrap',
           rowGap: 'var(--space-1)',
@@ -376,7 +398,7 @@ export function MessageActions({
       {/* ── Left: Action buttons ── */}
       <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
         {/* ── Thumbs up with optional comment popover ── */}
-        {messageId && canGiveFeedback && (
+        {messageId && allowFeedback && canGiveFeedback && (
           <Popover.Root open={likeOpen} onOpenChange={(open) => { if (!open) handleLikePopoverClose(); }}>
             <Tooltip content={t('chat.like', 'Helpful')} side="top">
               <Popover.Trigger>
@@ -385,6 +407,7 @@ export function MessageActions({
                   color="gray"
                   size="2"
                   onClick={handleLikeClick}
+                  aria-label={t('chat.like', 'Helpful')}
                   style={{
                     borderRadius: 'var(--radius-1)',
                     margin: 0,
@@ -515,7 +538,7 @@ export function MessageActions({
         )}
 
         {/* ── Thumbs down with category chips + optional text ── */}
-        {messageId && canGiveFeedback && (
+        {messageId && allowFeedback && canGiveFeedback && (
           <Popover.Root open={dislikeOpen} onOpenChange={(open) => { if (!open) handleDislikePopoverClose(); }}>
             <Tooltip content={t('chat.dislike', 'Not helpful')} side="top">
               <Popover.Trigger>
@@ -524,6 +547,7 @@ export function MessageActions({
                   color="gray"
                   size="2"
                   onClick={handleDislikeClick}
+                  aria-label={t('chat.dislike', 'Not helpful')}
                   style={{
                     borderRadius: 'var(--radius-1)',
                     margin: 0,
@@ -671,6 +695,7 @@ export function MessageActions({
                   variant="ghost"
                   color="gray"
                   size="2"
+                  aria-label={t('chat.copy')}
                   style={{
                     margin: 0,
                     cursor: 'pointer',
@@ -764,7 +789,7 @@ export function MessageActions({
         )}
 
         {/* Regenerate - only show for the last message */}
-        {isLastMessage && messageId && canRegenerate && canFork && (
+        {isLastMessage && messageId && canRegenerate && allowRegenerate && canFork && (
           <Tooltip content={t('chat.regenerate')} side="top">
             <IconButton
               variant="ghost"
@@ -811,6 +836,7 @@ export function MessageActions({
             </IconButton>
           </Tooltip>
         )}
+        {leadingActions}
       </Flex>
 
       {/* ── Right: Model info labels — pushed to the far right by the outer

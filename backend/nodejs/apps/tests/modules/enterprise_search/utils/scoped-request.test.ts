@@ -48,4 +48,17 @@ describe('hydrateScopedRequestAsUser', () => {
     expect((claims.exp as number) - (claims.iat as number)).to.equal(STAND_IN_TOKEN_TTL_SECONDS)
     expect(STAND_IN_TOKEN_TTL_SECONDS).to.be.at.most(60)
   })
+
+  it('looks the user up in the org a token names, without guessing the org', async () => {
+    const orgId = new mongoose.Types.ObjectId().toString()
+    const orgFind = sinon.stub(Org, 'find')
+    const findOne = sinon.stub(Users, 'findOne').resolves({ _id: new mongoose.Types.ObjectId(), orgId, email: 'person@example.com' } as any)
+    const req: any = { headers: {}, params: {}, tokenPayload: { email: 'person@example.com', orgId } }
+
+    await hydrateScopedRequestAsUser(req, { jwtSecret: 'session-secret', scopedJwtSecret: 'scoped-secret' } as any)
+
+    expect(orgFind.called).to.equal(false)
+    expect(findOne.firstCall.args[0]).to.deep.include({ email: 'person@example.com', orgId })
+    expect(String(req.user.orgId)).to.equal(orgId)
+  })
 })

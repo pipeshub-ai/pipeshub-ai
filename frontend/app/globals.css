@@ -128,7 +128,7 @@
   --emerald-7: #1e6d58;
   --emerald-8: #268169;
   --emerald-9: #047857;
-  --emerald-10: #17906c;
+  --emerald-10: #10674C;
   --emerald-11: #3dd9a0;
   --emerald-12: #EEEEEE;
 
@@ -187,6 +187,21 @@
   --accent-surface: var(--emerald-surface);
   --accent-indicator: var(--emerald-indicator);
   --accent-track: var(--emerald-track);
+}
+
+/* Portaled overlays render their own <Theme accentColor="jade"> whose stock
+   --accent-9 (#29a383) is only 3.15:1 against white text (WCAG AA needs 4.5:1).
+   Point the solid steps at the brand emerald so every solid accent surface
+   matches the root theme. White on solid / hover:
+     light  --accent-9 #047857 5.48:1   --accent-10 #10674C 6.85:1
+     dark   --accent-9 #047857 5.48:1   --accent-10 #10674C 6.85:1
+   (dark hover was #17906c, 4.01:1). Other steps stay Radix jade.
+   Asserted in app/__tests__/accent-contrast.test.ts. */
+.radix-themes[data-accent-color="jade"] {
+  --accent-9: var(--emerald-9);
+  --accent-10: var(--emerald-10);
+  --accent-a9: var(--emerald-a9);
+  --accent-contrast: var(--emerald-contrast);
 }
 
 /* ========================

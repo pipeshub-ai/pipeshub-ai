@@ -3,8 +3,9 @@
  * FORK_TEST_MONGO_URI is set; run it once with a replica set and
  * REPLICA_SET_AVAILABLE=true, and once against a standalone server.
  *
- * Every follow-up question goes through `continueConversation`, the code that
- * builds the history the AI backend receives, and every answer is stored with
+ * Every follow-up question goes through `appendPlainFollowUp` and
+ * `plainFollowUpContext`, the code that builds the history the AI backend
+ * receives, and every answer is stored with
  * `saveCompleteConversation`. Only the model is replaced: `fakeModel` can answer
  * only from the history it is handed, so a leaked or a missing message shows up
  * as a wrong answer.
@@ -16,7 +17,10 @@ import { ChatSession } from '../../../../src/modules/enterprise_search/schema/ch
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { copyArtifactsForFork, copySessionUpToMessage } from '../../../../src/modules/enterprise_search/utils/fork-conversation'
 import type { ArtifactCopier, ArtifactRef } from '../../../../src/modules/enterprise_search/utils/fork-artifacts'
-import { continueConversation } from '../../../../src/modules/enterprise_search/utils/non-streaming-chat'
+import { appendPlainFollowUp, plainFollowUpContext } from '../../../../src/modules/enterprise_search/utils/follow-up-turn'
+import { unleasedGate } from '../../../../src/modules/enterprise_search/services/conversation/turn/turn-gate'
+import { withOwnerGrant } from '../helpers/conversation-grant'
+import { turnDeps } from '../helpers/turn-deps'
 import { saveCompleteConversation } from '../../../../src/modules/enterprise_search/utils/utils'
 import type { IAIResponse, IChatSessionDocument } from '../../../../src/modules/enterprise_search/types/conversation.interfaces'
 
@@ -75,11 +79,17 @@ describeIfMongo(`history after a fork on a real MongoDB (transactions: ${useTran
 
   /** One real turn: history is built the way the controller builds it, then the answer is stored. */
   const ask = async (chat: IChatSessionDocument, question: string, answer?: string) => {
-    const now = new Date()
-    const { conversation, previousConversations } = await continueConversation(
-      { _id: chat._id, orgId, userId: owner },
-      { messageType: 'user_query', content: question, contentFormat: 'MARKDOWN', createdAt: now, updatedAt: now },
-    )
+    const req = withOwnerGrant({ params: { conversationId: String(chat._id) }, user: { userId: owner, orgId } })
+    const turn = await appendPlainFollowUp({
+      req: req as never,
+      target: { kind: 'assistant' },
+      userId: owner,
+      orgId,
+      body: { query: question },
+      gate: unleasedGate(),
+    })
+    const { conversation } = turn
+    const { previousConversations } = await plainFollowUpContext(turn, turnDeps())
     const history = previousConversations as unknown as HistoryRow[]
     const reply = answer ?? fakeModel(history, question)
     await saveCompleteConversation(

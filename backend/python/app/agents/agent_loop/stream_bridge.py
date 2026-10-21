@@ -51,6 +51,7 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.utils.conversation_tasks import cancel_run_tasks, set_task_run
 from app.utils.stage_timer import RunTimer
 from app.utils.time_conversion import set_llm_time_zone
 
@@ -406,6 +407,8 @@ async def run_agent_loop_stream(
     # direct access to AgentContext — chat_state IS tool_state in AgentContext.
     chat_state["event_sink"] = event_sink
     chat_state["sse_protocol"] = protocol
+    # The generated id when the client sent none; artifacts are stamped with it.
+    chat_state["run_id"] = run_id
     # Picked up by PipesHubAgentFactory.create() for its own sub-stage marks.
     chat_state["_stage_timer"] = stage_timer
     # `stage_timer` stops at the first agent event; this one times the rest
@@ -423,6 +426,7 @@ async def run_agent_loop_stream(
         configured_context_window=context_length,
         is_reasoning_model=is_reasoning_model,
         run_id=run_id, cancellation_token=cancellation_token,
+        invocation="assistant" if chat_state.get("is_placeholder_agent") else "saved_agent",
     )
 
     async def _produce() -> None:
@@ -430,6 +434,8 @@ async def run_agent_loop_stream(
         # weekday included. Set inside this task so it reaches every tool
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
+        # Background tasks the run's tools start reach only this run's answer.
+        set_task_run(run_id)
         agent: Any = None
         run_timing = _AgentRunTiming(run_timer)
         run_finished = False
@@ -543,6 +549,8 @@ async def run_agent_loop_stream(
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)
+            if context.conversation_id:
+                cancel_run_tasks(context.conversation_id)
             if context.sandbox_manager is not None:
                 try:
                     await context.sandbox_manager.destroy_all()

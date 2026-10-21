@@ -71,6 +71,8 @@ config:
   # is NOT acceptable for a shared or internet-reachable one.
   sandboxMode: "local"
   sandboxAllowLocal: true
+  # Small local data: build indexes at startup instead of ahead of an upgrade.
+  mongoAutoIndex: true
 
 # ----- MongoDB: single standalone node -----
 mongodb:

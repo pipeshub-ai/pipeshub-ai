@@ -20,6 +20,7 @@ import { SidebarItem } from './sidebar-item';
 import { ChatSectionElement, ChatItemSkeleton, GeneratingTitleItem } from './chat-section-element';
 import { groupByTime, getNonEmptyGroups, type TimeGroupKey } from '@/lib/utils/group-by-time';
 import { SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE } from '../constants';
+import { chatExtension, chatSlots } from '@/config';
 
 const YOUR_CHATS_SKELETON_COUNT = 3;
 
@@ -44,7 +45,7 @@ function toConversation(
 ): Conversation {
   return {
     id: row._id,
-    title: row.title || '',
+    title: chatExtension.formatConversationTitle(row.title) || '',
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     isShared: row.isShared,
@@ -54,6 +55,7 @@ function toConversation(
     isOwner: row.userId === currentUserId || row.initiator === currentUserId,
     projectId: row.sessionType === 'agent' ? undefined : projectId,
     projectVisibility: row.projectVisibility,
+    ...chatExtension.conversationFields(row, { ownerFromAccess: true }),
   };
 }
 
@@ -160,9 +162,11 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
     return selectPendingForSidebar(pendingConversations, slots, convIds, { projectId });
   }, [pendingConversations, slots, conversations, projectId]);
 
-  const rows = useMemo(
-    () => conversations.map((row) => ({ row, conversation: toConversation(row, currentUserId, projectId) })),
-    [conversations, currentUserId, projectId],
+  const rows = chatSlots.useVisibleConversations(
+    useMemo(
+      () => conversations.map((row) => ({ row, id: row._id, conversation: toConversation(row, currentUserId, projectId) })),
+      [conversations, currentUserId, projectId],
+    ),
   );
   const timeGroups = getNonEmptyGroups(groupByTime(rows, ({ row }) => row.lastActivityAt));
 

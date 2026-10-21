@@ -20,6 +20,8 @@ import {
   isSearchNoAccessibleDocumentsNotFound,
 } from '@/lib/api';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
+import { chatSlots } from '@/config';
+import type { ComposerSendExtra } from '../../chat-extension';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
@@ -35,6 +37,7 @@ export function ChatInputWrapper() {
   const threadRuntime = useThreadRuntime();
   const effectiveAgentId = useEffectiveAgentId();
   const isAgentChat = Boolean(effectiveAgentId);
+  const composerSend = chatSlots.useComposerSend({ isAgentChat, agentId: effectiveAgentId ?? null });
 
   useEffect(() => {
     if (effectiveAgentId) {
@@ -145,7 +148,12 @@ export function ChatInputWrapper() {
     [effectiveAgentId],
   );
 
-  const handleSend = async (message: string, attachments?: AttachmentRef[], mentions?: MentionNode[]) => {
+  const handleSend = async (
+    message: string,
+    attachments?: AttachmentRef[],
+    mentions?: MentionNode[],
+    extra?: ComposerSendExtra,
+  ) => {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
     const store = useChatStore.getState();
@@ -156,6 +164,12 @@ export function ChatInputWrapper() {
       if (message.trim()) handleSearchSubmit(message.trim());
       return;
     }
+
+    const intercepted = composerSend.intercept(message, attachments, extra, mentions);
+    const handled = intercepted && (await intercepted);
+    // `false` tells the composer to keep the draft.
+    if (handled === 'keep') return false;
+    if (handled) return;
 
     // ── Chat mode ──
     // Block a second send while a run is in flight, but allow Enter after
@@ -222,6 +236,7 @@ export function ChatInputWrapper() {
     // Attachments were uploaded the moment they were added to the composer,
     // so by the time we reach here every ref is already server-assigned.
     // Forward verbatim to the runtime; no upload step at send time.
+    composerSend.beforeAppend(extra);
     threadRuntime.append({
       role: 'user',
       content: [{ type: 'text', text: message }],
@@ -230,20 +245,27 @@ export function ChatInputWrapper() {
           collections: collectionsAtSendTime.length > 0 ? collectionsAtSendTime : undefined,
           attachments: attachments && attachments.length > 0 ? attachments : undefined,
           mentionIds: mentions && mentions.length > 0 ? mentions.map((node) => node.id) : undefined,
+          ...composerSend.messageCustom(extra),
         },
       },
       startRun: true,
     });
+    composerSend.afterAppend();
   };
 
   return (
-    <ChatInput
-      onSend={handleSend}
-      onUploadFile={handleUploadFile}
-      onDeleteFile={handleDeleteFile}
-      isAgentChat={isAgentChat}
-      agentId={effectiveAgentId}
-      persistDraft
-    />
+    <>
+      {composerSend.accessories}
+      <ChatInput
+        onSend={handleSend}
+        placeholder={composerSend.placeholder}
+        sendDuringRun={composerSend.sendDuringRun}
+        onUploadFile={handleUploadFile}
+        onDeleteFile={handleDeleteFile}
+        isAgentChat={isAgentChat}
+        agentId={effectiveAgentId}
+        persistDraft
+      />
+    </>
   );
 }

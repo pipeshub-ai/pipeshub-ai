@@ -22,6 +22,7 @@ from app.api.routes.chatbot import (
 )
 from app.config.constants.arangodb import CollectionNames, Connectors, OriginTypes
 from app.models.entities import RecordType
+from app.modules.authz.chat_content_access import NoChatContentAccess
 from app.sandbox.artifact_upload import save_query_result_csv
 from app.services.artifact_registry import Actor, ArtifactRegistryService
 from app.services.artifact_registry.access import (
@@ -39,6 +40,7 @@ OWNER = "user-owner"
 COLLEAGUE = "user-colleague"
 STRANGER = "user-stranger"
 CONVERSATION = "conv-1"
+RUN = "run-1"
 
 COLUMNS = ["id", "salary"]
 ROWS = [(1, 100), (2, 200)]
@@ -75,14 +77,16 @@ def _setup(*, signs_urls: bool = False) -> tuple[_Graph, FakeBlobStore, Artifact
         graph.add_user(user_id, key=key)
         graph.users[user_id]["orgId"] = ORG
     blob = FakeBlobStore(signs_urls=signs_urls)
-    return graph, blob, ArtifactRegistryService(graph, blob)
+    return graph, blob, ArtifactRegistryService(graph, blob, chat_access=NoChatContentAccess())
 
 
-async def _export(graph: _Graph, blob: FakeBlobStore, *, user_id: str | None = OWNER) -> dict[str, Any]:
+async def _export(
+    graph: _Graph, blob: FakeBlobStore, *, user_id: str | None = OWNER, run_id: str | None = RUN,
+) -> dict[str, Any]:
     result = await save_query_result_csv(
         blob_store=blob, graph_provider=graph, org_id=ORG, user_id=user_id,
         conversation_id=CONVERSATION, columns=COLUMNS, rows=ROWS,
-        file_name="query_result_1.csv", source_tool="sql.execute_sql_query",
+        file_name="query_result_1.csv", source_tool="sql.execute_sql_query", run_id=run_id,
     )
     assert result is not None and result["type"] == "artifacts"
     (entry,) = result["artifacts"]
@@ -113,6 +117,7 @@ class TestTheRecord:
         artifact = graph.nodes[CollectionNames.ARTIFACTS.value][record_id]
         assert (artifact["orgId"], artifact["conversationId"]) == (ORG, CONVERSATION)
         assert artifact["sourceTool"] == "sql.execute_sql_query"
+        assert artifact["runId"] == RUN
         assert artifact["contentHash"] == compute_content_hash(CSV)
 
         assert _permission_edges(graph, record_id) == {"ukey-owner": "OWNER"}
@@ -202,7 +207,7 @@ class TestSharingTheConversation:
         assert await _grant_reader_permissions(graph, ORG, OWNER, [COLLEAGUE], shared) == 1
         assert _permission_edges(graph, record_id) == {"ukey-owner": "OWNER", "ukey-colleague": "READER"}
         await registry.get_download_url(actor=colleague, artifact_id=record_id)
-        await TieredRecordAuthorizer(graph).authorize(colleague, _record_view(entry))
+        await TieredRecordAuthorizer(graph, NoChatContentAccess()).authorize(colleague, _record_view(entry))
 
         with pytest.raises(AccessDeniedError):
             await registry.get_download_url(actor=Actor(org_id=ORG, user_id=STRANGER), artifact_id=record_id)

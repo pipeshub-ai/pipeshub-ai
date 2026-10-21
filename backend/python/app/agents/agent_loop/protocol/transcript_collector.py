@@ -72,6 +72,14 @@ _MAX_TOOL_RESULT_CHARS = RESULT_PREVIEW_CHARS
 _MAX_ARG_VALUE_CHARS = 1200
 
 
+def _is_hidden_tool(name: object) -> bool:
+    """Tools whose arguments and results are kept elsewhere, not in the transcript."""
+    from app.modules.agents.chat_extension import get_chat_extension
+
+    suffixes = get_chat_extension().transcript_hidden_tool_suffixes()
+    return bool(suffixes) and isinstance(name, str) and name.endswith(suffixes)
+
+
 def _serialize_tool_args(args: object) -> str:
     """Serialize tool arguments to JSON that always parses, however large the
     inputs were.
@@ -290,11 +298,12 @@ class TranscriptCollector(EventEmitter):
 
         if event.event_type == EventType.TOOL_CALL_START:
             tool_call_id = payload.get("tool_call_id") or f"call_{event.event_id[:12]}"
+            tool_name = payload.get("tool", "tool")
             part: MessagePart = {
                 "type": "tool_call",
                 "toolCallId": tool_call_id,
-                "toolName": payload.get("tool", "tool"),
-                "args": _serialize_tool_args(payload.get("args", {})),
+                "toolName": tool_name,
+                "args": "{}" if _is_hidden_tool(tool_name) else _serialize_tool_args(payload.get("args", {})),
                 "status": "running",
                 "runId": run_id,
             }
@@ -327,6 +336,9 @@ class TranscriptCollector(EventEmitter):
                 if part["status"] == "awaiting_approval" and isinstance(payload.get("approval"), dict):
                     # Kept with the conversation, so the card is there after a reload too.
                     part["approval"] = payload["approval"]
+            elif _is_hidden_tool(part.get("toolName")):
+                part["status"] = "failed" if payload.get("is_error") else "completed"
+                part["resultPreview"] = ""
             else:
                 part["status"] = "failed" if payload.get("is_error") else "completed"
                 part["resultPreview"] = str(payload.get("content", ""))[:_MAX_TOOL_RESULT_CHARS]

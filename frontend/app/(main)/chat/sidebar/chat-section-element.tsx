@@ -20,6 +20,7 @@ import { DeleteChatDialog, ArchiveChatDialog, MoveToProjectDialog } from './dial
 import { Spinner } from '@/app/components/ui/spinner';
 import { toast } from '@/lib/store/toast-store';
 import { exportConversation } from '@/chat/utils/export-conversation';
+import { chatExtension, chatSlots } from '@/config';
 
 /** Duration must match `typing-reveal` animation duration in globals.css */
 const TYPING_ANIMATION_DURATION_MS = 400;
@@ -119,11 +120,12 @@ export function ChatSectionElement({
   const { t } = useTranslation();
   // A shared agent chat in the global list carries its own agent; the agent sidebar passes it per section.
   const agentId = sectionAgentId ?? conversation.agentKey;
+  const shownTitle = chatExtension.formatConversationTitle(conversation.title) ?? '';
 
   const [isHovered, setIsHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState(conversation.title);
+  const [renameValue, setRenameValue] = useState(shownTitle);
   const [isSavingRename, setIsSavingRename] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
@@ -186,14 +188,14 @@ export function ChatSectionElement({
 
   const handleStartRename = () => {
     if (convStreamingBlocksSidebarMutation()) return;
-    setRenameValue(conversation.title);
+    setRenameValue(shownTitle);
     setIsRenaming(true);
   };
 
   const handleRenameBlur = async () => {
     if (!isRenaming || isSavingRename) return;
     if (convStreamingBlocksSidebarMutation()) {
-      setRenameValue(conversation.title);
+      setRenameValue(shownTitle);
       setIsRenaming(false);
       return;
     }
@@ -251,7 +253,7 @@ export function ChatSectionElement({
       await toast.promise(
         exportConversation({
           conversationId: conversation.id,
-          title: conversation.title,
+          title: shownTitle,
           agentId,
           labels: {
             you: t('common.you'),
@@ -332,7 +334,7 @@ export function ChatSectionElement({
     }
   };
 
-  const handleConfirmMoveToProject = async (projectId: string | null) => {
+  const moveToProject = async (projectId: string | null) => {
     if (convStreamingBlocksSidebarMutation()) {
       throw new Error('Cannot move a conversation while it is streaming.');
     }
@@ -343,12 +345,16 @@ export function ChatSectionElement({
     bumpConversationsVersion();
   };
 
+  const handleConfirmMoveToProject = async (projectId: string | null) => {
+    if (row.interceptProjectChange(projectId)) return;
+    await moveToProject(projectId);
+  };
+
   const handleRemoveFromProject = async () => {
     if (convStreamingBlocksSidebarMutation()) return;
+    if (row.interceptProjectChange(null)) return;
     try {
-      await ProjectApi.setConversationProject(conversation.id, null, { agentKey: agentId });
-      moveConversationToProject(conversation.id, null);
-      bumpConversationsVersion();
+      await moveToProject(null);
     } catch {
       // Non-fatal — row simply stays linked; user can retry from the menu.
     }
@@ -377,6 +383,36 @@ export function ChatSectionElement({
       sharedByText
     );
 
+  const ownerMenu =
+    conversation.isOwner === true ? (
+      <ChatItemMenu
+        isParentHovered={isHovered}
+        onOpenChange={setMenuOpen}
+        onRename={handleStartRename}
+        onExport={() => void handleExport()}
+        // Agent chats have no pin API, and project rows come from a list that
+        // does not carry the pin, so only the main list offers it.
+        onTogglePin={agentId || projectId ? undefined : () => void handleTogglePin()}
+        isPinned={conversation.isPinned === true}
+        onArchive={() => setArchiveDialogOpen(true)}
+        onDelete={() => setDeleteDialogOpen(true)}
+        showRename={true}
+        showArchive={true}
+        onMoveToProject={projectsEnabled ? () => setMoveDialogOpen(true) : undefined}
+        onRemoveFromProject={
+          projectsEnabled && conversation.projectId ? () => void handleRemoveFromProject() : undefined
+        }
+      />
+    ) : undefined;
+  const row = chatSlots.useChatRow({
+    conversation,
+    agentId,
+    ownerMenu,
+    isHovered,
+    onMenuOpenChange: setMenuOpen,
+    applyProjectChange: moveToProject,
+    isMutationBlocked: convStreamingBlocksSidebarMutation,
+  });
 
   // Inline rename mode — render a plain input instead of SidebarItem
   if (isRenaming) {
@@ -423,13 +459,13 @@ export function ChatSectionElement({
       <SidebarItem
         label={
           isConversationStreaming ? (
-            <StreamingTitleLabel title={conversation.title} />
+            <StreamingTitleLabel title={shownTitle} />
           ) : hasUnreadAnswer && !isActive ? (
-            <UnreadTitleLabel title={conversation.title} dotLabel={t('chat.answerReady.unread')} />
+            <UnreadTitleLabel title={shownTitle} dotLabel={t('chat.answerReady.unread')} />
           ) : isTypingTitle ? (
-            <TypingTitle title={conversation.title} />
+            <TypingTitle title={shownTitle} />
           ) : (
-            conversation.title
+            shownTitle
           )
         }
         isActive={isActive}
@@ -440,28 +476,7 @@ export function ChatSectionElement({
         subtitle={sharedBySubtitle}
         forceHighlight={menuOpen}
         onHoverChange={setIsHovered}
-        rightSlot={
-          conversation.isOwner === true ? (
-            <ChatItemMenu
-              isParentHovered={isHovered}
-              onOpenChange={setMenuOpen}
-              onRename={handleStartRename}
-              onExport={() => void handleExport()}
-              // Agent chats have no pin API, and project rows come from a list that
-              // does not carry the pin, so only the main list offers it.
-              onTogglePin={agentId || projectId ? undefined : () => void handleTogglePin()}
-              isPinned={conversation.isPinned === true}
-              onArchive={() => setArchiveDialogOpen(true)}
-              onDelete={() => setDeleteDialogOpen(true)}
-              showRename={true}
-              showArchive={true}
-              onMoveToProject={projectsEnabled ? () => setMoveDialogOpen(true) : undefined}
-              onRemoveFromProject={
-                projectsEnabled && conversation.projectId ? () => void handleRemoveFromProject() : undefined
-              }
-            />
-          ) : undefined
-        }
+        rightSlot={row.rightSlot}
       />
 
       {/* Delete confirmation dialog */}
@@ -469,7 +484,7 @@ export function ChatSectionElement({
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
         onConfirm={handleConfirmDelete}
-        chatTitle={conversation.title}
+        chatTitle={shownTitle}
         isDeleting={isDeleting}
       />
 
@@ -477,7 +492,7 @@ export function ChatSectionElement({
         open={archiveDialogOpen}
         onOpenChange={setArchiveDialogOpen}
         onConfirm={handleConfirmArchive}
-        chatTitle={conversation.title}
+        chatTitle={shownTitle}
         isArchiving={isArchiving}
       />
 
@@ -487,6 +502,8 @@ export function ChatSectionElement({
         currentProjectId={conversation.projectId ?? null}
         onConfirm={handleConfirmMoveToProject}
       />
+
+      {row.dialogs}
     </>
   );
 }

@@ -19,6 +19,7 @@ function makeCallbacks(): {
     onComplete: vi.fn(),
     onArtifact: vi.fn(),
     onAskUserQuestion: vi.fn(),
+    onCustomEvent: vi.fn(),
     onAnswerFinal: vi.fn(),
     onReasoning: vi.fn(),
     onParts: vi.fn(),
@@ -382,6 +383,16 @@ describe('createAGUIEventHandler', () => {
     handle(frame('CUSTOM', { name: 'ask_user_question', value: { status: 'success', toolData } }));
 
     expect(spies.onAskUserQuestion).toHaveBeenCalledWith({ status: 'success', toolData });
+  });
+
+  it('routes a CUSTOM event it has no callback for to onCustomEvent', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const value = { id: 'd1', name: 'Something new' };
+
+    handle(frame('CUSTOM', { name: 'something_new', value }));
+
+    expect(spies.onCustomEvent).toHaveBeenCalledWith('something_new', value);
   });
 
   it('routes CUSTOM artifact to onArtifact', () => {

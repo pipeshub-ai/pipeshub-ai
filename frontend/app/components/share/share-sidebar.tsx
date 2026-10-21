@@ -40,6 +40,8 @@ interface ShareSidebarProps {
   onShareSuccess?: () => void;
   /** Optional content rendered above the members list (e.g. org-wide toggle). */
   headerContent?: React.ReactNode;
+  /** Typed into the people search each time the sidebar opens. */
+  initialSearch?: string;
 }
 
 export function ShareSidebar({
@@ -48,6 +50,7 @@ export function ShareSidebar({
   adapter,
   onShareSuccess,
   headerContent,
+  initialSearch,
 }: ShareSidebarProps) {
   const { t } = useTranslation();
   const roleLabels = getShareRoleLabels(t);
@@ -115,6 +118,11 @@ export function ShareSidebar({
     // paginated.reset is stable; omit from deps to avoid reset loops on every render
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  useEffect(() => {
+    if (open && initialSearch) updateSearchQuery(initialSearch);
+    // Only the moment of opening matters; later typing in the field must not be overwritten.
+  }, [open, initialSearch]);
 
   // Fetch non-user data when sidebar opens (paginated users are handled by the hook)
   useEffect(() => {

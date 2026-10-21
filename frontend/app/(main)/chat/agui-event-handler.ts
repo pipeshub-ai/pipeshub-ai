@@ -590,6 +590,8 @@ export function createAGUIEventHandler(
             callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
           }
           emitParts();
+        } else if (typeof name === 'string') {
+          callbacks.onCustomEvent?.(name, value);
         }
         break;
       }

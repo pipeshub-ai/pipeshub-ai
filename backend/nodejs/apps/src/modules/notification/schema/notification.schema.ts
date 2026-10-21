@@ -16,6 +16,7 @@ export interface INotification extends Document {
   assignedTo: mongoose.Types.ObjectId;
   redirectLink?: string;
   payload?: Record<string, unknown>;
+  dedupeKey?: string;
   isDeleted: boolean;
   deletedBy?: mongoose.Types.ObjectId;
   createdAt?: Date;
@@ -66,6 +67,10 @@ const notificationSchema = new Schema<INotification>(
       type: Schema.Types.Mixed,
       required: false,
     },
+    dedupeKey: {
+      type: String,
+      required: false,
+    },
     isDeleted: {
       type: Boolean,
       default: false,
@@ -81,6 +86,10 @@ const notificationSchema = new Schema<INotification>(
 // Indexes for performance improvements
 notificationSchema.index({ orgId: 1, status: 1 });
 notificationSchema.index({ assignedTo: 1, isDeleted: 1, status: 1, createdAt: -1, _id: -1 });
+notificationSchema.index(
+  { assignedTo: 1, dedupeKey: 1 },
+  { unique: true, partialFilterExpression: { dedupeKey: { $type: 'string' } } },
+);
 notificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: NOTIFICATION_TTL_SECONDS });
 
 export const Notifications: Model<INotification> = mongoose.model<INotification>("Notifications", notificationSchema);

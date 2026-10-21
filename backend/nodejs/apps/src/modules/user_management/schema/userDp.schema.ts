@@ -31,6 +31,9 @@ const userDisplayPictureSchema = new Schema<IuserDp>({
   },
 });
 
+// Pictures are looked up for many users of one org at a time.
+userDisplayPictureSchema.index({ orgId: 1, userId: 1 });
+
 export const UserDisplayPicture = mongoose.model<IuserDp>(
   'user-dps',
   userDisplayPictureSchema,

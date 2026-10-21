@@ -57,6 +57,8 @@ export function AgentBuilderHeader(props: {
   createdBy?: string | null;
   onShare?: () => void;
   hideShareControls?: boolean;
+  /** Extra settings rendered under the agent name. */
+  nameFieldExtra?: React.ReactNode;
 }) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -86,6 +88,7 @@ export function AgentBuilderHeader(props: {
     onShare,
     hideShareControls = false,
     sharePermissionDenied = false,
+    nameFieldExtra,
   } = props;
 
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
@@ -177,6 +180,7 @@ export function AgentBuilderHeader(props: {
                   {agentNameError}
                 </Text>
               ) : null}
+              {nameFieldExtra}
               {creatorName ? (
                 <Flex align="center" gap="1" mt="1">
                   <Text size="1" style={{ color: 'var(--olive-10)' }}>

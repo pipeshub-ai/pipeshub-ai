@@ -6,7 +6,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
 
 interface ChatItemMenuProps {
-  /** Whether the parent item is hovered (controls meatball visibility) */
+  /** Whether the parent item is hovered or holds keyboard focus (controls meatball visibility) */
   isParentHovered: boolean;
   /** Called when the dropdown open state changes (keep parent highlighted) */
   onOpenChange?: (open: boolean) => void;
@@ -30,7 +30,8 @@ interface ChatItemMenuProps {
 /**
  * Meatball (three-dot) dropdown menu for a chat sidebar item.
  *
- * Shows on hover of the parent row. Options: Rename, Pin, Export, Archive, Delete.
+ * Shows on hover of the parent row, or keyboard focus inside it, and always on a screen with no hover (touch), where a
+ * tap on the row would only open the chat. Options: Rename, Pin, Export, Archive, Delete.
  * Matches Figma spec (node 2496:29091).
  */
 export function ChatItemMenu({
@@ -50,7 +51,8 @@ export function ChatItemMenu({
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const [isMeatballHovered, setIsMeatballHovered] = useState(false);
-  const visible = isParentHovered || isOpen;
+  const [noHover] = useState(() => typeof window !== 'undefined' && window.matchMedia?.('(hover: none)').matches === true);
+  const visible = isParentHovered || isOpen || noHover;
 
   const handleOpenChange = (open: boolean) => {
     setIsOpen(open);
@@ -64,12 +66,14 @@ export function ChatItemMenu({
       <DropdownMenu.Trigger>
         <button
           type="button"
+          aria-label={t('common.moreOptions')}
           onMouseEnter={() => setIsMeatballHovered(true)}
           onMouseLeave={() => setIsMeatballHovered(false)}
           onClick={(e) => {
             e.stopPropagation();
           }}
           style={{
+            position: 'relative',
             appearance: 'none',
             border: 'none',
             background: isMeatballHovered || isOpen ? 'var(--olive-5)' : 'transparent',
@@ -83,6 +87,8 @@ export function ChatItemMenu({
           }}
         >
           <MaterialIcon name="more_horiz" size={18} color="var(--slate-11)" />
+          {/* A 44 px target for a finger round the 22 px button, without making the row taller. */}
+          {noHover && <span aria-hidden data-hit-area style={{ position: 'absolute', inset: -11 }} />}
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Content

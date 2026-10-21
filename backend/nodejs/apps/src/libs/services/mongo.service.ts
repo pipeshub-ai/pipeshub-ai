@@ -3,6 +3,7 @@ import mongoose, { Connection, ConnectOptions } from 'mongoose';
 import { ConnectionError } from '../errors/database.errors';
 import { BadRequestError, InternalServerError } from '../errors/http.errors';
 import { Logger } from './logger.service';
+import { setMongoMissingIndexes } from './telemetry/modules/mongo-index-metrics';
 
 const logger = Logger.getInstance({
   service: 'MongoDB Service',
@@ -71,12 +72,15 @@ export class MongoService {
         family: 4,
         maxPoolSize: 10,
       };
+      // false where indexes are built before the deploy: a build on a large
+      // collection at startup runs for hours while the app serves traffic.
+      const autoIndex = process.env.MONGO_AUTO_INDEX !== 'false';
       // Configure connection options
       const connectOptions: ConnectOptions = {
         dbName: db,
         ...(options ?? defaultOptions),
         autoCreate: true,
-        autoIndex: true,
+        autoIndex,
       };
 
       // Connect to MongoDB
@@ -88,6 +92,10 @@ export class MongoService {
 
       // Pre-create collections for compatibility with other dbs that do not support autocreate
       await this.ensureCollections();
+
+      if (!autoIndex) {
+        await this.reportMissingIndexes();
+      }
 
       this.isInitialized = true;
       logger.info(`Connected to MongoDB database: ${db}`);
@@ -157,6 +165,45 @@ export class MongoService {
       logger.error('Failed to ensure collections:', err.message);
       // Don't throw - allow app to continue, collections might already exist
     }
+  }
+
+  /**
+   * With auto-index off nothing builds schema indexes at startup, so log each
+   * one MongoDB lacks and count them in a gauge. A collection with no documents
+   * gets its indexes here: the build is instant, so a new install or a new
+   * collection does not wait for the index runbook.
+   */
+  private async reportMissingIndexes(): Promise<void> {
+    const models = Object.values(this.connection?.models ?? {});
+    const counts = await Promise.all(
+      models.map(async (model) => {
+        const collection = model.collection.collectionName;
+        let missing: unknown[][] = [];
+        try {
+          const diff = await model.diffIndexes({ indexOptionsToCreate: true });
+          missing = diff.toCreate as unknown[][];
+          if (
+            missing.length > 0 &&
+            (await model.estimatedDocumentCount()) === 0
+          ) {
+            await model.createIndexes();
+            return 0;
+          }
+        } catch (error) {
+          logger.warn('Could not check or build MongoDB indexes', {
+            collection,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        for (const [keys, options] of missing) {
+          logger.warn('MongoDB index missing', { collection, keys, options });
+        }
+        return missing.length;
+      }),
+    );
+    const total = counts.reduce((sum, n) => sum + n, 0);
+    setMongoMissingIndexes(total);
+    logger.info('MongoDB index check finished', { missing: total });
   }
 
   public async destroy(): Promise<void> {

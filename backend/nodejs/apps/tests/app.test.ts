@@ -7,6 +7,11 @@ import http from 'http';
 import net, { AddressInfo } from 'net';
 import { Container } from 'inversify';
 import { Application } from '../src/app';
+import {
+  isShuttingDown,
+  resetActiveRunsForTests,
+  trackRun,
+} from '../src/modules/enterprise_search/utils/active-runs';
 import { createMockLogger, MockLogger } from './helpers/mock-logger';
 import { Logger } from '../src/libs/services/logger.service';
 import * as telemetryModule from '../src/libs/services/telemetry/telemetry.service';
@@ -27,6 +32,8 @@ import { ConfigurationManagerContainer } from '../src/modules/configuration_mana
 import { StorageContainer } from '../src/modules/storage/container/storage.container';
 import { UserManagerContainer } from '../src/modules/user_management/container/userManager.container';
 import { AuthServiceContainer } from '../src/modules/auth/container/authService.container';
+import { CONVERSATION_TYPES } from '../src/modules/enterprise_search/services/conversation/conversation.types';
+import { conversationEdition } from '../src/config';
 import { EnterpriseSearchAgentContainer } from '../src/modules/enterprise_search/container/es.container';
 import { KnowledgeBaseContainer } from '../src/modules/knowledge_base/container/kb_container';
 import { MailServiceContainer } from '../src/modules/mail/container/mailService.container';
@@ -75,6 +82,7 @@ import * as delegationRoutes from '../src/modules/oauth_provider/routes/delegati
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
 import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
+import { OutboxDispatcher } from '../src/libs/services/outbox/outbox.dispatcher';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -263,6 +271,18 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
     revokeDelegatedTokensForServiceAccount: sandbox.stub().resolves(),
   } as any);
 
+  // configureRoutes shares the ES container's guards with the projects
+  // container, so the binding has to resolve here as it does in production.
+  containers.es!.bind(CONVERSATION_TYPES.ConversationGuards).toConstantValue({
+    authorize: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    listScope: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    caller: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    runLease: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  } as any);
+  containers.es!.bind(CONVERSATION_TYPES.ConversationTurnDeps).toConstantValue({} as any);
+  // The application wiring is tested with the default conversation edition.
+  sandbox.stub(conversationEdition, 'bind');
+  sandbox.stub(conversationEdition, 'mountRoutes');
 
   // NotificationService mock — needed for initialize() to call .initialize(server)
   const mockNotificationService = {
@@ -320,6 +340,9 @@ describe('Application', () => {
     sandbox.stub(Logger.prototype, 'error');
     sandbox.stub(Logger.prototype, 'warn');
     sandbox.stub(Logger.prototype, 'debug');
+    // A started dispatcher polls the outbox every 2 s for the rest of the worker's life and would
+    // claim the rows of a later real-Mongo test file in the same mocha worker.
+    sandbox.stub(OutboxDispatcher.prototype, 'start');
   });
 
   afterEach(() => {
@@ -1044,6 +1067,42 @@ describe('Application', () => {
       sandbox.stub(CrawlingManagerContainer, 'dispose').resolves();
       sandbox.stub(ApiDocsContainer, 'dispose').resolves();
       sandbox.stub(OAuthProviderContainer, 'dispose').resolves();
+    });
+
+    afterEach(() => {
+      resetActiveRunsForTests();
+      delete process.env.SHUTDOWN_DRAIN_MS;
+    });
+
+    it('refuses new runs, gives running answers the drain, then stops the rest before the edition and Mongo stop', async () => {
+      (app as any).notificationContainer = new Container();
+      process.env.SHUTDOWN_DRAIN_MS = '30';
+      const order: string[] = [];
+      const finishes = trackRun(async () => { order.push('stopped early'); });
+      trackRun(async () => {
+        expect(isShuttingDown(), 'new runs are refused by then').to.equal(true);
+        order.push('run stopped');
+      });
+      sandbox.stub(editionBoot, 'stop').callsFake(async () => { order.push('edition stopped'); });
+      (TokenManagerContainer.dispose as sinon.SinonStub).callsFake(async () => { order.push('mongo closed'); });
+      // This one ends within the drain, so it is never stopped.
+      setTimeout(finishes, 5);
+
+      await app.stop();
+
+      expect(order).to.deep.equal(['run stopped', 'edition stopped', 'mongo closed']);
+      expect(mockLogger.warn.calledWithMatch('Stopped answers still running after the drain', { stopped: 1, drainMs: 30 })).to.be.true;
+    });
+
+    it('does not wait for the drain when no answer is running', async () => {
+      (app as any).notificationContainer = new Container();
+      process.env.SHUTDOWN_DRAIN_MS = '60000';
+      const started = Date.now();
+
+      await app.stop();
+
+      expect(Date.now() - started).to.be.below(1000);
+      expect(isShuttingDown()).to.equal(true);
     });
 
     it('should dispose all containers', async () => {

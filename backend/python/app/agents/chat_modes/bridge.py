@@ -94,6 +94,7 @@ from app.modules.retrieval.selection_scope import (
 )
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
+from app.utils.conversation_tasks import cancel_run_tasks, set_task_run
 from app.utils.image_admission import admission_from_state
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
@@ -440,6 +441,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     user_id=user_info.get("userId") or "",
                     graph_provider=graph_provider,
                     is_service_account=bool(user_info.get("isServiceAccount")),
+                    conversation_id=query_info.get("conversationId"),
+                    acl_version=query_info.get("aclVersion"),
                 ),
                 # Pre-fetch user-visible connectors so the catalog
                 # (ConnectorCatalog.build) and capability_summary can use them
@@ -531,11 +534,13 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     # direct access to AgentContext — chat_state IS tool_state in AgentContext.
     chat_state["event_sink"] = event_sink
     chat_state["sse_protocol"] = protocol
+    chat_state["run_id"] = run_id
     context = AgentContext.from_chat_state(
         chat_state, event_sink=event_sink, protocol=protocol,
         llm_provider=llm_provider, context_length=context_length,
         configured_context_window=configured_context_window,
         run_id=run_id, cancellation_token=cancellation_token,
+        invocation="assistant",
     )
 
     async def _produce() -> None:
@@ -543,6 +548,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         # weekday included. Set inside this task so it reaches every tool
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
+        # Background tasks the run's tools start reach only this run's answer.
+        set_task_run(run_id)
         agent: Any = None
         try:
             factory = PipesHubAgentFactory()
@@ -751,6 +758,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)
+            if context.conversation_id:
+                cancel_run_tasks(context.conversation_id)
             if context.sandbox_manager is not None:
                 try:
                     await context.sandbox_manager.destroy_all()

@@ -95,6 +95,10 @@ class ProtocolFormatter(ABC):
     def artifact(self, context: "AgentContext", *, artifact_data: ArtifactSSEPayload) -> list[dict[str, Any]]: ...
 
     @abstractmethod
+    def custom_event(self, context: "AgentContext", *, name: str, value: dict[str, Any]) -> list[dict[str, Any]]:
+        """A named event the client renders on its own (no built-in frame)."""
+
+    @abstractmethod
     def tool_unavailable(
         self, context: "AgentContext", *, tool: str | None, toolset: str | None,
         reason: str | None, message: str | None,
@@ -140,6 +144,9 @@ class LegacyFormatter(ProtocolFormatter):
 
     def artifact(self, context, *, artifact_data):
         return [{"event": "artifact", "data": artifact_data.to_wire_dict()}]
+
+    def custom_event(self, context: "AgentContext", *, name: str, value: dict[str, Any]) -> list[dict[str, Any]]:
+        return [{"event": name, "data": value}]
 
     def tool_unavailable(self, context, *, tool, toolset, reason, message):
         return [{
@@ -224,6 +231,9 @@ class AGUIFormatter(ProtocolFormatter):
             runId=context.run_id,
             delta=[{"op": "add", "path": "/artifacts/-", "value": artifact_data.to_wire_dict()}],
         )]
+
+    def custom_event(self, context: "AgentContext", *, name: str, value: dict[str, Any]) -> list[dict[str, Any]]:
+        return [frame(AGUIEventType.CUSTOM, name=name, value=value, runId=context.run_id)]
 
     def tool_unavailable(self, context, *, tool, toolset, reason, message):
         return [frame(

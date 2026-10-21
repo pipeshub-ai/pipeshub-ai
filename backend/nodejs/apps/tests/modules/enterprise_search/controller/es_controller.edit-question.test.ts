@@ -6,6 +6,8 @@ import * as searchUtils from '../../../../src/modules/enterprise_search/utils/ut
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 import { settle } from './chat-test-harness'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { turnDeps } from '../helpers/turn-deps'
 import { ORG, OWNER, RUN, appConfig, delta, finalAnswer, startStream, type Flow, type StreamHandler } from './streaming-flows'
 
 const FIRST_QUESTION = 'What changed in the release?'
@@ -37,7 +39,7 @@ function editFlow(options: {
 }): Flow {
   return {
     name: 'regenerateAnswers (edited question)',
-    handler: (c) => c.regenerateAnswers(appConfig) as StreamHandler,
+    handler: (c) => behindGuard(realGuards(), 'regenerate', c.regenerateAnswers(appConfig, turnDeps()) as StreamHandler) as StreamHandler,
     prepare: (store) => {
       const session = store.addSession({
         orgId: ORG,
@@ -61,14 +63,6 @@ function editFlow(options: {
         store.addMessage(session, { messageType: 'user_query', content: CARD_ANSWERS })
         store.addMessage(session, { messageType: 'bot_response', content: 'An earlier answer.' })
       }
-      // The harness keeps messages in memory but does not model deletes.
-      sinon.stub(ChatSessionMessage, 'deleteMany').callsFake(((filter: { _id: { $in: unknown[] } }) => {
-        const doomed = new Set(filter._id.$in.map(String))
-        for (let i = store.messages.length - 1; i >= 0; i -= 1) {
-          if (doomed.has(String(store.messages[i]._id))) store.messages.splice(i, 1)
-        }
-        return Promise.resolve({ deletedCount: doomed.size })
-      }) as never)
       const turn = options.turn ?? 'plain'
       if (turn !== 'card-without-question') {
         store.addMessage(session, { messageType: 'user_query', content: options.question ?? FIRST_QUESTION, attachments: options.storedFiles ?? [] } as never)
@@ -118,13 +112,17 @@ function editFlow(options: {
   }
 }
 
+/** The rows a reader sees: a removed row stays only as an emptied marker. */
+const liveRows = (run: Awaited<ReturnType<typeof startStream>>) =>
+  run.messages().filter((m) => (m as { removedAt?: unknown }).removedAt === undefined)
+
 const lastQuestion = (run: Awaited<ReturnType<typeof startStream>>) =>
-  run.messages().filter((m) => m.messageType === 'user_query').at(-1)?.content
+  liveRows(run).filter((m) => m.messageType === 'user_query').at(-1)?.content
 
 const filesOf = (row: Record<string, unknown> | undefined): string[] =>
   ((row?.attachments as Array<{ recordId: string }> | undefined) ?? []).map((file) => file.recordId)
 const lastQuestionFiles = (run: Awaited<ReturnType<typeof startStream>>) =>
-  filesOf(run.messages().filter((m) => m.messageType === 'user_query').at(-1))
+  filesOf(liveRows(run).filter((m) => m.messageType === 'user_query').at(-1))
 const sentFiles = (run: Awaited<ReturnType<typeof startStream>>) =>
   filesOf(run.ai.streamCalls[0]?.body as Record<string, unknown>)
 
@@ -249,7 +247,7 @@ describe('es_controller editing the last question', () => {
 
   describe('a turn that went through a question card', () => {
     const rowsOf = (run: Awaited<ReturnType<typeof startStream>>) =>
-      run.messages().map((m) => `${String(m.messageType)}: ${String(m.content)}`)
+      liveRows(run).map((m) => `${String(m.messageType)}: ${String(m.content)}`)
 
     async function finish(run: Awaited<ReturnType<typeof startStream>>, answer: string) {
       run.ai.send('RUN_FINISHED', finalAnswer(answer))
@@ -308,7 +306,7 @@ describe('es_controller editing the last question', () => {
       await settle()
 
       expect(rowsOf(run).slice(0, 4)).to.deep.equal(before.slice(0, 4))
-      expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
+      expect(liveRows(run).filter((m) => m.messageType === 'user_query').map((m) => m.content))
         .to.deep.equal([FIRST_QUESTION, CARD_ANSWERS])
     })
 
@@ -319,7 +317,7 @@ describe('es_controller editing the last question', () => {
       await finish(run, 'Pop and an adventure.')
 
       expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(CARD_ANSWERS)
-      expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
+      expect(liveRows(run).filter((m) => m.messageType === 'user_query').map((m) => m.content))
         .to.deep.equal([FIRST_QUESTION, CARD_ANSWERS])
     })
 
@@ -499,7 +497,7 @@ describe('es_controller editing the last question', () => {
       await finish(run)
 
       expect(sentFiles(run)).to.deep.equal(['rec-b'])
-      expect(run.messages().map((m) => `${String(m.messageType)}: ${String(m.content)}`))
+      expect(liveRows(run).map((m) => `${String(m.messageType)}: ${String(m.content)}`))
         .to.deep.equal(['user_query: What changed in v2?', 'bot_response: Two things.'])
       expect(lastQuestionFiles(run)).to.deep.equal(['rec-b'])
     })
@@ -524,7 +522,7 @@ describe('es_controller editing the last question', () => {
   describe('which turns count as card turns, and what an edit takes with it', () => {
     const TYPED = 'User selections: what does this mean?'
     const rowsOf = (run: Awaited<ReturnType<typeof startStream>>) =>
-      run.messages().map((m) => `${String(m.messageType)}: ${String(m.content)}`)
+      liveRows(run).map((m) => `${String(m.messageType)}: ${String(m.content)}`)
     const start = async (options: Parameters<typeof editFlow>[0]) => {
       const run = await startStream(editFlow(options), controllerModule, undefined, { wait: false })
       await settle()
@@ -629,7 +627,7 @@ describe('es_controller editing the last question', () => {
       const answer = run.answer()
       expect(answer?.messageType).to.equal('bot_response')
       expect(answer?.content).to.equal('An older answer.')
-      expect(run.messages().some((m) => m.messageType === 'error')).to.equal(false)
+      expect(liveRows(run).some((m) => m.messageType === 'error')).to.equal(false)
     }
 
     it('keeps the answer when the text imitates a tool approval', async () => {
@@ -663,7 +661,7 @@ describe('es_controller editing the last question', () => {
       errorCode: 'rate_limit',
     }
     type Run = Awaited<ReturnType<typeof startStream>>
-    const rowsOf = (run: Run) => run.messages().map((m) => `${String(m.messageType)}: ${String(m.content)}`)
+    const rowsOf = (run: Run) => liveRows(run).map((m) => `${String(m.messageType)}: ${String(m.content)}`)
     const start = async (options: Parameters<typeof editFlow>[0]) => {
       const run = await startStream(editFlow(options), controllerModule, undefined, { wait: false })
       await settle()
@@ -696,7 +694,7 @@ describe('es_controller editing the last question', () => {
       await end(run)
 
       expect(rowsOf(run).slice(0, 4)).to.deep.equal(before.slice(0, 4))
-      expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
+      expect(liveRows(run).filter((m) => m.messageType === 'user_query').map((m) => m.content))
         .to.deep.equal([FIRST_QUESTION, CARD_ANSWERS])
     })
 
@@ -706,7 +704,7 @@ describe('es_controller editing the last question', () => {
       run.ai.send('RUN_FINISHED', finalAnswer('   '))
       await end(run)
 
-      expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
+      expect(liveRows(run).filter((m) => m.messageType === 'user_query').map((m) => m.content))
         .to.deep.equal([FIRST_QUESTION, CARD_ANSWERS])
     })
 
@@ -719,7 +717,7 @@ describe('es_controller editing the last question', () => {
       await end(run)
 
       expect(lastQuestion(run)).to.equal('What changed in v2?')
-      expect(run.messages().filter((m) => m.messageType === 'user_query')).to.have.length(1)
+      expect(liveRows(run).filter((m) => m.messageType === 'user_query')).to.have.length(1)
     })
 
     it('saves the edit when the reader stopped the run after some answer text', async () => {
@@ -766,7 +764,7 @@ describe('es_controller editing the last question', () => {
       expect(run.res.eventsOf('RUN_ERROR')[0]?.data.message).to.match(/last question/)
       expect(run.ai.streamCalls).to.deep.equal([])
       expect(run.answer()?.content).to.equal('An older answer.')
-      expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
+      expect(liveRows(run).filter((m) => m.messageType === 'user_query').map((m) => m.content))
         .to.deep.equal([FIRST_QUESTION, 'And what about v3?'])
     })
 

@@ -8,6 +8,7 @@ import { Conversation } from '../types';
 import { Flex, Box, Text, Button, IconButton } from '@radix-ui/themes';
 import { BrandMark } from '@/config';
 import { useTranslation } from 'react-i18next';
+import { chatExtension } from '@/config';
 
 //TODO: Refactor to separate files
 
@@ -113,7 +114,7 @@ const ChatItem = ({ conversation, isActive, onClick }: ChatItemProps) => (
         textAlign: 'left',
       }}
     >
-      {conversation.title}
+      {chatExtension.formatConversationTitle(conversation.title)}
     </span>
   </Button>
 );

@@ -293,6 +293,21 @@ class TestSourceToolTracking:
 
 class TestUploadArtifactsMethod:
     @pytest.mark.asyncio
+    async def test_stamps_the_turn_run_id(self) -> None:
+        from app.agents.actions.coding_sandbox.coding_sandbox import CodingSandbox
+
+        sandbox = CodingSandbox(_make_state(blob_store=MagicMock(), user_id="u1", run_id="run-9"))
+        artifact = ArtifactOutput(file_name="a.csv", file_path="/tmp/a.csv", mime_type="text/csv", size_bytes=1)
+
+        with patch(
+            "app.agents.actions.coding_sandbox.coding_sandbox.upload_artifacts_to_blob",
+            AsyncMock(return_value=[]),
+        ) as upload:
+            await sandbox._upload_artifacts(ExecutionResult(success=True, artifacts=[artifact]))
+
+        assert upload.await_args.kwargs["run_id"] == "run-9"
+
+    @pytest.mark.asyncio
     async def test_no_artifacts(self):
         from app.agents.actions.coding_sandbox.coding_sandbox import CodingSandbox
 

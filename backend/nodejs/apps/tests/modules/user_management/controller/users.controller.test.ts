@@ -614,6 +614,7 @@ describe('UserController', () => {
                     fullName: 'John Admin',
                     email: 'john@acme.com',
                     hasLoggedIn: true,
+                    isDisabled: true,
                     role: 'admin',
                     createdAt: new Date('2025-01-01T00:00:00.000Z'),
                     updatedAt: new Date('2025-01-02T00:00:00.000Z'),
@@ -675,6 +676,7 @@ describe('UserController', () => {
       expect(payload.users[0].profilePicture).to.equal('data:image/png;base64,abc123');
       expect(payload.users[0].isBlocked).to.equal(true);
       expect(payload.users[0].isActive).to.equal(false);
+      expect(payload.users[0].isDisabled).to.equal(true);
       expect(payload.users[0].role).to.equal('Admin');
       expect(payload.users[0].groupCount).to.equal(1);
       expect(payload.users[0].userGroups).to.have.length(2);

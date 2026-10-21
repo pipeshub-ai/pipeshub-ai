@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useCallback, useEffect, useContext } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { SelectedCollections } from '../selected-collections';
 import { AppliedFilters } from '../applied-filters';
@@ -29,8 +29,14 @@ import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts,
 import { ExpandableUserQuery } from './expandable-user-query';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
+import { AnswerFailed } from './answer-failed';
+import { formatMessageTime } from './format-message-time';
+import { chatSlots } from '@/config';
+import type { ChatResponseLayout, ChatResponseParts } from '../../chat-extension';
+import type { MessagePair, RetryTurn } from './message-pairs';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
+import { AnswerSlotContext, answerSlotIdNow, useAnswerSlotId } from './answer-slot-scope';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, AppliedFilterNode, MessagePart } from '../../types';
@@ -61,23 +67,16 @@ import { useInlineCitationPopoverStore } from './response-tabs/citations/citatio
 // Stable empty reference — avoids creating new objects in default params
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
-function formatMessageTime(isoString: string): string {
-  const date = new Date(isoString);
-  if (isNaN(date.getTime())) return '';
-  const now = new Date();
-  const isToday = date.toDateString() === now.toDateString();
-  const timeStr = date.toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-  if (isToday) return timeStr;
-  return date.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
+// No bottom padding: the activity inside ends with its own bottom margin. A step of light above the page, capped so
+// it reads as the work beside the answer rather than as the answer.
+const ACTIVITY_CARD_STYLE: React.CSSProperties = {
+  maxWidth: 640,
+  border: '1px solid var(--olive-5)',
+  background: 'var(--olive-2)',
+  borderRadius: 'var(--radius-3)',
+  padding: 'var(--space-3) var(--space-3) 0',
+  marginBottom: 'var(--space-5)',
+};
 
 function buildQuestionCardReadAloudText(payload: AskUserQuestionPayload): string {
   const parts: string[] = [];
@@ -93,7 +92,7 @@ interface FeedbackInfo {
   value?: 'like' | 'dislike';
 }
 
-interface ChatResponseProps {
+export interface ChatResponseProps {
   question: string;
   answer: string;
   citationMaps?: CitationMaps;
@@ -119,7 +118,7 @@ interface ChatResponseProps {
   /** Artifacts generated during streaming (coding sandbox, etc.) */
   streamingArtifacts?: ChatArtifact[];
   /** recordId -> highest version seen anywhere in this conversation (see `MessageList`) — powers the "newer version available" hint on older cards. */
-  latestArtifactVersions?: Map<string, number>;
+  latestArtifactVersions?: ReadonlyMap<string, number>;
   /** Live agent-activity transcript — only passed for the currently-streaming message. */
   streamingParts?: MessagePart[];
   /** Persisted agent-activity transcript from `ConversationMessage.parts` (absent for older messages). */
@@ -142,12 +141,22 @@ interface ChatResponseProps {
   status?: 'stopped';
   /** The server's error code and details when this reply is a failed run. */
   streamError?: ChatStreamErrorInfo;
+  /** The run failed: `answer` is the error text. */
+  failed?: boolean;
+  /** Resend the turn; offered on a failed last answer to someone who can send in this chat. */
+  onRetry?: (turn: RetryTurn) => void;
+  /** The viewer can send in this chat; regenerate is offered only then. */
+  canSend?: boolean;
   /**
    * No assistant row exists for this question (see `buildMessagePairs`). The
    * question is drawn on its own: an answer area, tabs and message actions
    * would all be empty controls over a reply that was never produced.
    */
   unanswered?: boolean;
+  /** The pair this row draws, for row extensions. */
+  pair?: MessagePair;
+  /** Row layout from the list body. */
+  layout?: ChatResponseLayout;
 }
 
 /**
@@ -190,12 +199,18 @@ export const ChatResponse = React.memo(function ChatResponse({
   feedbackInfo,
   status,
   streamError,
+  failed = false,
+  onRetry,
+  canSend = true,
   unanswered = false,
+  pair,
+  layout,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
   const mcpConnectDetails = isStreaming ? null : mcpConfigMissingDetails(streamError);
   const isMobile = useIsMobile();
+  const ext = chatSlots.useResponseExtension({ pair, layout, question, isStreaming, isLastMessage, unanswered });
 
   /** Shown only if the stream is active but no SSE status has arrived yet */
   const streamingFallbackStatus = useMemo(
@@ -233,13 +248,14 @@ export const ChatResponse = React.memo(function ChatResponse({
   // we track the active expanded message ID in the slot store.
   const [localTab, setLocalTab] = useState<ResponseTab>('answer');
 
+  const scopedSlotId = useContext(AnswerSlotContext);
+  const answerSlotId = useAnswerSlotId();
   // Read the slot-level activeExpandedMessageId so we can reset to 'answer'
   // when a different message becomes the expanded one.
   const activeExpandedMessageId = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.activeExpandedMessageId ?? null : null
+    answerSlotId ? s.slots[answerSlotId]?.activeExpandedMessageId ?? null : null
   );
   const updateSlot = useChatStore((s) => s.updateSlot);
-  const activeSlotId = useChatStore((s) => s.activeSlotId);
   const setPreviewFile = useChatStore((s) => s.setPreviewFile);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
 
@@ -406,7 +422,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   );
 
   const pendingAskUserQuestion = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.pendingAskUserQuestion ?? null : null
+    answerSlotId ? s.slots[answerSlotId]?.pendingAskUserQuestion ?? null : null
   );
 
   const askQuestionMatchesRow = askUserQuestionOwnsRow(
@@ -439,14 +455,14 @@ export const ChatResponse = React.memo(function ChatResponse({
 
   const setActiveTab = useCallback((tab: ResponseTab) => {
     setLocalTab(tab);
-    if (!activeSlotId) return;
+    if (!answerSlotId) return;
     if (tab === 'answer') {
       // Clear expansion only if we own it
-      updateSlot(activeSlotId, { activeExpandedMessageId: null });
+      updateSlot(answerSlotId, { activeExpandedMessageId: null });
     } else {
-      updateSlot(activeSlotId, { activeExpandedMessageId: messageId ?? null });
+      updateSlot(answerSlotId, { activeExpandedMessageId: messageId ?? null });
     }
-  }, [activeSlotId, messageId, updateSlot]);
+  }, [answerSlotId, messageId, updateSlot]);
 
   const setInlineCitationKey = useInlineCitationPopoverStore((s) => s.setActiveKey);
   const prevLocalTabForCite = useRef<ResponseTab>('answer');
@@ -599,61 +615,94 @@ export const ChatResponse = React.memo(function ChatResponse({
   const sourcesCount = effectiveCitationMaps.sourcesOrder.length;
   const citationCount = Object.keys(effectiveCitationMaps.citationsOrder).length;
 
-  const renderTabContent = () => {
+  const canRetry = isLastMessage && onRetry !== undefined && ext.allowRegenerate && !ranApprovedCall;
+
+  // Show confidence only when not streaming and has answer
+  const confidenceBadge = !isStreaming && confidence && !ext.hideConfidence && (
+    <ConfidenceIndicator confidence={confidence} marginBottom={ext.headline ? 'var(--space-2)' : undefined} />
+  );
+
+  /* Agent activity timeline — thinking / tool calls / sub-agents,
+     streamed live or rendered from the persisted transcript.
+     While streaming, the live status ("Thinking...", "Using
+     Jira Search...") renders as the LAST timeline entry instead
+     of a disconnected element below the answer — see
+     AgentActivityTimeline's `currentStatus` prop. Once narration
+     or the answer starts (or the response is complete), wrap in
+     CollapsibleActivitySection so the user can collapse the
+     trace if they want — never auto-collapsed while live.
+     Gated on `hasVisibleActivity` (not raw part count) — a
+     completed simple response's `effectiveParts` is just the one
+     `isFinal` text part, which the timeline itself filters out.
+     `isStreaming && multiStep` is OR'd in so the timeline stays
+     reachable while a multi-step run is active but hasn't
+     produced a visible part yet. Shown on ask_user_question
+     rows too — the card is the question UI, not a reason to
+     hide the tools that ran before it. */
+  const activity = effectiveParts && (hasVisibleActivity || (isStreaming && multiStep)) && (
+    canCollapseActivity ? (
+      <CollapsibleActivitySection parts={effectiveParts} isStreaming={isStreaming}>
+        <AgentActivityTimeline
+          parts={effectiveParts}
+          isStreaming={isStreaming}
+          // non-multiStep: null prevents duplicate status with StatusMessageComponent below
+          currentStatus={multiStep ? streamingStatusToShow : null}
+          citationMaps={effectiveCitationMaps}
+          citationCallbacks={wrappedCallbacks}
+        />
+      </CollapsibleActivitySection>
+    ) : (
+      <AgentActivityTimeline
+        parts={effectiveParts}
+        isStreaming={isStreaming}
+        currentStatus={multiStep ? streamingStatusToShow : null}
+        citationMaps={effectiveCitationMaps}
+        citationCallbacks={wrappedCallbacks}
+      />
+    )
+  );
+
+  const renderTabContent = (opts?: { padding?: string }) => {
+    const padding = opts?.padding ?? 'var(--space-4) 0';
     switch (activeTab) {
       case 'answer':
+        if (failed && !isStreaming && !mcpConnectDetails) {
+          return (
+            <Box style={{ padding }}>
+              <AnswerFailed
+                message={answer}
+                onRetry={canRetry ? () => onRetry?.({ question, attachments, collections, appliedFilters }) : undefined}
+              />
+            </Box>
+          );
+        }
         return (
-          <Box style={{ padding: 'var(--space-4) 0' }}>
-            {/* Show confidence only when not streaming and has answer */}
-            {!isStreaming && confidence && <ConfidenceIndicator confidence={confidence} />}
-
-            {/* Agent activity timeline — thinking / tool calls / sub-agents,
-                streamed live or rendered from the persisted transcript.
-                While streaming, the live status ("Thinking...", "Using
-                Jira Search...") renders as the LAST timeline entry instead
-                of a disconnected element below the answer — see
-                AgentActivityTimeline's `currentStatus` prop. Once narration
-                or the answer starts (or the response is complete), wrap in
-                CollapsibleActivitySection so the user can collapse the
-                trace if they want — never auto-collapsed while live.
-                Gated on `hasVisibleActivity` (not raw part count) — a
-                completed simple response's `effectiveParts` is just the one
-                `isFinal` text part, which the timeline itself filters out.
-                `isStreaming && multiStep` is OR'd in so the timeline stays
-                reachable while a multi-step run is active but hasn't
-                produced a visible part yet. Shown on ask_user_question
-                rows too — the card is the question UI, not a reason to
-                hide the tools that ran before it. */}
-            {effectiveParts && (hasVisibleActivity || (isStreaming && multiStep)) && (
-              canCollapseActivity ? (
-                <CollapsibleActivitySection parts={effectiveParts} isStreaming={isStreaming}>
-                  <AgentActivityTimeline
-                    parts={effectiveParts}
-                    isStreaming={isStreaming}
-                    // non-multiStep: null prevents duplicate status with StatusMessageComponent below
-                    currentStatus={multiStep ? streamingStatusToShow : null}
-                    citationMaps={effectiveCitationMaps}
-                    citationCallbacks={wrappedCallbacks}
-                  />
-                </CollapsibleActivitySection>
-              ) : (
-                <AgentActivityTimeline
-                  parts={effectiveParts}
-                  isStreaming={isStreaming}
-                  currentStatus={multiStep ? streamingStatusToShow : null}
-                  citationMaps={effectiveCitationMaps}
-                  citationCallbacks={wrappedCallbacks}
-                />
-              )
+          <Box style={{ padding }}>
+            {ext.activityCard ? (
+              <>
+                {activity && (
+                  <Box data-testid="chat-activity-card" style={ACTIVITY_CARD_STYLE}>
+                    {activity}
+                  </Box>
+                )}
+                {confidenceBadge}
+              </>
+            ) : (
+              <>
+                {confidenceBadge}
+                {activity}
+              </>
             )}
 
             {/* Separator marking the handoff from "here's the work" to
                 "here's the answer" — only when there's activity actually
                 visible above (not just a lone isFinal part that the
                 timeline itself filtered out) and content to show below
-                (answer text or the ask_user_question card). */}
-            {hasVisibleActivity && (answerShown || questionPending || persistedAskUserQuestion || toolApproval || approvalReceipts.length > 0) && (
+                (answer text or the ask_user_question card). The card
+                already sets the work apart. */}
+            {!ext.activityCard && hasVisibleActivity && (answerShown || questionPending || persistedAskUserQuestion || toolApproval || approvalReceipts.length > 0) && (
               <Box
+                data-testid="chat-activity-separator"
                 className="agent-activity-enter"
                 style={{
                   borderTop: '1px solid var(--slate-4)',
@@ -672,6 +721,8 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             ) : null}
 
+            {ext.answerExtras}
+
             {/* Active (streaming/pending) ask_user_question card */}
             {askQuestionMatchesRow && pendingAskUserQuestion ? (
               <AskUserQuestionCard
@@ -679,8 +730,10 @@ export const ChatResponse = React.memo(function ChatResponse({
                 initialAnswers={pendingAskUserQuestion.answers}
                 status={pendingAskUserQuestion.status}
                 sentAnswers={pendingAskUserQuestion.sentAnswers}
+                readOnlyFor={ext.askCardReadOnlyFor}
+                submitHeld={ext.askCardSubmitHeld}
                 onAnswersChange={(nextAnswers) => {
-                  const sid = useChatStore.getState().activeSlotId;
+                  const sid = answerSlotIdNow(scopedSlotId);
                   const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
                   if (!sid || !p) return;
                   useChatStore.getState().updateSlot(sid, {
@@ -688,13 +741,14 @@ export const ChatResponse = React.memo(function ChatResponse({
                   });
                 }}
                 onSubmit={(message, nextAnswers) => {
-                  const sid = useChatStore.getState().activeSlotId;
+                  const sid = answerSlotIdNow(scopedSlotId);
                   const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
                   if (!sid || !p) return;
                   useChatStore.getState().updateSlot(sid, {
                     pendingAskUserQuestion: { ...p, answers: nextAnswers, status: 'submitted' },
                   });
                   const request = buildStreamChatRequestForSlot(sid, message);
+                  if (request) ext.decorateResumeRequest?.(request, p);
                   if (request) {
                     void streamMessageForSlot(sid, message, request, {
                       resumeAskUserQuestion: true,
@@ -745,6 +799,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                   approval={toolApproval}
                   isLatest={isLastMessage}
                   rowId={rowId}
+                  readOnlyFor={ext.approvalCardReadOnlyFor}
                 />
               </Box>
             )}
@@ -768,7 +823,7 @@ export const ChatResponse = React.memo(function ChatResponse({
               >
                 <MaterialIcon name="stop_circle" size={14} color="var(--slate-9)" />
                 <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                  {t('chat.stoppedMarker', { defaultValue: 'Stopped' })}
+                  {answerShown.trim() ? t('chat.stoppedMarker', { defaultValue: 'Stopped' }) : t('chat.stoppedBeforeAnswer')}
                 </Text>
               </Flex>
             )}
@@ -849,7 +904,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   const cardAnswered = Object.keys(persistedAskUserQuestionAnswers ?? {}).length > 0;
   // Someone a chat was shared with reads it; the server only lets its owner edit.
   const isChatOwner = useChatStore((st) =>
-    st.activeSlotId ? st.slots[st.activeSlotId]?.isOwner !== false : true,
+    answerSlotId ? st.slots[answerSlotId]?.isOwner !== false : true,
   );
   const canEditQuestion =
     isChatOwner &&
@@ -860,14 +915,14 @@ export const ChatResponse = React.memo(function ChatResponse({
     !question.trimStart().startsWith('Tool approval:');
 
   const handleEditQuery = useCallback(() => {
-    if (!messageId || isStreaming) return;
+    if (!messageId || isStreaming || !canEditQuestion) return;
     useCommandStore.getState().dispatch('showEditQuery', {
       messageId,
       text: question,
       appliedFilters,
       attachments,
     });
-  }, [messageId, question, isStreaming, appliedFilters, attachments]);
+  }, [messageId, question, isStreaming, canEditQuestion, appliedFilters, attachments]);
 
   // When the active question card owns this row, read aloud the question text
   // and its options instead of the hidden bot response.
@@ -877,41 +932,10 @@ export const ChatResponse = React.memo(function ChatResponse({
 
   const appliedNodes = mentionedNodes(appliedFilters);
 
-  const shell = (
-    <Box style={{ width: '100%' }}>
-      <Box
-        style={{
-          marginBottom:
-            (collections && collections.length > 0) ||
-            hasAnyFilter(appliedFilters)
-              ? 'var(--space-3)'
-              : 'var(--space-4)',
-        }}
-      >
-        <ExpandableUserQuery
-          question={question}
-          isMobile={isMobile}
-          messageId={messageId}
-          isStreaming={isStreaming}
-          onEdit={canEditQuestion ? handleEditQuery : undefined}
-          mentions={appliedNodes}
-        />
-        {createdAt && (
-          <Text
-            size="1"
-            style={{
-              color: 'var(--slate-9)',
-              marginTop: 'var(--space-1)',
-              display: 'block',
-            }}
-          >
-            {formatMessageTime(createdAt)}
-          </Text>
-        )}
-      </Box>
-
+  const filtersAndAttachments = (
+    <>
       {/* Applied filter chips — shown when connector/KB filters were scoped on this query */}
-      {appliedFilters && hasAnyFilter(appliedFilters) && (
+      {appliedFilters && ext.showAppliedFilters !== false && hasAnyFilter(appliedFilters) && (
         <Box style={{ marginBottom: 'var(--space-3)' }}>
           <AppliedFilters appliedFilters={appliedFilters} />
         </Box>
@@ -999,11 +1023,114 @@ export const ChatResponse = React.memo(function ChatResponse({
         </Flex>
       )}
 
+    </>
+  );
+
+  const previewDialog = textPreviewAttachment ? (
+    <TextPreviewDialog
+      key={textPreviewAttachment.virtualRecordId || textPreviewAttachment.recordId}
+      open
+      onOpenChange={(open) => {
+        if (!open) setTextPreviewAttachment(null);
+      }}
+      title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
+      loadText={async () => {
+        const blob = await KnowledgeBaseApi.streamRecord(textPreviewAttachment.recordId);
+        return blob.text();
+      }}
+    />
+  ) : null;
+
+  const renderActions = (opts?: { compact?: boolean }) => (
+    <MessageActions
+      compact={opts?.compact}
+      allowRegenerate={ext.allowRegenerate && canSend}
+      allowFeedback={ext.allowFeedback !== false}
+      leadingActions={ext.leadingActions}
+      content={speakContent}
+      citationMaps={effectiveCitationMaps}
+      modelInfo={modelInfo}
+      isStreaming={isStreaming}
+      messageId={messageId}
+      question={question}
+      isLastMessage={isLastMessage && !questionPending}
+      appliedFilters={appliedFilters}
+      feedbackInfo={feedbackInfo}
+      canRegenerate={!ranApprovedCall}
+    />
+  );
+
+  const withRowKey = (node: React.ReactNode) =>
+    citationMessageRowKey ? (
+      <CitationMessageRowKeyContext.Provider value={citationMessageRowKey}>{node}</CitationMessageRowKeyContext.Provider>
+    ) : (
+      node
+    );
+
+  const parts: ChatResponseParts = {
+    activeTab,
+    setActiveTab,
+    sourcesCount,
+    citationCount,
+    askCardOwnsRow: askQuestionMatchesRow || Boolean(persistedAskUserQuestion),
+    renderTabContent,
+    renderActions,
+    filtersAndAttachments,
+    previewDialog,
+    withRowKey,
+    onEditQuery: handleEditQuery,
+    questionMentions: appliedNodes,
+  };
+  const customRow = ext.renderRow?.(parts);
+  if (customRow) return <>{customRow}</>;
+
+  const shell = (
+    <Box style={{ width: '100%' }}>
+      <Box
+        data-chat-question
+        style={{
+          // A headline is 24 px above what follows: the tabs, or the answer under its own 16 px.
+          marginBottom: ext.headline
+            ? ext.hideTabs
+              ? 'var(--space-2)'
+              : 'var(--space-5)'
+            : (collections && collections.length > 0) || hasAnyFilter(appliedFilters)
+              ? 'var(--space-3)'
+              : 'var(--space-4)',
+        }}
+      >
+        <ExpandableUserQuery
+          question={question}
+          isMobile={isMobile}
+          messageId={messageId}
+          isStreaming={isStreaming}
+          onEdit={ext.allowEditQuery === false || !canEditQuestion ? undefined : handleEditQuery}
+          headline={ext.headline}
+          mentions={appliedNodes}
+        />
+        {ext.questionMeta ?? (createdAt && (
+          <Text
+            size="1"
+            style={{
+              color: 'var(--slate-9)',
+              marginTop: 'var(--space-1)',
+              display: 'block',
+            }}
+          >
+            {formatMessageTime(createdAt)}
+          </Text>
+        ))}
+      </Box>
+
+      {filtersAndAttachments}
+
+      {!unanswered && ext.beforeTabs}
+
       {/* Tabs */}
       {/* Tabs — hide Sources/Citations counts when the ask_user_question card
           (streaming or persisted) owns this row; those tabs reflect answer
           chunks that are suppressed. */}
-      {!unanswered && (
+      {!unanswered && !ext.hideTabs && (
         <ResponseTabs
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -1015,46 +1142,14 @@ export const ChatResponse = React.memo(function ChatResponse({
       {/* Tab Content */}
       {!unanswered && renderTabContent()}
 
-      {/* Message Actions (feedback, copy, regenerate, model info) */}
-      {!unanswered && activeTab === 'answer' && (
-        <MessageActions
-          content={speakContent}
-          citationMaps={effectiveCitationMaps}
-          modelInfo={modelInfo}
-          isStreaming={isStreaming}
-          messageId={messageId}
-          question={question}
-          isLastMessage={isLastMessage && !questionPending}
-          appliedFilters={appliedFilters}
-          feedbackInfo={feedbackInfo}
-          canRegenerate={!ranApprovedCall}
-        />
-      )}
+      {!unanswered && ext.afterContent?.(activeTab)}
 
-      {/* Pasted-text attachment preview — read-only (this message already sent) */}
-      {textPreviewAttachment && (
-        <TextPreviewDialog
-          key={textPreviewAttachment.virtualRecordId || textPreviewAttachment.recordId}
-          open
-          onOpenChange={(open) => {
-            if (!open) setTextPreviewAttachment(null);
-          }}
-          title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
-          loadText={async () => {
-            const blob = await KnowledgeBaseApi.streamRecord(textPreviewAttachment.recordId);
-            return blob.text();
-          }}
-        />
-      )}
+      {/* Message Actions (feedback, copy, regenerate, model info) */}
+      {!unanswered && activeTab === 'answer' && renderActions()}
+
+      {previewDialog}
     </Box>
   );
 
-  if (citationMessageRowKey) {
-    return (
-      <CitationMessageRowKeyContext.Provider value={citationMessageRowKey}>
-        {shell}
-      </CitationMessageRowKeyContext.Provider>
-    );
-  }
-  return shell;
+  return <>{withRowKey(shell)}</>;
 });

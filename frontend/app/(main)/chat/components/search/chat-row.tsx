@@ -5,6 +5,7 @@ import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { formatConversationDateForSearch } from '@/lib/utils/formatters';
 import type { Conversation } from '@/chat/types';
+import { chatExtension } from '@/config';
 
 interface ChatRowProps {
   conversation: Conversation;
@@ -46,7 +47,7 @@ export function ChatRow({ conversation, onClick, showDate }: ChatRowProps) {
           whiteSpace: 'nowrap',
         }}
       >
-        {conversation.title}
+        {chatExtension.formatConversationTitle(conversation.title)}
       </Text>
       {sharedByLabel && (
       <Text

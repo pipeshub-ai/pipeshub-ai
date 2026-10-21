@@ -9,6 +9,8 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './chat-test-harness'
 import { AGENT_KEY, Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream } from './streaming-flows'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
+import { turnDeps } from '../helpers/turn-deps'
+import { withOwnerGrant } from '../helpers/conversation-grant'
 
 describe('es_controller streaming answers', () => {
   afterEach(() => {
@@ -210,6 +212,45 @@ describe('es_controller streaming answers', () => {
         expect(run.answer()?.content).to.equal(CHAT_ERROR_MESSAGES.unavailable)
       })
 
+      it('passes on the code the AI service names when it refuses the request as malformed, never its reply', async () => {
+        const run = await startStream(flow, controllerModule, (ai) => {
+          ai.refuseStream(400, { detail: { code: 'REQUEST_VERSION_UNSUPPORTED', message: 'Invalid request parameters' } })
+        })
+        await run.res.ended
+        await settle()
+
+        const errors = run.res.eventsOf('RUN_ERROR')
+        expect(errors.map((e) => e.data.message)).to.deep.equal([CHAT_ERROR_MESSAGES.failed])
+        // A regeneration's error frame passes it on too.
+        expect(errors[0]?.data.code).to.equal('REQUEST_VERSION_UNSUPPORTED')
+        expect(run.res.body).to.not.include('Invalid request parameters')
+        expect(run.conversation().status).to.equal('Failed')
+      })
+
+      it('keeps the words of a refusal that names no code, as before', async () => {
+        const run = await startStream(flow, controllerModule, (ai) => {
+          ai.refuseStream(400, { detail: 'The selected model does not support files.' })
+        })
+        await run.res.ended
+        await settle()
+
+        const [error] = run.res.eventsOf('RUN_ERROR')
+        expect(error?.data.message).to.equal('The selected model does not support files.')
+        expect(error?.data.code).to.not.equal('REQUEST_VERSION_UNSUPPORTED')
+      })
+
+      it('keeps the words of a coded refusal that is not a 400, such as a used-up budget', async () => {
+        const run = await startStream(flow, controllerModule, (ai) => {
+          ai.refuseStream(402, { detail: { code: 'BUDGET_USED_UP', message: 'Your AI budget for this month is used up.' } })
+        })
+        await run.res.ended
+        await settle()
+
+        const [error] = run.res.eventsOf('RUN_ERROR')
+        expect(error?.data.message).to.equal('Your AI budget for this month is used up.')
+        expect(error?.data.code).to.not.equal('BUDGET_USED_UP')
+      })
+
       it('reports an interrupted answer when the AI stream ends without a final answer', async () => {
         const run = await startStream(flow)
 
@@ -380,7 +421,11 @@ describe('es_controller streaming answers', () => {
         run.ai.send('TEXT_MESSAGE_CONTENT', delta('Still working'))
         await settle()
 
-        await clock.tickAsync(40 * 60 * 1000) // browser still connected the whole time
+        // Browser still connected the whole time; the AI service's heartbeats keep the run inside its limits.
+        for (let i = 0; i < 160; i += 1) {
+          await clock.tickAsync(15_000)
+          run.ai.send('HEARTBEAT')
+        }
         const second = sendAgain(flow, run)
         await clock.tickAsync(16_000)
         await second.done
@@ -423,7 +468,7 @@ describe('es_controller streaming answers', () => {
     const res = new FakeSSEResponse()
     let error: unknown
     try {
-      await controllerModule.streamChat(appConfig)({ body: {}, query: {}, user: { userId: OWNER, orgId: ORG } } as never, res as never)
+      await controllerModule.streamChat(appConfig, turnDeps())({ body: {}, query: {}, user: { userId: OWNER, orgId: ORG } } as never, res as never)
     } catch (e) {
       error = e
     }
@@ -472,11 +517,11 @@ describe('es_controller streaming answers', () => {
     } as never)
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id) }, body: {}, query: {},
         user: { userId: OWNER, orgId: ORG }, context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()
@@ -500,11 +545,11 @@ describe('es_controller streaming answers', () => {
     } as never)
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAgentAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAgentAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id), agentKey: AGENT_KEY },
         body: {}, query: {}, user: { userId: OWNER, orgId: ORG }, context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()
@@ -530,11 +575,11 @@ describe('es_controller streaming answers', () => {
     } as never)
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAgentAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAgentAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id), agentKey: AGENT_KEY },
         body: {}, query: {}, user: { userId: OWNER, orgId: ORG }, context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()
@@ -566,15 +611,15 @@ describe('es_controller streaming answers', () => {
     const firstQuestion = store.messagesOf(session._id)[0] as { _id: Types.ObjectId }
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {},
         params: { conversationId: String(session._id), messageId: String(firstQuestion._id) },
         body: {},
         query: {},
         user: { userId: OWNER, orgId: ORG },
         context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()

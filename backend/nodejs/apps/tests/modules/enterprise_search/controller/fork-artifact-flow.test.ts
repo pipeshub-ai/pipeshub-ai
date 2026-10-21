@@ -5,8 +5,6 @@ import { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import * as chatUtils from '../../../../src/modules/enterprise_search/utils/utils'
-import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
-import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
 
 /**
@@ -126,8 +124,6 @@ describe('fork route: the artifacts of a forked chat', () => {
     seed(`Done\n\n${card}`)
     fetchStub.resolves(reply(200, { copies: [copied], failed: [] }))
     sinon.stub(chatUtils, 'appendMessages').rejects(new Error('mongo down'))
-    sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
 
     const out = await fork()
 
@@ -140,8 +136,6 @@ describe('fork route: the artifacts of a forked chat', () => {
     seed(`Done\n\n${card}`)
     fetchStub.resolves(reply(200, { copies: [copied], failed: [] }))
     sinon.stub(chatUtils, 'appendMessages').rejects(new Error('mongo down'))
-    sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
     discard.rejects(new Error('connectors down'))
 
     const out = await fork()
@@ -152,8 +146,6 @@ describe('fork route: the artifacts of a forked chat', () => {
   it('has nothing to remove when no artifact was copied', async () => {
     seed('Plain answer')
     sinon.stub(chatUtils, 'appendMessages').rejects(new Error('mongo down'))
-    sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
 
     const out = await fork()
 

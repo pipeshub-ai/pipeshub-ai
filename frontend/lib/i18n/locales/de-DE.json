@@ -814,6 +814,7 @@
     "showDiagramSource": "Quelle anzeigen",
     "hideDiagramSource": "Quelle ausblenden",
     "stoppedMarker": "Gestoppt",
+    "stoppedBeforeAnswer": "Gestoppt, bevor eine Antwort begann",
     "toolCard": {
       "arguments": "Argumente",
       "result": "Ergebnis",
@@ -1291,7 +1292,8 @@
       "notice": {
         "expired": "{{tool}} auf {{server}} wurde nicht ausgeführt: Die Anfrage ist abgelaufen. Fragen Sie erneut, falls es noch nötig ist.",
         "passed": "{{tool}} auf {{server}} wurde nicht freigegeben und daher nicht ausgeführt.",
-        "waiting": "{{tool}} auf {{server}} wartet auf die Freigabe durch den Besitzer der Unterhaltung."
+        "waiting": "{{tool}} auf {{server}} wartet auf die Freigabe durch den Besitzer der Unterhaltung.",
+        "waitingFor": "{{tool}} auf {{server}} wartet auf die Freigabe durch {{name}}."
       },
       "receipt": {
         "allowed": "Sie haben {{tool}} zugelassen",
@@ -1330,7 +1332,10 @@
       "download": "Artefakt herunterladen",
       "downloading": "Artefakt wird heruntergeladen"
     },
-    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht."
+    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
+    "answerFailedTitle": "Diese Antwort ist fehlgeschlagen",
+    "answerFailedRetry": "Erneut versuchen",
+    "cannotOpenSource": "Sie können dieses Dokument nicht öffnen. Es wurde möglicherweise entfernt, oder Sie haben keinen Zugriff darauf."
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -5101,7 +5106,9 @@
     "back": "Zurück",
     "skip": "Überspringen",
     "next": "Weiter",
-    "submit": "Absenden"
+    "submit": "Absenden",
+    "unknownPerson": "Ehemaliges Mitglied",
+    "waitingFor": "Warten auf die Antwort von {{name}}"
   },
   "oauthDevice": {
     "title": "Gerät verbinden",
@@ -5288,7 +5295,10 @@
     },
     "team": "Team",
     "teamsNoRoles": "Teams haben keine Rollen",
-    "invite": "Zu PipesHub einladen"
+    "invite": "Zu PipesHub einladen",
+    "removeSelection": "{{name}} entfernen",
+    "peopleCanSee_one": "{{count}} Person kann diesen Chat sehen",
+    "peopleCanSee_other": "{{count}} Personen können diesen Chat sehen"
   },
   "demoData": {
     "badge": {

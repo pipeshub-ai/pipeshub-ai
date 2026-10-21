@@ -817,6 +817,7 @@
     "showDiagramSource": "स्रोत दिखाएं",
     "hideDiagramSource": "स्रोत छुपाएं",
     "stoppedMarker": "रोका गया",
+    "stoppedBeforeAnswer": "उत्तर शुरू होने से पहले रोका गया",
     "toolCard": {
       "arguments": "आर्गुमेंट",
       "result": "परिणाम",
@@ -1291,7 +1292,8 @@
       "notice": {
         "expired": "{{server}} पर {{tool}} नहीं चला: अनुरोध की समय-सीमा खत्म हो गई। ज़रूरत हो तो फिर से पूछें।",
         "passed": "{{server}} पर {{tool}} को अनुमति नहीं मिली, इसलिए यह नहीं चला।",
-        "waiting": "{{server}} पर {{tool}} बातचीत के मालिक की अनुमति का इंतज़ार कर रहा है।"
+        "waiting": "{{server}} पर {{tool}} बातचीत के मालिक की अनुमति का इंतज़ार कर रहा है।",
+        "waitingFor": "{{server}} पर {{tool}} {{name}} की अनुमति का इंतज़ार कर रहा है।"
       },
       "receipt": {
         "allowed": "आपने {{tool}} की अनुमति दी",
@@ -1330,7 +1332,10 @@
       "download": "आर्टिफैक्ट डाउनलोड करें",
       "downloading": "आर्टिफैक्ट डाउनलोड हो रहा है"
     },
-    "deleteChatArtifactsNote": "इस चैट में सहायक द्वारा बनाई गई फ़ाइलें भी हटा दी जाएँगी।"
+    "deleteChatArtifactsNote": "इस चैट में सहायक द्वारा बनाई गई फ़ाइलें भी हटा दी जाएँगी।",
+    "answerFailedTitle": "यह उत्तर विफल रहा",
+    "answerFailedRetry": "फिर से कोशिश करें",
+    "cannotOpenSource": "आप यह दस्तावेज़ नहीं खोल सकते। हो सकता है इसे हटा दिया गया हो, या आपके पास इसकी पहुँच न हो।"
   },
   "workspaceMenu": {
     "appearance": "अपियरेंस",
@@ -5101,7 +5106,9 @@
     "back": "वापस",
     "skip": "छोड़ें",
     "next": "अगला",
-    "submit": "जमा करें"
+    "submit": "जमा करें",
+    "unknownPerson": "पूर्व सदस्य",
+    "waitingFor": "{{name}} के उत्तर की प्रतीक्षा है"
   },
   "collections": {
     "stats": {
@@ -5288,7 +5295,10 @@
     },
     "team": "टीम",
     "teamsNoRoles": "टीमों की कोई भूमिकाएँ नहीं होतीं",
-    "invite": "Pipeshub में आमंत्रित करें"
+    "invite": "Pipeshub में आमंत्रित करें",
+    "removeSelection": "{{name}} को हटाएँ",
+    "peopleCanSee_one": "{{count}} व्यक्ति इस चैट को देख सकता है",
+    "peopleCanSee_other": "{{count}} लोग इस चैट को देख सकते हैं"
   },
   "demoData": {
     "badge": {

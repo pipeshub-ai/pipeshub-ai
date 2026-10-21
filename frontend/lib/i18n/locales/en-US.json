@@ -939,6 +939,7 @@
     "showDiagramSource": "Show source",
     "hideDiagramSource": "Hide source",
     "stoppedMarker": "Stopped",
+    "stoppedBeforeAnswer": "Stopped before an answer began",
     "toolCard": {
       "arguments": "Arguments",
       "result": "Result",
@@ -1378,7 +1379,8 @@
       "notice": {
         "expired": "{{tool}} on {{server}} didn't run: the request expired. Ask again if it's still needed.",
         "passed": "{{tool}} on {{server}} wasn't approved, so it didn't run.",
-        "waiting": "{{tool}} on {{server}} is waiting for the conversation owner's approval."
+        "waiting": "{{tool}} on {{server}} is waiting for the conversation owner's approval.",
+        "waitingFor": "{{tool}} on {{server}} is waiting for {{name}}'s approval."
       },
       "receipt": {
         "allowed": "You allowed {{tool}}",
@@ -1417,7 +1419,10 @@
       "download": "Download artifact",
       "downloading": "Downloading artifact"
     },
-    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too."
+    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
+    "answerFailedTitle": "This answer failed",
+    "answerFailedRetry": "Try again",
+    "cannotOpenSource": "You can't open this document. It may have been removed, or you may not have access to it."
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -5224,7 +5229,9 @@
     "back": "Back",
     "skip": "Skip",
     "next": "Next",
-    "submit": "Submit"
+    "submit": "Submit",
+    "unknownPerson": "Former member",
+    "waitingFor": "Waiting for {{name}} to answer"
   },
   "validation": {
     "password": {
@@ -5288,7 +5295,10 @@
     },
     "team": "Team",
     "teamsNoRoles": "Teams do not have roles",
-    "invite": "Invite to Pipeshub"
+    "invite": "Invite to Pipeshub",
+    "removeSelection": "Remove {{name}}",
+    "peopleCanSee_one": "{{count}} person can see this chat",
+    "peopleCanSee_other": "{{count}} people can see this chat"
   },
   "demoData": {
     "badge": {

@@ -95,6 +95,7 @@ import {
 } from '../../oauth_provider/schema/oauth.app.schema';
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 import { ProjectService } from '../../projects/services/project.service';
+import { conversationExtensions } from '../../enterprise_search/services/conversation/conversation-extensions';
 import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
 
 // What the auth service reads from an email lookup: the session and refresh
@@ -412,6 +413,7 @@ export class UserController {
         isActive: !blockedUserIds.has(uid) && (u.hasLoggedIn ?? false),
         hasLoggedIn: u.hasLoggedIn ?? false,
         isBlocked: blockedUserIds.has(uid),
+        isDisabled: u.isDisabled === true,
         createdAtTimestamp: timestamps.createdAt
           ? new Date(timestamps.createdAt).getTime()
           : undefined,
@@ -1715,6 +1717,19 @@ export class UserController {
         userId.toString(),
       );
 
+      // Runs before the user is marked deleted so a failure leaves the delete
+      // retryable; the cleanup is idempotent.
+      const deletedUserFields =
+        await conversationExtensions().lifecycle.userDeleted(
+          orgId.toString(),
+          userId.toString(),
+          {
+            actorUserId: String(req.user.userId ?? req.user._id),
+            requestId: req.context?.requestId,
+            logger: this.logger,
+          },
+        );
+
       user.isDeleted = true;
       user.hasLoggedIn = false;
       user.deletedBy = req.user.userId ?? req.user._id;
@@ -1739,7 +1754,7 @@ export class UserController {
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
 
-      res.json({ message: 'User deleted successfully' });
+      res.json({ message: 'User deleted successfully', ...deletedUserFields });
     } catch (error) {
       next(error);
     }

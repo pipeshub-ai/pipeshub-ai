@@ -2,8 +2,10 @@
 
 import { useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
 import { useChatStore } from '@/chat/store';
 import { KnowledgeBaseApi } from '@/knowledge-base/api';
+import { isGoneError, isProcessedError } from '@/lib/api/api-error';
 import type { CitationData, CitationCallbacks, CitationOrigin, CitationMaps } from './types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
 import {
@@ -21,6 +23,7 @@ import {
  */
 export function useCitationActions(): CitationCallbacks {
   const router = useRouter();
+  const { t } = useTranslation();
   const setPreviewFile = useChatStore((s) => s.setPreviewFile);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
 
@@ -204,12 +207,18 @@ export function useCitationActions(): CitationCallbacks {
           name: citation.recordName,
           url: '',
           type: citation.mimeType || '',
-          error: error instanceof Error ? error.message : 'Failed to load file',
+          // A 404 or 403: the record is gone, or not the viewer's to open.
+          error:
+            isProcessedError(error) && isGoneError(error)
+              ? t('chat.cannotOpenSource')
+              : error instanceof Error
+                ? error.message
+                : 'Failed to load file',
           isLoading: false,
         });
       }
     },
-    [setPreviewFile, setPreviewMode],
+    [setPreviewFile, setPreviewMode, t],
   );
 
   return useMemo(

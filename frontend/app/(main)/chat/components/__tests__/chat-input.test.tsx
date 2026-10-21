@@ -312,6 +312,20 @@ describe('ChatInput — typing and sending', () => {
     expect(streaming.cancelStreamForSlot).not.toHaveBeenCalled();
   });
 
+  it('keeps Send and sends while an answer streams, when sending during a run is on', () => {
+    startStreamingSlot();
+    const { onSend } = renderInput({ sendDuringRun: true });
+    type('A note beside the answer');
+
+    expect(screen.queryByRole('button', { name: 'Stop generating' })).toBeNull();
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('A note beside the answer', undefined, undefined);
+
+    type('And another');
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenLastCalledWith('And another', undefined, undefined);
+  });
+
   it('lets a follow-up through once the stopped run is winding down', () => {
     startStreamingSlot({ stopping: true });
     const { onSend } = renderInput();
@@ -624,6 +638,21 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     expect(onSend).not.toHaveBeenCalled();
     expect(composer().value).toBe('');
     expect(screen.queryByText('Regenerate response')).toBeNull();
+  });
+
+  it('regenerates on the slot the answer names, not the active one', () => {
+    const store = useChatStore.getState();
+    const active = store.createSlot('conv-1');
+    const beside = store.createSlot('conv-2');
+    store.setActiveSlot(active);
+    renderInput();
+
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-9', text: 'Old question', slotId: beside });
+    });
+    fireEvent.click(sendButton());
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(beside, 'msg-9', undefined, undefined);
   });
 
   it('leaves regenerate mode on Escape without regenerating', () => {
@@ -1886,5 +1915,187 @@ describe('ChatInput — a sent message is not kept as a draft', () => {
     await settleHost();
 
     expect(loadDraft(KEY_NEW)).toBe('the next question, typed during the answer');
+  });
+});
+
+describe('ChatInput — composer behaviour that must survive a change of input component', () => {
+  beforeEach(() => window.localStorage.clear());
+
+  it('consumes Enter so the browser inserts no newline, but leaves Shift+Enter to the browser', () => {
+    renderInput();
+    type('Line one');
+
+    expect(fireEvent.keyDown(composer(), { key: 'Enter', shiftKey: true })).toBe(true);
+    expect(fireEvent.keyDown(composer(), { key: 'Enter' })).toBe(false);
+  });
+
+  it('does not send on Enter when nothing was typed, and keeps the box open for typing', () => {
+    const { onSend } = renderInput();
+
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(composer().value).toBe('');
+  });
+
+  it('keeps multi-line text exactly as typed', () => {
+    const { onSend } = renderInput();
+    type('first\nsecond\n\nthird');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(onSend).toHaveBeenCalledWith('first\nsecond\n\nthird', undefined, undefined);
+  });
+
+  it('leaves a short plain-text paste to the browser', () => {
+    const onUploadFile = vi.fn();
+    renderInput({ onUploadFile });
+
+    const notCancelled = fireEvent.paste(composer(), {
+      clipboardData: { items: [], getData: () => 'a short note' },
+    });
+
+    expect(notCancelled).toBe(true);
+    expect(onUploadFile).not.toHaveBeenCalled();
+    expect(screen.queryByText('Pasted text')).toBeNull();
+  });
+
+  it('takes over a pasted file and a very long paste, so the browser inserts nothing', () => {
+    const onUploadFile = vi.fn(() => new Promise<AttachmentRef>(() => {}));
+    renderInput({ onUploadFile });
+    const shot = new File(['png'], 'diagram.png', { type: 'image/png' });
+    const longText = Array.from({ length: 200 }, (_, i) => `Line ${i} of the pasted log`).join('\n');
+
+    expect(
+      fireEvent.paste(composer(), {
+        clipboardData: { items: [{ kind: 'file', getAsFile: () => shot }], getData: () => '' },
+      }),
+    ).toBe(false);
+    expect(
+      fireEvent.paste(composer(), { clipboardData: { items: [], getData: () => longText } }),
+    ).toBe(false);
+
+    expect(onUploadFile).toHaveBeenCalledTimes(2);
+    expect(composer().value).toBe('');
+  });
+
+  it('moves a pasted-text attachment back into the box and focuses it', async () => {
+    // jsdom's Blob has no text()
+    vi.stubGlobal('File', class extends File {
+      text() {
+        return Promise.resolve('Line 0\nLine 1');
+      }
+    });
+    const onUploadFile = vi.fn().mockResolvedValue(ref('r-paste'));
+    renderInput({ onUploadFile });
+    type('Intro');
+    const longText = Array.from({ length: 200 }, (_, i) => `Line ${i}`).join('\n');
+    fireEvent.paste(composer(), { clipboardData: { items: [], getData: () => longText } });
+
+    await act(async () => {});
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Show in text field' }));
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+        vi.runAllTimers();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(composer().value.startsWith('Intro\n\nLine 0')).toBe(true);
+    expect(screen.queryByText('Pasted text')).toBeNull();
+    expect(document.activeElement).toBe(composer());
+  });
+
+  it('grows with the text up to 160px and goes back to one line once sent', () => {
+    const { onSend } = renderInput();
+    const box = composer();
+    expect(box.style.maxHeight).toBe('160px');
+
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, value: 80 });
+    type('a\nb\nc');
+    fireEvent.input(box);
+    expect(box.style.height).toBe('80px');
+
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, value: 400 });
+    fireEvent.input(box);
+    expect(box.style.height).toBe('160px');
+
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalled();
+    expect(box.style.height).toBe('auto');
+  });
+
+  it('puts the dictated words after the typed text while they are still being recognised', () => {
+    speech.state = { ...speech.state, isListening: true, interimTranscript: 'what is' };
+    renderInput();
+    expect((screen.getByPlaceholderText('Listening...') as HTMLTextAreaElement).value).toBe('what is');
+
+    cleanup();
+    speech.state = { ...speech.state, isListening: false, interimTranscript: 'the plan' };
+    renderInput();
+    type('Tell me');
+    expect(composer().value).toBe('Tell me the plan');
+  });
+
+  it('shows the question being regenerated, dimmed and not editable, and Escape empties it', () => {
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-2', text: 'Earlier question' });
+    });
+
+    expect(composer().value).toBe('Earlier question');
+    expect(composer().readOnly).toBe(true);
+    // The field's text is drawn by the layer behind it, which carries the dimmed colour.
+    expect((composer().previousElementSibling as HTMLElement).style.color).toBe('var(--slate-a8)');
+
+    fireEvent.keyDown(composer(), { key: 'Escape' });
+    expect(composer().value).toBe('');
+    expect(composer().readOnly).toBe(false);
+    expect(composer().style.color).toBe('var(--slate-12)');
+  });
+
+  it('focuses the box when editing an earlier question and when a suggestion seeds it', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      renderInput();
+      act(() => {
+        useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original' });
+      });
+      act(() => {
+        vi.runAllTimers();
+      });
+      expect(document.activeElement).toBe(composer());
+
+      act(() => (document.activeElement as HTMLElement).blur());
+      cleanup();
+      const { rerender } = renderInput();
+      rerender(
+        <Theme>
+          <ChatInput onSend={vi.fn()} prefill={{ key: 1, text: 'Seed' }} />
+        </Theme>,
+      );
+      act(() => {
+        vi.runAllTimers();
+      });
+      expect(composer().value).toBe('Seed');
+      expect(document.activeElement).toBe(composer());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears the attachment chips and the text together on send', async () => {
+    const upload = vi.fn().mockResolvedValue(ref('r1'));
+    const { onSend } = renderInput({ onUploadFile: upload });
+    pick(pdf());
+    await act(async () => {});
+    type('See attached');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    expect(onSend).toHaveBeenCalledWith('See attached', [ref('r1')], undefined);
+    expect(composer().value).toBe('');
+    expect(screen.queryByText('report.pdf')).toBeNull();
   });
 });

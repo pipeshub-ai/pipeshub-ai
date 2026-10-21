@@ -7,6 +7,7 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { MentionIcon } from '@/chat/components/mention-icon';
 import { locateMentionNames, mentionLabel, type MentionNode } from '@/chat/utils/node-mentions';
 import { CHAT_LINK_STYLE, cutOutsideUrl, findUrls, shortLinkLabel } from '@/chat/utils/link-label';
+import { chatExtension, chatSlots } from '@/config';
 
 export const QUESTION_CHAR_LIMIT = 250;
 export const EXPANDED_MAX_HEIGHT_PX = 360;
@@ -19,6 +20,17 @@ export interface ExpandableUserQueryProps {
   onEdit?: () => void;
   /** Nodes the question was scoped to; where the text names one, it shows as a chip. */
   mentions?: readonly MentionNode[];
+  /** Set as a headline under a byline: no space above it, sized by its length, 18 px when `compact`. */
+  headline?: { compact: boolean };
+}
+
+/** A headline's size: 28 px for a short question, then 24, 20 and 18 as it grows, so a long one keeps to a few lines. */
+export function headlineSize(question: string, compact: boolean): { size: '4' | '5' | '6' | '7'; letterSpacing: string } {
+  const n = question.length;
+  if (compact || n > 340) return { size: '4', letterSpacing: '-0.04px' };
+  if (n > 240) return { size: '5', letterSpacing: '-0.08px' };
+  if (n > 160) return { size: '6', letterSpacing: '-0.1px' };
+  return { size: '7', letterSpacing: '-0.12px' };
 }
 
 function MentionChip({ node }: { node: MentionNode }) {
@@ -59,11 +71,14 @@ function MentionChip({ node }: { node: MentionNode }) {
   return text === node.name ? chip : <Tooltip content={node.name}>{chip}</Tooltip>;
 }
 
+// URLs become short links; the text around them is drawn by the chat extension's `QueryText`.
 function withLinks(text: string, keyPrefix: string): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   let cursor = 0;
   for (const { start, end, url } of findUrls(text)) {
-    if (start > cursor) out.push(text.slice(cursor, start));
+    if (start > cursor) {
+      out.push(<chatSlots.QueryText key={`${keyPrefix}-${cursor}`} text={text.slice(cursor, start)} />);
+    }
     out.push(
       <a
         key={`${keyPrefix}-${start}`}
@@ -78,12 +93,15 @@ function withLinks(text: string, keyPrefix: string): React.ReactNode[] {
     );
     cursor = end;
   }
-  if (cursor < text.length) out.push(text.slice(cursor));
+  if (cursor < text.length) {
+    out.push(<chatSlots.QueryText key={`${keyPrefix}-${cursor}`} text={text.slice(cursor)} />);
+  }
   return out;
 }
 
 function withMentions(text: string, mentions: readonly MentionNode[]): React.ReactNode {
   const spans = locateMentionNames(text, mentions);
+  if (spans.length === 0) return withLinks(text, 't0');
   const out: React.ReactNode[] = [];
   let cursor = 0;
   for (const span of spans) {
@@ -130,7 +148,7 @@ function ActionIconButton({
   );
 }
 
-function ToggleButton({
+export function ToggleButton({
   expanded,
   onToggle,
 }: {
@@ -163,7 +181,7 @@ function ToggleButton({
   );
 }
 
-function QueryActions({
+export function QueryActions({
   question,
   showEdit,
   onEdit,
@@ -183,7 +201,7 @@ function QueryActions({
   }, [copied]);
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(question).then(() => {
+    void navigator.clipboard.writeText(chatExtension.question.toPlainText(question)).then(() => {
       setCopied(true);
     }).catch(() => {});
   }, [question]);
@@ -220,6 +238,7 @@ export function ExpandableUserQuery({
   isStreaming = false,
   onEdit,
   mentions = [],
+  headline,
 }: ExpandableUserQueryProps) {
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -227,13 +246,14 @@ export function ExpandableUserQuery({
   useEffect(() => setExpanded(false), [question]);
 
   const isLong = Boolean(question.trim()) && question.length > QUESTION_CHAR_LIMIT;
+  const sized = headline ? headlineSize(question, headline.compact) : null;
   const showEdit = Boolean(!isStreaming && messageId && onEdit);
   const toggle = () => setExpanded((prev) => !prev);
 
   if (!isLong || !expanded) {
     const displayed =
       isLong && !expanded
-        ? question.slice(0, cutOutsideUrl(question, QUESTION_CHAR_LIMIT)).trimEnd() + '…'
+        ? chatExtension.question.truncate(question, cutOutsideUrl(question, QUESTION_CHAR_LIMIT)).trimEnd() + '…'
         : question;
 
     return (
@@ -242,13 +262,14 @@ export function ExpandableUserQuery({
         onMouseLeave={() => setHovered(false)}
       >
         <Heading
-          size="5"
+          size={sized?.size ?? '5'}
           weight="medium"
           data-testid="user-query-heading"
           style={{
             color: 'var(--slate-12)',
             lineHeight: 1.3,
-            paddingTop: 'var(--space-3)',
+            letterSpacing: sized?.letterSpacing,
+            paddingTop: headline ? 0 : 'var(--space-3)',
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
           }}
@@ -276,7 +297,7 @@ export function ExpandableUserQuery({
   }
 
   return (
-    <Box style={{ paddingTop: 'var(--space-3)' }}>
+    <Box style={{ paddingTop: headline ? 0 : 'var(--space-3)' }}>
       <Box
         data-testid="user-query-bubble"
         style={{

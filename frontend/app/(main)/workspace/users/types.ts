@@ -39,6 +39,8 @@ export interface User {
 
   /** Account blocked (credentials); from GET /api/v1/users?isBlocked=true merge */
   isBlocked?: boolean;
+  /** Disabled by an administrator; cannot sign in or be added to a chat. */
+  isDisabled?: boolean;
 }
 
 /**

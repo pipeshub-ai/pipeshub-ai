@@ -182,6 +182,11 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
         async () => fetch(url, requestOptions),
         3,
         300,
+        // Only a refused connection proves the AI service never got the turn;
+        // a retry after a reset or a timeout could run it, and its tools, twice.
+        (error) =>
+          (error as { cause?: { code?: unknown } } | null)?.cause?.code ===
+          'ECONNREFUSED',
       );
 
       if (!response.ok) {

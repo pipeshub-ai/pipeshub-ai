@@ -7,6 +7,7 @@ from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
 from app.config.configuration_service import ConfigurationService
+from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.code_graph.connectors import agent_knowledge_has_code_connector
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -94,6 +95,8 @@ class ChatState(TypedDict):
     user_email: str
     send_user_info: bool
     conversation_id: str | None
+    acl_version: int | None
+    run_id: str | None
 
     # Enhanced features
     system_prompt: str | None  # User-defined system prompt
@@ -591,6 +594,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "limit": chat_query.get("limit", 50),
         "messages": [],  # Will be populated in prepare_prompt_node
         "previous_conversations": chat_query.get("previous_conversations") or chat_query.get("previousConversations") or [],
+        **get_chat_extension().chat_state_fields(chat_query),
         "quick_mode": chat_query.get("quickMode", False),
         "filters": filters,
         "retrieval_mode": chat_query.get("retrievalMode", "HYBRID"),
@@ -621,6 +625,8 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "user_email": user_info.get("userEmail", ""),
         "send_user_info": user_info.get("sendUserInfo", True),
         "conversation_id": chat_query.get("conversationId"),
+        "acl_version": chat_query.get("aclVersion"),
+        "run_id": chat_query.get("runId"),
         "llm": llm,
         "logger": logger,
         "retrieval_service": retrieval_service,

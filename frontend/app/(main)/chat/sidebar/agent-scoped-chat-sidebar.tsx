@@ -12,6 +12,7 @@ import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useChatStore, selectPendingForSidebar } from '@/chat/store';
 import type { Conversation } from '@/chat/types';
+import { chatSlots } from '@/config';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { openFreshAgentChat } from '@/chat/build-chat-url';
 import { ChatSidebarFooter } from '@/config';
@@ -54,7 +55,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   const setAgentStreamTools = useChatStore((s) => s.setAgentStreamTools);
   const setAgentContextAccess = useChatStore((s) => s.setAgentContextAccess);
 
-  const agentConversations = useChatStore((s) => s.agentConversations);
+  const agentConversations = chatSlots.useVisibleConversations(useChatStore((s) => s.agentConversations));
   // Kept local, not in the store's `sharedConversations`, which belongs to the global chat list.
   const [sharedAgentConversations, setSharedAgentConversations] = useState<Conversation[]>([]);
   // False once the agent is known to be off limits: someone a chat was shared with cannot start chats on it.
@@ -143,7 +144,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     : agentConversations;
 
   const yourTimeGroups = getNonEmptyGroups(groupConversationsByTime(visibleYour));
-  const visibleShared = sharedAgentConversations.slice(0, MAX_VISIBLE_CHATS);
+  const visibleShared = chatSlots.useAgentSharedConversations(sharedAgentConversations).slice(0, MAX_VISIBLE_CHATS);
 
   const activePendingConversations = useMemo(() => {
     const agentConvIds = new Set(agentConversations.map((c) => c.id));

@@ -13,6 +13,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
 import { ChatApi } from '@/chat/api';
 import { ChatSectionElement } from './chat-section-element';
+import { chatSlots } from '@/config';
 import { MORE_CHATS_PAGE_SIZE } from '../constants';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { orderPinnedFirst, withPinned } from '@/chat/utils/pinned-conversations';
@@ -60,6 +61,8 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
     page: number;
     hasNextPage: boolean;
   } | null>(null);
+
+  const visibleRows = chatSlots.useVisibleConversations(rows);
 
   const sentinelRef = useRef<HTMLDivElement>(null);
   const paginationRef = useRef(pagination);
@@ -197,8 +200,8 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
             <Flex align="center" justify="center" style={{ padding: 'var(--space-5) var(--space-3)' }}>
               <LottieLoader variant="loader" size={28} showLabel />
             </Flex>
-          ) : rows.length > 0 ? (
-            rows.map((conv) => (
+          ) : visibleRows.length > 0 ? (
+            visibleRows.map((conv) => (
               <ChatSectionElement
                 key={conv.id}
                 conversation={conv}

@@ -429,6 +429,13 @@ export interface AskUserQuestionCardProps {
   sentAnswers?: Record<string, AskUserQuestionAnswer>;
   onAnswersChange?: (answers: Record<string, AskUserQuestionAnswer>) => void;
   onSubmit?: (message: string, answers: Record<string, AskUserQuestionAnswer>) => void;
+  /**
+   * The question was put to someone else. The card shows who it waits for and every input is
+   * disabled. `name: null` is a person no longer known.
+   */
+  readOnlyFor?: { name: string | null };
+  /** Answers can be picked but not sent yet; the text says why (someone else's turn is running). */
+  submitHeld?: string;
 }
 
 export function AskUserQuestionCard({
@@ -438,8 +445,12 @@ export function AskUserQuestionCard({
   sentAnswers,
   onAnswersChange,
   onSubmit,
+  readOnlyFor,
+  submitHeld,
 }: AskUserQuestionCardProps) {
   const { t } = useTranslation();
+  const locked = Boolean(readOnlyFor);
+  const held = Boolean(submitHeld);
   const normalized = useMemo(() => normalizeAskUserQuestionPayload(payload), [payload]);
   const questions = normalized.questions;
   const [answers, setAnswers] = useState<Record<string, AskUserQuestionAnswer>>(() => ({
@@ -592,13 +603,13 @@ export function AskUserQuestionCard({
   }, []);
 
   const handleSubmit = useCallback(() => {
-    if (!stepValid || status !== 'pending') return;
+    if (locked || held || !stepValid || status !== 'pending') return;
     const msg = buildResumeMessage(normalized, answers, sentAnswers);
     onSubmit?.(msg, answers);
-  }, [stepValid, status, normalized, answers, sentAnswers, onSubmit]);
+  }, [locked, held, stepValid, status, normalized, answers, sentAnswers, onSubmit]);
 
   const handleSkip = useCallback(() => {
-    if (!currentQ || status !== 'pending') return;
+    if (locked || !currentQ || status !== 'pending' || (held && isLast)) return;
     const next = {
       ...answers,
       [currentQ.uuid]: {
@@ -614,7 +625,7 @@ export function AskUserQuestionCard({
     } else {
       setStep((s) => Math.min(s + 1, total - 1));
     }
-  }, [currentQ, status, answers, syncAnswers, isLast, normalized, sentAnswers, onSubmit, total]);
+  }, [locked, held, currentQ, status, answers, syncAnswers, isLast, normalized, sentAnswers, onSubmit, total]);
 
   if (status === 'submitted' || status === 'persisted') {
     const heading =
@@ -760,6 +771,19 @@ export function AskUserQuestionCard({
 
         </Flex>
 
+        {readOnlyFor ? (
+          <Flex align="center" gap="2" role="status" data-testid="ask-card-waiting">
+            <span aria-hidden style={{ display: 'inline-flex' }}>
+              <MaterialIcon name="hourglass_top" size={16} color="var(--slate-11)" />
+            </span>
+            <Text size="2" color="gray">
+              {t('askUserQuestion.waitingFor', {
+                name: readOnlyFor.name || t('askUserQuestion.unknownPerson'),
+              })}
+            </Text>
+          </Flex>
+        ) : null}
+
         <Flex direction="column" gap="1">
           <Heading as="h3" size="3" style={{ margin: 0 }}>
             {step + 1}. {currentQ.question}
@@ -782,7 +806,7 @@ export function AskUserQuestionCard({
             {augmentedOptions.map((opt, idx) => {
               const checked = selectedIds.includes(opt.id);
               const isSynthetic = opt.id === SOMETHING_ELSE_ID;
-              const isDisabled = false;
+              const isDisabled = locked;
               return (
                 <Flex key={`${opt.id}-${idx}`} direction="column" gap="2">
                   <label
@@ -814,6 +838,7 @@ export function AskUserQuestionCard({
                         setUserInput(currentQ, opt.id, e.target.value)
                       }
                       rows={3}
+                      disabled={locked}
                       style={{ marginLeft: '28px' }}
                     />
                   ) : null}
@@ -831,7 +856,7 @@ export function AskUserQuestionCard({
             <Flex direction="column" gap="3">
               {augmentedOptions.map((opt, idx) => {
                 const isSynthetic = opt.id === SOMETHING_ELSE_ID;
-                const isDisabled = isSomethingElseSelected && !isSynthetic;
+                const isDisabled = locked || (isSomethingElseSelected && !isSynthetic);
                 const radioValue = String(idx);
                 const isSelected = singleValue === radioValue;
                 return (
@@ -867,6 +892,7 @@ export function AskUserQuestionCard({
                           setUserInput(currentQ, opt.id, e.target.value)
                         }
                         rows={3}
+                        disabled={locked}
                         style={{ marginLeft: '28px' }}
                       />
                     ) : null}
@@ -882,12 +908,18 @@ export function AskUserQuestionCard({
           <Button type="button" variant="soft" onClick={handleBack} disabled={step === 0}>
             {t('askUserQuestion.back')}
           </Button>
+          {submitHeld ? (
+            <Text size="1" color="gray" role="status" data-testid="ask-card-held" style={{ flex: '1 1 12rem', minWidth: 0 }}>
+              {submitHeld}
+            </Text>
+          ) : null}
           <Flex gap="2">
             <Button
               type="button"
               variant="outline"
               color="gray"
               onClick={handleSkip}
+              disabled={locked || (held && isLast)}
             >
               {t('askUserQuestion.skip')}
             </Button>
@@ -895,7 +927,7 @@ export function AskUserQuestionCard({
               <Button
                 type="button"
                 onClick={handleContinue}
-                disabled={!stepValid}
+                disabled={locked || !stepValid}
               >
                 {t('askUserQuestion.next')}
               </Button>
@@ -903,7 +935,7 @@ export function AskUserQuestionCard({
               <Button
                 type="button"
                 onClick={handleSubmit}
-                disabled={!stepValid}
+                disabled={locked || held || !stepValid}
               >
                 {t('askUserQuestion.submit')}
               </Button>

@@ -16,6 +16,14 @@ import {
 import { ProjectKnowledgeBaseService } from '../services/project-kb.service';
 import { IProject, IProjectDocument, ProjectRole } from '../types/project.interfaces';
 import { resolveCallerTeamIds } from '../utils/team-membership';
+import {
+  conversationContextOf,
+  listFilterOf,
+} from '../../enterprise_search/services/conversation/http/conversation-context';
+import {
+  conversationExtensions,
+  ProjectSettingsExtension,
+} from '../../enterprise_search/services/conversation/conversation-extensions';
 
 /** Enrich a Mongoose project document with the caller's computed role for JSON responses. */
 function projectWithRole(
@@ -71,7 +79,15 @@ export const listProjects =
       const { projects, totalCount } = await ProjectService.list(
         orgId,
         userId,
-        { page, limit, search, scope, includeArchived, isArchived },
+        {
+          page,
+          limit,
+          search,
+          scope,
+          includeArchived,
+          isArchived,
+          visibleConversations: listFilterOf(req),
+        },
         callerTeamIds,
       );
       res.status(200).json({
@@ -110,7 +126,10 @@ export const getProjectById =
   };
 
 export const updateProject =
-  (appConfig: AppConfig): ProjectRouteHandler =>
+  (
+    appConfig: AppConfig,
+    settings?: ProjectSettingsExtension,
+  ): ProjectRouteHandler =>
   async (req, res, next): Promise<void> => {
     try {
       const userId = req.user?.userId as string;
@@ -124,6 +143,7 @@ export const updateProject =
         projectId,
         patch,
         callerTeamIds,
+        await settings?.forUpdate(req),
       );
       const role = ProjectService.computeRole(
         project,
@@ -278,7 +298,8 @@ export const unpinProject =
 /**
  * GET /:projectId/conversations — chat + agent sessions in this project that
  * the caller may see: rows they own, plus rows with `projectVisibility:
- * 'project'` if they have at least viewer access to the project itself.
+ * 'project'` if they have at least viewer access to the project itself, plus
+ * any other rows the conversation guard's list filter lets them see.
  * Access to the project has already been asserted, so a private chat that
  * belongs to a *different* project member never leaks here.
  */
@@ -289,6 +310,7 @@ export const getProjectConversations =
       const userId = req.user?.userId as string;
       const orgId = req.user?.orgId as string;
       const { projectId } = req.params as { projectId: string };
+      const lists = conversationExtensions().lists;
       const callerTeamIds = await resolveCallerTeamIds(req, appConfig);
       await ProjectService.assertAccess(
         orgId,
@@ -305,12 +327,9 @@ export const getProjectConversations =
       const skip = (page - 1) * limit;
 
       const filter = {
-        orgId: new mongoose.Types.ObjectId(orgId),
-        projectId: new mongoose.Types.ObjectId(projectId),
-        isDeleted: false,
-        $or: [
-          { userId: new mongoose.Types.ObjectId(userId) },
-          { projectVisibility: 'project' },
+        $and: [
+          listFilterOf(req),
+          { projectId: new mongoose.Types.ObjectId(projectId) },
         ],
       };
 
@@ -319,14 +338,18 @@ export const getProjectConversations =
           .sort({ lastActivityAt: -1, _id: -1 })
           .skip(skip)
           .limit(limit)
-          .select('-__v')
+          .select(lists.select(conversationContextOf(req)))
           .lean()
           .exec(),
         ChatSession.countDocuments(filter),
       ]);
 
+      const ctx = conversationContextOf(req);
+      const decorate = await lists.rowDecorator(ctx, conversations);
       res.status(200).json({
-        conversations,
+        conversations: conversations.map((row) =>
+          decorate(lists.redactRecipients(ctx, row)),
+        ),
         pagination: {
           page,
           limit,

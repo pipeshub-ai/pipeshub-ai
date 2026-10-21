@@ -5,11 +5,14 @@ import { useThread, useThreadRuntime } from '@assistant-ui/react';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
+import { chatResponseProps, useLatestArtifactVersions, useSlotStreamingProps } from './chat-response-props';
+import type { ChatResponseContext } from './chat-response-props';
+import { chatSlots } from '@/config';
+import type { ChatResponseLayout } from '../../chat-extension';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { ChatArtifact, MessagePart } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
 import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
@@ -17,9 +20,8 @@ import { InlineCitationPopoverHost } from './response-tabs/citations/inline-cita
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ProgressiveBlur } from '@/app/components/ui/progressive-blur';
 import { loadOlderMessagesForSlot } from '../../streaming';
-import { parseArtifactMarkers } from '../../utils/parse-download-markers';
-import { buildMessagePairs, extractTextContent } from './message-pairs';
-import type { MessagePair } from './message-pairs';
+import { buildMessagePairs, keepUnchangedPairs, retryTurnMessage } from './message-pairs';
+import type { MessagePair, RetryTurn } from './message-pairs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { shouldShowJumpToNewest } from './jump-to-newest';
 
@@ -27,8 +29,6 @@ import { shouldShowJumpToNewest } from './jump-to-newest';
 // `?? []` or `?? null` in a selector body creates a new ref every call,
 // defeating Object.is comparison.
 const EMPTY_ARRAY: never[] = [];
-const STABLE_EMPTY_ARTIFACTS: ChatArtifact[] = [];
-const STABLE_EMPTY_PARTS: MessagePart[] = [];
 /** Streaming: distance from bottom (px) to count as flush for resuming tail-follow */
 const STREAMING_RESUME_DIST_FLUSH_PX = 4;
 /** Streaming: wheel deltaY must be more negative than this to opt out (avoids trackpad jitter) */
@@ -58,15 +58,14 @@ const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 const COMPOSER_BLUR_HEIGHT_PX = 180;
 
 export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
+  // ── Active slot ID (needed for save/restore on conversation switch) ──
+  const activeSlotId = useChatStore((s) => s.activeSlotId);
   // ── Slot-scoped selectors (narrow — only active slot fields) ──
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming ?? false : false
   );
   const streamingQuestion = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.streamingQuestion || EMPTY_STRING : EMPTY_STRING
-  );
-  const streamingCitationMaps = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.streamingCitationMaps ?? null : null
   );
   const pendingCollections = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.pendingCollections || EMPTY_ARRAY : EMPTY_ARRAY
@@ -83,18 +82,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // streamingContent + currentStatusMessage are now passed as props to ChatResponse
   // (only the streaming instance gets non-empty values). Previously ChatResponse
   // subscribed to these directly, causing ALL instances to re-render on every rAF flush.
-  const streamingContent = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.streamingContent || EMPTY_STRING : EMPTY_STRING
-  );
-  const currentStatusMessage = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.currentStatusMessage ?? null : null
-  );
-  const streamingArtifacts = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.artifacts ?? STABLE_EMPTY_ARTIFACTS : STABLE_EMPTY_ARTIFACTS
-  );
-  const streamingParts = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.streamingParts ?? STABLE_EMPTY_PARTS : STABLE_EMPTY_PARTS
-  );
+  const streaming = useSlotStreamingProps(activeSlotId);
+  const { streamingContent, currentStatusMessage, streamingCitationMaps, streamingArtifacts, streamingParts } = streaming;
   const messagePagination = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messagePagination ?? null : null
   );
@@ -116,9 +105,6 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     debugLog.reason('[chat] [MessageList]', msgListReasons);
   }
   prevMsgListRef.current = currentMsgListVals;
-
-  // ── Active slot ID (needed for save/restore on conversation switch) ──
-  const activeSlotId = useChatStore((s) => s.activeSlotId);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const spacerRef = useRef<HTMLDivElement>(null);
@@ -209,45 +195,26 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   }, []);
 
   // Build message pairs (user question + assistant answer) in chronological order
+  const previousPairsRef = useRef<Map<string, MessagePair>>(new Map());
   const messagePairs = useMemo<MessagePair[]>(
     () =>
-      buildMessagePairs(thread.messages, {
-        isStreaming,
-        streamingQuestion,
-        pendingCollections,
-        regenerateMessageId,
-        emptyCitationMaps: EMPTY_CITATION_MAPS,
-      }),
+      keepUnchangedPairs(
+        previousPairsRef.current,
+        buildMessagePairs(thread.messages, {
+          isStreaming,
+          streamingQuestion,
+          pendingCollections,
+          regenerateMessageId,
+          emptyCitationMaps: EMPTY_CITATION_MAPS,
+        })
+      ),
     [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]
   );
+  useEffect(() => {
+    previousPairsRef.current = new Map(messagePairs.map((pair) => [pair.key, pair]));
+  }, [messagePairs]);
 
-  // The highest version any message in this conversation has shown for a
-  // given artifact `recordId`. Every version bump re-registers the SAME
-  // recordId, so an older message's card can compare its own `version`
-  // against this map to know a later turn has since produced a newer copy —
-  // derived entirely from markers already persisted on each message
-  // (`parseArtifactMarkers`), no extra API call. The currently-streaming
-  // turn's markers aren't persisted yet, so its live SSE `artifacts` are
-  // folded in too.
-  const latestArtifactVersions = useMemo(() => {
-    const versions = new Map<string, number>();
-    const record = (recordId: string | undefined, version: number | undefined) => {
-      if (!recordId || version === undefined) return;
-      const current = versions.get(recordId);
-      if (current === undefined || version > current) versions.set(recordId, version);
-    };
-    for (const msg of thread.messages) {
-      if (msg.role !== 'assistant') continue;
-      const content = extractTextContent(msg.content as { type: string; text?: string }[]);
-      if (!content.includes('::artifact[')) continue;
-      const { artifacts } = parseArtifactMarkers(content);
-      for (const artifact of artifacts) record(artifact.recordId, artifact.version);
-    }
-    if (isStreaming) {
-      for (const artifact of streamingArtifacts) record(artifact.recordId, artifact.version);
-    }
-    return versions;
-  }, [thread.messages, isStreaming, streamingArtifacts]);
+  const latestArtifactVersions = useLatestArtifactVersions(thread.messages, isStreaming ? streamingArtifacts : null);
 
   const lastPairKey = messagePairs[messagePairs.length - 1]?.key ?? null;
 
@@ -1043,6 +1010,23 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     [threadRuntime]
   );
 
+  const { showComposer } = chatSlots.useChatAccess(activeSlotId);
+  const handleRetry = useCallback(
+    (turn: RetryTurn) => threadRuntime.append(retryTurnMessage(turn)),
+    [threadRuntime]
+  );
+
+  const responseContext: ChatResponseContext = {
+    citationCallbacks,
+    streaming,
+    latestArtifactVersions,
+    canSend: showComposer,
+    onRetry: handleRetry,
+  };
+  const renderResponse = (pair: MessagePair, isLast: boolean, layout?: ChatResponseLayout) => (
+    <ChatResponse {...chatResponseProps(pair, isLast, responseContext, layout)} />
+  );
+
   // Lands on the end of the latest message and, if an answer is streaming, re-arms tail-follow.
   const handleJumpToNewest = useCallback(() => {
     lastTailSyncScrollTopRef.current = -1;
@@ -1102,43 +1086,19 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
             </Flex>
           )}
 
-          {messagePairs.map((pair, index) => {
+          <chatSlots.MessageListBody
+            pairs={messagePairs}
+            isStreaming={isStreaming}
+            renderResponse={renderResponse}
+            setMessageRef={setMessageRef}
+            renderDefault={() => messagePairs.map((pair, index) => {
             const isLast = index === messagePairs.length - 1;
             return (
               <div
                 key={pair.key}
                 ref={(el) => setMessageRef(pair.key, el)}
               >
-                <ChatResponse
-                  question={pair.question}
-                  answer={pair.answer}
-                  citationMaps={pair.citationMaps}
-                  citationCallbacks={citationCallbacks}
-                  confidence={pair.confidence}
-                  isStreaming={pair.isStreaming}
-                  modelInfo={pair.modelInfo}
-                  collections={pair.collections}
-                  appliedFilters={pair.appliedFilters}
-                  attachments={pair.attachments}
-                  messageId={pair.messageId}
-                  isLastMessage={isLast}
-                  rowId={pair.key}
-                  citationMessageRowKey={pair.key}
-                  createdAt={pair.createdAt}
-                  streamingContent={pair.isStreaming ? streamingContent : undefined}
-                  currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
-                  streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
-                  streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
-                  streamingParts={pair.isStreaming ? streamingParts : undefined}
-                  latestArtifactVersions={latestArtifactVersions}
-                  persistedParts={pair.persistedParts}
-                  persistedAskUserQuestion={pair.persistedAskUserQuestion}
-                  persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
-                  feedbackInfo={pair.feedbackInfo}
-                  status={pair.status}
-                  streamError={pair.streamError}
-                  unanswered={pair.unanswered}
-                />
+                {renderResponse(pair, isLast)}
 
                 {/* Ask More — follow-up suggestions after the last bot response.
                     Placed inside the last message wrapper so the ResizeObserver
@@ -1161,6 +1121,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
               </div>
             );
           })}
+          />
         </Flex>
       </Box>
 

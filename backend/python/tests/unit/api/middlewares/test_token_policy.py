@@ -123,3 +123,17 @@ class TestHasServiceScope:
 
     def test_none_user(self):
         assert has_service_scope(None, TokenScopes.RECORD_CONTENT) is False
+
+
+class TestEditionServiceScopes:
+    def test_the_built_in_scopes_are_always_accepted(self) -> None:
+        from app.api.middlewares.token_policy import accepted_service_scopes
+
+        assert ACCEPTED_SERVICE_SCOPES <= accepted_service_scopes()
+
+    def test_default_hooks_add_no_scope(self, monkeypatch) -> None:
+        from app.api.middlewares.token_policy import accepted_service_scopes
+        from app.modules.agents import chat_extension
+
+        monkeypatch.setattr(chat_extension, "get_chat_extension", chat_extension.default_chat_extension)
+        assert accepted_service_scopes() == ACCEPTED_SERVICE_SCOPES

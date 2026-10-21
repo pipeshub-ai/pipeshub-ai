@@ -63,3 +63,15 @@ export { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
 export { McpAgentApprovalsNotice } from '@/app/(main)/agents/agent-builder/components/mcp-agent-approvals-notice';
 
 
+
+// Chat extension points
+export { defaultChatExtension as chatExtension, defaultChatSlots as chatSlots } from '@/app/(main)/chat/chat-extension';
+
+// Notification panel and socket
+export { defaultNotificationExtension as notificationExtension } from '@/app/(main)/notifications/notification-extension';
+
+// Profile page sections
+export { ProfileExtraSections } from '@/app/(main)/workspace/profile/components/profile-extra-sections';
+
+// Agent builder
+export { defaultAgentBuilderExtension as agentBuilderExtension } from '@/app/(main)/agents/agent-builder/agent-builder-extension';

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
+import React, { useContext, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -13,8 +13,8 @@ import {
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
-import { useChatStore } from '../../store';
 import type { McpBlockedServer, McpConfigMissingDetails } from '../../stream-error';
+import { AnswerSlotContext, answerSlotIdNow } from './answer-slot-scope';
 
 /** Whether the person in the chat can fix this server themselves, right here. */
 function connectableHere(server: McpBlockedServer, details: McpConfigMissingDetails): boolean {
@@ -46,6 +46,7 @@ export function McpConnectRequiredCard({ details, question }: McpConnectRequired
   const [tokenEntry, setTokenEntry] = useState<McpMyServerEntry | null>(null);
   const [resent, setResent] = useState(false);
   const oauthTargetRef = useRef<string | null>(null);
+  const scopedSlotId = useContext(AnswerSlotContext);
 
   const markConnected = (instanceId: string) => setConnected((prev) => new Set(prev).add(instanceId));
   const setError = (instanceId: string, message: string | null) =>
@@ -90,7 +91,7 @@ export function McpConnectRequiredCard({ details, question }: McpConnectRequired
   };
 
   const tryAgain = () => {
-    const slotId = useChatStore.getState().activeSlotId;
+    const slotId = answerSlotIdNow(scopedSlotId);
     if (!slotId) return;
     const request = buildStreamChatRequestForSlot(slotId, question);
     if (!request) return;

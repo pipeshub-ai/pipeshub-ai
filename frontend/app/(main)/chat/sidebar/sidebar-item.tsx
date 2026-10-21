@@ -52,6 +52,8 @@ export function SidebarItem({
   onHoverChange,
 }: SidebarItemProps) {
   const [isHovered, setIsHovered] = useState(false);
+  // Keyboard focus inside the row counts as hover, so its menu can be reached without a mouse.
+  const [hasKeyboardFocus, setHasKeyboardFocus] = useState(false);
   const highlighted = isActive || isHovered || forceHighlight;
 
   const handleMouseEnter = () => {
@@ -61,7 +63,19 @@ export function SidebarItem({
 
   const handleMouseLeave = () => {
     setIsHovered(false);
-    onHoverChange?.(false);
+    onHoverChange?.(hasKeyboardFocus);
+  };
+
+  const handleFocus = (e: React.FocusEvent) => {
+    if (hasKeyboardFocus || !(e.target as HTMLElement).matches(':focus-visible')) return;
+    setHasKeyboardFocus(true);
+    onHoverChange?.(true);
+  };
+
+  const handleBlur = (e: React.FocusEvent) => {
+    if (!hasKeyboardFocus || e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    setHasKeyboardFocus(false);
+    onHoverChange?.(isHovered);
   };
 
   const sharedStyle: React.CSSProperties = {
@@ -166,6 +180,8 @@ export function SidebarItem({
         <div
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
+          onFocus={handleFocus}
+          onBlur={handleBlur}
           style={{ ...sharedStyle, padding: 0 }}
         >
           <Link
@@ -220,6 +236,8 @@ export function SidebarItem({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Keys pressed on a control inside the row (its menu) belong to that control.
+    if (e.target !== e.currentTarget) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       onClick?.();
@@ -234,6 +252,8 @@ export function SidebarItem({
       onKeyDown={handleKeyDown}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
       style={sharedStyle}
     >
       {content}

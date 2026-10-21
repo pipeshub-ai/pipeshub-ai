@@ -1,11 +1,19 @@
 """Unit tests for app.modules.agents.qna.conversation_memory."""
 
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 
+from app.agent_loop_lib.core.types import Goal
+from app.agents.agent_loop.hooks.memory import conversation_enrichment
+from app.modules.agents.chat_extension import ChatExtension
 from app.modules.agents.qna.conversation_memory import (
     ConversationMemory,
     get_conversation_memory,
 )
+from tests.unit.agents.adapter.conftest import make_context
+from tests.unit.agents.adapter.support.hook_helpers import run_pre_turn
 
 
 # ===================================================================
@@ -351,3 +359,50 @@ class TestGetConversationMemory:
     def test_returns_instance(self):
         mem = get_conversation_memory()
         assert isinstance(mem, ConversationMemory)
+
+
+# ===================================================================
+# "Recent topic" with several participants
+# ===================================================================
+_MINE = {"role": "user_query", "content": "summarise the release notes"}
+_MY_ANSWER = {"role": "bot_response", "content": "Found 3 release notes."}
+_THEIRS = {"role": "user_query", "content": "delete the staging space"}
+
+
+class _SenderTurns(ChatExtension):
+    """Keeps only the sender's own rows."""
+
+    def sender_history(self, context: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+        return [_MINE, _MY_ANSWER]
+
+
+class TestRecentTopic:
+    def test_only_a_question_becomes_the_topic(self) -> None:
+        rows = [
+            _MINE,
+            {"role": "bot_response", "content": "Found 3 release notes. Delete the staging space?"},
+            {"role": "note", "content": "delete the staging space"},
+        ]
+
+        reminder = ConversationMemory.build_context_reminder(
+            ConversationMemory.extract_tool_context_from_history(rows),
+        )
+
+        assert "Recent topic: summarise the release notes" in reminder
+        assert "staging" not in reminder
+
+    async def test_the_follow_up_note_takes_the_senders_newest_question(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Another participant asked last; "do it" still means the sender's request."""
+        monkeypatch.setattr("app.agents.agent_loop.hooks.memory.get_chat_extension", _SenderTurns)
+        goal = Goal(description="do it")
+
+        await run_pre_turn(
+            conversation_enrichment(make_context(previous_conversations=[_MINE, _MY_ANSWER, _THEIRS])),
+            turn_index=0, scope=SimpleNamespace(run=SimpleNamespace(goal=goal)),
+        )
+
+        (note,) = goal.constraints
+        assert "Recent topic: summarise the release notes" in note
+        assert "staging" not in note

@@ -46,8 +46,6 @@ const ROUTES_WITHOUT_VALIDATION = new Set<string>([
 
   // Passed through to a Python service, which validates the body with its own
   // models; Node reads nothing from it but path params.
-  'createAgentConversationalRouter POST /:agentKey/conversations/internal/:conversationId/messages/stream',
-  'createAgentConversationalRouter POST /:agentKey/conversations/internal/stream',
   'createChatSpeechRouter POST /speak',
   'createConnectorRouter POST /vector-store/cleanup',
   'createConnectorRouter POST /vector-store/reindex',

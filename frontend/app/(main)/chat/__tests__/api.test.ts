@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { apiClient, streamSSERequest } from '@/lib/api';
-import { ChatApi } from '../api';
-import { CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS, type StreamChatRequest } from '../types';
+import { ChatApi, mapApiConversationToConversation } from '../api';
+import { AgentsApi } from '@/app/(main)/agents/api';
+import { CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS, type ConversationApiResponse, type StreamChatRequest } from '../types';
+import { chatExtension } from '@/config';
 
 vi.mock('@/lib/api', () => ({
   apiClient: {
@@ -234,5 +236,71 @@ describe('mapApiConversationToConversation', () => {
     const base = { _id: 'c1', title: 'T', createdAt: 'a', updatedAt: 'b', isShared: true, isOwner: false } as never;
     expect(mapApiConversationToConversation({ ...(base as object), agentKey: 'agent-7' } as never).agentKey).toBe('agent-7');
     expect(mapApiConversationToConversation(base).agentKey).toBeUndefined();
+  });
+
+  it('keeps the project link so "Move to project" shows the current project', () => {
+    const row = {
+      _id: 'conv-1',
+      title: 'Hello',
+      projectId: 'proj-1',
+      projectVisibility: 'project',
+    } as ConversationApiResponse;
+    expect(mapApiConversationToConversation(row)).toMatchObject({
+      projectId: 'proj-1',
+      projectVisibility: 'project',
+    });
+  });
+});
+
+describe('the conversation routes', () => {
+  const request: StreamChatRequest = {
+    query: 'Q',
+    modelKey: 'k',
+    modelName: 'm',
+    modelFriendlyName: 'M',
+    chatMode: 'quick',
+    filters: { apps: [], kb: [] },
+    conversationId: 'c1',
+  };
+  const model = { modelKey: 'k', modelName: 'm', modelFriendlyName: 'M', filters: { apps: [], kb: [] } };
+
+  beforeEach(() => {
+    mockedGet.mockReset();
+    mockedPost.mockReset();
+    vi.mocked(streamSSERequest).mockReset();
+    vi.mocked(streamSSERequest).mockResolvedValue(undefined as never);
+  });
+
+  it('build on the path the extension gives a conversation', async () => {
+    const path = vi
+      .spyOn(chatExtension, 'conversationPath')
+      .mockImplementation((id, agentId) => `/base/${agentId ?? 'none'}/${id}`);
+    mockedGet.mockResolvedValue({ data: { conversation: { messages: [] } } });
+    mockedPost.mockResolvedValueOnce({ data: { cancelled: true } });
+
+    await ChatApi.fetchConversation('c1');
+    await AgentsApi.fetchAgentConversation('a1', 'c1');
+    await ChatApi.streamMessage(request, {});
+    await ChatApi.streamMessage({ ...request, agentId: 'a1' }, {});
+    await ChatApi.streamRegenerate('c1', 'm1', {}, { ...model, chatMode: 'quick' });
+    await ChatApi.streamAgentRegenerate('a1', 'c1', 'm1', {}, { ...model, chatMode: 'auto' });
+    await ChatApi.cancelStream('c1', 'run-1', 'a1');
+
+    expect(mockedGet.mock.calls[0][0]).toBe('/base/none/c1/');
+    expect(mockedGet.mock.calls[1][0]).toBe('/base/a1/c1');
+    const streamed = vi.mocked(streamSSERequest).mock.calls.map(([url]) => url);
+    expect(streamed[0]).toMatch(/^\/base\/none\/c1\/messages\/stream/);
+    expect(streamed[1]).toMatch(/^\/base\/a1\/c1\/messages\/stream/);
+    expect(streamed[2]).toMatch(/^\/base\/none\/c1\/message\/m1\/regenerate/);
+    expect(streamed[3]).toMatch(/^\/base\/a1\/c1\/message\/m1\/regenerate/);
+    expect(mockedPost.mock.calls[0][0]).toBe('/base/a1/c1/cancel');
+    path.mockRestore();
+  });
+
+  it('keep an agent conversation on its usual path by default', async () => {
+    mockedGet.mockResolvedValueOnce({ data: { conversation: { messages: [] } } });
+    await AgentsApi.fetchAgentConversation('a1', 'c1', { page: 2, limit: 5 });
+    expect(mockedGet.mock.calls[0][0]).toBe('/api/v1/agents/a1/conversations/c1');
+    expect(mockedGet.mock.calls[0][1]).toMatchObject({ params: { page: 2, limit: 5 } });
   });
 });

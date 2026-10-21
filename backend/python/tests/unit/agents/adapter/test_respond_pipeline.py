@@ -7,9 +7,12 @@ completion_data shape and the empty-answer / agent-failure fallback paths."""
 
 from __future__ import annotations
 
+import asyncio
+
 from app.agents.agent_loop.error_classification import _USER_MESSAGES
 from app.agents.agent_loop.hooks.citations import CitationCollector
 from app.agents.agent_loop.respond import AnswerFinalizer
+from app.utils.conversation_tasks import pop_tasks, register_task
 from tests.unit.agents.adapter.conftest import make_context
 
 
@@ -262,6 +265,25 @@ class TestSuccessPath:
         assert result["status"] == "waiting_input"
         assert "I wasn't able" not in (result.get("answer") or "")
         assert all(e["event"] != "answer_chunk" or not (e.get("data") or {}).get("accumulated") for e in sink.events)
+
+    async def test_needs_input_delivers_the_files_the_run_made(self) -> None:
+        """Left behind, they would land in the next answer in this chat."""
+        async def _file() -> dict:
+            return {"type": "artifacts", "artifacts": [{"fileName": "report.csv", "mimeType": "text/csv", "recordId": "rec-1"}]}
+
+        context = make_context(conversation_id="conv-1")
+        register_task("conv-1", asyncio.create_task(_file()))
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+
+        result = await finalizer.run(
+            agent_success=True, agent_error=None, agent_output="", event_sink=_RecordingSink(),
+            agent_needs_input="Waiting for user answers",
+        )
+
+        assert result["status"] == "waiting_input"
+        assert "::artifact[report.csv](record:rec-1)" in result["answer"]
+        assert context.tool_state["response"] == result["answer"]
+        assert pop_tasks("conv-1") == []
 
     async def test_empty_output_keeps_streamed_follow_up(self) -> None:
         context = make_context()

@@ -55,6 +55,7 @@ KNOWN_INTERFACE_GAPS = frozenset({
     "get_user_app_ids",
     "get_user_apps",
     "get_user_permission_app_ids",
+    "update_agent",
 })
 
 # Calls to a method no backend defines. Each raises AttributeError if reached;

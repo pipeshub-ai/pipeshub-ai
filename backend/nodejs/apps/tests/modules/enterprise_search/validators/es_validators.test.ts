@@ -15,6 +15,7 @@ import {
   agentConversationUnshareParamsSchema,
   forkConversationParamsSchema,
   forkAgentConversationParamsSchema,
+  conversationUnshareParamsSchema,
   messageIdParamsSchema,
   enterpriseSearchSearchSchema,
   REQUEST_FILTER_KEYS,
@@ -473,6 +474,24 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = conversationShareParamsSchema.safeParse(data)
       expect(result.success).to.be.false
+    })
+
+    it('keeps accessLevel write and rejects an unknown level', () => {
+      const params = { conversationId: '507f1f77bcf86cd799439011' }
+      const userIds = ['507f1f77bcf86cd799439012']
+      const ok = conversationShareParamsSchema.parse({ params, body: { userIds, accessLevel: 'write' } })
+      expect(ok.body.accessLevel).to.equal('write')
+      expect(conversationShareParamsSchema.safeParse({ params, body: { userIds, accessLevel: 'admin' } }).success).to.be.false
+    })
+  })
+
+  describe('conversationUnshareParamsSchema', () => {
+    it('accepts userIds and strips accessLevel', () => {
+      const parsed = conversationUnshareParamsSchema.parse({
+        params: { conversationId: '507f1f77bcf86cd799439011' },
+        body: { userIds: ['507f1f77bcf86cd799439012'], accessLevel: 'write' },
+      })
+      expect(parsed.body).to.deep.equal({ userIds: ['507f1f77bcf86cd799439012'] })
     })
   })
 
@@ -2108,6 +2127,16 @@ describe('enterprise_search/validators/es_validators', () => {
       modelName: 'mn1',
       isReasoning: true,
     }
+
+    it('should accept a leading @ and omit the handle when absent', () => {
+      const withAt = createAgentSchema.safeParse({
+        body: { name: 'My Agent', handle: '@my-agent' },
+      })
+      const without = createAgentSchema.safeParse({ body: { name: 'My Agent' } })
+      expect(withAt.success).to.be.true
+      expect(without.success).to.be.true
+      if (without.success) expect(without.data.body).to.not.have.property('handle')
+    })
 
     it('should accept minimal valid body', () => {
       const result = createAgentSchema.safeParse({

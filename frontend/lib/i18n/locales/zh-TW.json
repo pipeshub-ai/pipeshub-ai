@@ -939,6 +939,7 @@
     "showDiagramSource": "顯示原始碼",
     "hideDiagramSource": "隱藏原始碼",
     "stoppedMarker": "已停止",
+    "stoppedBeforeAnswer": "在回答開始前已停止",
     "toolCard": {
       "arguments": "引數",
       "result": "結果",
@@ -1375,7 +1376,8 @@
       "notice": {
         "expired": "{{server}} 上的 {{tool}} 未執行：請求已過期。如仍需要，請再次提問。",
         "passed": "{{server}} 上的 {{tool}} 未獲核准，因此未執行。",
-        "waiting": "{{server}} 上的 {{tool}} 正在等待對話擁有者核准。"
+        "waiting": "{{server}} 上的 {{tool}} 正在等待對話擁有者核准。",
+        "waitingFor": "{{server}} 上的 {{tool}} 正在等待 {{name}} 核准。"
       },
       "receipt": {
         "allowed": "你允許了 {{tool}}",
@@ -1413,7 +1415,10 @@
       "download": "下載產物",
       "downloading": "正在下載產物"
     },
-    "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。"
+    "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。",
+    "answerFailedTitle": "此回答失敗",
+    "answerFailedRetry": "重試",
+    "cannotOpenSource": "無法開啟此文件。它可能已被刪除，或者您沒有存取權限。"
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -5166,7 +5171,9 @@
     "back": "上一步",
     "skip": "略過",
     "next": "下一步",
-    "submit": "提交"
+    "submit": "提交",
+    "unknownPerson": "前成員",
+    "waitingFor": "正在等待 {{name}} 回答"
   },
   "oauthDevice": {
     "title": "連接裝置",
@@ -5262,7 +5269,9 @@
     },
     "team": "團隊",
     "teamsNoRoles": "團隊沒有角色",
-    "invite": "邀請加入 Pipeshub"
+    "invite": "邀請加入 Pipeshub",
+    "removeSelection": "移除 {{name}}",
+    "peopleCanSee_other": "{{count}} 人可以查看此對話"
   },
   "demoData": {
     "badge": {

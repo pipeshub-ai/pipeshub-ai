@@ -50,6 +50,7 @@ from app.agents.agent_loop.hooks.code_graph_unlock import CODE_GRAPH_TOOLSET
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled  # noqa: F401 — re-export for test patching
 from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.modules.agents.capability_summary import build_capability_summary
+from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.agents.context.knowledge_context import _build_knowledge_context
 from app.modules.agents.context.tool_surface import ToolSurfaces
 from app.modules.agents.context.user_context import _format_user_context
@@ -888,7 +889,9 @@ class PipesHubPromptBuilder:
         tpl.set("capability_summary", build_capability_summary(state) or None)
 
         # ── User context + skills (Band B) ────────────────────────────────────
-        tpl.set("user_context", _format_user_context(state) or None)
+        user_context = _format_user_context(state) or None
+        for section, text in get_chat_extension().prompt_sections(self._context, user_context).items():
+            tpl.set(section, text)
         tpl.set("skills_overview", render_skills_overview(runtime) or None)
         tpl.set(
             "answer_confidence",

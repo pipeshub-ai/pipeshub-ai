@@ -23,6 +23,7 @@ import {
   useNotificationFilterLabels,
 } from './notification-filter-menu';
 import { useTranslation } from 'react-i18next';
+import { notificationExtension } from '@/config';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -230,6 +231,13 @@ export function NotificationsPanel() {
     },
     [syncPendingActions],
   );
+
+  const rowExtension = notificationExtension.usePanelRows({
+    isPanelOpen,
+    beginRowAction: (id) => beginRowAction(id, 'extra'),
+    endRowAction,
+    setError,
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -573,10 +581,7 @@ export function NotificationsPanel() {
               <Text
                 size="1"
                 truncate
-                style={{
-                  color: 'var(--gray-11)',
-                  opacity: 0.5,
-                }}
+                style={{ color: 'var(--slate-11)' }}
               >
                 {filterLabels[listFilter]}
               </Text>
@@ -684,6 +689,8 @@ export function NotificationsPanel() {
                   archiveLabel={t('notifications.archive')}
                   unarchiveLabel={t('notifications.unarchive')}
                   dismissLabel={t('notifications.dismiss')}
+                  decoration={rowExtension.decorate(n)}
+                  extraAction={rowExtension.extraAction(n)}
                 />
               ))}
               {hasMore && (

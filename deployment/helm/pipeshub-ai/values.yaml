@@ -299,6 +299,12 @@ config:
   # Mask stored secrets in admin config API responses (HIDE_SECRET_CONFIG).
   # false matches the docker-compose default: one org's admins see what they stored.
   hideSecretConfig: false
+  # MONGO_AUTO_INDEX. false: the API builds no MongoDB index at startup, where a
+  # build on a large collection runs for hours while the pods serve traffic.
+  # Build the indexes a release adds before upgrading to it. At startup each
+  # missing index is logged and counted in pipeshub_mongo_missing_indexes; a
+  # collection with no documents, as on a new install, still gets its indexes.
+  mongoAutoIndex: false
   # NOTE: with the Kafka broker, per-partition ordering means only one
   # message per partition is processed at a time — actual concurrency is
   # also capped by the record-events topic's partition count, regardless
@@ -457,6 +463,10 @@ config:
   # effectively unbounded, so a closed connection is replaced by a new connect.
   indexingConcurrencyRedisMaxConnections: 32
   shutdownTaskTimeout: 240
+  # SHUTDOWN_DRAIN_MS. When a pod stops, chat answers still streaming get this
+  # long to finish; then they are stopped with their text so far saved. Keep it
+  # well under terminationGracePeriodSeconds: the services still need to stop.
+  shutdownDrainMs: 240000
   staleIndexingRecoveryStartupGraceSeconds: 330
   staleIndexingRecoveryIntervalSeconds: 60
   backendPort: 3001  # Backend HTTP port; should match service.port and probe ports

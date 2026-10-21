@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Box, Button, Checkbox, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -9,6 +9,7 @@ import { buildStreamChatRequestForSlot } from '../../runtime';
 import { useChatStore } from '../../store';
 import { approvalArgumentLines, approvalToolLabel, toolApprovalResumeQuery, type SettledToolApproval } from '../../tool-approval';
 import type { ToolApprovalDecision, ToolApprovalDetails } from '../../types';
+import { AnswerSlotContext, answerSlotIdNow, useAnswerSlotId } from './answer-slot-scope';
 
 /** Whole minutes left (rounded up), re-read every half minute; 0 once the request has expired. */
 function useMinutesLeft(expiresAt: number): number {
@@ -28,29 +29,36 @@ interface ToolApprovalCardProps {
   isLatest: boolean;
   /** The reply's row: the answer carries it on. */
   rowId?: string;
+  /** Who answers it instead of the conversation's owner: this person, or the viewer when `null`. */
+  readOnlyFor?: { name: string | null } | null;
 }
 
 /** Asks the person whether a tool call may run. The call itself is saved on the server; the
  * answer carries on this same reply, sending only the approval id and the choice. Where it can't
- * be answered (expired, an older reply, a conversation shared with the viewer) it is one line. */
-export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCardProps) {
+ * be answered (expired, an older reply, a conversation shared with the viewer, someone else's to
+ * answer) it is one line. */
+export function ToolApprovalCard({ approval, isLatest, rowId, readOnlyFor }: ToolApprovalCardProps) {
   const { t } = useTranslation();
   const minutesLeft = useMinutesLeft(approval.expiresAt);
   const [remember, setRemember] = useState(false);
   const [showAll, setShowAll] = useState(false);
+  const scopedSlotId = useContext(AnswerSlotContext);
+  const answerSlotId = useAnswerSlotId();
   // Someone viewing a conversation shared with them can't send in it.
-  const canSend = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null)) !== false;
+  const ownerRule = useChatStore((s) => (answerSlotId ? s.slots[answerSlotId]?.isOwner ?? null : null)) !== false;
+  const canSend = readOnlyFor === undefined ? ownerRule : readOnlyFor === null;
 
   const tool = approvalToolLabel(approval);
   const server = approval.serverName;
   const expired = minutesLeft === 0;
 
   if (expired || !isLatest || !canSend) {
-    const notice = expired ? 'expired' : canSend ? 'passed' : 'waiting';
+    const notice = expired ? 'expired' : readOnlyFor ? (isLatest ? 'waitingFor' : 'passed') : canSend ? 'passed' : 'waiting';
+    const name = readOnlyFor?.name || t('askUserQuestion.unknownPerson');
     return (
       <Flex data-testid="tool-approval-card" align="start" gap="2" style={{ color: 'var(--slate-11)' }}>
         <MaterialIcon name={expired ? 'timer_off' : 'pending_actions'} size={16} color="var(--slate-9)" style={{ marginTop: 3 }} />
-        <Text size="2">{t(`chat.toolApproval.notice.${notice}`, { tool, server })}</Text>
+        <Text size="2">{t(`chat.toolApproval.notice.${notice}`, { tool, server, name })}</Text>
       </Flex>
     );
   }
@@ -59,7 +67,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   const anyCut = !showAll && lines.some((line) => line.cut);
 
   const answer = (decision: ToolApprovalDecision) => {
-    const slotId = useChatStore.getState().activeSlotId;
+    const slotId = answerSlotIdNow(scopedSlotId);
     if (!slotId || useChatStore.getState().slots[slotId]?.isStreaming) return;
     const query = toolApprovalResumeQuery(decision);
     const request = buildStreamChatRequestForSlot(slotId, query, undefined, {

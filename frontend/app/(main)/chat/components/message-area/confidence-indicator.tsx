@@ -6,6 +6,8 @@ import type { ConfidenceLevel } from '@/chat/types';
 
 interface ConfidenceIndicatorProps {
   confidence: ConfidenceLevel;
+  /** The space down to the answer. */
+  marginBottom?: string;
 }
 
 const getConfidenceColor = (confidence: ConfidenceLevel): string => {
@@ -23,7 +25,7 @@ const getConfidenceColor = (confidence: ConfidenceLevel): string => {
   }
 };
 
-export function ConfidenceIndicator({ confidence }: ConfidenceIndicatorProps) {
+export function ConfidenceIndicator({ confidence, marginBottom = 'var(--space-3)' }: ConfidenceIndicatorProps) {
   const color = getConfidenceColor(confidence);
 
   return (
@@ -32,7 +34,7 @@ export function ConfidenceIndicator({ confidence }: ConfidenceIndicatorProps) {
         align="center" 
         gap="1" 
         style={{ 
-          marginBottom: 'var(--space-3)', 
+          marginBottom,
           border: '0.667px solid var(--olive-3)',
           width: 'fit-content',
           padding: 'var(--space-1) var(--space-2)',

@@ -18,6 +18,7 @@ import {
   FORK_COPY_BATCH_SIZE,
 } from '../../../../src/modules/enterprise_search/utils/fork-conversation'
 import { forkConversation, forkAgentConversation, deleteConversationById } from '../../../../src/modules/enterprise_search/controller/es_controller'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
 
 const APP_CONFIG = { connectorBackend: 'http://connectors.test' } as never
 const URI = process.env.FORK_TEST_MONGO_URI
@@ -392,7 +393,8 @@ describeIfMongo(`fork conversation on a real MongoDB (transactions: ${useTransac
       // Deleting a chat first asks the connectors service to delete its artifacts.
       sinon.stub(conversationArtifacts, 'deleteConversationArtifacts').resolves()
 
-      const deleted = await run(deleteConversationById(APP_CONFIG) as never, owner, { conversationId: forkId })
+      // The route's guard grants the delete; the handler reads that grant.
+      const deleted = await run(behindGuard(realGuards(), 'delete', deleteConversationById(APP_CONFIG) as never), owner, { conversationId: forkId })
       expect(deleted.error).to.equal(undefined)
       expect(deleted.status).to.equal(200)
 

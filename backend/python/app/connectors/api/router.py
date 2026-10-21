@@ -155,6 +155,11 @@ from app.connectors.services.vector_store_rebuild import (
 from app.edition_containers import ConnectorAppContainer
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
 from app.models.entities import ArtifactRecord, Record, RecordType
+from app.modules.authz.chat_content_access import (
+    can_read_record,
+    get_chat_content_access,
+    resolve_read_access,
+)
 from app.modules.demo_data.access import is_hidden_demo_record
 from app.modules.pipeline.models import RETRYABLE_STAGES
 from app.modules.pipeline.state import stage_summaries
@@ -669,16 +674,15 @@ async def get_record_content_internal(
                 detail="Record does not belong to your organization",
             )
 
-        # Independent ACL check — never trust the caller.
-        access = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
-        if not access:
+        # Independent ACL check — never trust the caller. Denied reads look
+        # exactly like a missing record so the route is no existence oracle.
+        if not await can_read_record(
+            graph_provider, user_id=user_id, org_id=org_id, record=record,
+        ):
             logger.warning(
                 "get_record_content_internal: access denied user=%s record=%s", user_id, record_id,
             )
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="You do not have permission to access this record",
-            )
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
         await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
 
         return await _resolve_record_content_response(
@@ -1260,14 +1264,14 @@ async def get_signed_url(
             )
 
         mint_user = caller_user or path_user
-        if not is_scoped:
-            access = await graph_provider.check_record_access_with_details(
-                mint_user, caller_org, record_id
+        if not is_scoped and not await can_read_record(
+            graph_provider,
+            user_id=mint_user, org_id=caller_org, record=record,
+        ):
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
-            if not access:
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
-                )
+        if not is_scoped:
             await refuse_outside_connection(request, graph_provider, caller_org, mint_user, record_id)
 
         additional_claims = {
@@ -1487,14 +1491,13 @@ async def download_file(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
 
-        if not is_scoped:
-            access = await graph_provider.check_record_access_with_details(
-                user_id, record_org, record_id
+        if not is_scoped and not await can_read_record(
+            graph_provider,
+            user_id=user_id, org_id=record_org, record=record,
+        ):
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
-            if not access:
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
-                )
 
         connector_id = record.connector_id
         await _refuse_hidden_demo_record(
@@ -1573,13 +1576,11 @@ async def stream_record(
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
 
-        access_check = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
-        if not access_check:
+        if not await can_read_record(
+            graph_provider, user_id=user_id, org_id=org_id, record=record,
+        ):
             logger.warning(f"User {user_id} does not have access to record {record_id}")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="You do not have permission to access this record"
-            )
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
         await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
         await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
         if isinstance(record, ArtifactRecord):
@@ -1850,10 +1851,8 @@ async def get_record_by_id(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        has_access = await graph_provider.check_record_access_with_details(
-            user_id=user_id,
-            org_id=org_id,
-            record_id=record_id,
+        has_access = await resolve_read_access(
+            graph_provider, user_id=user_id, org_id=org_id, record=record_id,
         )
         logger.debug(f"🚀 has_access: {has_access}")
         if has_access:
@@ -1896,14 +1895,17 @@ async def get_record_content(
     org_id = request.state.user.get("orgId")
 
     try:
-        # The one access check, `check_access` as the agent's fetch_record runs it;
-        # the fetch below reuses its answer.
+        # `check_access` as the agent's fetch_record runs it; the fetch below reuses
+        # its answer. Its node ids do not say which edge granted, so when graph edges
+        # do not grant chat content, or it grants nothing, the full check decides.
+        content_access = get_chat_content_access()
         accessible = await accessible_node_ids(graph_provider, {record_id}, user_id, org_id)
-        if record_id not in accessible:
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="You do not have permission to access this record",
-            )
+        if record_id not in accessible or not content_access.graph_grants_chat_content:
+            if not await can_read_record(
+                graph_provider, content_access, user_id=user_id, org_id=org_id, record=record_id,
+            ):
+                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+            accessible = {record_id}
         doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
         await _refuse_hidden_demo_record(
             graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
