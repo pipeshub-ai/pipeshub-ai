@@ -47,6 +47,11 @@ from app.modules.retrieval.record_cut import (
     passages_per_record,
     point_record_id,
 )
+from app.modules.retrieval.source_diversity import (
+    SourceDiversity,
+    active_source_diversity,
+    record_source,
+)
 from app.modules.retrieval.selection_scope import (
     SELECTION_EMPTY_MESSAGE,
     SELECTION_NOT_READY_MESSAGE,
@@ -335,6 +340,65 @@ def _record_cut_for(scope_virtual_ids: list[str] | None) -> RecordCut | None:
     if all(vid == first for vid in scope_virtual_ids):
         return None
     return record_cut
+
+
+def _vary_sources(
+    diversity: SourceDiversity,
+    hits: list[dict[str, Any]],
+    virtual_to_record_map: dict[str, Any],
+    *,
+    shown: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, int]]:
+    """Cut the deeper pool back to what the search returns, first page first.
+
+    ``hits`` are the pool's matches; the best ``shown`` of them are what the
+    plain search would have read. A record the plain search returns keeps the
+    matches it had there; a record brought up to the first page brings its
+    matches from the pool. Returns those hits (in their order), the record map
+    narrowed to the records kept, and each kept record's place by record id.
+    """
+    ranked = sorted(
+        (hit for hit in hits if isinstance(hit, dict)),
+        key=lambda hit: hit.get("score") or 0.0,
+        reverse=True,
+    )
+    in_plain = {id(hit) for hit in ranked[:shown]}
+    vids: list[str] = []
+    known: set[str] = set()
+    plain_records = 0
+    for hit in ranked:
+        vid = hit_record_id(hit)
+        if vid is None or vid in known or not virtual_to_record_map.get(vid):
+            continue
+        known.add(vid)
+        vids.append(vid)
+        if id(hit) in in_plain:
+            plain_records = len(vids)
+    order = diversity.order(
+        vids,
+        shown=plain_records,
+        source_of=lambda vid: record_source(virtual_to_record_map[vid]),
+    )
+    kept_vids = set(order)
+    brought_up = kept_vids.difference(vids[:plain_records])
+
+    def keep(hit: Any) -> bool:  # noqa: ANN401
+        if not isinstance(hit, dict):
+            return True
+        vid = hit_record_id(hit)
+        if vid not in known:
+            # No record to show it under: dropped further on, as before.
+            return True
+        return vid in brought_up or (id(hit) in in_plain and vid in kept_vids)
+
+    record_rank: dict[str, int] = {}
+    for vid in order:
+        record_rank.setdefault(virtual_to_record_map[vid].get("_key"), len(record_rank))
+    return (
+        [hit for hit in hits if keep(hit)],
+        {vid: record for vid, record in virtual_to_record_map.items() if vid in kept_vids},
+        record_rank,
+    )
 
 
 def _graph_filters(filter_groups: dict[str, Any] | None) -> dict[str, Any]:
@@ -814,13 +878,24 @@ class RetrievalService:
             filter, scope_virtual_ids = permission_filter
 
             record_cut = _record_cut_for(scope_virtual_ids)
+            # The search API's first page, varied across sources: read a deeper
+            # pool to fill it from (SEARCH_SOURCE_DIVERSITY).
+            diversity = (
+                active_source_diversity(
+                    scope_ids=requested_scope_ids(filters),
+                    scope_virtual_ids=scope_virtual_ids,
+                )
+                if knowledge_search
+                else None
+            )
+            search_limit = diversity.fetch_limit(limit) if diversity is not None else limit
             if use_containers:
                 (
                     search_results,
                     accessible_virtual_id_to_record_id,
                     verification_degraded,
                 ) = await self._search_and_adjudicate(
-                    queries, filter, limit, org_id, user_id, containers,
+                    queries, filter, search_limit, org_id, user_id, containers,
                     allow_requery=not virtual_record_ids_from_tool,
                     scope_connector_ids=containers.scope_connector_ids,
                     record_cut=record_cut,
@@ -846,7 +921,7 @@ class RetrievalService:
                     kept_failed, kept_searched = plan.failed_collections, plan.collections_searched
                     try:
                         replacement = await self._search_by_record_ids(
-                            queries, limit, org_id, user_id, user_key, filters, time_range,
+                            queries, search_limit, org_id, user_id, user_key, filters, time_range,
                             virtual_record_ids_from_tool, selection, scopes, plan,
                         )
                     except Exception as exc:
@@ -902,7 +977,7 @@ class RetrievalService:
                         )
             if not use_containers:
                 search_results = await self._execute_parallel_searches(
-                    queries, filter, limit, org_id, user_id, plan=plan, record_cut=record_cut
+                    queries, filter, search_limit, org_id, user_id, plan=plan, record_cut=record_cut
                 )
                 try:
                     enumerated = accessible_virtual_id_to_record_id
@@ -993,6 +1068,12 @@ class RetrievalService:
             except Exception as e:
                 self.logger.error("Error in _create_virtual_to_record_mapping: %s", e, exc_info=True)
                 raise
+
+            record_rank: dict[str, int] | None = None
+            if diversity is not None:
+                search_results, virtual_to_record_map, record_rank = _vary_sources(
+                    diversity, search_results, virtual_to_record_map, shown=limit * len(queries),
+                )
 
             unique_record_ids = {r.get("_key") for r in virtual_to_record_map.values() if r}
 
@@ -1275,6 +1356,13 @@ class RetrievalService:
                 key=lambda x: x.get("score") or 0,
                 reverse=True,
             )
+            if record_rank:
+                # The varied first page, then the records it demoted; each
+                # record's passages stay in score order.
+                last = len(record_rank)
+                final_search_results.sort(
+                    key=lambda x: record_rank.get((x.get("metadata") or {}).get("recordId"), last)
+                )
 
             # Filter out incomplete results to prevent citation validation failures
             required_fields = ['origin', 'recordName', 'recordId', 'mimeType', "orgId"]

@@ -81,6 +81,7 @@ from app.modules.agents.qna.chat_state import (
 )
 from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.retrieval.provenance import note_retrieved_by
+from app.modules.retrieval.source_diversity import plain_ranking
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.env_utils import enabled_unless_off
 
@@ -678,10 +679,13 @@ async def timeline_search_response(
         return result
 
     whole: list[Any] = []
-    collected = await _collect(
-        recorded, start_ms, end_ms, date_field, log,
-        period_limit=period_limit, on_whole_span=whole.append,
-    )
+    # The matches come back in date order, so a varied first page has no
+    # place here: each period keeps the plain ranking.
+    with plain_ranking():
+        collected = await _collect(
+            recorded, start_ms, end_ms, date_field, log,
+            period_limit=period_limit, on_whole_span=whole.append,
+        )
     span_answer = whole[0] if whole and isinstance(whole[0], dict) else None
     found = isinstance(collected, _Collected) and any(h.results for h in collected.hits)
     if not found and not any(r.get("status_code", 200) == 200 for r in responses):

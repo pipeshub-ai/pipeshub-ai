@@ -380,6 +380,10 @@ config:
   # "false" through extraEnv. With it on, a search returns fewer passages per
   # record and fetch_record takes a query that reads the part of a record it
   # names.
+  # SEARCH_SOURCE_DIVERSITY is not part of this mode: it is off unless set to
+  # "true" through extraEnv. With it on, no one connector type holds more than
+  # 4 of the first 10 records of a search API result; the records it pushes
+  # down come back after the first page.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network
