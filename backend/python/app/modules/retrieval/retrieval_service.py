@@ -1036,9 +1036,12 @@ class RetrievalService:
 
                 candidates, candidate_map = await self._diversity_candidates(
                     queries, filter, diversity.fetch_limit(limit), org_id, user_id, plan,
-                    containers=containers if use_containers and not replaced_by_record_ids else None,
+                    containers=containers if use_containers else None,
                     enumerated=enumerated_map,
-                    by_record_ids=read_by_record_ids if replaced_by_record_ids else None,
+                    by_record_ids=read_by_record_ids,
+                    record_ids_first=replaced_by_record_ids,
+                    record_cut=record_cut,
+                    allow_requery=not virtual_record_ids_from_tool,
                     user_key=user_key,
                     scope_connector_ids=requested_scope_ids(filters),
                     scopes=scopes,
@@ -1512,7 +1515,10 @@ class RetrievalService:
         *,
         containers: "AccessibleContainers | None",
         enumerated: dict[str, str] | None,
-        by_record_ids: "Callable[[int, _QueryPlan], Awaitable[_RecordIdSearch]] | None" = None,
+        by_record_ids: "Callable[[int, _QueryPlan], Awaitable[_RecordIdSearch]]",
+        record_ids_first: bool,
+        record_cut: RecordCut | None,
+        allow_requery: bool,
         user_key: str | None,
         scope_connector_ids: "tuple[str, ...] | None",
         scopes: Sequence[SelectionScope],
@@ -1520,39 +1526,46 @@ class RetrievalService:
         """Hits from a deeper read of the same search, checked the same way.
 
         Candidates for the first page only: the plain result is not changed by
-        them. Reuses the plain search's embeddings. Returns the hits the user
-        may read and their ``{vrid: recordId}``; nothing when the read or its
+        them. The read takes the path the page took (``record_ids_first`` when
+        the narrow-access fallback replaced a container page, or when this
+        read falls short the same way), with the same record cut and retry.
+        Reuses the plain search's embeddings. Returns the hits the user may
+        read and their ``{vrid: recordId}``; nothing when the read or its
         check fails, so the plain result stands.
         """
         candidate_plan = _QueryPlan(
             dense=plan.dense, sparse=plan.sparse, collections=plan.collections,
         )
         try:
-            if by_record_ids is not None:
-                # The page came from the record-id search: read deeper the same way.
-                found = await by_record_ids(depth, candidate_plan)
-                hits, accessible = found.results, found.accessible
-            elif containers is not None:
-                hits, accessible, degraded = await self._search_and_adjudicate(
-                    queries, filter, depth, org_id, user_id, containers,
-                    allow_requery=False,
-                    scope_connector_ids=containers.scope_connector_ids,
-                    plan=candidate_plan,
-                    user_key=user_key,
-                    scopes=scopes,
-                )
-                if degraded:
+            if containers is None:
+                if enumerated is None:
                     return [], {}
-            elif enumerated is not None:
                 hits = await self._execute_parallel_searches(
                     queries, filter, depth, org_id, user_id, plan=candidate_plan,
+                    record_cut=record_cut,
                 )
                 accessible = await self._keep_permitted_hits(
                     hits, enumerated, user_key, org_id,
                     scope_connector_ids=scope_connector_ids, scopes=scopes,
                 )
             else:
-                return [], {}
+                if not record_ids_first:
+                    hits, accessible, degraded = await self._search_and_adjudicate(
+                        queries, filter, depth, org_id, user_id, containers,
+                        allow_requery=allow_requery,
+                        scope_connector_ids=containers.scope_connector_ids,
+                        record_cut=record_cut,
+                        plan=candidate_plan,
+                        user_key=user_key,
+                        scopes=scopes,
+                    )
+                    if degraded:
+                        return [], {}
+                    record_ids_first = candidate_plan.narrow_shortfall
+                if record_ids_first:
+                    # As for the page: the record-id search, with its own cut and check.
+                    found = await by_record_ids(depth, candidate_plan)
+                    hits, accessible = found.results, found.accessible
         except Exception as exc:
             self.logger.warning("source diversity: deeper read failed, keeping the plain result: %s", exc)
             return [], {}

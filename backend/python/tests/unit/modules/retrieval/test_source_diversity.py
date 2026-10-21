@@ -429,6 +429,9 @@ class TestTheSearchApi:
         _knobs(monkeypatch, window=10, per_source=2, pool=6)
         varied = await _search(store(), containers=containers, limit=4)
 
+        # `records` comes from a set, in no set order, with the setting off too.
+        for response in (plain, varied):
+            response["records"].sort(key=lambda record: record["_key"])
         assert varied == plain
 
     async def test_on_every_record_a_query_returns_at_its_own_limit_is_kept(
@@ -567,6 +570,30 @@ class TestTheSearchApi:
 
         assert "unlisted" not in _order(response)
         assert _order(response) == ["gh0", "gh1", "chat-a", "gh2", "gh3"]
+
+    @pytest.mark.parametrize("containers", [False, True])
+    async def test_with_the_record_cut_the_deeper_read_is_cut_by_record_too(
+        self, monkeypatch: pytest.MonkeyPatch, containers: bool
+    ) -> None:
+        """Four long pull requests fill the first 24 points and Slack comes
+        after them. Cut by record like the page, the deeper read of 20 keeps a
+        place for Slack; its raw top 20 points would not."""
+        monkeypatch.setenv("FUSION_RECORD_CUT", "true")
+
+        def chunk(vrid: str, block: int, score: float) -> SearchResult:
+            point = _point(vrid, score)
+            point.id = f"{vrid}#{block}"
+            return point
+
+        points = [
+            chunk(f"gh{i}", block, 0.99 - (i * 6 + block) / 1000)
+            for i in range(4) for block in range(6)
+        ] + [_point("chat-a", 0.5)]
+        _knobs(monkeypatch, window=4, per_source=1, pool=20)
+
+        response = await _search(_FakeStore(points=points), containers=containers, limit=4)
+
+        assert _order(response)[:2] == ["gh0", "chat-a"]
 
     async def test_on_a_search_scoped_to_one_connector_is_left_alone(
         self, monkeypatch: pytest.MonkeyPatch
