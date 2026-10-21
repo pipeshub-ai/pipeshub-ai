@@ -87,7 +87,7 @@ def parse_document(raw: bytes) -> dict[str, Any]:
     try:
         document = yaml.load(raw, Loader=_NoAliasLoader)  # a SafeLoader subclass, so no arbitrary objects
     except yaml.YAMLError as e:
-        raise SpecError(f"The spec is not valid JSON or YAML: {_first_line(str(e))}") from e
+        raise SpecError(_yaml_error_message(raw, e)) from e
     if not isinstance(document, dict):
         raise SpecError("The spec must be a JSON or YAML object.")
     if "swagger" in document:
@@ -447,6 +447,19 @@ def _auth_scheme(name: str, scheme: dict[str, Any]) -> list[AuthScheme]:
             ))
         return found
     return []
+
+
+_HTML_ESCAPES = re.compile(rb"&(gt|lt|amp|quot|#3[49]);")
+
+
+def _yaml_error_message(raw: bytes, error: yaml.YAMLError) -> str:
+    """Where the parse failed, and the usual cause when the text came from a web page."""
+    mark = getattr(error, "problem_mark", None)
+    where = f" (line {mark.line + 1}, column {mark.column + 1})" if mark is not None else ""
+    message = f"The spec is not valid JSON or YAML{where}: {_first_line(str(error))}."
+    if _HTML_ESCAPES.search(raw):
+        message += " It contains HTML escapes such as &gt;, so it was probably copied from a web page's source; copy the plain text instead."
+    return message
 
 
 def _clean(value: Any) -> str:  # noqa: ANN401

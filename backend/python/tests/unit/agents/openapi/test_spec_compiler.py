@@ -118,6 +118,12 @@ class TestDocumentChecks:
         with pytest.raises(SpecError, match=message):
             compile_spec(raw)
 
+    def test_the_error_says_where_and_spots_html_escapes(self) -> None:
+        with pytest.raises(SpecError) as raised:
+            compile_spec(b"openapi: 3.1.0\ninfo:\n  description: &gt;\n    An API.\npaths: {/a: {get: {}}}\n")
+        message = str(raised.value)
+        assert "(line 3, column 19)" in message and "HTML escapes such as &gt;" in message
+
     def test_size_limit(self) -> None:
         with pytest.raises(SpecError, match="larger than"):
             compile_spec(b" " * (MAX_SPEC_BYTES + 1))

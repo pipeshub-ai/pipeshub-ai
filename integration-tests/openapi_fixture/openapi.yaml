@@ -1,6 +1,6 @@
 # Acme Helpdesk: the reference spec for PipesHub API Toolsets.
 #
-# Upload this file (or point PipesHub at http://<host>:<port>/openapi.yaml) to turn
+# Upload this file (or copy it from the running server at /openapi.yaml) to turn
 # the Acme Helpdesk API into tools an agent can call. Copy its habits into your own spec:
 #
 #   * Every operation has an operationId. It becomes the tool name the agent sees,
