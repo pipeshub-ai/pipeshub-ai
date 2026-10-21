@@ -14,4 +14,5 @@ import pytest
 def test_the_route_module_imports_first(module: str) -> None:
     code = f"import {module}; print('imported')"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
+    assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip().splitlines()[-1:] == ["imported"], out.stderr[-2000:]
