@@ -2327,6 +2327,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             metadata_changed = False
             content_changed = False
             permissions_changed = False
+            parent_changed = False
 
             if existing_record:
 
@@ -2339,9 +2340,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     is_updated = True
 
                 parent_external_record_id = (metadata.get("parents") or [None])[0]
-                if existing_record and parent_external_record_id != existing_record.parent_external_record_id:
-                    is_updated = True
-                    metadata_changed = True
+                parent_changed = parent_external_record_id != existing_record.parent_external_record_id
 
             # Determine if it's a file or folder
             mime_type = metadata.get("mimeType", "")
@@ -2438,22 +2437,33 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if keeps_its_drive and parent_external_record_id == grant_drive_id:
                     file_record.parent_external_record_id = None
                     file_record.parent_record_type = None
-                elif keeps_its_drive and not metadata.get("parents"):
-                    # Drive leaves out `parents` when the grantee cannot see the folder;
-                    # that is not a move to the drive's root.
-                    file_record.parent_external_record_id = existing_record.parent_external_record_id
-                    file_record.parent_record_type = existing_record.parent_record_type
+
+            item_shared_drive_id = metadata.get("driveId")
+            in_its_shared_drive = bool(item_shared_drive_id) and (
+                file_record.external_record_group_id == item_shared_drive_id
+            )
+            if (
+                is_shared_with_me
+                and in_its_shared_drive
+                and existing_record is not None
+                and not metadata.get("parents")
+            ):
+                # Drive leaves out `parents` when the grantee cannot see the folder; that
+                # is not a move to the drive's root, and writing it as one dropped the
+                # folder edge that no later member pass puts back.
+                file_record.parent_external_record_id = existing_record.parent_external_record_id
+                file_record.parent_record_type = existing_record.parent_record_type
+                parent_changed = False
 
             # Filing an item under its shared drive is a placement change the permission
             # path never writes: once the grantee's 0S: edge exists it skips the record,
             # so an item a grantee stored standalone stayed out of its drive.
-            item_shared_drive_id = metadata.get("driveId")
-            if (
-                existing_record is not None
-                and item_shared_drive_id
-                and file_record.external_record_group_id == item_shared_drive_id
+            joins_its_drive = (
+                in_its_shared_drive
+                and existing_record is not None
                 and existing_record.external_record_group_id != item_shared_drive_id
-            ):
+            )
+            if parent_changed or joins_its_drive:
                 is_updated = True
                 metadata_changed = True
 

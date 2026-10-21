@@ -1489,6 +1489,12 @@ class DataSourceEntitiesProcessor:
         if group_changed:
             moved = True
             leaving_group_id = existing_record.record_group_id
+        elif existing_record and not existing_record.record_group_id and record_group_id:
+            # A stored record with no group that gains one changed membership too: its
+            # chunks were written without this group, so drive-scoped search missed it.
+            # A brand-new record is not stored yet, and the caller refreshes only one
+            # whose stored VRID says it was indexed.
+            moved = True
 
         joining_group_id = record_group_id if record.id else None
         if joining_group_id or leaving_group_id:
