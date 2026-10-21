@@ -202,6 +202,33 @@ class TestPreviewsOnLinks:
         store.get_record_from_storage.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("size", [None, "2000", True, -1])
+    async def test_an_unknown_stored_size_is_not_downloaded(self, size: object) -> None:
+        # Storage reads an object of unknown size whole, as a large one.
+        hits = _issue()
+        graph = _graph(
+            {"issue-1": {"mentioned_in": ["odd-1", "ok-1"], "links_to": []}},
+            {"odd-1", "ok-1"},
+            [_doc("odd-1"), _doc("ok-1")],
+        )
+        store = _blob_store({
+            "v-odd-1": {"semantic_metadata": {"summary": "Odd."}},
+            "v-ok-1": {"semantic_metadata": {"summary": "Fine."}},
+        })
+        lookups = {
+            "v-odd-1": {"record_doc_id": "d-odd", "fileSizeBytes": size},
+            "v-ok-1": {"record_doc_id": "d-ok", "fileSizeBytes": 2000},
+        }
+        store.get_document_ids_by_virtual_record_ids = AsyncMock(return_value=lookups)
+
+        await enrich_records_with_address_links(hits, graph, "org-1", user_id="user-1", blob_store=store)
+
+        rows = {r["record_id"]: r for r in hits["v-issue"]["address_links"]["mentioned_in"]}
+        assert "preview" not in rows["odd-1"]
+        assert rows["ok-1"]["preview"] == "Fine."
+        assert [c.args[0] for c in store.get_record_from_storage.await_args_list] == ["v-ok-1"]
+
+    @pytest.mark.asyncio
     async def test_a_failed_read_leaves_the_names(self) -> None:
         hits = _issue()
         graph = _graph(
@@ -292,3 +319,18 @@ class TestPreviewsOnReadsAndSearch:
             "relation": "mentionedIn", "recordId": "reply-1", "recordName": "tech_2025-12-01_18-04-44",
             "recordType": "MESSAGE", "connector": "SLACK WORKSPACE", "preview": REPLY_SUMMARY,
         }]
+
+
+class TestWhereTheStoreComesFrom:
+    @pytest.mark.asyncio
+    async def test_a_read_goes_on_when_no_store_can_be_built(self) -> None:
+        from app.utils.fetch_full_record import _RecordResolver
+
+        graph = AsyncMock()
+        resolver = _RecordResolver(
+            virtual_record_id_to_result={}, graph_provider=graph, blob_store=None,
+            config_service=None, org_id="org-1", user_id="user-1", frontend_url=None,
+        )
+        resolver._ensure_blob_store = AsyncMock(side_effect=RuntimeError("no storage config"))
+
+        assert await resolver.blob_store_for_previews() is None

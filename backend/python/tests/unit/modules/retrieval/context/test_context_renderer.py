@@ -393,6 +393,23 @@ class TestKnowledgeContextBuilder:
         assert mock_links.await_args.kwargs["user_id"] == "u1"
 
     @pytest.mark.asyncio
+    async def test_linked_records_get_previews_unless_turned_off(self, records) -> None:
+        """Previews read linked records from storage; a caller that builds one
+        context per timeline period turns them off."""
+        store = object()
+        for link_previews, expected in ((True, store), (False, None)):
+            flatten, graph, fk = self._patches([_unit("a", 4, "a4", 0.2)], records)
+            builder = KnowledgeContextBuilder(
+                blob_store=store, graph_provider=object(), org_id="o1", user_id="u1",
+                link_previews=link_previews,
+            )
+            with flatten, graph, fk, patch(
+                f"{_BUILDER}.enrich_records_with_address_links", new_callable=AsyncMock
+            ) as mock_links:
+                await builder.build([], {}, is_multimodal_llm=False)
+            assert mock_links.await_args.kwargs["blob_store"] is expected
+
+    @pytest.mark.asyncio
     async def test_neighbours_take_only_the_slots_the_hits_left(self, records) -> None:
         flatten, graph, fk = self._patches([_unit("a", 4, "a4", 0.2), _unit("b", 2, "b2", 0.9)], records)
         with flatten, graph, fk:

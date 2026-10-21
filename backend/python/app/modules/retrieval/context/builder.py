@@ -44,8 +44,13 @@ class KnowledgeContextBuilder:
         org_id: str,
         user_id: str,
         config_service: ConfigurationService | None = None,
+        link_previews: bool = True,
     ) -> None:
+        """``link_previews`` False shows linked records by name only, for a
+        caller that builds many contexts at once (one per timeline period)
+        and would otherwise read each one's linked records from storage."""
         self._blob_store = blob_store
+        self._link_previews = link_previews
         self._graph_provider = graph_provider
         self._org_id = org_id
         self._user_id = user_id
@@ -101,6 +106,6 @@ class KnowledgeContextBuilder:
             )
             await enrich_records_with_address_links(
                 records, self._graph_provider, self._org_id, user_id=self._user_id,
-                blob_store=self._blob_store,
+                blob_store=self._blob_store if self._link_previews else None,
             )
         return KnowledgeContext(ranked=ranked, virtual_record_id_to_result=records)

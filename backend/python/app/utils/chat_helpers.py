@@ -2064,7 +2064,8 @@ MAX_LINKED_RECORD_PREVIEWS = 5
 # says comes after, often 200 to 330 characters in. Most summaries run about
 # 300 to 550 characters, so this shows the whole of a typical one.
 MAX_LINKED_PREVIEW_CHARS = 400
-# A linked record stored larger than this is not downloaded for one line.
+# A linked record stored larger than this is not downloaded for one line, nor
+# is one whose stored size is unknown: storage reads those as large objects.
 _MAX_LINKED_PREVIEW_BLOB_BYTES = 2 * 1024 * 1024
 # The lines are optional: past this, the links are shown by name only.
 _LINKED_PREVIEW_TIMEOUT_S = 5.0
@@ -2100,6 +2101,14 @@ def linked_record_preview(record: dict[str, Any] | None) -> str | None:
         if isinstance(data, str) and data.strip():
             return _clip_linked_preview(data)
     return None
+
+
+def _small_enough_to_preview(size: object) -> bool:
+    """A known stored size within the cap. A missing or non-numeric size is
+    not read: an unknown size is downloaded whole, as a large object."""
+    if isinstance(size, bool) or not isinstance(size, (int, float)):
+        return False
+    return 0 <= size <= _MAX_LINKED_PREVIEW_BLOB_BYTES
 
 
 async def linked_record_previews(
@@ -2140,7 +2149,7 @@ async def linked_record_previews(
         wanted = {
             rid: vrid for rid, vrid in to_read.items()
             if isinstance(lookups.get(vrid), dict)
-            and (lookups[vrid].get("fileSizeBytes") or 0) <= _MAX_LINKED_PREVIEW_BLOB_BYTES
+            and _small_enough_to_preview(lookups[vrid].get("fileSizeBytes"))
         }
         stored = await asyncio.gather(
             *[
