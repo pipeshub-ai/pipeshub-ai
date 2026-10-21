@@ -20,11 +20,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+
+if TYPE_CHECKING:
+    from app.connectors.sources.slack.team.connector import ProcessingContext
 
 # ---------------------------------------------------------------------------
 # Helpers to build a minimal SlackConnector without real deps
@@ -10074,3 +10077,93 @@ class TestUserListNotReadInFull:
         await c._sync_workspace_roles()
 
         c.data_entities_processor.on_new_app_roles.assert_not_awaited()
+
+
+class TestHasRepliesOnBurstRecords:
+    """A record's hasReplies says whether any message it holds started a thread."""
+
+    @staticmethod
+    def _ctx() -> ProcessingContext:
+        from app.connectors.sources.slack.team.connector import (
+            ProcessingContext,
+            RateLimiter,
+        )
+
+        rl = RateLimiter(limits={2: 10, 3: 10, 4: 10}, headroom=1.0)
+        return ProcessingContext("C1", {"C1": "rg"}, {}, {"U1": "A"}, {"C1": "x"}, rl)
+
+    @pytest.mark.asyncio
+    async def test_channel_burst_with_one_thread_parent_has_replies(self) -> None:
+        from app.connectors.sources.slack.team.connector import ConversationalBurst
+
+        c = _connector_pipeline_ready()
+        burst = ConversationalBurst(
+            messages=[
+                {"ts": "10.0", "user": "U1", "text": "a"},
+                {"ts": "11.0", "user": "U1", "text": "b", "thread_ts": "11.0", "reply_count": 6},
+            ],
+            start_ts=10.0,
+            end_ts=11.0,
+        )
+        recs, deferred = await c._process_burst(burst, self._ctx())
+        assert recs[0][0].has_replies is True
+        assert [d.msg["ts"] for d in deferred] == ["11.0"]
+
+    @pytest.mark.asyncio
+    async def test_channel_burst_without_replies_has_none(self) -> None:
+        from app.connectors.sources.slack.team.connector import ConversationalBurst
+
+        c = _connector_pipeline_ready()
+        burst = ConversationalBurst(
+            messages=[
+                {"ts": "10.0", "user": "U1", "text": "a"},
+                # A reply also sent to the channel names its parent's thread; it started none.
+                {"ts": "11.0", "user": "U1", "text": "b", "thread_ts": "9.0"},
+            ],
+            start_ts=10.0,
+            end_ts=11.0,
+        )
+        recs, deferred = await c._process_burst(burst, self._ctx())
+        assert recs[0][0].has_replies is False
+        assert deferred == []
+
+    @pytest.mark.asyncio
+    async def test_first_thread_burst_holds_the_parent_and_has_replies(self) -> None:
+        from app.connectors.sources.slack.team.connector import ConversationalBurst
+
+        c = _connector_pipeline_ready()
+        burst = ConversationalBurst(
+            messages=[
+                {"ts": "1.0", "user": "U1", "text": "root", "thread_ts": "1.0", "reply_count": 11},
+                {"ts": "2.0", "user": "U1", "text": "r1", "thread_ts": "1.0"},
+            ],
+            start_ts=1.0,
+            end_ts=2.0,
+        )
+        rec = await c._build_thread_burst_record(burst, "1.0", "trg", self._ctx())
+        assert (rec.has_replies, rec.is_reply) == (True, True)
+
+    @pytest.mark.asyncio
+    async def test_later_thread_burst_has_no_replies(self) -> None:
+        from app.connectors.sources.slack.team.connector import ConversationalBurst
+
+        c = _connector_pipeline_ready()
+        burst = ConversationalBurst(
+            messages=[
+                {"ts": "5.0", "user": "U1", "text": "r4", "thread_ts": "1.0"},
+                {"ts": "6.0", "user": "U1", "text": "r5", "thread_ts": "1.0"},
+            ],
+            start_ts=5.0,
+            end_ts=6.0,
+        )
+        rec = await c._build_thread_burst_record(burst, "1.0", "trg", self._ctx())
+        assert (rec.has_replies, rec.is_reply) == (False, True)
+
+    @pytest.mark.asyncio
+    async def test_single_message_flag_is_unchanged(self) -> None:
+        c = _connector_pipeline_ready()
+        with_replies = {"ts": "20.0", "user": "U1", "text": "solo", "thread_ts": "20.0", "reply_count": 2}
+        recs, _ = await c._process_single(with_replies, self._ctx())
+        assert recs[0][0].has_replies is True
+        recs, _ = await c._process_single({"ts": "21.0", "user": "U1", "text": "quiet"}, self._ctx())
+        assert recs[0][0].has_replies is False

@@ -81,6 +81,7 @@ valid_group_labels = [
     ]
 
 from app.utils.record_block_selection import (  # noqa: E402
+    API_READ_HINTS,
     FETCH_RECORD_HINTS,
     RECORD_CLOSE,
     ReadHints,
@@ -91,6 +92,7 @@ from app.utils.record_block_selection import (  # noqa: E402
     selection_hint,
 )
 from app.utils.render_budget import RenderBudget  # noqa: E402
+from app.utils.slack_replies import corrected_has_replies, replies_note  # noqa: E402
 
 # Larger than any record: what a caller that passes no budget gets, so its
 # rendering is bounded only by `max_blocks` exactly as it was before budgets
@@ -2275,12 +2277,19 @@ def build_address_links_info(record: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n" if lines else ""
 
 
-def record_header_metadata(record: dict[str, Any]) -> str:
+def record_header_metadata(record: dict[str, Any], hints: ReadHints = FETCH_RECORD_HINTS) -> str:
     """A read record's metadata as its header shows it: its own fields, then
-    the records that name it and that it names, when those were attached."""
+    the records that name it and that it names, when those were attached.
+
+    A Slack record whose messages have replies also says how many and how to
+    read them (`hints.thread`): the replies are records of their own.
+    """
     metadata = record.get("context_metadata")
     if not isinstance(metadata, str):
         metadata = ""
+    replies = replies_note(record, hints.thread)
+    if replies:
+        metadata = f"{metadata}\n{replies}" if metadata else replies
     links = build_address_links_info(record)
     return f"{metadata}{links.rstrip()}" if links else metadata
 
@@ -3638,6 +3647,13 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                         logger.error(f"Error fetching type-specific metadata for record {record_key}: {str(e)}")
 
                 record_instance = create_record_instance_from_dict(record, graph_doc)
+                if isinstance(record_instance, MessageRecord):
+                    # Records that bundle several Slack messages, and the first
+                    # record of a thread, were stored with hasReplies False; the
+                    # messages' own "Reply Count" lines say otherwise.
+                    record_instance.has_replies = corrected_has_replies(
+                        record_instance.has_replies, record,
+                    )
                 if record_instance:
                     if isinstance(record_instance, DealRecord):
                         record["context_metadata"] = await record_instance.to_llm_context_with_graph(
@@ -4656,7 +4672,7 @@ def record_to_message_content(
 
     try:
         content = []
-        context_metadata = record_header_metadata(record)
+        context_metadata = record_header_metadata(record, hints)
         fk_text = _fk_lines_text(record)
         trailer_reserve = record_trailer_reserve(
             record, selection=include_blocks is not None, hints=hints,
@@ -5283,7 +5299,8 @@ def record_to_text(record: dict[str, Any]) -> str:
     """
     try:
         content: list[str] = []
-        context_metadata = record_header_metadata(record)
+        # This string is what the record-content API returns.
+        context_metadata = record_header_metadata(record, API_READ_HINTS)
         content.append(f"""<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n""")
 
         block_containers = record.get("block_containers", {})
