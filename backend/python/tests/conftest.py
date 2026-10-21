@@ -43,11 +43,23 @@ def _fresh_lane_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 
-def pytest_collection_modifyitems(items) -> None:
+def pytest_collection_modifyitems(config, items) -> None:
     """xdist refuses to run unless every worker collected the same node ids
     in the same order. Parametrize over a set (hash-seeded per process)
     shuffles that order, so sort once after collection."""
     items.sort(key=lambda item: item.nodeid)
+    if not (os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None)):
+        return
+    # Parsing every module does not fit in 30s once the workers share the runner.
+    longer = pytest.mark.timeout(120)
+    # The probe needs a thread to hold the GIL. A busy runner does not
+    # schedule that thread, so the burst stays under the stall threshold.
+    skip_probe = pytest.mark.skip(reason="GIL stall is not measurable while xdist has the cores")
+    for item in items:
+        if item.name == "test_no_production_code_writes_anyone_documents":
+            item.add_marker(longer)
+        elif item.name == "test_the_probe_sees_the_stall_a_pdfminer_thread_causes":
+            item.add_marker(skip_probe)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
