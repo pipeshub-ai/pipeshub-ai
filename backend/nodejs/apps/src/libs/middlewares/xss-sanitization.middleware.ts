@@ -427,7 +427,8 @@ export const xssSanitizationMiddleware = (
     // (sanitizing turns YAML's `>` into `&gt;`), and credentials, which must not be
     // altered. Python validates every field; the web app renders them as React text.
     if (
-      (req.path === '/api/v1/api-toolsets' || req.path.startsWith('/api/v1/api-toolsets/')) &&
+      (req.path === '/api/v1/api-toolsets' ||
+        req.path.startsWith('/api/v1/api-toolsets/')) &&
       (req.method === 'POST' || req.method === 'PUT')
     ) {
       next();
