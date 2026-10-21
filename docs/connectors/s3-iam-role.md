@@ -52,5 +52,5 @@ Give the role the read-only S3 policy from the S3 connector page: https://docs.p
 ## What to expect
 
 - The STS session name is `pipeshub-s3-<connectorId>`. CloudTrail shows it, so you can trace calls to one connector.
-- PipesHub gets new temporary credentials before the old ones expire. You do not need to rotate anything in PipesHub.
+- STS renews the temporary role credentials before they expire. If you rotate the base access key, update it in PipesHub.
 - If STS refuses the role (wrong ARN, wrong external ID, or a trust policy that does not name the base key), the connection test fails. You get a "Connection test failed" notification with the STS `AccessDenied` message.
