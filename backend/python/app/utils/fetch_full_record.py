@@ -331,17 +331,6 @@ class _RecordResolver:
             record["virtual_record_id"] = vrid
         return record
 
-    async def blob_store_for_previews(self) -> BlobStorage | None:
-        """The store linked-record previews are read from, or None when there
-        is none to be had: previews are optional, the read is not."""
-        if self._graph_provider is None:
-            return self._blob_store
-        try:
-            return await self._ensure_blob_store()
-        except Exception as e:
-            logger.debug("Linked record previews skipped: no blob store: %s", e)
-            return None
-
     async def _ensure_blob_store(self) -> BlobStorage:
         if self._blob_store is None:
             self._blob_store = BlobStorage(
@@ -480,11 +469,8 @@ async def _fetch_multiple_records_impl(
     if found_records:
         # What names each record and what it names, with their status: read by
         # id, a record does not pass through the search pipeline that adds them.
-        # A line of each linked record's own text comes from storage too. It is
-        # optional: without a store the links are shown by name, as before.
         await enrich_read_records_with_address_links(
             found_records, graph_provider, org_id, user_id=user_id,
-            blob_store=await resolver.blob_store_for_previews(),
         )
         result["ok"] = True
         result["records"] = found_records

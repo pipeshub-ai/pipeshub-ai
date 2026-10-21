@@ -637,7 +637,7 @@ async def _read_channel_record(
     from app.utils.chat_helpers import enrich_read_records_with_address_links
 
     await enrich_read_records_with_address_links(
-        found_records, graph_provider, org_id, user_id=user_id, blob_store=blob_store,
+        found_records, graph_provider, org_id, user_id=user_id,
     )
 
     if threads:
@@ -832,7 +832,6 @@ async def _fetch_thread_records_impl(
 
     await enrich_read_records_with_address_links(
         found_records, graph_provider, effective_org, user_id=user_id,
-        blob_store=effective_blob,
     )
 
     logger.info(

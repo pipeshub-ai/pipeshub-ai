@@ -33,6 +33,7 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
+from app.utils.chat_helpers import attach_search_link_previews
 from app.utils.opik import get_llm_invoke_config
 from app.utils.query_transform import setup_query_transformation
 from app.utils.stage_timer import StageTimer
@@ -385,6 +386,12 @@ async def search(
                 period_limit = min(period_limit, PERIOD_SEARCH_LIMIT)
             searched = _timeline_search(span, period_limit, run_search, logger, automatic=automatic)
         results = await _with_search_without_dates(searched, run_search, time_range, logger)
+        # Once the response is whole: a linked record that is also in it shows
+        # a line of its text. Optional, and it reads nothing.
+        try:
+            attach_search_link_previews(results)
+        except Exception as e:
+            logger.warning("Linked record previews skipped: %s", e)
         timer.mark("retrieval")
         timer.emit(
             logger, "search",

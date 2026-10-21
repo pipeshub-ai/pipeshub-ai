@@ -10895,9 +10895,10 @@ components:
           type: string
           maxLength: 400
           description: |
-            One line of the linked record's own text: its indexed summary, or its first
-            text block when it has none, cut at a word to at most 400 characters. Only on
-            the first 5 linked records of a response that have text; absent on the rest.
+            One line of the linked record's own text, when that record is also in this
+            response: its summary passage if one came back, otherwise its best passage, cut
+            at a word to at most 400 characters. On at most 5 linked records per response
+            (counting `outsideDates`); absent on the rest.
 
     SemanticSearchAppliedFilters:
       type: object

@@ -628,3 +628,43 @@ class TestTheWholeSpanSearchCountsForTheCaveat:
 
         assert status == 200
         assert _CAVEAT not in body["timeline"]["notes"]
+
+
+class TestLinkedRecordPreviews:
+    """A linked record that is also in the response shows a line of its text:
+    added once for the whole timeline response, from text already in it."""
+
+    @pytest.mark.asyncio
+    async def test_added_once_per_response_and_nothing_is_read(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from app.modules.transformers.blob_storage import BlobStorage
+        from app.utils import chat_helpers
+
+        index = _Index(_QUARTER)
+        search_with_filters = index.search_with_filters
+
+        async def linked(**kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
+            result = await search_with_filters(**kwargs)
+            for doc in result.get("records") or []:
+                # Each record links to March's best match, which is a hit too.
+                doc["linkedRecords"] = [{"relation": "mentionedIn", "recordId": "rec-m1", "recordName": "m1"}]
+            return result
+
+        index.search_with_filters = linked  # type: ignore[method-assign]
+        attach = MagicMock(side_effect=chat_helpers.attach_search_link_previews)
+        with patch("app.api.routes.search.attach_search_link_previews", new=attach), patch.object(
+            BlobStorage, "get_record_from_storage", new=AsyncMock(side_effect=AssertionError("read")),
+        ) as read:
+            status, body = await _search(_quarter(), index)
+
+        assert status == 200
+        assert len(index.calls) == 4
+        attach.assert_called_once()
+        read.assert_not_awaited()
+        previews = {
+            entry.get("preview")
+            for record in body["records"]
+            for entry in record.get("linkedRecords") or []
+        }
+        assert previews == {"passage of m1"}

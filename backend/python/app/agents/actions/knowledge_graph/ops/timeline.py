@@ -1021,9 +1021,6 @@ async def _build_contexts(state: ChatState, hits: list[_PeriodHits]) -> list[Any
         org_id=state.get("org_id", ""),
         user_id=state.get("user_id", ""),
         config_service=config_service,
-        # One context per period, built in parallel: linked records stay
-        # names here rather than costing storage reads in every period.
-        link_previews=False,
     )
     is_multimodal_llm = bool(state.get("is_multimodal_llm", False))
     return await asyncio.gather(*(
