@@ -43,7 +43,7 @@ export function ApiActionConnectRows({ actions, isAdmin, rowStyle, showHeading, 
           key={action.id}
           testId="api-action-connect-row"
           rowStyle={rowStyle}
-          icon={<ConnectorIcon type="generic" size={18} />}
+          icon={<ConnectorIcon type="api" size={18} />}
           name={action.name}
           action={
             // Only an admin can set a shared credential.
