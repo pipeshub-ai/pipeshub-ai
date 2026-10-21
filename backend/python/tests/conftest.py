@@ -62,8 +62,12 @@ def pytest_unconfigure(config):
         # os._exit skips the interpreter's own flush, which dropped the summary.
         sys.stdout.flush()
         sys.stderr.flush()
-        # A run that never reached sessionfinish did not pass.
-        os._exit(getattr(config, "_exitcode", pytest.ExitCode.INTERNAL_ERROR))
+        # Configure and session-start failures never call pytest_sessionfinish.
+        # pytest then returns that status itself; os._exit here would replace it.
+        # Force-exit only after a finished run, where leftover tasks can keep
+        # the process alive.
+        if hasattr(config, "_exitcode"):
+            os._exit(int(config._exitcode))
 
 # ---------------------------------------------------------------------------
 # Auto-mock optional third-party modules that may not be installed in the
