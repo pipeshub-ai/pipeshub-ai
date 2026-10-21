@@ -572,7 +572,8 @@ async def execute_timeline_search(
 
         with_entities = bool(scope.entity_filter_groups)
         search = searcher(scope.groups(with_entities=with_entities))
-        if bounds and wants_outside_dates(bounds):
+        net = bool(bounds) and wants_outside_dates(bounds)
+        if net:
             # One plain search without dates beside the timeline's, for the
             # write-ups made outside the span (ops/outside_dates).
             outside_task = asyncio.create_task(quietly(search(None, OUTSIDE_DATES_SEARCH_LIMIT), log))
@@ -581,11 +582,17 @@ async def execute_timeline_search(
         if with_entities and isinstance(collected, _Collected) and not any(h.results for h in collected.hits):
             # Entity filters are a hard AND at the graph layer; a missing edge
             # empties the scope although matching records exist.
-            retried = await _collect(
-                searcher(scope.groups(with_entities=False)), start_ms, end_ms, date_field, log,
-            )
+            unfiltered = searcher(scope.groups(with_entities=False))
+            retried = await _collect(unfiltered, start_ms, end_ms, date_field, log)
             if isinstance(retried, _Collected) and any(h.results for h in retried.hits):
                 collected = retried
+                if net:
+                    # The search without dates follows the results shown.
+                    if outside_task is not None and not outside_task.done():
+                        outside_task.cancel()
+                    outside_task = asyncio.create_task(
+                        quietly(unfiltered(None, OUTSIDE_DATES_SEARCH_LIMIT), log),
+                    )
                 notes.append(
                     "Note: nothing matched inside the requested department/category/topic/"
                     "language, so these results are NOT limited to it."

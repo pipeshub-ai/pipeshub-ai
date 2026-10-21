@@ -937,13 +937,18 @@ async def _execute_search(
             return results.get("searchResults", []), results.get("virtual_to_record_map", {}), None
 
         entity_filter_dropped = False
-        if wants_outside_dates(time_range):
-            # The same search without its dates, beside the main one so it
-            # adds no wait: the matches the dates left out (ops/outside_dates).
-            outside_dates_task = asyncio.create_task(quietly(_attempt(
-                entity_filter_groups, virtual_record_ids_from_tool,
+
+        def _search_without_dates(entity_fg: dict[str, list[str]]) -> asyncio.Task[Any]:
+            """The same search without its dates, with the entity filter of the
+            results shown: the matches the dates left out (ops/outside_dates)."""
+            return asyncio.create_task(quietly(_attempt(
+                entity_fg, virtual_record_ids_from_tool,
                 bounds=None, limit=OUTSIDE_DATES_SEARCH_LIMIT, record_gaps=False,
             ), logger_instance))
+
+        if wants_outside_dates(time_range):
+            # Beside the main search, so it adds no wait of its own.
+            outside_dates_task = _search_without_dates(entity_filter_groups)
         search_results, virtual_to_record_map, error_json = await _attempt(
             entity_filter_groups, virtual_record_ids_from_tool,
         )
@@ -974,6 +979,11 @@ async def _execute_search(
             if fallback_results:
                 search_results, virtual_to_record_map = fallback_results, fallback_map
                 entity_filter_dropped = True
+                if outside_dates_task is not None:
+                    # The results shown dropped the entity filter, so the
+                    # search without dates drops it too.
+                    await cancel_task_if_running(outside_dates_task)
+                    outside_dates_task = _search_without_dates({})
 
         raw_pattern_records: list[dict[str, Any]] = []
         if pattern_match_task is not None:
@@ -992,7 +1002,9 @@ async def _execute_search(
             outside_dates = await _outside_dates_found(
                 outside_dates_task,
                 time_range,
-                shown=[*search_results, *raw_pattern_records],
+                # Not the grep hits: those outside the dates are dropped by the
+                # merge below, and those inside are never listed anyway.
+                shown=search_results,
                 shown_records=virtual_to_record_map,
                 log=logger_instance,
             )

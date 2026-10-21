@@ -15,6 +15,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    ENTITY_ID_FILTER_KEY_CACHE_KEY,
+)
 from app.agents.actions.knowledge_graph.ops.outside_dates import (
     DATE_FILTER_SAFETY_NET_ENV_VAR,
     MAX_OUTSIDE_DATES_RECORDS,
@@ -225,12 +228,17 @@ class _Index:
         self.records = {vrid: (created, score) for vrid, (created, score) in records.items()}
         self.calls: list[dict[str, Any]] = []
         self.fail_without_dates = False
+        # No record has a belongsTo edge to a department: an entity filter on
+        # one empties the scope.
+        self.no_entity_edges = False
 
     async def search_with_filters(self, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
         self.calls.append(kwargs)
         time_range = kwargs.get("time_range") or {}
         if not time_range and self.fail_without_dates:
             raise RuntimeError("vector store down")
+        if self.no_entity_edges and "departments" in kwargs["filter_groups"]:
+            return {"status_code": 404, "searchResults": [], "records": [], "message": "none"}
         found = sorted(
             (vrid for vrid, (created, _) in self.records.items()
              if not outside_bounds(_record(vrid, created), time_range)),
@@ -385,6 +393,34 @@ class TestADatedSearch:
         assert "outside your dates" not in result
 
     @pytest.mark.asyncio
+    async def test_a_keyword_hit_the_dates_drop_does_not_hide_a_record(self) -> None:
+        # Keyword search is not date-bounded; the merge drops its hits outside
+        # the dates. One on the release page must not keep it off the list.
+        index = _Index(_THE_WEEK)
+        state = {**_state(index), "config_service": MagicMock()}
+        with patch(f"{_SEARCH}.run_pattern_match_with_llm_grep",
+                   AsyncMock(return_value=[{"virtual_record_id": "release", "_key": "rec-release"}])), \
+                patch(f"{_SEARCH}.merge_pattern_match_results", AsyncMock(return_value=[])):
+            result = await _run(state, **_DATES)
+
+        assert "1. Record ID: rec-release | Doc release" in result
+
+    @pytest.mark.asyncio
+    async def test_after_the_entity_filter_is_dropped_the_extra_search_drops_it_too(self) -> None:
+        index = _Index(_THE_WEEK)
+        index.no_entity_edges = True
+        state = {**_state(index), ENTITY_ID_FILTER_KEY_CACHE_KEY: {"dept-1": ("departments", "Engineering")}}
+
+        result = await _run(state, entity_ids=["dept-1"], **_DATES)
+
+        assert "NOT limited to it" in result
+        assert "1. Record ID: rec-release | Doc release" in result
+        unbounded = [call for call in index.calls if not call["time_range"]]
+        # The one started with the filter is replaced (here, before it ran).
+        assert unbounded
+        assert "departments" not in unbounded[-1]["filter_groups"]
+
+    @pytest.mark.asyncio
     async def test_modified_dates_get_the_same_net(self) -> None:
         index = _Index(_THE_WEEK)
 
@@ -438,6 +474,19 @@ class TestATimeline:
             "1. Record ID: rec-release", "2. Record ID: rec-retro", "3. Record ID: rec-summary",
         ]
         assert {"rec-release", "rec-retro", "rec-summary"} <= state["known_record_ids"]
+
+    @pytest.mark.asyncio
+    async def test_after_the_entity_filter_is_dropped_the_extra_search_drops_it_too(self) -> None:
+        index = _Index(_THE_WEEK)
+        index.no_entity_edges = True
+        state = {**_state(index), ENTITY_ID_FILTER_KEY_CACHE_KEY: {"dept-1": ("departments", "Engineering")}}
+
+        result = await _run(state, entity_ids=["dept-1"], created_after="2025-12-01", created_before="2026-01-31")
+
+        assert "NOT limited to it" in result
+        assert "1. Record ID: rec-release | Doc release" in result
+        unbounded = [call for call in index.calls if not call["time_range"]]
+        assert ("departments" in unbounded[-1]["filter_groups"]) is False
 
     @pytest.mark.asyncio
     async def test_switched_off_it_is_the_timeline_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
