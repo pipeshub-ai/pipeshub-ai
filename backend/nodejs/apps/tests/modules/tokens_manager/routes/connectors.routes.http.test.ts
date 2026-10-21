@@ -18,6 +18,7 @@ import {
 } from './connectors-http-harness'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
 import { RESYNC_NOT_QUEUED_MESSAGE } from '../../../../src/modules/knowledge_base/services/kb.relation.service'
+import { VECTOR_STORE_REBUILD_AVAILABLE } from '../../../../src/edition'
 
 const admin = ADMIN
 const member = MEMBER
@@ -42,7 +43,11 @@ describe('Connector routes over HTTP', () => {
         const r = await call(h, 'POST', `/vector-store/${operation}`, sessionToken(h, member))
 
         expect(r.status).to.equal(403)
-        expect(errorMessage(r)).to.equal('You need admin access to do this. Ask an admin in your organisation.')
+        expect(errorMessage(r)).to.equal(
+          VECTOR_STORE_REBUILD_AVAILABLE
+            ? 'You need admin access to do this. Ask an admin in your organisation.'
+            : 'Rebuilding the vector store is not available on this deployment.',
+        )
         expect(h.backend.calls).to.have.length(0)
       })
 
@@ -55,6 +60,12 @@ describe('Connector routes over HTTP', () => {
 
         const r = await call(h, 'POST', `/vector-store/${operation}`, token)
 
+        // A deployment that does not offer the rebuild refuses it before the connector service.
+        if (!VECTOR_STORE_REBUILD_AVAILABLE) {
+          expect(r.status).to.equal(403)
+          expect(h.backend.calls).to.have.length(0)
+          return
+        }
         expect(r.status).to.equal(202)
         expect(r.body).to.deep.equal({ success: true, jobId: 'job-1' })
         const forwarded = single(h.backend.callsTo('POST', `/api/v1/connectors/vector-store/${operation}`))
@@ -74,7 +85,7 @@ describe('Connector routes over HTTP', () => {
 
       const r = await call(h, 'POST', '/vector-store/cleanup', oauthToken(h, admin, 'connector:sync'))
 
-      expect(r.status).to.equal(202)
+      expect(r.status).to.equal(VECTOR_STORE_REBUILD_AVAILABLE ? 202 : 403)
     })
 
     it('treats a token for a user in another org as unknown', async () => {
