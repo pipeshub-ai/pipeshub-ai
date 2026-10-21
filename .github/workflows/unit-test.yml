@@ -157,6 +157,15 @@ jobs:
             --cov=app --cov-config=.coveragerc --cov-report=term \
             --cov-fail-under=${{ inputs.python-coverage-threshold || 89.8 }}
 
+      - name: Run the stream stall check on one worker
+        run: |
+          cd backend/python
+          # longest_stall is wall time between loop turns. Under xdist it
+          # includes time the worker was not scheduled, so the parallel run
+          # skips this test. Run it alone, without coverage, so the gate
+          # above keeps the parallel report.
+          pytest tests/unit/agents/adapter/test_langchain_transport_accumulation.py::TestEventLoopStaysResponsive::test_other_work_keeps_running_through_a_long_stream --tb=short
+
       # The only automated check on agent behaviour: six golden properties the
       # prompt and loop must hold (tool choice, no placeholder write params, a
       # single final_answer, no write without user intent, resolvable citations,
