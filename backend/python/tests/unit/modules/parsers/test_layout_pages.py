@@ -79,3 +79,40 @@ class TestProcessorParse:
         assert len(pages) == 30
         assert isinstance(pages[0], ParsedPageData)
         assert 0 < io_probe.worst < 0.25
+
+
+class TestParsePdfLayoutMemory:
+    def test_each_page_is_closed_once_parsed_and_the_heap_is_trimmed(self) -> None:
+        """pdf.pages keeps every Page and its parsed chars until the PDF closes."""
+        import pdfplumber.page
+
+        from app.modules.parsers.pdf import layout_pages
+
+        with patch.object(pdfplumber.page.Page, "close", autospec=True) as close, \
+                patch.object(layout_pages, "_release_freed_memory") as trim:
+            pages = parse_pdf_layout(text_pdf(pages=3))
+
+        assert len(pages) == 3
+        assert close.call_count >= 3
+        trim.assert_called_once()
+
+
+class TestParsePdfLayoutModelRasters:
+    def test_one_windowed_72_dpi_cache_serves_the_layout_model(self) -> None:
+        from app.modules.parsers.pdf import layout_pages
+
+        seen = []
+        real = layout_pages.extract_layout_regions
+
+        def spy(page: object, **kwargs: object) -> list[object]:
+            seen.append(kwargs["model_raster_cache"])
+            return real(page, **kwargs)
+
+        with patch.object(layout_pages, "extract_layout_regions", side_effect=spy):
+            parse_pdf_layout(text_pdf(pages=3))
+
+        assert len(seen) == 3 and len({id(c) for c in seen}) == 1
+        cache = seen[0]
+        assert (cache._dpi, cache._num_pages, cache._window) == (
+            layout_pages.MODEL_DPI, 3, layout_pages.MODEL_RASTER_WINDOW_PAGES,
+        )
