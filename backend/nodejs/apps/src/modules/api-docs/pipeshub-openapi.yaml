@@ -10551,6 +10551,13 @@ components:
         block_index:
           type: integer
           nullable: true
+        qualified_name:
+          type: string
+          description: |
+            For a block of source code, the symbol it holds, written `kind:Scope.name` (for example
+            `method:Outer.Inner.run`), or `kind:Lstart-end` for a span with no name (`imports:L1-5`).
+            An empty string for any other block. Set on a code hit and on each passage of an expanded
+            section; absent on other hits.
         distanceFromMatch:
           type: integer
           minimum: 0
