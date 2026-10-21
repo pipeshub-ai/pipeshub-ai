@@ -141,6 +141,11 @@ async def test_lock_contention_is_acked_without_starting_second_build() -> None:
         payload,
     )
 
+    # The build runs as a background task: let it start before counting.
+    for _ in range(50):
+        if runner.run.call_count:
+            break
+        await asyncio.sleep(0)
     assert runner.run.call_count == 1
     finish.set()
     await manager.cancel_all()
