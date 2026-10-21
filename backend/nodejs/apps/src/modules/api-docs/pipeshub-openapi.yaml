@@ -10276,6 +10276,10 @@ components:
             Only records last changed in the source on or before this date. Same format as
             `createdBefore`. Records with no source date are left out whenever a bound on
             that date is set.
+
+            With any date bound set, the same search also runs once without dates, and its best
+            matches that the bounds left out come back apart from the results, in
+            `searchResponse.outsideDates`.
           example: "2026-09-30T23:59:59Z"
         rewriteQuery:
           type: boolean
@@ -10834,6 +10838,41 @@ components:
             $ref: '#/components/schemas/SemanticSearchGraphRecord'
         timeline:
           $ref: '#/components/schemas/SemanticSearchTimeline'
+        outsideDates:
+          $ref: '#/components/schemas/SemanticSearchOutsideDates'
+
+    SemanticSearchOutsideDates:
+      type: object
+      additionalProperties: false
+      description: |
+        Present only on a search with date bounds, when the same search without them found
+        matches the bounds left out. Date bounds match when a record was written or last changed,
+        not when the event it describes happened, so release notes, a retrospective or a weekly
+        summary written after a period are left out of a search bounded to that period. The
+        search without dates, with the same query, filters and permissions and a limit of 10,
+        runs beside the bounded search (or beside a timeline's searches: one plain search, not a
+        second timeline). Its best matches outside the bounds, up to 3 records, best first, come
+        here, never in `searchResults`, which are unchanged. When nothing inside the bounds
+        matched, the response is then a `200` with empty `searchResults`. A server whose
+        `DATE_FILTER_SAFETY_NET` setting is `false` never sends this field.
+      required:
+        - note
+        - searchResults
+        - records
+      properties:
+        note:
+          type: string
+          description: A plain-language label for these matches, to pass on with them.
+        searchResults:
+          type: array
+          description: Up to 3 passages of each record, best first.
+          items:
+            $ref: '#/components/schemas/SemanticSearchHit'
+        records:
+          type: array
+          description: The records, best first, with their source dates.
+          items:
+            $ref: '#/components/schemas/SemanticSearchGraphRecord'
 
     SemanticSearchTimeline:
       type: object

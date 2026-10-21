@@ -33,6 +33,10 @@ search API when the caller leaves ``timeline`` out, and through
 knowledgegraph__search. Agents seldom choose the timeline themselves, and a
 plain search over months answers a summary from one part of the span.
 
+With date bounds, one plain search without them runs beside the period
+searches, and its best matches written outside the span are listed after the
+periods (``ops/outside_dates``): a write-up made after a span can be about it.
+
 The deployment switch ``TIMELINE_SUMMARIES`` offers the tool and the API
 option; it is on unless set to ``false``, and does not follow
 ``HIGH_ACCURACY_MODE``.
@@ -57,6 +61,15 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
     resolve_entity_virtual_ids,
 )
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
+from app.agents.actions.knowledge_graph.ops.outside_dates import (
+    OUTSIDE_DATES_SEARCH_LIMIT,
+    outside_dates_for_model,
+    outside_dates_pointer,
+    pick_outside_dates,
+    quietly,
+    shown_ids,
+    wants_outside_dates,
+)
 from app.agents.actions.knowledge_graph.ops.results import (
     _RECORD_NAME_RE,
     dedupe_append_final_results,
@@ -538,6 +551,7 @@ async def execute_timeline_search(
     if not retrieval_service or not state.get("graph_provider"):
         return _json("error", "Retrieval services not available")
 
+    outside_task: asyncio.Task[Any] | None = None
     try:
         scope = await _resolve_scope(state, source_ids, entity_ids)
         if isinstance(scope, str):
@@ -557,9 +571,12 @@ async def execute_timeline_search(
             return search
 
         with_entities = bool(scope.entity_filter_groups)
-        collected = await _collect(
-            searcher(scope.groups(with_entities=with_entities)), start_ms, end_ms, date_field, log,
-        )
+        search = searcher(scope.groups(with_entities=with_entities))
+        if bounds and wants_outside_dates(bounds):
+            # One plain search without dates beside the timeline's, for the
+            # write-ups made outside the span (ops/outside_dates).
+            outside_task = asyncio.create_task(quietly(search(None, OUTSIDE_DATES_SEARCH_LIMIT), log))
+        collected = await _collect(search, start_ms, end_ms, date_field, log)
         notes = [*([note] if note else []), *scope.notes]
         if with_entities and isinstance(collected, _Collected) and not any(h.results for h in collected.hits):
             # Entity filters are a hard AND at the graph layer; a missing edge
@@ -575,6 +592,19 @@ async def execute_timeline_search(
                 )
         if isinstance(collected, str):
             return collected
+        outside_text = ""
+        outside_count = 0
+        if outside_task is not None and bounds:
+            shown_virtual_ids, shown_record_ids = shown_ids(
+                [hit for h in collected.hits for hit in h.results],
+                {vrid: record for h in collected.hits for vrid, record in h.records.items()},
+            )
+            picked = pick_outside_dates(
+                await outside_task, bounds,
+                shown_virtual_ids=shown_virtual_ids, shown_record_ids=shown_record_ids,
+            )
+            outside_text = outside_dates_for_model(state, picked, FETCH_RECORD_TOOL_NAME)
+            outside_count = len(picked)
         if not any(h.results for h in collected.hits):
             message = "No results found in any period."
             if any(h.failed or h.incomplete for h in collected.hits):
@@ -586,16 +616,23 @@ async def execute_timeline_search(
                 " Before concluding it does not exist, search with knowledgegraph__search and no "
                 "date filters: a record's source date may fall outside this span."
             )
-            return _json("success", " ".join([message, *notes]))
+            return _json("success", " ".join([message, *notes]) + outside_text)
         if start_ms is None:
             notes.append(
                 f"No start was given, so this covers {_day(collected.start_ms)} on: a year before the "
                 "end, or the earliest of the best matches if that is older. Pass start to look further back."
             )
-        return await _render_timeline(state, query, date_field, "".join(f"{n}\n" for n in notes), collected)
+        if outside_text:
+            notes.append(outside_dates_pointer(outside_count).strip())
+        return await _render_timeline(
+            state, query, date_field, "".join(f"{n}\n" for n in notes), collected, tail=outside_text,
+        )
     except Exception as exc:
         log.error("knowledgegraph__search_timeline error: %s", exc, exc_info=True)
         return _json("error", f"Timeline search error: {exc}")
+    finally:
+        if outside_task is not None and not outside_task.done():
+            outside_task.cancel()
 
 
 async def automatic_timeline_search(
@@ -886,7 +923,10 @@ def _status_line(period_hits: _PeriodHits, has_matches: bool) -> str:  # noqa: F
 
 async def _render_timeline(
     state: ChatState, query: str, date_field: str, notes: str, collected: _Collected,
+    *, tail: str = "",
 ) -> str | list[Part]:
+    """The periods' best blocks within one search result's size; ``tail``,
+    sized in, closes it."""
     from app.modules.retrieval.context.renderer import KnowledgeRenderer
     from app.utils.chat_helpers import (
         CitationRefMapper,
@@ -922,7 +962,10 @@ async def _render_timeline(
     has_matches = [context is not None and bool(context.ranked) for context in contexts]
     headings = [f"\n### {h.label}\n" for h in hits]
     status = [_status_line(h, matched) for h, matched in zip(hits, has_matches)]
-    budget = TIMELINE_RESULT_CHARS - len(header) - len(footer) - sum(map(len, headings)) - sum(map(len, status))
+    budget = (
+        TIMELINE_RESULT_CHARS - len(header) - len(footer) - len(tail)
+        - sum(map(len, headings)) - sum(map(len, status))
+    )
     shares = _shares(budget, [h.weight if matched else None for h, matched in zip(hits, has_matches)])
 
     shown = _Shown(sections=[header])
@@ -945,7 +988,7 @@ async def _render_timeline(
         )
         used = _render_period(renderer, context, period_hits, date_field, max(share, 0), shown, shortener)
         carry = share - used
-    shown.sections.append(footer)
+    shown.sections.append(footer + tail)
 
     state["citation_ref_mapper"] = ref_mapper
     _remember_shown(state, shown)

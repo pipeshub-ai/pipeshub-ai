@@ -195,6 +195,8 @@ services:
       - ENTITY_SEARCH_TOOL=${ENTITY_SEARCH_TOOL:-}
       # On unless set to false; HIGH_ACCURACY_MODE does not change it.
       - TIMELINE_SUMMARIES=${TIMELINE_SUMMARIES:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - DATE_FILTER_SAFETY_NET=${DATE_FILTER_SAFETY_NET:-}
       - FETCH_SIZE_BY_CHARS=${FETCH_SIZE_BY_CHARS:-}
       # On unless set to false; HIGH_ACCURACY_MODE does not change it.
       - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}

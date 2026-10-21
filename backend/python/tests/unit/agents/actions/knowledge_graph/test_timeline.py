@@ -22,6 +22,9 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
     RECORD_SCOPED_ENTITY_CACHE_KEY,
 )
 from app.agents.actions.knowledge_graph.ops.entity_records import EntitySearchScope
+from app.agents.actions.knowledge_graph.ops.outside_dates import (
+    DATE_FILTER_SAFETY_NET_ENV_VAR,
+)
 from app.agents.actions.knowledge_graph.ops.timeline import (
     DEFAULT_LOOKBACK_DAYS,
     MAX_PERIODS,
@@ -37,6 +40,13 @@ from app.agents.actions.knowledge_graph.ops.timeline import (
 from app.models.blocks import BlockType
 
 _BUILDER = "app.modules.retrieval.context.builder"
+
+
+@pytest.fixture(autouse=True)
+def _period_searches_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These count and read a timeline's own searches; the one search without
+    # dates beside them is tested in test_outside_dates.py.
+    monkeypatch.setenv(DATE_FILTER_SAFETY_NET_ENV_VAR, "false")
 
 
 def _ms(day: str) -> int:

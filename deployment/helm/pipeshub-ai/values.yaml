@@ -373,6 +373,11 @@ config:
   # order, and questions about a span ("between March and May", "how did X
   # evolve") are pointed to it. A search bounded on one date over more than
   # 31 days runs period by period too.
+  # DATE_FILTER_SAFETY_NET is not part of this mode: it is on unless set to
+  # "false" through extraEnv. With it on, a search with a date filter also
+  # runs once without dates and names its best 3 matches written outside the
+  # dates, such as release notes written after the period, apart from the
+  # results.
   # FETCH_SIZE_BY_CHARS is not part of this mode: it is on unless set to
   # "false" through extraEnv. With it on, fetch_record reads as much of each
   # record as fits a share of the context window instead of a block count.

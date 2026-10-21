@@ -14,6 +14,9 @@ from pydantic import ValidationError
 
 # The route module only loads cleanly once app.edition_config is imported first.
 import app.edition_config  # noqa: F401
+from app.agents.actions.knowledge_graph.ops.outside_dates import (
+    DATE_FILTER_SAFETY_NET_ENV_VAR,
+)
 from app.api.routes.search import (
     SearchQuery,
     SearchRequest,
@@ -25,6 +28,13 @@ from app.api.routes.search import (
     search,
 )
 from app.utils.user_messages import action_failed
+
+
+@pytest.fixture(autouse=True)
+def _one_search_per_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These read the one search a request runs; the search without dates that
+    # runs beside a dated one is tested in test_search_outside_dates.py.
+    monkeypatch.setenv(DATE_FILTER_SAFETY_NET_ENV_VAR, "false")
 
 
 # ---------------------------------------------------------------------------

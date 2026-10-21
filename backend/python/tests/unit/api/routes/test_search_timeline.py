@@ -15,6 +15,9 @@ from pydantic import ValidationError
 
 import app.edition_config  # noqa: F401
 from app.agents.actions.knowledge_graph.ops import timeline
+from app.agents.actions.knowledge_graph.ops.outside_dates import (
+    DATE_FILTER_SAFETY_NET_ENV_VAR,
+)
 from app.agents.actions.knowledge_graph.ops.timeline import (
     AUTO_TIMELINE_MIN_DAYS,
     PERIOD_SEARCH_LIMIT,
@@ -127,6 +130,9 @@ def _quarter(**fields: Any) -> SearchQuery:  # noqa: ANN401
 @pytest.fixture(autouse=True)
 def _switch_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(TIMELINE_SUMMARIES_ENV_VAR, raising=False)
+    # These count a ranked search as one search; the search without dates
+    # that runs beside a dated one is tested in test_search_outside_dates.py.
+    monkeypatch.setenv(DATE_FILTER_SAFETY_NET_ENV_VAR, "false")
 
 
 class TestTheField:
