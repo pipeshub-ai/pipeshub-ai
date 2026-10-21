@@ -13,6 +13,8 @@ from object_store_behaviour_fakes import (
     FakeRecordsDb,
     Response,
     make_connector,
+    run_full_sync_task,
+    runner_graph,
 )
 
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -407,6 +409,34 @@ class TestBucketDeletedAtTheSource:
 
         assert db.paths() == {path("a.txt")}
         assert BUCKET in db.record_groups
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    @pytest.mark.parametrize("failure", ["no_such_bucket", "listing_error"])
+    async def test_a_full_sync_past_a_failed_listing_unlinks_nothing(self, connector, store, db, failure) -> None:
+        # The runner strips the edges of every record a full sync did not write, unless it reports a partial read.
+        connector.bucket_name = None
+        connector.data_source.add_bucket("bucket-2").put("b.txt")
+        store.put("a.txt")
+        await run_full_sync_task(connector, runner_graph())
+
+        if failure == "no_such_bucket":
+            del connector.data_source.stores[BUCKET]
+        else:
+            store.fail_page = 0
+        graph = runner_graph()
+        await run_full_sync_task(connector, graph)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert db.paths() == {path("a.txt"), "bucket-2/b.txt"}
+
+        if failure == "no_such_bucket":
+            connector.data_source.stores[BUCKET] = store
+        else:
+            store.fail_page = None
+        graph = runner_graph()
+        await run_full_sync_task(connector, graph)
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
 
 
 class TestDateFilters:

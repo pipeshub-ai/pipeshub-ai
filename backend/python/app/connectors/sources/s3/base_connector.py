@@ -73,6 +73,7 @@ from app.connectors.core.registry.folder_scope import (
     remove_deselected_containers,
     remove_records_not_listed,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -360,6 +361,8 @@ class S3CompatibleBaseConnector(BaseConnector):
         self._ensured_folders: set[str] = set()
         # Personal scope's creator, looked up once per run; a failed lookup is never kept.
         self._creator: User | None = None
+        # Set when a bucket of this full sync was not listed to the end; asyncio runs the buckets on one thread.
+        self._skipped_part_of_a_bucket = False
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
@@ -418,6 +421,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             # the memo only removes repeats *within* one run.
             self._ensured_folders.clear()
             self._creator = None
+            self._skipped_part_of_a_bucket = False
 
             # Reload sync and indexing filters to pick up configuration changes
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -505,6 +509,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     self.logger.info(f"Syncing bucket: {bucket_name}")
                     await self._sync_bucket(bucket_name)
                 except Exception as e:
+                    self._skipped_part_of_a_bucket = True
                     self.logger.error(f"Error syncing bucket {bucket_name}: {e}", exc_info=True)
 
         async with asyncio.TaskGroup() as tasks:
@@ -722,6 +727,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.data_entities_processor, self.connector_id, bucket_name, scope.list_prefixes, listed, self.logger
             )
         else:
+            self._skipped_part_of_a_bucket = True
             self.logger.info(f"Not removing records in bucket {bucket_name}: a listing did not cover every object")
         await clean_up_scope(
             self.data_entities_processor, self.record_sync_point, self.connector_id, bucket_name, scope, self.logger
@@ -1281,6 +1287,10 @@ class S3CompatibleBaseConnector(BaseConnector):
                 raise LookupError(f"Creator {self.created_by!r} of connector {self.connector_id} not found or has no email")
             self._creator = user
         return self._creator
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A bucket not listed to the end was not seen in full, so nothing is unlinked after this sync."""
+        return FullSyncCoverage(complete=not self._skipped_part_of_a_bucket)
 
     async def _creator_or_raise(self) -> User:
         """The creator, or a notification and the error: a run that ends normally would count as a full sync."""
