@@ -681,7 +681,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     expect(onSend).not.toHaveBeenCalled();
     expect(streaming.streamRegenerateForSlot).toHaveBeenCalledTimes(1);
     expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
-      slotId, 'msg-3', undefined, undefined, 'Edited question',
+      slotId, 'msg-3', undefined, undefined, { query: 'Edited question' },
     );
     expect(composer().value).toBe('');
     expect(screen.queryByText('Edit Query')).toBeNull();
@@ -714,7 +714,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     fireEvent.keyDown(composer(), { key: 'Enter' });
 
     expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
-      slotId, 'msg-3', undefined, { apps: ['app-drive'], kb: ['kb-legal'] }, 'Edited question',
+      slotId, 'msg-3', undefined, { apps: ['app-drive'], kb: ['kb-legal'] }, { query: 'Edited question' },
     );
   });
 
@@ -729,6 +729,240 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
     fireEvent.keyDown(composer(), { key: 'Escape' });
     expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
+  });
+
+  describe('the files of the edited question', () => {
+    const stored = [ref('rec-a'), ref('rec-b')];
+
+    function startEdit(attachments: AttachmentRef[] = stored) {
+      act(() => {
+        useCommandStore.getState().dispatch('showEditQuery', {
+          messageId: 'msg-3',
+          text: 'Original question',
+          attachments,
+        });
+      });
+    }
+    const chip = (name: string) => screen.queryByText(name)
+
+    it('shows the files stored with the question as chips', () => {
+      openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
+
+      startEdit();
+
+      expect(chip('rec-a.pdf')).toBeTruthy();
+      expect(chip('rec-b.pdf')).toBeTruthy();
+      expect(screen.getAllByText('PDF')).toHaveLength(2);
+    });
+
+    it('sends only the text when the files are left as they are', () => {
+      const slotId = openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
+      startEdit();
+
+      type('Edited question');
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+        slotId, 'msg-3', undefined, undefined, { query: 'Edited question' },
+      );
+    });
+
+    it('regenerates as it was when neither the text nor the files changed', () => {
+      const slotId = openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
+      startEdit();
+
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(slotId, 'msg-3', undefined, undefined);
+    });
+
+    it('detaches a removed file from the question without deleting the stored file', () => {
+      const slotId = openActiveConversation();
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile });
+      startEdit();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove rec-a.pdf' }));
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(onDeleteFile).not.toHaveBeenCalled();
+      expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+        slotId, 'msg-3', undefined, undefined, { query: 'Original question', attachments: [ref('rec-b')] },
+      );
+    });
+
+    it('sends an empty list when every file was removed', () => {
+      const slotId = openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
+      startEdit();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove rec-a.pdf' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Remove rec-b.pdf' }));
+      type('Edited question');
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+        slotId, 'msg-3', undefined, undefined, { query: 'Edited question', attachments: [] },
+      );
+    });
+
+    it('sends the stored files together with a file added in the edit', async () => {
+      const slotId = openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-c')), onDeleteFile: vi.fn() });
+      startEdit();
+
+      await act(async () => pick(pdf()));
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(
+        slotId, 'msg-3', undefined, undefined,
+        { query: 'Original question', attachments: [ref('rec-a'), ref('rec-b'), ref('rec-c')] },
+      );
+    });
+
+    it('counts the stored files toward the limit of ten', () => {
+      openActiveConversation();
+      const onUploadFile = vi.fn(() => new Promise<AttachmentRef>(() => {}));
+      renderInput({ onUploadFile, onDeleteFile: vi.fn() });
+      startEdit(Array.from({ length: 9 }, (_, i) => ref(`rec-${i}`)));
+
+      pick(pdf('one.pdf'), pdf('two.pdf'))
+
+      expect(onUploadFile).toHaveBeenCalledTimes(1);
+      expect(toastTitles()).toEqual(['Maximum 10 attachments per message.']);
+    });
+
+    it('waits for a file that is still uploading before it sends the edit', async () => {
+      openActiveConversation();
+      const upload = deferred<AttachmentRef>();
+      renderInput({ onUploadFile: vi.fn(() => upload.promise), onDeleteFile: vi.fn() });
+      startEdit();
+      pick(pdf());
+
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+      expect(streaming.streamRegenerateForSlot).not.toHaveBeenCalled();
+
+      await act(async () => upload.resolve(ref('rec-c')));
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+      expect(streaming.streamRegenerateForSlot).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops the files picked in an edit that is cancelled, and keeps the stored ones', async () => {
+      openActiveConversation();
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-c')), onDeleteFile });
+      startEdit();
+      await act(async () => pick(pdf()));
+
+      fireEvent.keyDown(composer(), { key: 'Escape' });
+
+      expect(onDeleteFile).toHaveBeenCalledTimes(1);
+      expect(onDeleteFile).toHaveBeenCalledWith('rec-c');
+      expect(chip('rec-a.pdf')).toBeNull();
+      expect(chip('report.pdf')).toBeNull();
+    });
+
+    it('puts back the files the reader had attached when the edit is cancelled', async () => {
+      openActiveConversation();
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-mine')), onDeleteFile });
+      await act(async () => pick(pdf('mine.pdf')));
+      expect(chip('mine.pdf')).toBeTruthy();
+
+      startEdit();
+      expect(chip('mine.pdf')).toBeNull();
+      expect(chip('rec-a.pdf')).toBeTruthy();
+      fireEvent.keyDown(composer(), { key: 'Escape' });
+
+      expect(chip('mine.pdf')).toBeTruthy();
+      expect(chip('rec-a.pdf')).toBeNull();
+      expect(onDeleteFile).not.toHaveBeenCalled();
+    });
+
+    it('puts back the files the reader had attached once the edit is sent', async () => {
+      openActiveConversation();
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-mine')), onDeleteFile });
+      await act(async () => pick(pdf('mine.pdf')));
+
+      startEdit();
+      type('Edited question');
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(chip('mine.pdf')).toBeTruthy();
+      expect(chip('rec-a.pdf')).toBeNull();
+      expect(onDeleteFile).not.toHaveBeenCalled();
+    });
+
+    it('keeps a file picked for a sent edit, since the question now holds it', async () => {
+      openActiveConversation();
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-c')), onDeleteFile });
+      startEdit();
+      await act(async () => pick(pdf()));
+
+      fireEvent.keyDown(composer(), { key: 'Enter' });
+
+      expect(onDeleteFile).not.toHaveBeenCalled();
+    });
+
+    it('leaves the edit, and its files, when the reader opens another conversation', async () => {
+      openActiveConversation();
+      const other = useChatStore.getState().createSlot('conv-2');
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-c')), onDeleteFile });
+      startEdit();
+      await act(async () => pick(pdf()));
+
+      act(() => useChatStore.getState().setActiveSlot(other));
+
+      expect(screen.queryByText('Edit Query')).toBeNull();
+      expect(chip('rec-a.pdf')).toBeNull();
+      expect(chip('report.pdf')).toBeNull();
+      expect(onDeleteFile).toHaveBeenCalledWith('rec-c');
+    });
+
+    it('leaves the edit files when a regenerate starts instead', () => {
+      openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
+      startEdit();
+
+      act(() => {
+        useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Old question' });
+      });
+
+      expect(screen.getByText('Regenerate response')).toBeTruthy();
+      expect(chip('rec-a.pdf')).toBeNull();
+    });
+
+    it('shows the files of the newer edit when the reader switches edits, and drops the earlier new ones', async () => {
+      openActiveConversation();
+      const onDeleteFile = vi.fn();
+      renderInput({ onUploadFile: vi.fn(async () => ref('rec-c')), onDeleteFile });
+      startEdit();
+      await act(async () => pick(pdf()));
+
+      startEdit([ref('rec-z')]);
+
+      expect(onDeleteFile).toHaveBeenCalledWith('rec-c');
+      expect(onDeleteFile).not.toHaveBeenCalledWith('rec-a');
+      expect(chip('rec-z.pdf')).toBeTruthy();
+      expect(chip('rec-a.pdf')).toBeNull();
+      expect(chip('report.pdf')).toBeNull();
+    });
+
+    it('does not keep the question files after the edit when the question had none', () => {
+      openActiveConversation();
+      renderInput({ onUploadFile: vi.fn(), onDeleteFile: vi.fn() });
+
+      startEdit([]);
+      fireEvent.keyDown(composer(), { key: 'Escape' });
+
+      expect(screen.queryByText('Edit Query')).toBeNull();
+    });
   });
 
   it('does not send an edit that was cleared, and stays in edit mode', () => {

@@ -152,7 +152,7 @@ describe('regenerating with an edited question', () => {
       data: { conversation: conversationWith('Edited question', 'new answer') },
     });
 
-    const run = streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, 'Edited question');
+    const run = streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
 
     expect(questionOf(slotId)).toBe('Edited question');
     expect(slot(slotId).isStreaming).toBe(true);
@@ -182,7 +182,7 @@ describe('regenerating with an edited question', () => {
     const slotId = newSlot();
     fetchMock.mockResolvedValueOnce(jsonResponse(500, {}));
 
-    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, 'Edited question');
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
 
     expect(sentBody().query).toBe('Edited question');
     expect(slot(slotId).isStreaming).toBe(false);
@@ -196,7 +196,7 @@ describe('regenerating with an edited question', () => {
       sseResponse([frame('RUN_ERROR', { message: 'The AI model is not responding right now.', code: 'stream_error' })]),
     );
 
-    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, 'Edited question');
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
 
     expect(slot(slotId).isStreaming).toBe(false);
     expect(questionOf(slotId)).toBe('Old question');
@@ -209,7 +209,7 @@ describe('regenerating with an edited question', () => {
       data: { conversation: conversationWith('Edited question', 'new answer') },
     });
 
-    await streamRegenerateForSlot(slotId, 'unknown-id', MODEL, undefined, 'Edited question');
+    await streamRegenerateForSlot(slotId, 'unknown-id', MODEL, undefined, { query: 'Edited question' });
 
     expect(sentBody().query).toBe('Edited question');
   });
@@ -221,7 +221,7 @@ describe('regenerating with an edited question', () => {
       sseResponse([frame('RUN_ERROR', { message: 'stop here', code: 'stream_error' })]),
     );
 
-    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, 'Edited question');
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
 
     expect(String(fetchMock.mock.calls[0][0])).toContain(
       '/api/v1/agents/agent-1/conversations/conv-1/message/a1/regenerate',
@@ -237,7 +237,7 @@ describe('regenerating with an edited question', () => {
       data: { conversation: { ...conversationWith('Edited question', 'new answer'), title: 'Edited question' } },
     });
 
-    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, 'Edited question');
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
 
     expect(useChatStore.getState().conversations[0].title).toBe('Edited question');
   });
@@ -289,7 +289,7 @@ describe('editing a turn that went through a question card', () => {
       data: { conversation: conversationWith('Edited question', 'new answer') },
     });
 
-    const run = streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, 'Edited question');
+    const run = streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
 
     expect(slot(slotId).pendingAskUserQuestion).toBeNull();
     expect(answerCustom(slotId)).not.toHaveProperty('persistedAskUserQuestion');
@@ -306,7 +306,7 @@ describe('editing a turn that went through a question card', () => {
     const slotId = cardSlot();
     fetchMock.mockResolvedValueOnce(jsonResponse(500, {}));
 
-    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, 'Edited question');
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
 
     expect(slot(slotId).pendingAskUserQuestion).toEqual(pending);
     expect(answerCustom(slotId)).toHaveProperty('persistedAskUserQuestion');
@@ -321,5 +321,108 @@ describe('editing a turn that went through a question card', () => {
 
     expect(slot(slotId).pendingAskUserQuestion).toEqual(pending);
     expect(answerCustom(slotId)).toHaveProperty('persistedAskUserQuestion');
+  });
+});
+
+const FILE_A = { recordId: 'rec-a', recordName: 'a.pdf', mimeType: 'application/pdf', extension: 'pdf', virtualRecordId: 'v-a' };
+const FILE_B = { recordId: 'rec-b', recordName: 'b.png', mimeType: 'image/png', extension: 'png', virtualRecordId: 'v-b' };
+
+describe('editing the files of the question', () => {
+  function slotWithFiles(files = [FILE_A]): string {
+    const slotId = newSlot();
+    const messages = threadWith('Old question');
+    messages[0] = { ...messages[0], metadata: { custom: { attachments: files, createdAt: 'then' } } } as ThreadMessageLike;
+    useChatStore.getState().updateSlot(slotId, { messages });
+    return slotId;
+  }
+  const questionFiles = (id: string) =>
+    (slot(id).messages[0].metadata?.custom as { attachments?: unknown } | undefined)?.attachments;
+
+  it('swaps the files of the question row, and leaves the rest of the row alone', () => {
+    const thread = threadWith('Old');
+    thread[0] = { ...thread[0], metadata: { custom: { attachments: [FILE_A], createdAt: 'then' } } } as ThreadMessageLike;
+
+    const out = withEditedQuestion(thread, 'a1', 'New', [FILE_B]);
+
+    expect(out[0].metadata?.custom).toEqual({ attachments: [FILE_B], createdAt: 'then' });
+    expect(getThreadMessagePlainText(out[0])).toBe('New');
+  });
+
+  it('clears the files for an empty list, and keeps them when none are given', () => {
+    const thread = threadWith('Old');
+    thread[0] = { ...thread[0], metadata: { custom: { attachments: [FILE_A] } } } as ThreadMessageLike;
+
+    expect((withEditedQuestion(thread, 'a1', 'New', [])[0].metadata?.custom as { attachments?: unknown }).attachments).toBeUndefined();
+    expect((withEditedQuestion(thread, 'a1', 'New')[0].metadata?.custom as { attachments?: unknown }).attachments).toEqual([FILE_A]);
+  });
+
+  it('sends the new files with the question, and shows them before the answer arrives', async () => {
+    const slotId = slotWithFiles();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    fetchMock.mockImplementationOnce(async () => {
+      await gate;
+      return sseResponse([frame('RUN_FINISHED', { result: {} })]);
+    });
+    vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: { conversation: conversationWith('Edited question', 'new answer') },
+    });
+
+    const run = streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question', attachments: [FILE_B] });
+
+    expect(questionFiles(slotId)).toEqual([FILE_B]);
+    release();
+    await run;
+
+    expect(sentBody()).toMatchObject({ query: 'Edited question', attachments: [FILE_B] });
+  });
+
+  it('sends an empty list to remove every file', async () => {
+    const slotId = slotWithFiles();
+    fetchMock.mockImplementationOnce(async () => sseResponse([frame('RUN_ERROR', { message: 'stop', code: 'stream_error' })]));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Old question', attachments: [] });
+
+    expect(sentBody().attachments).toEqual([]);
+  });
+
+  it('sends no files when only the text changed, so the stored files stay', async () => {
+    const slotId = slotWithFiles();
+    fetchMock.mockImplementationOnce(async () => sseResponse([frame('RUN_ERROR', { message: 'stop', code: 'stream_error' })]));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question' });
+
+    expect(sentBody()).not.toHaveProperty('attachments');
+    expect(questionFiles(slotId)).toEqual([FILE_A]);
+  });
+
+  it('puts the stored files back when the request fails', async () => {
+    const slotId = slotWithFiles();
+    fetchMock.mockResolvedValueOnce(jsonResponse(500, {}));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question', attachments: [FILE_B] });
+
+    expect(questionFiles(slotId)).toEqual([FILE_A]);
+    expect(questionOf(slotId)).toBe('Old question');
+  });
+
+  it('puts the stored files back when the run ends in an error', async () => {
+    const slotId = slotWithFiles();
+    fetchMock.mockImplementationOnce(async () => sseResponse([frame('RUN_ERROR', { message: 'stop', code: 'stream_error' })]));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question', attachments: [] });
+
+    expect(questionFiles(slotId)).toEqual([FILE_A]);
+  });
+
+  it('sends the files to an agent conversation too', async () => {
+    const slotId = slotWithFiles();
+    useChatStore.getState().updateSlot(slotId, { threadAgentId: 'agent-1' });
+    fetchMock.mockImplementationOnce(async () => sseResponse([frame('RUN_ERROR', { message: 'stop', code: 'stream_error' })]));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, { query: 'Edited question', attachments: [FILE_B] });
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/api/v1/agents/agent-1/');
+    expect(sentBody()).toMatchObject({ query: 'Edited question', attachments: [FILE_B] });
   });
 });

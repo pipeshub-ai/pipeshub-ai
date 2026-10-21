@@ -452,6 +452,11 @@ export interface UploadedFile {
   errorMessage?: string;
   /** Origin of this chip — see {@link UploadedFileSource}. */
   source?: UploadedFileSource;
+  /**
+   * A file already stored with the question being edited, not one picked now. Removing the chip
+   * only detaches it from the edit: the stored file stays, since a fork of the chat may use it.
+   */
+  existing?: boolean;
   /** First-line excerpt shown on the chip, present only when `source === 'paste-text'`. */
   pastePreview?: string;
   /** Character count of the original pasted text (present only when `source === 'paste-text'`). */
@@ -1065,7 +1070,7 @@ export interface AvailableLlmModel {
 export type ActiveMessageAction =
   | null
   | { type: 'regenerate'; messageId: string; appliedFilters?: AppliedFilters }
-  | { type: 'editQuery'; messageId: string; text: string; appliedFilters?: AppliedFilters };
+  | { type: 'editQuery'; messageId: string; text: string; appliedFilters?: AppliedFilters; attachments?: AttachmentRef[] };
 
 // ── Multi-Chat Slot Types ──
 

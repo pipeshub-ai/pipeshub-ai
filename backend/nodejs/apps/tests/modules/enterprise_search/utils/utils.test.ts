@@ -4024,6 +4024,23 @@ describe('chatSessions helpers', () => {
     expect(del.firstCall.args[0]).to.deep.equal({ _id: { $in: ids }, sessionId })
   })
 
+  it('updateUserQueryContent leaves the files alone unless the edit replaced them', async () => {
+    const updateStub = sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves({} as any)
+    const sessionId = new mongoose.Types.ObjectId()
+    await updateUserQueryContent(new mongoose.Types.ObjectId(), 'Edited question', sessionId)
+    expect(updateStub.firstCall.args[1]).to.deep.equal({ $set: { content: 'Edited question' } })
+  })
+
+  it('updateUserQueryContent replaces the files, and clears them for an empty list', async () => {
+    const updateStub = sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves({} as any)
+    const sessionId = new mongoose.Types.ObjectId()
+    const files = [{ recordId: 'rec-1', recordName: 'a.pdf' }]
+    await updateUserQueryContent(new mongoose.Types.ObjectId(), 'Edited question', sessionId, null, files)
+    await updateUserQueryContent(new mongoose.Types.ObjectId(), 'Edited question', sessionId, null, [])
+    expect(updateStub.firstCall.args[1]).to.deep.equal({ $set: { content: 'Edited question', attachments: files } })
+    expect(updateStub.secondCall.args[1]).to.deep.equal({ $set: { content: 'Edited question', attachments: [] } })
+  })
+
   it('updateUserQueryContent returns null when the row is not a user_query', async () => {
     sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves(null as any)
     expect(await updateUserQueryContent(new mongoose.Types.ObjectId(), 'Edited question', new mongoose.Types.ObjectId())).to.equal(null)

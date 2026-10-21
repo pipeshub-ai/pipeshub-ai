@@ -955,6 +955,70 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
+    const file = { recordId: 'rec-1', recordName: 'a.pdf', mimeType: 'application/pdf', extension: 'pdf', virtualRecordId: 'v-1' }
+
+    it('keeps the files of an edited question on the regenerate body', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { query: 'Edited question', attachments: [file] },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.attachments).to.deep.equal([file])
+      }
+    })
+
+    it('accepts an empty list of files, which removes them all', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({ params: regenParams, body: { attachments: [] } })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.attachments).to.deep.equal([])
+      }
+    })
+
+    it('leaves the files undefined when the body has none', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({ params: regenParams, body: { query: 'Edited question' } })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.attachments).to.be.undefined
+      }
+    })
+
+    it('rejects a file without a record id', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { attachments: [{ recordName: 'a.pdf' }] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects more files than a message can carry', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { attachments: Array.from({ length: 11 }, (_, i) => ({ ...file, recordId: 'rec-' + i })) },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('accepts ten files', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { attachments: Array.from({ length: 10 }, (_, i) => ({ ...file, recordId: 'rec-' + i })) },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('accepts the files of an edited question on the agent regenerate body', () => {
+      const result = regenerateAgentAnswersParamsSchema.safeParse({
+        params: { agentKey: 'agent-1', ...regenParams },
+        body: { query: 'Edited question', chatMode: 'quick', attachments: [file] },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.attachments).to.deep.equal([file])
+      }
+    })
+
     it('accepts an edited question on the agent regenerate body', () => {
       const result = regenerateAgentAnswersParamsSchema.safeParse({
         params: { agentKey: 'agent-1', ...regenParams },

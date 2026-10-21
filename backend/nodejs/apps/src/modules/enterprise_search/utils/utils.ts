@@ -287,20 +287,22 @@ export const updateMessageById = async (
 };
 
 /**
- * Rewrite the text of a stored `user_query` row, used when the user edits the
- * last question and regenerates its answer. Only `content` changes; the row's
- * attachments, mentions and seq stay as they were. Scoped to the conversation,
- * so an id from anywhere else matches nothing.
+ * Rewrite a stored `user_query` row, used when the user edits the last
+ * question and regenerates its answer. Only `content` changes, and
+ * `attachments` when the edit replaced them (omitted keeps the stored files);
+ * mentions and seq stay as they were. Scoped to the conversation, so an id
+ * from anywhere else matches nothing.
  */
 export const updateUserQueryContent = async (
   messageId: mongoose.Types.ObjectId | string,
   content: string,
   sessionId: mongoose.Types.ObjectId | string,
   mongoSession?: ClientSession | null,
+  attachments?: IChatAttachmentRef[],
 ): Promise<IChatSessionMessageDocument | null> =>
   ChatSessionMessage.findOneAndUpdate(
     { _id: messageId, sessionId, messageType: 'user_query' },
-    { $set: { content } },
+    { $set: { content, ...(attachments ? { attachments } : {}) } },
     { new: true, session: mongoSession || undefined },
   );
 

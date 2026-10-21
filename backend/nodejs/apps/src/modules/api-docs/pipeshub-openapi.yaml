@@ -8582,6 +8582,9 @@ components:
         original message are reused.
 
         Supported fields:
+        - `attachments` — optional files of the edited question, replacing the
+          stored ones (an empty list removes them all); omitted keeps them.
+          At most 10, each a ref from the attachment upload
         - `query` — optional edited question. When it differs from the stored
           question, the answer is regenerated for it and the stored question is
           replaced once the new answer is saved; a failed run keeps the original
@@ -8608,6 +8611,17 @@ components:
             answer. A turn that went through an answered question card can be
             edited: the question is rewritten and the whole turn, including its
             card and the card's answers, is replaced by the new answer.
+        attachments:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/ChatAttachmentRef'
+          description: |
+            The files of the edited question, replacing the stored ones. An
+            empty list removes them all; omitted keeps the stored files. A
+            change of files alone, with the same `query`, also counts as an
+            edit. Files are not deleted when removed from a question: a fork
+            of the chat may still refer to them.
         filters:
           $ref: '#/components/schemas/Filters'
         modelKey:
@@ -37450,7 +37464,7 @@ paths:
 
         `chatMode: quick` is required. Other fields are optional and reuse
         the original model/context when omitted. The body supports:
-        - `query` (an edited question, as on the assistant endpoint)
+        - `query` and `attachments` (an edited question and its files, as on the assistant endpoint)
         - `filters`
         - `chatMode`
         - `modelKey`

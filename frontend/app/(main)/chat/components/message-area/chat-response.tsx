@@ -865,8 +865,9 @@ export const ChatResponse = React.memo(function ChatResponse({
       messageId,
       text: question,
       appliedFilters,
+      attachments,
     });
-  }, [messageId, question, isStreaming, appliedFilters]);
+  }, [messageId, question, isStreaming, appliedFilters, attachments]);
 
   // When the active question card owns this row, read aloud the question text
   // and its options instead of the hidden bot response.

@@ -52,6 +52,7 @@ import {
   type PendingAskUserQuestion,
   type MessagePart,
   type ChatKnowledgeFilters,
+  type AttachmentRef,
 } from './types';
 import {
   buildCitationMapsFromStreaming,
@@ -315,11 +316,15 @@ function assistantRowIdForBackendMessage(
   return last && typeof last.id === 'string' ? last.id : backendMessageId;
 }
 
-/** The user row before an assistant row, with its text swapped for an edited question. */
+/**
+ * The user row before an assistant row, with its text swapped for an edited question and, when
+ * the edit replaced them, its files (an empty list clears them).
+ */
 export function withEditedQuestion(
   messages: ThreadMessageLike[],
   backendMessageId: string,
   text: string,
+  attachments?: AttachmentRef[],
 ): ThreadMessageLike[] {
   const idx = messages.findIndex((m) => {
     if (m.role !== 'assistant') return false;
@@ -327,9 +332,22 @@ export function withEditedQuestion(
     return m.id === backendMessageId || custom?.messageId === backendMessageId;
   });
   if (idx <= 0 || messages[idx - 1].role !== 'user') return messages;
-  return messages.map((m, i) =>
-    i === idx - 1 ? { ...m, content: [{ type: 'text' as const, text }] } : m,
-  );
+  return messages.map((m, i) => {
+    if (i !== idx - 1) return m;
+    const custom = (m.metadata?.custom ?? {}) as Record<string, unknown>;
+    return {
+      ...m,
+      content: [{ type: 'text' as const, text }],
+      ...(attachments === undefined
+        ? {}
+        : {
+            metadata: {
+              ...m.metadata,
+              custom: { ...custom, attachments: attachments.length > 0 ? attachments : undefined },
+            },
+          }),
+    };
+  });
 }
 
 /** The answer row without the question card it asked, for a turn that is being asked again. */
@@ -1458,8 +1476,11 @@ export async function streamRegenerateForSlot(
   messageId: string,
   modelOverride?: ModelOverride,
   originalFilters?: ChatKnowledgeFilters,
-  /** Set when the user edited the question: it replaces the stored one and the answer is rebuilt for it. */
-  editedQuery?: string
+  /**
+   * Set when the user edited the question: its text, and its files when they changed, replace
+   * the stored ones and the answer is rebuilt for them.
+   */
+  edit?: { query: string; attachments?: AttachmentRef[] }
 ): Promise<void> {
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
@@ -1468,10 +1489,13 @@ export async function streamRegenerateForSlot(
 
   const preEditMessages = slot.messages;
   const preEditPending = slot.pendingAskUserQuestion;
-  const editedMessages = editedQuery
-    ? withoutQuestionCard(withEditedQuestion(slot.messages, messageId, editedQuery), messageId)
+  const editedMessages = edit
+    ? withoutQuestionCard(
+        withEditedQuestion(slot.messages, messageId, edit.query, edit.attachments),
+        messageId,
+      )
     : slot.messages;
-  const questionWasEdited = Boolean(editedQuery);
+  const questionWasEdited = Boolean(edit);
   /** A run that fails keeps the stored question and its card, so the screen must too. */
   const undoEditedQuestion = (): Partial<{
     messages: ThreadMessageLike[];
@@ -1850,7 +1874,8 @@ export async function streamRegenerateForSlot(
           agentCapabilities: scopedCaps,
           ...(agentRegenReasoningEffort ? { reasoningEffort: agentRegenReasoningEffort } : {}),
           runId,
-          ...(editedQuery ? { query: editedQuery } : {}),
+          ...(edit ? { query: edit.query } : {}),
+          ...(edit?.attachments !== undefined ? { attachments: edit.attachments } : {}),
         }
       );
     } else {
@@ -1879,7 +1904,8 @@ export async function streamRegenerateForSlot(
         ...(isUniversalAgent ? { agentCapabilities: store.settings.agentCapabilities } : {}),
         ...(assistantRegenReasoningEffort ? { reasoningEffort: assistantRegenReasoningEffort } : {}),
         runId,
-        ...(editedQuery ? { query: editedQuery } : {}),
+        ...(edit ? { query: edit.query } : {}),
+        ...(edit?.attachments !== undefined ? { attachments: edit.attachments } : {}),
       });
     }
   } catch (error) {

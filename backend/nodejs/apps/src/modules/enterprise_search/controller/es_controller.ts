@@ -46,6 +46,7 @@ import {
   IAgentConversation,
   IAIModel,
   IAIResponse,
+  IChatAttachmentRef,
   IChatSession,
   IChatSessionDocument,
   IMessage,
@@ -3261,6 +3262,26 @@ export function findQuestionBehindCard(
   return null;
 }
 
+/** Whether two lists name the same files, whatever their order. */
+export function sameAttachmentFiles(
+  a: Array<{ recordId: string }> | undefined | null,
+  b: Array<{ recordId: string }> | undefined | null,
+): boolean {
+  const key = (list: Array<{ recordId: string }> | undefined | null): string =>
+    (list ?? []).map((file) => file.recordId).sort().join('\n');
+  return key(a) === key(b);
+}
+
+/** The files of a request once each file appears only once, in the order first named. */
+export function uniqueAttachmentFiles<T extends { recordId: string }>(files: T[]): T[] {
+  const seen = new Set<string>();
+  return files.filter((file) => {
+    if (seen.has(file.recordId)) return false;
+    seen.add(file.recordId);
+    return true;
+  });
+}
+
 /** Whether a reply's transcript holds a tool call a person approved (`IMessagePart.approved`). */
 export function ranApprovedCall(
   parts: IMessagePart[] | undefined | null,
@@ -3371,15 +3392,10 @@ async function regenerateAnswersInternal(
     }
     // The stored question here is the card's answers, which the chat shows as part of the question
     // before it, so an edit goes to that question and the whole card turn is asked again.
-    let cardEdit: CardTurnQuestion | null = null;
-    if (req.body.query && isAskUserQuestionAnswer(userQuery.content)) {
-      cardEdit = findQuestionBehindCard(recentMessages.slice(lastBotIdx + 1));
-      if (!cardEdit) {
-        throw new BadRequestError(
-          'This question cannot be edited. Ask again instead.',
-        );
-      }
-    }
+    // Whether the request is an edit is decided by the caller; a missing question only matters then.
+    const cardEdit = isAskUserQuestionAnswer(userQuery.content)
+      ? findQuestionBehindCard(recentMessages.slice(lastBotIdx + 1))
+      : null;
 
     logger.debug('Regenerate answers validation passed', {
       requestId,
@@ -3457,11 +3473,27 @@ async function regenerateAnswersInternal(
     // The question the chat shows: for a card turn, the first one, not the card's answers.
     const cardEdit = validationResult.cardEdit;
     const shownQuestion = cardEdit?.question ?? userQuery;
+    const requestedAttachments: IChatAttachmentRef[] | undefined = Array.isArray(
+      req.body.attachments,
+    )
+      ? uniqueAttachmentFiles<IChatAttachmentRef>(req.body.attachments)
+      : undefined;
+    const textChanged =
+      Boolean(requestedQuery) && requestedQuery !== shownQuestion.content.trim();
+    const attachmentsChanged =
+      requestedAttachments !== undefined &&
+      !sameAttachmentFiles(requestedAttachments, shownQuestion.attachments);
     // An unchanged edit is a plain regenerate; only a real change rewrites the stored question.
-    const editedQuery =
-      requestedQuery && requestedQuery !== shownQuestion.content.trim()
-        ? requestedQuery
-        : null;
+    const isEdit = textChanged || attachmentsChanged;
+    if (isEdit && isAskUserQuestionAnswer(userQuery.content) && !cardEdit) {
+      throw new BadRequestError(
+        'This question cannot be edited. Ask again instead.',
+      );
+    }
+    const editedQuery = isEdit
+      ? requestedQuery || shownQuestion.content
+      : null;
+    const editedAttachments = attachmentsChanged ? requestedAttachments : undefined;
     const staleAskToolCallIds = validationResult.staleAskToolCallIds;
 
     // Format previous conversations up to this message (exclude last bot
@@ -3508,6 +3540,7 @@ async function regenerateAnswersInternal(
         editedQuery,
         existingConversation._id as mongoose.Types.ObjectId,
         session,
+        editedAttachments,
       );
       if (!editedRow) {
         throw new InternalServerError('Failed to save the edited question');
@@ -3534,7 +3567,11 @@ async function regenerateAnswersInternal(
       query: editedQuery ?? userQuery.content,
       previousConversations: previousConversations || [],
       filters: req.body.filters || {},
-      attachments: userQuery.attachments || [],
+      // The files of the question being asked: the edit's, else those stored with it.
+      attachments:
+        editedAttachments ??
+        (editedQuery !== null ? shownQuestion : userQuery).attachments ??
+        [],
       // New fields for multi-model support
       modelKey: req.body.modelKey || null,
       modelName: req.body.modelName || null,

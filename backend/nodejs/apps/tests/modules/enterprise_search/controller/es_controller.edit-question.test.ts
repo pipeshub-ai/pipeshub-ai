@@ -15,7 +15,19 @@ const CARD_ANSWERS = 'User selections:\n1. "What do you enjoy?" → Pop'
 /** How the last turn was saved: a plain answer, or a question card that was answered. */
 type Turn = 'plain' | 'card' | 'card-after-approval' | 'card-without-question'
 
-function editFlow(options: { edit?: string; title?: string; earlierTurn?: boolean; turn?: Turn }): Flow {
+const FILE_A = { recordId: 'rec-a', recordName: 'a.pdf', mimeType: 'application/pdf', extension: 'pdf', virtualRecordId: 'v-a' }
+const FILE_B = { recordId: 'rec-b', recordName: 'b.png', mimeType: 'image/png', extension: 'png', virtualRecordId: 'v-b' }
+
+function editFlow(options: {
+  edit?: string
+  title?: string
+  earlierTurn?: boolean
+  turn?: Turn
+  /** Files stored with the question. */
+  storedFiles?: Array<typeof FILE_A>
+  /** Files the request sends; omitted sends none. */
+  files?: Array<typeof FILE_A>
+}): Flow {
   return {
     name: 'regenerateAnswers (edited question)',
     handler: (c) => c.regenerateAnswers(appConfig) as StreamHandler,
@@ -41,7 +53,7 @@ function editFlow(options: { edit?: string; title?: string; earlierTurn?: boolea
       }) as never)
       const turn = options.turn ?? 'plain'
       if (turn !== 'card-without-question') {
-        store.addMessage(session, { messageType: 'user_query', content: FIRST_QUESTION })
+        store.addMessage(session, { messageType: 'user_query', content: FIRST_QUESTION, attachments: options.storedFiles ?? [] } as never)
       }
       if (turn !== 'plain') {
         store.addMessage(session, { messageType: 'bot_response', content: 'Which one do you enjoy?' })
@@ -60,7 +72,10 @@ function editFlow(options: { edit?: string; title?: string; earlierTurn?: boolea
       store.writes.length = 0
       return {
         params: { conversationId: String(session._id), messageId: String(bot._id) },
-        body: options.edit === undefined ? {} : { query: options.edit },
+        body: {
+          ...(options.edit === undefined ? {} : { query: options.edit }),
+          ...(options.files === undefined ? {} : { attachments: options.files }),
+        },
         existing: session,
         replacedMessageId: String(bot._id),
       }
@@ -73,6 +88,13 @@ function editFlow(options: { edit?: string; title?: string; earlierTurn?: boolea
 
 const lastQuestion = (run: Awaited<ReturnType<typeof startStream>>) =>
   run.messages().filter((m) => m.messageType === 'user_query').at(-1)?.content
+
+const filesOf = (row: Record<string, unknown> | undefined): string[] =>
+  ((row?.attachments as Array<{ recordId: string }> | undefined) ?? []).map((file) => file.recordId)
+const lastQuestionFiles = (run: Awaited<ReturnType<typeof startStream>>) =>
+  filesOf(run.messages().filter((m) => m.messageType === 'user_query').at(-1))
+const sentFiles = (run: Awaited<ReturnType<typeof startStream>>) =>
+  filesOf(run.ai.streamCalls[0]?.body as Record<string, unknown>)
 
 describe('es_controller editing the last question', () => {
   afterEach(() => {
@@ -317,4 +339,153 @@ describe('es_controller editing the last question', () => {
       expect(lastQuestion(run)).to.equal(FIRST_QUESTION)
     })
   }
+
+  describe('editing the files of the question', () => {
+    async function finish(run: Awaited<ReturnType<typeof startStream>>, answer = 'Two things.') {
+      run.ai.send('RUN_FINISHED', finalAnswer(answer))
+      run.ai.finish()
+      await run.res.ended
+      await run.done
+      await settle()
+    }
+    const start = async (options: Parameters<typeof editFlow>[0]) => {
+      const run = await startStream(editFlow(options), controllerModule, undefined, { wait: false })
+      await settle()
+      return run
+    }
+
+    it('keeps the files stored with the question when the edit sends none', async () => {
+      const run = await start({ edit: 'What changed in v2?', storedFiles: [FILE_A] })
+
+      expect(sentFiles(run)).to.deep.equal(['rec-a'])
+      await finish(run)
+
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-a'])
+    })
+
+    it('replaces the files with the ones the edit sends, for the AI service and in the stored question', async () => {
+      const run = await start({ edit: 'What changed in v2?', storedFiles: [FILE_A], files: [FILE_B] })
+
+      expect(sentFiles(run)).to.deep.equal(['rec-b'])
+      await finish(run)
+
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-b'])
+      expect(lastQuestion(run)).to.equal('What changed in v2?')
+    })
+
+    it('adds a file next to the stored ones', async () => {
+      const run = await start({ edit: 'What changed in v2?', storedFiles: [FILE_A], files: [FILE_A, FILE_B] })
+      await finish(run)
+
+      expect(sentFiles(run)).to.deep.equal(['rec-a', 'rec-b'])
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-a', 'rec-b'])
+    })
+
+    it('stores a file named twice once', async () => {
+      const run = await start({ edit: 'What changed in v2?', storedFiles: [FILE_A], files: [FILE_A, FILE_B, FILE_B, FILE_A] })
+
+      expect(sentFiles(run)).to.deep.equal(['rec-a', 'rec-b'])
+      await finish(run)
+
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-a', 'rec-b'])
+    })
+
+    it('does not count a repeated file as a change of files', async () => {
+      const run = await start({ edit: FIRST_QUESTION, storedFiles: [FILE_A], files: [FILE_A, FILE_A] })
+      await finish(run)
+
+      expect(sentFiles(run)).to.deep.equal(['rec-a'])
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-a'])
+    })
+
+    it('removes every file when the edit sends an empty list', async () => {
+      const run = await start({ edit: 'What changed in v2?', storedFiles: [FILE_A], files: [] })
+
+      expect(sentFiles(run)).to.deep.equal([])
+      await finish(run)
+
+      expect(lastQuestionFiles(run)).to.deep.equal([])
+    })
+
+    it('counts a change of files alone as an edit, and asks the stored question', async () => {
+      const run = await start({ storedFiles: [FILE_A], files: [FILE_B] })
+
+      expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(FIRST_QUESTION)
+      await finish(run)
+
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-b'])
+      expect(lastQuestion(run)).to.equal(FIRST_QUESTION)
+      expect(run.answer()?.content).to.equal('Two things.')
+    })
+
+    it('treats the same files and the same text as a plain regenerate', async () => {
+      const run = await start({ edit: FIRST_QUESTION, storedFiles: [FILE_A, FILE_B], files: [FILE_B, FILE_A] })
+      await finish(run)
+
+      expect(sentFiles(run)).to.deep.equal(['rec-a', 'rec-b'])
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-a', 'rec-b'])
+    })
+
+    it('keeps the stored files when the run fails', async () => {
+      const run = await start({ edit: 'What changed in v2?', storedFiles: [FILE_A], files: [FILE_B] })
+
+      run.ai.send('RUN_ERROR', { runId: RUN, message: 'The AI model is not responding right now.', code: 'stream_error' })
+      run.ai.finish()
+      await run.res.ended
+      await run.done
+      await settle()
+
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-a'])
+      expect(lastQuestion(run)).to.equal(FIRST_QUESTION)
+    })
+
+    it('stores the new files with the partial answer when the user leaves mid-answer', async () => {
+      const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const run = await start({ edit: 'What changed in v2?', storedFiles: [FILE_A], files: [FILE_B] })
+
+      run.ai.send('TEXT_MESSAGE_CONTENT', delta('Two '))
+      await settle()
+      run.res.disconnect()
+      await settle(10)
+      clock.tick(DETACHED_RUN_MAX_MS + 1)
+      await settle(20)
+
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-b'])
+    })
+
+    it('asks a card turn with the files of its first question, not of the card answers', async () => {
+      const run = await start({ edit: 'What changed in v2?', turn: 'card', storedFiles: [FILE_A] })
+
+      expect(sentFiles(run)).to.deep.equal(['rec-a'])
+      await finish(run)
+
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-a'])
+    })
+
+    it('replaces the files of a card turn at its first question', async () => {
+      const run = await start({ edit: 'What changed in v2?', turn: 'card', storedFiles: [FILE_A], files: [FILE_B] })
+      await finish(run)
+
+      expect(sentFiles(run)).to.deep.equal(['rec-b'])
+      expect(run.messages().map((m) => `${String(m.messageType)}: ${String(m.content)}`))
+        .to.deep.equal(['user_query: What changed in v2?', 'bot_response: Two things.'])
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-b'])
+    })
+
+    it('refuses a change of files on a card turn whose question is not there', async () => {
+      const run = await start({ turn: 'card-without-question', files: [FILE_B] })
+      await run.done
+      await settle()
+
+      expect(run.res.eventsOf('RUN_ERROR')[0]?.data.message).to.match(/cannot be edited/)
+      expect(run.ai.streamCalls).to.deep.equal([])
+    })
+
+    it('regenerates a card turn as it was when the files sent are the stored ones', async () => {
+      const run = await start({ turn: 'card', storedFiles: [FILE_A], files: [FILE_A] })
+      await finish(run)
+
+      expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal(CARD_ANSWERS)
+    })
+  })
 })

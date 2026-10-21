@@ -1032,9 +1032,19 @@ export const messageIdParamsSchema = z.object({
 // Regenerate answers (conversation + agent)
 // ---------------------------------------------------------------------------
 
+/** The composer's own limit on files per message (CHAT_ATTACHMENT_MAX_FILES in the frontend). */
+const REGENERATE_ATTACHMENTS_MAX = 10;
+
 const regenerateBodySchema = z.object({
   // Present only when the user edited the question being regenerated.
   query: chatQuerySchema.optional(),
+  // The edited question's files, replacing the stored ones; omitted keeps them.
+  attachments: z
+    .array(attachmentRefSchema)
+    .max(REGENERATE_ATTACHMENTS_MAX, {
+      message: `At most ${REGENERATE_ATTACHMENTS_MAX} attachments per message`,
+    })
+    .optional(),
   filters: filtersSchema,
   chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
   ...modelFieldsSchema,

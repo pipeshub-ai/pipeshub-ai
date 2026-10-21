@@ -111,4 +111,15 @@ describe('ChatResponse — editing the question', () => {
 
     expect(received).toEqual([{ messageId: 'msg-1', text: 'What changed?', appliedFilters }]);
   });
+
+  it('hands the files of the question to the editor', () => {
+    const received: unknown[] = [];
+    useCommandStore.getState().register('showEditQuery', (payload) => received.push(payload));
+    const attachments = [{ recordId: 'rec-a', recordName: 'a.pdf', mimeType: 'application/pdf', extension: 'pdf', virtualRecordId: 'v-a' }];
+
+    renderAnswer({ attachments });
+    fireEvent.click(editButton() as HTMLElement);
+
+    expect(received).toEqual([{ messageId: 'msg-1', text: 'What changed?', appliedFilters: undefined, attachments }]);
+  });
 });
