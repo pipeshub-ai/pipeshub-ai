@@ -161,7 +161,7 @@ _UNKNOWN_MACRO_TEXT_RE = re.compile(r"^\s*[^:{}\[\]]{1,60}:\s*\{")
 def has_unknown_macro_placeholder(html: str) -> bool:
     """True when Jira's rendered HTML replaced part of the text with an unknown-macro error.
 
-    Jira Cloud renders ``renderedFields`` through its wiki renderer. Plain text that contains
+    Jira renders ``renderedFields`` through its wiki renderer. Plain text that contains
     a ``{`` (a pasted JSON payload, ``{placeholder}`` text) is read as a macro, and everything
     from the ``{`` up to the matching ``}`` is replaced with ``<span class="error">Unknown
     macro: {...}</span>``. That text is then missing from the rendered HTML, so callers fall
