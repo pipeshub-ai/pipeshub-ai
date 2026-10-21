@@ -253,7 +253,7 @@ export function handleFlowCanvasDrop(
       data: {
         id: tsNodeId,
         type: tsType,
-        label: normalizePaletteLabel(instanceLabel),
+        label: normalizeDisplayName(instanceLabel),
         description: t('agentBuilder.toolsetNodeDescriptionTools', {
           name: toolsetDisplayName || toolsetName,
           count: (() => {
@@ -372,7 +372,7 @@ export function handleFlowCanvasDrop(
       data: {
         id: tsId,
         type: tsTypeSingle,
-        label: normalizePaletteLabel(instanceLabelSingle),
+        label: normalizeDisplayName(instanceLabelSingle),
         description: toolsetDisplayName || toolsetName,
         icon: toolsetIconPath || 'extension',
         category: 'toolset',
