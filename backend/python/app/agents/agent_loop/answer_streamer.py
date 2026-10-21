@@ -112,12 +112,16 @@ class TerminalAnswerStreamer:
         # much to persist (see `reasoning_persistence.py`).
         self._reasoning_buffer = ""
         self.reasoning_turns: list[dict[str, Any]] = []
+        self._model_call_reasoning_start = 0
 
     async def on_event(self, event: "AgentEvent") -> None:
         if event.event_type == EventType.TEXT_MESSAGE_START:
             self._start_turn(continues=bool(event.payload.get("continues_truncated")))
         elif event.event_type == EventType.TEXT_MESSAGE_CONTENT:
             await self._on_delta(event.payload.get("delta", ""))
+        elif event.event_type == EventType.TEXT_MESSAGE_END:
+            if event.payload.get("discarded"):
+                await self._discard_model_call()
         elif event.event_type == EventType.TOOL_CALL_START:
             # Skip clearing the buffer for terminal tools whose answer is
             # streamed via TEXT_MESSAGE_CONTENT deltas extracted from the
@@ -139,7 +143,7 @@ class TerminalAnswerStreamer:
         elif event.event_type == EventType.REASONING_MESSAGE_CONTENT:
             self._reasoning_buffer += event.payload.get("delta", "")
         elif event.event_type == EventType.REASONING_MESSAGE_END:
-            if self._reasoning_buffer:
+            if self._reasoning_buffer and not event.payload.get("discarded"):
                 self.reasoning_turns.append({
                     "turnIndex": event.payload.get("turn_index"),
                     "content": self._reasoning_buffer,
@@ -171,6 +175,7 @@ class TerminalAnswerStreamer:
         self._carried = len(self._buffer) if continues else 0
         if not continues:
             self._buffer = ""
+        self._model_call_reasoning_start = len(self.reasoning_turns)
         self._last_emit = 0.0
         self._withheld = False
         self._web_records = self._collector.web_records
@@ -218,6 +223,15 @@ class TerminalAnswerStreamer:
             confidence=confidence, raw_length=len(self._buffer),
         ):
             await self._event_sink.write(evt)
+
+    async def _discard_model_call(self) -> None:
+        """The model call failed mid-stream and may be retried: take back
+        what it streamed so the retry does not show it a second time."""
+        del self.reasoning_turns[self._model_call_reasoning_start:]
+        if len(self._buffer) == self._carried:
+            return
+        self._buffer = self._buffer[:self._carried]
+        await self._emit_state_delta()
 
     async def _drop_carried_text(self) -> None:
         """A turn that followed a cut-off reply wrote its answer through a

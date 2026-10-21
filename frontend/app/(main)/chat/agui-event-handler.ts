@@ -79,6 +79,9 @@ class LivePartsBuilder {
    * name here, keyed by the parent's runId, until that `RUN_STARTED` lands. */
   private pendingRoleByParent = new Map<string, string>();
 
+  /** messageId -> where that text message's model call starts in its container. */
+  private modelCallStarts = new Map<string, { container: MessagePart[]; index: number }>();
+
   private containerFor(runId: string | undefined): MessagePart[] {
     if (!runId) return this.parts;
     return this.containers.get(runId) ?? this.parts;
@@ -241,8 +244,21 @@ class LivePartsBuilder {
     }
     const runId = typeof data.runId === 'string' ? data.runId : undefined;
     const part: MessagePart = { type: 'text', content: '', runId };
-    this.containerFor(runId).push(part);
+    const container = this.containerFor(runId);
+    if (messageId) this.modelCallStarts.set(messageId, { container, index: container.length });
+    container.push(part);
     this.openTurnParts.set(`${runId ?? ''}:text`, part);
+  }
+
+  /** Mirrors `TranscriptCollector`: a model call that failed mid-stream is
+   * dropped whole — its text message and the reasoning streamed after it. */
+  discardMessage(messageId: string | undefined, runId: string | undefined): void {
+    if (!messageId) return;
+    const start = this.modelCallStarts.get(messageId);
+    this.modelCallStarts.delete(messageId);
+    this.openTurnParts.delete(`${runId ?? ''}:text`);
+    this.openTurnParts.delete(`${runId ?? ''}:reasoning`);
+    if (start) start.container.splice(start.index);
   }
 
   handleTextContent(data: AGUIEventEnvelope): void {
@@ -546,6 +562,20 @@ export function createAGUIEventHandler(
           callbacks.onAskUserQuestion?.(value as SSEAskUserQuestionEvent);
         } else if (name === 'artifact') {
           callbacks.onArtifact?.(value as SSEArtifactEvent);
+        } else if (name === 'message_discarded') {
+          const runId = typeof data?.runId === 'string' ? data.runId : undefined;
+          const discarded = (value ?? {}) as { messageId?: unknown };
+          partsBuilder.discardMessage(
+            typeof discarded.messageId === 'string' ? discarded.messageId : undefined,
+            runId,
+          );
+          if (partsBuilder.isRootRun(runId)) {
+            textBuffer = '';
+            rawTextReceived = 0;
+            state = { ...state, normalizedAnswer: '', rawLength: 0 };
+            callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
+          }
+          emitParts();
         }
         break;
       }

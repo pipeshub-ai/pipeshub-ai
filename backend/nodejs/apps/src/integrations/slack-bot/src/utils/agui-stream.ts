@@ -431,6 +431,15 @@ export function createSlackAGUIEventHandler(
           emitAskUserFromRaw(value);
         } else if (name === "artifact") {
           callbacks.onArtifact?.((value ?? {}) as SlackArtifactPayload);
+        } else if (name === "message_discarded") {
+          // A model call failed mid-stream and may be retried: drop its text.
+          const runId = typeof data?.runId === "string" ? data.runId : undefined;
+          if (runs.isRootRun(runId)) {
+            textBuffer = "";
+            rawTextReceived = 0;
+            state = { ...state, normalizedAnswer: "", rawLength: 0 };
+            emitAnswer();
+          }
         }
         break;
       }

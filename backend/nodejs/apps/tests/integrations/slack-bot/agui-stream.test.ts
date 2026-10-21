@@ -48,4 +48,23 @@ describe('slack-bot/utils/agui-stream', () => {
       expect(onStatus.called).to.equal(false);
     });
   });
+
+  describe('a model call discarded mid-stream', () => {
+    const frame = (type: string, fields: Record<string, unknown> = {}) => ({ event: type, data: { type, ...fields } });
+
+    it('takes back the text the failed attempt streamed, so the retry is posted once', () => {
+      const onAnswerAccumulated = sinon.stub();
+      const handle = createSlackAGUIEventHandler({ onAnswerAccumulated });
+
+      handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
+      handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The dep' }));
+      handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
+      handle(frame('CUSTOM', { runId: 'root', name: 'message_discarded', value: { messageId: 'm1' } }));
+      expect(onAnswerAccumulated.lastCall.args[0]).to.equal('');
+
+      handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm2' }));
+      handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The deploy broke it.' }));
+      expect(onAnswerAccumulated.lastCall.args[0]).to.equal('The deploy broke it.');
+    });
+  });
 });

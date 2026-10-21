@@ -77,8 +77,9 @@ class _AgentRunTiming:
     A model turn runs from TURN_START until its reply has finished streaming
     (TEXT_MESSAGE_END), so it excludes the tool calls that follow; a turn
     that never streams falls back to TURN_COMPLETE. A turn whose model call
-    raised, or a tool still running when the client disconnects, never gets
-    its end event; `RunTimer.emit` logs it as ``(open)``. Turns are numbered
+    raised (its TEXT_MESSAGE_END says `discarded`, and a retry may follow),
+    or a tool still running when the client disconnects, never gets its end
+    event; `RunTimer.emit` logs it as ``(open)``. Turns are numbered
     from 1 in the order they start (``llm_turn_1``, ``llm_turn_2``, ...).
     A tool span runs from TOOL_CALL to TOOL_RESULT or TOOL_BLOCKED, matched
     on ``tool_call_id`` and named ``tool:<name>``. A sub-agent's events are
@@ -105,7 +106,8 @@ class _AgentRunTiming:
             self.turns += 1
             self._timer.start(("turn", payload.get("turn_index")), f"llm_turn_{self.turns}")
         elif event_type in (EventType.TEXT_MESSAGE_END, EventType.TURN_COMPLETE):
-            self._timer.stop(("turn", payload.get("turn_index")))
+            if not payload.get("discarded"):
+                self._timer.stop(("turn", payload.get("turn_index")))
         elif event_type == EventType.TOOL_CALL:
             self.tool_calls += 1
             self._timer.start(

@@ -369,3 +369,50 @@ class TestConfidenceTrailerHiddenWhileStreaming:
         await streamer.on_event(_event(EventType.AGENT_COMPLETE, {}))
 
         assert streamer.streamed_answer == "Done.\n---\nConfidence: Low"
+
+
+class TestDiscardedModelCall:
+    """A model call that failed mid-stream and is being retried: the text it
+    streamed is taken back so the retry does not show it twice."""
+
+    async def test_discard_clears_the_answer_on_screen(self) -> None:
+        streamer, sink = _make_streamer()
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "The dep"}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_END, {"discarded": True}))
+
+        assert sink.events[-1]["data"]["accumulated"] == ""
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "The deploy broke it."}))
+        await streamer.on_event(_event(EventType.AGENT_COMPLETE))
+
+        assert streamer.streamed_answer == "The deploy broke it."
+
+    async def test_discard_keeps_the_cut_off_reply_a_continuation_carried(self) -> None:
+        streamer, sink = _make_streamer()
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Part one, "}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START, {"continues_truncated": True}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "part t"}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_END, {"discarded": True}))
+
+        assert sink.events[-1]["data"]["accumulated"] == "Part one, "
+
+    async def test_discard_drops_reasoning_the_failed_call_streamed(self) -> None:
+        streamer, _sink = _make_streamer()
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START, {"turn_index": 0}))
+        await streamer.on_event(_event(EventType.REASONING_MESSAGE_START, {"turn_index": 0}))
+        await streamer.on_event(_event(EventType.REASONING_MESSAGE_CONTENT, {"delta": "Closed before the drop."}))
+        await streamer.on_event(_event(EventType.REASONING_MESSAGE_END, {"turn_index": 0}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_END, {"turn_index": 0, "discarded": True}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START, {"turn_index": 0}))
+        await streamer.on_event(_event(EventType.REASONING_MESSAGE_START, {"turn_index": 0}))
+        await streamer.on_event(_event(EventType.REASONING_MESSAGE_CONTENT, {"delta": "Open at the drop."}))
+        await streamer.on_event(_event(EventType.REASONING_MESSAGE_END, {"turn_index": 0, "discarded": True}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_END, {"turn_index": 0, "discarded": True}))
+
+        assert streamer.reasoning_turns == []
