@@ -38,7 +38,7 @@ class AzureBlobDataSource:
         """Initialize with AzureBlobClient."""
         self._azure_blob_client_wrapper = azure_blob_client
         self._async_blob_service_client: Optional[AsyncBlobServiceClient] = None
-        self._user_delegation_key: Optional[UserDelegationKey] = None
+        self._user_delegation_key: UserDelegationKey | None = None
 
     async def _get_async_blob_service_client(self) -> AsyncBlobServiceClient:
         """Get the async blob service client, creating it if needed."""
@@ -209,9 +209,9 @@ class AzureBlobDataSource:
 
     async def list_containers_page(
         self,
-        prefix: Optional[str] = None,
+        prefix: str | None = None,
         results_per_page: int = 20,
-        continuation_token: Optional[str] = None,
+        continuation_token: str | None = None,
     ) -> AzureBlobResponse:
         """One page of container names, server-side filtered by name prefix.
 

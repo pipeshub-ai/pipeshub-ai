@@ -38,7 +38,7 @@ class AzureBlobResponse:
     error: Optional[str] = None
     message: Optional[str] = None
     # Azure's x-ms-error-code (e.g. ContainerNotFound), so callers can tell "gone" from any other failure.
-    error_code: Optional[str] = None
+    error_code: str | None = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
@@ -139,7 +139,7 @@ class AzureBlobEntraIdConfig:
             credential=ClientSecretCredential(self.tenantId, self.clientId, self.clientSecret),
         )
 
-    def get_account_name(self) -> Optional[str]:
+    def get_account_name(self) -> str | None:
         return BlobServiceClient(account_url=self.accountUrl).account_name or None
 
     def get_authentication_method(self) -> str:
