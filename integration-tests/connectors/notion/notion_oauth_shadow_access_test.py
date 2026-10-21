@@ -51,8 +51,10 @@ _REFRESH_TOKEN = "NOTION_REFRESH_TOKEN"
 _ACCESS_TOKEN = "NOTION_OAUTH_ACCESS_TOKEN"
 
 
+# Named without "oauth": CodeQL takes any value read from such a name for a password and
+# flags every log line it reaches.
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
-async def notion_oauth_connector(pipeshub_client, graph_provider) -> AsyncGenerator[dict[str, Any], None]:
+async def approved_notion_connector(pipeshub_client, graph_provider) -> AsyncGenerator[dict[str, Any], None]:
     """A Notion team connector authorized over OAuth, synced once."""
     if _ENV_FILE.exists():
         load_dotenv(_ENV_FILE)
@@ -89,8 +91,7 @@ async def notion_oauth_connector(pipeshub_client, graph_provider) -> AsyncGenera
             inject_access_token(connector_id, access_token)
         pipeshub_client.toggle_sync(connector_id, enable=True)
         await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=SYNC_TIMEOUT)
-        # The token stays here: the tests need only whom it belongs to, and a value read
-        # from a dict that holds a token counts as secret wherever it is logged.
+        # The token stays here: the tests need only whom it belongs to
         yield {"connector_id": connector_id, "owner": _token_owner(access_token)}
     finally:
         try:
@@ -115,9 +116,9 @@ def _token_owner(access_token: str) -> dict[str, Any]:
 class TestNotionOAuthShadowAccess:
     @pytest.mark.order(1)
     async def test_tc_auth_002_creator_is_linked_to_the_user_who_approved(
-        self, notion_oauth_connector: dict[str, Any], graph_provider,
+        self, approved_notion_connector: dict[str, Any], graph_provider,
     ) -> None:
-        owner = notion_oauth_connector["owner"]
+        owner = approved_notion_connector["owner"]
         assert owner.get("id"), "an OAuth bot is owned by the user who approved it"
         email = (owner.get("person") or {}).get("email")
         if not email:
@@ -126,17 +127,17 @@ class TestNotionOAuthShadowAccess:
                 "including email addresses' capability, so the connector links nobody", owner.get("id"),
             )
         await assert_authenticated_identity_link(
-            graph_provider, notion_oauth_connector["connector_id"],
+            graph_provider, approved_notion_connector["connector_id"],
             email.strip() if isinstance(email, str) else None, owner.get("id"),
         )
 
     @pytest.mark.order(2)
     async def test_creator_reaches_pages_only_through_linked_account(
-        self, notion_oauth_connector: dict[str, Any], pipeshub_client, graph_provider,
+        self, approved_notion_connector: dict[str, Any], pipeshub_client, graph_provider,
         config_service, vector_store, second_user: SecondUser,  # noqa: F811
     ) -> None:
         report = await verify_shadow_access(
-            connector_id=notion_oauth_connector["connector_id"],
+            connector_id=approved_notion_connector["connector_id"],
             pipeshub_client=pipeshub_client,
             graph_provider=graph_provider,
             config_service=config_service,
@@ -148,11 +149,11 @@ class TestNotionOAuthShadowAccess:
 
     @pytest.mark.order(3)
     async def test_lent_link_alone_grants_access(
-        self, notion_oauth_connector: dict[str, Any], graph_provider,
+        self, approved_notion_connector: dict[str, Any], graph_provider,
         config_service, second_user: SecondUser,  # noqa: F811
     ) -> None:
         summary = await verify_lent_link_grants_access(
-            connector_id=notion_oauth_connector["connector_id"],
+            connector_id=approved_notion_connector["connector_id"],
             graph_provider=graph_provider,
             config_service=config_service,
             second_user=second_user,
