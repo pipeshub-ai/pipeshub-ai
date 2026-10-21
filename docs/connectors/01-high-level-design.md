@@ -18,10 +18,10 @@ flowchart LR
   N --> C["Connector service :8088<br/>one asyncio loop"]
   C --> S[(Source API)]
   C --> G["Graph<br/>via the processor"]
-  C --> B[[record-events]]
+  C -->|"record event carries signed_url"| B[[record-events]]
   C --> K[(ConfigurationService)]
   B --> I["Indexing :8091"]
-  I -->|"signedUrl, else stream_record"| C
+  I -->|"stream_record when there is no signed URL"| C
   I --> V[(Vector store)]
 ```
 
@@ -40,7 +40,7 @@ Facts that shape every design choice:
 | Register type | service start | `ConnectorFactory` registry (a fixed dict) and the `@ConnectorBuilder` metadata on each class. The UI reads this to list connector types and render their settings form. |
 | Create | admin or user adds it in the UI | Node proxies to the connector service, which creates the App node and the config entry (`create_connector_instance` in `app/connectors/api/router.py`). Scope is team (org-wide, set up by an admin) or personal (one user's own account). |
 | Configure and authenticate | settings form, OAuth | Config lands at `/services/connectors/{connector_id}/config`. OAuth runs through the connector service's authorize and callback routes; tokens are stored in the same config and refreshed by `TokenRefreshService`. |
-| Initialise | `<connector>.init` event, or lazily on first use | `create_connector()` builds the instance, `init()` builds the API client from config, `test_connection_and_access()` proves it works. |
+| Initialise | `<connector>.init` event, or lazily on first use | `create_connector()` builds the instance and `init()` builds the API client from config. `test_connection_and_access()` is a separate call on that same setup path, and on the test route: it proves the credentials can read the source. |
 | Sync | `<connector>.start` / `.resync` event: enable, the Sync button, or the scheduler | `SyncTaskManager` starts `run_sync()` as a task. One sync per connector at a time; a new request while one runs is declined or deferred. |
 | Index | `newRecord` / `updateRecord` on `record-events`, published by the processor | The indexing service fetches content (signed URL first, else the connector's internal stream route, which calls `stream_record()`), parses, chunks and embeds. |
 | Open a citation | user clicks a result | The stream route checks the user's access, then calls `stream_record(record)`. |
@@ -56,7 +56,8 @@ sequenceDiagram
   participant Idx as Indexing
   Admin->>Node: create, configure, OAuth
   Node->>Conn: create instance and store config
-  Conn->>Conn: init and test_connection_and_access
+  Conn->>Conn: init
+  Conn->>Src: test_connection_and_access
   Node->>Conn: start or resync
   Conn->>Src: list users, groups, containers, items
   Conn->>Conn: processor writes nodes and publishes record-events
@@ -106,7 +107,8 @@ flowchart TD
   A[App: one connector instance]
   A --> RG[RecordGroup: space, base, guild]
   RG --> RG2[RecordGroup, nested]
-  RG2 --> R[Record: page, row, file, message segment]
+  RG --> R[Record: page, row, file, message segment]
+  RG2 --> R
   R --> C[Child record]
   R --> AT[Attachment]
   U[AppUser] -.->|grant or USER_APP_RELATION| A
@@ -115,7 +117,7 @@ flowchart TD
   R -.->|related_external_records, not a parent| R2[Another record]
 ```
 
-A `related_external_records` link is not hierarchy and does not grant access. `06-permissions.md` is the access check. In short: the user must pass the App gate, the node must be live, and then `OPEN` is a readable parent or a direct grant, `STRICT` also needs every ancestor, and `RESTRICTED` needs both a readable parent and a direct grant. `APP_LEVEL`, or an ancestor with `RECORD_GROUP_LEVEL`, opens everything under it.
+A `related_external_records` link is not hierarchy and does not grant access. `06-permissions.md` is the access check. In short: the user must pass the App gate and the node must be live. `OPEN` is an inherit edge from a readable parent, or a direct grant. `STRICT` is that, and every ancestor is readable. `RESTRICTED` is an inherit edge from a readable parent and a direct grant. A parent being readable does not open a child that does not inherit, and a `RESTRICTED` node with `inherit_permissions=False` is never readable. `APP_LEVEL` opens every record under the App to anyone who passes the gate. A `RECORD_GROUP_LEVEL` group opens the groups and records under it only for someone with a direct grant on that group, or access to it from the App.
 
 ```mermaid
 flowchart TD
@@ -123,12 +125,14 @@ flowchart TD
   G -->|no| X[Deny]
   G -->|yes| L{Live, not a placeholder, same org?}
   L -->|no| X
-  L -->|yes| M{APP_LEVEL, or under a RECORD_GROUP_LEVEL group?}
-  M -->|yes| Y[Allow]
-  M -->|no| Rr{access_rule}
-  Rr -->|OPEN| O{Readable parent or a direct grant}
+  L -->|yes| A{APP_LEVEL?}
+  A -->|yes| Y[Allow]
+  A -->|no| Rg{Grant on a RECORD_GROUP_LEVEL ancestor, or access to it from the App?}
+  Rg -->|yes| Y
+  Rg -->|no| Rr{access_rule}
+  Rr -->|OPEN| O{Inherit edge from a readable parent, or a direct grant}
   Rr -->|STRICT| St{That, and every ancestor is readable}
-  Rr -->|RESTRICTED| Re{Readable parent and a direct grant}
+  Rr -->|RESTRICTED| Re{Inherit edge from a readable parent, and a direct grant}
   O -->|yes| Y
   St -->|yes| Y
   Re -->|yes| Y
@@ -140,6 +144,6 @@ flowchart TD
 - Records are matched across syncs by `(connector_id, external_record_id)`. The external id must be stable for the life of the item in the source.
 - A record changes when its `external_revision_id` changes; only then is it re-sent for indexing.
 - Records and record groups link to their parent by external id (`parent_external_record_id`, `external_record_group_id`, `parent_external_group_id`). The processor turns those into graph edges, creating a restricted placeholder for a parent it has not seen yet.
-- Access is decided by one check over this hierarchy: a node is readable through a direct grant, or by inheriting from a readable parent, subject to the node's access rule. `06-permissions.md` is the full model.
+- Access is decided by one check over this hierarchy: a direct grant, or an inherit edge from a readable parent, subject to the node's access rule. A readable parent does not open a child that does not inherit. `06-permissions.md` is the full model.
 
 `02-low-level-design.md` has the class-level reference for every piece named here.
