@@ -323,6 +323,29 @@ class TestPdfPlumberParser:
         assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
         assert "empty result" in exc_info.value.message.lower()
 
+    @pytest.mark.asyncio
+    async def test_processor_crash_becomes_parse_error_so_smart_parser_falls_back(self) -> None:
+        mock_processor = MagicMock()
+        mock_processor.parse_document = AsyncMock(side_effect=ValueError("bad xref"))
+
+        parser = PdfPlumberParser(mock_processor)
+        with pytest.raises(ParseError) as exc_info:
+            await parser.parse(b"content", "test.pdf")
+
+        assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
+        assert "bad xref" in exc_info.value.message
+
+    @pytest.mark.asyncio
+    async def test_skip_table_enrichment_skips_llm(self) -> None:
+        mock_processor = MagicMock()
+        mock_processor.parse_document = AsyncMock(return_value=[])
+        mock_processor.create_blocks = AsyncMock(return_value=_make_block_container())
+
+        parser = PdfPlumberParser(mock_processor)
+        await parser.parse(b"content", "test.pdf", {"skip_table_enrichment": True})
+
+        mock_processor.create_blocks.assert_called_once_with([], skip_llm_enrichment=True)
+
     def test_supported_formats(self):
         mock_processor = MagicMock()
         parser = PdfPlumberParser(mock_processor)
