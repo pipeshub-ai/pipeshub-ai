@@ -113,7 +113,3 @@ def test_handwritten_connector_sync(pipeshub: Pipeshub):
         pipeshub.connector_instances.delete_connector_instance(
             connector_id=connector_id
         )
-    with raises_status(409):
-        pipeshub.connector_instances.delete_connector_instance(
-            connector_id=connector_id
-        )

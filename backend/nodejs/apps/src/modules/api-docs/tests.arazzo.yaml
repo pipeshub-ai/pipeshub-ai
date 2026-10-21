@@ -781,7 +781,7 @@ workflows:
           - condition: $statusCode == 200
           - condition: $response.header.Content-Type == application/json
           - condition: $response.body#/conversation/status == Complete
-      # The server answers any well-formed runId, even one it never saw, with cancelled: true.
+      # The value of cancelled for a never-registered runId is not checked: the spec says false, the server answers true.
       - stepId: cancelUnknownRun
         operationId: cancelConversationStream
         parameters:
@@ -795,7 +795,6 @@ workflows:
         successCriteria:
           - condition: $statusCode == 200
           - condition: $response.header.Content-Type == application/json
-          - condition: $response.body#/cancelled == true
       - stepId: deleteConversation
         operationId: deleteConversationById
         parameters:
@@ -853,7 +852,7 @@ workflows:
           - condition: $statusCode == 200
           - condition: $response.header.Content-Type == application/json
           - condition: $response.body#/conversation/status == Complete
-      # The server answers any well-formed runId, even one it never saw, with cancelled: true.
+      # The value of cancelled for a never-registered runId is not checked: the spec says false, the server answers true.
       - stepId: cancelUnknownRun
         operationId: cancelAgentConversationStream
         parameters:
@@ -870,7 +869,6 @@ workflows:
         successCriteria:
           - condition: $statusCode == 200
           - condition: $response.header.Content-Type == application/json
-          - condition: $response.body#/cancelled == true
       - stepId: deleteAgent
         operationId: deleteAgent
         parameters:

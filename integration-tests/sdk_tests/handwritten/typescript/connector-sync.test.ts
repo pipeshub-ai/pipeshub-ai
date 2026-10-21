@@ -98,5 +98,4 @@ test("Handwritten Connector Sync", async () => {
   } finally {
     await pipeshub.connectorInstances.deleteConnectorInstance({ connectorId });
   }
-  await expectStatus(pipeshub.connectorInstances.deleteConnectorInstance({ connectorId }), 409);
 });

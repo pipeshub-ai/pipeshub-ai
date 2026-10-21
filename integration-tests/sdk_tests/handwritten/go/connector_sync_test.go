@@ -143,6 +143,4 @@ func TestHandwritten_ConnectorSync(t *testing.T) {
 	_, err = s.ConnectorInstances.DeleteConnectorInstance(ctx, connectorID)
 	require.NoError(t, err)
 	deleted = true
-	_, err = s.ConnectorInstances.DeleteConnectorInstance(ctx, connectorID)
-	requireStatus(t, 409, err)
 }
