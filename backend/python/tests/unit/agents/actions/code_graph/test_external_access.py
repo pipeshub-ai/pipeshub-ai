@@ -269,6 +269,28 @@ async def test_a_storage_failure_is_explicit() -> None:
     assert res.json() == {"error": "graph unavailable"}
 
 
+async def test_a_failing_tool_is_a_503_that_names_nothing(monkeypatch) -> None:
+    def broken(**_: object) -> None:
+        raise RuntimeError("secret internals")
+
+    monkeypatch.setattr(routes, "BlobStorage", broken)
+    res = _client(Repos()).post("/api/v1/code-graph/read", json={"repo": "acme/shop", "file_path": MAIN})
+    assert res.status_code == 503
+    assert res.json() == {"error": "graph unavailable"}
+
+
+async def test_a_missing_repo_name_says_how_to_find_one(blobs) -> None:
+    res = _client(Repos()).post("/api/v1/code-graph/read", json={"file_path": MAIN})
+    assert res.status_code == 404
+    assert res.json()["error"].startswith("Give `repo`")
+
+
+async def test_an_unreadable_record_is_a_404_that_names_it(blobs) -> None:
+    res = _client(Repos(deny={"rec-shop"})).post("/api/v1/code-graph/read", json={"record_id": "rec-shop"})
+    assert res.status_code == 404
+    assert res.json()["error"] == "record_id 'rec-shop' is not an indexed code file you can read."
+
+
 def test_a_large_result_is_cut_to_the_budget_and_says_so() -> None:
     rows = [{"file_path": f"src/f{i}.py", "qualifiedName": f"function:f{i}"} for i in range(5000)]
     out = routes.fit_to_budget({"neighbors": rows, "truncated": False}, max_chars=4000)

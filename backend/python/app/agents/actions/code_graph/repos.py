@@ -36,7 +36,10 @@ __all__ = [
     "CodeRepo",
     "RepoNotFoundError",
     "list_code_repos",
+    "ambiguous_repo_message",
+    "matching_code_repos",
     "repo_for_record",
+    "repo_not_found_message",
     "resolve_code_repo",
 ]
 
@@ -71,10 +74,7 @@ class RepoNotFoundError(Exception):
 class AmbiguousRepoNameError(Exception):
     def __init__(self, repo: str, repos: list[str]) -> None:
         self.repos = repos
-        super().__init__(
-            f"{repo!r} matches {len(repos)} repositories: {', '.join(repos)}. "
-            "Call again with `repo` set to one of them."
-        )
+        super().__init__(ambiguous_repo_message(repo, repos))
 
 
 async def _code_connectors(graph_provider: "IGraphDBProvider", org_id: str, user_id: str) -> dict[str, str]:
@@ -170,26 +170,52 @@ def _matches(repo: CodeRepo, wanted: str) -> bool:
     return wanted in (name, repo.group_id.casefold()) or name.endswith("/" + wanted)
 
 
-async def resolve_code_repo(
-    graph_provider: "IGraphDBProvider", org_id: str, user_id: str, repo: str,
-) -> CodeRepo:
-    """The one readable repo *repo* names: ``owner/name``, ``name`` or ``<connector>:owner/name``.
+def repo_not_found_message(repo: str | None, record_id: str | None = None) -> str:
+    """What a caller is told when *repo* (or *record_id*, given no repo) names nothing readable.
 
-    Raises ``RepoNotFoundError`` when nothing readable matches, and
-    ``AmbiguousRepoNameError`` listing the qualified names when several do.
+    Built from the caller's own input, never from an exception.
     """
     if not (repo or "").strip():
-        raise RepoNotFoundError("Give `repo`, e.g. `acme/shop` -- pipeshub_code_repos lists them.")
+        if record_id:
+            return f"record_id {record_id!r} is not an indexed code file you can read."
+        return "Give `repo`, e.g. `acme/shop` -- pipeshub_code_repos lists them."
+    return f"No indexed repository you can read matches {repo!r}. pipeshub_code_repos lists the ones you can."
+
+
+def ambiguous_repo_message(repo: str, names: list[str]) -> str:
+    return (
+        f"{repo!r} matches {len(names)} repositories: {', '.join(names)}. "
+        "Call again with `repo` set to one of them."
+    )
+
+
+async def matching_code_repos(
+    graph_provider: "IGraphDBProvider", org_id: str, user_id: str, repo: str,
+) -> list[CodeRepo]:
+    """The readable repos *repo* names: ``owner/name``, ``name`` or ``<connector>:owner/name``.
+
+    An exact name wins over suffix matches; a blank name matches nothing.
+    """
+    if not (repo or "").strip():
+        return []
     # Only the repos the name picks pay for an access check.
     named = [r for r in await _candidates(graph_provider, org_id, user_id) if _matches(r, repo)]
     matches = await _keep_readable(graph_provider, org_id, user_id, named)
     exact = [r for r in matches if r.name.casefold() == repo.strip().strip("/").casefold()]
-    matches = exact or matches
+    return exact or matches
+
+
+async def resolve_code_repo(
+    graph_provider: "IGraphDBProvider", org_id: str, user_id: str, repo: str,
+) -> CodeRepo:
+    """The one readable repo *repo* names.
+
+    Raises ``RepoNotFoundError`` when nothing readable matches, and
+    ``AmbiguousRepoNameError`` listing the qualified names when several do.
+    """
+    matches = await matching_code_repos(graph_provider, org_id, user_id, repo)
     if not matches:
-        raise RepoNotFoundError(
-            f"No indexed repository you can read matches {repo!r}. "
-            "pipeshub_code_repos lists the ones you can."
-        )
+        raise RepoNotFoundError(repo_not_found_message(repo))
     if len(matches) > 1:
         raise AmbiguousRepoNameError(repo, sorted(r.qualified for r in matches))
     return matches[0]
@@ -202,7 +228,7 @@ async def repo_for_record(
 
     An unreadable, missing and non-code record all get the same answer.
     """
-    not_found = RepoNotFoundError(f"record_id {record_id!r} is not an indexed code file you can read.")
+    not_found = RepoNotFoundError(repo_not_found_message(None, record_id))
     if not await RecordAccess(graph_provider, org_id, user_id).readable([record_id]):
         raise not_found
     record = await graph_provider.get_document(

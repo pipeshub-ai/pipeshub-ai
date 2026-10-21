@@ -202,6 +202,21 @@ class TestWholeFile:
         ]
 
     @pytest.mark.asyncio
+    async def test_two_symbols_reaching_one_node_are_both_reported(self, graph) -> None:
+        graph.edges = [
+            {"_from": f"{BLOCKS}/k_target", "_to": f"{BLOCKS}/k_caller", "relationshipType": "CALLS"},
+            {"_from": f"{BLOCKS}/k_class", "_to": f"{BLOCKS}/k_caller", "relationshipType": "CALLS"},
+        ]
+        result = await get_neighbour_impl(
+            graph_provider=graph, connector_id=CONN, org_id=ORG, user_id=USER,
+            file_path="src/b.py", direction="outbound", edge_types=["CALLS"],
+        )
+        assert sorted((n["from"], n["qualified_name"]) for n in result["neighbors"]) == [
+            ("class:Thing", "function:caller"), ("function:target", "function:caller"),
+        ]
+        assert result["total"] == 2
+
+    @pytest.mark.asyncio
     async def test_no_symbol_key_is_reported_for_a_named_walk(self, graph) -> None:
         """`symbol` and `from` are the two shapes' distinguishing fields; a
         caller reading one result must not have to guess which mode ran."""
@@ -235,7 +250,7 @@ class TestWholeFile:
         graph.edges = [
             {"_from": "blocks/k_target", "_to": f"blocks/k_hub_{i}",
              "relationshipType": "CALLS"} for i in range(5)
-        ] + [{"_from": "blocks/k_class", "_to": "blocks/k_caller",
+        ] + [{"_from": f"{BLOCKS}/k_class", "_to": f"{BLOCKS}/k_caller",
               "relationshipType": "CALLS"}]
         for i in range(5):
             graph.blocks[f"k_hub_{i}"] = dict(

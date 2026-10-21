@@ -126,10 +126,19 @@ def _looks_like_locator(select: str) -> bool:
     return bool(sep and path.strip() and qualified.strip())
 
 
+def path_matches(path: str, pattern: str) -> bool:
+    """A glob matches by ``fnmatch``; a literal is the file itself or a directory above it,
+    never a name prefix: ``app/page.ts`` does not match ``app/page.tsx``."""
+    if "*" in pattern or "?" in pattern:
+        return fnmatch.fnmatch(path, pattern)
+    literal = pattern.rstrip("/")
+    return not literal or path == literal or path.startswith(literal + "/")
+
+
 async def files_by_pattern(
     graph_provider: IGraphDBProvider, org_id: str, pattern: str,
 ) -> tuple[dict[str, str], bool]:
-    """``(record id -> path, scan_capped)`` for the code files a glob or prefix matches.
+    """``(record id -> path, scan_capped)`` for the code files a glob, file or directory matches.
 
     Matched against ``codeFiles``, one row per file. Neither connector nor
     access is applied here: callers re-apply both.
@@ -150,9 +159,7 @@ async def files_by_pattern(
         row = _unwrap(raw)
         key = row.get("_key") or row.get("id")
         path = row.get("filePath")
-        if not key or not path:
-            continue
-        if ("*" in pattern or "?" in pattern) and not fnmatch.fnmatch(path, pattern):
+        if not key or not path or not path_matches(path, pattern):
             continue
         paths[key] = path
     return paths, len(files or []) >= _SELECT_SCAN_LIMIT

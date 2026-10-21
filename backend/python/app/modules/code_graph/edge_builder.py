@@ -765,10 +765,14 @@ class _Builder:
 
         from_file = self.index.file_by_record.get(record_id) or ""
         family = lang_family(None, from_file)
+        # Only a module this file imports: an untyped variable (`def run(config):
+        # config.load()`) would otherwise bind to any repo file of that name.
+        imported = self.module_imports.get(from_file, ())
+        bound = receiver.split(".", 1)[0] in self.module_bindings.get(from_file, {})
         # The full dotted prefix first (`pkg.mod.fn()`), then the bare receiver.
         for specifier in filter(None, (fact.get("qualifiedPrefix"), receiver)):
             target_file = self.imports.resolve(specifier, from_file, family)
-            if not target_file:
+            if not target_file or not (bound or target_file in imported):
                 continue
             target_file = self.imports.walk_barrel_chain(target_file, self.re_exports)
             hit = self._defined_or_reexported(target_file, name)

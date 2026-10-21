@@ -8,9 +8,13 @@ result is gated, ranked and capped, and that a denial looks like a miss.
 """
 import pytest
 
-from app.agents.actions.code_graph.query import TEST_ROLE, query_code_graph_impl
+from app.agents.actions.code_graph.query import (
+    TEST_ROLE,
+    path_matches,
+    query_code_graph_impl,
+)
 
-from .conftest import CONN, ORG, USER, QueryGraphProvider
+from .conftest import CONN, ORG, USER, QueryGraphProvider, _block
 
 pytestmark = pytest.mark.asyncio
 
@@ -34,6 +38,20 @@ class TestSelectorResolution:
         assert result["resolved_as"] == "path"
         assert _names(result) == {"function:target", "class:Thing", "method:run"}
         assert result["connector_id"] == CONN, "every follow-up call needs it back"
+
+    async def test_a_literal_path_is_not_a_name_prefix(self, query_graph) -> None:
+        # The DB-side filter is a prefix: `src/b.py` must not also load `src/b.pyi`,
+        # nor `web/ui` a sibling directory `web/ui_old`.
+        for key, rid, path in (("k_stub", "rec-e", "src/b.pyi"), ("k_old", "rec-f", "web/ui_old/x.ts")):
+            query_graph.blocks[key] = {k: v for k, v in _block(key, rid, path, key, key).items()
+                                       if k != "filePath"}
+            query_graph.code_files[rid] = path
+            query_graph.records[rid] = {"_key": rid, "orgId": ORG, "connectorId": CONN, "virtualRecordId": f"v-{rid}"}
+        result = await query_code_graph_impl(**_ctx(query_graph), select="src/b.py")
+        assert _names(result) == {"function:target", "class:Thing", "method:run"}
+        assert path_matches("web/ui/panel.ts", "web/ui")
+        assert path_matches("web/ui/panel.ts", "web/ui/")
+        assert not path_matches("web/ui_old/x.ts", "web/ui")
 
     async def test_glob_does_not_leak_its_prefix_siblings(self, query_graph) -> None:
         # The DB-side filter is a prefix, so `web/api/*` must not return web/ui.

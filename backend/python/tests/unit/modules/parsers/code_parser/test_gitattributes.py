@@ -29,10 +29,26 @@ from app.modules.parsers.code_parser.gitattributes import parse_linguist_exclusi
         ("vendor/ linguist-vendored", "vendor/lib.py", False),
         ("# comment\n\n*.min.css linguist-generated", "a.min.css", True),
         ("*.ts text eol=lf", "a.ts", False),
+        # `**` inside a name is one `*`, and a class never matches `/`, as in git.
+        ("foo**.js linguist-generated", "foobar.js", True),
+        ("foo**.js linguist-generated", "foo/bar.js", False),
+        ("a[!x]b linguist-generated", "a/b", False),
+        ("a[!x]b linguist-generated", "ayb", True),
+        ("*a*b*.js linguist-generated", "src/xaybz.js", True),
     ],
 )
 def test_linguist_rules(rules: str, path: str, excluded: bool) -> None:
     assert parse_linguist_exclusions(rules).excludes(path) is excluded
+
+
+def test_a_crafted_pattern_matches_in_linear_time() -> None:
+    """Repository content writes these rules; `*a*a…*b` must not backtrack over every split."""
+    import time
+
+    rules = parse_linguist_exclusions("*a" * 40 + "*b linguist-generated")
+    started = time.perf_counter()
+    assert rules.excludes("a" * 255) is False
+    assert time.perf_counter() - started < 0.5
 
 
 def test_no_linguist_rules_is_falsy() -> None:

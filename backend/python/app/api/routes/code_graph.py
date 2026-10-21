@@ -20,12 +20,13 @@ from app.agents.actions.code_graph.neighbours import DEFAULT_NEIGHBOR_LIMIT
 from app.agents.actions.code_graph.path import DEFAULT_MAX_DEPTH
 from app.agents.actions.code_graph.query import DEFAULT_QUERY_LIMIT
 from app.agents.actions.code_graph.repos import (
-    AmbiguousRepoNameError,
     CodeRepo,
     RepoNotFoundError,
+    ambiguous_repo_message,
     list_code_repos,
+    matching_code_repos,
     repo_for_record,
-    resolve_code_repo,
+    repo_not_found_message,
 )
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.service import OAuthScopes
@@ -161,10 +162,23 @@ async def _deps(request: Request) -> tuple["QueryAppContainer", "IGraphDBProvide
 
 async def _target(
     graph_provider: "IGraphDBProvider", org_id: str, user_id: str, repo: str | None, record_id: str | None = None,
-) -> CodeRepo:
+) -> CodeRepo | JSONResponse:
+    """The repo a request names, or the 404/409 that says why there is none.
+
+    The messages are built from the request, not from an exception.
+    """
     if not repo and record_id:
-        return await repo_for_record(graph_provider, org_id, user_id, record_id)
-    return await resolve_code_repo(graph_provider, org_id, user_id, repo or "")
+        try:
+            return await repo_for_record(graph_provider, org_id, user_id, record_id)
+        except RepoNotFoundError:
+            return _response({"error": repo_not_found_message(repo, record_id)}, 404)
+    matches = await matching_code_repos(graph_provider, org_id, user_id, repo or "")
+    if not matches:
+        return _response({"error": repo_not_found_message(repo, record_id)}, 404)
+    if len(matches) > 1:
+        names = sorted(r.qualified for r in matches)
+        return _response({"error": ambiguous_repo_message(repo or "", names), "repos": names}, 409)
+    return matches[0]
 
 
 def _toolset(
@@ -188,16 +202,18 @@ async def _run(request: Request, body: RepoRef, record_id: str | None, call: Too
     container, graph_provider, org_id, user_id = await _deps(request)
     try:
         repo = await _target(graph_provider, org_id, user_id, body.repo, record_id)
-    except RepoNotFoundError as exc:
-        return _response({"error": str(exc)}, 404)
-    except AmbiguousRepoNameError as exc:
-        return _response({"error": str(exc), "repos": exc.repos}, 409)
     except Exception:
         container.logger().exception("code-graph repo lookup failed")
         return _response({"error": "graph unavailable"}, 503)
-    toolset = _toolset(container, graph_provider, org_id, user_id, repo)
-    _ok, raw = await call(toolset, repo)
-    result = json.loads(raw)
+    if isinstance(repo, JSONResponse):
+        return repo
+    try:
+        toolset = _toolset(container, graph_provider, org_id, user_id, repo)
+        _ok, raw = await call(toolset, repo)
+        result = json.loads(raw)
+    except Exception:
+        container.logger().exception("code-graph tool call failed")
+        return _response({"error": "graph unavailable"}, 503)
     if isinstance(result, dict) and "error" not in result:
         result.setdefault("repo", repo.name)
     return _response(result if isinstance(result, dict) else {"result": result})

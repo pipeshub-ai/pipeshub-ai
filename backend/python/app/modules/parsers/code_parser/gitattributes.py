@@ -14,6 +14,9 @@ from dataclasses import dataclass
 __all__ = ["LinguistExclusions", "glob_regex", "parse_linguist_exclusions"]
 
 _ATTRS = ("linguist-generated", "linguist-vendored")
+# `**/` segments still backtrack over the path depth, so a rule may hold a few.
+_MAX_DOUBLE_STARS = 3
+_NEVER = re.compile(r"(?!)")
 
 
 def _attr_state(token: str) -> tuple[str, bool] | None:
@@ -37,20 +40,28 @@ def glob_regex(pattern: str) -> re.Pattern[str]:
     anchored = "/" in pattern.rstrip("/")
     pattern = pattern.lstrip("/")
     out: list[str] = []
+    stars = 0
     i = 0
     while i < len(pattern):
-        if pattern.startswith("**/", i):
+        whole = i == 0 or pattern[i - 1] == "/"
+        if whole and pattern.startswith("**/", i):
             out.append("(?:.*/)?")
+            stars += 1
             i += 3
         elif pattern.startswith("/**", i) and i + 3 == len(pattern):
             out.append("/.*")
             i += 3
-        elif pattern.startswith("**", i):
+        elif whole and pattern.startswith("**", i) and i + 2 == len(pattern):
             out.append(".*")
             i += 2
         elif pattern[i] == "*":
-            out.append("[^/]*")
-            i += 1
+            # As in git, any other run of `*` is one `*`. Each `*` takes the
+            # earliest match of what follows it up to the next `*` (atomic, as
+            # fnmatch does), which is enough within one segment and keeps the
+            # match linear instead of backtracking over every split.
+            while i < len(pattern) and pattern[i] == "*":
+                i += 1
+            out.append("\0")
         elif pattern[i] == "?":
             out.append("[^/]")
             i += 1
@@ -62,14 +73,22 @@ def glob_regex(pattern: str) -> re.Pattern[str]:
             else:
                 body = pattern[i + 1:end].replace("\\", "\\\\")
                 if body.startswith("!"):
-                    body = "^" + body[1:]
+                    body = "^/" + body[1:]  # as in git, a class never matches `/`
                 out.append(f"[{body}]")
                 i = end + 1
         else:
             out.append(re.escape(pattern[i]))
             i += 1
+    if stars > _MAX_DOUBLE_STARS:
+        return _NEVER
+    chunks = "".join(out).split("\0")
+    # Every `*` but the last is atomic and lazy; the last is anchored by `$`.
+    # A chunk holding `**/` has no single earliest match, so it backtracks.
+    middle = "".join(f"[^/]*{c}" if "(?:.*/)?" in c else f"(?>[^/]*?{c})" for c in chunks[1:-1])
+    tail = f"[^/]*{chunks[-1]}" if len(chunks) > 1 else ""
+    joined = chunks[0] + middle + tail
     prefix = "" if anchored else "(?:.*/)?"
-    return re.compile(f"^{prefix}{''.join(out)}$")
+    return re.compile(f"^{prefix}{joined}$")
 
 
 @dataclass(frozen=True)

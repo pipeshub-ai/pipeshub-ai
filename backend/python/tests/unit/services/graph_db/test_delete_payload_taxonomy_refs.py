@@ -365,6 +365,32 @@ class TestNeo4jRecursiveDelete:
         assert "taxonomyRefs" not in _payloads(result)["drive-1"]
 
     @pytest.mark.asyncio
+    async def test_a_block_cleanup_failure_after_commit_keeps_the_deletes_events(self) -> None:
+        """The folder delete is committed before its blocks go; rolling that back is
+        impossible, and the deleted records' vectors still need their events."""
+        r1 = _kb("r1", key_field="id")
+        provider = _neo4j([], inventory=_neo4j_inventory([r1]), deleted_rows=[{"record": r1, "type_doc": None}])
+        provider.delete_blocks_for_records = AsyncMock(side_effect=RuntimeError("blocks"))
+        provider.rollback_transaction = AsyncMock()
+
+        result = await provider.delete_records_recursive(["r1"], "kb-1", within_folder_id="folder-1")
+
+        assert result["success"] is True
+        assert list(_payloads(result)) == ["r1"]
+        provider.rollback_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_block_cleanup_failure_in_a_callers_transaction_propagates(self) -> None:
+        r1 = _kb("r1", key_field="id")
+        provider = _neo4j([], inventory=_neo4j_inventory([r1]), deleted_rows=[{"record": r1, "type_doc": None}])
+        provider.delete_blocks_for_records = AsyncMock(side_effect=RuntimeError("blocks"))
+
+        with pytest.raises(RuntimeError, match="blocks"):
+            await provider.delete_records_recursive(
+                ["r1"], "kb-1", within_folder_id="folder-1", transaction="caller-txn",
+            )
+
+    @pytest.mark.asyncio
     async def test_a_failed_link_read_still_deletes_and_publishes(self) -> None:
         calls: list[str] = []
         provider = _neo4j(calls, inventory=_neo4j_inventory([_kb("r1", key_field="id")]))

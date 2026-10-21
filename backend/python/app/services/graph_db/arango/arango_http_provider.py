@@ -4099,10 +4099,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not node_keys:
             return 0
         node_ids = [f"{node_collection}/{key}" for key in node_keys]
+        # One equality lookup per direction, as in _delete_blocks_where: an OR of
+        # two IN clauses does not reliably use the edge index and scans the collection.
         query = f"""
-        FOR edge IN {edge_collection}
-            FILTER edge._from IN @node_ids OR edge._to IN @node_ids
-            REMOVE edge IN {edge_collection} OPTIONS {{ ignoreErrors: true }}
+        LET edge_keys = UNION_DISTINCT(
+            (FOR nid IN @node_ids FOR e IN {edge_collection} FILTER e._from == nid RETURN e._key),
+            (FOR nid IN @node_ids FOR e IN {edge_collection} FILTER e._to == nid RETURN e._key)
+        )
+        FOR key IN edge_keys
+            REMOVE key IN {edge_collection} OPTIONS {{ ignoreErrors: true }}
             RETURN 1
         """
         try:

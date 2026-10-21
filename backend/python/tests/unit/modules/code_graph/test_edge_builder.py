@@ -218,6 +218,30 @@ async def test_module_qualified_call_to_unknown_module_emits_nothing(graph, inde
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("module_path", ["config.py", "src/config.py"])
+async def test_an_untyped_parameter_is_not_a_module(graph, index_file, module_path) -> None:
+    # `config` is a parameter, not `import config`: no edge to the repo's config.py.
+    await index_file("recC", module_path, b"def load():\n    return 1\n", "python")
+    await index_file("recR", "src/app/runner.py",
+                     b"def run(config):\n    return config.load()\n", "python")
+    await _build(graph)
+    assert graph.edge_targets(RecordRelations.CALLS.value) == []
+
+
+@pytest.mark.asyncio
+async def test_an_attribute_set_from_a_parameter_is_not_a_module(graph, index_file) -> None:
+    await index_file("recC", "src/client.py", b"def fetch():\n    return 1\n", "python")
+    await index_file(
+        "recS", "src/app/svc.py",
+        b"class Svc:\n    def __init__(self, client):\n        self.client = client\n\n"
+        b"    def go(self):\n        return self.client.fetch()\n",
+        "python",
+    )
+    await _build(graph)
+    assert graph.edge_targets(RecordRelations.CALLS.value) == []
+
+
+@pytest.mark.asyncio
 async def test_inheritance_resolves_across_files(graph, index_file) -> None:
     await index_file("recBase", "src/base.py", b"class Base:\n    pass\n", "python")
     await index_file("recSub", "src/sub.py", b"from .base import Base\n\nclass Sub(Base):\n    pass\n", "python")

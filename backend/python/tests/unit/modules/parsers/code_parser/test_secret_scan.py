@@ -86,6 +86,14 @@ def test_binary_content_is_not_touched() -> None:
     assert out is raw and result.count == 0
 
 
+def test_a_file_that_is_not_utf8_is_still_redacted() -> None:
+    raw = b'# caf\xe9\naws_key = "AKIAIOSFODNN7EXAMPLE"\n'
+    out, result = redact_secrets_bytes(raw)
+    assert result.count >= 1
+    assert b"AKIAIOSFODNN7EXAMPLE" not in out
+    assert out.startswith(b"# caf\xe9\n"), "the other bytes are kept as they were"
+
+
 @pytest.mark.parametrize(
     "path, sensitive",
     [

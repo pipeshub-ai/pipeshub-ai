@@ -4345,3 +4345,29 @@ class TestGetRecordsByStatusField:
             result = []
         assert result == []
         typed_provider.http_client.execute_aql.assert_not_awaited()
+
+
+class TestDeleteEdgesTouchingNodes:
+    @pytest.mark.asyncio
+    async def test_looks_up_each_direction_by_equality_so_the_edge_index_serves_it(
+        self, connected_provider
+    ) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[1, 1])
+        deleted = await connected_provider.delete_edges_touching_nodes(
+            ["b1", "b2"], CollectionNames.BLOCKS.value, CollectionNames.RECORD_LINKS.value,
+        )
+        assert deleted == 2
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        assert "UNION_DISTINCT" in query
+        assert "e._from == nid" in query and "e._to == nid" in query
+        assert " OR " not in query
+        bind_vars = connected_provider.http_client.execute_aql.await_args.kwargs["bind_vars"]
+        assert bind_vars == {"node_ids": ["blocks/b1", "blocks/b2"]}
+
+    @pytest.mark.asyncio
+    async def test_no_nodes_is_no_query(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock()
+        assert await connected_provider.delete_edges_touching_nodes(
+            [], CollectionNames.BLOCKS.value, CollectionNames.RECORD_LINKS.value,
+        ) == 0
+        connected_provider.http_client.execute_aql.assert_not_awaited()

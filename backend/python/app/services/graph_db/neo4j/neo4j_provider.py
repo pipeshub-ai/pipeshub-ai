@@ -13636,10 +13636,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if within_folder_id and records_with_type:
                     # Only now is it known which records the folder delete removed.
                     # In a caller's transaction, since its Record locks are still held.
-                    await self.delete_blocks_for_records(
-                        [rt["record"]["id"] for rt in records_with_type if rt.get("record")],
-                        transaction=transaction,
-                    )
+                    try:
+                        await self.delete_blocks_for_records(
+                            [rt["record"]["id"] for rt in records_with_type if rt.get("record")],
+                            transaction=transaction,
+                        )
+                    except Exception as block_error:
+                        if transaction is not None:
+                            raise
+                        # Our transaction is committed: rolling it back is impossible, and
+                        # the deleted records' events must still go out.
+                        self.logger.error(f"❌ Records deleted but their block cleanup failed: {block_error}")
 
                 event_payloads = []
                 try:

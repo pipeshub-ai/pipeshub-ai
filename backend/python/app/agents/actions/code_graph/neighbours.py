@@ -337,7 +337,7 @@ async def get_neighbour_impl(
     visited = set(anchor_keys)
     frontier = list(anchor_keys)
     rows: list[dict[str, Any]] = []
-    seen_rows: set[tuple[str, str | None, str | None]] = set()
+    seen_rows: set[tuple[str, str | None, str | None, str | None]] = set()
     for hop in range(1, depth + 1):
         if not frontier:
             break
@@ -368,14 +368,15 @@ async def get_neighbour_impl(
             key = row.get("key")
             if not key:
                 continue
+            back = row.get("anchorKey")
+            origin = origin_of.get(back, back)
             # A walk that comes back to where it started (A calls B calls A) or
-            # reaches a node twice by different routes adds rows, not facts.
-            seen_key = (key, row.get("relationshipType"), row.get("direction"))
+            # reaches a node twice by different routes from one origin adds rows,
+            # not facts. Two symbols of a file that both call it are two facts.
+            seen_key = (key, row.get("relationshipType"), row.get("direction"), origin)
             if (hop > 1 and key in anchor_names) or seen_key in seen_rows:
                 continue
             seen_rows.add(seen_key)
-            back = row.get("anchorKey")
-            origin = origin_of.get(back, back)
             row["hop"] = hop
             row["_origin"] = origin
             row["_via"] = back

@@ -158,14 +158,14 @@ def redact_secrets(text: str) -> RedactionResult:
 
 
 def redact_secrets_bytes(content: bytes) -> tuple[bytes, RedactionResult]:
-    """Redact UTF-8 text; binary or oversized content is returned unchanged."""
-    if len(content) > _MAX_SCAN_BYTES:
+    """Redact text in any ASCII-compatible encoding; binary or oversized content is returned unchanged.
+
+    Bytes that are not UTF-8 (a Latin-1 ``é`` in a comment) round-trip through
+    ``surrogateescape`` untouched, so one of them does not exempt the file.
+    """
+    if len(content) > _MAX_SCAN_BYTES or b"\x00" in content[:8000]:
         return content, RedactionResult("", 0)
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        return content, RedactionResult("", 0)
-    result = redact_secrets(text)
+    result = redact_secrets(content.decode("utf-8", errors="surrogateescape"))
     if not result.count:
         return content, result
-    return result.text.encode("utf-8"), result
+    return result.text.encode("utf-8", errors="surrogateescape"), result

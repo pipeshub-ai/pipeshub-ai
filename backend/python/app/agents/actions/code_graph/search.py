@@ -24,7 +24,7 @@ from .ops import (
     get_record_roles,
     repo_names,
 )
-from .query import files_by_pattern
+from .query import files_by_pattern, path_matches
 from .read import _outer_spans
 
 if TYPE_CHECKING:
@@ -124,7 +124,7 @@ async def _by_identifier(
         blocks = [b for b in blocks if _repo_matches(repo, b.get("recordGroupId"), names)]
     await attach_file_paths(graph_provider, org_id, blocks)
     if path:
-        blocks = [b for b in blocks if (b.get("filePath") or "").startswith(path.rstrip("*"))]
+        blocks = [b for b in blocks if path_matches(b.get("filePath") or "", path)]
     blocks.sort(key=lambda b: (b.get("filePath") or "", b.get("startLine") or 0))
     out: dict[str, Any] = {
         "mode": "identifier",
