@@ -46,6 +46,7 @@ _SEED_FILE_CONTENT = b"PipesHub SDK test seed document. The codeword is pineappl
 # The search the searchLifecycle workflow in tests.arazzo.yaml sends; keep the two the same.
 _SEED_SEARCH = {
     "query": "What is the codeword?",
+    "limit": 1,  # search answers 500 without one (the default is not applied)
     "createdAfter": "2000-01-01",
     "createdBefore": "2999-12-31",
     "modifiedAfter": "2000-01-01",
@@ -127,8 +128,7 @@ def search_answers(base_url: str, headers: dict[str, str]) -> bool:
     """
     response = requests.post(
         f"{base_url}/api/v1/search",
-        # A limit, because search answers 500 without one (the default is not applied).
-        json={"limit": 1, **_SEED_SEARCH},
+        json=_SEED_SEARCH,
         headers=headers,
         timeout=60,
     )

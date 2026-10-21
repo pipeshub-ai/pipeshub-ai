@@ -687,6 +687,7 @@ workflows:
           contentType: application/json
           payload:
             query: What is the codeword?
+            limit: 1
             createdAfter: "2000-01-01"
             createdBefore: "2999-12-31"
             modifiedAfter: "2000-01-01"
