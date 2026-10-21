@@ -122,7 +122,8 @@ def search_answers(base_url: str, headers: dict[str, str]) -> bool:
     if response.status_code == requests.codes.not_found:
         return False
     response.raise_for_status()
-    return True
+    # An org with no indexed document can also answer 200 with status "empty_response".
+    return response.json().get("searchResponse", {}).get("status") == "success"
 
 
 def seed_search_document(base_url: str, token: str) -> None:

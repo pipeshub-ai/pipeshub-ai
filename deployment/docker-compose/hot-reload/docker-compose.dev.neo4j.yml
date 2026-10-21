@@ -73,7 +73,6 @@ services:
       - PARSING_SERVICE_URL=http://localhost:8092
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
-      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
@@ -181,9 +180,13 @@ services:
       - ENTITY_SEARCH_TOOL=${ENTITY_SEARCH_TOOL:-}
       # On unless set to false; HIGH_ACCURACY_MODE does not change it.
       - TIMELINE_SUMMARIES=${TIMELINE_SUMMARIES:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - DATE_FILTER_SAFETY_NET=${DATE_FILTER_SAFETY_NET:-}
       - FETCH_SIZE_BY_CHARS=${FETCH_SIZE_BY_CHARS:-}
       # On unless set to false; HIGH_ACCURACY_MODE does not change it.
       - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS=${UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS:-60}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}

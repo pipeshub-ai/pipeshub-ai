@@ -226,7 +226,8 @@ async def test_the_record_page_hides_a_switched_off_demo_record(excluded, expect
             assert err.value.status_code == 404
         else:
             result = await connector_router.get_record_by_id(record_id="rec-1", request=_http_request(), graph_provider=graph)
-            assert result == {"record": {"id": "rec-1"}}
+            # Shown, with the stage track the record page reads (empty: no revision yet).
+            assert result == {"record": {"id": "rec-1"}, "stageStates": []}
 
 
 @pytest.mark.asyncio

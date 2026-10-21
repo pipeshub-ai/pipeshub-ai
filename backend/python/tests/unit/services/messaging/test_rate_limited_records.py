@@ -207,7 +207,7 @@ class Setup:
         self.handler = RecordEventHandler(
             logger=logger,
             config_service=config_service,
-            event_processor=SimpleNamespace(graph_provider=self.graph, processor=MagicMock()),
+            event_processor=SimpleNamespace(graph_provider=self.graph, processor=MagicMock(), stage_ingress=None),
         )
 
     async def message_handler(self):  # noqa: ANN201

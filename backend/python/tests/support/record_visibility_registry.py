@@ -160,6 +160,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "reindex_single_record": (Rule.WRITE, "refuses a deleted record"),
     "reindex_record_group_records": (Rule.WRITE, "walks with get_records_by_record_group"),
     "update_indexing_status_for_record_ids": (Rule.WRITE, ""),
+    "compare_and_set_record_fields": (Rule.WRITE, "writes only records still on the given contentRev"),
     "delete_parent_child_edge_to_record": (Rule.WRITE, ""),
     "batch_upsert_records": (Rule.WRITE, ""),
     "create_record_relation": (Rule.WRITE, ""),

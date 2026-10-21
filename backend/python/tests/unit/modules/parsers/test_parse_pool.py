@@ -368,6 +368,20 @@ class TestAbandonedJobs:
         monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "1800")
         assert await parse_pool.submit(len, b"abc") == len(b"abc")
 
+    async def test_a_job_with_its_own_deadline_is_stopped_at_it(
+        self, governor: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "1800")
+        await parse_pool.submit(os.getpid)
+
+        started = time.monotonic()
+        with pytest.raises(parse_pool.ParseWorkerError) as raised:
+            await parse_pool.submit(time.sleep, 600, label="slow.pdf", timeout=0.5)
+
+        assert raised.value.cause == "timed_out"
+        assert time.monotonic() - started < 10
+        assert await parse_pool.submit(len, b"abc", timeout=30) == len(b"abc")
+
     async def test_cancelling_the_caller_stops_its_running_parse(self, governor: MagicMock) -> None:
         busy_pid = await parse_pool.submit(os.getpid)
         task = asyncio.create_task(parse_pool.submit(time.sleep, 600))
@@ -470,6 +484,8 @@ class TestLifecycle:
         "app.modules.parsers.markdown.image_references",
         "app.modules.parsers.code_parser.code_file_parser",
         "app.modules.parsers.csv.table_detection",
+        "app.modules.parsers.pdf.pdf_inspection",
+        "app.modules.parsers.pdf.layout_pages",
     ],
 )
 def test_what_a_worker_imports_stays_light(module: str) -> None:

@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, override
 
 from fastapi import Request
 from neo4j.exceptions import ClientError, TransientError
@@ -45,6 +45,7 @@ from app.config.constants.arangodb import (
     RecordRelations,
     RecordTypes,
 )
+from app.services.graph_db.common.utils import record_status_field
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Collection, Mapping
@@ -526,6 +527,18 @@ def _purge_walk_query(hint: str) -> str:
     """
 
 
+# The sweeper scans stage states by status and age; the coordinator reads one revision.
+_STAGE_STATE_INDEXES = (
+    "CREATE INDEX stage_state_status_updated IF NOT EXISTS FOR (n:StageState) ON (n.status, n.updatedAtMs)",
+    "CREATE INDEX stage_state_revision IF NOT EXISTS FOR (n:StageState) ON (n.virtualRecordId, n.rev)",
+)
+
+
+def _unique_id_constraint(label: str) -> str:
+    name = f"{label.lower()}_id_unique".replace(".", "_")
+    return f"CREATE CONSTRAINT {name} IF NOT EXISTS FOR (n:{label}) REQUIRE n.id IS UNIQUE"
+
+
 class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
     Neo4j implementation of IGraphDBProvider.
@@ -830,7 +843,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             List of Cypher CREATE CONSTRAINT queries for unique id fields
         """
-        constraints = []
+        constraints: list[str] = []
 
         # dict.fromkeys preserves order while de-duplicating the two sources.
         collections = dict.fromkeys(
@@ -841,16 +854,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Get the Neo4j label for this collection
             label = collection_to_label(collection)
 
-            # Create a safe constraint name
-            constraint_name = f"{label.lower()}_id_unique".replace(".", "_")
-
-            # Create unique constraint on id property
-            constraint_query = (
-                f"CREATE CONSTRAINT {constraint_name} IF NOT EXISTS "
-                f"FOR (n:{label}) REQUIRE n.id IS UNIQUE"
-            )
-
-            constraints.append(constraint_query)
+            constraints.append(_unique_id_constraint(label))
 
         # Also backs the (orgId, collection, normalized) seek, and makes the
         # MERGE in add_taxonomy_aliases converge under concurrent writers.
@@ -897,7 +901,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             List of Cypher CREATE INDEX queries
         """
-        indexes = []
+        indexes: list[str] = []
 
         # ==================== TAXONOMY INDEXES ====================
         # Entity resolution looks canonical taxonomy nodes up by
@@ -1192,6 +1196,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
 
         indexes.extend(named_entity_neo4j_indexes())
+        indexes.extend(_STAGE_STATE_INDEXES)
         return indexes
 
     def _generate_required_field_constraints(self) -> list[str]:
@@ -1292,7 +1297,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 try:
                     await self.client.execute_query(index_query)
                 except Exception as e:
-                    self.logger.debug(f"Index creation (may already exist): {str(e)}")
+                    self.logger.warning(f"Index creation failed: {str(e)}")
 
             self.logger.info(f"✅ Created {len(indexes)} performance indexes")
             self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
@@ -1317,7 +1322,51 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Ensure schema failed: {str(e)}")
             return False
 
-    def _arango_to_neo4j_node(self, arango_node: dict, collection: str) -> dict:
+    @override
+    async def ensure_pipeline_schema(self) -> None:
+        if self.client is None:
+            raise RuntimeError("Neo4j client is not connected")
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        constraint = _unique_id_constraint(label)
+        try:
+            await self.client.execute_query(constraint)
+        except Exception:
+            # Stage states written while the constraint was missing can share an id, which blocks
+            # creating it; without it two concurrent claims of one stage could both succeed.
+            removed = await self._remove_duplicate_stage_states(label)
+            if not removed:
+                raise
+            self.logger.warning("Removed %d duplicate %s nodes to create their unique constraint", removed, label)
+            await self.client.execute_query(constraint)
+        for index in _STAGE_STATE_INDEXES:
+            await self.client.execute_query(index)
+        rows = await self.client.execute_query(
+            "SHOW CONSTRAINTS YIELD labelsOrTypes, properties, type "
+            "WHERE $label IN labelsOrTypes AND properties = ['id'] AND type CONTAINS 'UNIQUENESS' "
+            "RETURN count(*) AS found",
+            {"label": label},
+        )
+        if not rows or not rows[0]["found"]:
+            raise RuntimeError(f"the unique constraint on {label}.id is missing")
+
+    async def _remove_duplicate_stage_states(self, label: str) -> int:
+        """Keep the most recently updated node of each duplicated id; returns how many were removed."""
+        if self.client is None:
+            return 0
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label})
+            WITH n ORDER BY coalesce(n.updatedAtMs, 0) DESC
+            WITH n.id AS id, collect(n) AS nodes
+            WHERE size(nodes) > 1
+            UNWIND nodes[1..] AS extra
+            DETACH DELETE extra
+            RETURN count(*) AS removed
+            """
+        )
+        return int(rows[0]["removed"]) if rows else 0
+
+    def _arango_to_neo4j_node(self, arango_node: dict[str, Any], collection: str) -> dict[str, Any]:
         """
         Convert ArangoDB node format to Neo4j format.
 
@@ -1685,6 +1734,39 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         await self.client.execute_query(
             f"{statement}\n            RETURN n.id", parameters=parameters, txn_id=transaction
+        )
+
+    @override
+    async def ensure_nodes(
+        self,
+        nodes: list[dict[str, Any]],
+        collection: str,
+        transaction: str | None = None,
+    ) -> None:
+        if not nodes:
+            return
+        if self.client is None:
+            raise RuntimeError("Neo4j provider is not connected")
+        label = collection_to_label(collection)
+        neo4j_nodes: list[dict[str, Any]] = []
+        for node in nodes:
+            neo4j_node: dict[str, Any] = self._arango_to_neo4j_node(node, collection)
+            if "id" not in neo4j_node:
+                if "_key" not in neo4j_node:
+                    raise ValueError("ensure_nodes requires every node to carry an id")
+                neo4j_node["id"] = neo4j_node.pop("_key")
+            self.validator.validate_node_update(collection, neo4j_node)
+            neo4j_nodes.append(neo4j_node)
+        # MERGE on the id-uniqueness constraint; ON CREATE leaves an existing node untouched.
+        # Records and record groups also carry derived listing state, as upsert_nodes writes it.
+        query = f"""
+        UNWIND $nodes AS node
+        MERGE (n:{label} {{id: node.id}})
+        ON CREATE SET n += node
+        {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
+        """
+        await self.client.execute_query(
+            query, parameters={"nodes": neo4j_nodes}, txn_id=transaction
         )
 
     async def delete_nodes(
@@ -3342,6 +3424,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        status_field: str = "indexingStatus",
     ) -> list[Record]:
         """Get records by indexing status. A None or empty status_filters returns records regardless of status.
         Optionally scope to a record group and/or filter on the placeholder flag
@@ -3349,11 +3432,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Pass after_key for keyset pagination instead of offset.
 
         An empty list means no record matched; a listing that could not be read
-        raises GraphQueryError."""
+        raises GraphQueryError. A status_field that is not a record status
+        field raises ValueError before any query runs."""
+        status_attr = record_status_field(status_field)
         limit_clause = f"SKIP {offset} LIMIT {limit}" if limit else ""
         after_key_clause = "AND r.id > $after_key" if after_key else ""
+        # NOT (null IN list) is null in Cypher, which would drop a record with no indexingStatus.
         exclude_clause = (
-            "AND NOT r.indexingStatus IN $exclude_statuses" if exclude_statuses else ""
+            "AND NOT coalesce(r.indexingStatus, '') IN $exclude_statuses" if exclude_statuses else ""
         )
 
         record_group_clause = "AND r.recordGroupId = $record_group_id" if record_group_id else ""
@@ -3368,7 +3454,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         MATCH (r:Record)
         WHERE r.orgId = $org_id
           AND r.connectorId = $connector_id
-          AND ($status_filters IS NULL OR size($status_filters) = 0 OR r.indexingStatus IN $status_filters)
+          AND ($status_filters IS NULL OR size($status_filters) = 0 OR r.{status_attr} IN $status_filters)
           AND {cypher_record_visibility("r", visibility)}
           {record_group_clause}
           {placeholder_clause}
@@ -3872,7 +3958,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if status_filters:
                 status_clause = "AND record.indexingStatus IN $status_filters"
             if exclude_statuses:
-                status_clause += "\nAND NOT record.indexingStatus IN $exclude_statuses"
+                status_clause += "\nAND NOT coalesce(record.indexingStatus, '') IN $exclude_statuses"
             if after_key:
                 status_clause += "\nAND record.id > $after_key"
 
@@ -4086,7 +4172,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if status_filters:
                 status_clause = "AND record.indexingStatus IN $status_filters"
             if exclude_statuses:
-                status_clause += "\nAND NOT record.indexingStatus IN $exclude_statuses"
+                status_clause += "\nAND NOT coalesce(record.indexingStatus, '') IN $exclude_statuses"
             if after_key:
                 status_clause += "\nAND record.id > $after_key"
 
@@ -11018,7 +11104,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND coalesce(r.isPlaceholder, false) = false
               AND coalesce(r.isDeleted, false) = false
               AND NOT coalesce(r.mimeType, '') IN $folder_mime_types
-            RETURN r.recordType AS recordType, r.indexingStatus AS indexingStatus, count(DISTINCT r) AS cnt
+            RETURN r.recordType AS recordType, r.indexingStatus AS indexingStatus,
+                   r.extractionStatus AS extractionStatus, count(DISTINCT r) AS cnt
             """
 
             results = await self.client.execute_query(
@@ -13731,7 +13818,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             label = collection_to_label(CollectionNames.RECORDS.value)
             exclude_clause = (
-                "AND NOT n.indexingStatus IN $exclude_statuses" if excluded else ""
+                "AND NOT coalesce(n.indexingStatus, '') IN $exclude_statuses" if excluded else ""
             )
             include_clause = (
                 "AND n.indexingStatus IN $only_statuses" if included else ""
@@ -13828,6 +13915,119 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 expected, new_status, str(e),
             )
             return []
+
+    # ==================== Pipeline stage states ====================
+
+    async def _stage_cypher(self, query: str, parameters: dict[str, Any]) -> list[dict[str, Any]]:
+        if self.client is None:
+            raise RuntimeError("Neo4j client is not connected")
+        return await self.client.execute_query(query, parameters=parameters)
+
+    @override
+    async def stage_state_get(self, key: str) -> dict[str, Any] | None:
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        rows = await self._stage_cypher(f"MATCH (n:{label} {{id: $key}}) RETURN properties(n) AS doc", {"key": key})
+        return dict(rows[0]["doc"]) if rows else None
+
+    @override
+    async def stage_states_for_revision(self, virtual_record_id: str, rev: str) -> list[dict[str, Any]]:
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        rows = await self._stage_cypher(
+            f"MATCH (n:{label}) WHERE n.virtualRecordId = $vrid AND n.rev = $rev RETURN properties(n) AS doc",
+            {"vrid": virtual_record_id, "rev": rev},
+        )
+        return [dict(row["doc"]) for row in rows]
+
+    @override
+    async def stage_state_create(self, document: dict[str, Any]) -> bool:
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        # MERGE on the unique id constraint is atomic: exactly one concurrent caller creates.
+        rows = await self._stage_cypher(
+            f"""
+            MERGE (n:{label} {{id: $id}})
+            ON CREATE SET n += $props, n.__created = true
+            WITH n, coalesce(n.__created, false) AS created
+            REMOVE n.__created
+            RETURN created
+            """,
+            {"id": document["id"], "props": document},
+        )
+        return bool(rows and rows[0]["created"])
+
+    @override
+    async def stage_state_compare_and_set(
+        self,
+        key: str,
+        expected: str,
+        new: str,
+        fields: dict[str, Any],
+        *,
+        expected_attempt: int | None = None,
+    ) -> bool:
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        # Take the node's write lock before reading status: a MATCH ... WHERE status
+        # predicate is evaluated before the lock, so two writers could both pass it
+        # (the same lost-update guard as update_node_fields_if_match).
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (n:{label} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE n.status = $expected AND ($attempt IS NULL OR n.attempt = $attempt)
+            SET n += $fields, n.status = $new
+            RETURN n.id AS id
+            """,
+            {"key": key, "expected": expected, "new": new, "fields": fields, "attempt": expected_attempt},
+        )
+        return bool(rows)
+
+    @override
+    async def stage_states_stale(
+        self, statuses: list[str], updated_before_ms: int, limit: int
+    ) -> list[dict[str, Any]]:
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (n:{label})
+            WHERE n.status IN $statuses AND n.updatedAtMs < $before
+            RETURN properties(n) AS doc, n.updatedAtMs AS updated
+            ORDER BY updated ASC
+            LIMIT $limit
+            """,
+            {"statuses": statuses, "before": updated_before_ms, "limit": limit},
+        )
+        return [dict(row["doc"]) for row in rows]
+
+    @override
+    async def compare_and_set_record_fields(
+        self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
+    ) -> list[str]:
+        # Sorted, so two calls over overlapping records take their locks in one order.
+        keys = sorted({rid for rid in record_ids if rid})
+        if not keys:
+            return []
+        if "indexingStatus" in fields:
+            # COMPLETED sets hasIndexedCopy and EMPTY clears it, as every indexingStatus write does.
+            fields = {**indexed_copy_fields(fields["indexingStatus"]), **fields}
+        label = collection_to_label(CollectionNames.RECORDS.value)
+        # The lock comes first so the revision check reads a write that committed
+        # while this waited (the same guard as update_nodes_fields_if_match).
+        rows = await self._stage_cypher(
+            f"""
+            UNWIND $keys AS key
+            MATCH (n:{label} {{id: key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE n.contentRev = $rev
+            SET n += $fields
+            {_cypher_kh_node_state("n")}
+            RETURN n.id AS id
+            """,
+            {"keys": keys, "rev": content_rev, "fields": fields},
+        )
+        return [row["id"] for row in rows if row.get("id")]
 
     async def get_existing_record_keys(
         self,

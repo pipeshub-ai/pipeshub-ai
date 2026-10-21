@@ -119,6 +119,50 @@ class TestChatStreamAccess:
         assert call["query_info"]["is_service_account"] is True
         assert call["cancellation_owner"].user_id == "u-bob"
 
+    def test_service_account_artifacts_belong_to_the_person_chatting(self, graph, loop) -> None:
+        c, _ = make_client(graph)
+        assert _stream(c, "sa", "bob", {"query": "hi", "callerDisplayName": "Bob B."}).status_code == 200
+        (call,) = loop.calls
+        # Only what the run makes changes hands; the run itself is still the creator's.
+        assert call["query_info"]["artifact_owner_user_id"] == "u-bob"
+        assert call["user_info"]["userId"] == "u-alice"
+
+    def test_service_account_artifacts_of_a_service_caller_stay_the_creators(self, graph, loop) -> None:
+        """The Slack bot's JWT is a service identity with no user to grant files to."""
+        bot = {"slack-bot": {"userId": "u-slack-bot", "orgId": "org-1", "isServiceAccount": True}}
+        c, _ = make_client(graph, extra_users=bot)
+        assert _stream(c, "sa", "slack-bot", {"query": "hi", "callerDisplayName": "Bob"}).status_code == 200
+        (call,) = loop.calls
+        assert call["query_info"]["artifact_owner_user_id"] is None
+        assert call["user_info"]["userId"] == "u-alice"
+
+    @pytest.mark.parametrize("change", ["missing", "other-org"])
+    def test_service_account_artifacts_of_an_unknown_caller_stay_the_creators(self, graph, loop, change) -> None:
+        if change == "missing":
+            del graph.nodes["users"][user_key("bob")]
+        else:
+            graph.nodes["users"][user_key("bob")]["orgId"] = "org-2"
+        c, _ = make_client(graph)
+        assert _stream(c, "sa", "bob", {"query": "hi", "callerDisplayName": "Bob B."}).status_code == 200
+        (call,) = loop.calls
+        assert call["query_info"]["artifact_owner_user_id"] is None
+
+    def test_service_account_chat_fails_rather_than_guess_the_owner(self, graph, loop) -> None:
+        """A caller who cannot be read is not handed to the creator: their files would go to the wrong person."""
+        graph.fail("get_user_by_user_id")
+        c, _ = make_client(graph)
+        response = _stream(c, "sa", "bob", {"query": "hi", "callerDisplayName": "Bob B."})
+        assert response.status_code == 503
+        assert not loop.calls
+
+    @pytest.mark.parametrize("agent", ["private", "shared"])
+    def test_other_agents_set_no_artifact_owner(self, graph, loop, agent) -> None:
+        c, _ = make_client(graph)
+        caller = "alice" if agent == "private" else "bob"
+        assert _stream(c, agent, caller).status_code == 200
+        (call,) = loop.calls
+        assert call["query_info"]["artifact_owner_user_id"] is None
+
     def test_service_account_creator_in_another_org_is_refused(self, graph, loop) -> None:
         graph.nodes["users"][user_key("alice")]["orgId"] = "org-2"
         c, _ = make_client(graph)

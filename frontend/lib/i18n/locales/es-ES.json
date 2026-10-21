@@ -606,7 +606,21 @@
     "chatSelectionLimit": "El chat admite hasta {{max}} elementos seleccionados. Desmarca algunos e inténtalo de nuevo.",
     "chatTooManyCollections": "El chat puede buscar en hasta {{max}} colecciones a la vez y tienes más. Abre una colección o marca las que quieras consultar.",
     "chatCollectionsLoadFailed": "No se pudieron cargar tus colecciones para el chat. Inténtalo de nuevo.",
-    "chatNoCollections": "Todavía no tienes colecciones sobre las que preguntar."
+    "chatNoCollections": "Todavía no tienes colecciones sobre las que preguntar.",
+    "indexingStatus": {
+      "completed": "Completado",
+      "inProgress": "En curso",
+      "failed": "Error",
+      "fileTypeNotSupported": "Tipo de archivo no compatible",
+      "notStarted": "No iniciado",
+      "queued": "En cola",
+      "manualIndexing": "Indexación manual",
+      "empty": "Vacío",
+      "paused": "En pausa",
+      "needsMultimodalModel": "Requiere un modelo multimodal",
+      "skipped": "Omitido",
+      "pending": "Pendiente"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -2627,6 +2641,11 @@
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "VIGILANTE LOCAL",
         "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos",
+        "classification": "Clasificación",
+        "classificationSkipped": "Omitidos",
+        "retryFailedClassification": "Reintentar clasificación fallida",
+        "retryClassificationSuccess": "Reintento de clasificación en cola",
+        "retryClassificationError": "No se pudo reintentar la clasificación",
         "lastRun": {
           "title": "Última sincronización",
           "outcome": {
@@ -4578,6 +4597,12 @@
       "noRecordMetadata": "No hay metadatos adicionales para este elemento."
     },
     "indexingReasonAria": "Detalles del error de indexación",
+    "stageTrackLabel": "Canalización",
+    "stageParsed": "Analizado",
+    "stageSearchable": "Buscable",
+    "stageClassified": "Clasificado",
+    "stageAttempt": "Intento {{n}}",
+    "stageDetailsAria": "Detalles de la etapa",
     "tabRecordInformation": "Información del registro",
     "tabDocumentDetails": "Detalles del documento",
     "chat": "Chat",
@@ -4853,6 +4878,8 @@
   },
   "collections": {
     "stats": {
+      "retryClassificationStart": "Reintento de clasificación en cola",
+      "retryClassificationError": "No se pudo reintentar la clasificación",
       "title": "Analíticas",
       "menuLabel": "Analíticas",
       "fetchError": "No se han podido cargar las estadísticas de indexación",

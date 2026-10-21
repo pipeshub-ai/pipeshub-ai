@@ -121,6 +121,148 @@ class TestUpdateAppStatus:
         assert call_args["isLocked"] is False
 
 
+# What ArangoDB raised when the sync task wrote the app document at the same
+# moment as the full-sync prep released its lock (nightly run, 20 Oct 2026).
+_ARANGO_WRITE_CONFLICT = (
+    "Batch insert failed with 1 error(s): Item 0: [1200] write-write conflict"
+)
+
+
+def _arango_conflicts(gp) -> None:
+    """Classify errors as the real ArangoDB provider does."""
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+
+    gp.is_write_conflict = ArangoHTTPProvider.__new__(ArangoHTTPProvider).is_write_conflict
+
+
+def _upserted_locks(gp) -> list:
+    return [
+        args[0][0]["isLocked"]
+        for name, args, _kwargs in gp.mock_calls
+        if name == "batch_upsert_nodes" and "isLocked" in args[0][0]
+    ]
+
+
+_SLEEP = "app.connectors.services.event_service.asyncio.sleep"
+
+
+class TestReleaseFullSyncLock:
+    """The release lost a write-write conflict to the sync task's own start
+    write, the lock stayed set after the sync ended, and every toggle, filter
+    change and delete of the connector answered 409."""
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_is_retried_on_a_connector_that_is_still_there(self, service) -> None:
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        gp.get_document = AsyncMock(return_value={"id": "c1", "status": "FULL_SYNCING", "isLocked": True})
+        gp.update_node = AsyncMock(return_value=True)
+        with patch(_SLEEP, new_callable=AsyncMock):
+            assert await service._release_full_sync_lock("c1") is True
+
+        gp.batch_upsert_nodes.assert_awaited_once()
+        assert gp.get_document.await_args.kwargs["raise_on_error"] is True
+        key, collection, updates = gp.update_node.await_args.args
+        assert (key, collection, updates["isLocked"]) == ("c1", CollectionNames.APPS.value, False)
+        assert "status" not in updates
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("doc", [None, {"id": "c1", "status": "DELETING", "isLocked": True}])
+    async def test_a_deleted_or_deleting_connector_is_not_written_again(self, service, doc) -> None:
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        gp.get_document = AsyncMock(return_value=doc)
+        gp.update_node = AsyncMock(return_value=True)
+        with patch(_SLEEP, new_callable=AsyncMock):
+            assert await service._release_full_sync_lock("c1") is False
+
+        gp.batch_upsert_nodes.assert_awaited_once()
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_is_raised_not_taken_as_deleted(self, service) -> None:
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        gp.get_document = AsyncMock(side_effect=Exception("503 Service Unavailable"))
+        gp.update_node = AsyncMock(return_value=True)
+        with patch(_SLEEP, new_callable=AsyncMock), pytest.raises(Exception, match="503"):
+            await service._release_full_sync_lock("c1")
+
+        gp.batch_upsert_nodes.assert_awaited_once()
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_any_other_failure_is_raised_without_a_retry(self, service) -> None:
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("connection refused"))
+        gp.get_document = AsyncMock()
+        with patch(_SLEEP, new_callable=AsyncMock), pytest.raises(Exception, match="connection refused"):
+            await service._release_full_sync_lock("c1")
+
+        gp.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_that_never_clears_is_raised_in_the_end(self, service) -> None:
+        from app.connectors.services import event_service as module
+
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        gp.get_document = AsyncMock(return_value={"id": "c1", "status": "FULL_SYNCING"})
+        gp.update_node = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        with patch(_SLEEP, new_callable=AsyncMock), pytest.raises(Exception, match="write-write conflict"):
+            await service._release_full_sync_lock("c1")
+
+        assert gp.update_node.await_count == module._LOCK_RELEASE_RETRIES
+
+    @pytest.mark.asyncio
+    async def test_full_sync_start_releases_the_lock_after_a_conflict(self, service) -> None:
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=[True, Exception(_ARANGO_WRITE_CONFLICT)])
+        gp.get_document = AsyncMock(side_effect=[None, {"id": "c1", "status": "FULL_SYNCING", "isLocked": True}])
+        gp.update_node = AsyncMock(return_value=True)
+        mock_conn = AsyncMock()
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
+             patch.object(service, "_get_connector", return_value=mock_conn), \
+             patch(_SLEEP, new_callable=AsyncMock), \
+             current_coordinator() as mock_stm:
+            mock_stm.spawn = AsyncMock(side_effect=spawned)
+            result = await service._handle_start_sync("gmail", {
+                "orgId": "org1", "connectorId": "c1", "fullSync": True
+            })
+
+        assert result is True
+        assert _upserted_locks(gp) == [True, False]
+        assert gp.update_node.await_args.args[2]["isLocked"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_lock_set_that_collides_is_not_retried_and_runs_no_prep(self, service) -> None:
+        """The winner may be the delete route's DELETING or stop's IDLE repair;
+        writing FULL_SYNCING over it and deleting sync points would undo it.
+        Refused, the event is redelivered and meets the DELETING check."""
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        mock_conn = AsyncMock()
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
+             patch.object(service, "_get_connector", return_value=mock_conn), \
+             patch(_SLEEP, new_callable=AsyncMock), \
+             current_coordinator() as mock_stm:
+            result = await service._handle_start_sync("gmail", {
+                "orgId": "org1", "connectorId": "c1", "fullSync": True
+            })
+
+        assert result is False
+        gp.batch_upsert_nodes.assert_awaited_once()
+        gp.delete_sync_points_by_connector_id.assert_not_awaited()
+        mock_stm.spawn.assert_not_awaited()
+
+
 # ===========================================================================
 # _get_connector / _store_connector
 # ===========================================================================

@@ -22,7 +22,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Dict, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Dict, Optional, TypeVar, override
 
 from fastapi import Request
 
@@ -116,6 +116,7 @@ from app.schema.arango.documents import (
     record_schema,
     sql_table_record_schema,
     sql_view_record_schema,
+    stage_state_schema,
     team_schema,
     ticket_record_schema,
     tool_schema,
@@ -155,7 +156,12 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
-from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
+from app.services.graph_db.arango.arango_http_client import (
+    ARANGO_CONFLICT,
+    ARANGO_UNIQUE_CONSTRAINT_VIOLATED,
+    ArangoHTTPClient,
+    ArangoQueryError,
+)
 from app.services.graph_db.common.full_sync_unlink import (
     FULL_SYNC_EDGE_COLLECTIONS,
     split_unseen_by_window,
@@ -188,6 +194,7 @@ from app.services.graph_db.common.utils import (
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     jira_issue_browse_url_regex,
+    record_status_field,
     restore_items,
     select_canonical_chain_names,
     soft_delete_request_result,
@@ -316,6 +323,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.SQL_TABLES.value, sql_table_record_schema),
     (CollectionNames.SQL_VIEWS.value, sql_view_record_schema),
     (CollectionNames.CODE_FILES.value, code_file_record_schema),
+    (CollectionNames.STAGE_STATES.value, stage_state_schema),
 ]
 
 #: Retired collection roles, which read as READER.
@@ -592,6 +600,10 @@ _PURGE_WALK_FIELDS = ("orgId", "deletedAtTimestamp", "_key")
 _PURGE_LOCK_TIMEOUT_SECONDS = 30
 
 
+# The sweeper scans stage states by status and age; the coordinator reads one revision.
+_STAGE_STATE_INDEXES: tuple[tuple[str, ...], ...] = (("status", "updatedAtMs"), ("virtualRecordId", "rev"))
+
+
 class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
     ArangoDB implementation using REST API for fully async operations.
@@ -735,7 +747,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         return edge
 
-    def _translate_nodes_to_arango(self, nodes: list[dict]) -> list[dict]:
+    def _translate_nodes_to_arango(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Batch translate nodes to ArangoDB format."""
         return [self._translate_node_to_arango(node) for node in nodes]
 
@@ -900,6 +912,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Error ensuring schema: {str(e)}")
             return False
 
+    @override
+    async def ensure_pipeline_schema(self) -> None:
+        client = self.http_client
+        if client is None:
+            raise RuntimeError("ArangoDB client is not connected")
+        stages = CollectionNames.STAGE_STATES.value
+        # A concurrent creator makes this a no-op; the schema update below settles either way.
+        if not await client.has_collection(stages):
+            _ = await client.create_collection(stages, schema=stage_state_schema)
+        # The connector service creates records; until it has, this fails and the caller retries.
+        for name, schema in ((stages, stage_state_schema), (CollectionNames.RECORDS.value, record_schema)):
+            if not await client.update_collection_schema(name, schema):
+                raise RuntimeError(f"could not apply the schema of collection '{name}'")
+        for fields in _STAGE_STATE_INDEXES:
+            if not await client.ensure_persistent_index(stages, list(fields)):
+                raise RuntimeError(f"could not ensure the index {list(fields)} on '{stages}'")
+
     async def _ensure_edge_definitions_up_to_date(self, graph_name: str) -> None:
         """Ensure existing graph edge definitions include all declared vertex collections.
 
@@ -996,6 +1025,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Edge collections have automatic indexes on _from and _to fields which optimize
         graph traversals. Custom indexes below cover document-lookup hot paths.
         """
+        if self.http_client is None:
+            raise RuntimeError("ArangoDB client is not connected")
         # ==================== TAXONOMY INDEXES ====================
         # Entity resolution looks canonical category/subcategory/topic/language
         # nodes up by (orgId, normalizedName) once per record — see
@@ -1031,6 +1062,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ["virtualRecordId", "orgId"],
         )
 
+        for fields in _STAGE_STATE_INDEXES:
+            await self.http_client.ensure_persistent_index(CollectionNames.STAGE_STATES.value, list(fields))
         # SINGLE: virtualRecordToDocIdMapping.virtualRecordId, the fallback of
         # get_document_id_by_virtual_record_id when the keyed lookup misses
         # (every record indexed the first time).
@@ -2534,6 +2567,116 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return []
 
+    # ==================== Pipeline stage states ====================
+
+    @staticmethod
+    def _stage_doc_from_arango(row: dict[str, Any]) -> dict[str, Any]:
+        document = {k: v for k, v in row.items() if k not in ("_id", "_key", "_rev")}
+        document["id"] = row["_key"]
+        return document
+
+    async def _stage_aql(self, query: str, bind_vars: dict[str, Any]) -> list[Any]:
+        if self.http_client is None:
+            raise RuntimeError("ArangoDB client is not connected")
+        return await self.http_client.execute_aql(
+            query, {"@collection": CollectionNames.STAGE_STATES.value, **bind_vars}
+        )
+
+    @override
+    async def stage_state_get(self, key: str) -> dict[str, Any] | None:
+        rows = await self._stage_aql("FOR doc IN @@collection FILTER doc._key == @key RETURN doc", {"key": key})
+        return self._stage_doc_from_arango(rows[0]) if rows else None
+
+    @override
+    async def stage_states_for_revision(self, virtual_record_id: str, rev: str) -> list[dict[str, Any]]:
+        rows = await self._stage_aql(
+            "FOR doc IN @@collection FILTER doc.virtualRecordId == @vrid AND doc.rev == @rev RETURN doc",
+            {"vrid": virtual_record_id, "rev": rev},
+        )
+        return [self._stage_doc_from_arango(row) for row in rows]
+
+    @override
+    async def stage_state_create(self, document: dict[str, Any]) -> bool:
+        arango_doc = {k: v for k, v in document.items() if k != "id"}
+        arango_doc["_key"] = document["id"]
+        try:
+            await self._stage_aql("INSERT @doc INTO @@collection RETURN NEW._key", {"doc": arango_doc})
+        except ArangoQueryError as exc:
+            if exc.error_num in (ARANGO_UNIQUE_CONSTRAINT_VIOLATED, ARANGO_CONFLICT):
+                return False
+            raise
+        return True
+
+    @override
+    async def stage_state_compare_and_set(
+        self,
+        key: str,
+        expected: str,
+        new: str,
+        fields: dict[str, Any],
+        *,
+        expected_attempt: int | None = None,
+    ) -> bool:
+        # FILTER + UPDATE in one statement. A concurrent update of the same document
+        # fails with a write-write conflict instead of being lost: that writer won.
+        try:
+            rows = await self._stage_aql(
+                """
+                FOR doc IN @@collection
+                    FILTER doc._key == @key AND doc.status == @expected
+                    FILTER @attempt == null OR doc.attempt == @attempt
+                    UPDATE doc WITH MERGE(@fields, { status: @new }) IN @@collection
+                    RETURN NEW._key
+                """,
+                {"key": key, "expected": expected, "new": new, "fields": fields, "attempt": expected_attempt},
+            )
+        except ArangoQueryError as exc:
+            if exc.error_num == ARANGO_CONFLICT:
+                return False
+            raise
+        return bool(rows)
+
+    @override
+    async def stage_states_stale(
+        self, statuses: list[str], updated_before_ms: int, limit: int
+    ) -> list[dict[str, Any]]:
+        rows = await self._stage_aql(
+            """
+            FOR doc IN @@collection
+                FILTER doc.status IN @statuses AND doc.updatedAtMs < @before
+                SORT doc.updatedAtMs ASC
+                LIMIT @limit
+                RETURN doc
+            """,
+            {"statuses": statuses, "before": updated_before_ms, "limit": limit},
+        )
+        return [self._stage_doc_from_arango(row) for row in rows]
+
+    @override
+    async def compare_and_set_record_fields(
+        self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
+    ) -> list[str]:
+        keys = [rid for rid in dict.fromkeys(record_ids) if rid]
+        if not keys:
+            return []
+        if self.http_client is None:
+            raise RuntimeError("ArangoDB client is not connected")
+        if "indexingStatus" in fields:
+            # COMPLETED sets hasIndexedCopy and EMPTY clears it, as every indexingStatus write does.
+            fields = {**indexed_copy_fields(fields["indexingStatus"]), **fields}
+        # A write-write conflict here is usually an unrelated field update on the same
+        # record (a connector sync), so it propagates for the caller to retry.
+        rows = await self.http_client.execute_aql(
+            """
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys AND doc.contentRev == @rev
+                UPDATE doc WITH @fields IN @@collection
+                RETURN NEW._key
+            """,
+            {"@collection": CollectionNames.RECORDS.value, "keys": keys, "rev": content_rev, "fields": fields},
+        )
+        return [key for key in rows if isinstance(key, str)]
+
     async def get_existing_record_keys(
         self,
         record_ids: list[str],
@@ -2808,6 +2951,26 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             transaction=transaction,
         )
 
+    @override
+    async def ensure_nodes(
+        self,
+        nodes: list[dict[str, Any]],
+        collection: str,
+        transaction: str | None = None,
+    ) -> None:
+        if not nodes:
+            return
+        if self.http_client is None:
+            raise RuntimeError("ArangoDB provider is not connected")
+        arango_nodes: list[dict[str, Any]] = self._translate_nodes_to_arango(nodes)
+        # overwriteMode "ignore": an existing _key is left as is and is not an error.
+        result = await self.http_client.batch_insert_documents(
+            collection, arango_nodes, txn_id=transaction, overwrite=True, overwrite_mode="ignore"
+        )
+        errors = result.get("errors", 0)
+        if errors:
+            raise RuntimeError(f"ensure_nodes: {errors} node(s) could not be created in {collection}")
+
     async def delete_nodes(
         self,
         keys: list[str],
@@ -2928,7 +3091,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Build AQL query for batch UPDATE (not UPSERT)
             # This will only update existing documents and skip non-existent ones
-            bind_vars = {
+            bind_vars: dict[str, Any] = {
                 "nodes": arango_nodes
             }
 
@@ -4526,6 +4689,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        status_field: str = "indexingStatus",
     ) -> list[Record]:
         """
         Get records by their indexing status with pagination support.
@@ -4541,6 +4705,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         self.logger.debug(f"Retrieving records for connector {connector_id} with status filters: {status_filters}, limit: {limit}, offset: {offset}, after_key: {after_key}")
 
+        status_attr = record_status_field(status_field)
         limit_clause = "LIMIT @offset, @limit" if limit else ""
         after_key_clause = "FILTER record._key > @after_key" if after_key else ""
         exclude_clause = (
@@ -4611,7 +4776,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         FOR record IN {CollectionNames.RECORDS.value}
             FILTER record.orgId == @org_id
                 AND record.connectorId == @connector_id
-                AND (@status_filters == null OR LENGTH(@status_filters) == 0 OR record.indexingStatus IN @status_filters)
+                AND (@status_filters == null OR LENGTH(@status_filters) == 0 OR record.{status_attr} IN @status_filters)
                 AND {aql_record_visibility("record", visibility)}
                 {record_group_clause}
                 {placeholder_clause}
@@ -20644,9 +20809,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER doc.isPlaceholder != true
                 FILTER doc.isDeleted != true
                 FILTER doc.mimeType NOT IN @folder_mime_types
-                COLLECT key = doc._key, recordType = doc.recordType, indexingStatus = doc.indexingStatus
-                COLLECT recordType2 = recordType, indexingStatus2 = indexingStatus WITH COUNT INTO cnt
-                RETURN {{ recordType: recordType2, indexingStatus: indexingStatus2, cnt }}
+                COLLECT key = doc._key, recordType = doc.recordType, indexingStatus = doc.indexingStatus,
+                    extractionStatus = doc.extractionStatus
+                COLLECT recordType2 = recordType, indexingStatus2 = indexingStatus,
+                    extractionStatus2 = extractionStatus WITH COUNT INTO cnt
+                RETURN {{ recordType: recordType2, indexingStatus: indexingStatus2,
+                    extractionStatus: extractionStatus2, cnt }}
             """
 
             rows = await self.http_client.execute_aql(

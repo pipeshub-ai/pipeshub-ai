@@ -87,6 +87,9 @@ class ChatState(TypedDict):
     error: dict[str, Any] | None
     org_id: str
     user_id: str
+    # Who owns the artifacts this run makes. The caller, when a service-account
+    # agent (running as user_id, its creator) is chatted with by a signed-in user.
+    artifact_owner_user_id: str
     user_email: str
     send_user_info: bool
     conversation_id: str | None
@@ -609,6 +612,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "error": None,
         "org_id": user_info.get("orgId", ""),
         "user_id": user_info.get("userId", ""),
+        "artifact_owner_user_id": chat_query.get("artifact_owner_user_id") or user_info.get("userId", ""),
         "user_email": user_info.get("userEmail", ""),
         "send_user_info": user_info.get("sendUserInfo", True),
         "conversation_id": chat_query.get("conversationId"),

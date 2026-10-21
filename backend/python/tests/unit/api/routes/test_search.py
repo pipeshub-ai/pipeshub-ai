@@ -14,6 +14,9 @@ from pydantic import ValidationError
 
 # The route module only loads cleanly once app.edition_config is imported first.
 import app.edition_config  # noqa: F401
+from app.agents.actions.knowledge_graph.ops.outside_dates import (
+    DATE_FILTER_SAFETY_NET_ENV_VAR,
+)
 from app.api.routes.search import (
     SearchQuery,
     SearchRequest,
@@ -25,6 +28,13 @@ from app.api.routes.search import (
     search,
 )
 from app.utils.user_messages import action_failed
+
+
+@pytest.fixture(autouse=True)
+def _one_search_per_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These read the one search a request runs; the search without dates that
+    # runs beside a dated one is tested in test_search_outside_dates.py.
+    monkeypatch.setenv(DATE_FILTER_SAFETY_NET_ENV_VAR, "false")
 
 
 # ---------------------------------------------------------------------------
@@ -550,7 +560,7 @@ class TestSearchEndpoint:
         """The retrieval service already filters by date; the route used to drop it."""
         body = SearchQuery(
             query="q", modifiedAfter="2026-09-01", modifiedBefore="2026-09-30T12:00:00Z",
-            createdAfter="2026-01-01",
+            createdAfter="2026-01-01", timeline="off",
         )
 
         retrieval = await self._search_with(body)
@@ -969,7 +979,7 @@ class TestSearchWithoutQueryRewrite:
         retrieval = self._retrieval()
         body = SearchQuery(
             query="q", rewriteQuery=False, limit=7,
-            filters={"apps": ["c1"], "kb": []}, modifiedAfter="2026-09-01",
+            filters={"apps": ["c1"], "kb": []}, modifiedAfter="2026-09-01", timeline="off",
         )
 
         await self._search(body, retrieval)

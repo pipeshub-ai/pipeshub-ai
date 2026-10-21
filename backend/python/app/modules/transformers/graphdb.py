@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -50,7 +50,14 @@ class GraphDBTransformer(Transformer):
     def __init__(self, graph_provider: IGraphDBProvider, logger) -> None:
         super().__init__()
         self.logger = logger
+        self.graph_provider = graph_provider
         self.graph_data_store = GraphDataStore(logger, graph_provider)
+
+    @staticmethod
+    def resolution_of(ctx: TransformContext) -> EntityResolution | None:
+        """The apply-mode resolution ``EntityResolver`` attached to ``ctx``, if any."""
+        resolution = getattr(ctx, "entity_resolution", None)
+        return resolution if isinstance(resolution, EntityResolution) else None
 
     async def apply(self, ctx: TransformContext) -> List[EntityRecord]:
         """Persist semantic metadata to the graph and update extractionStatus.
@@ -72,20 +79,29 @@ class GraphDBTransformer(Transformer):
         record_id = record.id
 
         if metadata is None:
+            skip_reason = getattr(ctx, "extraction_skip_reason", None)
+            skip_reason = skip_reason if isinstance(skip_reason, str) and skip_reason else None
             try:
                 async with self.graph_data_store.transaction() as tx_store:
                     timestamp = get_epoch_timestamp_in_ms()
                     # Only update extractionStatus — indexingStatus was already
                     # set to COMPLETED by SinkOrchestrator.index().
-                    status_doc = {
+                    status_doc: dict[str, Any] = {
                         "id": record_id,
-                        "extractionStatus": "FAILED",
+                        # Skipped by configuration (no model set up) is not a failure.
+                        "extractionStatus": (
+                            ProgressStatus.SKIPPED.value
+                            if skip_reason
+                            else ProgressStatus.FAILED.value
+                        ),
                         "lastExtractionTimestamp": timestamp,
                         # Kept through enrichment for stale recovery to age; enrichment has ended.
                         "processingStartedAt": None,
                         "isDirty": False,
                         "virtualRecordId": virtual_record_id,
                     }
+                    if skip_reason:
+                        status_doc["reason"] = skip_reason
                     self.logger.debug(
                         "🎯 Upserting extraction status for document"
                     )
@@ -100,16 +116,14 @@ class GraphDBTransformer(Transformer):
                             record_id,
                         )
                         return []
-                    record.extraction_status = ProgressStatus.FAILED.value
+                    record.extraction_status = status_doc["extractionStatus"]
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
                 raise
             return []
         else:
             is_vlm_ocr_processed = getattr(record, 'is_vlm_ocr_processed', False)
-            resolution = getattr(ctx, "entity_resolution", None)
-            if not isinstance(resolution, EntityResolution):
-                resolution = None
+            resolution = self.resolution_of(ctx)
             result = await self.save_metadata_to_db(
                 record_id, metadata, virtual_record_id, is_vlm_ocr_processed,
                 resolution=resolution,
@@ -124,7 +138,8 @@ class GraphDBTransformer(Transformer):
     @staticmethod
     def _node_key(doc: Dict) -> str | None:
         """Extract the node key from a document returned by the graph provider."""
-        return doc.get("_key") or doc.get("id")
+        key = doc.get("_key") or doc.get("id")
+        return str(key) if key else None
 
     def _org_filters(self, org_id: str) -> dict[str, str]:
         """Fields that keep name lookups inside the record's org. None here:
@@ -480,10 +495,20 @@ class GraphDBTransformer(Transformer):
         is_vlm_ocr_processed: bool = False,
         *,
         resolution: Optional[EntityResolution] = None,
+        write_status: bool = True,
     ) -> List[EntityRecord]:
         """
         Extract metadata from a document and create department relationships.
         Uses reconciliation logic: fetch existing edges, compare with new, create new ones, delete stale ones.
+
+        A field that is ``None`` is unknown (a fallback summary carries only the
+        summary) and leaves that field's existing edges untouched; an empty list
+        is a known "none" and removes them. A record with no category keeps its
+        category edges for the same reason.
+
+        ``write_status`` False leaves ``extractionStatus`` to the caller: the
+        classify stage writes it only while the record is still on the
+        revision it classified (``write_taxonomy``).
 
         ``resolution`` (apply-mode output of ``EntityResolver``) maps each
         metadata name to its canonical per-org node; without it every name
@@ -504,6 +529,24 @@ class GraphDBTransformer(Transformer):
             self._write_record_metadata,
             record_id, metadata, virtual_record_id,
             is_vlm_ocr_processed=is_vlm_ocr_processed, resolution=resolution,
+            write_status=write_status,
+        )
+
+    async def write_taxonomy(
+        self,
+        record_id: str,
+        metadata: SemanticMetadata,
+        *,
+        resolution: EntityResolution | None = None,
+    ) -> list[EntityRecord]:
+        """Reconcile the record's taxonomy edges only; the caller owns ``extractionStatus``.
+
+        The classify stage's entry point: the same write as ``save_metadata_to_db``,
+        canonical nodes and aliases from ``resolution`` included. Returns the
+        entities touched, for the entity vector store.
+        """
+        return await self.save_metadata_to_db(
+            record_id, metadata, None, resolution=resolution, write_status=False,
         )
 
     async def _write_record_metadata(
@@ -515,6 +558,7 @@ class GraphDBTransformer(Transformer):
         *,
         is_vlm_ocr_processed: bool,
         resolution: EntityResolution | None,
+        write_status: bool = True,
     ) -> list[EntityRecord]:
         """One attempt at the record's graph write, inside ``tx_store``."""
         touched_entities: list[EntityRecord] = []
@@ -542,7 +586,7 @@ class GraphDBTransformer(Transformer):
 
             # --- Reconcile department edges ---
             new_dept_tos: Dict[str, str] = {}
-            for department in metadata.departments:
+            for department in metadata.departments or []:
                 results = await tx_store.get_nodes_by_filters(
                     CollectionNames.DEPARTMENTS.value,
                     {"departmentName": department, **org_filters},
@@ -565,11 +609,12 @@ class GraphDBTransformer(Transformer):
                 else:
                     self.logger.warning(f"⚠️ No department found for: {department}")
 
-            await self._reconcile_edges(
-                tx_store, record_id, record_from,
-                CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                new_dept_tos, "department",
-            )
+            if metadata.departments is not None:
+                await self._reconcile_edges(
+                    tx_store, record_id, record_from,
+                    CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                    new_dept_tos, "department",
+                )
 
             # --- Reconcile category edges ---
             new_cat_tos: Dict[str, str] = {}
@@ -661,11 +706,12 @@ class GraphDBTransformer(Transformer):
                 )
 
             # Reconcile category edges (convert set to dict for _reconcile_edges)
-            await self._reconcile_edges(
-                tx_store, record_id, record_from,
-                CollectionNames.BELONGS_TO_CATEGORY.value,
-                new_cat_tos, "category", extracted_names=cat_extracted,
-            )
+            if primary_category:
+                await self._reconcile_edges(
+                    tx_store, record_id, record_from,
+                    CollectionNames.BELONGS_TO_CATEGORY.value,
+                    new_cat_tos, "category", extracted_names=cat_extracted,
+                )
 
             # --- Reconcile language edges ---
             new_lang_tos: Dict[str, str] = {}
@@ -687,11 +733,12 @@ class GraphDBTransformer(Transformer):
                     connector_ids_placeholder, record_group_ids_placeholder,
                 ))
 
-            await self._reconcile_edges(
-                tx_store, record_id, record_from,
-                CollectionNames.BELONGS_TO_LANGUAGE.value,
-                new_lang_tos, "language", extracted_names=lang_extracted,
-            )
+            if metadata.languages is not None:
+                await self._reconcile_edges(
+                    tx_store, record_id, record_from,
+                    CollectionNames.BELONGS_TO_LANGUAGE.value,
+                    new_lang_tos, "language", extracted_names=lang_extracted,
+                )
 
             # --- Reconcile topic edges ---
             new_topic_tos: Dict[str, str] = {}
@@ -713,15 +760,18 @@ class GraphDBTransformer(Transformer):
                     connector_ids_placeholder, record_group_ids_placeholder,
                 ))
 
-            await self._reconcile_edges(
-                tx_store, record_id, record_from,
-                CollectionNames.BELONGS_TO_TOPIC.value,
-                new_topic_tos, "topic", extracted_names=topic_extracted,
-            )
+            if metadata.topics is not None:
+                await self._reconcile_edges(
+                    tx_store, record_id, record_from,
+                    CollectionNames.BELONGS_TO_TOPIC.value,
+                    new_topic_tos, "topic", extracted_names=topic_extracted,
+                )
 
             self.logger.debug(
                 "🚀 Metadata saved successfully for document"
             )
+            if not write_status:
+                return touched_entities
 
             # Update only extractionStatus — indexingStatus is managed
             # independently by SinkOrchestrator.index().

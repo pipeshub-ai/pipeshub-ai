@@ -96,6 +96,18 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
+# How much of the address space a fetch may reach.
+#   "public_only": the public internet only; the default for user/admin-supplied URLs.
+#   "no_local":    private networks too (``allow_private``: RFC1918, ULA, CGNAT), but never
+#                  loopback, link-local or cloud metadata.
+HostPolicy = Literal["public_only", "no_local"]
+PUBLIC_ONLY: HostPolicy = "public_only"
+NO_LOCAL: HostPolicy = "no_local"
+
+
+def _allows_private(policy: HostPolicy) -> bool:
+    return policy == NO_LOCAL
+
 
 @dataclass(frozen=True)
 class PublicTarget:
@@ -170,6 +182,11 @@ def _ip_is_blocked(ip: IPAddress, *, block_non_global: bool = True, allow_privat
         or ip.is_unspecified
         or (block_non_global and not ip.is_global)
     )
+
+
+def ip_is_blocked(ip: IPAddress, policy: HostPolicy) -> bool:
+    """``_ip_is_blocked`` under a host-policy tier, for resolvers that vet at connect time."""
+    return _ip_is_blocked(ip, allow_private=_allows_private(policy))
 
 
 PRIVATE_ADDRESS_SWITCH_ENV = "PIPESHUB_BLOCK_PRIVATE_ADDRESSES"
@@ -265,6 +282,19 @@ def check_http_url_without_resolving(
         FetchError: if the URL's scheme/hostname/port/literal address is disallowed.
     """
     _check_static(url, block_non_global=block_non_global, allow_private=allow_private)
+
+
+def check_url_host_without_dns(url: str, policy: HostPolicy) -> None:
+    """``check_http_url_without_resolving`` under a host-policy tier.
+
+    For callers whose HTTP client vets resolved addresses at connect time: that covers
+    hostnames, and this covers what never reaches a resolver (literal addresses and
+    blocked names) on the first request and on every redirect.
+
+    Raises:
+        FetchError: if the URL is disallowed under *policy*.
+    """
+    check_http_url_without_resolving(url, allow_private=_allows_private(policy))
 
 
 def resolve_public_http_target(
@@ -728,6 +758,7 @@ def fetch_url(
     profile: str | None = None,
     verbose: bool = False,
     block_private_hosts: bool = True,
+    host_policy: HostPolicy | None = None,
 ) -> FetchResult:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -756,6 +787,10 @@ def fetch_url(
             without environment proxies or the cloudscraper strategy. Set False only
             for URLs an operator configured, never for URLs a user, a model or a
             third-party document supplied.
+        host_policy: The address tier every hop is judged under. ``None`` means
+            ``"public_only"`` when ``block_private_hosts`` is True and no checks otherwise;
+            ``"no_local"`` also reaches private networks (never loopback, link-local or
+            metadata), with the same per-hop resolution and pinning.
 
     Returns:
         FetchResult with .text, .content, .status_code, .strategy, etc.
@@ -775,15 +810,18 @@ def fetch_url(
         profile=profile,
         verbose=verbose,
     )
-    if not block_private_hosts:
+    if host_policy is None and block_private_hosts:
+        host_policy = PUBLIC_ONLY
+    if host_policy is None:
         return run(url, follow_redirects=True, pin=None)
+    allow_private = _allows_private(host_policy)
 
     # Each hop is resolved once and pinned to that answer, so a second DNS answer
     # (rebinding) cannot move the connection somewhere the check never saw.
     current_url = url
     for _ in range(_MAX_REDIRECTS + 1):
         _reject_http_userinfo(current_url)
-        target = resolve_public_http_target(current_url)
+        target = resolve_public_http_target(current_url, allow_private=allow_private)
         result = _run_pinned_with_failover(run, current_url, target)
         location = _redirect_location(result)
         if location is None:

@@ -2915,6 +2915,7 @@ describe('Enterprise Search Controller', () => {
       for (const body of [
         { query: 'q', limit: 10, timeline: 'created', createdAfter: '2026-03-01' },
         { query: 'q', limit: 10 },
+        { query: 'q', limit: 10, timeline: 'off', createdAfter: '2026-03-01' },
       ]) {
         const req = createMockRequest({ body, user: { userId: VALID_OID, orgId: VALID_OID2 } })
         const res = createMockResponse()
@@ -2924,6 +2925,7 @@ describe('Enterprise Search Controller', () => {
 
       expect(sent[0]).to.deep.include({ query: 'q', timeline: 'created', createdAfter: '2026-03-01' })
       expect(sent[1]).to.not.have.property('timeline')
+      expect(sent[2]).to.deep.include({ timeline: 'off' })
       const body = responses[0].json.firstCall.args[0]
       expect(body.searchResponse.timeline).to.deep.equal(timeline)
       expect(body.searchResponse.searchResults[0].timelinePeriod).to.equal(0)

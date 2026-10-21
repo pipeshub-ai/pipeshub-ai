@@ -24,12 +24,15 @@ class TestHealthCheck:
             result = await health_check()
 
         assert result.status_code == 200
-        assert json.loads(result.body) == {
+        body = json.loads(result.body)
+        assert {key: body[key] for key in ("status", "service", "formats", "resource_governor")} == {
             "status": "healthy",
             "service": "parsing",
             "formats": ["pdf"],
             "resource_governor": {"error": "unavailable"},
         }
+        assert set(body) == {"status", "service", "formats", "resource_governor", "llm_gateway"}
+        assert "SENTINEL" not in result.body.decode()
         mock_container.logger.return_value.warning.assert_called_once_with(
             "Resource governor stats failed: %s", error
         )

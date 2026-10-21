@@ -1,8 +1,12 @@
+import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, cast
 
 from app.config.constants.ai_models import OCRProvider
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+
+if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
 
 
 class OCRStrategy(ABC):
@@ -25,7 +29,7 @@ class OCRStrategy(ABC):
             )
         )
 
-    def __init__(self, logger) -> None:
+    def __init__(self, logger: logging.Logger) -> None:
         self.logger = logger
 
     @abstractmethod
@@ -95,7 +99,7 @@ class OCRHandler:
     The handler itself is safe to share across concurrent requests.
     """
 
-    def __init__(self, logger, strategy_type: str, **kwargs) -> None:
+    def __init__(self, logger: logging.Logger, strategy_type: str, **kwargs: object) -> None:
         """
         Initialize OCR handler with specified strategy
 
@@ -118,7 +122,7 @@ class OCRHandler:
             details={"strategy": strategy_type},
         )
 
-    def _create_strategy(self, strategy_type: str, **kwargs) -> OCRStrategy:
+    def _create_strategy(self, strategy_type: str, **kwargs: object) -> OCRStrategy:
         """Factory method to create appropriate OCR strategy"""
         self.logger.debug(f"🏭 Creating OCR strategy: {strategy_type}")
         self._ensure_supported(strategy_type)
@@ -128,9 +132,13 @@ class OCRHandler:
             VLMOCRStrategy,
         )
 
+        config = kwargs.get("config")
+        if config is None:
+            # VLM OCR resolves its model from the org's AI settings; without them it fails mid-document.
+            raise ValueError("VLM OCR needs the configuration service (config=...)")
         return VLMOCRStrategy(
             logger=self.logger,
-            config=kwargs.get("config"),
+            config=cast("ConfigurationService", config),
         )
 
     async def process_document(self, content: bytes) -> Dict[str, Any]:

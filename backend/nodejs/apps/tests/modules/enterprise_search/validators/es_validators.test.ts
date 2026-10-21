@@ -659,7 +659,7 @@ describe('enterprise_search/validators/es_validators', () => {
     })
 
     it('keeps timeline when the caller sets it, and leaves it out otherwise', () => {
-      for (const timeline of ['created', 'modified']) {
+      for (const timeline of ['created', 'modified', 'off']) {
         const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', timeline } })
         expect(result.success).to.be.true
         expect(result.data!.body.timeline).to.equal(timeline)
@@ -669,8 +669,8 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(omitted.data!.body).to.not.have.property('timeline')
     })
 
-    it('rejects a timeline that is not created or modified', () => {
-      for (const timeline of ['updated', '', true, null, 1]) {
+    it('rejects a timeline that is not created, modified or off', () => {
+      for (const timeline of ['updated', '', 'none', true, false, null, 1]) {
         const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', timeline } })
         expect(result.success, JSON.stringify(timeline)).to.be.false
       }

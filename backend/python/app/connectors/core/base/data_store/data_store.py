@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from logging import Logger
-from typing import TYPE_CHECKING, AsyncContextManager, Optional
+from typing import TYPE_CHECKING, Any, AsyncContextManager, Optional
 
 from app.models.entities import (
     AppMetadata,
@@ -285,7 +285,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
+    async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str) -> None:
         pass
 
     @abstractmethod
@@ -409,7 +409,7 @@ class BaseDataStore(ABC):
         collection: str,
         *,
         raise_on_error: bool = False,
-    ) -> Optional[dict]:
+    ) -> Optional[dict[str, Any]]:
         pass
 
     @abstractmethod

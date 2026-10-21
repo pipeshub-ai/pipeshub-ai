@@ -802,7 +802,7 @@ class KnowledgeGraph:
                if args.get("source_ids") else "")
             if args.get("query") else None
         ),
-        result_summary=search_result_summary,
+        result_summary=lambda args, result: _timeline_result_summary(args, result),
         display_name="Searched the knowledge base",
     )
     async def search(

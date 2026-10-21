@@ -57,7 +57,7 @@ def _services(
              "creator": {"_key": "creator-key", "email": "c@x.com"}}
     graph.get_document = AsyncMock(side_effect=_get_document)
     graph.get_nodes_by_field_in = AsyncMock(side_effect=_nodes)
-    graph.get_user_by_user_id = AsyncMock(side_effect=lambda user_id: users.get(user_id))
+    graph.get_user_by_user_id = AsyncMock(side_effect=lambda user_id, **_: users.get(user_id))
 
     async def _role(kb_id: str, user: str) -> str | None:
         return (roles or {}).get((kb_id, user))

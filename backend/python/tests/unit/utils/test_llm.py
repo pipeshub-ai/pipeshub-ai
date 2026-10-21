@@ -98,6 +98,14 @@ class TestGetLlm:
             await get_llm(mock_config_service)
 
     @pytest.mark.asyncio
+    async def test_raises_when_ai_settings_never_saved(self, mock_config_service) -> None:
+        mock_config_service.get_config.return_value = None
+
+        with pytest.raises(LLMNotConfiguredError) as exc:
+            await get_llm(mock_config_service)
+        assert exc.value.code == "LLM_NOT_CONFIGURED"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("ai_models", [{}, None, {"embedding": [{"provider": "openAI"}]}])
     async def test_no_llm_key_says_what_to_do_instead_of_keyerror(self, mock_config_service, ai_models) -> None:
         """A config with no LLM bucket used to raise KeyError('llm'), which records showed as "'llm'"."""
@@ -209,13 +217,18 @@ class TestGetEmbeddingModelConfig:
             await get_embedding_model_config(mock_config_service)
 
     @pytest.mark.asyncio
-    async def test_raises_on_missing_embedding_key(self, mock_config_service):
+    async def test_returns_none_when_embedding_key_missing(self, mock_config_service) -> None:
         mock_config_service.get_config.return_value = {
             "llm": [{"provider": "openAI"}]
         }
 
-        with pytest.raises(KeyError):
-            await get_embedding_model_config(mock_config_service)
+        assert await get_embedding_model_config(mock_config_service) is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_ai_settings_never_saved(self, mock_config_service) -> None:
+        mock_config_service.get_config.return_value = None
+
+        assert await get_embedding_model_config(mock_config_service) is None
 
 
 class TestIsLocalCpuEmbeddingConfigured:

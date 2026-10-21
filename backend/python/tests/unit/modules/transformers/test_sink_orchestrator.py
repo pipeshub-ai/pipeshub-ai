@@ -83,18 +83,18 @@ class TestApply:
             await orch.apply(ctx)
 
     @pytest.mark.asyncio
-    async def test_completed_skips_vector_still_enriches(self):
-        """index() skips vector when already COMPLETED; enrich() still runs."""
+    async def test_completed_skips_vector_and_does_not_classify(self) -> None:
+        """index() skips vector when already COMPLETED; classification is a pipeline stage."""
         orch = _make_orchestrator(graph_doc={"indexingStatus": "COMPLETED"})
         ctx = _make_ctx()
 
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_not_awaited()
-        orch.graphdb.apply.assert_awaited_once_with(ctx)
+        orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_not_completed_runs_vector_and_graph(self):
+    async def test_not_completed_runs_vector_only(self) -> None:
         orch = _make_orchestrator(
             graph_doc={"indexingStatus": "IN_PROGRESS"},
             vector_result=None,  # None is not False, so processing continues
@@ -104,10 +104,10 @@ class TestApply:
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_awaited_once_with(ctx)
-        orch.graphdb.apply.assert_awaited_once_with(ctx)
+        orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_missing_indexing_status_runs_vector_and_graph(self):
+    async def test_missing_indexing_status_runs_vector_only(self) -> None:
         """If the document has no indexingStatus field it is not 'COMPLETED'."""
         orch = _make_orchestrator(
             graph_doc={"someOtherField": "x"},
@@ -118,7 +118,7 @@ class TestApply:
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_awaited_once()
-        orch.graphdb.apply.assert_awaited_once()
+        orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_vector_store_returns_false_fails_pipeline(self):
@@ -137,7 +137,7 @@ class TestApply:
         orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_vector_store_returns_true_continues_to_graph(self):
+    async def test_vector_store_returns_true_completes_indexing(self) -> None:
         orch = _make_orchestrator(
             graph_doc={"indexingStatus": "NOT_STARTED"},
             vector_result=True,
@@ -147,7 +147,7 @@ class TestApply:
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_awaited_once()
-        orch.graphdb.apply.assert_awaited_once()
+        orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_graph_provider_called_with_correct_args(self):
@@ -582,11 +582,11 @@ class TestSyncEntitiesForDuplicate:
 
 
 class TestIndexedWriteWhenEnrichmentFollows:
-    """No reader may see a record indexed whose enrichment has not started:
-    a duplicate copies that as finished, before the taxonomy exists."""
+    """No reader may see a record indexed with an extractionStatus that looks final:
+    a duplicate copies it as its own, before the taxonomy exists."""
 
     @pytest.mark.asyncio
-    async def test_marks_enrichment_in_progress_in_the_same_write_and_keeps_the_start_time(self) -> None:
+    async def test_marks_enrichment_queued_in_the_same_write_for_the_classify_stage(self) -> None:
         orch = _make_orchestrator()
         ctx = _make_ctx()
         ctx.settings = {"enrichment_follows": True}
@@ -595,11 +595,14 @@ class TestIndexedWriteWhenEnrichmentFollows:
 
         (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
         assert row["indexingStatus"] == "COMPLETED"
-        assert row["extractionStatus"] == "IN_PROGRESS"
-        assert "processingStartedAt" not in row, "stale recovery ages a stuck enrichment by it"
+        assert row["extractionStatus"] == "QUEUED"
+        # An indexed record was parsed, whichever pipeline parsed it.
+        assert row["parsingStatus"] == "COMPLETED"
+        # Nothing on the record path is still running; the stage runtime owns the rest.
+        assert row["processingStartedAt"] is None
 
     @pytest.mark.asyncio
-    async def test_deferred_enrichment_leaves_extraction_alone(self) -> None:
+    async def test_without_a_stage_to_follow_extraction_is_left_alone(self) -> None:
         orch = _make_orchestrator()
         ctx = _make_ctx()
 
@@ -608,6 +611,111 @@ class TestIndexedWriteWhenEnrichmentFollows:
         (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
         assert "extractionStatus" not in row
         assert row["processingStartedAt"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_vlm_ocr_parse_is_recorded_with_the_indexed_write(self) -> None:
+        orch = _make_orchestrator()
+        ctx = _make_ctx()
+        ctx.record.is_vlm_ocr_processed = True
+
+        await orch._update_indexing_status(ctx)
+
+        (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
+        assert row["isVLMOcrProcessed"] is True
+
+
+class TestStageEnrichment:
+    """What the classify stage calls: resolve, then summary, taxonomy and entity points,
+    never extractionStatus and never named entities."""
+
+    @pytest.mark.asyncio
+    async def test_resolution_keeps_unknown_lists_unknown(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        metadata = SemanticMetadata(summary="only a summary", categories=[])
+
+        async def resolve(ctx) -> None:
+            ctx.record.semantic_metadata.topics = []
+            ctx.record.semantic_metadata.languages = []
+
+        orch.entity_resolver = MagicMock()
+        orch.entity_resolver.resolve = AsyncMock(side_effect=resolve)
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = metadata
+
+        await orch.prepare_enrichment(ctx)
+
+        assert metadata.topics is None and metadata.languages is None
+
+    @pytest.mark.asyncio
+    async def test_writes_summary_taxonomy_and_entity_points_without_status(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        orch.entity_vector_store = AsyncMock()
+        touched = [MagicMock()]
+        orch.graphdb.write_taxonomy = AsyncMock(return_value=touched)
+        orch.graphdb.resolution_of = MagicMock(return_value=None)
+        orch.persist_named_entities = AsyncMock()
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = SemanticMetadata(summary="A plan.", topics=["VPN"])
+
+        await orch.write_enrichment(ctx)
+
+        orch.vector_store.index_record_summary.assert_awaited_once()
+        orch.graphdb.write_taxonomy.assert_awaited_once()
+        orch.graphdb.apply.assert_not_awaited()
+        orch.entity_vector_store.upsert_entities_batch.assert_awaited_once_with(touched)
+        orch.persist_named_entities.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_other_records_of_the_content_share_the_owners_summary(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        orch.graphdb.write_taxonomy = AsyncMock(return_value=[])
+        orch.graphdb.resolution_of = MagicMock(return_value=None)
+        ctx = _make_ctx("rec-2")
+        ctx.record.semantic_metadata = SemanticMetadata(summary="A plan.")
+
+        await orch.write_enrichment(ctx, index_summary=False)
+
+        orch.vector_store.index_record_summary.assert_not_awaited()
+        orch.graphdb.write_taxonomy.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_summary_embedding_time_is_counted_once(self) -> None:
+        """index_record_summary times its own embed and upsert steps, so a stage
+        wrapped around the whole call would count that time twice."""
+        import asyncio
+        import time
+
+        from app.models.blocks import SemanticMetadata
+        from app.utils import indexing_timing as timing
+
+        async def embed_summary(*_args, **_kwargs) -> None:
+            with timing.stage("embed.dense"):
+                await asyncio.sleep(0.05)
+
+        orch = _make_orchestrator()
+        orch.vector_store.index_record_summary = AsyncMock(side_effect=embed_summary)
+        orch.graphdb.write_taxonomy = AsyncMock(return_value=[])
+        orch.graphdb.resolution_of = MagicMock(return_value=None)
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = SemanticMetadata(summary="Timed summary")
+
+        timeline, token = timing.begin_record("rec-123")
+        started = time.perf_counter()
+        try:
+            await orch.write_enrichment(ctx)
+        finally:
+            wall = time.perf_counter() - started
+            timing.end_record(timeline, token, outcome="ok")
+
+        busy = sum(total for _count, total, _max in timeline.stage_totals().values())
+        assert busy <= wall
+        assert timeline.stage_totals()["embed.dense"][0] == 1
 
 
 class TestIndexedCopyFlag:

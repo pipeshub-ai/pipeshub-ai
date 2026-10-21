@@ -178,9 +178,13 @@ services:
       - ENTITY_SEARCH_TOOL=${ENTITY_SEARCH_TOOL:-}
       # On unless set to false; HIGH_ACCURACY_MODE does not change it.
       - TIMELINE_SUMMARIES=${TIMELINE_SUMMARIES:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - DATE_FILTER_SAFETY_NET=${DATE_FILTER_SAFETY_NET:-}
       - FETCH_SIZE_BY_CHARS=${FETCH_SIZE_BY_CHARS:-}
       # On unless set to false; HIGH_ACCURACY_MODE does not change it.
       - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}
@@ -243,8 +247,6 @@ services:
 
       # Set to "true" to route indexing through the standalone parsing/extraction services
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
-      # Set to "true" to defer graph enrichment until after vectordb indexing completes
-      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
       # Lazy tool loading: group connector tools into toolsets and disclose
       # their schemas on demand (list_toolsets/fetch_tools/search_tools)
