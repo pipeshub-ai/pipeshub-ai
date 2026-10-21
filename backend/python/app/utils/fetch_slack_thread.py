@@ -647,8 +647,6 @@ async def _read_channel_record(
             f"{len(threads)} of them started a thread. The record comes first, then "
             f"each thread's replies, oldest first."
         )
-        if unread_groups:
-            note += f" {len(unread_groups)} more thread(s) of this record were not read."
     elif own is None:
         note = (
             "This record's content could not be loaded, so the threads of its "
@@ -659,6 +657,10 @@ async def _read_channel_record(
             "No replies: no message in this record has replies you can read in the "
             "index, so the record is returned on its own."
         )
+    if unread_groups:
+        # Said whatever came before it: threads past the bound were not
+        # looked at, so "no replies" holds only for the threads that were.
+        note += f" {len(unread_groups)} more thread(s) of this record were not read."
 
     logger.info(
         "Read Slack record %s with %d thread(s): %d records returned, %d skipped",

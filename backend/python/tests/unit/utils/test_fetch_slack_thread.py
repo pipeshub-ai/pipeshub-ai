@@ -1246,6 +1246,25 @@ class TestChannelRecordThreads:
         assert graph.get_records_by_record_group.await_count == fst.MAX_THREADS_PER_RECORD
         assert "2 more thread(s)" in out["note"]
 
+    async def test_unread_threads_are_counted_even_when_the_read_ones_show_nothing(self):
+        """Threads past the bound are named in the note even when none of the
+        threads that were read has a reply the user may see."""
+        stamps = [f"17000{i:05d}.000100" for i in range(fst.MAX_THREADS_PER_RECORD + 3)]
+        records = {"burst": _slack_meta(external_record_id="burst_C1_0009")}
+        hydrated = {"burst": _hydrated("burst", *[(ts, True) for ts in stamps])}
+        graph = _slack_graph(
+            records,
+            groups={f"thread_C1_{ts}": f"rg-{ts}" for ts in stamps},
+            listings={f"rg-{ts}": [f"r-{ts}"] for ts in stamps},
+            allowed={"burst"},
+        )
+
+        out = await _read_thread(graph, "burst", hydrated)
+
+        assert out["threads"] == [] and out["threads_not_read"] == 3
+        assert out["note"].startswith("No replies")
+        assert out["note"].endswith("3 more thread(s) of this record were not read.")
+
     async def test_messages_with_replies_are_looked_up_first_and_the_lookups_are_bounded(self):
         stamps = [f"17{i:08d}.000100" for i in range(fst.MAX_MESSAGES_CHECKED + 20)]
         parent = stamps[-1]

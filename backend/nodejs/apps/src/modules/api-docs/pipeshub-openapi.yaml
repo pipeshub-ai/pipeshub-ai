@@ -5863,6 +5863,29 @@ components:
             content could not be loaded.
           items:
             type: string
+        threads:
+          type: array
+          description: >-
+            Thread reads of a Slack record in no single thread only (several
+            channel messages in one record, or a message without replies). The
+            threads its messages started whose replies follow it in `records`,
+            in the order their first messages were posted; empty when none of
+            its messages has replies the caller may see.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              threadRecordGroupId:
+                type: string
+                description: The thread's record group.
+              recordCount:
+                type: integer
+                description: Replies of this thread the caller may see.
+        threadsNotRead:
+          type: integer
+          description: >-
+            Thread reads of a Slack record in no single thread only. Threads
+            of its messages left out because one read covers at most 10.
         chars:
           type: integer
           description: Budgeted reads only. Characters in `content`.
@@ -39260,7 +39283,10 @@ paths:
         the budget show its most relevant blocks first, with the skipped
         ranges marked. `mode=thread` returns every message of the Slack
         thread the record belongs to, oldest first, as far as the caller may
-        see them.
+        see them. A Slack record in no single thread (several channel
+        messages in one record, or a message without replies) returns itself,
+        then the replies of each thread its messages started; the first page
+        opens with a bracketed note saying which.
 
         **Permission scoping:**
 
@@ -39319,8 +39345,10 @@ paths:
           required: false
           description: >-
             `record` (default) reads this record. `thread` reads every record
-            of the Slack thread this message belongs to, oldest first; a
-            record outside any thread answers `422`.
+            of the Slack thread this message belongs to, oldest first. A Slack
+            record in no single thread reads as itself, then the threads its
+            messages started (at most 10). A record that is not from Slack
+            answers `422`.
           schema:
             type: string
             enum: [record, thread]
@@ -39364,8 +39392,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
           description: |
-            `mode=thread` was asked of a record that is not part of a Slack
-            thread.
+            `mode=thread` was asked of a record that is not from Slack. Every
+            Slack message record can be read in thread mode.
           content:
             application/json:
               schema:
