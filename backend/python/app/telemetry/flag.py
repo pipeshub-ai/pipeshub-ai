@@ -21,17 +21,18 @@ def telemetry_enabled() -> bool:
     return raw.lower() == "true"
 
 
-_consent_given = METRICS_CONSENT_DEFAULT
-
-
-def set_collection_consent(given: bool) -> None:
+class _Consent:
     """The admin's Data Collection switch, as the pusher last read it."""
-    global _consent_given
-    _consent_given = given
+
+    given = METRICS_CONSENT_DEFAULT
+
+
+def set_collection_consent(given: bool) -> None:  # noqa: FBT001 - the switch's one value
+    _Consent.given = given
 
 
 def telemetry_collecting() -> bool:
     """Whether anything may be recorded right now: the deployment allows telemetry
     and an admin has switched Data Collection on, so the admin can always see and
     stop whatever is collected."""
-    return telemetry_enabled() and _consent_given
+    return telemetry_enabled() and _Consent.given

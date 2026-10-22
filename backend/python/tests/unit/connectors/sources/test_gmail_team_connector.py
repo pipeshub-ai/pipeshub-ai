@@ -2127,14 +2127,14 @@ class TestStreamRecord:
         assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
     @pytest.mark.asyncio
-    async def test_no_candidate_impersonates_mailbox_owner_from_group(self, connector):
+    async def test_no_candidate_impersonates_mailbox_owner_from_group(self, connector) -> None:
         record = _make_mock_record(record_type=RecordTypes.MAIL.value)
 
         tx = AsyncMock()
         tx.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
 
         @asynccontextmanager
-        async def _transaction():
+        async def _transaction() -> AsyncIterator[MagicMock]:
             yield tx
 
         connector.data_store_provider = MagicMock()

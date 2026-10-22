@@ -1039,7 +1039,7 @@ class TestOnEventEdgeCases:
                 await _drain(ep.on_event(event_data))
 
     @pytest.mark.asyncio
-    async def test_stale_reason_is_cleared_in_the_database(self):
+    async def test_stale_reason_is_cleared_in_the_database(self) -> None:
         """A new attempt clears the previous failure reason before processing,
         since a successful completion never writes `reason` itself."""
         ep, _, processor, gp = _make_event_processor()
