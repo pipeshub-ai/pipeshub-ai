@@ -87,6 +87,7 @@ from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
 )
+from app.utils.query_instruction import instruct_query
 
 if TYPE_CHECKING:
     import logging
@@ -1968,7 +1969,9 @@ class EntityVectorStore:
             self._query_vector_cache.move_to_end(query)
             return cached
         generation = self._generation
-        dense_vec = await asyncio.to_thread(self._dense_embeddings.embed_query, query)
+        dense_vec = await asyncio.to_thread(self._dense_embeddings.embed_query,
+            instruct_query(self._dense_embeddings, query),
+        )
         sparse_vec = None
         if self._sparse_embedder:
             sparse_results = await self._sparse_embedder.embed_documents([query])
