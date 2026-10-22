@@ -221,7 +221,7 @@ export class DesktopProxySocketGateway {
   /**
    * Resolves to the error refusing the handshake, or undefined to accept it.
    * Refusals that mean "sign in again" carry an auth-looking message: the
-   * desktop client stops retrying on those and keeps retrying on the rest.
+   * desktop client stops on those and retries the rest after a delay.
    */
   private async authenticateHandshake(
     socket: RestProxySocket,
@@ -252,7 +252,13 @@ export class DesktopProxySocketGateway {
     try {
       refusal = await this.sessions.findSessionRefusal(decoded, this.logger);
     } catch (error) {
-      this.logger.error('Desktop handshake: session check failed', { error });
+      // Fail closed, as HTTP does. The message must not look like an auth
+      // failure, so the desktop client keeps retrying until the check works.
+      this.logger.error('Desktop handshake: session check failed', {
+        error,
+        orgId,
+        userId,
+      });
       return new Error('Unable to check the session right now');
     }
     if (refusal) {

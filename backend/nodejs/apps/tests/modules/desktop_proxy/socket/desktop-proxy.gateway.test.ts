@@ -99,15 +99,19 @@ describe('DesktopProxySocketGateway session checks', () => {
       expect(findSessionRefusal.firstCall.args[0]).to.include({ userId: USER, orgId: ORG })
     })
 
+    // A user revoked before a database outage must not get in during it.
     it('refuses with a retryable, non-auth message when the session check fails', async () => {
       const gateway = makeGateway({
         findSessionRefusal: sinon.stub().rejects(new Error('mongo down')),
       })
+      const socket = makeSocket()
 
-      const error = await gateway.authenticateHandshake(makeSocket())
+      const error = await gateway.authenticateHandshake(socket)
 
       expect(error).to.be.instanceOf(Error)
+      // The desktop client stops retrying on messages matching this pattern.
       expect(error.message).not.to.match(/token|auth|unauthor|expired/i)
+      expect(socket.data.userId).to.equal(undefined)
     })
   })
 
