@@ -45,7 +45,9 @@ describe('maskConfigSecrets', () => {
         dimensions: '',
         defaultReasoningEffort: 'low',
       })
-      expect(Object.keys(result)).to.have.members([...AI_PUBLIC_CONFIG_KEYS])
+      expect(Object.keys(result)).to.have.members(
+        AI_PUBLIC_CONFIG_KEYS.filter((key) => key in entry.configuration),
+      )
       expect(strip(entry).provider).to.equal('azureOpenAI')
       expect(strip(entry).modelKey).to.equal('mk-1')
       expect(strip(entry).isDefault).to.equal(true)

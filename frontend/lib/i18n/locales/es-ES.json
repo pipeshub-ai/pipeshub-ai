@@ -1949,6 +1949,7 @@
         "format": "Formato",
         "formatHeaders": "Cabeceras de LiteLLM",
         "formatTemplate": "Plantilla de cabeceras",
+        "formatSignedJwt": "Token firmado (enterprise)",
         "preset": "Preajuste del gateway",
         "presetCustom": "Cabeceras personalizadas",
         "templates": "Plantillas de cabeceras",
@@ -1968,6 +1969,7 @@
       },
       "identityPolicy": {
         "open": "Política de identidad",
+        "damaged": "No se pudo leer la política de identidad guardada, así que se muestran los valores predeterminados. Al guardar se reemplaza.",
         "title": "Política de identidad",
         "hint": "Lo que PipesHub puede decirle a un gateway de modelos sobre la persona que consulta. Se aplica a toda conexión que reenvía identidad.",
         "subjectSource": "Identificar a las personas por",

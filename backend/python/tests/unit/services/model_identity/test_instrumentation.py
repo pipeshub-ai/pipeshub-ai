@@ -179,6 +179,49 @@ class TestHook:
         assert rec.seen[0]["x-subject"] == "svc:pipeshub:system"
         assert metrics.counter_value(metrics.IDENTITY_FORWARDED, "headers", "interactive", "error") == 1
 
+    async def test_a_failed_render_never_moves_a_person_onto_the_service_key(self, alice):
+        class ServiceKeyForwarder:
+            def requires_groups(self, s):
+                return False
+
+            def render(self, identity, s):
+                if identity.subject_kind == "user":
+                    raise RuntimeError("signing key missing")
+                return HeaderSet(
+                    set=(("authorization", "Bearer service-key"), ("x-subject", identity.subject))
+                )
+
+        rec = Recorder()
+        client = rec.async_client()
+        client.headers["authorization"] = "Bearer connection-key"
+        install_identity_hook(client, settings(), ServiceKeyForwarder())
+        async with bind_call_context(ctx_for(alice)):
+            await client.post("http://gw/v1")
+        assert rec.seen[0]["authorization"] == "Bearer connection-key"
+        assert rec.seen[0]["x-subject"] == "svc:pipeshub:system"
+
+    async def test_a_service_call_that_fails_to_render_keeps_its_own_key(self):
+        class Forwarder:
+            def requires_groups(self, s):
+                return False
+
+            def render(self, identity, s):
+                raise RuntimeError("down") if identity.workload == "indexing" else None
+
+        # The fallback is the service identity, so its key is the one that belongs on the request.
+        class WithKey(Forwarder):
+            def render(self, identity, s):
+                if identity.workload == "indexing":
+                    raise RuntimeError("down")
+                return HeaderSet(set=(("authorization", "Bearer service-key"),))
+
+        rec = Recorder()
+        client = rec.async_client()
+        install_identity_hook(client, settings(), WithKey())
+        async with bind_call_context(ctx_for(service_principal("indexing", "org-1"), Workload.INDEXING)):
+            await client.post("http://gw/v1")
+        assert rec.seen[0]["authorization"] == "Bearer service-key"
+
     async def test_a_forwarder_that_always_fails_still_lets_the_request_through(self, alice):
         class Broken:
             def requires_groups(self, s):
@@ -421,6 +464,38 @@ class TestSharedDefaultClients:
         assert copy is not original and not copy.follow_redirects
         assert isinstance(copy._transport._pool._network_backend, VettedAsyncBackend)
 
+    def test_a_client_with_custom_tls_is_instrumented_in_place(self):
+        import ssl
+
+        import httpx
+
+        from app.services.model_identity.transport.private_client import private_copy
+
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        original = httpx.AsyncClient(verify=context)
+        assert private_copy(original, None) is original
+
+    def test_a_client_with_proxy_mounts_is_instrumented_in_place(self):
+        import httpx
+
+        from app.services.model_identity.transport.private_client import private_copy
+
+        original = httpx.AsyncClient(mounts={"https://gateway.example.com": httpx.AsyncHTTPTransport()})
+        assert private_copy(original, None) is original
+
+    def test_the_copy_keeps_the_connection_limits(self):
+        import httpx
+
+        from app.services.model_identity.transport.private_client import private_copy
+
+        original = httpx.AsyncClient(limits=httpx.Limits(max_connections=7, max_keepalive_connections=3))
+        copy = private_copy(original, None)
+        assert copy is not original
+        assert copy._transport._pool._max_connections == 7
+        assert copy._transport._pool._max_keepalive_connections == 3
+
     def test_an_unguarded_client_stays_unguarded(self):
         import httpx
 
@@ -499,35 +574,45 @@ class TestMediaClients:
         from app.utils.aimodels import _media_client_kwargs
 
         assert _media_client_kwargs(None, None) == {}
-        assert _media_client_kwargs(None, {"enabled": False}) == {}
+        assert _media_client_kwargs(None, {"identityForwarding": {"enabled": False}}) == {}
 
-    def test_forwarding_without_an_endpoint_gets_an_instrumented_client(self):
+    @pytest.mark.parametrize(
+        "forwarding",
+        [{"identityForwarding": {"enabled": True}}, {"identityForwardingEnabled": True}],
+        ids=["nested", "flat-from-the-admin-dialog"],
+    )
+    def test_forwarding_without_an_endpoint_gets_an_instrumented_client(self, forwarding):
         from app.utils.aimodels import _media_client_kwargs
 
-        kwargs = _media_client_kwargs(None, {"enabled": True})
+        kwargs = _media_client_kwargs(None, forwarding)
         assert has_identity_hook(kwargs["http_client"]) and "base_url" not in kwargs
 
     def test_endpoint_client_is_instrumented_when_enabled(self):
         from app.utils.aimodels import _media_client_kwargs
 
-        kwargs = _media_client_kwargs("https://gateway.example.com/v1", {"enabled": True})
+        kwargs = _media_client_kwargs("https://gateway.example.com/v1", {"identityForwardingEnabled": True})
         assert kwargs["base_url"] == "https://gateway.example.com/v1"
         assert has_identity_hook(kwargs["http_client"])
         plain = _media_client_kwargs("https://gateway.example.com/v1", None)
         assert not has_identity_hook(plain["http_client"])
 
     @pytest.mark.parametrize("getter,kind", [("get_image_generation_model", "image"), ("get_tts_model", "tts"), ("get_stt_model", "stt")])
-    def test_adapters_receive_the_connection_settings(self, getter, kind):
+    @pytest.mark.parametrize(
+        "forwarding",
+        [{"identityForwarding": {"enabled": True}}, {"identityForwardingEnabled": True, "identityForwardingMode": "headers"}],
+        ids=["nested", "flat-from-the-admin-dialog"],
+    )
+    def test_adapters_receive_the_connection_settings(self, getter, kind, forwarding):
         from app.utils import aimodels
 
         config = {
             "configuration": {
-                "model": "m", "apiKey": "k", "endpoint": "https://gateway.example.com/v1",
-                "identityForwarding": {"enabled": True},
+                "model": "m", "apiKey": "k", "endpoint": "https://gateway.example.com/v1", **forwarding,
             }
         }
         adapter = getattr(aimodels, getter)("litellmProxy", config, "m")
-        assert adapter.identity_forwarding == {"enabled": True}
+        assert adapter.identity_forwarding == forwarding
+        assert settings_from_config({"configuration": adapter.identity_forwarding}).enabled
 
 
 def _chat_completion():

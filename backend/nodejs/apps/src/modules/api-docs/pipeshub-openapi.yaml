@@ -16106,8 +16106,13 @@ components:
         Provider-specific configuration stored on each AI model entry.
 
         **Read shape:** user-facing GET responses return only `model`,
-        `modelFriendlyName`, `dimensions`, and `defaultReasoningEffort` (when stored).
-        Values are copied as-is; other keys including credentials are omitted.
+        `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the
+        `identityForwarding*` settings (when stored). Values are copied as-is,
+        except that the value of a credential-bearing header template (such as
+        `Authorization`) is replaced by `****************`; send the placeholder
+        back to keep the stored value. Other keys including credentials, and
+        `identityForwardingServiceApiKey`, are omitted; `configuredFields`
+        lists the ones that have a value.
 
         **Write shape:** create and update still accept the full provider payload
         (Zod `configurationSchema` with `.passthrough()`). An omitted key retains
@@ -16222,6 +16227,29 @@ components:
             choose one. Applies only when `isReasoning` is true. Empty or absent
             means the platform default (`high`). `none` is accepted for
             compatibility and treated as `low`.
+        identityForwardingEnabled:
+          type: boolean
+          description: Forward the caller's identity to the gateway. Written through the connection identity-forwarding route.
+        identityForwardingMode:
+          type: string
+          enum: [headers, template, signedJwt]
+        identityForwardingPreset:
+          type: string
+          enum: [litellm, portkey, helicone, cloudflare, apim, custom]
+        identityForwardingHeaderTemplates:
+          type: object
+          additionalProperties:
+            type: string
+          description: Header name to template. Values of credential-bearing headers read back as `****************`.
+        identityForwardingJwtAudience:
+          type: string
+        identityForwardingServiceAuth:
+          type: string
+          enum: [apiKey, jwt]
+        identityForwardingServiceApiKey:
+          type: string
+          writeOnly: true
+          description: Gateway key for background work. Never returned; `configuredFields` shows whether one is set.
 
     AddAIModelProviderRequest:
       type: object
@@ -45236,7 +45264,7 @@ paths:
                   additionalProperties:
                     type: string
                     maxLength: 512
-                  description: 'Header name to template, for example the value {{subject}}. Used with mode template.'
+                  description: 'Header name to template, for example the value {{subject}}. Used with mode template. A value of `****************` keeps the stored template for that header.'
                 jwtAudience:
                   type: string
                   maxLength: 256
@@ -45276,7 +45304,7 @@ paths:
       tags:
         - AI Models Providers
       summary: Get the identity governance policy
-      description: What PipesHub may forward to a model gateway about the person asking. Answers the restrictive default when nothing is saved.
+      description: What PipesHub may forward to a model gateway about the person asking. Answers the default when nothing is saved. When the stored policy cannot be read (for example after the secret key was rotated), `damaged` is true and `policy` is the default, not what was saved; save again to replace it.
       operationId: getAIGatewayIdentityPolicy
       security:
         - bearerAuth: []
@@ -45293,6 +45321,9 @@ paths:
                     type: string
                   policy:
                     $ref: '#/components/schemas/AIGatewayIdentityPolicy'
+                  damaged:
+                    type: boolean
+                    description: The stored policy could not be read and `policy` is the default.
         '401':
           description: Authentication required
         '403':

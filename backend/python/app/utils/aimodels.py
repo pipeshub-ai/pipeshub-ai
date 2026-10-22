@@ -300,19 +300,32 @@ def _endpoint_client_kwargs(base_url: str, config: Mapping[str, Any] | None = No
     return {"base_url": base_url, "http_client": model_http_client(base_url, config)}
 
 
+def _forwarding_configuration(configuration: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The identity-forwarding part of a connection's configuration.
+
+    The admin dialog saves flat ``identityForwarding*`` fields and the API may send one
+    nested ``identityForwarding`` object; ``settings_from_config`` reads both, so both are kept.
+    """
+    return {
+        key: value
+        for key, value in (configuration or {}).items()
+        if key == "identityForwarding" or key.startswith("identityForwarding")
+    }
+
+
 def _media_client_kwargs(base_url: str | None, identity_forwarding: Mapping[str, Any] | None) -> dict[str, Any]:
     """HTTP arguments for an image, TTS or STT client.
 
-    ``identity_forwarding`` is the connection's ``configuration.identityForwarding``. A
-    connection with no custom endpoint is only given a client of its own when forwarding is
-    on, so the default path is unchanged.
+    ``identity_forwarding`` is the connection's forwarding configuration (see
+    ``_forwarding_configuration``). A connection with no custom endpoint is only given a
+    client of its own when forwarding is on, so the default path is unchanged.
     """
     from app.services.model_identity.transport.instrument import (
         model_http_client,
         settings_from_config,
     )
 
-    config = {"configuration": {"identityForwarding": identity_forwarding}}
+    config = {"configuration": dict(identity_forwarding or {})}
     if base_url:
         return _endpoint_client_kwargs(base_url, config)
     if settings_from_config(config).enabled:
@@ -417,6 +430,8 @@ def embedding_config_hash(embedding_configs: "list[dict[str, Any]] | None") -> s
     """
     if not embedding_configs:
         return "default"
+    from app.services.model_identity.transport.instrument import settings_from_config
+
     serialisable = []
     for cfg in embedding_configs:
         configuration = cfg.get("configuration") or {}
@@ -436,7 +451,7 @@ def embedding_config_hash(embedding_configs: "list[dict[str, Any]] | None") -> s
             "serviceAccountJson": configuration.get("serviceAccountJson"),
             "project": configuration.get("project"),
             "location": configuration.get("location"),
-            "identityForwarding": configuration.get("identityForwarding"),
+            "identityForwarding": settings_from_config({"configuration": configuration}).fingerprint,
         })
     return hashlib.sha256(
         json.dumps(serialisable, sort_keys=True, default=str).encode()
@@ -2881,7 +2896,7 @@ def get_image_generation_model(
     if builder is None:
         raise ValueError(f"Unsupported image generation provider: {provider}")
     adapter = builder(configuration, model_name)
-    adapter.identity_forwarding = configuration.get("identityForwarding")
+    adapter.identity_forwarding = _forwarding_configuration(configuration)
     return adapter
 
 
@@ -3265,7 +3280,7 @@ def get_tts_model(
     if builder is None:
         raise ValueError(f"Unsupported TTS provider: {provider}")
     adapter = builder(configuration, model_name)
-    adapter.identity_forwarding = configuration.get("identityForwarding")
+    adapter.identity_forwarding = _forwarding_configuration(configuration)
     return adapter
 
 
@@ -3936,5 +3951,5 @@ def get_stt_model(
     if builder is None:
         raise ValueError(f"Unsupported STT provider: {provider}")
     adapter = builder(configuration, model_name)
-    adapter.identity_forwarding = configuration.get("identityForwarding")
+    adapter.identity_forwarding = _forwarding_configuration(configuration)
     return adapter

@@ -122,7 +122,7 @@ describe('identity forwarding', () => {
   });
 
   it('saves the policy with the group list from the text box', async () => {
-    api.getIdentityPolicy.mockResolvedValue(policy);
+    api.getIdentityPolicy.mockResolvedValue({ policy, damaged: false });
     api.putIdentityPolicy.mockResolvedValue(policy);
     render(withTheme(<IdentityPolicyDialog open onClose={vi.fn()} />));
 
@@ -139,5 +139,61 @@ describe('identity forwarding', () => {
     render(withTheme(<IdentityPolicyDialog open onClose={vi.fn()} />));
     expect(await screen.findByText('Could not load the identity policy')).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('keeps a signed-token connection signed, with its audience and service auth, when saved', async () => {
+    api.setConnectionIdentityForwarding.mockResolvedValue({});
+    render(
+      withTheme(
+        <IdentityForwardingDialog
+          model={model({
+            identityForwardingEnabled: true,
+            identityForwardingMode: 'signedJwt',
+            identityForwardingJwtAudience: 'litellm',
+            identityForwardingServiceAuth: 'jwt',
+          })}
+          onClose={vi.fn()}
+          onSaved={vi.fn()}
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.setConnectionIdentityForwarding).toHaveBeenCalled());
+    expect(api.setConnectionIdentityForwarding.mock.calls[0][1]).toMatchObject({
+      mode: 'signedJwt',
+      jwtAudience: 'litellm',
+      serviceAuth: 'jwt',
+    });
+  });
+
+  it('gives every policy switch an accessible name', async () => {
+    api.getIdentityPolicy.mockResolvedValue({ policy, damaged: false });
+    render(withTheme(<IdentityPolicyDialog open onClose={vi.fn()} />));
+    await screen.findByDisplayValue('g1');
+    for (const toggle of screen.getAllByRole('switch')) {
+      expect(toggle.getAttribute('aria-label')).toBeTruthy();
+    }
+  });
+
+  it('cannot save the previous policy while the next load is pending', async () => {
+    api.getIdentityPolicy.mockResolvedValueOnce({ policy, damaged: false });
+    const view = render(withTheme(<IdentityPolicyDialog open onClose={vi.fn()} />));
+    await screen.findByDisplayValue('g1');
+
+    view.rerender(withTheme(<IdentityPolicyDialog open={false} onClose={vi.fn()} />));
+    api.getIdentityPolicy.mockReturnValueOnce(new Promise(() => undefined));
+    view.rerender(withTheme(<IdentityPolicyDialog open onClose={vi.fn()} />));
+
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true),
+    );
+    expect(screen.queryByDisplayValue('g1')).toBeNull();
+  });
+
+  it('warns when the stored policy was unreadable', async () => {
+    api.getIdentityPolicy.mockResolvedValue({ policy, damaged: true });
+    render(withTheme(<IdentityPolicyDialog open onClose={vi.fn()} />));
+    expect(await screen.findByText(/could not be read/)).toBeTruthy();
   });
 });

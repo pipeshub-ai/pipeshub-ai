@@ -26,7 +26,7 @@ function SwitchRow({
         <Text size="2" weight="medium">{label}</Text>
         {hint ? <Text size="1" style={{ color: 'var(--gray-11)' }}>{hint}</Text> : null}
       </Flex>
-      <Switch checked={checked} onCheckedChange={onChange} />
+      <Switch aria-label={label} checked={checked} onCheckedChange={onChange} />
     </Flex>
   );
 }
@@ -42,13 +42,18 @@ export function IdentityPolicyDialog({ open, onClose }: IdentityPolicyDialogProp
   const [allowList, setAllowList] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [damaged, setDamaged] = useState(false);
 
   const load = useCallback(async () => {
+    // A policy from an earlier opening must not be savable while this load is pending.
+    setPolicy(null);
+    setDamaged(false);
     setError(null);
     try {
       const loaded = await AIModelsApi.getIdentityPolicy();
-      setPolicy(loaded);
-      setAllowList(loaded.groups.allowList.join('\n'));
+      setPolicy(loaded.policy);
+      setDamaged(loaded.damaged);
+      setAllowList(loaded.policy.groups.allowList.join('\n'));
     } catch {
       setPolicy(null);
       setError(t('workspace.aiModels.identityPolicy.loadFailed'));
@@ -187,6 +192,12 @@ export function IdentityPolicyDialog({ open, onClose }: IdentityPolicyDialogProp
                 />
               </Flex>
             </>
+          ) : null}
+
+          {damaged ? (
+            <Text size="2" style={{ color: 'var(--amber-11)' }}>
+              {t('workspace.aiModels.identityPolicy.damaged')}
+            </Text>
           ) : null}
 
           {error ? <Text size="2" style={{ color: 'var(--red-11)' }}>{error}</Text> : null}

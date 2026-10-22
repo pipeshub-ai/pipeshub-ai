@@ -9,10 +9,14 @@ class _Config:
         self.reads = []
         self.fail = False
 
-    async def get_config(self, key, default=None, use_cache=False, **_):
+    async def get_config(self, key, default=None, use_cache=False, raise_on_error=False, **_):
         self.reads.append(key)
+        self.raise_on_error = raise_on_error
         if self.fail:
-            raise RuntimeError("kv down")
+            # As the real service: a store failure is a miss unless the caller asks to see it.
+            if raise_on_error:
+                raise RuntimeError("kv down")
+            return default
         return self.values.get(key, default)
 
 
@@ -46,12 +50,36 @@ async def test_ttl_expiry_and_invalidate_reload():
 
 
 async def test_outage_keeps_the_last_known_policy_and_never_raises():
-    cfg = _Config({POLICY_KEY: {"includeEmail": True}})
+    cfg = _Config({POLICY_KEY: {"includeEmail": True, "pseudonymize": True}})
     store = IdentityPolicyStore(cfg, ttl_seconds=0.0)
     first = await store.get()
     cfg.fail = True
     assert await store.get() == first
-    assert await IdentityPolicyStore(cfg).get() == DEFAULT_GOVERNANCE
+
+
+async def test_the_read_asks_to_see_a_store_failure():
+    cfg = _Config({POLICY_KEY: {}})
+    await IdentityPolicyStore(cfg).get()
+    assert cfg.raise_on_error is True
+
+
+async def test_a_failed_read_with_no_policy_cached_sends_nothing_that_identifies_a_person():
+    cfg = _Config({POLICY_KEY: {"pseudonymize": True, "groups": {"enabled": False}}})
+    cfg.fail = True
+    policy = await IdentityPolicyStore(cfg).get()
+    assert policy.pseudonymize is True
+    assert policy.groups_enabled is False
+    assert policy != DEFAULT_GOVERNANCE
+
+
+async def test_an_outage_does_not_make_every_call_wait_on_the_store():
+    cfg = _Config({POLICY_KEY: {}})
+    cfg.fail = True
+    store = IdentityPolicyStore(cfg)
+    await store.get()
+    await store.get()
+    await store.get()
+    assert cfg.reads.count(POLICY_KEY) == 1
 
 
 async def test_pseudonym_key_prefers_the_dedicated_secret():

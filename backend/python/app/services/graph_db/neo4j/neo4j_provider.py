@@ -5049,10 +5049,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         query = """
         MATCH (u:User {userId: $user_id})
         WITH u LIMIT 1
-        OPTIONAL MATCH (u)-[:AUTHENTICATED_AS]->(source:User)
-        WITH [u] + collect(source) AS principals
-        UNWIND principals AS principal
-        MATCH (principal)-[:PERMISSION {type: 'USER'}]->(g:Group {orgId: $org_id})
+        CALL {
+            WITH u
+            MATCH (u)-[:PERMISSION {type: 'USER'}]->(g:Group {orgId: $org_id})
+            RETURN g
+            UNION
+            // A source account contributes only the groups of the connector it was
+            // linked for; its groups under other connectors are not this person's.
+            WITH u
+            MATCH (u)-[link:AUTHENTICATED_AS]->(source:User)
+            MATCH (source)-[:PERMISSION {type: 'USER'}]->(g:Group {orgId: $org_id})
+            WHERE g.connectorId = link.connectorId
+            RETURN g
+        }
+        WITH DISTINCT g
         WHERE $app_names IS NULL OR g.connectorName IN $app_names
         RETURN DISTINCT g.id AS id, g.externalGroupId AS externalId, g.name AS name,
                g.connectorId AS connectorId, g.connectorName AS appName
@@ -5064,7 +5074,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             parameters={
                 "user_id": user_id,
                 "org_id": org_id,
-                "app_names": list(app_names) if app_names else None,
+                "app_names": list(app_names) if app_names is not None else None,
                 "limit": max(1, int(limit)),
             },
         )

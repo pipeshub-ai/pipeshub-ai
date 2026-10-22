@@ -102,6 +102,9 @@ def decode_pcp(claims: Mapping[str, Any]) -> Optional[PropagatedContext]:
         return _reject("org_mismatch")
     if kind is not PrincipalKind.SERVICE and not org:
         return _reject("shape")
+    if kind is not PrincipalKind.SERVICE and not token_org:
+        # A person or agent is only believed inside the org the token was minted for.
+        return _reject("org_mismatch")
     try:
         workload = Workload(str(raw.get("wl")))
     except ValueError:

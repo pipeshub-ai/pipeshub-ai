@@ -194,32 +194,38 @@ async def extract_entities(
                     continue
             enabled = frozenset(parsed)
         config_service = request.app.container.config_service()
-        llm = transport = None
-        provider = model = "indexing"
-        try:
-            llm, transport, provider, model = await indexing_llm(
-                config_service, org_id=org_id, shard_key=body.record_name,
+        async with scope_from_claims(
+            claims,
+            Workload.EXTRACTION,
+            fallback_service="extraction",
+            config_service=config_service,
+        ):
+            llm = transport = None
+            provider = model = "indexing"
+            try:
+                llm, transport, provider, model = await indexing_llm(
+                    config_service, org_id=org_id, shard_key=body.record_name,
+                )
+            except Exception as exc:
+                # As in-process extraction does: without a model the deterministic
+                # entities still count, and the record is PARTIAL, not failed.
+                logger.warning("Named-entity model unavailable for org '%s': %s", org_id, type(exc).__name__)
+            extraction = await NamedEntityExtractor().extract(
+                NamedEntityRequest(
+                    blocks=body.block_container.blocks,
+                    org_id=org_id,
+                    record_name=body.record_name,
+                    record_type=body.record_type,
+                    reference_time_ms=body.reference_time_ms,
+                    tz=body.tz,
+                    enabled=enabled,
+                    budgets=body.budgets,
+                    llm=llm,
+                    transport=transport,
+                    provider_name=provider,
+                    model_name=model,
+                )
             )
-        except Exception as exc:
-            # As in-process extraction does: without a model the deterministic
-            # entities still count, and the record is PARTIAL, not failed.
-            logger.warning("Named-entity model unavailable for org '%s': %s", org_id, type(exc).__name__)
-        extraction = await NamedEntityExtractor().extract(
-            NamedEntityRequest(
-                blocks=body.block_container.blocks,
-                org_id=org_id,
-                record_name=body.record_name,
-                record_type=body.record_type,
-                reference_time_ms=body.reference_time_ms,
-                tz=body.tz,
-                enabled=enabled,
-                budgets=body.budgets,
-                llm=llm,
-                transport=transport,
-                provider_name=provider,
-                model_name=model,
-            )
-        )
     except Exception as exc:
         # The exception text can quote document content; report the type only.
         logger.warning("Named-entity extraction failed for org '%s': %s", org_id, type(exc).__name__)

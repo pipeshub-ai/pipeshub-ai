@@ -1,5 +1,8 @@
 """Reusable field definitions shared across many AI model providers."""
 
+from collections.abc import Iterable
+from typing import Any
+
 from app.config.ai_models.types import AIModelField, ModelCapability
 
 # ---------------------------------------------------------------------------
@@ -288,7 +291,7 @@ IDENTITY_FORWARDING_FIELDS = [
 ]
 
 
-def add_identity_forwarding(builder, capabilities):
+def add_identity_forwarding(builder: Any, capabilities: Iterable[Any]) -> Any:
     """Add the identity forwarding fields to ``builder`` for each capability."""
     for capability in capabilities:
         for identity_field in IDENTITY_FORWARDING_FIELDS:

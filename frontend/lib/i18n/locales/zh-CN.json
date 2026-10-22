@@ -2061,6 +2061,7 @@
         "format": "格式",
         "formatHeaders": "LiteLLM 请求头",
         "formatTemplate": "请求头模板",
+        "formatSignedJwt": "签名令牌（企业版）",
         "preset": "网关预设",
         "presetCustom": "自定义请求头",
         "templates": "请求头模板",
@@ -2080,6 +2081,7 @@
       },
       "identityPolicy": {
         "open": "身份策略",
+        "damaged": "无法读取已保存的身份策略，因此显示默认值。保存后将替换它。",
         "title": "身份策略",
         "hint": "PipesHub 可以向模型网关透露的请求者信息。适用于所有转发身份的连接。",
         "subjectSource": "识别用户的依据",

@@ -59,7 +59,7 @@ from app.web.errors import (
 from app.web.health import check_provider, provider_name
 
 async def _bind_health_check_identity(request: Request) -> AsyncIterator[None]:
-    """Run each probe as the admin who asked for it, so the gateway's audit log names them."""
+    """Bind the admin as the caller. The projector sends admin workloads as the service, so a probe never spends a person's gateway budget."""
     user = getattr(request.state, "user", None)
     container = getattr(request.app, "container", None)
     config_service = container.config_service() if container is not None else None

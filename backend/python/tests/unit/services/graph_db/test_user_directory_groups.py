@@ -52,6 +52,17 @@ class TestNeo4j:
         assert "LIMIT $limit" in query
         assert params == {"user_id": "u1", "org_id": "o1", "app_names": ["ONEDRIVE"], "limit": 25}
 
+    async def test_a_linked_account_contributes_only_its_connectors_groups(self):
+        p = _neo4j([])
+        await p.get_user_directory_groups("u1", "o1")
+        query = p.client.execute_query.call_args.args[0]
+        assert "g.connectorId = link.connectorId" in query
+
+    async def test_an_empty_app_filter_stays_an_empty_filter(self):
+        p = _neo4j([])
+        await p.get_user_directory_groups("u1", "o1", app_names=[])
+        assert p.client.execute_query.call_args.kwargs["parameters"]["app_names"] == []
+
     async def test_no_app_filter_binds_null_and_limit_is_at_least_one(self):
         p = _neo4j([])
         await p.get_user_directory_groups("u1", "o1", limit=0)
@@ -78,6 +89,16 @@ class TestArango:
         assert "g.orgId == @org_id" in query
         assert "LIMIT @limit" in query
         assert bind == {"user_id": "u1", "org_id": "o1", "app_names": ["ONEDRIVE"], "limit": 25}
+
+    async def test_a_linked_account_contributes_only_its_connectors_groups(self):
+        p = _arango([])
+        await p.get_user_directory_groups("u1", "o1")
+        assert "g.connectorId == link.connectorId" in p.http_client.execute_aql.call_args.args[0]
+
+    async def test_an_empty_app_filter_stays_an_empty_filter(self):
+        p = _arango([])
+        await p.get_user_directory_groups("u1", "o1", app_names=[])
+        assert p.http_client.execute_aql.call_args.args[1]["app_names"] == []
 
     async def test_the_two_backends_return_the_same_shape(self):
         assert await _neo4j([ROW]).get_user_directory_groups("u", "o") == await _arango([ROW]).get_user_directory_groups("u", "o")

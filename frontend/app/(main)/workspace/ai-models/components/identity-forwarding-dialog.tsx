@@ -9,6 +9,7 @@ import type {
   ConfiguredModel,
   IdentityForwardingMode,
   IdentityForwardingPreset,
+  IdentityForwardingSettings,
   IdentityPreview,
 } from '../types';
 
@@ -55,6 +56,8 @@ export function IdentityForwardingDialog({ model, onClose, onSaved }: IdentityFo
   const [mode, setMode] = useState<IdentityForwardingMode>('headers');
   const [preset, setPreset] = useState<IdentityForwardingPreset>('litellm');
   const [templates, setTemplates] = useState('');
+  const [jwtAudience, setJwtAudience] = useState('');
+  const [serviceAuth, setServiceAuth] = useState<IdentityForwardingSettings['serviceAuth']>('apiKey');
   const [serviceKey, setServiceKey] = useState('');
   const [clearServiceKey, setClearServiceKey] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -68,7 +71,11 @@ export function IdentityForwardingDialog({ model, onClose, onSaved }: IdentityFo
     if (!model) return;
     const cfg = model.configuration ?? {};
     setEnabled(cfg.identityForwardingEnabled === true);
-    setMode(cfg.identityForwardingMode === 'template' ? 'template' : 'headers');
+    // signedJwt is set through the API or the enterprise edition; keep it rather than downgrade it on save.
+    const storedMode = cfg.identityForwardingMode;
+    setMode(storedMode === 'template' || storedMode === 'signedJwt' ? storedMode : 'headers');
+    setJwtAudience(typeof cfg.identityForwardingJwtAudience === 'string' ? cfg.identityForwardingJwtAudience : '');
+    setServiceAuth(cfg.identityForwardingServiceAuth === 'jwt' ? 'jwt' : 'apiKey');
     setPreset((cfg.identityForwardingPreset as IdentityForwardingPreset) || 'litellm');
     setTemplates(templatesToText(cfg.identityForwardingHeaderTemplates));
     setServiceKey('');
@@ -121,7 +128,8 @@ export function IdentityForwardingDialog({ model, onClose, onSaved }: IdentityFo
         mode,
         preset,
         headerTemplates: textToTemplates(templates),
-        serviceAuth: 'apiKey',
+        serviceAuth,
+        ...(jwtAudience ? { jwtAudience } : {}),
         ...(serviceApiKey !== undefined ? { serviceApiKey } : {}),
       });
       toast.success(t('workspace.aiModels.identity.saved'));
@@ -157,6 +165,9 @@ export function IdentityForwardingDialog({ model, onClose, onSaved }: IdentityFo
                   <Select.Content>
                     <Select.Item value="headers">{t('workspace.aiModels.identity.formatHeaders')}</Select.Item>
                     <Select.Item value="template">{t('workspace.aiModels.identity.formatTemplate')}</Select.Item>
+                    {mode === 'signedJwt' ? (
+                      <Select.Item value="signedJwt">{t('workspace.aiModels.identity.formatSignedJwt')}</Select.Item>
+                    ) : null}
                   </Select.Content>
                 </Select.Root>
               </Flex>

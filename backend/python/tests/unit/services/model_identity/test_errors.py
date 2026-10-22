@@ -38,6 +38,15 @@ TEAM_ACCESS_BODY = {
 RATE_BODY = {"error": {"message": "Max parallel request limit reached", "type": "None", "code": "429"}}
 
 
+class TestUntrustedBodies:
+    @pytest.mark.parametrize(
+        "body",
+        ["{[1]: 2}", "{{}}", "{" * 5000 + "}" * 5000, "{'a': " * 600 + "1" + "}" * 600, "{not: valid"],
+    )
+    def test_a_body_the_parser_chokes_on_is_not_a_policy_refusal_and_does_not_raise(self, body):
+        assert classify_gateway_error(400, body, {}) is None
+
+
 class TestClassifyGatewayError:
     @pytest.mark.parametrize("status", [400, 401, 403, 429])
     def test_a_budget_refusal_is_a_budget_whatever_the_status(self, status):
@@ -196,13 +205,12 @@ class TestHookStopsSdkRetries:
 
     @pytest.mark.parametrize(
         "status, body, kind",
-        [(400, BUDGET_BODY, "budget"), (401, CUSTOMER_ACCESS_BODY, "model_access"), (429, BUDGET_BODY, "budget")],
+        [(400, BUDGET_BODY, "budget"), (401, CUSTOMER_ACCESS_BODY, "model_access"), (422, BUDGET_BODY, "budget"), (429, BUDGET_BODY, "budget")],
     )
     def test_refusals_are_marked_do_not_retry_and_counted(self, status, body, kind):
         calls = []
         response = self._client(status, body, calls=calls).get("http://gw/v1/chat")
         assert response.headers["x-should-retry"] == "false"
-        assert metrics.counter_value(metrics.GATEWAY_POLICY_REFUSALS, kind, "interactive") == 0 or True
         assert any(
             labels[0] == kind for labels in metrics.snapshot().get(metrics.GATEWAY_POLICY_REFUSALS, {})
         )

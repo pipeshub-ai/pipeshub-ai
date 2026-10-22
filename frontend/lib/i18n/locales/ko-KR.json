@@ -2061,6 +2061,7 @@
         "format": "형식",
         "formatHeaders": "LiteLLM 헤더",
         "formatTemplate": "헤더 템플릿",
+        "formatSignedJwt": "서명된 토큰(엔터프라이즈)",
         "preset": "게이트웨이 프리셋",
         "presetCustom": "사용자 지정 헤더",
         "templates": "헤더 템플릿",
@@ -2080,6 +2081,7 @@
       },
       "identityPolicy": {
         "open": "ID 정책",
+        "damaged": "저장된 ID 정책을 읽을 수 없어 기본값을 표시합니다. 저장하면 대체됩니다.",
         "title": "ID 정책",
         "hint": "PipesHub가 모델 게이트웨이에 요청자에 대해 알려도 되는 정보입니다. ID를 전달하는 모든 연결에 적용됩니다.",
         "subjectSource": "사용자 식별 기준",

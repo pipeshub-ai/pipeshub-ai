@@ -12,7 +12,7 @@ import { loadConfigurationManagerConfig } from '../config/config';
 import { AI_MODEL_TYPES, AIServiceResponse } from '../constants/constants';
 import { configPaths } from '../paths/paths';
 import { AiModelsConfigRepository } from '../services/aiModelsConfig.repository';
-import { IDENTITY_FORWARDING_KEYS } from '../utils/maskConfigSecrets';
+import { IDENTITY_FORWARDING_KEYS, restoreCredentialTemplates } from '../utils/maskConfigSecrets';
 import { identityPolicyBodySchema } from '../validator/validators';
 
 const POLICY_CAS_MAX_RETRIES = 5;
@@ -24,14 +24,25 @@ function cipher(): EncryptionService {
   return EncryptionService.getInstance(config.algorithm, config.secretKey);
 }
 
-function readPolicy(ciphertext: string | null | undefined) {
-  if (!ciphertext) return DEFAULT_POLICY;
-  // Unreadable or out-of-shape data answers the default. The default is the
-  // most restrictive policy, so a bad blob never widens what is forwarded.
+type StoredPolicy = ReturnType<typeof identityPolicyBodySchema.parse>;
+
+/**
+ * A stored blob that cannot be decrypted or no longer matches the schema (a
+ * rotated secret key, say) is reported as damaged. Answering the default would
+ * show the admin a looser policy than the one they saved, and the next save
+ * would overwrite the blob without warning.
+ */
+function readPolicy(
+  ciphertext: string | null | undefined,
+): { policy: StoredPolicy; damaged: boolean } {
+  if (!ciphertext) return { policy: DEFAULT_POLICY, damaged: false };
   try {
-    return identityPolicyBodySchema.parse(JSON.parse(cipher().decrypt(ciphertext)));
+    return {
+      policy: identityPolicyBodySchema.parse(JSON.parse(cipher().decrypt(ciphertext))),
+      damaged: false,
+    };
   } catch {
-    return DEFAULT_POLICY;
+    return { policy: DEFAULT_POLICY, damaged: true };
   }
 }
 
@@ -39,7 +50,7 @@ export function getIdentityPolicy(keyValueStoreService: KeyValueStoreService) {
   return async (_req: Request, res: Response, next: NextFunction) => {
     try {
       const stored = await keyValueStoreService.get<string>(configPaths.aiGatewayIdentityPolicy);
-      res.status(200).json({ status: 'success', policy: readPolicy(stored) });
+      res.status(200).json({ status: 'success', ...readPolicy(stored) });
     } catch (error) {
       next(error);
     }
@@ -104,7 +115,10 @@ export function setConnectionIdentityForwarding(keyValueStoreService: KeyValueSt
             configuration[keys.enabled] = body.enabled;
             configuration[keys.mode] = body.mode;
             configuration[keys.preset] = body.preset;
-            configuration[keys.headerTemplates] = body.headerTemplates;
+            configuration[keys.headerTemplates] = restoreCredentialTemplates(
+              body.headerTemplates,
+              (entry.configuration ?? {})[keys.headerTemplates],
+            );
             configuration[keys.serviceAuth] = body.serviceAuth;
             if (body.jwtAudience) {
               configuration[keys.jwtAudience] = body.jwtAudience;
@@ -146,6 +160,7 @@ export function previewIdentityForwarding(
         configuration: Record<string, unknown>;
         connectionId?: string;
       };
+      const keys = IDENTITY_FORWARDING_KEYS;
       let configuration = { ...body.configuration };
       if (body.connectionId) {
         // Stored settings, including the service key the browser never sees.
@@ -157,7 +172,14 @@ export function previewIdentityForwarding(
           res.status(404).json({ status: 'error', message: 'Connection not found' });
           return;
         }
+        const submitted = configuration[keys.headerTemplates];
         configuration = { ...member.configuration, ...configuration };
+        if (submitted && typeof submitted === 'object' && !Array.isArray(submitted)) {
+          configuration[keys.headerTemplates] = restoreCredentialTemplates(
+            submitted as Record<string, string>,
+            member.configuration?.[keys.headerTemplates],
+          );
+        }
       }
       const options: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/ai-models/identity/preview`,

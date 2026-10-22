@@ -11,12 +11,18 @@ import time
 from typing import Any, Optional
 
 from app.config.constants.service import config_node_constants
-from app.services.model_identity.settings import DEFAULT_GOVERNANCE, IdentityGovernancePolicy
+from app.services.model_identity.settings import IdentityGovernancePolicy
 
 logger = logging.getLogger(__name__)
 
 POLICY_TTL_SECONDS = 30.0
 _PSEUDONYM_SECRET_FIELDS = ("identityPseudonymKey", "scopedJwtSecret")
+
+# With no saved policy readable, send nothing that identifies a person: no groups,
+# and a pseudonym (which the projector turns into the service identity when the
+# deployment has no key). The permissive default would forward raw user ids that
+# an admin may have turned off.
+_OUTAGE_GOVERNANCE = IdentityGovernancePolicy(groups_enabled=False, pseudonymize=True)
 
 
 class IdentityPolicyStore:
@@ -40,9 +46,13 @@ class IdentityPolicyStore:
             policy = await self._load(org_id)
         except Exception:
             # A configuration outage must not stop model calls. Keep the last
-            # known policy; with none, the default is the most restrictive one.
+            # known policy; with none, fall back to the closed one. Recording the
+            # attempt makes the next reads wait out the TTL instead of each paying
+            # the store's timeout.
             logger.warning("identity policy unavailable", exc_info=True)
-            return self._cached or DEFAULT_GOVERNANCE
+            fallback = self._cached or _OUTAGE_GOVERNANCE
+            self._cached, self._cached_at = fallback, now
+            return fallback
         self._cached, self._cached_at = policy, now
         return policy
 
@@ -51,7 +61,10 @@ class IdentityPolicyStore:
 
     async def _load(self, org_id: str) -> IdentityGovernancePolicy:
         raw = await self._config.get_config(
-            config_node_constants.AI_GATEWAY_IDENTITY_POLICY.value, default=None, use_cache=False
+            config_node_constants.AI_GATEWAY_IDENTITY_POLICY.value,
+            default=None,
+            use_cache=False,
+            raise_on_error=True,
         )
         return IdentityGovernancePolicy.parse(raw)
 

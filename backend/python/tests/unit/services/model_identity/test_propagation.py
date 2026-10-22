@@ -64,7 +64,7 @@ class TestDecode:
 
     async def test_round_trips_a_service_account_and_a_service(self):
         sa = await _claim_for(service_account_principal("agent-1", "org-1"), Workload.AGENT, agent_id="agent-1")
-        decoded = decode_pcp({PCP_CLAIM: sa})
+        decoded = decode_pcp({"orgId": "org-1", PCP_CLAIM: sa})
         assert (decoded.principal.kind, decoded.principal.subject_id) == (PrincipalKind.SERVICE_ACCOUNT, "agent-1")
         assert decoded.agent_id == "agent-1"
         svc = await _claim_for(service_principal("indexing"), Workload.INDEXING)
@@ -90,8 +90,14 @@ class TestDecode:
     )
     def test_malformed_claims_are_dropped_and_counted(self, claim, reason, caplog):
         with caplog.at_level(logging.WARNING):
-            assert decode_pcp({PCP_CLAIM: claim}) is None
+            assert decode_pcp({"orgId": "o", PCP_CLAIM: claim}) is None
         assert metrics.counter_value(metrics.IDENTITY_MISSING, f"bad_pcp_{reason}") == 1
+
+    @pytest.mark.parametrize("kind", ["user", "service_account"])
+    def test_a_person_or_agent_is_not_believed_without_the_tokens_org(self, kind):
+        claim = {"v": 1, "kind": kind, "sub": "u", "org": "org-1", "wl": "chat"}
+        assert decode_pcp({PCP_CLAIM: claim}) is None
+        assert metrics.counter_value(metrics.IDENTITY_MISSING, "bad_pcp_org_mismatch") == 1
 
     def test_a_claim_naming_another_org_than_the_token_is_dropped(self):
         claim = {"v": 1, "kind": "user", "sub": "u", "org": "org-evil", "wl": "chat"}

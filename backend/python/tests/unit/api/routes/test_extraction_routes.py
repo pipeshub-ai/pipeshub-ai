@@ -375,6 +375,41 @@ def test_entities_success_releases_the_slot(entities_app) -> None:
     assert not app.state.entity_extraction_semaphore.locked()
 
 
+def test_entities_model_calls_run_as_the_caller_named_in_the_service_token(entities_app) -> None:
+    from app.services.model_identity.call_context import peek_call_context
+
+    app, llm, extract = entities_app
+    seen = {}
+
+    async def as_indexing_with_caller(request: Request) -> Request:
+        request.state.user = {
+            "token_type": "scoped",
+            "scopes": ["document:classify"],
+            "orgId": "org-123",
+            "pcp": {"v": 1, "kind": "service", "sub": "indexing", "org": "org-123", "wl": "indexing"},
+        }
+        return request
+
+    async def load_model(*_a, **_k):
+        seen["load"] = peek_call_context()
+        return None, None, "fake", "fake-model"
+
+    async def run_extract(*_a, **_k):
+        seen["extract"] = peek_call_context()
+        return MagicMock(model_dump=MagicMock(return_value={"entities": []}))
+
+    llm.side_effect = load_model
+    extract.side_effect = run_extract
+    app.dependency_overrides[authMiddleware] = as_indexing_with_caller
+
+    assert _post_entities(app).status_code == 200
+
+    for step in ("load", "extract"):
+        assert seen[step] is not None, f"the {step} step ran with no caller bound"
+        assert seen[step].principal.service_name == "indexing"
+        assert seen[step].principal.org_id == "org-123"
+
+
 def test_entities_failure_releases_the_slot(entities_app) -> None:
     app, _, extract = entities_app
     extract.side_effect = RuntimeError("extraction broke")

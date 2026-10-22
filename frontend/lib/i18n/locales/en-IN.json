@@ -1925,6 +1925,7 @@
         "format": "Format",
         "formatHeaders": "LiteLLM headers",
         "formatTemplate": "Header template",
+        "formatSignedJwt": "Signed token (enterprise)",
         "preset": "Gateway preset",
         "presetCustom": "Custom headers",
         "templates": "Header templates",
@@ -1944,6 +1945,7 @@
       },
       "identityPolicy": {
         "open": "Identity policy",
+        "damaged": "The saved identity policy could not be read, so the defaults are shown. Saving replaces it.",
         "title": "Identity policy",
         "hint": "What PipesHub may tell a model gateway about the person asking. It applies to every connection that forwards identity.",
         "subjectSource": "Identify people by",

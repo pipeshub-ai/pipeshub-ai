@@ -76,8 +76,10 @@ export const AIModelsApi = {
   },
 
   getIdentityPolicy: async () => {
-    const { data } = await apiClient.get<{ policy: IdentityPolicy }>(`${BASE}/ai-models/identity-policy`);
-    return data.policy;
+    const { data } = await apiClient.get<{ policy: IdentityPolicy; damaged?: boolean }>(
+      `${BASE}/ai-models/identity-policy`,
+    );
+    return { policy: data.policy, damaged: data.damaged === true };
   },
 
   putIdentityPolicy: async (policy: IdentityPolicy) => {

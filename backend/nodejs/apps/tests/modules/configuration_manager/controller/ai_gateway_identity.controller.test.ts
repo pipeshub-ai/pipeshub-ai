@@ -125,11 +125,23 @@ describe('ai gateway identity', () => {
       expect(got.body.policy.includeEmail).to.equal(true);
     });
 
-    it('falls back to the default when the stored blob is damaged', async () => {
+    it('reports a damaged stored blob instead of passing the default off as the saved policy', async () => {
       const store = keyedStore({ [POLICY_PATH]: { subjectSource: 'nonsense' } });
       const res = response();
       await getIdentityPolicy(store as any)({} as any, res as any, () => undefined);
+      expect(res.body.damaged).to.equal(true);
       expect(res.body.policy.subjectSource).to.equal('userId');
+    });
+
+    it('does not flag a missing or readable policy as damaged', async () => {
+      const empty = response();
+      await getIdentityPolicy(keyedStore() as any)({} as any, empty as any, () => undefined);
+      expect(empty.body.damaged).to.equal(false);
+
+      const saved = response();
+      const store = keyedStore({ [POLICY_PATH]: { includeEmail: true } });
+      await getIdentityPolicy(store as any)({} as any, saved as any, () => undefined);
+      expect(saved.body.damaged).to.equal(false);
     });
 
     it('rejects unknown keys and out-of-range values', () => {
@@ -198,6 +210,45 @@ describe('ai gateway identity', () => {
       expect(extra.success).to.equal(false);
     });
 
+    it('keeps a credential template value out of the public view', () => {
+      const view: any = stripAiModelsStoredConfig({
+        llm: [
+          {
+            ...seed().llm[0],
+            configuration: {
+              model: 'a',
+              identityForwardingHeaderTemplates: {
+                Authorization: 'Bearer static-secret',
+                'x-team': '{{subject}}',
+              },
+            },
+          },
+        ],
+      });
+      const templates = view.llm[0].configuration.identityForwardingHeaderTemplates;
+      expect(templates['x-team']).to.equal('{{subject}}');
+      expect(templates.Authorization).to.equal('****************');
+      expect(JSON.stringify(view)).to.not.include('static-secret');
+    });
+
+    it('restores a redacted template from storage on save, and drops one with nothing stored', async () => {
+      const models = seed();
+      (models.llm[0].configuration as any).identityForwardingHeaderTemplates = {
+        Authorization: 'Bearer static-secret',
+      };
+      const store = keyedStore({ [MODELS_PATH]: models });
+      await put(store, 'conn-1', {
+        ...forwarding,
+        mode: 'template',
+        headerTemplates: { Authorization: '****************', 'x-api-key': '****************' },
+      });
+      const saved = store.read(MODELS_PATH).llm;
+      expect(saved[0].configuration.identityForwardingHeaderTemplates).to.deep.equal({
+        Authorization: 'Bearer static-secret',
+      });
+      expect(saved[1].configuration.identityForwardingHeaderTemplates).to.deep.equal({});
+    });
+
     it('keeps the service key out of the public view and lists it as configured', () => {
       const view: any = stripAiModelsStoredConfig({
         llm: [
@@ -249,6 +300,34 @@ describe('ai gateway identity', () => {
       expect(sent.configuration.identityForwardingEnabled).to.equal(true);
       expect(sent.configuration.identityForwardingServiceApiKey).to.equal('sk-svc');
       expect(sent.configuration.connectionId).to.equal(undefined);
+    });
+
+    it('restores a redacted template before previewing', async () => {
+      const models = seed();
+      (models.llm[0].configuration as any).identityForwardingHeaderTemplates = {
+        Authorization: 'Bearer static-secret',
+      };
+      const store = keyedStore({ [MODELS_PATH]: models });
+      let sent: any;
+      execute.callsFake(async function (this: { body: string }) {
+        sent = JSON.parse(this.body);
+        return { statusCode: 200, data: { success: true } };
+      });
+      await previewIdentityForwarding(store as any, appConfig)(
+        {
+          body: {
+            connectionId: 'conn-1',
+            workload: 'chat',
+            configuration: { identityForwardingHeaderTemplates: { Authorization: '****************' } },
+          },
+          headers: {},
+        } as any,
+        response() as any,
+        () => undefined,
+      );
+      expect(sent.configuration.identityForwardingHeaderTemplates).to.deep.equal({
+        Authorization: 'Bearer static-secret',
+      });
     });
 
     it('answers 404 for an unknown connection and calls nothing', async () => {

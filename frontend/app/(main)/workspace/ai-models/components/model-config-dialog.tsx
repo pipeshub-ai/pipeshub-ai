@@ -187,7 +187,10 @@ function findHiddenCredentialFields(
   if (editModel.configuredFields) {
     return new Set(
       editModel.configuredFields.filter(
-        (name) => !TOP_LEVEL_FIELD_NAMES.has(name) && !PUBLIC_CONFIG_KEYS.has(name),
+        (name) =>
+          !TOP_LEVEL_FIELD_NAMES.has(name) &&
+          !PUBLIC_CONFIG_KEYS.has(name) &&
+          !name.startsWith(IDENTITY_FORWARDING_FIELD_PREFIX),
       ),
     );
   }
@@ -195,7 +198,12 @@ function findHiddenCredentialFields(
   return new Set(
     fields
       .map((f) => f.name)
-      .filter((name) => !TOP_LEVEL_FIELD_NAMES.has(name) && !(name in configured))
+      .filter(
+        (name) =>
+          !TOP_LEVEL_FIELD_NAMES.has(name) &&
+          !name.startsWith(IDENTITY_FORWARDING_FIELD_PREFIX) &&
+          !(name in configured),
+      )
   );
 }
 

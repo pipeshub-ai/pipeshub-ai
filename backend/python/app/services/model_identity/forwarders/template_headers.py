@@ -4,10 +4,10 @@ An admin writes ``{"X-User": "{{SUBJECT}}"}``; only the placeholders in
 ``ALLOWED_PLACEHOLDERS`` exist, and each is filled from the already-minimised
 ``ForwardedIdentity``. A template cannot reach a field governance removed.
 
-Presets fill in the headers a known gateway reads when the admin gave no
-templates. Presets that carry JSON build it with ``json.dumps`` so no value can
-break out of a string. Explicit templates are added on top of the preset's
-headers and win on a name clash.
+A preset fills in the headers a known gateway reads. Presets that carry JSON
+build it with ``json.dumps`` so no value can break out of a string. Explicit
+templates are added on top of the preset's headers and win on a name clash, so a
+preset's group headers stay even when the admin adds an unrelated template.
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ class TemplateHeadersForwarder:
     def requires_groups(self, settings: ConnectionForwardingSettings) -> bool:
         if any("GROUP_IDS" in template for _, template in settings.header_templates):
             return True
-        return settings.preset in _PRESETS and not settings.header_templates
+        return settings.preset in _PRESETS
 
     def render(
         self, identity: ForwardedIdentity, settings: ConnectionForwardingSettings

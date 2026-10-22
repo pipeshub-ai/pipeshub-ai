@@ -2061,6 +2061,7 @@
         "format": "格式",
         "formatHeaders": "LiteLLM 標頭",
         "formatTemplate": "標頭範本",
+        "formatSignedJwt": "簽章權杖（企業版）",
         "preset": "閘道預設",
         "presetCustom": "自訂標頭",
         "templates": "標頭範本",
@@ -2080,6 +2081,7 @@
       },
       "identityPolicy": {
         "open": "身分原則",
+        "damaged": "無法讀取已儲存的身分原則，因此顯示預設值。儲存後將取代它。",
         "title": "身分原則",
         "hint": "PipesHub 可向模型閘道透露的請求者資訊。適用於所有轉送身分的連線。",
         "subjectSource": "識別使用者的依據",

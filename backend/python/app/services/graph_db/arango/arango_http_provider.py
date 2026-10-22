@@ -6552,30 +6552,39 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER user.userId == @user_id
                 RETURN user
         )
-        LET principals = caller == null ? [] : APPEND([caller], (
-            FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
-                FILTER link._from == caller._id
-                RETURN DOCUMENT(link._to)
-        ))
-        FOR principal IN principals
-            FILTER principal != null
-            FOR g, edge IN 1..1 OUTBOUND principal._id {CollectionNames.PERMISSION.value}
+        // A source account contributes only the groups of the connector it was linked
+        // for; its groups under other connectors are not this person's.
+        LET own = caller == null ? [] : (
+            FOR g, edge IN 1..1 OUTBOUND caller._id {CollectionNames.PERMISSION.value}
                 FILTER edge.type == 'USER'
                 FILTER IS_SAME_COLLECTION("{CollectionNames.GROUPS.value}", g)
                 FILTER g.orgId == @org_id
-                FILTER @app_names == null OR g.connectorName IN @app_names
-                COLLECT id = g._key, externalId = g.externalGroupId, name = g.name,
-                        connectorId = g.connectorId, appName = g.connectorName
-                SORT externalId
-                LIMIT @limit
-                RETURN {{id, externalId, name, connectorId, appName}}
+                RETURN g
+        )
+        LET linked = caller == null ? [] : (
+            FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
+                FILTER link._from == caller._id
+                FOR g, edge IN 1..1 OUTBOUND link._to {CollectionNames.PERMISSION.value}
+                    FILTER edge.type == 'USER'
+                    FILTER IS_SAME_COLLECTION("{CollectionNames.GROUPS.value}", g)
+                    FILTER g.orgId == @org_id
+                    FILTER g.connectorId == link.connectorId
+                    RETURN g
+        )
+        FOR g IN UNION_DISTINCT(own, linked)
+            FILTER @app_names == null OR g.connectorName IN @app_names
+            COLLECT id = g._key, externalId = g.externalGroupId, name = g.name,
+                    connectorId = g.connectorId, appName = g.connectorName
+            SORT externalId
+            LIMIT @limit
+            RETURN {{id, externalId, name, connectorId, appName}}
         """
         rows = await self.http_client.execute_aql(
             query,
             {
                 "user_id": user_id,
                 "org_id": org_id,
-                "app_names": list(app_names) if app_names else None,
+                "app_names": list(app_names) if app_names is not None else None,
                 "limit": max(1, int(limit)),
             },
         )

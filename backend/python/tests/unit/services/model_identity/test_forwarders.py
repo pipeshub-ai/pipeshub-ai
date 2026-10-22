@@ -48,7 +48,7 @@ class TestLiteLLMHeaders:
         out = LiteLLMHeadersForwarder().render(identity(alice), conn()).as_dict()
         assert out == {
             "x-litellm-end-user-id": "u-alice",
-            "x-litellm-tags": "group:g-a,group:g-b,workload:chat,org:org-1",
+            "x-litellm-tags": "workload:chat,org:org-1,group:g-a,group:g-b",
             "x-pipeshub-workload": "chat",
             "x-pipeshub-request-id": "req-1",
             "x-pipeshub-conversation-id": "conv-1",
@@ -163,6 +163,30 @@ class TestTemplates:
         s = conn(mode="template", preset="helicone", headerTemplates={"Helicone-User-Id": "team-{{ORG_ID}}"})
         out = TemplateHeadersForwarder().render(identity(alice), s).as_dict()
         assert out["helicone-user-id"] == "team-org-1"
+
+
+class TestTemplateGroups:
+    def test_a_preset_wants_groups_even_with_an_unrelated_template(self):
+        forwarder = TemplateHeadersForwarder()
+        settings = conn(
+            mode="template", preset="helicone", headerTemplates=[{"name": "X-Team", "value": "{{ORG_ID}}"}]
+        )
+        assert forwarder.requires_groups(settings) is True
+
+    def test_custom_with_only_non_group_templates_does_not(self):
+        settings = conn(
+            mode="template", preset="custom", headerTemplates=[{"name": "X-Org", "value": "{{ORG_ID}}"}]
+        )
+        assert TemplateHeadersForwarder().requires_groups(settings) is False
+
+
+class TestLiteLLMTagCap:
+    def test_workload_and_org_tags_survive_a_full_group_list(self, alice):
+        many = tuple(f"group-{i:04d}-{'x' * 40}" for i in range(200))
+        out = LiteLLMHeadersForwarder().render(identity(alice, member_ids=many), conn()).as_dict()
+        tags = out["x-litellm-tags"].split(",")
+        assert tags[:2] == ["workload:chat", "org:org-1"]
+        assert len(out["x-litellm-tags"]) <= 4096
 
 
 class TestHeaderSet:

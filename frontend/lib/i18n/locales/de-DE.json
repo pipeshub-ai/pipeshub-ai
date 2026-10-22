@@ -1925,6 +1925,7 @@
         "format": "Format",
         "formatHeaders": "LiteLLM-Header",
         "formatTemplate": "Header-Vorlage",
+        "formatSignedJwt": "Signiertes Token (Enterprise)",
         "preset": "Gateway-Voreinstellung",
         "presetCustom": "Eigene Header",
         "templates": "Header-Vorlagen",
@@ -1944,6 +1945,7 @@
       },
       "identityPolicy": {
         "open": "Identitätsrichtlinie",
+        "damaged": "Die gespeicherte Identitätsrichtlinie konnte nicht gelesen werden, daher werden die Standardwerte angezeigt. Speichern ersetzt sie.",
         "title": "Identitätsrichtlinie",
         "hint": "Was PipesHub einem Modell-Gateway über die fragende Person mitteilen darf. Gilt für jede Verbindung, die Identität weiterleitet.",
         "subjectSource": "Personen identifizieren über",

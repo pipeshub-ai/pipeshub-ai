@@ -79,8 +79,10 @@ class LiteLLMHeadersForwarder:
 
     @staticmethod
     def _tags(identity: ForwardedIdentity) -> str:
-        tags = [f"group:{clean_tag_value(g)}" for g in identity.group_ids]
-        tags.append(f"workload:{clean_tag_value(identity.workload)}")
+        # Workload and org first: when many groups fill the header cap it is the
+        # group tags at the end that are dropped, not the ones every request needs.
+        tags = [f"workload:{clean_tag_value(identity.workload)}"]
         if identity.org_id:
             tags.append(f"org:{clean_tag_value(identity.org_id)}")
+        tags.extend(f"group:{clean_tag_value(g)}" for g in identity.group_ids)
         return join_capped(tags)

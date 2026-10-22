@@ -230,11 +230,11 @@ def _parse_body(body: Any) -> Any:
         return None
     try:
         return json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         pass
     try:
         return ast.literal_eval(text)
-    except (ValueError, SyntaxError):
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
         return None
 
 

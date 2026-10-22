@@ -40,6 +40,45 @@ export const AI_PUBLIC_CONFIG_KEYS = [
   'identityForwardingServiceAuth',
 ] as const;
 
+const CREDENTIAL_HEADER_HINT = /authorization|cookie|api[-_]?key|token|secret|password|credential/i;
+
+/**
+ * A header template may carry a literal credential (e.g. a static bearer token
+ * on `Authorization`). The value is write-only: a response keeps the header
+ * name so the editor can show it, and the placeholder stands in for the value.
+ */
+export function redactCredentialTemplates(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [name, template] of Object.entries(value as Record<string, unknown>)) {
+    out[name] =
+      CREDENTIAL_HEADER_HINT.test(name) && typeof template === 'string' && template.length > 0
+        ? CONFIG_SECRET_PLACEHOLDER
+        : template;
+  }
+  return out;
+}
+
+/** Swap a redacted template back for the stored one. A placeholder with nothing to restore is dropped. */
+export function restoreCredentialTemplates(
+  incoming: Record<string, string>,
+  stored: unknown,
+): Record<string, string> {
+  const previous =
+    stored && typeof stored === 'object' && !Array.isArray(stored)
+      ? (stored as Record<string, unknown>)
+      : {};
+  const out: Record<string, string> = {};
+  for (const [name, template] of Object.entries(incoming)) {
+    if (template !== CONFIG_SECRET_PLACEHOLDER) {
+      out[name] = template;
+    } else if (typeof previous[name] === 'string' && previous[name]) {
+      out[name] = previous[name] as string;
+    }
+  }
+  return out;
+}
+
 export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfiguration {
   const cfg = entry.configuration;
   if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
@@ -52,6 +91,11 @@ export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfigu
     if (key in src) {
       safeCfg[key] = src[key];
     }
+  }
+  if ('identityForwardingHeaderTemplates' in safeCfg) {
+    safeCfg.identityForwardingHeaderTemplates = redactCredentialTemplates(
+      safeCfg.identityForwardingHeaderTemplates,
+    );
   }
 
   return {

@@ -24,6 +24,23 @@ def ctx_for(principal, workload=Workload.CHAT, **kw):
     return ModelCallContext(principal=principal, workload=workload, **kw)
 
 
+class TestAdminAndBackgroundActAsService:
+    @pytest.mark.parametrize(
+        "workload",
+        [Workload.HEALTH_CHECK, Workload.DISCOVERY, Workload.INDEXING, Workload.VLM_OCR, Workload.IMAGE_DESCRIPTION],
+    )
+    def test_a_person_bound_to_non_interactive_work_goes_out_as_the_service(self, alice, workload):
+        out = IdentityProjector().project(ctx_for(alice, workload), gov(), groups=GroupMembership(ids=("g",)))
+        assert out.subject == f"svc:pipeshub:{workload.value}"
+        assert out.subject_kind == "service"
+        assert out.group_ids == () and out.email is None
+
+    @pytest.mark.parametrize("workload", [Workload.CHAT, Workload.AGENT, Workload.SEARCH, Workload.SPEECH])
+    def test_interactive_work_still_carries_the_person(self, alice, workload):
+        out = IdentityProjector().project(ctx_for(alice, workload), gov())
+        assert out.subject == "u-alice" and out.is_user
+
+
 class TestPrincipals:
     def test_user_needs_ids(self):
         with pytest.raises(ValueError):

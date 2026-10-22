@@ -18,7 +18,7 @@ from app.services.model_identity.groups import GroupMembership
 from app.services.model_identity.principal import Principal, PrincipalKind
 from app.services.model_identity.sanitize import clean_text, optional_clean
 from app.services.model_identity.settings import IdentityGovernancePolicy
-from app.services.model_identity.workload import Workload
+from app.services.model_identity.workload import Workload, WorkloadClass, workload_class
 
 _PSEUDONYM_DOMAIN = b"pipeshub-identity-pseudonym-v1"
 _PSEUDONYM_LENGTH = 32
@@ -109,9 +109,15 @@ class IdentityProjector:
     ) -> bool:
         if principal.kind is PrincipalKind.SERVICE:
             return True
+        if principal.kind is not PrincipalKind.USER:
+            return False
+        # Only interactive calls carry a person. A probe an admin starts or work a
+        # user's upload triggers must not spend that person's gateway budget, and a
+        # refusal for them must not fail the probe.
+        if workload_class(workload) is not WorkloadClass.INTERACTIVE:
+            return True
         return (
-            principal.kind is PrincipalKind.USER
-            and workload is Workload.QUERY_EMBEDDING
+            workload is Workload.QUERY_EMBEDDING
             and governance.query_embedding_identity == "service"
         )
 

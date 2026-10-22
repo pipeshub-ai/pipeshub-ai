@@ -238,3 +238,22 @@ def test_preview_rejects_an_unknown_workload():
     ):
         resp = client.post("/api/v1/ai-models/identity/preview", json={**BODY, "workload": "nope"})
     assert resp.status_code == 422
+
+
+def test_preview_refuses_a_user_whose_org_was_never_recorded():
+    client, runtime = _client(ADMIN, graph_user={"email": "ghost@x.io"})
+    with _as_admin(), patch(
+        "app.services.model_identity.runtime.get_identity_runtime", return_value=runtime
+    ):
+        resp = client.post("/api/v1/ai-models/identity/preview", json={**BODY, "userId": "u-ghost"})
+    assert resp.status_code == 404
+
+
+def test_preview_of_a_health_check_is_the_service_not_the_admin():
+    client, runtime = _client(ADMIN)
+    with _as_admin(), patch(
+        "app.services.model_identity.runtime.get_identity_runtime", return_value=runtime
+    ):
+        resp = client.post("/api/v1/ai-models/identity/preview", json={**BODY, "workload": "health_check"})
+    assert resp.status_code == 200
+    assert resp.json()["identity"]["subject"] == "svc:pipeshub:health_check"

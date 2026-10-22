@@ -22,6 +22,13 @@ _SECRET_HEADER_HINTS = ("key", "token", "secret", "password", "auth")
 
 
 def redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    """Hide the value of any header that looks like a credential, by name.
+
+    Placeholders cannot render a secret (only identity fields exist), so a header
+    carries one only if an admin typed it into a template. That is caught by the
+    name hints below, not guaranteed: a credential in a header named outside them
+    would show in the preview an admin sees.
+    """
     return {
         name: REDACTED
         if is_forbidden_header_name(name) or any(hint in name.lower() for hint in _SECRET_HEADER_HINTS)

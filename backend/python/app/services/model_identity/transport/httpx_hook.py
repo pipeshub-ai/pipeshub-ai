@@ -34,7 +34,7 @@ from app.services.model_identity.workload import Workload
 logger = logging.getLogger(__name__)
 
 HOOK_MARKER = "_pipeshub_identity_hook"
-_REFUSAL_STATUSES = frozenset({400, 401, 403, 429})
+_REFUSAL_STATUSES = frozenset({400, 401, 403, 422, 429})
 
 # Re-render a little before a token actually expires so one never goes out stale.
 _EXPIRY_SKEW_SECONDS = 5.0
@@ -75,10 +75,19 @@ class IdentityHook:
         ctx.memo[key] = rendered
         return rendered
 
-    def _service_fallback(self) -> HeaderSet:
+    def _service_fallback(self, original: ModelCallContext) -> HeaderSet:
         ctx = ModelCallContext(principal=service_principal(), workload=Workload.SYSTEM)
         identity = self._projector.project(ctx, DEFAULT_GOVERNANCE, groups=EMPTY_MEMBERSHIP)
-        return self._forwarder.render(identity, self._settings)
+        rendered = self._forwarder.render(identity, self._settings)
+        if not original.principal.is_user:
+            return rendered
+        # A person's request must never be moved onto the background service's
+        # virtual key, whose team, budget and model list are not theirs.
+        return HeaderSet(
+            set=tuple((n, v) for n, v in rendered.set if n.lower() != "authorization"),
+            remove=tuple(n for n in rendered.remove if n.lower() != "authorization"),
+            expires_at=rendered.expires_at,
+        )
 
     def _apply(self, request: httpx.Request, render: Callable[[], HeaderSet]) -> None:
         ctx = current_call_context()
@@ -90,7 +99,7 @@ class IdentityHook:
             metrics.inc(metrics.IDENTITY_FORWARDED, mode, ctx.workload_class.value, "error")
             _log_once(exc)
             try:
-                self._service_fallback().apply(request.headers)
+                self._service_fallback(ctx).apply(request.headers)
             except Exception:
                 pass
 
