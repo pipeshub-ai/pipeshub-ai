@@ -5479,6 +5479,12 @@ components:
             lastExtractionTimestamp:
               type: integer
               format: int64
+            secretsRedacted:
+              type: integer
+              description: >-
+                Credentials (keys, tokens, passwords) removed from a code repository
+                file before it was indexed. Present once the file has been scanned,
+                0 when nothing was found.
             processingStartedAt:
               type: integer
               format: int64

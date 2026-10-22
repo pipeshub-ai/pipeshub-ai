@@ -23,7 +23,9 @@ from app.modules.extraction.prompt_template import (
     prompt_for_code_extraction,
     prompt_for_document_extraction,
 )
-from app.modules.parsers.code_parser.classification_policy import code_classification_skip_reason
+from app.modules.parsers.code_parser.classification_policy import (
+    code_classification_skip_reason,
+)
 from app.modules.parsers.code_parser.models import FILLER_KINDS
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider

@@ -434,12 +434,12 @@ async def test_an_agent_tool_answers_from_the_built_graph(repo: _Repo) -> None:
             await repo.graph.delete_nodes_and_edges([repo.connector_id], CollectionNames.APPS.value)
 
 
+# Neo4j only: collected for one backend, so the Arango job never selects (and skips) it.
+@pytest.mark.parametrize("repo", ["neo4j"], indirect=True)
 async def test_full_text_search_is_scoped_to_the_org_inside_the_index(repo: _Repo) -> None:
     """S-9: the org is part of the Lucene query, not only a filter on what it returns,
     so another tenant's matches are never collected or scored. Queried directly too,
     since the provider falls back to a scan when a full-text query fails."""
-    if repo.backend != "neo4j":
-        pytest.skip("Neo4j full-text index")
     rows = await repo.graph.client.execute_query(
         "CALL db.index.fulltext.queryNodes('block_text_org', $q) YIELD node RETURN count(node) AS n",
         {"q": f'(name:"target") AND orgId:"{repo.org_id}"'},

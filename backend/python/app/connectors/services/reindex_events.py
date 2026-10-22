@@ -17,6 +17,7 @@ def build_reindex_event(
     depth: int | None = None,
     user_key: str | None = None,
     status_filters: list[str] | None = None,
+    stages: list[str] | None = None,
 ) -> dict:
     """Build the {eventType, topic, payload} envelope for a '*.reindex' sync-event.
 
@@ -38,4 +39,6 @@ def build_reindex_event(
         payload["userKey"] = user_key
     if status_filters:
         payload["statusFilters"] = status_filters
+    if stages:
+        payload["stages"] = stages
     return {"eventType": event_type, "topic": "sync-events", "payload": payload}

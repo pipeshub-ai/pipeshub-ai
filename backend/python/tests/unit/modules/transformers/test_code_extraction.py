@@ -181,7 +181,9 @@ class TestToSemanticMetadata:
         return CodeClassification(**kwargs)
 
     def test_code_fields_survive_the_mapping(self) -> None:
-        from app.modules.transformers.document_extraction import semantic_metadata_from_code
+        from app.modules.transformers.document_extraction import (
+            semantic_metadata_from_code,
+        )
 
         metadata = semantic_metadata_from_code(self._code_classification())
 
@@ -193,7 +195,9 @@ class TestToSemanticMetadata:
 
     def test_departments_and_languages_are_lists_not_none(self) -> None:
         """save_metadata_to_db iterates both; None raises TypeError there."""
-        from app.modules.transformers.document_extraction import semantic_metadata_from_code
+        from app.modules.transformers.document_extraction import (
+            semantic_metadata_from_code,
+        )
 
         metadata = semantic_metadata_from_code(self._code_classification())
 
@@ -202,7 +206,9 @@ class TestToSemanticMetadata:
 
     def test_blank_category_yields_no_category(self) -> None:
         """A blank one would create a Categories node named ''."""
-        from app.modules.transformers.document_extraction import semantic_metadata_from_code
+        from app.modules.transformers.document_extraction import (
+            semantic_metadata_from_code,
+        )
 
         metadata = semantic_metadata_from_code(self._code_classification(category=""))
 
@@ -259,7 +265,9 @@ class TestApplyRouting:
         ext = _build_extractor()
         container = _parse()
 
-        from app.modules.transformers.document_extraction import semantic_metadata_from_code
+        from app.modules.transformers.document_extraction import (
+            semantic_metadata_from_code,
+        )
 
         ext.process_code_document = AsyncMock(return_value=semantic_metadata_from_code(self._code_classification()))
         ext.extract_metadata = AsyncMock()
