@@ -132,7 +132,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
 
       const result = await this.s3.upload(uploadParams).promise();
 
-      if (!result?.Key) {
+      if (result.Key === undefined || result.Key === '') {
         throw new StorageUploadError('Upload response missing file key');
       }
 
@@ -186,7 +186,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
 
       const result = await this.s3.upload(uploadParams).promise();
 
-      if (!result?.Key) {
+      if (result.Key === undefined || result.Key === '') {
         throw new StorageUploadError('Update response missing file key');
       }
 
@@ -297,7 +297,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
       }
       return {
         statusCode: 200,
-        data: response.Body as Buffer,
+        data: response.Body,
       };
     } catch (error) {
       if (error instanceof StorageError) {
@@ -533,7 +533,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
    * @param prefix - The S3 key prefix to list.
    * @returns A promise resolving to all matching S3 objects across all pages.
    */
-  private async _listAllObjects(prefix: string): Promise<Array<{ Key?: string }>> {
+  private async _listAllObjects(
+    prefix: string,
+  ): Promise<Array<{ Key?: string }>> {
     const allObjects: Array<{ Key?: string }> = [];
     let continuationToken: string | undefined;
     do {
