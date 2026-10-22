@@ -1822,6 +1822,7 @@
         "createDisabledScopesTooltip": "請至少選取一個權限範圍才能建立應用程式。",
         "tabGeneral": "一般",
         "tabPermissions": "權限與範圍",
+        "tabGranular": "細部權限",
         "appNameLabel": "應用程式名稱",
         "appNamePlaceholder": "我的應用程式",
         "descriptionLabel": "描述",
@@ -4937,7 +4938,14 @@
     "selectedCount_other": "已選擇 {{count}} 項",
     "canSeeEverything": "可檢視：您能看到的所有內容",
     "canSeeSome_other": "可檢視：所選的 {{count}} 項",
-    "thisToken": "此權杖"
+    "thisToken": "此權杖",
+    "app": {
+      "thisApp": "此應用程式",
+      "help": "連接此應用程式的使用者只能搜尋和閱讀您在此選擇的內容，且絕不會超出他們自己可見的範圍。",
+      "everything": "每位使用者可見的全部內容",
+      "everythingHint": "包括之後新增的來源。"
+    },
+    "appLimited_other": "{{appName}} 只能查看其建立者選擇的 {{count}} 個項目，且僅限您可見的部分。"
   },
   "validation": {
     "password": {

@@ -15,6 +15,12 @@ import {
 import { useTranslation } from 'react-i18next';
 import type { CheckedState } from '@radix-ui/react-checkbox';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import {
+  KnowledgeLimitChoice,
+  isKnowledgeLimitValid,
+  knowledgeLimitForApi,
+  type KnowledgeLimitValue,
+} from '@/app/components/knowledge-limit';
 import { FormField, WorkspaceRightPanel } from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { Oauth2Api } from '../api';
@@ -101,6 +107,8 @@ export interface CreateOAuthApplicationPanelProps {
 // Component
 // ========================================
 
+type CreateTab = 'general' | 'scopes' | 'granular';
+
 export function CreateOAuthApplicationPanel({
   open,
   onOpenChange,
@@ -110,7 +118,8 @@ export function CreateOAuthApplicationPanel({
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
 
-  const [activeTab, setActiveTab] = useState<'general' | 'scopes'>('general');
+  const [activeTab, setActiveTab] = useState<CreateTab>('general');
+  const [knowledgeLimit, setKnowledgeLimit] = useState<KnowledgeLimitValue>(null);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [grantTypes, setGrantTypes] = useState<Set<OAuthGrantTypeValue>>(
@@ -175,6 +184,7 @@ export function CreateOAuthApplicationPanel({
   useEffect(() => {
     if (!open) {
       setActiveTab('general');
+      setKnowledgeLimit(null);
       setName('');
       setDescription('');
       setGrantTypes(
@@ -346,6 +356,7 @@ export function CreateOAuthApplicationPanel({
       privacyPolicyUrl: optionalUrlOrEmpty(privacyPolicyUrl),
       termsOfServiceUrl: optionalUrlOrEmpty(termsUrl),
       isConfidential: true as const,
+      knowledgeLimit: knowledgeLimitForApi(knowledgeLimit),
     };
   }, [
     name,
@@ -357,6 +368,7 @@ export function CreateOAuthApplicationPanel({
     privacyPolicyUrl,
     termsUrl,
     usesAuthorizationCode,
+    knowledgeLimit,
   ]);
 
   const handleNext = useCallback(() => {
@@ -372,6 +384,11 @@ export function CreateOAuthApplicationPanel({
       return;
     }
     if (totalScopeCount > 0 && selectedScopeCount === 0) {
+      setActiveTab('scopes');
+      return;
+    }
+    if (!isKnowledgeLimitValid(knowledgeLimit)) {
+      setActiveTab('granular');
       return;
     }
     setIsCreating(true);
@@ -405,7 +422,7 @@ export function CreateOAuthApplicationPanel({
     } finally {
       setIsCreating(false);
     }
-  }, [validateGeneral, buildPayload, addToast, t, onCreated, totalScopeCount, selectedScopeCount]);
+  }, [validateGeneral, buildPayload, addToast, t, onCreated, totalScopeCount, selectedScopeCount, knowledgeLimit]);
 
   const onPrimaryClick = useCallback(() => {
     if (createdCredentials) {
@@ -414,6 +431,8 @@ export function CreateOAuthApplicationPanel({
     }
     if (activeTab === 'general') {
       handleNext();
+    } else if (activeTab === 'scopes') {
+      setActiveTab('granular');
     } else {
       void handleCreate();
     }
@@ -454,6 +473,9 @@ export function CreateOAuthApplicationPanel({
       ? undefined
       : t('workspace.oauth2.create.createDisabledScopesTooltip')
     : undefined;
+
+  const primaryDisabledGranular =
+    primaryDisabledScopes || !isKnowledgeLimitValid(knowledgeLimit);
 
   const documentationAction = (
     <Button
@@ -516,9 +538,9 @@ export function CreateOAuthApplicationPanel({
       primaryLabel={
         createdCredentials
           ? t('workspace.oauth2.create.returnToAppsButton')
-          : activeTab === 'general'
-            ? t('workspace.oauth2.create.next')
-            : t('workspace.oauth2.create.createApp')
+          : activeTab === 'granular'
+            ? t('workspace.oauth2.create.createApp')
+            : t('workspace.oauth2.create.next')
       }
       secondaryLabel={
         createdCredentials
@@ -530,7 +552,9 @@ export function CreateOAuthApplicationPanel({
           ? false
           : activeTab === 'general'
             ? primaryDisabledGeneral
-            : primaryDisabledScopes
+            : activeTab === 'scopes'
+              ? primaryDisabledScopes
+              : primaryDisabledGranular
       }
       primaryLoading={createdCredentials ? false : isCreating}
       primaryTooltip={
@@ -663,7 +687,7 @@ export function CreateOAuthApplicationPanel({
       ) : (
         <Tabs.Root
           value={activeTab}
-          onValueChange={(v) => setActiveTab(v as 'general' | 'scopes')}
+          onValueChange={(v) => setActiveTab(v as CreateTab)}
         >
           <Tabs.List
             style={{
@@ -676,6 +700,9 @@ export function CreateOAuthApplicationPanel({
             </Tabs.Trigger>
             <Tabs.Trigger value="scopes">
               {t('workspace.oauth2.create.tabPermissions')}
+            </Tabs.Trigger>
+            <Tabs.Trigger value="granular">
+              {t('workspace.oauth2.create.tabGranular')}
             </Tabs.Trigger>
           </Tabs.List>
 
@@ -1049,6 +1076,18 @@ export function CreateOAuthApplicationPanel({
                   );
                 })}
             </Flex>
+          </Tabs.Content>
+
+          <Tabs.Content value="granular">
+            <Box style={CARD_STYLE}>
+              <KnowledgeLimitChoice
+                appName={name.trim() || t('knowledgeLimit.app.thisApp')}
+                value={knowledgeLimit}
+                onChange={setKnowledgeLimit}
+                idPrefix="oauth-app-create"
+                forApp
+              />
+            </Box>
           </Tabs.Content>
         </Tabs.Root>
       )}

@@ -2088,10 +2088,11 @@ components:
       type: object
       additionalProperties: false
       description: |
-        What a connected app (an OAuth app or a personal access token) may see,
-        as its user picked it. Search, chat, agent chat and every record read by
-        id stay inside it, and inside the user's own permissions. Omit it for
-        everything the user can see. Sent, it must name at least one id and at
+        What a connected app may see: an OAuth app's limit is picked by its
+        creator and holds for every user who connects it; a personal access
+        token's by its owner. Search, chat, agent chat and every record read by
+        id stay inside it, and inside the connecting user's own permissions.
+        Omit it for everything the user can see. Sent, it must name at least one id and at
         most 50 in all, since it is signed into every token the app gets.
       properties:
         apps:
@@ -2139,8 +2140,6 @@ components:
           type: string
           enum: [S256]
           description: PKCE challenge method. Only `S256` is accepted; `plain` is rejected with `400`. Defaults to `S256` when omitted.
-        knowledge_limit:
-          $ref: '#/components/schemas/KnowledgeLimit'
       required:
         - client_id
         - redirect_uri
@@ -2751,6 +2750,8 @@ components:
           maximum: 31536000
           default: 2592000
           example: 2592000
+        knowledgeLimit:
+          $ref: '#/components/schemas/KnowledgeLimit'
       required:
         - name
         - allowedScopes
@@ -2812,6 +2813,13 @@ components:
           type: integer
           minimum: 3600
           maximum: 31536000
+        knowledgeLimit:
+          description: |
+            A new limit revokes the app's outstanding tokens. `null` lifts the
+            limit; tokens get that at their next refresh.
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/KnowledgeLimit'
 
     OAuthAppResponse:
       type: object
@@ -2890,6 +2898,8 @@ components:
         refreshTokenLifetime:
           type: integer
           description: Refresh token lifetime in seconds
+        knowledgeLimit:
+          $ref: '#/components/schemas/KnowledgeLimit'
         createdAt:
           type: string
           format: date-time

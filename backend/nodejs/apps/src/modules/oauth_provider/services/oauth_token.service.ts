@@ -100,6 +100,10 @@ export class OAuthTokenService {
 
     const jti = randomUUID();
     const now = Math.floor(Date.now() / 1000);
+    // A personal access token names its own limit; every other token takes
+    // its app's, read here so a refresh picks up the creator's latest edit.
+    const knowledgeLimit =
+      opts?.knowledgeLimit ?? toKnowledgeLimit(app.knowledgeLimit);
     const accessTokenLifetime =
       opts?.accessTokenLifetimeOverrideSeconds ?? app.accessTokenLifetime;
 
@@ -127,7 +131,7 @@ export class OAuthTokenService {
       // Changing an app's identity revokes its outstanding tokens, so none
       // minted under the previous answer survives to be honoured.
       createdBy: (app.tokenIdentityUserId ?? app.createdBy)?.toString(),
-      knowledgeLimit: opts?.knowledgeLimit,
+      knowledgeLimit,
     };
 
     // A delegated token speaks as the person named in `userId`, so every
@@ -171,7 +175,7 @@ export class OAuthTokenService {
         opts?.actorUserId === undefined
           ? undefined
           : new Types.ObjectId(opts.actorUserId),
-      knowledgeLimit: opts?.knowledgeLimit,
+      knowledgeLimit,
     });
 
     const result: GeneratedTokens = {
@@ -212,8 +216,6 @@ export class OAuthTokenService {
         accountType,
         // Same resolved identity as the access token above.
         createdBy: (app.tokenIdentityUserId ?? app.createdBy)?.toString(),
-        // Read back on refresh, so every token of the grant keeps the limit.
-        knowledgeLimit: opts?.knowledgeLimit,
       };
 
       const refreshToken = jwt.sign(
@@ -477,7 +479,7 @@ export class OAuthTokenService {
       true, // Include new refresh token
       payload.fullName,
       payload.accountType,
-      { recheckAppScopes: true, knowledgeLimit: payload.knowledgeLimit },
+      { recheckAppScopes: true },
     );
 
     this.logger.info('Tokens refreshed', {

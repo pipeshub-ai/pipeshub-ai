@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import { ZodError } from 'zod'
 import {
   authorizeConsentSchema,
+  createAppSchema,
   authorizeQuerySchema,
   deviceAuthorizationSchema,
   deviceConsentSchema,
@@ -10,6 +11,7 @@ import {
   knowledgeLimitSchema,
   MAX_KNOWLEDGE_LIMIT_IDS,
   tokenSchema,
+  updateAppSchema,
 } from '../../../../src/modules/oauth_provider/validators/oauth.validators'
 import { OAuthGrantType } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
 
@@ -150,12 +152,13 @@ describe('knowledgeLimitSchema', () => {
     expect(knowledgeLimitSchema.safeParse({ apps: [id(1)], recordsExact: [id(2)] }).success).to.be.false
   })
 
-  it('rides on the consent and device approval bodies', () => {
+  it('rides on the app create and update bodies, and null lifts it on update', () => {
     const limit = { apps: [id(1)] }
-    expect(authorizeConsentSchema.parse({ body: { ...baseConsent, knowledge_limit: limit } }).body.knowledge_limit)
+    const app = { name: 'n', allowedScopes: ['kb:read'], redirectUris: ['https://example.com/cb'] }
+    expect(createAppSchema.parse({ body: { ...app, knowledgeLimit: limit } }).body.knowledgeLimit)
       .to.deep.equal({ apps: [id(1)], recordGroups: [], records: [] })
-    expect(deviceConsentSchema.safeParse({
-      body: { user_code: 'ABCD-EFGH', consent: 'granted', knowledge_limit: limit },
-    }).success).to.be.true
+    const params = { appId: '507f1f77bcf86cd799439011' }
+    expect(updateAppSchema.parse({ params, body: { knowledgeLimit: null } }).body.knowledgeLimit).to.equal(null)
+    expect(updateAppSchema.safeParse({ params, body: { knowledgeLimit: { apps: [] } } }).success).to.be.false
   })
 })

@@ -1,6 +1,4 @@
 import mongoose, { Document, Schema, Model, Types } from 'mongoose'
-import { KnowledgeLimit } from '../types/oauth.types';
-import { knowledgeLimitField } from './knowledge_limit.schema';
 
 export interface IAuthorizationCode extends Document {
   code: string
@@ -14,7 +12,6 @@ export interface IAuthorizationCode extends Document {
   expiresAt: Date
   isUsed: boolean
   usedAt?: Date
-  knowledgeLimit?: KnowledgeLimit;
   createdAt: Date
 }
 
@@ -55,7 +52,6 @@ const AuthorizationCodeSchema = new Schema<IAuthorizationCode>(
     },
     isUsed: { type: Boolean, default: false },
     usedAt: { type: Date },
-    knowledgeLimit: knowledgeLimitField,
   },
   { timestamps: true },
 )

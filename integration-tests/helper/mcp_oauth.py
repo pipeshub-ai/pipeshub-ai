@@ -93,9 +93,14 @@ def create_oauth_app(
     scopes: Optional[list[str]] = None,
     grant_types: Optional[list[str]] = None,
     redirect_uri: str = DEFAULT_REDIRECT_URI,
+    knowledge_limit: Optional[dict[str, list[str]]] = None,
     timeout: int = 30,
 ) -> OAuthApp:
-    """Register an OAuth app. Defaults to every scope and every grant type."""
+    """Register an OAuth app. Defaults to every scope and every grant type.
+
+    ``knowledge_limit`` is what the creator lets the app see for every user who
+    connects it; None lets it see everything each user can.
+    """
     base_url = base_url.rstrip("/")
     scopes = scopes or list_scope_names(base_url, user_jwt, timeout)
     data = _check(
@@ -107,6 +112,7 @@ def create_oauth_app(
                 "allowedGrantTypes": grant_types or ALL_GRANT_TYPES,
                 "allowedScopes": scopes,
                 "redirectUris": [redirect_uri],
+                **({"knowledgeLimit": knowledge_limit} if knowledge_limit is not None else {}),
             },
             timeout=timeout,
         ),
@@ -150,7 +156,6 @@ def authorization_code_token(
     app: OAuthApp,
     *,
     scopes: Optional[list[str]] = None,
-    knowledge_limit: Optional[dict[str, list[str]]] = None,
     timeout: int = 30,
 ) -> dict:
     """
@@ -158,8 +163,6 @@ def authorization_code_token(
 
     ``POST /api/v1/oauth2/authorize`` with a user session JWT and ``consent: granted``
     answers with ``{ redirectUrl }`` that carries the code, so no browser is needed.
-    ``knowledge_limit`` is what the user lets the app see on the consent page;
-    None lets it see everything the user can.
     """
     base_url = base_url.rstrip("/")
     scope = " ".join(scopes or app.scopes)
@@ -178,7 +181,6 @@ def authorization_code_token(
                 "consent": "granted",
                 "code_challenge": challenge,
                 "code_challenge_method": "S256",
-                **({"knowledge_limit": knowledge_limit} if knowledge_limit is not None else {}),
             },
             timeout=timeout,
         ),

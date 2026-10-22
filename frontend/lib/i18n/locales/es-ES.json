@@ -1768,6 +1768,7 @@
         "createDisabledScopesTooltip": "Select at least one permission scope to create the application.",
         "tabGeneral": "General",
         "tabPermissions": "Permissions & Scopes",
+        "tabGranular": "Permisos detallados",
         "appNameLabel": "App name",
         "appNamePlaceholder": "My Application",
         "descriptionLabel": "Description",
@@ -5002,7 +5003,16 @@
     "canSeeSome_one": "Puede ver: {{count}} elemento elegido",
     "canSeeSome_other": "Puede ver: {{count}} elementos elegidos",
     "canSeeSome_many": "Puede ver: {{count}} de elementos elegidos",
-    "thisToken": "este token"
+    "thisToken": "este token",
+    "app": {
+      "thisApp": "esta aplicación",
+      "help": "Los usuarios que conecten esta aplicación solo pueden buscar y leer lo que elijas aquí, y nunca más de lo que ellos mismos pueden ver.",
+      "everything": "Todo lo que cada usuario puede ver",
+      "everythingHint": "Incluye las fuentes que se añadan después."
+    },
+    "appLimited_one": "{{appName}} solo puede ver {{count}} elemento elegido por su creador, y solo si tú puedes verlo.",
+    "appLimited_many": "{{appName}} solo puede ver {{count}} elementos elegidos por su creador, y solo los que tú puedes ver.",
+    "appLimited_other": "{{appName}} solo puede ver {{count}} elementos elegidos por su creador, y solo los que tú puedes ver."
   },
   "validation": {
     "password": {

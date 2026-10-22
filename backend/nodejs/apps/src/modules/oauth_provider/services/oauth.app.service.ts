@@ -12,6 +12,7 @@ import {
   OAuthAppStatus,
   OAuthGrantType,
 } from '../schema/oauth.app.schema'
+import { toKnowledgeLimit } from '../schema/knowledge_limit.schema';
 import {
   InvalidClientError,
   InvalidRedirectUriError,
@@ -149,6 +150,7 @@ export class OAuthAppService {
       isConfidential: data.isConfidential ?? true,
       accessTokenLifetime: data.accessTokenLifetime ?? 3600,
       refreshTokenLifetime: data.refreshTokenLifetime ?? 2592000,
+      knowledgeLimit: data.knowledgeLimit,
     })
 
     this.logger.info('OAuth app created', {
@@ -458,6 +460,7 @@ export class OAuthAppService {
     }
 
     const previousScopes = [...app.allowedScopes]
+    const previousLimit = toKnowledgeLimit(app.knowledgeLimit);
 
     // Update fields
     if (data.name !== undefined) app.name = data.name
@@ -482,6 +485,9 @@ export class OAuthAppService {
     if (data.refreshTokenLifetime !== undefined) {
       app.refreshTokenLifetime = data.refreshTokenLifetime
     }
+    if (data.knowledgeLimit !== undefined) {
+      app.knowledgeLimit = data.knowledgeLimit ?? undefined;
+    }
 
     await app.save()
 
@@ -491,18 +497,27 @@ export class OAuthAppService {
     const removedScopes = previousScopes.filter(
       (scope) => !app.allowedScopes.includes(scope),
     )
-    if (removedScopes.length > 0) {
+    // The knowledge limit rides in the claim the same way. Any new limit may
+    // hide something an outstanding token reaches, so those tokens go too;
+    // lifting the limit reaches tokens at their next refresh.
+    const nextLimit = toKnowledgeLimit(app.knowledgeLimit);
+    const limitNarrowed =
+      nextLimit !== undefined &&
+      JSON.stringify(nextLimit) !== JSON.stringify(previousLimit);
+    if (removedScopes.length > 0 || limitNarrowed) {
       try {
         await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
       } catch (error) {
         app.allowedScopes = previousScopes
+        app.knowledgeLimit = previousLimit;
         await app.save()
         throw error
       }
-      this.logger.info('OAuth app scopes reduced; tokens revoked', {
+      this.logger.info('OAuth app access reduced; tokens revoked', {
         appId: (app._id as Types.ObjectId).toString(),
         orgId,
         removedScopes,
+        limitNarrowed,
       })
     }
 
@@ -785,6 +800,7 @@ export class OAuthAppService {
       isConfidential: app.isConfidential,
       accessTokenLifetime: app.accessTokenLifetime,
       refreshTokenLifetime: app.refreshTokenLifetime,
+      knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
       createdAt: app.createdAt,
       updatedAt: app.updatedAt,
     }

@@ -587,46 +587,4 @@ describe('OAuthDeviceService', () => {
     expect(service.normalizeUserCode('ab-cd-efgh')).to.equal('ABCDEFGH')
     expect(service.normalizeUserCode('ABCD EFGH')).to.equal('ABCDEFGH')
   })
-
-  it('should keep the limit picked on approval and mint the tokens with it', async () => {
-    const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
-    const userId = new Types.ObjectId()
-    const orgId = new Types.ObjectId()
-    const pending: any = {
-      status: OAuthDeviceCodeStatus.PENDING,
-      expiresAt: new Date(Date.now() + 60_000),
-      clientId: 'cid',
-      save: sinon.stub().resolves(),
-    }
-    const findOne = sinon.stub(OAuthDeviceCode, 'findOne')
-    findOne.onFirstCall().resolves(pending)
-    await service.approve('ABCD-EFGH', userId.toString(), orgId.toString(), 'granted', knowledgeLimit)
-    expect(pending.knowledgeLimit).to.deep.equal(knowledgeLimit)
-
-    const approved = {
-      _id: new Types.ObjectId(), status: OAuthDeviceCodeStatus.APPROVED,
-      expiresAt: new Date(Date.now() + 60_000), userId, orgId, scopes: ['user:read'], clientId: 'cid',
-      knowledgeLimit,
-    }
-    findOne.onSecondCall().resolves(approved as any)
-    stubLookup(Users, { fullName: 'Ada' })
-    stubLookup(Org, { accountType: 'business' })
-    sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(approved as any)
-
-    await service.poll('cid', undefined, 'device-code')
-    expect(mockOAuthTokenService.generateTokens.firstCall.args[7]).to.deep.include({ knowledgeLimit })
-  })
-
-  it('should not keep a limit sent with a denial', async () => {
-    const denied: any = {
-      status: OAuthDeviceCodeStatus.PENDING,
-      expiresAt: new Date(Date.now() + 60_000),
-      clientId: 'cid',
-      save: sinon.stub().resolves(),
-    }
-    sinon.stub(OAuthDeviceCode, 'findOne').resolves(denied)
-    await service.approve('ABCD-EFGH', new Types.ObjectId().toString(), new Types.ObjectId().toString(),
-      'denied', { apps: ['app-1'], recordGroups: [], records: ['folder-1'] })
-    expect(denied.knowledgeLimit).to.be.undefined
-  })
 })

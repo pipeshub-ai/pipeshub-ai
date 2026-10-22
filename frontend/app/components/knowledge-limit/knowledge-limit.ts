@@ -30,6 +30,12 @@ export function limitSize(limit: KnowledgeLimit): number {
   return limit.apps.length + limit.recordGroups.length + limit.records.length;
 }
 
+/** A stored limit as the picker's selection, for editing it. */
+export function selectionFromLimit(limit?: KnowledgeLimit | null): KnowledgeLimitValue {
+  if (!limit) return null;
+  return { apps: [...limit.apps], kb: [], recordGroups: [...limit.recordGroups], records: [...limit.records] };
+}
+
 /** The limit to send, or undefined for everything the user can see. */
 export function knowledgeLimitForApi(value: KnowledgeLimitValue): KnowledgeLimit | undefined {
   return value === null ? undefined : limitFromSelection(value);

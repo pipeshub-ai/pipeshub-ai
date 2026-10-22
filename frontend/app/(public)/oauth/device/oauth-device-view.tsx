@@ -12,12 +12,8 @@ import { useAuthStore } from '@/config';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LoadingButton } from '@/app/components/ui/loading-button';
-import {
-  KnowledgeLimitChoice,
-  isKnowledgeLimitValid,
-  knowledgeLimitForApi,
-  type KnowledgeLimitValue,
-} from '@/app/components/knowledge-limit';
+import { KnowledgeLimitNotice } from '@/app/components/knowledge-limit/knowledge-limit-summary';
+import type { KnowledgeLimit } from '@/app/components/knowledge-limit/knowledge-limit';
 
 const OAUTH_DEVICE_PATH = '/oauth/device';
 const VERIFY_API = '/api/v1/oauth2/device/verify';
@@ -30,7 +26,7 @@ interface ScopeInfo {
 }
 
 interface ConsentData {
-  app: { name: string; description?: string; isDynamic?: boolean };
+  app: { name: string; description?: string; isDynamic?: boolean; knowledgeLimit?: KnowledgeLimit };
   scopes: ScopeInfo[];
   user: { email: string; name?: string };
 }
@@ -66,7 +62,6 @@ export function OAuthDeviceView() {
   const [userCode, setUserCode] = useState(initialCode);
   const [loading, setLoading] = useState(Boolean(initialCode));
   const [submitting, setSubmitting] = useState(false);
-  const [knowledgeLimit, setKnowledgeLimit] = useState<KnowledgeLimitValue>(null);
   const [error, setError] = useState('');
   const [consentData, setConsentData] = useState<ConsentData | null>(null);
   const [done, setDone] = useState<'granted' | 'denied' | null>(null);
@@ -123,11 +118,7 @@ export function OAuthDeviceView() {
     try {
       await apiClient.post(
         CONSENT_API,
-        {
-          user_code: userCode,
-          consent,
-          knowledge_limit: consent === 'granted' ? knowledgeLimitForApi(knowledgeLimit) : undefined,
-        },
+        { user_code: userCode, consent },
         { suppressErrorToast: true },
       );
       setDone(consent);
@@ -253,13 +244,8 @@ export function OAuthDeviceView() {
             </Text>
           ))}
         </Box>
-        <Box mt="4">
-          <KnowledgeLimitChoice
-            appName={consentData.app.name}
-            value={knowledgeLimit}
-            onChange={setKnowledgeLimit}
-            idPrefix="oauth-device"
-          />
+        <Box mt="3">
+          <KnowledgeLimitNotice appName={consentData.app.name} limit={consentData.app.knowledgeLimit} />
         </Box>
         {error ? (
           <Text as="p" size="2" color="red" mt="2">
@@ -277,7 +263,6 @@ export function OAuthDeviceView() {
           </Button>
           <LoadingButton
             loading={submitting}
-            disabled={!isKnowledgeLimitValid(knowledgeLimit)}
             onClick={() => handleConsent('granted')}
           >
             {t('oauthConsent.allow')}

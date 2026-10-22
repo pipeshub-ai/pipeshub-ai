@@ -1,6 +1,4 @@
 import mongoose, { Document, Schema, Model, Types } from 'mongoose'
-import { KnowledgeLimit } from '../types/oauth.types';
-import { knowledgeLimitField } from './knowledge_limit.schema';
 
 export enum OAuthDeviceCodeStatus {
   PENDING = 'pending',
@@ -19,7 +17,6 @@ export interface IOAuthDeviceCode extends Document {
   interval: number
   lastPolledAt?: Date
   expiresAt: Date
-  knowledgeLimit?: KnowledgeLimit;
   createdAt: Date
   updatedAt: Date
 }
@@ -53,7 +50,6 @@ const OAuthDeviceCodeSchema = new Schema<IOAuthDeviceCode>(
     orgId: { type: Schema.Types.ObjectId, ref: 'org' },
     interval: { type: Number, default: 5 },
     lastPolledAt: { type: Date },
-    knowledgeLimit: knowledgeLimitField,
     expiresAt: {
       type: Date,
       required: true,

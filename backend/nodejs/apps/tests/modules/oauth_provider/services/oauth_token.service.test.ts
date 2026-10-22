@@ -178,7 +178,20 @@ describe('OAuthTokenService', () => {
       })
     })
 
-    it('signs the knowledge limit into the token and stores it on the token row', async () => {
+    it("signs the app's knowledge limit into every token of the app", async () => {
+      const create = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
+
+      const result = await service.generateTokens(
+        { ...mockApp, knowledgeLimit }, new Types.ObjectId().toString(), new Types.ObjectId().toString(),
+        ['kb:read'], false,
+      )
+
+      expect((jwt.decode(result.accessToken) as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
+      expect(create.firstCall.args[0]).to.deep.include({ knowledgeLimit })
+    })
+
+    it('signs the knowledge limit a personal access token names into the token and stores it on the token row', async () => {
       const create = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
       const knowledgeLimit = { apps: ['app-1'], recordGroups: ['group-1'], records: [] }
 
@@ -1369,7 +1382,7 @@ describe('OAuthTokenService - branch coverage', () => {
         expect(refreshCreate.calledOnce).to.be.true
       })
 
-      it('keeps the knowledge limit of the grant on the refreshed tokens', async () => {
+      it("gives the refreshed tokens the app's current knowledge limit", async () => {
         const stored = storedRefreshToken('client-a')
         sinon.stub(OAuthRefreshToken, 'findOne')
           .onFirstCall().resolves(stored as any)
@@ -1377,15 +1390,13 @@ describe('OAuthTokenService - branch coverage', () => {
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
         const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
-        const refreshToken = jwt.sign(
-          { ...(jwt.decode(signRefreshToken('client-a')) as object), knowledgeLimit },
-          secret,
+
+        // The token was issued before the creator set the limit.
+        const result = await service.refreshTokens(
+          { ...app('client-a'), knowledgeLimit }, signRefreshToken('client-a'),
         )
 
-        const result = await service.refreshTokens(app('client-a'), refreshToken)
-
         expect((jwt.decode(result.accessToken) as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
-        expect((jwt.decode(result.refreshToken!) as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
         expect(accessCreate.firstCall.args[0]).to.deep.include({ knowledgeLimit })
       })
 

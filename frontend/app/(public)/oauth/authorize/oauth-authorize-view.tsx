@@ -12,12 +12,8 @@ import { useAuthStore, switchToSignedInWorkspace } from '@/config';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LoadingButton } from '@/app/components/ui/loading-button';
-import {
-  KnowledgeLimitChoice,
-  isKnowledgeLimitValid,
-  knowledgeLimitForApi,
-  type KnowledgeLimitValue,
-} from '@/app/components/knowledge-limit';
+import { KnowledgeLimitNotice } from '@/app/components/knowledge-limit/knowledge-limit-summary';
+import type { KnowledgeLimit } from '@/app/components/knowledge-limit/knowledge-limit';
 import { OAuthConnectionOutcome } from '@/app/(public)/oauth/components/oauth-connection-outcome';
 
 const OAUTH_AUTHORIZE_PATH = '/oauth/authorize';
@@ -36,6 +32,7 @@ interface AppInfo {
   homepageUrl?: string;
   privacyPolicyUrl?: string;
   isDynamic?: boolean;
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 interface ConsentData {
@@ -165,7 +162,6 @@ export function OAuthAuthorizeView() {
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [knowledgeLimit, setKnowledgeLimit] = useState<KnowledgeLimitValue>(null);
   const [error, setError] = useState('');
   const [errorCode, setErrorCode] = useState('');
   const [outcome, setOutcome] = useState<ConsentOutcome>({ type: 'idle' });
@@ -321,7 +317,6 @@ export function OAuthAuthorizeView() {
           code_challenge: cc,
           code_challenge_method: ccm,
           consent,
-          knowledge_limit: consent === 'granted' ? knowledgeLimitForApi(knowledgeLimit) : undefined,
         },
         { suppressErrorToast: true }
       );
@@ -716,14 +711,7 @@ export function OAuthAuthorizeView() {
             </Flex>
           ) : null}
 
-          <Separator size="4" />
-
-          <KnowledgeLimitChoice
-            appName={appName}
-            value={knowledgeLimit}
-            onChange={setKnowledgeLimit}
-            idPrefix="oauth-consent"
-          />
+          <KnowledgeLimitNotice appName={appName} limit={consentData.app.knowledgeLimit} />
 
           <Separator size="4" />
 
@@ -761,7 +749,6 @@ export function OAuthAuthorizeView() {
               color="green"
               size="2"
               loading={submitting}
-              disabled={!isKnowledgeLimitValid(knowledgeLimit)}
               loadingLabel={t('oauthConsent.submitting')}
               style={{
                 flex: 1,

@@ -5,6 +5,7 @@ import {
   isKnowledgeLimitValid,
   knowledgeLimitForApi,
   limitFromSelection,
+  selectionFromLimit,
 } from '../knowledge-limit';
 
 describe('knowledge limit', () => {
@@ -27,5 +28,11 @@ describe('knowledge limit', () => {
     const records = Array.from({ length: MAX_KNOWLEDGE_LIMIT_IDS + 1 }, (_, n) => `r${n}`);
     expect(isKnowledgeLimitValid({ ...EMPTY_SELECTION, records })).toBe(false);
     expect(isKnowledgeLimitValid({ ...EMPTY_SELECTION, records: records.slice(1) })).toBe(true);
+  });
+
+  it("opens an app's stored limit in the picker and saves it back unchanged", () => {
+    const limit = { apps: ['a', 'kb-1'], recordGroups: ['g'], records: ['f'] };
+    expect(selectionFromLimit(undefined)).toBeNull();
+    expect(knowledgeLimitForApi(selectionFromLimit(limit))).toEqual(limit);
   });
 });

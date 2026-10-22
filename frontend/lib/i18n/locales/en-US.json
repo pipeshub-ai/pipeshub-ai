@@ -1831,6 +1831,7 @@
         "createDisabledScopesTooltip": "Select at least one permission scope to create the application.",
         "tabGeneral": "General",
         "tabPermissions": "Permissions & Scopes",
+        "tabGranular": "Granular permissions",
         "appNameLabel": "App name",
         "appNamePlaceholder": "My Application",
         "descriptionLabel": "Description",
@@ -4811,7 +4812,15 @@
     "canSeeEverything": "Can see: everything you can",
     "canSeeSome_one": "Can see: {{count}} picked item",
     "canSeeSome_other": "Can see: {{count}} picked items",
-    "thisToken": "this token"
+    "thisToken": "this token",
+    "app": {
+      "thisApp": "this app",
+      "help": "Users who connect this app can search and read only what you pick here, and never more than they can see themselves.",
+      "everything": "Everything each user can see",
+      "everythingHint": "Includes sources added later."
+    },
+    "appLimited_one": "{{appName}} can see only {{count}} item its creator picked, and only if you can see it.",
+    "appLimited_other": "{{appName}} can see only {{count}} items its creator picked, and only the ones you can see."
   },
   "auth": {
     "titleSection": {

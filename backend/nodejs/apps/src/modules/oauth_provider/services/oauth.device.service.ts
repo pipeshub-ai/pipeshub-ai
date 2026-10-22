@@ -14,17 +14,13 @@ import {
   OAuthDeviceCodeStatus,
 } from '../schema/oauth.device_code.schema'
 import { OAuthGrantType } from '../schema/oauth.app.schema'
+import { toKnowledgeLimit } from '../schema/knowledge_limit.schema';
 import { OAuthAppService } from './oauth.app.service'
 import { OAuthTokenService } from './oauth_token.service'
 import { ScopeValidatorService } from './scope.validator.service'
 import { Users } from '../../user_management/schema/users.schema'
 import { Org } from '../../user_management/schema/org.schema'
-import {
-  TokenResponse,
-  ConsentData,
-  KnowledgeLimit,
-} from '../types/oauth.types';
-import { toKnowledgeLimit } from '../schema/knowledge_limit.schema';
+import { TokenResponse, ConsentData } from '../types/oauth.types'
 import { FirstPartyDeviceAppService } from './oauth.first_party_device.service'
 import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../constants/constants'
 
@@ -129,6 +125,7 @@ export class OAuthDeviceService {
         homepageUrl: app.homepageUrl,
         privacyPolicyUrl: app.privacyPolicyUrl,
         isDynamic: app.isDynamic === true,
+        knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
       },
       scopes: scopeDefinitions,
       user: { email: '', name: undefined },
@@ -142,7 +139,6 @@ export class OAuthDeviceService {
     userId: string,
     orgId: string,
     consent: 'granted' | 'denied',
-    knowledgeLimit?: KnowledgeLimit,
   ): Promise<void> {
     const record = await this.findPendingByUserCode(userCodeRaw)
     if (consent !== 'granted') {
@@ -157,7 +153,6 @@ export class OAuthDeviceService {
     record.status = OAuthDeviceCodeStatus.APPROVED
     record.userId = new Types.ObjectId(userId)
     record.orgId = new Types.ObjectId(orgId)
-    record.knowledgeLimit = knowledgeLimit;
     await record.save()
     this.logger.info('Device authorization approved', {
       clientId: record.clientId,
@@ -273,10 +268,7 @@ export class OAuthDeviceService {
       true,
       fullName,
       accountType,
-      {
-        recheckAppScopes: true,
-        knowledgeLimit: toKnowledgeLimit(claimed.knowledgeLimit),
-      },
+      { recheckAppScopes: true },
     )
 
     return {

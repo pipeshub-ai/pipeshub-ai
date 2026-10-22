@@ -31,9 +31,9 @@ import {
   TokenResponse,
   ConsentData,
   OAuthErrorResponse,
-  KnowledgeLimit,
 } from '../types/oauth.types';
 import { Users } from '../../user_management/schema/users.schema';
+import { toKnowledgeLimit } from '../schema/knowledge_limit.schema';
 import { Org } from '../../user_management/schema/org.schema';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
 import { OAuthDeviceService } from '../services/oauth.device.service';
@@ -168,6 +168,7 @@ export class OAuthProviderController {
           homepageUrl: app.homepageUrl,
           privacyPolicyUrl: app.privacyPolicyUrl,
           isDynamic: app.isDynamic === true,
+          knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
         },
         scopes: toScopeInfo(granted),
         notGrantedScopes: toScopeInfo(notGranted),
@@ -227,7 +228,6 @@ export class OAuthProviderController {
         code_challenge,
         code_challenge_method,
         consent, // 'granted' or 'denied'
-        knowledge_limit,
       } = req.body;
 
       // Validate client
@@ -289,7 +289,6 @@ export class OAuthProviderController {
         granted,
         code_challenge,
         code_challenge_method,
-        knowledge_limit as KnowledgeLimit | undefined,
       );
 
       // Build redirect URL with code
@@ -599,7 +598,6 @@ export class OAuthProviderController {
         user.userId,
         user.orgId,
         consent,
-        (req.body as { knowledge_limit?: KnowledgeLimit }).knowledge_limit,
       );
       res.json({ ok: true, consent });
     } catch (error) {
@@ -709,7 +707,7 @@ export class OAuthProviderController {
       true,
       fullName,
       accountType,
-      { recheckAppScopes: true, knowledgeLimit: codeResult.knowledgeLimit },
+      { recheckAppScopes: true },
     );
 
     this.logger.info('Authorization code grant completed', {

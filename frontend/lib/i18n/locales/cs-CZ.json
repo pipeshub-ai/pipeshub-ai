@@ -1901,6 +1901,7 @@
         "createDisabledScopesTooltip": "Pro vytvoření aplikace vyberte alespoň jeden rozsah oprávnění.",
         "tabGeneral": "Obecné",
         "tabPermissions": "Oprávnění a rozsahy",
+        "tabGranular": "Podrobná oprávnění",
         "appNameLabel": "Název aplikace",
         "appNamePlaceholder": "Moje aplikace",
         "descriptionLabel": "Popis",
@@ -4909,7 +4910,17 @@
     "canSeeSome_few": "Vidí: {{count}} vybrané položky",
     "canSeeSome_many": "Vidí: {{count}} vybrané položky",
     "canSeeSome_other": "Vidí: {{count}} vybraných položek",
-    "thisToken": "tento token"
+    "thisToken": "tento token",
+    "app": {
+      "thisApp": "tato aplikace",
+      "help": "Uživatelé, kteří tuto aplikaci připojí, mohou prohledávat a číst jen to, co zde vyberete, a nikdy víc, než sami vidí.",
+      "everything": "Vše, co vidí každý uživatel",
+      "everythingHint": "Zahrnuje i zdroje přidané později."
+    },
+    "appLimited_one": "{{appName}} vidí jen {{count}} položku vybranou tvůrcem, a jen pokud ji vidíte i vy.",
+    "appLimited_few": "{{appName}} vidí jen {{count}} položky vybrané tvůrcem, a jen ty, které vidíte i vy.",
+    "appLimited_many": "{{appName}} vidí jen {{count}} položky vybrané tvůrcem, a jen ty, které vidíte i vy.",
+    "appLimited_other": "{{appName}} vidí jen {{count}} položek vybraných tvůrcem, a jen ty, které vidíte i vy."
   },
   "auth": {
     "titleSection": {

@@ -1744,6 +1744,7 @@
         "createDisabledScopesTooltip": "Wählen Sie mindestens einen Berechtigungs-Scope, um die Anwendung zu erstellen.",
         "tabGeneral": "Allgemein",
         "tabPermissions": "Berechtigungen & Scopes",
+        "tabGranular": "Detaillierte Berechtigungen",
         "appNameLabel": "App-Name",
         "appNamePlaceholder": "Meine Anwendung",
         "descriptionLabel": "Beschreibung",
@@ -4866,7 +4867,15 @@
     "canSeeEverything": "Sieht: alles, was Sie sehen",
     "canSeeSome_one": "Sieht: {{count}} ausgewähltes Element",
     "canSeeSome_other": "Sieht: {{count}} ausgewählte Elemente",
-    "thisToken": "dieses Token"
+    "thisToken": "dieses Token",
+    "app": {
+      "thisApp": "diese App",
+      "help": "Nutzer, die diese App verbinden, können nur durchsuchen und lesen, was Sie hier auswählen, und nie mehr, als sie selbst sehen können.",
+      "everything": "Alles, was jeder Nutzer sehen kann",
+      "everythingHint": "Gilt auch für später hinzugefügte Quellen."
+    },
+    "appLimited_one": "{{appName}} kann nur {{count}} vom Ersteller ausgewähltes Element sehen, und nur, wenn Sie es sehen können.",
+    "appLimited_other": "{{appName}} kann nur {{count}} vom Ersteller ausgewählte Elemente sehen, und nur die, die Sie sehen können."
   },
   "collections": {
     "stats": {

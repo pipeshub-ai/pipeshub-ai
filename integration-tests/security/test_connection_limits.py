@@ -1,9 +1,9 @@
 """What a connected app may see (PP-7), checked against a live stack.
 
-A user who connects an app (a personal access token, an OAuth app through the
-consent page, or a device login) picks "everything I can see" or only some
-sources, spaces, folders or files. The pick is signed into every token of that
-connection, and every data path keeps to it: search, chat, a record read by id,
+The creator of an OAuth app, or the owner of a personal access token, picks
+"everything" or only some sources, spaces, folders or files. The pick is signed
+into every token of that app or token, never widens what the connecting user
+can see, and every data path keeps to it: search, chat, a record read by id,
 a download, and browsing. These tests drive each path the way an outside app
 does, mostly through PipesHub's own MCP server, and check both sides: what is
 inside the pick is reachable, and what is outside it is not.
@@ -41,6 +41,7 @@ from helper.local_auth import obtain_user_session_token
 from helper.mcp_client import mcp_url
 from helper.mcp_oauth import (
     authorization_code_token,
+    client_credentials_token,
     create_oauth_app,
     delete_oauth_app,
     refresh_token_grant,
@@ -51,9 +52,6 @@ logger = logging.getLogger("connection-limits-it")
 pytestmark = [pytest.mark.integration, pytest.mark.security, pytest.mark.mcp]
 
 PATS = "/api/v1/personal-access-tokens"
-# What the device login of the PipesHub coding agent asks for (AgentMcpScopes).
-DEVICE_CLIENT_ID = "pipeshub-agent"
-DEVICE_SCOPES = "conversation:chat semantic:write kb:read user:read connector:read offline_access"
 OUTSIDE_MESSAGE = "not shared with this connected app"
 
 
@@ -364,7 +362,7 @@ class TestMcp:
 
 
 # ---------------------------------------------------------------------------
-# OAuth apps and the device login
+# OAuth apps
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
@@ -379,64 +377,66 @@ def oauth_app(base_url: str, user_jwt: str):
             pass
 
 
-class TestOAuthConsent:
-    def test_the_limit_picked_on_the_consent_page_holds_after_a_refresh(
-        self, base_url, user_jwt, oauth_app, corpus,
+class TestOAuthApps:
+    """The limit is the OAuth app's, picked by its creator, and holds for every token of the app."""
+
+    def test_the_limit_picked_on_the_app_holds_for_every_token_and_after_a_refresh(
+        self, base_url, user_jwt, corpus,
     ) -> None:
-        limit = {"apps": [corpus["kb_in"]]}
-        first = authorization_code_token(base_url, user_jwt, oauth_app, knowledge_limit=limit)
-        assert _claims(first["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
-        assert corpus["outside_record"] not in _rest_search(base_url, first["access_token"], corpus["outside_needle"])
+        app = create_oauth_app(base_url, user_jwt, name=f"pp7-it-{uuid.uuid4().hex[:10]}",
+                               knowledge_limit={"apps": [corpus["kb_in"]]})
+        try:
+            first = authorization_code_token(base_url, user_jwt, app)
+            assert _claims(first["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
+            assert corpus["outside_record"] not in _rest_search(
+                base_url, first["access_token"], corpus["outside_needle"],
+            )
 
-        assert first.get("refresh_token"), "the app has offline_access, so a refresh token is expected"
-        refreshed = refresh_token_grant(base_url, oauth_app, first["refresh_token"])
-        assert _claims(refreshed["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
-        assert corpus["outside_record"] not in _rest_search(
-            base_url, refreshed["access_token"], corpus["outside_needle"],
-        )
-        assert corpus["inside_record"] in _rest_search(base_url, refreshed["access_token"], corpus["inside_needle"])
+            assert first.get("refresh_token"), "the app has offline_access, so a refresh token is expected"
+            refreshed = refresh_token_grant(base_url, app, first["refresh_token"])
+            assert _claims(refreshed["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
+            assert corpus["inside_record"] in _rest_search(
+                base_url, refreshed["access_token"], corpus["inside_needle"],
+            )
 
-    def test_consent_without_a_limit_sees_everything(self, base_url, user_jwt, oauth_app, corpus) -> None:
+            machine = client_credentials_token(base_url, app)["access_token"]
+            assert _claims(machine)["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
+        finally:
+            delete_oauth_app(base_url, user_jwt, app.id)
+
+    def test_an_app_without_a_limit_sees_everything(self, base_url, user_jwt, oauth_app, corpus) -> None:
         token = authorization_code_token(base_url, user_jwt, oauth_app)["access_token"]
         assert "knowledgeLimit" not in _claims(token)
         assert corpus["outside_record"] in _rest_search(base_url, token, corpus["outside_needle"])
 
-    def test_a_bad_limit_on_the_consent_page_issues_no_code(self, base_url, user_jwt, oauth_app) -> None:
+    def test_an_app_with_a_limit_that_names_nothing_is_refused(self, base_url, user_jwt) -> None:
         with pytest.raises(RuntimeError, match="400"):
-            authorization_code_token(base_url, user_jwt, oauth_app, knowledge_limit={"apps": []})
+            create_oauth_app(base_url, user_jwt, name=f"pp7-it-{uuid.uuid4().hex[:10]}",
+                             knowledge_limit={"apps": []})
 
+    def test_a_new_limit_revokes_the_apps_tokens_and_lifting_it_reaches_the_next_refresh(
+        self, base_url, user_jwt, corpus,
+    ) -> None:
+        app = create_oauth_app(base_url, user_jwt, name=f"pp7-it-{uuid.uuid4().hex[:10]}")
+        edit = f"{base_url}/api/v1/oauth-clients/{app.id}"
+        try:
+            before = authorization_code_token(base_url, user_jwt, app)
+            limited = requests.put(edit, headers=_bearer(user_jwt), timeout=30,
+                                   json={"knowledgeLimit": {"apps": [corpus["kb_in"]]}})
+            assert limited.status_code == 200, f"{limited.status_code} {limited.text[:300]}"
+            stale = requests.post(f"{base_url}/api/v1/search", headers=_bearer(before["access_token"]),
+                                  json={"query": corpus["outside_needle"]}, timeout=60)
+            assert stale.status_code == 401, f"a token from before the limit still works: {stale.status_code}"
 
-class TestDeviceLogin:
-    def test_the_limit_picked_when_approving_a_device_holds(self, base_url, user_jwt, corpus) -> None:
-        start = requests.post(
-            f"{base_url}/api/v1/oauth2/device_authorization",
-            json={"client_id": DEVICE_CLIENT_ID, "scope": DEVICE_SCOPES}, timeout=30,
-        )
-        if start.status_code in (400, 404) and "unsupported" in start.text.lower():
-            pytest.skip(f"device login is switched off here: {start.text[:200]}")
-        assert start.status_code == 200, f"device authorization: {start.status_code} {start.text[:300]}"
-        grant = start.json()
+            after = authorization_code_token(base_url, user_jwt, app)
+            assert _claims(after["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
 
-        approve = requests.post(
-            f"{base_url}/api/v1/oauth2/device/consent",
-            headers=_bearer(user_jwt),
-            json={"user_code": grant["user_code"], "consent": "granted",
-                  "knowledge_limit": {"records": [corpus["picked_folder"]]}},
-            timeout=30,
-        )
-        assert approve.status_code == 200, f"device consent: {approve.status_code} {approve.text[:300]}"
-
-        token = requests.post(
-            f"{base_url}/api/v1/oauth2/token",
-            json={"grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                  "device_code": grant["device_code"], "client_id": DEVICE_CLIENT_ID},
-            timeout=30,
-        )
-        assert token.status_code == 200, f"device token: {token.status_code} {token.text[:300]}"
-        access = token.json()["access_token"]
-        assert _claims(access)["knowledgeLimit"]["records"] == [corpus["picked_folder"]]
-        assert corpus["inside_record"] in _rest_search(base_url, access, corpus["inside_needle"])
-        assert corpus["sibling_record"] not in _rest_search(base_url, access, corpus["sibling_needle"])
+            lifted = requests.put(edit, headers=_bearer(user_jwt), timeout=30, json={"knowledgeLimit": None})
+            assert lifted.status_code == 200, f"{lifted.status_code} {lifted.text[:300]}"
+            refreshed = refresh_token_grant(base_url, app, after["refresh_token"])
+            assert "knowledgeLimit" not in _claims(refreshed["access_token"])
+        finally:
+            delete_oauth_app(base_url, user_jwt, app.id)
 
 
 class TestKnowledgeBaseRoutes:

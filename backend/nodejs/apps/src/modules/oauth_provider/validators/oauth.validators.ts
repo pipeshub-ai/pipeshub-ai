@@ -85,7 +85,6 @@ export const authorizeConsentSchema = z.object({
       .optional(),
     // RFC 9700: only S256; `plain` exposes the verifier on the wire
     code_challenge_method: z.enum(['S256']).optional(),
-    knowledge_limit: knowledgeLimitSchema.optional(),
   }),
 });
 
@@ -158,7 +157,6 @@ export const deviceConsentSchema = z.object({
   body: z.object({
     user_code: z.string().min(1).max(32),
     consent: z.enum(['granted', 'denied']),
-    knowledge_limit: knowledgeLimitSchema.optional(),
   }),
 });
 
@@ -228,6 +226,7 @@ export const createAppSchema = z.object({
       isConfidential: z.boolean().optional(),
       accessTokenLifetime: z.number().int().min(300).max(86400).optional(),
       refreshTokenLifetime: z.number().int().min(3600).max(31536000).optional(),
+      knowledgeLimit: knowledgeLimitSchema.optional(),
     })
     .refine(
       (data) => {
@@ -272,6 +271,8 @@ export const updateAppSchema = z.object({
       termsOfServiceUrl: z.string().url().optional().nullable(),
       accessTokenLifetime: z.number().int().min(300).max(86400).optional(),
       refreshTokenLifetime: z.number().int().min(3600).max(31536000).optional(),
+      // null puts the app back to everything each user can see.
+      knowledgeLimit: knowledgeLimitSchema.nullable().optional(),
     })
     .refine(
       (data) => {

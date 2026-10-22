@@ -1822,6 +1822,7 @@
         "createDisabledScopesTooltip": "애플리케이션을 생성하려면 하나 이상의 권한 범위를 선택하세요.",
         "tabGeneral": "일반",
         "tabPermissions": "권한 및 범위",
+        "tabGranular": "세부 권한",
         "appNameLabel": "앱 이름",
         "appNamePlaceholder": "내 애플리케이션",
         "descriptionLabel": "설명",
@@ -4937,7 +4938,14 @@
     "selectedCount_other": "{{count}}개 항목 선택됨",
     "canSeeEverything": "볼 수 있는 항목: 회원님이 볼 수 있는 모든 항목",
     "canSeeSome_other": "볼 수 있는 항목: 선택한 {{count}}개 항목",
-    "thisToken": "이 토큰"
+    "thisToken": "이 토큰",
+    "app": {
+      "thisApp": "이 앱",
+      "help": "이 앱을 연결한 사용자는 여기에서 선택한 항목만 검색하고 읽을 수 있으며, 본인이 볼 수 있는 범위를 넘지 않습니다.",
+      "everything": "각 사용자가 볼 수 있는 모든 항목",
+      "everythingHint": "나중에 추가되는 소스도 포함됩니다."
+    },
+    "appLimited_other": "{{appName}}은(는) 작성자가 선택한 {{count}}개 항목 중 회원님이 볼 수 있는 항목만 볼 수 있습니다."
   },
   "validation": {
     "password": {

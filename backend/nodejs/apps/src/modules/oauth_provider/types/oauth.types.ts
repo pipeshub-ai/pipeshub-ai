@@ -173,6 +173,7 @@ export interface CreateOAuthAppRequest {
   isConfidential?: boolean;
   accessTokenLifetime?: number;
   refreshTokenLifetime?: number;
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 // Update OAuth App Request
@@ -187,6 +188,7 @@ export interface UpdateOAuthAppRequest {
   termsOfServiceUrl?: string | null;
   accessTokenLifetime?: number;
   refreshTokenLifetime?: number;
+  knowledgeLimit?: KnowledgeLimit | null;
 }
 
 // OAuth App Response (public data without secret)
@@ -207,6 +209,7 @@ export interface OAuthAppResponse {
   isConfidential: boolean;
   accessTokenLifetime: number;
   refreshTokenLifetime: number;
+  knowledgeLimit?: KnowledgeLimit;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -225,6 +228,8 @@ export interface ConsentData {
     homepageUrl?: string;
     privacyPolicyUrl?: string;
     isDynamic?: boolean;
+    /** What the app's creator let it see; absent for everything the user can. */
+    knowledgeLimit?: KnowledgeLimit;
   };
   scopes: Array<{
     name: string;
@@ -253,7 +258,6 @@ export interface AuthCodeExchangeResult {
   userId: string;
   orgId: string;
   scopes: string[];
-  knowledgeLimit?: KnowledgeLimit;
 }
 
 // OAuth Error Response (RFC 6749)

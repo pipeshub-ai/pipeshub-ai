@@ -9,7 +9,6 @@ import {
   MAX_KNOWLEDGE_LIMIT_IDS,
   limitFromSelection,
   limitSize,
-  type KnowledgeLimit,
   type KnowledgeLimitValue,
 } from './knowledge-limit';
 
@@ -20,17 +19,21 @@ export interface KnowledgeLimitChoiceProps {
   onChange: (next: KnowledgeLimitValue) => void;
   /** Keeps the radio group's name unique when two choices are on one page. */
   idPrefix: string;
+  /** An OAuth app's creator picks for every user who connects it, not for themselves. */
+  forApp?: boolean;
 }
 
 /**
  * Lets a user decide what a connected app may see: everything they can, or
- * only the sources, spaces, folders and files they pick.
+ * only the sources, spaces, folders and files they pick. On an OAuth app the
+ * creator decides for every user who connects it.
  */
-export function KnowledgeLimitChoice({ appName, value, onChange, idPrefix }: KnowledgeLimitChoiceProps) {
+export function KnowledgeLimitChoice({ appName, value, onChange, idPrefix, forApp = false }: KnowledgeLimitChoiceProps) {
   const { t } = useTranslation();
   const size = value === null ? 0 : limitSize(limitFromSelection(value));
+  const copy = forApp ? 'knowledgeLimit.app' : 'knowledgeLimit';
   const options = [
-    { key: 'everything', checked: value === null, select: () => onChange(null), label: t('knowledgeLimit.everything'), hint: t('knowledgeLimit.everythingHint') },
+    { key: 'everything', checked: value === null, select: () => onChange(null), label: t(`${copy}.everything`), hint: t(`${copy}.everythingHint`) },
     { key: 'only', checked: value !== null, select: () => value === null && onChange(EMPTY_SELECTION), label: t('knowledgeLimit.only'), hint: t('knowledgeLimit.onlyHint') },
   ];
 
@@ -41,7 +44,7 @@ export function KnowledgeLimitChoice({ appName, value, onChange, idPrefix }: Kno
           {t('knowledgeLimit.title', { appName })}
         </Text>
         <Text size="1" style={{ color: 'var(--slate-11)' }}>
-          {t('knowledgeLimit.help')}
+          {t(`${copy}.help`)}
         </Text>
       </Flex>
 
@@ -93,12 +96,3 @@ export function KnowledgeLimitChoice({ appName, value, onChange, idPrefix }: Kno
   );
 }
 
-/** "Can see: …" for a connected app in a list. */
-export function KnowledgeLimitSummary({ limit }: { limit?: KnowledgeLimit | null }) {
-  const { t } = useTranslation();
-  return (
-    <Text size="1" style={{ color: 'var(--slate-11)' }}>
-      {limit ? t('knowledgeLimit.canSeeSome', { count: limitSize(limit) }) : t('knowledgeLimit.canSeeEverything')}
-    </Text>
-  );
-}
