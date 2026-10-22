@@ -201,6 +201,7 @@ function findHiddenCredentialFields(
       .filter(
         (name) =>
           !TOP_LEVEL_FIELD_NAMES.has(name) &&
+          !PUBLIC_CONFIG_KEYS.has(name) &&
           !name.startsWith(IDENTITY_FORWARDING_FIELD_PREFIX) &&
           !(name in configured),
       )

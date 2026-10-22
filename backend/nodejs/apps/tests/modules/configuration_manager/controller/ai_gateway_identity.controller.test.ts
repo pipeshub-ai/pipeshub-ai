@@ -219,6 +219,7 @@ describe('ai gateway identity', () => {
               model: 'a',
               identityForwardingHeaderTemplates: {
                 Authorization: 'Bearer static-secret',
+                'Ocp-Apim-Subscription-Key': 'apim-secret',
                 'x-team': '{{subject}}',
               },
             },
@@ -228,7 +229,9 @@ describe('ai gateway identity', () => {
       const templates = view.llm[0].configuration.identityForwardingHeaderTemplates;
       expect(templates['x-team']).to.equal('{{subject}}');
       expect(templates.Authorization).to.equal('****************');
+      expect(templates['Ocp-Apim-Subscription-Key']).to.equal('****************');
       expect(JSON.stringify(view)).to.not.include('static-secret');
+      expect(JSON.stringify(view)).to.not.include('apim-secret');
     });
 
     it('restores a redacted template from storage on save, and drops one with nothing stored', async () => {

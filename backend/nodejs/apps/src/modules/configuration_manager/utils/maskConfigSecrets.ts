@@ -40,7 +40,8 @@ export const AI_PUBLIC_CONFIG_KEYS = [
   'identityForwardingServiceAuth',
 ] as const;
 
-const CREDENTIAL_HEADER_HINT = /authorization|cookie|api[-_]?key|token|secret|password|credential/i;
+const CREDENTIAL_HEADER_HINT =
+  /auth|cookie|key|token|secret|password|credential|signature|subscription|assertion/i;
 
 /**
  * A header template may carry a literal credential (e.g. a static bearer token

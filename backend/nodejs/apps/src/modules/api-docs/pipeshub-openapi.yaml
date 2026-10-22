@@ -15265,9 +15265,7 @@ components:
       additionalProperties: false
       description: |
         Success response from getAIModelsProviders. Returns the stored models
-        bucket map. Each entry's `configuration` includes only `model`,
-        `modelFriendlyName`, `dimensions`, and `defaultReasoningEffort` when
-        those keys were stored.
+        bucket map. Each entry's `configuration` includes `model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the saved `identityForwarding*` settings (when stored). The service API key is never returned; a credential-bearing header template value reads as `****************`.
       required:
         - status
         - models
@@ -15290,8 +15288,7 @@ components:
       description: |
         Success response from getModelsByType. Returns stored provider entries
         for a single model type bucket (not the flattened available-models shape).
-        Each entry's `configuration` includes only `model`, `modelFriendlyName`,
-        `dimensions`, and `defaultReasoningEffort` when stored.
+        Each entry's `configuration` includes `model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the saved `identityForwarding*` settings (when stored). The service API key is never returned; a credential-bearing header template value reads as `****************`.
       required:
         - status
         - models
@@ -44668,8 +44665,7 @@ paths:
       summary: Get models by type
       description: |
         Get all configured models of a specific type. Each entry's `configuration`
-        includes only `model`, `modelFriendlyName`, `dimensions`, and
-        `defaultReasoningEffort` when stored.
+        includes `model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the saved `identityForwarding*` settings (when stored). The service API key is never returned; a credential-bearing header template value reads as `****************`.
       operationId: getModelsByType
       security:
         - bearerAuth: []
@@ -47292,8 +47288,7 @@ paths:
       summary: Get AI models configuration
       description: |
         Retrieve the AI models configuration for the organization. Each entry's
-        `configuration` includes only `model`, `modelFriendlyName`, `dimensions`,
-        and `defaultReasoningEffort` when stored.
+        `configuration` includes `model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the saved `identityForwarding*` settings (when stored). The service API key is never returned; a credential-bearing header template value reads as `****************`.
       operationId: getAIModelsConfig
       security:
         - bearerAuth: []
@@ -47349,8 +47344,10 @@ paths:
         Retrieve all configured AI model provider entries grouped by model type
         (admin-only). Returns the stored KV shape under `models`, not the flattened
         list from getAvailableModelsByType. Each entry's `configuration` includes
-        only `model`, `modelFriendlyName`, `dimensions`, and
-        `defaultReasoningEffort` when stored.
+        `model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the
+        saved `identityForwarding*` settings (when stored). The service API key is
+        never returned; a credential-bearing header template value reads as
+        `****************`.
       operationId: getAIModelsProviders
       security:
         - bearerAuth: []
