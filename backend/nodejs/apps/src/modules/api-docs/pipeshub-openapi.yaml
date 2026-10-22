@@ -249,6 +249,8 @@ tags:
       member's private chats. See `Conversations` for the two fields
       (`projectId`, `projectVisibility`) that link a conversation to a
       project.
+  - name: Code Graph
+    description: Code repositories indexed into a navigable code graph, and each one's graph status
   - name: Semantic Search
     description: Enterprise semantic search across all indexed knowledge with relevance scoring
   - name: Agents
@@ -20334,6 +20336,10 @@ components:
                 isDynamic:
                   type: boolean
                   description: Whether the app was created through dynamic client registration
+                knowledgeLimit:
+                  description: What the app could see when this login started; absent when it may see everything the user can.
+                  allOf:
+                    - $ref: '#/components/schemas/KnowledgeLimit'
               required:
                 - name
                 - isDynamic
@@ -24694,6 +24700,10 @@ paths:
                               isDynamic:
                                 type: boolean
                                 description: Whether the app was created through dynamic client registration
+                              knowledgeLimit:
+                                description: What the app's creator let it see; absent when it may see everything the user can.
+                                allOf:
+                                  - $ref: '#/components/schemas/KnowledgeLimit'
                           scopes:
                             type: array
                             description: The requested scopes the app allows, in request order, each once
@@ -25244,7 +25254,9 @@ paths:
             - `invalid_request` - the body fails validation (`unsupported_grant_type` instead when
               `grant_type` is a non-empty string the schema does not accept)
             - `invalid_grant` - `code`, `redirect_uri`, `refresh_token` or `device_code` missing,
-              or an unknown, expired or already used authorization code
+              or an unknown, expired or already used authorization code. Also an authorization code
+              or approved device code issued before the app's `knowledgeLimit` changed ("The
+              application's permissions changed after you allowed it. Sign in again.")
             - `unsupported_grant_type` - the app does not have the grant
             - `invalid_scope` - a requested scope is not allowed for the app, or the token would carry
               no scope at all ("A token must carry at least one scope"). A `client_credentials` grant
@@ -25865,7 +25877,8 @@ paths:
                 $ref: '#/components/schemas/CreateOAuthAppResponse'
         '400':
           description: |
-            Invalid request (validation error)
+            Invalid request (validation error), including a `knowledgeLimit` with a key other than `apps`, `recordGroups` and `records`, an id that
+            is not a UUID, or no id at all or more than 50 once duplicates are dropped.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
@@ -26101,7 +26114,8 @@ paths:
                 $ref: '#/components/schemas/UpdateOAuthAppResponse'
         '400':
           description: |
-            Validation error
+            Validation error, including a `knowledgeLimit` with a key other than `apps`, `recordGroups` and `records`, an id that
+            is not a UUID, or no id at all or more than 50 once duplicates are dropped. `null` is accepted and lifts the limit.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
@@ -26696,7 +26710,7 @@ paths:
           description: |
             Invalid request: a `VALIDATION_ERROR` from the body validator (missing,
             empty or over-long `name`, `scopes` not a non-empty list, `expiryDays`
-            other than 30, 90, 365 or "never"), or a requested scope that isn't in
+            other than 30, 90, 365 or "never", a `knowledgeLimit` with a key other than `apps`, `recordGroups` and `records`, an id that is not a UUID, or no id at all or more than 50 once duplicates are dropped), or a requested scope that isn't in
             the org's configured `MCP_SCOPES` (refused by the service, code
             `OAUTH_INVALID_SCOPE`).
 
@@ -39841,6 +39855,8 @@ paths:
             (inclusive) after surrounding whitespace is removed, otherwise `400`.
             When provided, the endpoint searches across the entire
             node tree regardless of the current browse level.
+            A repeated `q` is joined with commas into one query, and a `q` sent as an object
+            (`q[a]=b`) is refused with `400` ("Search query must be text").
           schema:
             type: string
             minLength: 2
@@ -40387,8 +40403,11 @@ paths:
           required: false
           description: |
             Full-text search query. Must be between 2 and 500 characters
-            (inclusive). When provided, the endpoint searches across all
+            (inclusive) after surrounding whitespace is removed, otherwise `400`.
+            When provided, the endpoint searches across all
             descendants of the parent node.
+            A repeated `q` is joined with commas into one query, and a `q` sent as an object
+            (`q[a]=b`) is refused with `400` ("Search query must be text").
           schema:
             type: string
             minLength: 2
@@ -69007,6 +69026,96 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /code-graph/repos:
+    get:
+      tags:
+        - Code Graph
+      summary: List code repositories and their graph status
+      description: |
+        The indexed code repositories (GitHub and GitLab connectors) the caller can read, each
+        with the status of its code graph. Relayed from the query service with the caller's own
+        token, so the list is filtered the same way the MCP code tools are. A caller with no
+        readable repository gets `{"repos": []}`.
+      operationId: listCodeGraphRepos
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      responses:
+        '200':
+          description: Repositories the caller can read
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [repos]
+                properties:
+                  repos:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [repo, source, connector_id, graph_status]
+                      properties:
+                        repo:
+                          type: string
+                          description: Repository name, or `<connector>:owner/name` when two readable repositories share the name.
+                        source:
+                          type: string
+                          description: Name of the connector instance the repository comes from.
+                        connector_id:
+                          type: string
+                          description: Id of that connector instance.
+                        graph_status:
+                          type: string
+                          enum: [never_built, building, ready, stale, waiting_on_indexing, retrying, failed, too_large, unknown]
+                          description: State of the repository's code graph; `unknown` when its build state could not be read.
+                        last_built_at:
+                          type: integer
+                          format: int64
+                          description: When the graph was last built, in epoch milliseconds. Absent if it never was.
+                        last_error:
+                          type: string
+                          description: Why the last build failed. Absent when it did not.
+                  truncated:
+                    type: boolean
+                    description: Present and `true` when trailing repositories were dropped to keep the answer under the size cap.
+                  omitted_for_size:
+                    type: object
+                    description: With `truncated`, how many repositories were dropped, keyed `repos`.
+                    additionalProperties:
+                      type: integer
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Missing, malformed or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '500':
+          description: |
+            The query service failed with another error, or (before authentication) the
+            app-wide body parsers failed on the request body (`INTERNAL_ERROR`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The query service could not be reached, or could not read the graph.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The query service did not answer within 15 seconds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   # ── MCP (Model Context Protocol) ──────────────────────────────────
   # These endpoints are mounted at /mcp (root-level, NOT under /api/v1).
   # Use the root server URL: {instance_url}/mcp
@@ -69020,6 +69129,10 @@ paths:
         - `initialize` — Negotiate capabilities and protocol version
         - `tools/list` — List available tools
         - `tools/call` — Execute a tool (search, conversations, KB management, etc.)
+
+        The code-graph tools (`pipeshub_code_repos`, `pipeshub_code_symbols`, `pipeshub_code_read`
+        and the rest) are listed and callable only when the caller can read at least one indexed
+        code repository and, for an OAuth access token or personal access token, holds `code:read`.
 
         The server runs in stateless mode: each request gets its own MCP server, so no
         `Mcp-Session-Id` is issued or needed. The body is one JSON-RPC message or a batch (array)
@@ -69617,7 +69730,9 @@ paths:
             Either the body fails schema validation (standard error envelope, `VALIDATION_ERROR`),
             or the code cannot be used: `invalid_request` when it is unknown, was already
             approved or denied, or has no letters or digits at all; `expired_token` when it is past
-            its lifetime.
+            its lifetime. Granting a code after the app's `knowledgeLimit` changed is refused in the
+            standard envelope (`OAUTH_INVALID_GRANT`, "The application's permissions changed after this
+            login started. Start it again.").
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
@@ -69629,7 +69744,8 @@ paths:
         '401':
           description: |
             Missing, invalid or expired session token, or the signed-in account has been deleted.
-            The app behind the code is not looked up, so a code whose app was removed can still be decided.
+            Also `granted` for a code whose app was deleted or is no longer active (`OAUTH_INVALID_CLIENT`,
+            "Invalid client_id" or "OAuth app is <status>"); `denied` does not look the app up.
           content:
             application/json:
               schema:
