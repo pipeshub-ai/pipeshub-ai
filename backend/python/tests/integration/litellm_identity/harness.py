@@ -21,12 +21,14 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 LITELLM_IMAGE = "ghcr.io/berriai/litellm-database"
 # The version the feature is verified against. Tag budgets on the
@@ -142,7 +144,7 @@ class LiteLLMStack:
     def admin_headers(self) -> dict[str, str]:
         return {"authorization": f"Bearer {self.master_key}"}
 
-    def admin(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+    def admin(self, method: str, path: str, **kwargs: Any) -> httpx.Response:  # noqa: ANN401 - a value of unknown shape (JSON or user input)
         response = httpx.request(
             method, f"{self.base_url}{path}", headers=self.admin_headers, timeout=30, **kwargs
         )
@@ -175,7 +177,7 @@ class LiteLLMStack:
         response.raise_for_status()
         return float(response.json().get("spend") or 0.0)
 
-    def wait_for(self, predicate: Any, timeout: float = 45.0) -> bool:
+    def wait_for(self, predicate: Any, timeout: float = 45.0) -> bool:  # noqa: ANN401 - a value of unknown shape (JSON or user input)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if predicate():
@@ -208,7 +210,7 @@ general_settings:
 
 
 @contextlib.contextmanager
-def litellm_stack(version: str, *, extra_general: str = "", extra_env: Optional[dict[str, str]] = None) -> Iterator[LiteLLMStack]:
+def litellm_stack(version: str, *, extra_general: str = "", extra_env: dict[str, str] | None = None) -> Iterator[LiteLLMStack]:
     """Postgres, LiteLLM and a fake provider, torn down on exit."""
     suffix = secrets.token_hex(4)
     network = f"pipeshub-litellm-test-{suffix}"

@@ -19,8 +19,9 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, Mapping, Optional, Tuple
+from typing import Any
 
 from app.services.model_identity.sanitize import (
     is_forbidden_header_name,
@@ -42,7 +43,7 @@ DEFAULT_SERVICE_PREFIX = "svc:pipeshub"
 DEFAULT_MAX_FORWARDED_GROUPS = 50
 MAX_FORWARDED_GROUPS_LIMIT = 500
 
-ALLOWED_PLACEHOLDERS: FrozenSet[str] = frozenset(
+ALLOWED_PLACEHOLDERS: frozenset[str] = frozenset(
     {
         "SUBJECT",
         "EMAIL",
@@ -62,7 +63,7 @@ class SettingsError(ValueError):
     """An admin-supplied setting is not valid."""
 
 
-def _choice(raw: Mapping[str, Any], key: str, allowed: Tuple[str, ...], default: str, strict: bool) -> str:
+def _choice(raw: Mapping[str, Any], key: str, allowed: tuple[str, ...], default: str, *, strict: bool) -> str:
     value = raw.get(key, default)
     if value in allowed:
         return value
@@ -72,7 +73,7 @@ def _choice(raw: Mapping[str, Any], key: str, allowed: Tuple[str, ...], default:
     return default
 
 
-def _flag(raw: Mapping[str, Any], key: str, default: bool, strict: bool) -> bool:
+def _flag(raw: Mapping[str, Any], key: str, *, default: bool, strict: bool) -> bool:
     value = raw.get(key, default)
     if isinstance(value, bool):
         return value
@@ -81,7 +82,7 @@ def _flag(raw: Mapping[str, Any], key: str, default: bool, strict: bool) -> bool
     return default
 
 
-def _as_mapping(raw: Any, name: str, strict: bool) -> Mapping[str, Any]:
+def _as_mapping(raw: Any, name: str, *, strict: bool) -> Mapping[str, Any]:  # noqa: ANN401 - a value of unknown shape (JSON or user input)
     if raw is None:
         return {}
     if isinstance(raw, Mapping):
@@ -98,7 +99,7 @@ class IdentityGovernancePolicy:
     include_display_name: bool = False
     groups_enabled: bool = True
     # Empty means every group is forwarded, up to ``max_forwarded_groups``.
-    groups_allow_list: FrozenSet[str] = frozenset()
+    groups_allow_list: frozenset[str] = frozenset()
     max_forwarded_groups: int = DEFAULT_MAX_FORWARDED_GROUPS
     pseudonymize: bool = False
     on_missing_identity: str = "service"
@@ -107,9 +108,9 @@ class IdentityGovernancePolicy:
     schema_version: int = SCHEMA_VERSION
 
     @classmethod
-    def parse(cls, raw: Any, *, strict: bool = False) -> "IdentityGovernancePolicy":
-        data = _as_mapping(raw, "identity policy", strict)
-        groups = _as_mapping(data.get("groups"), "groups", strict)
+    def parse(cls, raw: Any, *, strict: bool = False) -> "IdentityGovernancePolicy":  # noqa: ANN401 - a value of unknown shape (JSON or user input)
+        data = _as_mapping(raw, "identity policy", strict=strict)
+        groups = _as_mapping(data.get("groups"), "groups", strict=strict)
 
         allow_raw = groups.get("allowList", [])
         if not isinstance(allow_raw, (list, tuple, set, frozenset)):
@@ -131,22 +132,22 @@ class IdentityGovernancePolicy:
             prefix = DEFAULT_SERVICE_PREFIX
 
         return cls(
-            subject_source=_choice(data, "subjectSource", SUBJECT_SOURCES, "userId", strict),
-            include_email=_flag(data, "includeEmail", False, strict),
-            include_display_name=_flag(data, "includeDisplayName", False, strict),
-            groups_enabled=_flag(groups, "enabled", True, strict),
+            subject_source=_choice(data, "subjectSource", SUBJECT_SOURCES, "userId", strict=strict),
+            include_email=_flag(data, "includeEmail", default=False, strict=strict),
+            include_display_name=_flag(data, "includeDisplayName", default=False, strict=strict),
+            groups_enabled=_flag(groups, "enabled", default=True, strict=strict),
             groups_allow_list=allow,
             max_forwarded_groups=max_raw,
-            pseudonymize=_flag(data, "pseudonymize", False, strict),
-            on_missing_identity=_choice(data, "onMissingIdentity", ON_MISSING_IDENTITY, "service", strict),
+            pseudonymize=_flag(data, "pseudonymize", default=False, strict=strict),
+            on_missing_identity=_choice(data, "onMissingIdentity", ON_MISSING_IDENTITY, "service", strict=strict),
             query_embedding_identity=_choice(
-                data, "queryEmbeddingIdentity", QUERY_EMBEDDING_IDENTITY, "user", strict
+                data, "queryEmbeddingIdentity", QUERY_EMBEDDING_IDENTITY, "user", strict=strict
             ),
             service_identity_prefix=prefix.strip(),
             schema_version=SCHEMA_VERSION,
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "schemaVersion": self.schema_version,
             "subjectSource": self.subject_source,
@@ -167,7 +168,7 @@ class IdentityGovernancePolicy:
 DEFAULT_GOVERNANCE = IdentityGovernancePolicy()
 
 
-def _parse_templates(raw: Any, strict: bool) -> Tuple[Tuple[str, str], ...]:
+def _parse_templates(raw: Any, *, strict: bool) -> tuple[tuple[str, str], ...]:  # noqa: ANN401 - a value of unknown shape (JSON or user input)
     if raw is None:
         return ()
     if not isinstance(raw, Mapping):
@@ -180,8 +181,8 @@ def _parse_templates(raw: Any, strict: bool) -> Tuple[Tuple[str, str], ...]:
         raw = dict(list(raw.items())[:MAX_TEMPLATES])
 
     out = []
-    for name, template in raw.items():
-        name = str(name).strip()
+    for raw_name, template in raw.items():
+        name = str(raw_name).strip()
         problem = _template_problem(name, template)
         if problem is not None:
             if strict:
@@ -192,7 +193,7 @@ def _parse_templates(raw: Any, strict: bool) -> Tuple[Tuple[str, str], ...]:
     return tuple(sorted(out))
 
 
-def _template_problem(name: str, template: Any) -> Optional[str]:
+def _template_problem(name: str, template: Any) -> str | None:  # noqa: ANN401 - a value of unknown shape (JSON or user input)
     if not is_valid_header_name(name):
         return f"{name!r} is not a valid header name"
     if is_forbidden_header_name(name):
@@ -215,10 +216,10 @@ class ConnectionForwardingSettings:
     enabled: bool = False
     mode: str = "headers"
     preset: str = "litellm"
-    header_templates: Tuple[Tuple[str, str], ...] = ()
-    jwt_audience: Optional[str] = None
+    header_templates: tuple[tuple[str, str], ...] = ()
+    jwt_audience: str | None = None
     service_auth: str = "apiKey"
-    service_api_key: Optional[str] = field(default=None, repr=False)
+    service_api_key: str | None = field(default=None, repr=False)
     schema_version: int = SCHEMA_VERSION
     fingerprint: str = field(default="", init=False, compare=False)
 
@@ -245,13 +246,13 @@ class ConnectionForwardingSettings:
         object.__setattr__(self, "fingerprint", hashlib.sha256(material.encode()).hexdigest()[:16])
 
     @classmethod
-    def parse(cls, raw: Any, *, strict: bool = False) -> "ConnectionForwardingSettings":
+    def parse(cls, raw: Any, *, strict: bool = False) -> "ConnectionForwardingSettings":  # noqa: ANN401 - a value of unknown shape (JSON or user input)
         if raw is None:
             return cls()
-        data = _as_mapping(raw, "identityForwarding", strict)
-        mode = _choice(data, "mode", FORWARDING_MODES, "headers", strict)
-        templates = _parse_templates(data.get("headerTemplates"), strict)
-        preset = _choice(data, "preset", PRESETS, "litellm", strict)
+        data = _as_mapping(raw, "identityForwarding", strict=strict)
+        mode = _choice(data, "mode", FORWARDING_MODES, "headers", strict=strict)
+        templates = _parse_templates(data.get("headerTemplates"), strict=strict)
+        preset = _choice(data, "preset", PRESETS, "litellm", strict=strict)
 
         audience = data.get("jwtAudience")
         if audience is not None and (not isinstance(audience, str) or len(audience) > 256):
@@ -266,7 +267,7 @@ class ConnectionForwardingSettings:
                 raise SettingsError("serviceApiKey must be text")
             api_key = None
 
-        enabled = _flag(data, "enabled", False, strict)
+        enabled = _flag(data, "enabled", default=False, strict=strict)
         if strict and enabled and mode == "template" and not templates:
             raise SettingsError("template mode needs at least one header template")
         if strict and enabled and mode == "signedJwt" and not audience:
@@ -278,13 +279,13 @@ class ConnectionForwardingSettings:
             preset=preset,
             header_templates=templates,
             jwt_audience=audience,
-            service_auth=_choice(data, "serviceAuth", SERVICE_AUTH, "apiKey", strict),
+            service_auth=_choice(data, "serviceAuth", SERVICE_AUTH, "apiKey", strict=strict),
             service_api_key=api_key or None,
             schema_version=SCHEMA_VERSION,
         )
 
-    def to_dict(self, *, redact: bool = True) -> Dict[str, Any]:
-        out: Dict[str, Any] = {
+    def to_dict(self, *, redact: bool = True) -> dict[str, Any]:
+        out: dict[str, Any] = {
             "schemaVersion": self.schema_version,
             "enabled": self.enabled,
             "mode": self.mode,

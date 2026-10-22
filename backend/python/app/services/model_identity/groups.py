@@ -16,7 +16,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional, Protocol, Tuple, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from app.services.model_identity import metrics
 from app.services.model_identity.principal import Principal, service_principal
@@ -35,9 +35,9 @@ class GroupMembership:
     not as "not a member".
     """
 
-    ids: Tuple[str, ...] = ()
+    ids: tuple[str, ...] = ()
     source: str = "none"
-    synced_at: Optional[float] = None
+    synced_at: float | None = None
     complete: bool = True
 
 
@@ -73,14 +73,14 @@ class GroupsHandle:
         principal: Principal,
         *,
         budget_seconds: float = DEFAULT_WAIT_BUDGET_SECONDS,
-        preset: Optional[GroupMembership] = None,
+        preset: GroupMembership | None = None,
     ) -> None:
         self._resolver = resolver
         self._principal = principal
         self._budget = budget_seconds
         self._preset = preset
-        self._task: Optional["asyncio.Task[GroupMembership]"] = None
-        self._started_at: Optional[float] = None
+        self._task: "asyncio.Task[GroupMembership]" | None = None
+        self._started_at: float | None = None
         self._timed_out = False
 
     @classmethod
@@ -108,7 +108,7 @@ class GroupsHandle:
             logger.warning("group resolution failed", exc_info=True)
             return _degraded("error")
 
-    async def wait(self, budget_seconds: Optional[float] = None) -> GroupMembership:
+    async def wait(self, budget_seconds: float | None = None) -> GroupMembership:
         """The groups, waiting at most ``budget_seconds`` (default: the handle's).
 
         Never raises: a slow or failing resolver gives an incomplete, empty
@@ -138,7 +138,7 @@ class GroupsHandle:
         self._record_duration()
         return result
 
-    def result_nowait(self) -> Optional[GroupMembership]:
+    def result_nowait(self) -> GroupMembership | None:
         """The groups if already known, else None. For synchronous hooks."""
         if self._preset is not None:
             return self._preset

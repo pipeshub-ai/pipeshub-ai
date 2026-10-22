@@ -31,6 +31,8 @@ from app.api.middlewares.auth import (
     service_token_org,
 )
 from app.config.constants.service import TokenScopes
+from app.services.model_identity.propagation import scope_from_claims
+from app.services.model_identity.workload import Workload
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -49,8 +51,6 @@ from app.services.resource_governor.memory_domain import (
 )
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
-from app.services.model_identity.propagation import scope_from_claims
-from app.services.model_identity.workload import Workload
 
 logger = logging.getLogger(__name__)
 

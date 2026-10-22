@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 from app.config.constants.service import config_node_constants
 from app.services.model_identity.settings import IdentityGovernancePolicy
@@ -32,10 +32,10 @@ class IdentityPolicyStore:
     subclasses this and overrides ``_load``.
     """
 
-    def __init__(self, config_service: Any, *, ttl_seconds: float = POLICY_TTL_SECONDS) -> None:
+    def __init__(self, config_service: Any, *, ttl_seconds: float = POLICY_TTL_SECONDS) -> None:  # noqa: ANN401 - an untyped dependency-injection object
         self._config = config_service
         self._ttl = ttl_seconds
-        self._cached: Optional[IdentityGovernancePolicy] = None
+        self._cached: IdentityGovernancePolicy | None = None
         self._cached_at = 0.0
 
     async def get(self, org_id: str = "") -> IdentityGovernancePolicy:
@@ -68,7 +68,7 @@ class IdentityPolicyStore:
         )
         return IdentityGovernancePolicy.parse(raw)
 
-    async def pseudonym_key(self) -> Optional[bytes]:
+    async def pseudonym_key(self) -> bytes | None:
         """Secret for HMAC pseudonyms; None when the deployment has none."""
         try:
             secrets = await self._config.get_config(

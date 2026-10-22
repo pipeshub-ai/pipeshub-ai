@@ -60,7 +60,10 @@ from app.modules.transformers.transformer import (
 from app.services.artifact_registry.access import is_direct_share, reader_edge
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.model_identity.boundary import UNATTRIBUTED_SERVICE, principal_from_request_user
+from app.services.model_identity.boundary import (
+    UNATTRIBUTED_SERVICE,
+    principal_from_request_user,
+)
 from app.services.model_identity.principal import Principal, service_principal
 from app.services.model_identity.runtime import assert_identity_allowed, call_scope
 from app.services.model_identity.workload import Workload

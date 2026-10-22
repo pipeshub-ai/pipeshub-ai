@@ -20,8 +20,6 @@ import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
 from logging import Logger
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Optional
 from typing import TYPE_CHECKING, Any, Optional, override
 
 from fastapi import Request
@@ -50,7 +48,7 @@ from app.config.constants.arangodb import (
 from app.services.graph_db.common.utils import record_status_field
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Collection, Mapping
+    from collections.abc import Awaitable, Collection, Mapping, Sequence
 
     from app.services.cache.interface import IAccessibleRecordsCache
 from app.config.constants.neo4j import (

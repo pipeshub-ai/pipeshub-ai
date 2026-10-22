@@ -8,9 +8,8 @@ All methods support optional transaction parameter for atomic operations.
 """
 
 import asyncio
-from collections.abc import Sequence
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeVar
 

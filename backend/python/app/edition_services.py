@@ -109,7 +109,7 @@ def decorate_embeddings(embeddings: "Embeddings", provider: str, model_name: str
     return embeddings
 
 
-def get_group_membership_resolver(container: Any) -> "GroupMembershipResolver":
+def get_group_membership_resolver(container: Any) -> "GroupMembershipResolver":  # noqa: ANN401 - an untyped dependency-injection object
     """Resolves a person's IdP group ids for identity forwarding to a model gateway.
 
     OSS knows no groups: the gateway receives the user id only.

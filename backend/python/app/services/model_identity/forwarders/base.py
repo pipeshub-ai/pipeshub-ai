@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import MutableMapping, Optional, Protocol, Tuple, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from app.services.model_identity.projector import ForwardedIdentity
-from app.services.model_identity.settings import ConnectionForwardingSettings
+if TYPE_CHECKING:
+    from collections.abc import MutableMapping
+
+    from app.services.model_identity.projector import ForwardedIdentity
+    from app.services.model_identity.settings import ConnectionForwardingSettings
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,11 +20,11 @@ class HeaderSet:
     attached (the ``Authorization`` header) and not send two.
     """
 
-    set: Tuple[Tuple[str, str], ...] = ()
-    remove: Tuple[str, ...] = field(default=())
+    set: tuple[tuple[str, str], ...] = ()
+    remove: tuple[str, ...] = field(default=())
     # ``time.monotonic()`` after which these headers must be rendered again, for
     # forwarders whose output expires (signed tokens). None means they never do.
-    expires_at: Optional[float] = None
+    expires_at: float | None = None
 
     def apply(self, headers: MutableMapping[str, str]) -> None:
         for name in self.remove:

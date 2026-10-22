@@ -9,7 +9,8 @@ forwarding.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Mapping, Optional
+from collections.abc import Mapping
+from typing import Any
 
 import httpx
 
@@ -17,7 +18,10 @@ from app.services.model_identity import metrics
 from app.services.model_identity.forwarders.registry import get_forwarder_registry
 from app.services.model_identity.runtime import note_forwarding
 from app.services.model_identity.settings import ConnectionForwardingSettings
-from app.services.model_identity.transport.client_paths import iter_client_slots, iter_http_clients
+from app.services.model_identity.transport.client_paths import (
+    iter_client_slots,
+    iter_http_clients,
+)
 from app.services.model_identity.transport.httpx_hook import (
     has_identity_hook,
     install_identity_hook,
@@ -29,7 +33,7 @@ logger = logging.getLogger(__name__)
 CONFIG_KEY = "identityForwarding"
 
 
-def settings_from_config(config: Optional[Mapping[str, Any]]) -> ConnectionForwardingSettings:
+def settings_from_config(config: Mapping[str, Any] | None) -> ConnectionForwardingSettings:
     """``configuration.identityForwarding`` of a model entry, or the disabled default."""
     configuration = (config or {}).get("configuration") or {}
     if not isinstance(configuration, Mapping):
@@ -53,7 +57,7 @@ _FLAT_KEYS = {
 }
 
 
-def _flat_settings(configuration: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+def _flat_settings(configuration: Mapping[str, Any]) -> dict[str, Any] | None:
     found = {target: configuration[key] for key, target in _FLAT_KEYS.items() if key in configuration}
     if not found:
         return None
@@ -62,7 +66,7 @@ def _flat_settings(configuration: Mapping[str, Any]) -> Optional[dict[str, Any]]
     return found
 
 
-def instrument_http_client(client: Any, settings: ConnectionForwardingSettings) -> bool:
+def instrument_http_client(client: Any, settings: ConnectionForwardingSettings) -> bool:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     """Install the hook on one httpx client. False when forwarding is off or unavailable."""
     if not settings.enabled:
         return False
@@ -76,13 +80,13 @@ def instrument_http_client(client: Any, settings: ConnectionForwardingSettings) 
     return install_identity_hook(client, settings, forwarder)
 
 
-def _endpoint_of(config: Optional[Mapping[str, Any]]) -> Optional[str]:
+def _endpoint_of(config: Mapping[str, Any] | None) -> str | None:
     configuration = (config or {}).get("configuration")
     endpoint = configuration.get("endpoint") if isinstance(configuration, Mapping) else None
     return endpoint if isinstance(endpoint, str) and endpoint.strip() else None
 
 
-def instrument_model(model: Any, provider: str, config: Optional[Mapping[str, Any]]) -> Any:
+def instrument_model(model: Any, provider: str, config: Mapping[str, Any] | None) -> Any:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     """Install identity forwarding on every httpx client of a chat or embeddings model.
 
     Idempotent, and a no-op when the connection has not enabled forwarding.
@@ -115,7 +119,7 @@ def instrument_model(model: Any, provider: str, config: Optional[Mapping[str, An
         return model
 
     endpoint = _endpoint_of(config)
-    replacements: Dict[int, Any] = {}
+    replacements: dict[int, Any] = {}
     for slot in slots:
         old = slot.client
         if has_identity_hook(old):
@@ -131,7 +135,7 @@ def instrument_model(model: Any, provider: str, config: Optional[Mapping[str, An
 
 
 def model_http_client(
-    base_url: str, config: Optional[Mapping[str, Any]] = None
+    base_url: str, config: Mapping[str, Any] | None = None
 ) -> httpx.AsyncClient:
     """A guarded async httpx client for media models, with identity forwarding when enabled."""
     from openai import DefaultAsyncHttpxClient
@@ -144,12 +148,12 @@ def model_http_client(
     return client
 
 
-def identity_http_clients(model: Any) -> List[Any]:
+def identity_http_clients(model: Any) -> list[Any]:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     """The httpx clients of ``model`` that carry the identity hook."""
     return [c for c in iter_http_clients(model) if has_identity_hook(c)]
 
 
-def identity_async_http_client(model: Any) -> Optional[httpx.AsyncClient]:
+def identity_async_http_client(model: Any) -> httpx.AsyncClient | None:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     """The model's instrumented async client, for a direct transport to reuse.
 
     A direct SDK transport builds its own client, so without this its requests

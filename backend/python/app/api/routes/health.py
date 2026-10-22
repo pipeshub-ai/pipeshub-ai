@@ -21,10 +21,10 @@ from pydantic import BaseModel, Field
 from app.agent_loop_lib.transport.provider_conflicts import is_api_shape_conflict
 from app.agents.agent_loop.langchain_transport import responses_api_copy
 from app.api.middlewares.auth import deny_service_tokens
+from app.services.ai_models.decision import PredicateQuestion, get_decision_model
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
 from app.services.model_identity.workload import Workload
-from app.services.ai_models.decision import PredicateQuestion, get_decision_model
 from app.services.vector_db.collections import CollectionType
 from app.utils.aimodels import (
     ImageGenerationProvider,
@@ -57,6 +57,7 @@ from app.web.errors import (
     WebError,
 )
 from app.web.health import check_provider, provider_name
+
 
 async def _bind_health_check_identity(request: Request) -> AsyncIterator[None]:
     """Bind the admin as the caller. The projector sends admin workloads as the service, so a probe never spends a person's gateway budget."""

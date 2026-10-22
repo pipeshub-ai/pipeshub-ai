@@ -24,7 +24,11 @@ from app.services.base_client import (
     CircuitBreaker,
 )
 from app.services.llm_gateway.limiter import CrossLoopSemaphore
-from app.services.model_identity.errors import GatewayPolicyError, policy_error_from_exception, report_background_refusal
+from app.services.model_identity.errors import (
+    GatewayPolicyError,
+    policy_error_from_exception,
+    report_background_refusal,
+)
 from app.telemetry.modules.llm_gateway_metrics import (
     LLM_BREAKER_OPEN,
     LLM_CALLS,

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from operator import attrgetter
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 import httpx
 
@@ -36,11 +36,11 @@ class ClientSlot:
     attr: str
     client: Any
 
-    def replace(self, new_client: Any) -> None:
+    def replace(self, new_client: Any) -> None:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
         setattr(self.owner, self.attr, new_client)
 
 
-def _resolve(model: Any, path: str) -> Optional[Any]:
+def _resolve(model: Any, path: str) -> Any | None:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     try:
         return attrgetter(path)(model)
     except Exception:
@@ -49,17 +49,17 @@ def _resolve(model: Any, path: str) -> Optional[Any]:
         return None
 
 
-def sdk_http_client(sdk_client: Any) -> Optional[Any]:
+def sdk_http_client(sdk_client: Any) -> Any | None:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     inner = getattr(sdk_client, "_client", None)
     return inner if isinstance(inner, HttpxClient) else None
 
 
-def iter_client_slots(model: Any, paths: Tuple[str, ...] = ALL_CLIENT_PATHS) -> List[ClientSlot]:
+def iter_client_slots(model: Any, paths: tuple[str, ...] = ALL_CLIENT_PATHS) -> list[ClientSlot]:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     """Every place ``model`` holds an httpx client. One client can appear in several slots."""
-    slots: List[ClientSlot] = []
+    slots: list[ClientSlot] = []
     seen = set()
 
-    def add(owner: Any, attr: str, client: Any) -> None:
+    def add(owner: Any, attr: str, client: Any) -> None:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
         key = (id(owner), attr)
         if key not in seen:
             seen.add(key)
@@ -76,9 +76,9 @@ def iter_client_slots(model: Any, paths: Tuple[str, ...] = ALL_CLIENT_PATHS) -> 
     return slots
 
 
-def iter_http_clients(model: Any, paths: Tuple[str, ...] = ALL_CLIENT_PATHS) -> List[Any]:
+def iter_http_clients(model: Any, paths: tuple[str, ...] = ALL_CLIENT_PATHS) -> list[Any]:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     """Every distinct httpx client ``model`` sends requests through."""
-    found: List[Any] = []
+    found: list[Any] = []
     seen = set()
     for slot in iter_client_slots(model, paths):
         if id(slot.client) not in seen:

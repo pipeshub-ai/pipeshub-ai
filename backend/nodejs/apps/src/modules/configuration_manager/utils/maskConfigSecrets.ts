@@ -51,9 +51,13 @@ const CREDENTIAL_HEADER_HINT =
 export function redactCredentialTemplates(value: unknown): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const out: Record<string, unknown> = {};
-  for (const [name, template] of Object.entries(value as Record<string, unknown>)) {
+  for (const [name, template] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
     out[name] =
-      CREDENTIAL_HEADER_HINT.test(name) && typeof template === 'string' && template.length > 0
+      CREDENTIAL_HEADER_HINT.test(name) &&
+      typeof template === 'string' &&
+      template.length > 0
         ? CONFIG_SECRET_PLACEHOLDER
         : template;
   }
@@ -71,10 +75,11 @@ export function restoreCredentialTemplates(
       : {};
   const out: Record<string, string> = {};
   for (const [name, template] of Object.entries(incoming)) {
+    const storedTemplate = previous[name];
     if (template !== CONFIG_SECRET_PLACEHOLDER) {
       out[name] = template;
-    } else if (typeof previous[name] === 'string' && previous[name]) {
-      out[name] = previous[name] as string;
+    } else if (typeof storedTemplate === 'string' && storedTemplate.length > 0) {
+      out[name] = storedTemplate;
     }
   }
   return out;

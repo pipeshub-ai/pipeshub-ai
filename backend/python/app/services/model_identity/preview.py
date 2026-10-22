@@ -6,22 +6,27 @@ hook sends. Credentials are redacted; nothing here makes a model call.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
-from app.services.model_identity.forwarders.registry import get_forwarder_registry
 from app.services.model_identity.call_context import ModelCallContext
-from app.services.model_identity.groups import GroupMembership
-from app.services.model_identity.principal import Principal
+from app.services.model_identity.forwarders.registry import get_forwarder_registry
 from app.services.model_identity.projector import IdentityProjector
 from app.services.model_identity.sanitize import is_forbidden_header_name
-from app.services.model_identity.settings import ConnectionForwardingSettings, IdentityGovernancePolicy
 from app.services.model_identity.workload import Workload, workload_class
+
+if TYPE_CHECKING:
+    from app.services.model_identity.groups import GroupMembership
+    from app.services.model_identity.principal import Principal
+    from app.services.model_identity.settings import (
+        ConnectionForwardingSettings,
+        IdentityGovernancePolicy,
+    )
 
 REDACTED = "[redacted]"
 _SECRET_HEADER_HINTS = ("key", "token", "secret", "password", "auth")
 
 
-def redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
+def redact_headers(headers: dict[str, str]) -> dict[str, str]:
     """Hide the value of any header that looks like a credential, by name.
 
     Placeholders cannot render a secret (only identity fields exist), so a header
@@ -43,10 +48,10 @@ def build_preview(
     workload: Workload,
     settings: ConnectionForwardingSettings,
     governance: IdentityGovernancePolicy,
-    pseudonym_key: Optional[bytes],
-    groups: Optional[GroupMembership],
-    conversation_id: Optional[str] = None,
-) -> Dict[str, Any]:
+    pseudonym_key: bytes | None,
+    groups: GroupMembership | None,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
     ctx = ModelCallContext(
         principal=principal,
         workload=workload,
@@ -56,7 +61,7 @@ def build_preview(
     )
     identity = IdentityProjector(pseudonym_key=pseudonym_key).project(ctx, governance, groups=groups)
     notes = []
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "forwarding": settings.to_dict(redact=True),
         "principal": {"kind": principal.kind.value, "orgId": principal.org_id},
         "workload": {"name": workload.value, "class": workload_class(workload).value},

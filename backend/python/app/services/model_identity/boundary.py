@@ -6,7 +6,7 @@ function with its own tests, and every route answers it the same way.
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional
+from typing import TYPE_CHECKING, Any
 
 from app.services.model_identity.principal import (
     Principal,
@@ -15,13 +15,16 @@ from app.services.model_identity.principal import (
     user_principal,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 UNATTRIBUTED_SERVICE = "unattributed"
 
 
 def principal_from_request_user(
-    user: Optional[Mapping[str, Any]],
+    user: Mapping[str, Any] | None,
     *,
-    agent_id: Optional[str] = None,
+    agent_id: str | None = None,
 ) -> Principal:
     """The principal for an authenticated request, from ``request.state.user``.
 
@@ -45,7 +48,7 @@ def principal_from_request_user(
     return service_principal(UNATTRIBUTED_SERVICE, org_id)
 
 
-def config_service_of(container: Any) -> Any:
+def config_service_of(container: Any) -> Any:  # noqa: ANN401 - an untyped dependency-injection object
     """The container's config service, or ``None``: identity is best effort and must not fail a request."""
     try:
         return container.config_service()

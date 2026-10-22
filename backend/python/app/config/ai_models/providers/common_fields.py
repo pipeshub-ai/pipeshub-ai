@@ -291,7 +291,7 @@ IDENTITY_FORWARDING_FIELDS = [
 ]
 
 
-def add_identity_forwarding(builder: Any, capabilities: Iterable[Any]) -> Any:
+def add_identity_forwarding(builder: Any, capabilities: Iterable[Any]) -> Any:  # noqa: ANN401 - the builder and capability types are defined by the registry that calls this
     """Add the identity forwarding fields to ``builder`` for each capability."""
     for capability in capabilities:
         for identity_field in IDENTITY_FORWARDING_FIELDS:

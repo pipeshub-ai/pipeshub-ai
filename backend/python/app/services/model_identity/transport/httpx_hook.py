@@ -8,19 +8,20 @@ failure in identity forwarding must not fail a model call.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
-from typing import Any, Awaitable, Callable, Optional, Set
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from app.services.model_identity import metrics
-from app.services.model_identity.errors import classify_gateway_error, record_refusal
 from app.services.model_identity.call_context import (
     ModelCallContext,
     current_call_context,
     current_llm_purpose,
 )
+from app.services.model_identity.errors import classify_gateway_error, record_refusal
 from app.services.model_identity.forwarders.base import HeaderSet, IdentityForwarder
 from app.services.model_identity.groups import EMPTY_MEMBERSHIP, GroupMembership
 from app.services.model_identity.principal import service_principal
@@ -31,6 +32,9 @@ from app.services.model_identity.settings import (
 )
 from app.services.model_identity.workload import Workload
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 logger = logging.getLogger(__name__)
 
 HOOK_MARKER = "_pipeshub_identity_hook"
@@ -38,7 +42,7 @@ _REFUSAL_STATUSES = frozenset({400, 401, 403, 422, 429})
 
 # Re-render a little before a token actually expires so one never goes out stale.
 _EXPIRY_SKEW_SECONDS = 5.0
-_logged_errors: Set[str] = set()
+_logged_errors: set[str] = set()
 
 
 class IdentityHook:
@@ -48,7 +52,7 @@ class IdentityHook:
         self,
         settings: ConnectionForwardingSettings,
         forwarder: IdentityForwarder,
-        projector: Optional[IdentityProjector] = None,
+        projector: IdentityProjector | None = None,
     ) -> None:
         self._settings = settings
         self._forwarder = forwarder
@@ -62,7 +66,7 @@ class IdentityHook:
             and self._forwarder.requires_groups(self._settings)
         )
 
-    def _headers(self, ctx: ModelCallContext, groups: Optional[GroupMembership]) -> HeaderSet:
+    def _headers(self, ctx: ModelCallContext, groups: GroupMembership | None) -> HeaderSet:
         purpose = current_llm_purpose()
         key = (self._settings.fingerprint, purpose, groups)
         cached = ctx.memo.get(key)
@@ -98,10 +102,8 @@ class IdentityHook:
         except Exception as exc:
             metrics.inc(metrics.IDENTITY_FORWARDED, mode, ctx.workload_class.value, "error")
             _log_once(exc)
-            try:
+            with contextlib.suppress(Exception):
                 self._service_fallback(ctx).apply(request.headers)
-            except Exception:
-                pass
 
     def sync_hook(self, request: httpx.Request) -> None:
         def render() -> HeaderSet:
@@ -150,14 +152,14 @@ class IdentityHook:
             # refusal comes back identical on every attempt, so retrying only delays the answer.
             response.headers["x-should-retry"] = "false"
 
-    def _sync_groups(self, ctx: ModelCallContext) -> Optional[GroupMembership]:
+    def _sync_groups(self, ctx: ModelCallContext) -> GroupMembership | None:
         if not ctx.principal.is_user:
             return None
         if not self._wants_groups(ctx):
             return EMPTY_MEMBERSHIP
         return ctx.groups.result_nowait()  # type: ignore[union-attr]
 
-    async def _async_groups(self, ctx: ModelCallContext) -> Optional[GroupMembership]:
+    async def _async_groups(self, ctx: ModelCallContext) -> GroupMembership | None:
         if not ctx.principal.is_user:
             return None
         if not self._wants_groups(ctx):
@@ -174,7 +176,7 @@ def _log_once(exc: BaseException) -> None:
 
 
 def install_identity_hook(
-    client: Any, settings: ConnectionForwardingSettings, forwarder: IdentityForwarder
+    client: Any, settings: ConnectionForwardingSettings, forwarder: IdentityForwarder  # noqa: ANN401 - SDK clients and models are duck-typed across providers
 ) -> bool:
     """Add the hook to ``client``. False if it already has one.
 
@@ -194,7 +196,7 @@ def install_identity_hook(
     return True
 
 
-def has_identity_hook(client: Any) -> bool:
+def has_identity_hook(client: Any) -> bool:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     return getattr(client, HOOK_MARKER, None) is not None
 
 

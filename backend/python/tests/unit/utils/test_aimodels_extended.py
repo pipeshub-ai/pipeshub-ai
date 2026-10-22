@@ -602,17 +602,17 @@ class TestBedrockReasoningAndTemperature:
 
 
 class TestEmbeddingConfigHashIdentityForwarding:
-    def _cfg(self, **configuration):
+    def _cfg(self, **configuration: object) -> list[dict]:
         return [{"provider": "openAI", "configuration": {"model": "m", "apiKey": "k", **configuration}}]
 
-    def test_flat_forwarding_fields_change_the_hash(self):
+    def test_flat_forwarding_fields_change_the_hash(self) -> None:
         from app.utils.aimodels import embedding_config_hash
 
         off = embedding_config_hash(self._cfg())
         on = embedding_config_hash(self._cfg(identityForwardingEnabled=True))
         assert off != on
 
-    def test_identical_forwarding_settings_hash_identically(self):
+    def test_identical_forwarding_settings_hash_identically(self) -> None:
         from app.utils.aimodels import embedding_config_hash
 
         a = embedding_config_hash(self._cfg(identityForwardingEnabled=True))

@@ -9,7 +9,7 @@ fetched here, once, so the hook itself never waits on anything.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import HTTPException
 
@@ -66,15 +66,15 @@ def forwarding_state() -> _ForwardingState:
 
 
 def reset_forwarding_state() -> None:
-    global _state
+    global _state  # noqa: PLW0603 - a lazily built process-wide singleton
     _state = _ForwardingState()
 
 
 class IdentityRuntime:
     def __init__(
         self,
-        policy_store: Optional[IdentityPolicyStore],
-        resolver: Optional[GroupMembershipResolver] = None,
+        policy_store: IdentityPolicyStore | None,
+        resolver: GroupMembershipResolver | None = None,
     ) -> None:
         self._policies = policy_store
         self._resolver: GroupMembershipResolver = resolver or NoopGroupResolver()
@@ -84,14 +84,14 @@ class IdentityRuntime:
         principal: Principal,
         workload: Workload,
         *,
-        request_id: Optional[str] = None,
-        conversation_id: Optional[str] = None,
-        agent_id: Optional[str] = None,
-        record_id: Optional[str] = None,
-        connector_id: Optional[str] = None,
+        request_id: str | None = None,
+        conversation_id: str | None = None,
+        agent_id: str | None = None,
+        record_id: str | None = None,
+        connector_id: str | None = None,
     ) -> ModelCallContext:
         governance = DEFAULT_GOVERNANCE
-        pseudonym_key: Optional[bytes] = None
+        pseudonym_key: bytes | None = None
         if self._policies is not None:
             governance = await self._policies.get(principal.org_id)
             if governance.pseudonymize:
@@ -99,7 +99,7 @@ class IdentityRuntime:
 
         self._enforce_strict(principal, workload, governance.on_missing_identity)
 
-        groups: Optional[GroupsHandle] = None
+        groups: GroupsHandle | None = None
         if (
             principal.is_user
             and governance.groups_enabled
@@ -131,7 +131,7 @@ class IdentityRuntime:
             return DEFAULT_GOVERNANCE
         return await self._policies.get(org_id)
 
-    async def pseudonym_key(self) -> Optional[bytes]:
+    async def pseudonym_key(self) -> bytes | None:
         return None if self._policies is None else await self._policies.pseudonym_key()
 
     async def resolve_groups(self, principal: Principal, budget_seconds: float = 2.0):  # noqa: ANN201
@@ -157,11 +157,11 @@ class IdentityRuntime:
             )
 
 
-_runtime: Optional[IdentityRuntime] = None
-_runtime_key: Optional[int] = None
+_runtime: IdentityRuntime | None = None
+_runtime_key: int | None = None
 
 
-def get_identity_runtime(config_service: Any = None, container: Any = None) -> IdentityRuntime:
+def get_identity_runtime(config_service: Any = None, container: Any = None) -> IdentityRuntime:  # noqa: ANN401 - an untyped dependency-injection object
     """The process runtime, built on first use from the config service and edition hook.
 
     Rebuilt if called with a different config service (tests, a restart in the
@@ -177,12 +177,12 @@ def get_identity_runtime(config_service: Any = None, container: Any = None) -> I
     return _runtime
 
 
-def set_identity_runtime(runtime: Optional[IdentityRuntime]) -> None:
+def set_identity_runtime(runtime: IdentityRuntime | None) -> None:
     global _runtime, _runtime_key
     _runtime, _runtime_key = runtime, None
 
 
-def _edition_resolver(container: Any) -> GroupMembershipResolver:
+def _edition_resolver(container: Any) -> GroupMembershipResolver:  # noqa: ANN401 - an untyped dependency-injection object
     try:
         from app import edition_services
 
@@ -204,16 +204,16 @@ class call_scope:
         principal: Principal,
         workload: Workload,
         *,
-        config_service: Any = None,
-        container: Any = None,
-        **metadata: Optional[str],
+        config_service: Any = None,  # noqa: ANN401 - an untyped dependency-injection object
+        container: Any = None,  # noqa: ANN401 - an untyped dependency-injection object
+        **metadata: str | None,
     ) -> None:
         self._principal = principal
         self._workload = workload
         self._config_service = config_service
         self._container = container
-        self._metadata: Dict[str, Optional[str]] = metadata
-        self._binding: Optional[_Binding] = None
+        self._metadata: dict[str, str | None] = metadata
+        self._binding: _Binding | None = None
 
     async def __aenter__(self) -> ModelCallContext:
         runtime = get_identity_runtime(self._config_service, self._container)
@@ -239,8 +239,8 @@ async def assert_identity_allowed(
     principal: Principal,
     workload: Workload,
     *,
-    config_service: Any = None,
-    container: Any = None,
+    config_service: Any = None,  # noqa: ANN401 - an untyped dependency-injection object
+    container: Any = None,  # noqa: ANN401 - an untyped dependency-injection object
 ) -> None:
     """Raise ``MissingIdentityError`` now if strict governance would refuse this call.
 

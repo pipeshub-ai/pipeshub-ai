@@ -34,11 +34,11 @@ from app.modules.named_entities.domain.config import (
     NamedEntityBudgets,  # noqa: TC001  # pydantic field type
 )
 from app.modules.named_entities.domain.kinds import EntityKind
-from app.services.model_identity.propagation import scope_from_claims
-from app.services.model_identity.workload import Workload
 from app.modules.transformers.document_extraction import (
     ExtractionLLMError,
 )
+from app.services.model_identity.propagation import scope_from_claims
+from app.services.model_identity.workload import Workload
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 logger = logging.getLogger(__name__)

@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import threading
 from collections import defaultdict
-from typing import Dict, Tuple
 
-LabelValues = Tuple[str, ...]
+LabelValues = tuple[str, ...]
 
 IDENTITY_FORWARDED = "llm_identity_forwarded_total"
 IDENTITY_MISSING = "identity_missing_total"
@@ -19,8 +18,8 @@ GATEWAY_POLICY_REFUSALS = "gateway_policy_refusals_total"
 GROUP_RESOLUTION_SECONDS = "identity_group_resolution_seconds"
 
 _lock = threading.Lock()
-_counters: Dict[str, Dict[LabelValues, float]] = defaultdict(lambda: defaultdict(float))
-_observations: Dict[str, Dict[LabelValues, list]] = defaultdict(lambda: defaultdict(list))
+_counters: dict[str, dict[LabelValues, float]] = defaultdict(lambda: defaultdict(float))
+_observations: dict[str, dict[LabelValues, list]] = defaultdict(lambda: defaultdict(list))
 
 # Cap what is kept per series: a long-running worker must not grow without bound
 # because nothing scraped the histogram.
@@ -45,7 +44,7 @@ def counter_value(name: str, *labels: str) -> float:
         return _counters[name][labels] if labels in _counters[name] else 0.0
 
 
-def snapshot() -> Dict[str, Dict[LabelValues, float]]:
+def snapshot() -> dict[str, dict[LabelValues, float]]:
     with _lock:
         return {name: dict(series) for name, series in _counters.items()}
 

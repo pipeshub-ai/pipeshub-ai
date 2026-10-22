@@ -22,8 +22,6 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from logging import Logger
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Dict, Optional, TypeVar
 from typing import TYPE_CHECKING, Any, Dict, Optional, TypeVar, override
 
 from fastapi import Request
@@ -266,7 +264,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import folder_in_trash
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Collection, Mapping
+    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
 # Constants for ArangoDB document ID format
 ARANGO_ID_PARTS_COUNT = 2  # ArangoDB document IDs are in format "collection/key"

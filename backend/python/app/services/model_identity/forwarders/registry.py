@@ -8,27 +8,33 @@ edition adds its own (for example signed-JWT mode) through the
 from __future__ import annotations
 
 import logging
-from typing import Dict, Optional, Tuple
+from typing import TYPE_CHECKING
 
-from app.services.model_identity.forwarders.base import IdentityForwarder
-from app.services.model_identity.forwarders.litellm_headers import LiteLLMHeadersForwarder
-from app.services.model_identity.forwarders.template_headers import TemplateHeadersForwarder
-from app.services.model_identity.settings import ConnectionForwardingSettings
+from app.services.model_identity.forwarders.litellm_headers import (
+    LiteLLMHeadersForwarder,
+)
+from app.services.model_identity.forwarders.template_headers import (
+    TemplateHeadersForwarder,
+)
+
+if TYPE_CHECKING:
+    from app.services.model_identity.forwarders.base import IdentityForwarder
+    from app.services.model_identity.settings import ConnectionForwardingSettings
 
 logger = logging.getLogger(__name__)
 
 
 class ForwarderRegistry:
     def __init__(self) -> None:
-        self._by_key: Dict[Tuple[str, Optional[str]], IdentityForwarder] = {}
+        self._by_key: dict[tuple[str, str | None], IdentityForwarder] = {}
 
     def register(
-        self, mode: str, forwarder: IdentityForwarder, *, preset: Optional[str] = None
+        self, mode: str, forwarder: IdentityForwarder, *, preset: str | None = None
     ) -> None:
         """Register ``forwarder`` for ``mode``, optionally only for one preset."""
         self._by_key[(mode, preset)] = forwarder
 
-    def get(self, settings: ConnectionForwardingSettings) -> Optional[IdentityForwarder]:
+    def get(self, settings: ConnectionForwardingSettings) -> IdentityForwarder | None:
         return self._by_key.get((settings.mode, settings.preset)) or self._by_key.get(
             (settings.mode, None)
         )
@@ -41,12 +47,12 @@ def build_default_registry() -> ForwarderRegistry:
     return registry
 
 
-_registry: Optional[ForwarderRegistry] = None
+_registry: ForwarderRegistry | None = None
 
 
 def get_forwarder_registry() -> ForwarderRegistry:
     """The process registry: OSS forwarders plus whatever the edition adds."""
-    global _registry
+    global _registry  # noqa: PLW0603 - a lazily built process-wide singleton
     if _registry is None:
         registry = build_default_registry()
         _register_edition_forwarders(registry)
@@ -55,7 +61,7 @@ def get_forwarder_registry() -> ForwarderRegistry:
 
 
 def reset_forwarder_registry() -> None:
-    global _registry
+    global _registry  # noqa: PLW0603 - a lazily built process-wide singleton
     _registry = None
 
 

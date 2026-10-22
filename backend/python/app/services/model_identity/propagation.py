@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import Any, Optional
+from typing import Any
 
 from app.services.model_identity import metrics
 from app.services.model_identity.call_context import ModelCallContext, peek_call_context
@@ -34,7 +34,7 @@ _MAX_ID_LENGTH = 256
 _KINDS = {kind.value: kind for kind in PrincipalKind}
 
 
-def encode_pcp(ctx: Optional[ModelCallContext] = None) -> Optional[dict[str, Any]]:
+def encode_pcp(ctx: ModelCallContext | None = None) -> dict[str, Any] | None:
     """The claim for the context bound now, or ``None`` when nothing is bound."""
     ctx = ctx or peek_call_context()
     if ctx is None:
@@ -66,10 +66,10 @@ class PropagatedContext:
         self,
         principal: Principal,
         origin_workload: Workload,
-        request_id: Optional[str],
-        record_id: Optional[str],
-        connector_id: Optional[str],
-        agent_id: Optional[str],
+        request_id: str | None,
+        record_id: str | None,
+        connector_id: str | None,
+        agent_id: str | None,
     ) -> None:
         self.principal = principal
         self.origin_workload = origin_workload
@@ -79,7 +79,7 @@ class PropagatedContext:
         self.agent_id = agent_id
 
 
-def decode_pcp(claims: Mapping[str, Any]) -> Optional[PropagatedContext]:
+def decode_pcp(claims: Mapping[str, Any]) -> PropagatedContext | None:
     """Parse the claim from *already verified* token claims.
 
     Returns ``None`` for anything that is not a well-formed claim of a known
@@ -130,8 +130,8 @@ def scope_from_claims(
     workload: Workload,
     *,
     fallback_service: str,
-    config_service: Any = None,
-    container: Any = None,
+    config_service: Any = None,  # noqa: ANN401 - an untyped dependency-injection object
+    container: Any = None,  # noqa: ANN401 - an untyped dependency-injection object
 ) -> call_scope:
     """``call_scope`` for a service route, from its verified token claims.
 
@@ -162,7 +162,7 @@ def scope_from_claims(
     )
 
 
-def _identifier(value: Any) -> Optional[str]:
+def _identifier(value: Any) -> str | None:  # noqa: ANN401 - a value of unknown shape (JSON or user input)
     if value is None or isinstance(value, (bool, int, float, list, dict)):
         return None
     text = str(value).strip()
@@ -172,4 +172,3 @@ def _identifier(value: Any) -> Optional[str]:
 def _reject(reason: str) -> None:
     metrics.inc(metrics.IDENTITY_MISSING, f"bad_pcp_{reason}")
     logger.warning("ignoring an unusable identity claim (%s)", reason)
-    return None

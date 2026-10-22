@@ -12,16 +12,18 @@ any identity, so restrict the key's routes and network access.
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import TYPE_CHECKING
 
 from app.services.model_identity.forwarders.base import HeaderSet
-from app.services.model_identity.projector import ForwardedIdentity
 from app.services.model_identity.sanitize import (
     clean_header_value,
     clean_tag_value,
     join_capped,
 )
-from app.services.model_identity.settings import ConnectionForwardingSettings
+
+if TYPE_CHECKING:
+    from app.services.model_identity.projector import ForwardedIdentity
+    from app.services.model_identity.settings import ConnectionForwardingSettings
 
 END_USER_HEADER = "x-litellm-end-user-id"
 TAGS_HEADER = "x-litellm-tags"
@@ -36,7 +38,7 @@ AUTHORIZATION_HEADER = "authorization"
 
 def service_key_headers(
     identity: ForwardedIdentity, settings: ConnectionForwardingSettings
-) -> List[Tuple[str, str]]:
+) -> list[tuple[str, str]]:
     """Authorization for background traffic that uses its own virtual key.
 
     A separate key lets LiteLLM give indexing its own team, budget and model
@@ -56,7 +58,7 @@ class LiteLLMHeadersForwarder:
     def render(
         self, identity: ForwardedIdentity, settings: ConnectionForwardingSettings
     ) -> HeaderSet:
-        headers: List[Tuple[str, str]] = [
+        headers: list[tuple[str, str]] = [
             (END_USER_HEADER, clean_header_value(identity.subject)),
             (TAGS_HEADER, self._tags(identity)),
             (WORKLOAD_HEADER, identity.workload),

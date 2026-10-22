@@ -15,14 +15,19 @@ import contextvars
 import logging
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.usage_source import current_llm_usage_source
 from app.services.model_identity import metrics
-from app.services.model_identity.groups import GroupsHandle
 from app.services.model_identity.principal import Principal, service_principal
-from app.services.model_identity.settings import DEFAULT_GOVERNANCE, IdentityGovernancePolicy
+from app.services.model_identity.settings import (
+    DEFAULT_GOVERNANCE,
+    IdentityGovernancePolicy,
+)
 from app.services.model_identity.workload import Workload, WorkloadClass, workload_class
+
+if TYPE_CHECKING:
+    from app.services.model_identity.groups import GroupsHandle
 
 logger = logging.getLogger(__name__)
 
@@ -31,18 +36,18 @@ logger = logging.getLogger(__name__)
 class ModelCallContext:
     principal: Principal
     workload: Workload
-    request_id: Optional[str] = None
-    conversation_id: Optional[str] = None
-    agent_id: Optional[str] = None
-    record_id: Optional[str] = None
-    connector_id: Optional[str] = None
-    groups: Optional[GroupsHandle] = field(default=None, compare=False, repr=False)
+    request_id: str | None = None
+    conversation_id: str | None = None
+    agent_id: str | None = None
+    record_id: str | None = None
+    connector_id: str | None = None
+    groups: GroupsHandle | None = field(default=None, compare=False, repr=False)
     governance: IdentityGovernancePolicy = field(default=DEFAULT_GOVERNANCE, compare=False, repr=False)
-    pseudonym_key: Optional[bytes] = field(default=None, compare=False, repr=False)
+    pseudonym_key: bytes | None = field(default=None, compare=False, repr=False)
     # Header sets already rendered for this context, keyed by connection and
     # sub-purpose. ``replace()`` does not copy it (init=False), so a narrowed
     # context never reuses headers rendered for the wider one.
-    memo: Dict[Any, Any] = field(default_factory=dict, init=False, compare=False, repr=False)
+    memo: dict[Any, Any] = field(default_factory=dict, init=False, compare=False, repr=False)
 
     @property
     def workload_class(self) -> WorkloadClass:
@@ -54,18 +59,18 @@ class _Frame:
 
     __slots__ = ("ctx", "parent", "closed")
 
-    def __init__(self, ctx: ModelCallContext, parent: Optional["_Frame"]) -> None:
+    def __init__(self, ctx: ModelCallContext, parent: "_Frame" | None) -> None:
         self.ctx = ctx
         self.parent = parent
         self.closed = False
 
 
-_frame: contextvars.ContextVar[Optional[_Frame]] = contextvars.ContextVar(
+_frame: contextvars.ContextVar[_Frame | None] = contextvars.ContextVar(
     "model_call_context", default=None
 )
 
 
-def peek_call_context() -> Optional[ModelCallContext]:
+def peek_call_context() -> ModelCallContext | None:
     """The bound context, or None. Does not count a missing binding."""
     frame = _frame.get()
     return frame.ctx if frame is not None else None
@@ -103,7 +108,7 @@ class _Binding:
 
     def __init__(self, ctx: ModelCallContext) -> None:
         self._ctx = ctx
-        self._frame: Optional[_Frame] = None
+        self._frame: _Frame | None = None
 
     def __enter__(self) -> ModelCallContext:
         self._frame = _Frame(self._ctx, _frame.get())

@@ -10,15 +10,17 @@ from __future__ import annotations
 import hashlib
 import hmac
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING
 
 from app.services.model_identity import metrics
-from app.services.model_identity.call_context import ModelCallContext
-from app.services.model_identity.groups import GroupMembership
 from app.services.model_identity.principal import Principal, PrincipalKind
 from app.services.model_identity.sanitize import clean_text, optional_clean
-from app.services.model_identity.settings import IdentityGovernancePolicy
 from app.services.model_identity.workload import Workload, WorkloadClass, workload_class
+
+if TYPE_CHECKING:
+    from app.services.model_identity.call_context import ModelCallContext
+    from app.services.model_identity.groups import GroupMembership
+    from app.services.model_identity.settings import IdentityGovernancePolicy
 
 _PSEUDONYM_DOMAIN = b"pipeshub-identity-pseudonym-v1"
 _PSEUDONYM_LENGTH = 32
@@ -32,14 +34,14 @@ class ForwardedIdentity:
     workload: str
     workload_class: str
     purpose: str
-    email: Optional[str] = None
-    display_name: Optional[str] = None
-    group_ids: Tuple[str, ...] = ()
+    email: str | None = None
+    display_name: str | None = None
+    group_ids: tuple[str, ...] = ()
     groups_complete: bool = True
     groups_source: str = "none"
-    request_id: Optional[str] = None
-    conversation_id: Optional[str] = None
-    agent_id: Optional[str] = None
+    request_id: str | None = None
+    conversation_id: str | None = None
+    agent_id: str | None = None
 
     @property
     def is_user(self) -> bool:
@@ -54,7 +56,7 @@ def pseudonymize(value: str, key: bytes) -> str:
 
 
 class IdentityProjector:
-    def __init__(self, *, pseudonym_key: Optional[bytes] = None) -> None:
+    def __init__(self, *, pseudonym_key: bytes | None = None) -> None:
         self._pseudonym_key = pseudonym_key
 
     def project(
@@ -62,7 +64,7 @@ class IdentityProjector:
         ctx: ModelCallContext,
         governance: IdentityGovernancePolicy,
         *,
-        groups: Optional[GroupMembership] = None,
+        groups: GroupMembership | None = None,
         purpose: str = "main",
     ) -> ForwardedIdentity:
         principal = ctx.principal
@@ -149,8 +151,8 @@ class IdentityProjector:
 
     @staticmethod
     def _groups(
-        groups: Optional[GroupMembership], governance: IdentityGovernancePolicy
-    ) -> Tuple[Tuple[str, ...], bool, str]:
+        groups: GroupMembership | None, governance: IdentityGovernancePolicy
+    ) -> tuple[tuple[str, ...], bool, str]:
         if not governance.groups_enabled:
             return (), True, "disabled"
         if groups is None:
@@ -169,9 +171,9 @@ class IdentityProjector:
         *,
         subject: str,
         kind: PrincipalKind,
-        email: Optional[str] = None,
-        display_name: Optional[str] = None,
-        group_ids: Tuple[str, ...] = (),
+        email: str | None = None,
+        display_name: str | None = None,
+        group_ids: tuple[str, ...] = (),
         groups_complete: bool = True,
         groups_source: str = "none",
     ) -> ForwardedIdentity:

@@ -8,7 +8,7 @@ Set ``LITELLM_TEST_VERSIONS=v1.106.0,v1.103.5`` to run the matrix.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
@@ -28,6 +28,12 @@ from .harness import (
     litellm_stack,
     litellm_versions,
 )
+
+if TYPE_CHECKING:
+    from app.services.model_identity.principal import Principal
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 pytestmark = [pytest.mark.docker, pytest.mark.integration, pytest.mark.timeout(900, method="thread")]
 
@@ -54,7 +60,7 @@ def virtual_key(stack: LiteLLMStack) -> str:
     return response.json()["key"]
 
 
-def person(name: str):
+def person(name: str) -> Principal:
     return user_principal({"userId": f"u-{name}-{uuid.uuid4().hex[:6]}", "email": f"{name}@example.com"}, ORG)
 
 
@@ -84,7 +90,7 @@ async def chat(client: httpx.AsyncClient, ctx: ModelCallContext, model: str = "f
         )
 
 
-async def test_spend_lands_on_the_person_who_asked(stack, virtual_key):
+async def test_spend_lands_on_the_person_who_asked(stack, virtual_key) -> None:
     alice, bob = person("alice"), person("bob")
     async with forwarding_client(stack, virtual_key) as client:
         assert (await chat(client, context(alice))).status_code == 200
@@ -96,7 +102,7 @@ async def test_spend_lands_on_the_person_who_asked(stack, virtual_key):
     assert stack.customer_spend(bob.subject_id) == pytest.approx(CALL_COST)
 
 
-async def test_a_person_over_their_budget_is_refused_and_the_refusal_is_classified(stack, virtual_key):
+async def test_a_person_over_their_budget_is_refused_and_the_refusal_is_classified(stack, virtual_key) -> None:
     capped, other = person("capped"), person("other")
     stack.make_customer(capped.subject_id, max_budget=CALL_COST / 2)
     async with forwarding_client(stack, virtual_key) as client:
@@ -114,7 +120,7 @@ async def test_a_person_over_their_budget_is_refused_and_the_refusal_is_classifi
         assert (await chat(client, context(other))).status_code == 200
 
 
-async def test_a_group_over_its_tag_budget_is_refused(stack, virtual_key):
+async def test_a_group_over_its_tag_budget_is_refused(stack, virtual_key) -> None:
     group = f"g-{uuid.uuid4().hex[:6]}"
     stack.admin("POST", "/tag/new", json={"name": f"group:{group}", "max_budget": CALL_COST / 2})
     member, outsider = person("member"), person("outsider")
@@ -136,7 +142,7 @@ def _tag_spend(stack: LiteLLMStack, group: str) -> float:
     return sum(float(r.get("total_spend") or 0) for r in rows if r.get("individual_request_tag") == f"group:{group}")
 
 
-async def test_background_work_is_charged_to_the_service_not_a_person(stack, virtual_key):
+async def test_background_work_is_charged_to_the_service_not_a_person(stack, virtual_key) -> None:
     service = service_principal("indexing", ORG)
     async with forwarding_client(stack, virtual_key) as client:
         assert (await chat(client, context(service, Workload.INDEXING))).status_code == 200
@@ -144,7 +150,7 @@ async def test_background_work_is_charged_to_the_service_not_a_person(stack, vir
     assert stack.wait_for(lambda: stack.customer_spend("svc:pipeshub:indexing") > 0)
 
 
-async def test_the_provider_never_sees_the_identity_headers_it_has_no_use_for(stack, virtual_key):
+async def test_the_provider_never_sees_the_identity_headers_it_has_no_use_for(stack, virtual_key) -> None:
     alice = person("alice")
     before = len(stack.provider.requests)
     async with forwarding_client(stack, virtual_key) as client:

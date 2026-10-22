@@ -8,7 +8,10 @@ value is cleaned, never rejected, so the request still goes out.
 from __future__ import annotations
 
 import re
-from typing import Iterable, List, Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 MAX_VALUE_LENGTH = 256
 MAX_HEADER_LENGTH = 4096
@@ -70,7 +73,7 @@ def clean_header_value(value: object, *, max_length: int = MAX_HEADER_LENGTH) ->
 
 def join_capped(values: Iterable[str], *, max_length: int = MAX_HEADER_LENGTH) -> str:
     """Comma-join ``values`` and stop before the header would exceed ``max_length``."""
-    out: List[str] = []
+    out: list[str] = []
     size = 0
     for value in values:
         extra = len(value) + (1 if out else 0)
@@ -81,6 +84,6 @@ def join_capped(values: Iterable[str], *, max_length: int = MAX_HEADER_LENGTH) -
     return ",".join(out)
 
 
-def optional_clean(value: Optional[object]) -> Optional[str]:
+def optional_clean(value: object | None) -> str | None:
     cleaned = clean_text(value) if value is not None else ""
     return cleaned or None

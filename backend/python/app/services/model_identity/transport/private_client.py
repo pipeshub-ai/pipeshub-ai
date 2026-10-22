@@ -15,7 +15,7 @@ copying it would silently drop those settings, so it is instrumented where it is
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -25,17 +25,17 @@ logger = logging.getLogger(__name__)
 _DEFAULT_LIMITS = httpx.Limits(max_connections=1000, max_keepalive_connections=100)
 
 
-def _uses_standard_transport(client: Any) -> bool:
+def _uses_standard_transport(client: Any) -> bool:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     return isinstance(
         getattr(client, "_transport", None), (httpx.HTTPTransport, httpx.AsyncHTTPTransport)
     )
 
 
-def _pool_of(client: Any) -> Any:
+def _pool_of(client: Any) -> Any:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     return getattr(getattr(client, "_transport", None), "_pool", None)
 
 
-def _limits_of(client: Any) -> httpx.Limits:
+def _limits_of(client: Any) -> httpx.Limits:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     """The connection limits ``client`` was built with, so the copy keeps them."""
     pool = _pool_of(client)
     max_connections = getattr(pool, "_max_connections", None)
@@ -49,7 +49,7 @@ def _limits_of(client: Any) -> httpx.Limits:
     )
 
 
-def _transport_settings(client: Any) -> tuple[Any, ...]:
+def _transport_settings(client: Any) -> tuple[Any, ...]:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     """What an httpx client's transport was built with that a copy cannot reproduce."""
     pool = _pool_of(client)
     ssl_context = getattr(pool, "_ssl_context", None)
@@ -61,7 +61,7 @@ def _transport_settings(client: Any) -> tuple[Any, ...]:
     )
 
 
-def _is_egress_guarded(client: Any) -> bool:
+def _is_egress_guarded(client: Any) -> bool:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     from app.utils.model_egress import VettedAsyncBackend, VettedSyncBackend
 
     pool = getattr(getattr(client, "_transport", None), "_pool", None)
@@ -70,7 +70,7 @@ def _is_egress_guarded(client: Any) -> bool:
     )
 
 
-def private_copy(client: Any, endpoint: Optional[str]) -> Any:
+def private_copy(client: Any, endpoint: str | None) -> Any:  # noqa: ANN401 - SDK clients and models are duck-typed across providers
     """A new client configured like ``client``, or ``client`` itself when it cannot be copied.
 
     The copy keeps the egress guard if the original had one, using ``endpoint``
@@ -79,19 +79,19 @@ def private_copy(client: Any, endpoint: Optional[str]) -> Any:
     """
     if not _uses_standard_transport(client):
         return client
-    kwargs = dict(
-        base_url=client.base_url,
-        headers=client.headers,
-        auth=client.auth,
-        params=client.params,
-        timeout=client.timeout,
-        follow_redirects=client.follow_redirects,
-        max_redirects=client.max_redirects,
-        trust_env=client.trust_env,
-        limits=_limits_of(client),
-        http2=bool(getattr(_pool_of(client), "_http2", False)),
-        event_hooks={name: list(hooks) for name, hooks in client.event_hooks.items()},
-    )
+    kwargs = {
+        "base_url": client.base_url,
+        "headers": client.headers,
+        "auth": client.auth,
+        "params": client.params,
+        "timeout": client.timeout,
+        "follow_redirects": client.follow_redirects,
+        "max_redirects": client.max_redirects,
+        "trust_env": client.trust_env,
+        "limits": _limits_of(client),
+        "http2": bool(getattr(_pool_of(client), "_http2", False)),
+        "event_hooks": {name: list(hooks) for name, hooks in client.event_hooks.items()},
+    }
     try:
         copy = type(client)(**kwargs)
     except Exception:

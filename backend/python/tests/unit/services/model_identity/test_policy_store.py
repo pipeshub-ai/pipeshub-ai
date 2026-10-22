@@ -4,12 +4,12 @@ from app.services.model_identity.settings import DEFAULT_GOVERNANCE
 
 
 class _Config:
-    def __init__(self, values):
+    def __init__(self, values) -> None:
         self.values = values
         self.reads = []
         self.fail = False
 
-    async def get_config(self, key, default=None, use_cache=False, raise_on_error=False, **_):
+    async def get_config(self, key, default=None, use_cache=False, raise_on_error=False, **_) -> object:
         self.reads.append(key)
         self.raise_on_error = raise_on_error
         if self.fail:
@@ -24,7 +24,7 @@ POLICY_KEY = config_node_constants.AI_GATEWAY_IDENTITY_POLICY.value
 SECRETS_KEY = config_node_constants.SECRET_KEYS.value
 
 
-async def test_reads_and_caches_the_policy():
+async def test_reads_and_caches_the_policy() -> None:
     cfg = _Config({POLICY_KEY: {"includeEmail": True}})
     store = IdentityPolicyStore(cfg)
     assert (await store.get("o")).include_email is True
@@ -32,11 +32,11 @@ async def test_reads_and_caches_the_policy():
     assert cfg.reads.count(POLICY_KEY) == 1
 
 
-async def test_missing_policy_is_the_default():
+async def test_missing_policy_is_the_default() -> None:
     assert await IdentityPolicyStore(_Config({})).get() == DEFAULT_GOVERNANCE
 
 
-async def test_ttl_expiry_and_invalidate_reload():
+async def test_ttl_expiry_and_invalidate_reload() -> None:
     cfg = _Config({POLICY_KEY: {}})
     store = IdentityPolicyStore(cfg, ttl_seconds=0.0)
     await store.get()
@@ -49,7 +49,7 @@ async def test_ttl_expiry_and_invalidate_reload():
     assert cfg.reads.count(POLICY_KEY) == 4
 
 
-async def test_outage_keeps_the_last_known_policy_and_never_raises():
+async def test_outage_keeps_the_last_known_policy_and_never_raises() -> None:
     cfg = _Config({POLICY_KEY: {"includeEmail": True, "pseudonymize": True}})
     store = IdentityPolicyStore(cfg, ttl_seconds=0.0)
     first = await store.get()
@@ -57,13 +57,13 @@ async def test_outage_keeps_the_last_known_policy_and_never_raises():
     assert await store.get() == first
 
 
-async def test_the_read_asks_to_see_a_store_failure():
+async def test_the_read_asks_to_see_a_store_failure() -> None:
     cfg = _Config({POLICY_KEY: {}})
     await IdentityPolicyStore(cfg).get()
     assert cfg.raise_on_error is True
 
 
-async def test_a_failed_read_with_no_policy_cached_sends_nothing_that_identifies_a_person():
+async def test_a_failed_read_with_no_policy_cached_sends_nothing_that_identifies_a_person() -> None:
     cfg = _Config({POLICY_KEY: {"pseudonymize": True, "groups": {"enabled": False}}})
     cfg.fail = True
     policy = await IdentityPolicyStore(cfg).get()
@@ -72,7 +72,7 @@ async def test_a_failed_read_with_no_policy_cached_sends_nothing_that_identifies
     assert policy != DEFAULT_GOVERNANCE
 
 
-async def test_an_outage_does_not_make_every_call_wait_on_the_store():
+async def test_an_outage_does_not_make_every_call_wait_on_the_store() -> None:
     cfg = _Config({POLICY_KEY: {}})
     cfg.fail = True
     store = IdentityPolicyStore(cfg)
@@ -82,7 +82,7 @@ async def test_an_outage_does_not_make_every_call_wait_on_the_store():
     assert cfg.reads.count(POLICY_KEY) == 1
 
 
-async def test_pseudonym_key_prefers_the_dedicated_secret():
+async def test_pseudonym_key_prefers_the_dedicated_secret() -> None:
     cfg = _Config({SECRETS_KEY: {"identityPseudonymKey": "dedicated", "scopedJwtSecret": "scoped"}})
     assert await IdentityPolicyStore(cfg).pseudonym_key() == b"dedicated"
     cfg = _Config({SECRETS_KEY: {"scopedJwtSecret": "scoped"}})

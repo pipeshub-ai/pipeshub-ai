@@ -15,12 +15,14 @@ import json
 import logging
 import re
 import time
-from collections.abc import Iterator, Mapping
 from email.utils import parsedate_to_datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from app.services.model_identity import metrics
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +57,10 @@ class GatewayPolicyError(Exception):
     def __init__(
         self,
         kind: GatewayPolicyKind,
-        status: Optional[int] = None,
-        retry_after: Optional[float] = None,
-        reset_at: Optional[float] = None,
-        provider_code: Optional[str] = None,
+        status: int | None = None,
+        retry_after: float | None = None,
+        reset_at: float | None = None,
+        provider_code: str | None = None,
     ) -> None:
         super().__init__(kind, status)
         self.kind = kind
@@ -80,7 +82,7 @@ class GatewayPolicyError(Exception):
             GatewayPolicyKind.RATE_LIMIT: "rate_limit",
         }[self.kind]
 
-    def user_message(self, now: Optional[float] = None) -> str:
+    def user_message(self, now: float | None = None) -> str:
         if self.kind is GatewayPolicyKind.BUDGET:
             wait = _wait_phrase(self.reset_at, now)
             tail = f" It resets {wait}." if wait else " It resets automatically."
@@ -100,7 +102,7 @@ class GatewayPolicyError(Exception):
         return f"gateway refused the call ({self.kind.value}, status {self.status})"
 
 
-def _wait_phrase(reset_at: Optional[float], now: Optional[float]) -> Optional[str]:
+def _wait_phrase(reset_at: float | None, now: float | None) -> str | None:
     if reset_at is None:
         return None
     remaining = reset_at - (time.time() if now is None else now)
@@ -116,12 +118,12 @@ def _wait_phrase(reset_at: Optional[float], now: Optional[float]) -> Optional[st
 
 
 def classify_gateway_error(
-    status: Optional[int],
-    body: Any,
-    headers: Optional[Mapping[str, str]] = None,
+    status: int | None,
+    body: Any,  # noqa: ANN401 - a value of unknown shape (JSON or user input)
+    headers: Mapping[str, str] | None = None,
     *,
-    now: Optional[float] = None,
-) -> Optional[GatewayPolicyError]:
+    now: float | None = None,
+) -> GatewayPolicyError | None:
     """The policy refusal this response is, or ``None`` if it is anything else."""
     error = _error_object(body)
     kind_hint = str(error.get("type") or "").lower()
@@ -148,7 +150,7 @@ def classify_gateway_error(
     )
 
 
-def policy_error_from_exception(exc: BaseException) -> Optional[GatewayPolicyError]:
+def policy_error_from_exception(exc: BaseException) -> GatewayPolicyError | None:
     """``classify_gateway_error`` for an SDK exception, whatever shape it has.
 
     OpenAI-style exceptions carry ``status_code``, ``body`` and ``response``;
@@ -172,7 +174,7 @@ def policy_error_from_exception(exc: BaseException) -> Optional[GatewayPolicyErr
     return None
 
 
-def classify_gateway_text(message: str) -> Optional[GatewayPolicyError]:
+def classify_gateway_text(message: str) -> GatewayPolicyError | None:
     """Classify an error already flattened to a string."""
     match = _ERROR_CODE_RE.search(message)
     if match is None:
@@ -184,7 +186,7 @@ def classify_gateway_text(message: str) -> Optional[GatewayPolicyError]:
     return classify_gateway_error(int(match.group(1)), message[start : end + 1])
 
 
-def classify_for_user(message: str) -> Optional[tuple[str, str]]:
+def classify_for_user(message: str) -> tuple[str, str] | None:
     """``(error_code, user_message)`` for a flattened budget or model-access refusal.
 
     A plain rate limit is left to the existing classifier, which already gives
@@ -200,7 +202,7 @@ def record_refusal(error: GatewayPolicyError, workload_class: str) -> None:
     metrics.inc(metrics.GATEWAY_POLICY_REFUSALS, error.kind.value, workload_class)
 
 
-def _chain(exc: Optional[BaseException]) -> Iterator[BaseException]:
+def _chain(exc: BaseException | None) -> Iterator[BaseException]:
     seen: set[int] = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
@@ -208,7 +210,7 @@ def _chain(exc: Optional[BaseException]) -> Iterator[BaseException]:
         exc = exc.__cause__ or exc.__context__
 
 
-def _error_object(body: Any) -> dict[str, Any]:
+def _error_object(body: Any) -> dict[str, Any]:  # noqa: ANN401 - a value of unknown shape (JSON or user input)
     parsed = _parse_body(body)
     if not isinstance(parsed, dict):
         return {}
@@ -220,7 +222,7 @@ def _error_object(body: Any) -> dict[str, Any]:
     return parsed
 
 
-def _parse_body(body: Any) -> Any:
+def _parse_body(body: Any) -> Any:  # noqa: ANN401 - a value of unknown shape (JSON or user input)
     if isinstance(body, (bytes, bytearray)):
         body = bytes(body).decode("utf-8", errors="replace")
     if not isinstance(body, str):
@@ -238,14 +240,14 @@ def _parse_body(body: Any) -> Any:
         return None
 
 
-def _clean_code(value: Any) -> Optional[str]:
+def _clean_code(value: Any) -> str | None:  # noqa: ANN401 - a value of unknown shape (JSON or user input)
     if value is None:
         return None
     text = str(value).strip()
     return text[:64] if text and text.lower() != "none" else None
 
 
-def _retry_after(headers: Optional[Mapping[str, str]], now: Optional[float]) -> Optional[float]:
+def _retry_after(headers: Mapping[str, str] | None, now: float | None) -> float | None:
     if not headers:
         return None
     raw = None
@@ -272,7 +274,7 @@ _ALERT_INTERVAL_SECONDS = 300.0
 _last_alert: dict[str, float] = {}
 
 
-def report_background_refusal(error: GatewayPolicyError, *, now: Optional[float] = None) -> None:
+def report_background_refusal(error: GatewayPolicyError, *, now: float | None = None) -> None:
     """Make a refusal of background work visible, without flooding the log.
 
     Indexing has no user to show a message to, and a service budget that is

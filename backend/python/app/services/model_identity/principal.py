@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 SYSTEM_SERVICE_NAME = "system"
 
@@ -26,17 +29,17 @@ class Principal:
     kind: PrincipalKind
     org_id: str
     subject_id: str
-    idp_object_id: Optional[str] = None
-    email: Optional[str] = None
-    display_name: Optional[str] = None
-    service_name: Optional[str] = None
+    idp_object_id: str | None = None
+    email: str | None = None
+    display_name: str | None = None
+    service_name: str | None = None
 
     @property
     def is_user(self) -> bool:
         return self.kind is PrincipalKind.USER
 
 
-def _clean(value: Any) -> Optional[str]:
+def _clean(value: Any) -> str | None:  # noqa: ANN401 - a value of unknown shape (JSON or user input)
     if value is None:
         return None
     text = str(value).strip()
@@ -45,9 +48,9 @@ def _clean(value: Any) -> Optional[str]:
 
 def user_principal(
     user: Mapping[str, Any],
-    org_id: Optional[str] = None,
+    org_id: str | None = None,
     *,
-    idp_object_id: Optional[str] = None,
+    idp_object_id: str | None = None,
 ) -> Principal:
     """Principal for a signed-in person, from ``request.state.user``.
 
@@ -69,7 +72,7 @@ def user_principal(
 
 
 def service_account_principal(
-    agent_id: str, org_id: str, *, name: Optional[str] = None
+    agent_id: str, org_id: str, *, name: str | None = None
 ) -> Principal:
     """Principal for an agent that runs as its own service account."""
     agent = _clean(agent_id)

@@ -31,7 +31,7 @@ from app.services.messaging.kafka.config.kafka_config import (
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
 
 
-def _str_or_none(value: Any) -> str | None:
+def _str_or_none(value: Any) -> str | None:  # noqa: ANN401 - a message field of unknown type
     return str(value) if value else None
 
 

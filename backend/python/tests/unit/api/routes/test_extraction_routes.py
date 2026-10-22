@@ -415,11 +415,11 @@ def test_entities_model_calls_run_as_the_caller_named_in_the_service_token(entit
         }
         return request
 
-    async def load_model(*_a, **_k):
+    async def load_model(*_a: object, **_k: object) -> tuple[None, None, str, str]:
         seen["load"] = peek_call_context()
         return None, None, "fake", "fake-model"
 
-    async def run_extract(*_a, **_k):
+    async def run_extract(*_a: object, **_k: object) -> MagicMock:
         seen["extract"] = peek_call_context()
         return MagicMock(model_dump=MagicMock(return_value={"entities": []}))
 

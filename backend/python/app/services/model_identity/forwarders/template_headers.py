@@ -13,21 +13,25 @@ preset's group headers stay even when the admin adds an unrelated template.
 from __future__ import annotations
 
 import json
-from typing import Callable, Dict, List, Tuple
+from typing import TYPE_CHECKING
 
 from app.services.model_identity.forwarders.base import HeaderSet
 from app.services.model_identity.forwarders.litellm_headers import service_key_headers
-from app.services.model_identity.projector import ForwardedIdentity
 from app.services.model_identity.sanitize import clean_header_value, join_capped
 from app.services.model_identity.settings import (
     PLACEHOLDER_RE,
     ConnectionForwardingSettings,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from app.services.model_identity.projector import ForwardedIdentity
+
 _JSON_UNSAFE = str.maketrans("", "", '"\\')
 
 
-def placeholder_values(identity: ForwardedIdentity) -> Dict[str, str]:
+def placeholder_values(identity: ForwardedIdentity) -> dict[str, str]:
     values = {
         "SUBJECT": identity.subject,
         "EMAIL": identity.email or "",
@@ -43,11 +47,11 @@ def placeholder_values(identity: ForwardedIdentity) -> Dict[str, str]:
     return {key: value.translate(_JSON_UNSAFE) for key, value in values.items()}
 
 
-def render_template(template: str, values: Dict[str, str]) -> str:
+def render_template(template: str, values: dict[str, str]) -> str:
     return clean_header_value(PLACEHOLDER_RE.sub(lambda m: values.get(m.group(1), ""), template))
 
 
-def _portkey(identity: ForwardedIdentity) -> List[Tuple[str, str]]:
+def _portkey(identity: ForwardedIdentity) -> list[tuple[str, str]]:
     metadata = {
         "_user": identity.subject,
         "org_id": identity.org_id,
@@ -58,7 +62,7 @@ def _portkey(identity: ForwardedIdentity) -> List[Tuple[str, str]]:
     return [("x-portkey-metadata", json.dumps(metadata, separators=(",", ":")))]
 
 
-def _helicone(identity: ForwardedIdentity) -> List[Tuple[str, str]]:
+def _helicone(identity: ForwardedIdentity) -> list[tuple[str, str]]:
     headers = [
         ("Helicone-User-Id", identity.subject),
         ("Helicone-Property-Workload", identity.workload),
@@ -69,7 +73,7 @@ def _helicone(identity: ForwardedIdentity) -> List[Tuple[str, str]]:
     return headers
 
 
-def _cloudflare(identity: ForwardedIdentity) -> List[Tuple[str, str]]:
+def _cloudflare(identity: ForwardedIdentity) -> list[tuple[str, str]]:
     # AI Gateway accepts at most five flat entries.
     metadata = {"userid": identity.subject, "org": identity.org_id, "workload": identity.workload}
     if identity.group_ids:
@@ -77,7 +81,7 @@ def _cloudflare(identity: ForwardedIdentity) -> List[Tuple[str, str]]:
     return [("cf-aig-metadata", json.dumps(metadata, separators=(",", ":")))]
 
 
-def _apim(identity: ForwardedIdentity) -> List[Tuple[str, str]]:
+def _apim(identity: ForwardedIdentity) -> list[tuple[str, str]]:
     # Azure API Management reads these in a policy, for example as the counter
     # key of llm-token-limit.
     headers = [("x-pipeshub-counter-key", identity.subject), ("x-pipeshub-org", identity.org_id)]
@@ -86,7 +90,7 @@ def _apim(identity: ForwardedIdentity) -> List[Tuple[str, str]]:
     return headers
 
 
-_PRESETS: Dict[str, Callable[[ForwardedIdentity], List[Tuple[str, str]]]] = {
+_PRESETS: dict[str, Callable[[ForwardedIdentity], list[tuple[str, str]]]] = {
     "portkey": _portkey,
     "helicone": _helicone,
     "cloudflare": _cloudflare,
@@ -105,7 +109,7 @@ class TemplateHeadersForwarder:
     def render(
         self, identity: ForwardedIdentity, settings: ConnectionForwardingSettings
     ) -> HeaderSet:
-        out: Dict[str, str] = {}
+        out: dict[str, str] = {}
         preset = _PRESETS.get(settings.preset)
         if preset is not None:
             for name, value in preset(identity):
