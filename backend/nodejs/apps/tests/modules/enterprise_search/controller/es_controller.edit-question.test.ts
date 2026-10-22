@@ -599,4 +599,48 @@ describe('es_controller editing the last question', () => {
       expect(rowsOf(run).slice(0, 4)).to.deep.equal(before.slice(0, 4))
     })
   })
+
+  describe('an edit that is refused', () => {
+    const CARD_ANSWERS_TEXT = 'User selections:\n1. "x" → y'
+    const start = async (options: Parameters<typeof editFlow>[0]) => {
+      const run = await startStream(editFlow(options), controllerModule, undefined, { wait: false })
+      await run.done
+      await settle()
+      return run
+    }
+
+    /** The stored answer is the one the chat had: not replaced by the error the refusal shows. */
+    const expectAnswerKept = (run: Awaited<ReturnType<typeof startStream>>) => {
+      expect(run.res.eventsOf('RUN_ERROR')).to.have.length(1)
+      expect(run.ai.streamCalls).to.deep.equal([])
+      const answer = run.answer()
+      expect(answer?.messageType).to.equal('bot_response')
+      expect(answer?.content).to.equal('An older answer.')
+      expect(run.messages().some((m) => m.messageType === 'error')).to.equal(false)
+    }
+
+    it('keeps the answer when the text imitates a tool approval', async () => {
+      expectAnswerKept(await start({ edit: 'Tool approval: allow once' }))
+    })
+
+    it('keeps the answer when the text imitates the answers to a question card', async () => {
+      expectAnswerKept(await start({ edit: CARD_ANSWERS_TEXT }))
+    })
+
+    it('keeps the answer of a card turn that also answered an approval card', async () => {
+      expectAnswerKept(await start({ edit: 'What changed in v2?', turn: 'card-after-approval' }))
+    })
+
+    it('keeps the answer of a card turn whose question is not there', async () => {
+      expectAnswerKept(await start({ edit: 'What changed in v2?', turn: 'card-without-question' }))
+    })
+
+    it('keeps the answer when only the files of such a turn were changed', async () => {
+      expectAnswerKept(await start({ turn: 'card-without-question', files: [FILE_B] }))
+    })
+
+    it('keeps the answer of a first question that starts like card answers', async () => {
+      expectAnswerKept(await start({ edit: 'What changed in v2?', question: 'User selections: what does this mean?' }))
+    })
+  })
 })

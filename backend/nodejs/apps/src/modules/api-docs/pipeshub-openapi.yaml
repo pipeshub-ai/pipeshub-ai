@@ -8610,7 +8610,9 @@ components:
             an approved action or is itself a tool-approval or question-card
             answer. A turn that went through an answered question card can be
             edited: the question is rewritten and the whole turn, including its
-            card and the card's answers, is replaced by the new answer.
+            card and the card's answers, is replaced by the new answer. A card
+            turn that spans more than 50 saved rows cannot be edited; the
+            request is refused and the stored answer is left as it was.
         attachments:
           type: array
           maxItems: 10

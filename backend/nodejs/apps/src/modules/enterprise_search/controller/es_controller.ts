@@ -3491,7 +3491,6 @@ async function regenerateAnswersInternal(
     if (!validationResult) {
       throw new NotFoundError('Conversation or message not found');
     }
-    existingConversation = validationResult.conversation;
     const userQuery = validationResult.userQuery;
     // Only an edit carries these two; their types are not trusted until read.
     const editBody = req.body as { query?: unknown; attachments?: unknown };
@@ -3529,6 +3528,9 @@ async function regenerateAnswersInternal(
       ? requestedAttachments
       : undefined;
     const staleAskToolCallIds = validationResult.staleAskToolCallIds;
+    // Set only once the request is accepted: an error that reaches the catch below with a
+    // conversation in hand replaces the stored answer, which a refused edit must not do.
+    existingConversation = validationResult.conversation;
 
     // Format previous conversations up to this message (exclude last bot
     // response and the user query that triggered it)
