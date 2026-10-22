@@ -155,7 +155,7 @@ class KeyValueStoreFactory:
     def _create_in_memory_store() -> InMemoryKeyValueStore[T]:
         """Create an in-memory store instance."""
         logger.debug("🔄 Creating in-memory store instance")
-        store = InMemoryKeyValueStore[T]()
+        store = InMemoryKeyValueStore[T](logger)
         logger.debug("✅ In-memory store instance created successfully")
         return store
 
