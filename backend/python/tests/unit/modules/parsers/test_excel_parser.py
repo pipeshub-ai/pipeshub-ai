@@ -2632,23 +2632,6 @@ class TestResolveAmbiguousFormatAdditional:
         assert "%H" in result
         assert "%I" not in result  # Not 12-hour
 
-    def test_mm_ss_with_time_context(self):
-        """mm:ss format where has_time detects time (via h in format), covering line 251.
-
-        When the format has 'h' making has_time=True and then mm:ss appears with no
-        h patterns in the python_format, the special case branch is taken.
-        """
-        # This is a tricky case. We need has_time=True but no 'h' in python_format.
-        # Actually, looking at line 248-251 more carefully:
-        # has_time checks for 'h' in format_str (the original)
-        # Line 250 checks for [hH%] in python_format (after substitutions)
-        # If format_str has 'h' but the h gets consumed, it might not be present
-        # However, this is hard to trigger naturally. Instead:
-        # "mm:ss" has no 'h' so has_time=False, taking the else branch (line 263-265).
-        # For coverage of line 251, we need a format where has_time=True but
-        # python_format after step 5 has NO [hH%] -> this is the mm:ss without hours path.
-        pass
-
     def test_single_m_in_time_context(self):
         """Single 'm' adjacent to colon in time format, covering lines 278-285."""
         result = _resolve_ambiguous_format("m/d/yyyy h:m")
