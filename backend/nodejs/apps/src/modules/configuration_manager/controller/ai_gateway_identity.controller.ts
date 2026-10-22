@@ -210,19 +210,21 @@ async function publishModelsReconfigured(
   modelTypes: ReadonlySet<string>,
 ): Promise<void> {
   const credentialsRoute = `${appConfig.cmBackend}/${aiModelRoute}`;
+  const llmPayload: LLMConfiguredEvent = { credentialsRoute };
+  const embeddingPayload: EmbeddingModelConfiguredEvent = { credentialsRoute };
   const events: Event[] = [];
   if ([...modelTypes].some((type) => type !== 'embedding')) {
     events.push({
       eventType: EventType.LLMConfiguredEvent,
       timestamp: Date.now(),
-      payload: { credentialsRoute } as LLMConfiguredEvent,
+      payload: llmPayload,
     });
   }
   if (modelTypes.has('embedding')) {
     events.push({
       eventType: EventType.EmbeddingModelConfiguredEvent,
       timestamp: Date.now(),
-      payload: { credentialsRoute } as EmbeddingModelConfiguredEvent,
+      payload: embeddingPayload,
     });
   }
   if (events.length === 0) return;
