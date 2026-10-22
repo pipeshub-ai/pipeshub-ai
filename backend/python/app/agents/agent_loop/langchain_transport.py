@@ -563,9 +563,10 @@ class LangChainTransport(LLMTransport):
         # here only gets a retry if that config list also allows the code.
         # Below 400 (or no status) the HTTP exchange itself succeeded or never happened, so the error came from the
         # network or from inside the stream, and its type says whether it is transient.
+        http_failed = bool(status_code) and status_code >= 400
         retryable = (
             status_code in (429, 500, 502, 503, 504, 529)
-            if status_code and status_code >= 400
+            if http_failed
             else _is_network_error(exc) or _is_transient_provider_error(exc)
         )
         # The class name keeps the cause classifiable when the provider
@@ -573,7 +574,8 @@ class LangChainTransport(LLMTransport):
         # unknown failure).
         return TransportError(
             f"LangChain transport error ({context}): {type(exc).__name__}: {exc}",
-            status_code=status_code,
+            # A stream's opening 200 is not the failure's status; with None the retry wrapper uses `retryable`.
+            status_code=status_code if http_failed else None,
             retryable=retryable,
             partial_output=partial_output,
         )

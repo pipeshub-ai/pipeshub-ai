@@ -1605,6 +1605,30 @@ class TestInStreamProviderErrorIsRetryable:
             async for _ in transport.stream([UserMessage(content="hi")]):
                 pass
         assert exc_info.value.retryable is True
+        assert exc_info.value.status_code is None, "the stream's opening 200 is not the failure's status"
+
+    async def test_an_anthropic_overloaded_event_gets_a_second_attempt(self) -> None:
+        """The retry wrapper trusts `retryable` only without a status code; the stream's 200 must not reach it."""
+        from app.agent_loop_lib.transport.base import RetryConfig
+        from app.agents.agent_loop.hooks.retry_with_status import retry_with_status
+
+        class _Sink:
+            async def write(self, event: dict) -> bool:
+                return True
+
+        transport = LangChainTransport(_FakeModel(raise_on_stream=self._anthropic_overloaded()))
+        calls = {"n": 0}
+
+        async def _next() -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                async for _ in transport.stream([UserMessage(content="hi")]):
+                    pass
+            return "ok"
+
+        middleware = retry_with_status(_Sink(), RetryConfig(initial_delay=0.001, backoff_factor=1.0, max_delay=0.001))
+        assert await middleware(_next) == "ok"
+        assert calls["n"] == 2
 
     async def test_an_invalid_request_error_event_is_not_retryable(self) -> None:
         import httpx
