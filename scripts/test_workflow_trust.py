@@ -45,7 +45,24 @@ PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml", "dco.yml"}
 # Privileged workflows that name the PR head only to fetch its commits and read
 # them with git log. They never check them out or run anything from them.
 PR_HEAD_READ_ONLY = {"dco.yml"}
-_CHECKS_OUT = re.compile(r"^\s*ref:|\bgit\s+(?:checkout|switch|worktree|reset)\b", re.M)
+# A checkout `ref:` that names the head, or a git command that puts a fetched commit
+# into the worktree. Comments and echo/printf lines (a fix-it hint) run nothing.
+_HEAD_CHECKOUT_REF = re.compile(
+    r"^\s*ref:.*(?:github\.event\.pull_request\.head\.|github\.head_ref|refs/pull/)"
+)
+_WORKTREE_GIT = re.compile(
+    r"\bgit\s+(?:-[cC]\s+\S+\s+|-\S+\s+)*(?:checkout|switch|worktree|reset|restore|merge|cherry-pick|rebase|pull|am)\b"
+)
+_NOT_RUN = re.compile(r"^\s*(?:#|(?:-\s*)?(?:run:\s*)?(?:echo|printf)\b)")
+
+
+def _checks_out(text: str) -> bool:
+    return any(
+        _HEAD_CHECKOUT_REF.search(line) or _WORKTREE_GIT.search(line)
+        for line in text.splitlines()
+        if not _NOT_RUN.match(line)
+    )
+
 
 _PULL_REQUEST_TRIGGER = _trigger("pull_request")
 _SECRETS_INHERIT = re.compile(r"^\s+secrets:\s*inherit\s*$", re.M)
@@ -191,7 +208,7 @@ class TestWorkflowTrust(unittest.TestCase):
             p.name
             for p in WORKFLOWS
             if _PRIVILEGED_TRIGGER.search(_text(p)) and _PR_HEAD_REF.search(_text(p))
-            and (p.name not in PR_HEAD_READ_ONLY or _CHECKS_OUT.search(_text(p)))
+            and (p.name not in PR_HEAD_READ_ONLY or _checks_out(_text(p)))
         ]
         self.assertEqual(offenders, [], "a privileged trigger checks out or references the PR head")
 
@@ -200,6 +217,37 @@ class TestWorkflowTrust(unittest.TestCase):
         # runner and keeps the intent explicit: secrets only for same-repo heads.
         offenders = [f"{p.name}:{job}" for p in WORKFLOWS for job in _unguarded_secret_jobs(_text(p))]
         self.assertEqual(offenders, [], "pull_request job reads secrets without its own fork guard")
+
+
+class TestHeadReadOnly(unittest.TestCase):
+    _FETCH = '      - run: |\n          git fetch -q origin "$HEAD"\n'
+
+    def test_fetching_the_head_and_reading_it_is_not_a_checkout(self) -> None:
+        text = (
+            "# fix a branch with `git rebase --signoff origin/main`\n"
+            "      - uses: actions/checkout@v4\n        with:\n"
+            "          ref: ${{ github.event.pull_request.base.sha }}\n"
+            + self._FETCH
+            + '          git log -1 --format=%ae "$HEAD"\n'
+            '          echo "Sign off with: git rebase --signoff $BASE"\n'
+        )
+        self.assertFalse(_checks_out(text))
+
+    def test_putting_the_head_in_the_worktree_is_a_checkout(self) -> None:
+        for line in (
+            "          ref: ${{ github.event.pull_request.head.sha }}\n",
+            "          ref: refs/pull/${{ github.event.number }}/merge\n",
+            "          ref: ${{ github.head_ref }}\n",
+            '          git checkout "$HEAD"\n',
+            '          git merge "$HEAD"\n',
+            '          git cherry-pick "$HEAD"\n',
+            '          git restore --source "$HEAD" .\n',
+            '          git -c advice.detachedHead=false switch --detach "$HEAD"\n',
+            '          git rebase "$HEAD"\n',
+            "          git pull origin pull/1/head\n",
+        ):
+            with self.subTest(line=line.strip()):
+                self.assertTrue(_checks_out(self._FETCH + line))
 
 
 class TestUnguardedSecretJobs(unittest.TestCase):

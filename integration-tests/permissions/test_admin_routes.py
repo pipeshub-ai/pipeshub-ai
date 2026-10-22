@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import requests
@@ -42,6 +42,10 @@ from helper.admin_route_table import (
 from helper.http.session_client import SessionClient
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser, create_second_user, delete_second_user
+from helper.smtp_env import smtp_env
+
+if TYPE_CHECKING:
+    from helper.clients.config_client import ConfigClient
 
 logger = logging.getLogger("admin-routes")
 
@@ -112,6 +116,16 @@ def _admin_request(route: AdminRoute) -> tuple[str, Any]:
 
 
 @pytest.fixture(scope="module")
+def smtp_stored(config_client: ConfigClient) -> None:
+    """Without a stored SMTP config, smtpConfigCheck refuses before the admin check."""
+    smtp = smtp_env()
+    if smtp is None:
+        pytest.skip("SMTP_HOST/SMTP_PORT not set: this route's admin check sits behind smtpConfigCheck")
+    resp = config_client.create_smtp_config(**smtp)
+    assert resp.status_code in (200, 201), f"Failed to configure SMTP: {resp.status_code} {resp.text}"
+
+
+@pytest.fixture(scope="module")
 def member(pipeshub_client: PipeshubClient) -> Iterator[SecondUser]:
     pipeshub_client._ensure_access_token()
     user = create_second_user(pipeshub_client)
@@ -123,7 +137,11 @@ def member(pipeshub_client: PipeshubClient) -> Iterator[SecondUser]:
 
 class TestMembersAreRefused:
     @pytest.mark.parametrize("route", ALL_ROUTES, ids=lambda r: r.id)
-    def test_a_member_is_refused(self, route: AdminRoute, member: SecondUser) -> None:
+    def test_a_member_is_refused(
+        self, route: AdminRoute, member: SecondUser, request: pytest.FixtureRequest
+    ) -> None:
+        if route.needs_smtp:
+            request.getfixturevalue("smtp_stored")
         status, text = _call(
             member.base_url, member.token, route,
             path_value=ABSENT_ID, body=_member_body(route), timeout=member.timeout,
@@ -142,8 +160,10 @@ class TestMembersAreRefused:
 class TestTheAdminGetsThrough:
     @pytest.mark.parametrize("route", ADMIN_CALLABLE, ids=lambda r: r.id)
     def test_the_admin_passes_the_check(
-        self, route: AdminRoute, user_session_client: SessionClient
+        self, route: AdminRoute, user_session_client: SessionClient, request: pytest.FixtureRequest
     ) -> None:
+        if route.needs_smtp:
+            request.getfixturevalue("smtp_stored")
         path_value, body = _admin_request(route)
         status, text = _call(
             user_session_client.base_url, user_session_client.token, route,

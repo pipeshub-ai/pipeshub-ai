@@ -50,6 +50,8 @@ class AdminRoute:
     why_no_admin: str = ""
     # Multipart upload instead of JSON (the org logo route checks the file first).
     upload: bool = False
+    # Behind smtpConfigCheck, which runs before the admin check: the suite stores SMTP first.
+    needs_smtp: bool = False
     # For Python routes: the handler in backend/python/app this row covers,
     # and the words its refusal carries.
     handler: str = ""
