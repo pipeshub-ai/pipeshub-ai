@@ -23,6 +23,7 @@ from app.agents.actions.knowledge_graph.models import (
 )
 from app.api.connection_limit import (
     ids_outside_connection,
+    ids_outside_connection_on_restore,
     keep_path_inside_connection,
     refuse_outside_connection,
 )
@@ -112,6 +113,56 @@ class TestTheSharedCheck:
     async def test_a_node_the_graph_does_not_know_is_outside(self) -> None:
         """Deleted, or never there: never treated as inside."""
         assert await ids_outside_connection(_request(), _graph(), "org-1", "user-1", ["gone"]) == {"gone"}
+
+
+def _trashed(key: str, parent: str | None = None) -> dict:
+    return {"record": {"_key": key}, "parentId": parent}
+
+
+class TestRestoreInTheTrash:
+    """A deleted node is never returned by check_access, so a restore judges a
+    delete batch by where it sits."""
+
+    @staticmethod
+    async def _outside(trashed: list[dict], kb_id: str = "app-in", live_ids: list[str] | None = None,
+                       limit: dict | None = LIMIT, graph: AsyncMock | None = None) -> set[str]:
+        return await ids_outside_connection_on_restore(
+            _request(limit), graph or _graph(), "org-1", "user-1", kb_id, live_ids or [], trashed,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_file_from_a_collection_inside_the_limit_comes_back(self) -> None:
+        assert await self._outside([_trashed("gone")]) == set()
+        assert await self._outside([_trashed("gone")], kb_id="app-out") == {"gone"}
+
+    @pytest.mark.asyncio
+    async def test_a_batch_is_judged_by_the_live_folder_it_came_from(self) -> None:
+        folder = [_trashed("dir"), _trashed("file", "dir")]
+        assert await self._outside([{**folder[0], "parentId": "rec-in"}, folder[1]]) == set()
+        assert await self._outside([{**folder[0], "parentId": "rec-out"}, folder[1]]) == {"dir", "file"}
+
+    @pytest.mark.asyncio
+    async def test_one_member_outside_the_limit_is_named_for_the_refusal(self) -> None:
+        batch = [_trashed("a", "rec-in"), _trashed("b", "rec-out")]
+        assert await self._outside(batch) == {"b"}
+
+    @pytest.mark.asyncio
+    async def test_a_limit_that_names_a_folder_in_the_trash_admits_what_was_deleted_with_it(self) -> None:
+        graph = _graph()
+        graph.get_selection_nodes = AsyncMock(return_value={
+            "groups": [], "records": [{"id": "dir", "vrid": "", "connectorId": "app-in"}], "truncated": False,
+        })
+        limit = {"apps": [], "recordGroups": [], "records": ["dir"]}
+        batch = [_trashed("dir", "rec-out"), _trashed("file", "dir")]
+        assert await self._outside(batch, limit=limit, graph=graph) == set()
+        assert await self._outside([_trashed("other", "rec-out")], limit=limit, graph=graph) == {"other"}
+
+    @pytest.mark.asyncio
+    async def test_a_live_id_is_checked_as_it_is_and_no_limit_asks_nothing(self) -> None:
+        assert await self._outside([], live_ids=["rec-in", "rec-out"]) == {"rec-out"}
+        graph = _graph()
+        assert await self._outside([_trashed("gone")], limit=None, graph=graph) == set()
+        graph.get_user_by_user_id.assert_not_awaited()
 
 
 class TestRecordsById:
@@ -364,6 +415,34 @@ class TestKnowledgeBaseRoutes:
         request = self._path_request(None, kb_id="app-out")
         await keep_path_inside_connection(request)
         request.app.state.graph_provider.get_user_by_user_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_folder_only_limit_reaches_its_folder_through_its_collection(self) -> None:
+        limit = {"apps": [], "recordGroups": [], "records": ["rec-in"]}
+        graph = _graph()
+        graph.get_selection_nodes = AsyncMock(return_value={
+            "groups": [], "records": [{"id": "rec-in", "vrid": "", "connectorId": "app-in"}], "truncated": False,
+        })
+
+        def request(**params) -> MagicMock:
+            req = _request(limit, graph=graph)
+            req.path_params = params
+            return req
+
+        graph.get_document = AsyncMock(return_value={"connectorId": "app-in"})
+        await keep_path_inside_connection(request(kb_id="app-in", folder_id="rec-in"))
+        for params in ({"kb_id": "app-in"}, {"kb_id": "app-in", "folder_id": "rec-out"}):
+            with pytest.raises(HTTPException):
+                await keep_path_inside_connection(request(**params))
+        graph.get_document = AsyncMock(return_value={"connectorId": "another-kb"})
+        with pytest.raises(HTTPException):
+            await keep_path_inside_connection(request(kb_id="app-in", folder_id="rec-in"))
+
+    @pytest.mark.asyncio
+    async def test_a_restore_is_left_to_the_restore_itself(self) -> None:
+        request = self._path_request(record_id="rec-out")
+        request.scope = {"route": SimpleNamespace(path="/api/v1/kb/record/{record_id}/restore")}
+        await keep_path_inside_connection(request)
 
     def test_every_knowledge_base_route_carries_the_check(self) -> None:
         from app.connectors.sources.localKB.api.kb_router import kb_router

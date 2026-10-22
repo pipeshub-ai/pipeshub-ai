@@ -258,6 +258,7 @@ export interface AuthCodeExchangeResult {
   userId: string;
   orgId: string;
   scopes: string[];
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 // OAuth Error Response (RFC 6749)

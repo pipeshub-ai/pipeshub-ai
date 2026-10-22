@@ -77,6 +77,9 @@ MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 # Restore asks for the role its delete needed: an owner or a writer.
+#: ``(kb_id, live ids, delete-batch members)`` to the ids a connected app may not reach.
+ConnectionCheck = Callable[[str, list[str], list[dict]], Awaitable[set[str]]]
+
 RESTORE_FILE_ROLES = ("OWNER", "WRITER")
 RESTORE_BATCH_ROLES = ("OWNER", "WRITER")
 MAX_RESTORE_RECORD_IDS = 100
@@ -1598,7 +1601,7 @@ class KnowledgeBaseService:
         record_id: str,
         user_id: str,
         org_id: str,
-        outside: Callable[[list[str]], Awaitable[set[str]]] | None = None,
+        outside: ConnectionCheck | None = None,
     ) -> dict:
         """Bring a deleted KB file or folder back from the trash, with everything
         deleted along with it.
@@ -1611,7 +1614,8 @@ class KnowledgeBaseService:
         name is now used by another one beside it comes back as
         "name (restored)". Restored files are indexed again: their vectors went
         when they were deleted. ``outside`` names the ids a connected app may
-        not reach; a batch holding any of them is refused whole.
+        not reach; a batch holding any of them is refused whole, and an item
+        that is not in the trash is refused the same way.
         """
         try:
             if not await is_soft_delete_enabled(self.config_service):
@@ -1638,6 +1642,8 @@ class KnowledgeBaseService:
             if err:
                 return err
             if is_live_record(record):
+                if outside is not None and await outside(kb_id, [record_id], []):
+                    return {"success": False, "code": 403, "reason": CONNECTION_OUTSIDE_MESSAGE}
                 if self._owes_restore_reindex(record):
                     return await self._requeue_restored_file(record, kb_id, user_role)
                 return {
@@ -1654,7 +1660,7 @@ class KnowledgeBaseService:
             member_ids = {item["record"]["_key"] for item in members}
             if record_id not in member_ids:
                 return {"success": False, "code": 409, "reason": RESTORE_CHANGED_REASON}
-            if outside is not None and await outside(sorted(member_ids)):
+            if outside is not None and await outside(kb_id, [], members):
                 return {"success": False, "code": 403, "reason": CONNECTION_OUTSIDE_MESSAGE}
 
             single_file = len(members) == 1 and members[0].get("isFile") is True
@@ -1935,7 +1941,7 @@ class KnowledgeBaseService:
         record_ids: list[str],
         user_id: str,
         org_id: str,
-        outside: Callable[[list[str]], Awaitable[set[str]]] | None = None,
+        outside: ConnectionCheck | None = None,
     ) -> dict:
         """Restore several deleted items, each with the batch it was deleted in.
 

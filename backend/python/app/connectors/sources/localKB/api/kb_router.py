@@ -1,13 +1,16 @@
 # router.py fixes - Add return type annotations
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any, Dict, List, Optional, Union
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
 
-from app.api.connection_limit import ids_outside_connection, keep_path_inside_connection
+from app.api.connection_limit import (
+    ids_outside_connection,
+    ids_outside_connection_on_restore,
+    keep_path_inside_connection,
+)
 from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes
@@ -36,7 +39,10 @@ from app.connectors.sources.localKB.api.models import (
     UploadRecordsinFolderResponse,
     UploadRecordsinKBResponse,
 )
-from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.connectors.sources.localKB.handlers.kb_service import (
+    ConnectionCheck,
+    KnowledgeBaseService,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
@@ -1532,14 +1538,14 @@ async def delete_record_in_folder(
         )
 
 
-def _outside_connection(request: Request) -> Callable[[list[str]], Awaitable[set[str]]] | None:
-    """For a connected app with a limit: which of some ids it may not reach.
-    A restore brings back a whole delete batch, not only the ids it names."""
+def _outside_connection(request: Request) -> ConnectionCheck | None:
+    """For a connected app with a limit: which of a restore's ids it may not
+    reach. A restore brings back a whole delete batch, not only the ids it names."""
     if connection_limit(request.state.user) is None:
         return None
     user = request.state.user
-    return lambda ids: ids_outside_connection(
-        request, request.app.state.graph_provider, user.get("orgId"), user.get("userId"), ids,
+    return lambda kb_id, live_ids, trashed: ids_outside_connection_on_restore(
+        request, request.app.state.graph_provider, user.get("orgId"), user.get("userId"), kb_id, live_ids, trashed,
     )
 
 

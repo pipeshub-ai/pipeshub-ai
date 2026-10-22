@@ -430,7 +430,8 @@ class TestConnectedAppLimit:
         from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
 
         inside, other = _doc("r1"), _doc("r2", name="b.pdf")
-        _batch(svc, inside, [_member(inside), _member(other)])
+        members = [_member(inside), _member(other)]
+        _batch(svc, inside, members)
         outside = AsyncMock(return_value={"r2"})
 
         for result in (
@@ -438,8 +439,8 @@ class TestConnectedAppLimit:
             (await svc.restore_records(["r1"], "u1", ORG, outside))["results"][0],
         ):
             assert (result["code"], result["reason"]) == (403, CONNECTION_OUTSIDE_MESSAGE)
-            assert "restoredRecords" not in result
-        assert outside.await_args.args[0] == ["r1", "r2"]
+            assert "r2" not in str(result) and "b.pdf" not in str(result)
+        outside.assert_awaited_with(KB, [], members)
         mock_processor.restore_trashed_records.assert_not_called()
 
     async def test_a_batch_inside_the_limit_comes_back(self, svc, mock_processor) -> None:
@@ -448,3 +449,15 @@ class TestConnectedAppLimit:
         result = await svc.restore_record("r1", "u1", ORG, AsyncMock(return_value=set()))
         assert result["success"] is True
         mock_processor.restore_trashed_records.assert_awaited_once()
+
+    async def test_a_file_that_is_back_already_is_refused_outside_the_limit(self, svc, mock_processor) -> None:
+        """An id that is not in the trash may still owe a re-index, which restore would queue."""
+        live = _doc("r1", deleted=False, **{RESTORED_AT_FIELD: 1, "indexingStatus": ProgressStatus.NOT_STARTED.value})
+        _batch(svc, live, [])
+        outside = AsyncMock(return_value={"r1"})
+
+        result = await svc.restore_record("r1", "u1", ORG, outside)
+
+        assert result["code"] == 403
+        outside.assert_awaited_with(KB, ["r1"], [])
+        mock_processor.reindex_existing_records.assert_not_called()

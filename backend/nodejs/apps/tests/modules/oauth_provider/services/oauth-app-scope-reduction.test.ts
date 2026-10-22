@@ -134,6 +134,17 @@ describe('updating what an OAuth app can see', () => {
     expect(tokens.revokeAllTokensForApp.called).to.equal(false);
   });
 
+  it('revokes nothing when the same ids are saved in another order', async () => {
+    const { service, tokens } = makeService();
+    app.knowledgeLimit = { apps: ['app-1', 'app-2'], recordGroups: [], records: ['f-2', 'f-1'] };
+
+    await service.updateApp(appId, orgId, userId, true, {
+      knowledgeLimit: { apps: ['app-2', 'app-1'], recordGroups: [], records: ['f-1', 'f-2'] },
+    });
+
+    expect(tokens.revokeAllTokensForApp.called).to.equal(false);
+  });
+
   it('lifts the limit on null and revokes: users agreed to less, so they connect again', async () => {
     const { service, tokens } = makeService();
     app.knowledgeLimit = { ...limit };

@@ -29,9 +29,20 @@ export const toKnowledgeLimit = (
       }
     : undefined;
 
-/** Two limits name the same items; absent equals only absent. */
+/** Two limits name the same items, in any order; absent equals only absent. */
 export const sameKnowledgeLimit = (
   a: KnowledgeLimit | null | undefined,
   b: KnowledgeLimit | null | undefined,
-): boolean =>
-  JSON.stringify(toKnowledgeLimit(a)) === JSON.stringify(toKnowledgeLimit(b));
+): boolean => {
+  const sorted = (limit: KnowledgeLimit | null | undefined) => {
+    const plain = toKnowledgeLimit(limit);
+    return (
+      plain && {
+        apps: plain.apps.sort(),
+        recordGroups: plain.recordGroups.sort(),
+        records: plain.records.sort(),
+      }
+    );
+  };
+  return JSON.stringify(sorted(a)) === JSON.stringify(sorted(b));
+};
