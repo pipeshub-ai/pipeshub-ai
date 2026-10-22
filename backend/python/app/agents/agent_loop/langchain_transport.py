@@ -216,6 +216,7 @@ def _is_network_error(exc: Exception) -> bool:
 # falling through to the permissive default.
 _OLLAMA_CLASS_NAME = "ChatOllama"
 _OPENAI_CLASS_NAMES = frozenset({"BaseChatOpenAI", "ChatOpenAI", "AzureChatOpenAI"})
+_BEDROCK_CONVERSE_CLASS_NAME = "ChatBedrockConverse"
 
 
 def _is_openai_family(chat_model: "BaseChatModel") -> bool:
@@ -241,16 +242,23 @@ def _supports_multipart_tool_result(chat_model: "BaseChatModel") -> bool:
       unsupported here and delivers its images through the user-message
       fallback instead — a redundant relocation, not a broken call.
 
+    - OpenAI GPT-5.x / GPT-6 on Bedrock Converse reject an `image` block
+      inside a `toolResult` with a ValidationException.
+
     Every other LangChain-wrapped provider PipesHub configures (Anthropic,
-    Gemini, Bedrock, ...) accepts multipart tool results. Whatever this gets
-    wrong for an unknown gateway is recovered at runtime off the provider's
-    own error — see `LangChainTransport._relocates_tool_images`.
+    Gemini, other Bedrock models, ...) accepts multipart tool results.
+    Whatever this gets wrong for an unknown gateway is recovered at runtime
+    off the provider's own error — see `LangChainTransport._relocates_tool_images`.
     """
     mro_names = {cls.__name__ for cls in type(chat_model).__mro__}
     if _OLLAMA_CLASS_NAME in mro_names:
         return False
     if mro_names & _OPENAI_CLASS_NAMES:
         return bool(getattr(chat_model, "use_responses_api", False))
+    if _BEDROCK_CONVERSE_CLASS_NAME in mro_names:
+        from app.utils.aimodels import bedrock_is_openai_gpt
+
+        return not bedrock_is_openai_gpt(getattr(chat_model, "model_id", None))
     return True
 
 
