@@ -1830,7 +1830,10 @@ class TestReviewFixesPP366:
         monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
         connector = build(server, db, store, config=auth_config(server, baseUrl=base_url))
 
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="Nextcloud server URL"):
+            await connector.init()
+        with pytest.raises(ConnectorInitError, match="Nextcloud server URL"):
+            await connector.run_sync()
 
         assert connector.data_source is None
         assert server.requests == []

@@ -42,7 +42,8 @@ def nextcloud_source() -> NextcloudSourceHelper:
         admin_password=os.getenv("NEXTCLOUD_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD),
         user=SYNC_USER,
         password=SYNC_PASSWORD,
-        # Records are owned by the Nextcloud account's email, so it is the test user's.
+        # Access goes to the connector's creator, not this address (TC-EMAIL-ISOLATION
+        # changes it and checks); it is kept the test user's so the account looks real.
         email=os.getenv("PIPESHUB_TEST_USER_EMAIL", "pipeshub-it@example.com"),
     )
     try:

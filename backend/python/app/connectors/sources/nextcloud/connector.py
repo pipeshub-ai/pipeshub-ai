@@ -599,9 +599,13 @@ class NextcloudConnector(BaseConnector):
                 return False
 
             self.batch_size = sync_batch_size(config.get("sync"))
-            client = NextcloudRESTClientViaUsernamePassword(
-                base_url, username, password, resilience=self.resilience
-            )
+            try:
+                client = NextcloudRESTClientViaUsernamePassword(
+                    base_url, username, password, resilience=self.resilience
+                )
+            except ValueError as e:
+                # The reason (https, '?', a blocked address) is what the person must fix.
+                raise ConnectorInitError(str(e)) from e
             self.base_url = client.get_base_url()
             data_source = NextcloudDataSource(NextcloudClient(client))
             self._app_password = password
@@ -610,7 +614,7 @@ class NextcloudConnector(BaseConnector):
             self.data_source = data_source
             self.logger.info(f"Nextcloud client initialized for user: {self.current_user_id}")
             return True
-        except NextcloudAppPasswordRejectedError:
+        except ConnectorInitError:
             raise
         except Exception as e:
             self.logger.error(f"Failed to initialize Nextcloud client: {e}", exc_info=True)
