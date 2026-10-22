@@ -204,6 +204,9 @@ class FakeGraph:
                 self.apps.setdefault(n["id"], {"_key": n["id"]}).update(n)
         return True
 
+    async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> int:
+        return len(virtual_record_ids)
+
     async def delete_nodes(self, keys, collection):
         for key in keys:
             self.mappings.pop(key, None)
