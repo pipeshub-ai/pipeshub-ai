@@ -51799,7 +51799,8 @@ paths:
                   - connector
         '400':
           description: |
-            Invalid request: a parameter or the body failed validation
+            Invalid request: `connectorId` is not 1 to 64 letters, digits, underscores or hyphens
+            (`VALIDATION_ERROR`, "Connector ID must be 1-64 chars of letters, digits, underscore, or hyphen").
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:

@@ -45,6 +45,7 @@ from openapi_schema_validator import (  # noqa: E402
     assert_query_params_documented,
     assert_request_body_strictly_matches_openapi_operation,
     assert_response_strictly_matches_openapi_operation,
+    load_openapi_document,
     operation_oauth2_scopes,
     operation_request_examples,
     request_body_violations,
@@ -570,6 +571,9 @@ class TestCreateAndDeleteOAuthApp:
         assert _operation_responses(_DELETE_OAUTH_CONFIG).get("400") == {
             "$ref": "#/components/responses/XssRejected"
         }
+        # The validator never reads descriptions, so the shared response's sentence is checked here.
+        xss = load_openapi_document()["components"]["responses"]["XssRejected"]["description"]
+        assert "HTML tags, scripts, and XSS content are not allowed" in xss, xss
         resp = oauth_configs_api.delete_config(
             "Jira", str(uuid4()), auth=False, params={"q": "<script>alert(1)</script>"}
         )
