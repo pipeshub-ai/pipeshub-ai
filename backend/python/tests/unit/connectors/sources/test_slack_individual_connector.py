@@ -4091,3 +4091,56 @@ class TestFullSyncCoverage:
             await c._sync_channels()
 
         assert c.full_sync_coverage().complete is False
+
+
+class TestHasRepliesOnBurstRecords:
+    """A record's hasReplies says whether any message it holds started a thread."""
+
+    @pytest.mark.asyncio
+    async def test_channel_burst_with_a_thread_parent_has_replies(self) -> None:
+        from app.connectors.sources.slack.individual.connector import (
+            ConversationalBurst,
+        )
+
+        c = _make_connector()
+        with_parent = ConversationalBurst(
+            messages=[
+                {"ts": "10.0", "user": "U1", "text": "a"},
+                {"ts": "11.0", "user": "U1", "text": "b", "thread_ts": "11.0", "reply_count": 3},
+            ],
+            start_ts=10.0,
+            end_ts=11.0,
+        )
+        recs, _ = await c._process_burst(with_parent, _ctx(c))
+        assert recs[0][0].has_replies is True
+
+        quiet = ConversationalBurst(
+            messages=[{"ts": "12.0", "user": "U1", "text": "a"}, {"ts": "13.0", "user": "U1", "text": "b"}],
+            start_ts=12.0,
+            end_ts=13.0,
+        )
+        recs, _ = await c._process_burst(quiet, _ctx(c))
+        assert recs[0][0].has_replies is False
+
+    @pytest.mark.asyncio
+    async def test_thread_burst_has_replies_only_when_it_holds_the_parent(self) -> None:
+        from app.connectors.sources.slack.individual.connector import (
+            ConversationalBurst,
+        )
+
+        c = _make_connector()
+        first = ConversationalBurst(
+            messages=[
+                {"ts": "1.0", "user": "U1", "text": "root", "thread_ts": "1.0", "reply_count": 4},
+                {"ts": "2.0", "user": "U1", "text": "r1", "thread_ts": "1.0"},
+            ],
+            start_ts=1.0,
+            end_ts=2.0,
+        )
+        later = ConversationalBurst(
+            messages=[{"ts": "9.0", "user": "U1", "text": "r4", "thread_ts": "1.0"}],
+            start_ts=9.0,
+            end_ts=9.0,
+        )
+        assert (await c._build_thread_burst_record(first, "1.0", "rg", _ctx(c))).has_replies is True
+        assert (await c._build_thread_burst_record(later, "1.0", "rg", _ctx(c))).has_replies is False

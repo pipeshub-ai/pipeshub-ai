@@ -567,7 +567,13 @@ class GraphTransactionStore(TransactionStore):
         app_users_dict = await self.graph_provider.get_app_users(
             org_id, connector_id, raise_on_error=raise_on_error
         )
-        return [AppUser.from_arango_user(user_dict) for user_dict in app_users_dict if user_dict is not None]
+        # A membership the source names no user for, as an external collaborator's
+        # (on_external_app_users), is no app user: AppUser cannot be built without the
+        # source's id, and one such row would fail the whole list.
+        return [
+            AppUser.from_arango_user(user_dict) for user_dict in app_users_dict
+            if user_dict is not None and user_dict.get("sourceUserId")
+        ]
 
     async def get_user_groups(
         self, connector_id: str, org_id: str, *, raise_on_error: bool = False

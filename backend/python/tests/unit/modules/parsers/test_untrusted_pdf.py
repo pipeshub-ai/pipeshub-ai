@@ -6,7 +6,9 @@ threads (no pool), and real files through real parse worker processes.
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -326,26 +328,29 @@ class TestRealFilesInThreads:
 PDFMINER_BUSY_SECONDS = 1.0
 
 
+@contextmanager
+def _untraced() -> Iterator[None]:
+    """Pause this thread's tracer, such as coverage's, and resume it after.
+
+    A tracer runs on every line in the pdfminer thread and in the probe alike,
+    which evens out the convoy: under CI's coverage run the probe saw 0.09 to
+    0.21 s, where the same read untraced gives it 0.5 to 1.2 s.
+    """
+    tracer = sys.gettrace()
+    sys.settrace(None)
+    try:
+        yield
+    finally:
+        sys.settrace(tracer)
+
+
 def _keep_pdfminer_busy(seconds: float) -> None:
     """Read a damaged file with pdfminer, again and again, for at least *seconds*."""
     content = broken_xref_pdf(256 * 1024)
     deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        open_pdf(content)
-
-
-def _hold_the_gil(seconds: float) -> None:
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        pass
-
-
-async def _worst_burst_while(busy: Callable[[float], None]) -> float:
-    with IoProbe() as io_probe:
-        await asyncio.sleep(0.1)
-        await asyncio.to_thread(busy, PDFMINER_BUSY_SECONDS)
-        await asyncio.sleep(0.1)
-    return io_probe.worst
+    with _untraced():
+        while time.monotonic() < deadline:
+            open_pdf(content)
 
 
 def _governor() -> MagicMock:
@@ -397,15 +402,12 @@ class TestRealFilesInWorkers:
 
     async def test_the_probe_sees_the_stall_a_pdfminer_thread_causes(self) -> None:
         """Without this, a probe that measured nothing would pass the test above."""
-        worst = await _worst_burst_while(_keep_pdfminer_busy)
-        if worst > 0.25:
-            return
-        # The convoy needs a free core for the busy thread: on a CPU-starved
-        # runner it barely gets the GIL, so no thread can stall the loop and
-        # there is nothing to see. A thread that only holds the GIL tells which.
-        if await _worst_burst_while(_hold_the_gil) <= 0.25:
-            pytest.skip("CPUs too busy for a GIL convoy to form, so no stall to see")
-        pytest.fail(f"A pdfminer thread stalled the probe for {worst:.3f} s, under 0.25 s")
+        with _untraced(), IoProbe() as io_probe:
+            await asyncio.sleep(0.1)
+            await asyncio.to_thread(_keep_pdfminer_busy, PDFMINER_BUSY_SECONDS)
+            await asyncio.sleep(0.1)
+
+        assert io_probe.worst > 0.25
 
     async def test_the_pool_keeps_working_after_a_worker_was_stopped(self, pool: None) -> None:
         await inspect_untrusted_pdf(garbage_tail_pdf(32 * MIB))

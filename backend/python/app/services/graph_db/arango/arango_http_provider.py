@@ -600,8 +600,18 @@ _PURGE_WALK_FIELDS = ("orgId", "deletedAtTimestamp", "_key")
 _PURGE_LOCK_TIMEOUT_SECONDS = 30
 
 
-# The sweeper scans stage states by status and age; the coordinator reads one revision.
-_STAGE_STATE_INDEXES: tuple[tuple[str, ...], ...] = (("status", "updatedAtMs"), ("virtualRecordId", "rev"))
+# Stage states removed per statement, as records are: a connector can hold millions.
+_STAGE_STATE_DELETE_BATCH = 5000
+# Virtual records whose stage states one statement removes.
+_STAGE_STATE_VRID_BATCH = 1000
+
+# The sweeper scans stage states by status and age; the coordinator reads one revision;
+# a connector's delete removes its stage states by connectorId.
+_STAGE_STATE_INDEXES: tuple[tuple[str, ...], ...] = (
+    ("status", "updatedAtMs"),
+    ("virtualRecordId", "rev"),
+    ("connectorId",),
+)
 
 
 class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
@@ -2651,6 +2661,26 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {"statuses": statuses, "before": updated_before_ms, "limit": limit},
         )
         return [self._stage_doc_from_arango(row) for row in rows]
+
+    @override
+    async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> int:
+        ids = sorted({vrid for vrid in virtual_record_ids if vrid})
+        if not ids:
+            return 0
+        deleted = 0
+        for start in range(0, len(ids), _STAGE_STATE_VRID_BATCH):
+            rows = await self._stage_aql(
+                """
+                FOR doc IN @@collection
+                    FILTER doc.virtualRecordId IN @ids
+                    REMOVE doc IN @@collection
+                    COLLECT WITH COUNT INTO removed
+                    RETURN removed
+                """,
+                {"ids": ids[start:start + _STAGE_STATE_VRID_BATCH]},
+            )
+            deleted += int(rows[0]) if rows else 0
+        return deleted
 
     @override
     async def compare_and_set_record_fields(
@@ -10074,6 +10104,41 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Error deleting from {collection}: {str(e)}")
             return (0, False)
 
+    async def _delete_stage_states_by_connector_id(
+        self, transaction: str | None, connector_id: str
+    ) -> tuple[int, bool]:
+        """Delete a connector's stage states in bounded batches, inside *transaction*.
+
+        Each statement returns one count, not a row per removed document.
+        """
+        query = """
+        FOR doc IN @@collection
+            FILTER doc.connectorId == @connector_id
+            LIMIT @batch
+            REMOVE doc IN @@collection
+            COLLECT WITH COUNT INTO removed
+            RETURN removed
+        """
+        total = 0
+        try:
+            while True:
+                rows = await self.http_client.execute_aql(
+                    query=query,
+                    bind_vars={
+                        "@collection": CollectionNames.STAGE_STATES.value,
+                        "connector_id": connector_id,
+                        "batch": _STAGE_STATE_DELETE_BATCH,
+                    },
+                    txn_id=transaction,
+                )
+                deleted = int(rows[0]) if rows else 0
+                total += deleted
+                if deleted < _STAGE_STATE_DELETE_BATCH:
+                    return (total, True)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete the stage states of connector {connector_id}: {str(e)}")
+            return (total, False)
+
     async def delete_sync_points_by_connector_id(
         self,
         connector_id: str,
@@ -10313,6 +10378,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 CollectionNames.ROLES.value,
                 CollectionNames.GROUPS.value,
                 CollectionNames.SYNC_POINTS.value,
+                CollectionNames.STAGE_STATES.value,
                 CollectionNames.FILES.value,
                 CollectionNames.MAILS.value,
                 CollectionNames.WEBPAGES.value,
@@ -10446,6 +10512,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if not sync_success:
                     raise Exception(
                         "CRITICAL: Failed to delete sync points. Transaction will be rolled back."
+                    )
+
+                # Stage states hang off no edge, so nothing above reaches them.
+                _, stages_success = await self._delete_stage_states_by_connector_id(transaction, connector_id)
+                if not stages_success:
+                    raise Exception(
+                        "CRITICAL: Failed to delete pipeline stage states. Transaction will be rolled back."
                     )
 
                 # Step 13: Delete the app itself (CRITICAL - must succeed completely)

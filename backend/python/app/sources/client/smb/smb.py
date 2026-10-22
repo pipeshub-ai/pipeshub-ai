@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import stat
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, BinaryIO, TypeVar
 
@@ -17,14 +19,26 @@ from app.connectors.sources.network_share.errors import (
 )
 from app.sources.client.iclient import IClient
 from app.sources.client.smb.share_enum import enumerate_shares
+from app.utils.url_fetcher import (
+    HostCheckError,
+    check_addresses,
+    literal_ip,
+    resolved_addresses,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from logging import Logger
+    from types import ModuleType
 
     from app.config.configuration_service import ConfigurationService
 
 REPARSE_POINT = 0x0400
+# smbclient waits 60 s by default, longer than a gateway holds a request open.
+CONNECTION_TIMEOUT_SECONDS = 15
+LOOKUP_TIMEOUT_SECONDS = 5
+# getaddrinfo has no timeout. A lookup left running here does not hold a client's lock.
+_lookups = ThreadPoolExecutor(max_workers=4, thread_name_prefix="smb-lookup")
 _T = TypeVar("_T")
 
 
@@ -52,6 +66,64 @@ def _stat_time(result: object, field: str) -> datetime | None:
     return _as_datetime(getattr(result, field, None))
 
 
+def dial_address(server: str) -> str:
+    """The address to connect to for ``server``, looked up once.
+
+    Every path is then built on this address, so a second lookup cannot move the
+    connection. The deployment's rule for hosts users type applies (``check_addresses``:
+    link-local and cloud metadata never, private ones not while
+    PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on), and loopback, unspecified and multicast
+    addresses are never a file server either. Sessions authenticate with NTLM (the image
+    has no Kerberos), which does not need the server's name.
+
+    Raises:
+        NetworkShareAuthError: the name doesn't resolve or an address is refused.
+    """
+    literal = literal_ip(server)
+    try:
+        addresses = (
+            [literal]
+            if literal is not None
+            else _lookups.submit(resolved_addresses, server).result(timeout=LOOKUP_TIMEOUT_SECONDS)
+        )
+    except TimeoutError as exc:
+        raise NetworkShareAuthError(f'Looking up "{server}" timed out. Check the server name.') from exc
+    if not addresses:
+        raise NetworkShareAuthError(f'Could not find a server named "{server}". Check the server name.')
+    plain = [
+        a.ipv4_mapped if isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped is not None else a
+        for a in addresses
+    ]
+    if any(a.is_loopback or a.is_unspecified or a.is_multicast for a in plain):
+        raise NetworkShareAuthError(
+            f"The SMB server address {server} is not allowed: loopback, link-local and multicast "
+            "addresses cannot be used."
+        )
+    try:
+        check_addresses(server, addresses)
+    except HostCheckError as exc:
+        raise NetworkShareAuthError(str(exc)) from exc
+    return str(next((a for a in plain if a.version == 4), plain[0]))
+
+
+def _vet_every_session(pool: ModuleType) -> None:
+    """Send every session smbclient opens through ``dial_address``.
+
+    A DFS referral makes smbclient open a session to a server the user never typed
+    (``get_smb_tree`` and ``_resolve_dfs`` call ``_pool.register_session``).
+    smbprotocol is pinned, so the private name is stable.
+    """
+    original = pool.register_session
+    if getattr(original, "vetted", False) is True:
+        return
+
+    def register_session(server: str, *args: object, **kwargs: object) -> object:
+        return original(dial_address(server), *args, **kwargs)
+
+    register_session.vetted = True  # type: ignore[attr-defined]
+    pool.register_session = register_session
+
+
 def unc(server: str, share: str, rel: str = "") -> str:
     rel = rel.replace("/", "\\").strip("\\")
     if rel:
@@ -71,7 +143,10 @@ class SmbClient(IClient):
         share: str | None = None,
         logger: Logger | None = None,
     ) -> None:
-        self.server = server
+        # smbclient takes an IPv6 address without the brackets a URL would use.
+        self.server = server.removeprefix("[").removesuffix("]")
+        # The address actually dialled, set when the session is registered.
+        self.host = self.server
         self.port = port
         self.username = f"{domain}\\{username}" if domain else username
         self.password = password
@@ -93,10 +168,12 @@ class SmbClient(IClient):
     def _smbclient(self) -> object:
         try:
             import smbclient
+            from smbclient import _pool
         except ImportError as exc:
             raise NetworkShareAuthError(
                 "smbprotocol is not installed. Add smbprotocol to the Python environment."
             ) from exc
+        _vet_every_session(_pool)
         return smbclient
 
     def serialized(self, fn: Callable[..., _T], *args: object) -> _T:
@@ -108,12 +185,14 @@ class SmbClient(IClient):
         with self._io_lock:
             if self._registered:
                 return
+            self.host = dial_address(self.server)
             smbclient = self._smbclient()
             smbclient.register_session(
-                self.server,
+                self.host,
                 username=self.username,
                 password=self.password,
                 port=self.port,
+                connection_timeout=CONNECTION_TIMEOUT_SECONDS,
                 connection_cache=self._connection_cache,
             )
             self._registered = True
@@ -133,6 +212,7 @@ class SmbClient(IClient):
             "port": self.port,
             "username": self.username,
             "password": self.password,
+            "connection_timeout": CONNECTION_TIMEOUT_SECONDS,
         }
 
     def list_directory(self, share: str, path: str) -> list[DirectoryEntry]:
@@ -142,7 +222,7 @@ class SmbClient(IClient):
     def _list_directory(self, share: str, path: str) -> list[DirectoryEntry]:
         self.register()
         smbclient = self._smbclient()
-        target = unc(self.server, share, path)
+        target = unc(self.host, share, path)
         entries: list[DirectoryEntry] = []
         try:
             with smbclient.scandir(target, **self._kwargs()) as scan:
@@ -165,7 +245,7 @@ class SmbClient(IClient):
     def _stat(self, share: str, path: str, *, follow: bool = True) -> DirectoryEntry | None:
         self.register()
         smbclient = self._smbclient()
-        target = unc(self.server, share, path)
+        target = unc(self.host, share, path)
         try:
             result = smbclient.stat(target, follow_symlinks=follow, **self._kwargs())
         except FileNotFoundError:
@@ -187,13 +267,14 @@ class SmbClient(IClient):
             created_time=_stat_time(result, "st_ctime"),
             last_write_time=_stat_time(result, "st_mtime"),
             file_id=int(result.st_ino) if getattr(result, "st_ino", None) else None,
+            attributes=attrs,
         )
 
     def open_file(self, share: str, path: str) -> BinaryIO:
         with self._io_lock:
             self.register()
             smbclient = self._smbclient()
-            target = unc(self.server, share, path)
+            target = unc(self.host, share, path)
             # The default share mode for "rb" is read-only, so two overlapping
             # previews of one file fail with STATUS_SHARING_VIOLATION.
             return smbclient.open_file(
@@ -204,7 +285,7 @@ class SmbClient(IClient):
         with self._io_lock:
             self.register()
             try:
-                return enumerate_shares(self.server, self._connection_cache, port=self.port)
+                return enumerate_shares(self.host, self._connection_cache, port=self.port)
             except ShareListingError:
                 if self.default_share:
                     return [ShareInfo(name=self.default_share, share_type="disk")]
@@ -230,6 +311,7 @@ class SmbClient(IClient):
             created_time=created,
             last_write_time=written,
             file_id=file_id,
+            attributes=attrs,
         )
 
     @classmethod

@@ -12,6 +12,7 @@ from app.connectors.core.registry.folder_scope import (
     CleanupResult,
     FolderScope,
     clean_up_scope,
+    folder_path_problems,
     listed_record_ids,
     remove_records_not_listed,
     remove_records_outside_scope,
@@ -402,3 +403,19 @@ class TestFilterField:
         assert field.option_source_type == OptionSourceType.MANUAL
         assert field.default_operator == ListOperator.IN.value
         assert "container" in field.description
+
+
+class TestFolderPathProblems:
+    @pytest.mark.parametrize("value", ["../etc", "a/../../b", "a\\..\\b", ["ok", ".."], " .. /x"])
+    def test_a_path_that_climbs_out_is_refused(self, value: object) -> None:
+        problems = folder_path_problems({"folder_paths": {"operator": "in", "value": value}})
+
+        assert len(problems) == 1
+        assert "without" in problems[0]
+
+    @pytest.mark.parametrize("value", ["finance/restricted", "/reports/", ["a", "b/c"], "a..b/c", "", None])
+    def test_paths_inside_are_fine(self, value: object) -> None:
+        assert folder_path_problems({"folder_paths": {"operator": "in", "value": value}}) == []
+
+    def test_no_folder_filter_is_fine(self) -> None:
+        assert folder_path_problems({}) == []

@@ -40,6 +40,7 @@ class TestArangoPipelineSchema:
         assert [call.args for call in client.ensure_persistent_index.await_args_list] == [
             (STAGES, ["status", "updatedAtMs"]),
             (STAGES, ["virtualRecordId", "rev"]),
+            (STAGES, ["connectorId"]),
         ]
 
     async def test_an_existing_stage_store_is_not_created_again(self) -> None:
@@ -115,6 +116,7 @@ class TestNeo4jPipelineSchema:
         )
         assert any("stage_state_status_updated" in query for query in queries)
         assert any("stage_state_revision" in query for query in queries)
+        assert any("stage_state_connector" in query for query in queries)
         assert queries[-1].startswith("SHOW CONSTRAINTS")
         assert not any("DETACH DELETE" in query for query in queries)
 
@@ -156,3 +158,4 @@ class TestNeo4jPipelineSchema:
         indexes = provider._generate_performance_indexes()
         assert any("stage_state_status_updated" in index for index in indexes)
         assert any("stage_state_revision" in index for index in indexes)
+        assert any("stage_state_connector" in index for index in indexes)

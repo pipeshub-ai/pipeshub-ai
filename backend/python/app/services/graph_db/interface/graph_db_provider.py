@@ -2122,6 +2122,13 @@ class IGraphDBProvider(ABC):
         """Stage states in ``statuses`` with ``updatedAtMs < updated_before_ms``, oldest first."""
 
     @abstractmethod
+    async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> int:
+        """Delete the stage states of every revision of these virtual records; returns how many went.
+
+        Raises on infrastructure errors.
+        """
+
+    @abstractmethod
     async def compare_and_set_record_fields(
         self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
     ) -> list[str]:

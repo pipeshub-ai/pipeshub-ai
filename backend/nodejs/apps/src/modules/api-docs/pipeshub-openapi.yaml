@@ -5490,6 +5490,21 @@ components:
             virtualRecordId:
               type: string
               nullable: true
+            contentRev:
+              type: string
+              nullable: true
+              description: |
+                Revision of the record's content, 16 lowercase hex characters:
+                the start of the SHA-256 of the content the indexer received
+                for the record. If a record still has no revision stored when
+                its vectors are written, a digest of its parsed blocks is
+                stored instead.
+                Identical content gives the same value, and a copy whose content
+                matches another record carries that record's value.
+                `stageStates` describes this revision. Set when indexing
+                starts; absent on records not indexed since pipeline stages
+                were introduced.
+              example: "78f3f276290c9f81"
             summaryDocumentId:
               type: string
               nullable: true
@@ -10814,6 +10829,13 @@ components:
         virtualRecordId:
           type: string
           nullable: true
+        contentRev:
+          type: string
+          nullable: true
+          description: |
+            Revision of the record's content (16 lowercase hex characters); see
+            `contentRev` on GET /knowledgeBase/record/{recordId}. Absent on
+            records not indexed since pipeline stages were introduced.
         previewRenderable:
           type: boolean
           nullable: true
@@ -40813,15 +40835,13 @@ paths:
         a selected group), pass the parent paths via the
         <code>contextGroupPath</code> query parameter on that endpoint.<br><br>
         <b>Which connectors answer:</b><br>
-        Only connectors with auth type <code>API_TOKEN</code>, <code>USERNAME_PASSWORD</code>
-        or <code>OAUTH_ADMIN_CONSENT</code> (and saved settings), and <code>OAUTH</code>
-        connectors that have completed sign-in. Every other connector is refused with <code>400</code>:
-        those with auth type <code>NONE</code> (for example RSS), <code>BASIC_AUTH</code>,
-        <code>ACCESS_KEY</code>, <code>CONNECTION_STRING</code> or <code>CUSTOM</code>
-        (<code>Unsupported authentication type: ...</code>), an OAUTH connector that has not
-        signed in, and a token or password connector with no saved settings.
-        Their filter fields are in the registry schema; dynamic values come from
-        <code>GET /connectors/{connectorId}/filters/{filterKey}/options</code>.
+        An <code>OAUTH</code> connector answers once it has completed sign-in. A connector with
+        any other auth type (<code>API_TOKEN</code>, <code>BEARER_TOKEN</code>,
+        <code>OAUTH_ADMIN_CONSENT</code>, <code>BASIC_AUTH</code>, <code>ACCESS_KEY</code>,
+        <code>ACCOUNT_KEY</code>, <code>CONNECTION_STRING</code>, <code>CUSTOM</code>) answers once its settings,
+        including the auth section, are saved. A <code>NONE</code> connector (for example RSS)
+        needs saved settings but no auth section. Otherwise the request is refused with
+        <code>400</code>.
       operationId: getConnectorFilters
       x-pipeshub-sdk: true
       security:
@@ -40850,9 +40870,8 @@ paths:
                   - filterOptions
         '400':
           description: |
-            The connector's auth type has no filter options (for example <code>NONE</code>,
-            <code>BASIC_AUTH</code> or <code>ACCESS_KEY</code>), an OAUTH connector has not
-            signed in, or a token or password connector has no saved settings.
+            An OAUTH connector has not signed in, or another connector has no saved settings
+            (or, for any type except <code>NONE</code>, no saved auth section).
           content:
             application/json:
               schema:
@@ -49254,7 +49273,7 @@ paths:
         - oauth2: []
       requestBody:
         required: true
-        description: MCP JSON-RPC 2.0 request object with method, params, and id.
+        description: MCP JSON-RPC 2.0 request object with method, params, and id. The body can be at most 5 MB.
         content:
           application/json:
             schema:
@@ -49302,6 +49321,52 @@ paths:
                         type: string
         '401':
           description: Unauthorized
+        '413':
+          description: |
+            The request body is larger than 5 MB, the most `/mcp` accepts. The
+            answer is a JSON-RPC 2.0 error whose `id` is null, because the
+            request was refused before it was read. `error.data.requestId`
+            identifies the request for support.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc:
+                    type: string
+                    enum: ["2.0"]
+                  id:
+                    type: string
+                    nullable: true
+                    enum: [null]
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: integer
+                        enum: [-32000]
+                      message:
+                        type: string
+                      data:
+                        type: object
+                        properties:
+                          requestId:
+                            type: string
+                    required:
+                      - code
+                      - message
+                required:
+                  - jsonrpc
+                  - id
+                  - error
+              example:
+                jsonrpc: "2.0"
+                id: null
+                error:
+                  code: -32000
+                  message: This request is too large for PipesHub. One MCP request can be at most 5 MB. Send less in one call, such as a shorter question or fewer IDs, and try again.
+                  data:
+                    requestId: 7f3c2a10-5b1e-4c8e-9a43-2d6f0e8b1c55
         '500':
           description: Internal server error
     get:

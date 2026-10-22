@@ -116,6 +116,7 @@ from app.connectors.core.sync.sync_coordinator import get_coordinator
 from app.edition_services import max_connector_workers, sync_executor_enabled
 from app.connectors.core.sync.sync_dispatcher import get_dispatcher
 from app.connectors.core.sync.sync_runner import write_app_status
+from app.connectors.core.registry.folder_scope import folder_path_problems
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.vector_cleanup_events import (
     build_soft_delete_events,
@@ -1069,11 +1070,20 @@ def _without_masked_secrets(auth: dict[str, Any], secret_auth_fields: frozenset[
     }
 
 
-def _require_filter_sections_are_objects(filters: object) -> None:
-    """400 when ``filters.sync`` / ``filters.indexing`` is present but not an object.
+def _require_auth_is_object(auth: object, *, allow_null: bool = False) -> None:
+    """400 when a supplied ``auth`` is not an object; the save paths read it as a dict."""
+    if not isinstance(auth, dict) and not (allow_null and auth is None):
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="Auth configuration must be an object.",
+        )
 
-    The merge below stores the section verbatim, and a stored ``null`` later
-    breaks ``load_connector_filters`` (``.get`` on ``None``) at sync time.
+
+def _require_filter_sections_are_objects(filters: object) -> None:
+    """400 when ``filters.sync`` / ``filters.indexing`` or its ``values`` is present but not an object.
+
+    The merge below stores the section verbatim, and a stored ``null`` section or
+    a non-object ``values`` later breaks ``load_connector_filters`` at sync time.
     """
     if not isinstance(filters, dict):
         return
@@ -1083,6 +1093,22 @@ def _require_filter_sections_are_objects(filters: object) -> None:
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"filters.{key} must be an object",
             )
+        values = filters.get(key, {}).get("values")
+        if values is not None and not isinstance(values, dict):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"filters.{key}.values must be an object",
+            )
+
+
+def _require_valid_auth_config(connector_type: str, auth_config: dict[str, Any]) -> None:
+    """400 when the connector rejects the auth settings a save would store."""
+    connector_cls = ConnectorFactory.get_connector_class(connector_type.replace(" ", ""))
+    if connector_cls is None:
+        return
+    problems = connector_cls.auth_config_problems(auth_config)
+    if problems:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
 
 
 async def _validate_sync_filter_selections(
@@ -1111,9 +1137,8 @@ async def _validate_sync_filter_selections(
     )
     schema_fields = [f for f in schema_fields if isinstance(f, dict)]
     sync_values = ((config.get("filters") or {}).get("sync") or {}).get("values") or {}
-    problems = sync_filter_selection_problems(
-        schema_fields, sync_values if isinstance(sync_values, dict) else {}, action
-    )
+    sync_values = sync_values if isinstance(sync_values, dict) else {}
+    problems = sync_filter_selection_problems(schema_fields, sync_values, action) + folder_path_problems(sync_values)
     if problems:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
 
@@ -4356,6 +4381,9 @@ async def create_connector_instance(
         connector_type = body.get(ConnectorRequestKeys.CONNECTOR_TYPE)
         instance_name = (body.get(ConnectorRequestKeys.INSTANCE_NAME) or "").strip()
         config = _trim_connector_config(body.get(ConnectorRequestKeys.CONFIG, {})) if body.get(ConnectorRequestKeys.CONFIG) else {}
+        if isinstance(config, dict):
+            # A null auth on create means no auth section yet.
+            _require_auth_is_object(config.get(OAuthConfigKeys.AUTH), allow_null=True)
         oauth_config_id = body.get(ConnectorRequestKeys.OAUTH_CONFIG_ID)
         selected_auth_type = body.get(ConnectorRequestKeys.AUTH_TYPE)
         base_url = body.get(ConnectorRequestKeys.BASE_URL, "")
@@ -4476,6 +4504,9 @@ async def create_connector_instance(
                 logger=logger,
                 container=container,
             )
+
+        if config and isinstance(config.get(OAuthConfigKeys.AUTH), dict):
+            _require_valid_auth_config(connector_type, config[OAuthConfigKeys.AUTH])
 
         # ============================================================
         # 8. Create Connector Instance in Database
@@ -5074,6 +5105,7 @@ async def update_connector_instance_auth_config(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Auth configuration is required"
             )
+        _require_auth_is_object(body["auth"])
 
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
@@ -5248,6 +5280,7 @@ async def update_connector_instance_auth_config(
         merged_auth_config = existing_auth_config.copy()
         merged_auth_config.update(auth_config_clean)
 
+        _require_valid_auth_config(connector_type, merged_auth_config)
         new_config[OAuthConfigKeys.AUTH] = merged_auth_config
         if connector_type:
             merged_auth_config["connectorType"] = connector_type
@@ -5577,6 +5610,8 @@ async def update_connector_instance_config(
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
         _require_filter_sections_are_objects(body.get("filters"))
+        if "auth" in body:
+            _require_auth_is_object(body["auth"])
         secret_auth_fields = await _secret_auth_field_names(connector_registry, connector_type)
         if isinstance(body.get("auth"), dict):
             body["auth"] = _without_masked_secrets(
@@ -5666,6 +5701,8 @@ async def update_connector_instance_config(
                 connector_registry, instance.get("type", ""), new_config, "saving"
             )
 
+        if auth_updated and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
+            _require_valid_auth_config(connector_type, new_config[OAuthConfigKeys.AUTH])
         if auth_updated and connector_type and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
             new_config[OAuthConfigKeys.AUTH]["connectorType"] = connector_type
 
@@ -7301,21 +7338,16 @@ async def get_connector_instance_filters(
                 )
             token_or_credentials = OAuthToken.from_dict(config[OAuthConfigKeys.CREDENTIALS])
 
-        elif auth_type in ["OAUTH_ADMIN_CONSENT", "API_TOKEN", "USERNAME_PASSWORD"]:
-            if not config or not config.get(OAuthConfigKeys.AUTH):
+        else:
+            # Every other auth type (API token, basic auth, access keys, ...) keeps its
+            # settings in the instance's auth section.
+            if not config or (auth_type != AuthType.NONE and not config.get(OAuthConfigKeys.AUTH)):
                 logger.error("Configuration not found. Please configure first.")
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail="Configuration not found. Please configure first."
                 )
-            token_or_credentials = config.get(OAuthConfigKeys.AUTH, {})
-
-        else:
-            logger.error(f"Unsupported authentication type: {auth_type}")
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Unsupported authentication type: {auth_type}"
-            )
+            token_or_credentials = config.get(OAuthConfigKeys.AUTH) or {}
 
         # Get filter options
         filter_options = await _get_connector_filter_options_from_config(

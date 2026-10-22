@@ -241,6 +241,13 @@ class BaseConnector(ABC):
         raise NotImplementedError(f"{cls.__name__} has no connection check")
 
     @classmethod
+    def auth_config_problems(cls, auth_config: dict[str, Any]) -> list[str]:
+        """What is wrong with auth settings about to be saved, each fit to show the user.
+
+        Called with the merged settings a save would store. None by default."""
+        return []
+
+    @classmethod
     def supports_connection_check(cls) -> bool:
         return cls.check_connection.__func__ is not BaseConnector.check_connection.__func__
 
@@ -584,6 +591,22 @@ class BaseConnector(ABC):
                 "Could not link the user who authenticated connector %s to source account %s: %s",
                 self.connector_id, email, e,
             )
+
+    async def authenticator_email(self) -> str | None:
+        """Email of the PipesHub user whose credentials this connector runs with: the app's
+        ``authenticatedBy``, else its creator, as ``link_authenticator_to_source_user`` resolves
+        them. None when neither names a user with an email."""
+        try:
+            user = await self.data_entities_processor.get_app_authenticator_user(
+                self.connector_id, self.created_by,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Connector %s: could not read the user who authenticated it: %s", self.connector_id, e,
+            )
+            return None
+        email = (user or {}).get("email")
+        return email.strip() if isinstance(email, str) and email.strip() else None
 
     async def notify(
         self,
