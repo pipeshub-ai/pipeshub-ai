@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, Mapping
 from contextlib import aclosing
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, cast
 from uuid import uuid4
 
 import pdfplumber
@@ -1406,6 +1406,36 @@ async def load_entity_vector_store(
         return None
 
 
+_semantic_cache_warned: bool = False
+
+
+async def load_semantic_cache_service(container: Any, logger_: Any) -> Any | None:  # noqa: ANN401
+    """The semantic cache service for plain-RAG chat, or None.
+
+    Matches the container service resolution pattern of load_entity_vector_store.
+    If the Resource provider is async/awaitable, it is awaited.
+    Logs a warning once if unconfigured or unavailable. Never constructs an
+    ad-hoc instance per request.
+    """
+    global _semantic_cache_warned  # noqa: PLW0603
+    provider = getattr(container, "semantic_cache_service", None)
+    if provider is None:
+        if not _semantic_cache_warned:
+            logger_.warning("semantic_cache_service provider is not configured on container")
+            _semantic_cache_warned = True
+        return None
+    try:
+        service = provider()
+        if inspect.isawaitable(service):
+            service = await service
+        return service
+    except Exception as exc:
+        if not _semantic_cache_warned:
+            logger_.warning("semantic_cache_service unavailable: %s", type(exc).__name__)
+            _semantic_cache_warned = True
+        return None
+
+
 async def warm_up_entity_vector_store(container: Any, logger_: Any) -> None:  # noqa: ANN401
     """Load the entity store's embedding models at startup. Loaded lazily,
     they used up the first entity search's deadline, which then dropped every
@@ -1422,6 +1452,7 @@ async def warm_up_entity_vector_store(container: Any, logger_: Any) -> None:  # 
         logger_.info("✅ Entity vector store warmup complete")
     except Exception as exc:
         logger_.warning("Entity vector store warmup failed (a later search retries): %s", exc)
+
 
 
 async def load_system_prompts(
@@ -1495,9 +1526,13 @@ async def _generate_chat_stream_via_agent_loop(
     entity_vector_store_task = asyncio.ensure_future(
         load_entity_vector_store(container, logger_, org_id)
     )
+    semantic_cache_task = asyncio.ensure_future(
+        load_semantic_cache_service(container, logger_)
+    )
     background_tasks = [
         prompts_task, user_doc_task, org_doc_task,
         user_context_flag_task, entity_vector_store_task,
+        semantic_cache_task,
     ]
 
     try:
@@ -1620,6 +1655,7 @@ async def _generate_chat_stream_via_agent_loop(
         user_info["sendUserInfo"] = False
 
     entity_vector_store = await entity_vector_store_task
+    semantic_cache = await semantic_cache_task
 
     client_name = request.headers.get("client-name")
 
@@ -1638,6 +1674,7 @@ async def _generate_chat_stream_via_agent_loop(
         client_name=client_name,
         cancellation_registry=cancellation_registry,
         entity_vector_store=entity_vector_store,
+        semantic_cache_service=cast(Any, semantic_cache),
     )) as events:
         async for event in events:
             yield event

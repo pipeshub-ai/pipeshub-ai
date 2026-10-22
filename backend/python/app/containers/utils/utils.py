@@ -54,7 +54,10 @@ if TYPE_CHECKING:
         AccessibleRecordsInvalidator,
     )
     from app.services.cache.interface import IAccessibleRecordsCache
+    from app.services.cache.semantic_cache_service import SemanticCacheService
     from app.services.parsing.client import ParsingClient
+    from app.services.redis.connection_provider import IRedisConnectionProvider
+
 
 
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
@@ -62,6 +65,21 @@ class ContainerUtils:
     """Utility class for container operations"""
     def __init__(self) -> None:
         self.logger = create_logger("container_utils")
+
+    async def create_semantic_cache_service(
+        self,
+        logger: Logger,
+        config_service: ConfigurationService,
+        redis_provider: "IRedisConnectionProvider | None" = None,
+    ) -> "SemanticCacheService":
+        """Async factory for SemanticCacheService."""
+        from app.services.cache.semantic_cache_service import SemanticCacheService
+
+        return SemanticCacheService(
+            redis_provider=redis_provider,
+            config_service=config_service,
+            logger_instance=logger,
+        )
 
     async def get_vector_db_service(
         self,

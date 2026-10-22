@@ -726,9 +726,11 @@ class RetrievalService:
         virtual_record_ids_from_tool: list[str] | None = None,
         knowledge_search: bool = False,
         time_range: dict[str, int] | None = None,
+        *,
+        out_query_embedding: list[list[float]] | None = None,
     ) -> dict[str, Any]:
         """Perform semantic search on records the given user may access (graph permission checks)."""
-
+        plan = _QueryPlan()
         try:
             # Get accessible records
             if not self.graph_provider:
@@ -1503,6 +1505,9 @@ class RetrievalService:
         except Exception as e:
             self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
+        finally:
+            if out_query_embedding is not None and plan.dense:
+                out_query_embedding.extend(plan.dense)
 
     async def _diversity_candidates(
         self,

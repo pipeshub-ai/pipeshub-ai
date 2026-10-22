@@ -23,7 +23,7 @@ PLATFORM_SETTINGS_KEY = "/services/platform/settings"
 
 async def read_platform_feature_flag(
     flag_name: str,
-    config_service: Any,
+    config_service: ConfigurationService,
     *,
     default: bool,
     use_cache: bool = False,
@@ -73,7 +73,7 @@ async def read_platform_feature_flag(
 
 
 async def _platform_flag(
-    config_service: Optional["ConfigurationService"],
+    config_service: ConfigurationService | None,
     flag: str,
     *,
     default: bool,
@@ -106,7 +106,7 @@ async def _platform_flag(
         return default
 
 
-async def is_actions_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
+async def is_actions_enabled(config_service: ConfigurationService | None = None) -> bool:
     """Deployment-level gate for Actions: agents may only load/use toolset
     (connector) tools when this is true. Source of truth is the
     ``ENABLE_ACTIONS`` platform feature flag. Defaults to ENABLED; admins
@@ -115,7 +115,7 @@ async def is_actions_enabled(config_service: Optional["ConfigurationService"] = 
     return await _platform_flag(config_service, CONFIG.ENABLE_ACTIONS, default=True)
 
 
-async def is_skills_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
+async def is_skills_enabled(config_service: ConfigurationService | None = None) -> bool:
     """Org-level gate for the whole Skills subsystem: UI, REST, agent-runtime
     skill tools, and builtin seeding. Source of truth is the ``ENABLE_SKILLS``
     platform feature flag. Defaults to ENABLED (Beta) — mirrors
@@ -145,7 +145,7 @@ async def is_soft_delete_enabled(config_service: ConfigurationService | None = N
     return await _platform_flag(config_service, CONFIG.ENABLE_SOFT_DELETE, default=False)
 
 
-async def is_user_context_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
+async def is_user_context_enabled(config_service: ConfigurationService | None = None) -> bool:
     """Org-level gate for injecting user/org profile into the default
     assistant and Universal Agent Mode system prompts. Source of truth is
     the ``ENABLE_USER_CONTEXT`` platform feature flag. Defaults to ENABLED
@@ -155,6 +155,15 @@ async def is_user_context_enabled(config_service: Optional["ConfigurationService
     own ``sendUserContext`` field.
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_USER_CONTEXT, default=True)
+
+
+async def is_semantic_cache_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Deployment-level gate for Semantic Caching in plain-RAG chat.
+
+    Source of truth is the ``ENABLE_SEMANTIC_CACHE`` platform feature flag.
+    Defaults to DISABLED (opt-in per organization).
+    """
+    return await _platform_flag(config_service, CONFIG.ENABLE_SEMANTIC_CACHE, default=False)
 
 
 async def is_kh_scope_listing_enabled(config_service: Optional["ConfigurationService"]) -> bool:
@@ -168,3 +177,4 @@ async def is_kh_scope_listing_enabled(config_service: Optional["ConfigurationSer
     return await read_platform_feature_flag(
         CONFIG.ENABLE_KH_SCOPE_LISTING, config_service, default=False, use_cache=True,
     )
+
