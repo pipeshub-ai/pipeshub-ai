@@ -1605,36 +1605,6 @@ def bedrock_inference_profile_hint(model_name: str | None) -> str | None:
     return f"us.{name} or global.{name}"
 
 
-def bedrock_access_denied_cause(exc: BaseException | None) -> str | None:
-    """Why Bedrock refused a call: ``account``, ``marketplace``, ``scp``, ``iam``,
-    ``other``, or None when there is no exception to read.
-
-    Every one of these is a 403 AccessDeniedException, but only ``iam`` is
-    fixed by the caller's policy. ``account`` (the model is not enabled for
-    the AWS account) needs AWS Support; ``marketplace`` (the model's
-    subscription failed, e.g. INVALID_PAYMENT_INSTRUMENT) needs billing fixed;
-    ``scp`` needs the Organizations admin. An unrecognised denial is
-    ``other`` so it is not mistaken for an IAM problem.
-    """
-    if exc is None:
-        return None
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        text = str(current).lower()
-        if "not available for this account" in text:
-            return "account"
-        if "marketplace subscription" in text or "payment instrument" in text:
-            return "marketplace"
-        if "service control policy" in text:
-            return "scp"
-        if "not authorized to perform" in text:
-            return "iam"
-        current = current.__cause__ or current.__context__
-    return "other"
-
-
 def _bedrock_is_openai(provider: str, model_name: str | None) -> bool:
     if (provider or "").lower() == "openai":
         return True

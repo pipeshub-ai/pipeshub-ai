@@ -40,7 +40,7 @@ from app.utils.aimodels import (
     require_public_endpoint,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_errors import provider_error_code
+from app.utils.user_errors import bedrock_access_denied_cause, provider_error_code
 from app.web.deadline import Deadline
 from app.web.errors import (
     AuthFailed,
@@ -265,11 +265,7 @@ def _rejected_settings_message(
     configuration = model_config.get("configuration") or {}
     name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
     if _normalize_provider_key(model_config.get("provider")) == "bedrock":
-        from app.utils.aimodels import (
-            bedrock_access_denied_cause,
-            bedrock_inference_profile_hint,
-            bedrock_is_openai_gpt,
-        )
+        from app.utils.aimodels import bedrock_inference_profile_hint, bedrock_is_openai_gpt
 
         profiles = bedrock_inference_profile_hint(model)
         if profiles and code in ("invalid_request", "model_not_found"):
@@ -279,6 +275,12 @@ def _rejected_settings_message(
             )
         if code == "auth_error":
             cause = bedrock_access_denied_cause(exc)
+            if cause == "credentials":
+                return (
+                    f"AWS rejected the credentials for {name}: the access key, secret key or "
+                    "session token is wrong or has expired. Check them in Workspace > AI Models, "
+                    "or the server's IAM role when no key is set, then try again."
+                )
             if cause == "account":
                 return (
                     f"AWS hasn't enabled {name} for this AWS account. IAM permissions can't fix "
@@ -309,8 +311,9 @@ def _rejected_settings_message(
             )
             return (
                 f"Bedrock denied access to {name}. Make sure the access key, or the server's IAM "
-                f"role when no key is set, allows bedrock:InvokeModel on this inference profile "
-                f"and on the foundation model in every Region the profile routes to "
+                f"role when no key is set, allows bedrock:InvokeModel and "
+                f"bedrock:InvokeModelWithResponseStream on this inference profile and on the "
+                f"foundation model in every Region the profile routes to "
                 f"(arn:aws:bedrock:*::foundation-model/...).{extra}"
             )
     if code == "auth_error":

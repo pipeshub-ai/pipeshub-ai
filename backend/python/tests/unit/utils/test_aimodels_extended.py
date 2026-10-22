@@ -306,7 +306,7 @@ class TestGetGeneratorModelBedrock:
         assert _detect_bedrock_provider("amazon.gpt-50-future") == "amazon"
         assert _detect_bedrock_provider("vendor.gpt5-model") == LLMProvider.ANTHROPIC.value
 
-    def test_inference_profile_hint_for_bare_openai_gpt_ids(self):
+    def test_inference_profile_hint_for_bare_openai_gpt_ids(self) -> None:
         """GPT-5.x / GPT-6 have no in-Region throughput on bedrock-runtime."""
         assert bedrock_inference_profile_hint("openai.gpt-5.6-luna") == (
             "us.openai.gpt-5.6-luna or global.openai.gpt-5.6-luna"
@@ -384,7 +384,7 @@ class TestBedrockReasoningAndTemperature:
         "model_id",
         ("us.openai.gpt-5.6-luna", "global.openai.gpt-6-luna", "us.openai.gpt-6-sol"),
     )
-    def test_openai_gpt_sends_nested_reasoning_effort_unclamped(self, model_id):
+    def test_openai_gpt_sends_nested_reasoning_effort_unclamped(self, model_id: str) -> None:
         """Converse rejects flat ``reasoning_effort`` on GPT-5.x / GPT-6 with
         400 unknown_parameter; only ``reasoning.effort`` is accepted."""
         config = self._make_config(model_id, provider="openai", is_reasoning=True)
@@ -400,7 +400,7 @@ class TestBedrockReasoningAndTemperature:
                 }
                 assert "temperature" not in kwargs
 
-    def test_openai_gpt_none_effort_floors_to_low(self):
+    def test_openai_gpt_none_effort_floors_to_low(self) -> None:
         config = self._make_config("us.openai.gpt-6-luna", provider="openai", is_reasoning=True)
         with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
             with patch("langchain_aws.ChatBedrockConverse") as mock_chat:

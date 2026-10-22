@@ -383,6 +383,82 @@ class TestProviderErrorCode:
         assert ue.provider_error_code(ClientError(response, "Converse")) == expected
 
 
+def _bedrock_error(code: str, message: str) -> BaseException:
+    from botocore.exceptions import ClientError
+
+    return ClientError(
+        {"Error": {"Code": code, "Message": message}, "ResponseMetadata": {"HTTPStatusCode": 403}},
+        "Converse",
+    )
+
+
+class TestBedrockAccessDeniedCause:
+    @pytest.mark.parametrize(
+        ("code", "message"),
+        (
+            ("UnrecognizedClientException", "The security token included in the request is invalid."),
+            ("InvalidSignatureException", "The request signature we calculated does not match the signature you provided."),
+            ("ExpiredTokenException", "The security token included in the request is expired"),
+            ("InvalidClientTokenId", "The security token included in the request is invalid."),
+        ),
+    )
+    def test_a_wrong_or_expired_key_is_its_own_cause(self, code: str, message: str) -> None:
+        assert ue.bedrock_access_denied_cause(_bedrock_error(code, message)) == "credentials"
+
+    def test_the_cause_is_read_through_a_wrapper(self) -> None:
+        exc = _wrapped(
+            RuntimeError("Converse call failed"),
+            _bedrock_error("UnrecognizedClientException", "The security token included in the request is invalid."),
+        )
+        assert ue.bedrock_access_denied_cause(exc) == "credentials"
+
+    def test_an_iam_denial_is_not_a_credential_failure(self) -> None:
+        exc = _bedrock_error(
+            "AccessDeniedException",
+            "User: arn:aws:iam::1:user/x is not authorized to perform: bedrock:InvokeModel",
+        )
+        assert ue.bedrock_access_denied_cause(exc) == "iam"
+
+    def test_no_exception_has_no_cause(self) -> None:
+        assert ue.bedrock_access_denied_cause(None) is None
+
+
+class TestBedrockDenialOnEmbeddingReason:
+    @pytest.mark.parametrize(
+        "message",
+        (
+            "openai.gpt-6-luna is not available for this account.",
+            "explicit deny in a service control policy",
+            "Something new went wrong",
+            "Model access is denied due to INVALID_PAYMENT_INSTRUMENT. Your AWS Marketplace "
+            "subscription for this model cannot be completed.",
+        ),
+    )
+    def test_a_denial_that_is_not_a_bad_key_does_not_blame_the_key(self, message: str) -> None:
+        exc = _wrapped(EmbeddingError("Dense embedding failed"), _bedrock_error("AccessDeniedException", message))
+        reason = ue.to_user_reason(exc)
+        assert "API key" not in reason
+        assert "refused access to the model" in reason
+
+    @pytest.mark.parametrize(
+        ("code", "message"),
+        (
+            ("UnrecognizedClientException", "The security token included in the request is invalid."),
+            (
+                "AccessDeniedException",
+                "User: arn:aws:iam::1:user/x is not authorized to perform: bedrock:InvokeModel",
+            ),
+        ),
+    )
+    def test_a_bad_key_or_missing_permission_still_points_to_the_key(self, code: str, message: str) -> None:
+        exc = _wrapped(EmbeddingError("Dense embedding failed"), _bedrock_error(code, message))
+        assert "rejected PipesHub's API key" in ue.to_user_reason(exc)
+
+    def test_a_forbidden_response_from_another_provider_still_points_to_the_key(self) -> None:
+        exc = _wrapped(EmbeddingError("Dense embedding failed"), _status_error(openai.PermissionDeniedError, 403))
+        assert "rejected PipesHub's API key" in ue.to_user_reason(exc)
+
+
 class TestRepositoryFileReasons:
     @pytest.mark.parametrize(
         ("size_bytes", "limit_bytes", "size_text", "limit_text"),

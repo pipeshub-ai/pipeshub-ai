@@ -233,6 +233,11 @@ def _ai_messages(model: str) -> dict[str, str]:
             "this file wasn't indexed. An admin can check the model name and endpoint in "
             "Workspace → AI Models, then Reindex the file."
         ),
+        "access_blocked": (
+            f"The {model}'s provider refused access to the model (model access, billing "
+            "or account policy), so this file wasn't indexed. An admin can check the "
+            "model's access in the provider's console, then Reindex the file."
+        ),
         "server_error": unreachable,
         "timeout": unreachable,
         "content_filter": (
@@ -333,6 +338,51 @@ def _status_code(exc: BaseException) -> int | None:
     return value if isinstance(value, int) else None
 
 
+# What Bedrock says when the key itself is wrong. All of them are HTTP 403, like
+# a permission denial, and AWS words the three most common ones the same way.
+_BEDROCK_CREDENTIAL_MARKERS = (
+    "(unrecognizedclientexception)",
+    "(invalidclienttokenid)",
+    "(expiredtokenexception)",
+    "(expiredtoken)",
+    "(invalidsignatureexception)",
+    "(signaturedoesnotmatch)",
+    "(incompletesignature)",
+    "security token included in the request is invalid",
+    "security token included in the request is expired",
+    "signature we calculated does not match",
+)
+
+
+def bedrock_access_denied_cause(exc: BaseException | None) -> str | None:
+    """Why Bedrock refused a call: ``credentials``, ``account``, ``marketplace``,
+    ``scp``, ``iam``, ``other``, or None when there is no exception to read.
+
+    All of these are HTTP 403, but each has a different fix. ``credentials`` (an
+    unknown, mistyped or expired key, secret or session token) is the caller's
+    to re-enter. ``iam`` is fixed by the caller's policy. ``account`` (the model
+    is not enabled for the AWS account) needs AWS Support; ``marketplace`` (the
+    model's subscription failed, e.g. INVALID_PAYMENT_INSTRUMENT) needs billing
+    fixed; ``scp`` needs the Organizations admin. An unrecognised denial is
+    ``other`` so it is not mistaken for an IAM problem.
+    """
+    if exc is None:
+        return None
+    for current in _chain(exc):
+        text = str(current).lower()
+        if any(marker in text for marker in _BEDROCK_CREDENTIAL_MARKERS):
+            return "credentials"
+        if "not available for this account" in text:
+            return "account"
+        if "marketplace subscription" in text or "payment instrument" in text:
+            return "marketplace"
+        if "service control policy" in text:
+            return "scp"
+        if "not authorized to perform" in text:
+            return "iam"
+    return "other"
+
+
 def _bad_request_code(exc: BaseException) -> str:
     text = str(exc).lower()
     return "request_too_large" if any(h in text for h in _TOO_LARGE_FOR_MODEL_HINTS) else "invalid_request"
@@ -380,6 +430,26 @@ def _provider_code(chain: list[BaseException]) -> str:
         if code != "unknown":
             return code
     return "unknown"
+
+
+# Bedrock refusals where the key is fine and something on the AWS side says no.
+_BEDROCK_BLOCKED_CAUSES = frozenset({"account", "marketplace", "scp", "other"})
+
+
+def _ai_failure_code(chain: list[BaseException]) -> str:
+    """`_provider_code`, except a Bedrock denial that is not a bad key.
+
+    botocore answers those with the same 403 as a bad key, which reads as
+    "rejected PipesHub's API key" and sends the admin to rotate a key that works.
+    """
+    code = _provider_code(chain)
+    if (
+        code == "auth_error"
+        and any(_from(e, ("botocore",)) for e in chain)
+        and bedrock_access_denied_cause(chain[0]) in _BEDROCK_BLOCKED_CAUSES
+    ):
+        return "access_blocked"
+    return code
 
 
 def provider_error_code(exc: BaseException) -> str:
@@ -445,14 +515,14 @@ def to_user_reason(exc: BaseException | None) -> str:
     http = [i for i, e in enumerate(chain) if _from(e, _HTTP_CLIENT_MODULES)]
 
     if embedding:
-        code = _provider_code(chain)
+        code = _ai_failure_code(chain)
         return _ai_messages("embedding model").get(code, EMBEDDING_UNAVAILABLE)
 
     # Storing a file means embedding it first, so a provider error under a
     # storage wrapper is the embedding model's.
     model = "embedding model" if storage else "AI model"
     if provider:
-        return _ai_message(model, _provider_code(chain[provider[0]:]))
+        return _ai_message(model, _ai_failure_code(chain[provider[0]:]))
 
     if storage:
         return TEMPORARY_PROBLEM

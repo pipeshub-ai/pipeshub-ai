@@ -1,5 +1,6 @@
 """What the AI model setup dialog shows when a check fails."""
 
+import pytest
 from botocore.exceptions import ClientError
 
 from app.api.routes.health import (
@@ -137,6 +138,40 @@ def test_bedrock_denial_cause_is_read_through_a_wrapping_exception() -> None:
             "auth_error", "chat model", _BEDROCK, "us.openai.gpt-6-luna", outer,
         )
     assert "AWS Support" in message
+
+
+def _credential_failure(code: str, message: str) -> ClientError:
+    return ClientError(
+        {"Error": {"Code": code, "Message": message}, "ResponseMetadata": {"HTTPStatusCode": 403}},
+        "Converse",
+    )
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    (
+        ("UnrecognizedClientException", "The security token included in the request is invalid."),
+        ("InvalidSignatureException", "The request signature we calculated does not match the signature you provided."),
+        ("ExpiredTokenException", "The security token included in the request is expired"),
+    ),
+)
+def test_bedrock_bad_credentials_tell_the_admin_to_check_the_key(code: str, message: str) -> None:
+    error = _credential_failure(code, message)
+    assert provider_error_code(error) == "auth_error"
+    text = _rejected_settings_message("auth_error", "chat model", _BEDROCK, "us.anthropic.claude-sonnet-5", error)
+    assert "credentials" in text
+    assert "access key" in text
+    assert "billing" not in text
+    assert "Marketplace" not in text
+    assert "bedrock:InvokeModel" not in text
+
+
+def test_bedrock_iam_denial_names_the_streaming_action_too() -> None:
+    message = _rejected_settings_message(
+        "auth_error", "chat model", _BEDROCK, "us.anthropic.claude-sonnet-5", _IAM_DENIAL,
+    )
+    assert "bedrock:InvokeModel " in message
+    assert "bedrock:InvokeModelWithResponseStream" in message
 
 
 def test_bedrock_access_denied_is_classified_as_auth_error() -> None:
