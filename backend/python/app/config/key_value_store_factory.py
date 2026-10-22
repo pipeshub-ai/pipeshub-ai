@@ -7,6 +7,7 @@ from app.config.key_value_store import KeyValueStore
 from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
+from app.telemetry.modules.db_metrics import instrument_store
 from app.utils.logger import create_logger
 
 logger = create_logger("KV Store:" + os.getenv("KV_STORE_TYPE", "redis"))
@@ -83,19 +84,19 @@ class KeyValueStoreFactory:
                     serializer, deserializer, config
                 )
                 logger.info("✅ ETCD3 store created successfully")
-                return store
+                return instrument_store(store, "kv")
             elif store_type == StoreType.IN_MEMORY:
                 logger.debug("🔄 Creating in-memory store")
                 store = KeyValueStoreFactory._create_in_memory_store()
                 logger.info("✅ In-memory store created successfully")
-                return store
+                return instrument_store(store, "kv")
             elif store_type == StoreType.REDIS:
                 logger.debug("🔄 Creating Redis store")
                 store = KeyValueStoreFactory._create_redis_store(
                     serializer, deserializer, config
                 )
                 logger.info("✅ Redis store created successfully")
-                return store
+                return instrument_store(store, "kv")
             else:
                 logger.error("❌ Unsupported store type: %s", store_type)
                 raise ValueError(f"Unsupported store type: {store_type}")

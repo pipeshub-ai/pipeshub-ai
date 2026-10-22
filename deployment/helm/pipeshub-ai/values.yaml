@@ -97,35 +97,12 @@ securityContext:
 service:
   type: ClusterIP
 
-# Metrics configuration for Prometheus
-metrics:
-  enabled: true
-  port: 9090  # Port for exposing application metrics
-
-# Monitoring configuration
-monitoring:
-  serviceMonitor:
-    enabled: false  # Requires Prometheus Operator CRDs
-    labels: {}  # Labels to match Prometheus selector
-    annotations: {}
-    path: /metrics
-    interval: 30s
-    scrapeTimeout: 10s
-
 # Telemetry configuration
 telemetry:
   # Product metrics/event collection (TELEMETRY_COLLECTION_FLAG). Empty keeps the
   # services' default, on; false turns all telemetry code off.
   collection:
     enabled: ""
-  # OpenTelemetry (OTLP) exporter wiring
-  enabled: false
-  otlp:
-    endpoint: ""  # OTLP endpoint URL (e.g., "http://otel-collector:4317")
-    headers: {}  # Custom headers for OTLP exporter
-    tls:
-      enabled: false
-      insecure: false
 
 # Express `trust proxy` (TRUST_PROXY): how many proxies in front of the app
 # may set X-Forwarded-For, or a comma-separated list of their CIDRs. Empty
