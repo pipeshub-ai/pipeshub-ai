@@ -1631,7 +1631,7 @@ class KnowledgeBaseService:
                 return err
             if is_live_record(record):
                 if self._owes_restore_reindex(record):
-                    return await self._requeue_restored_file(record, kb_id, user_role)
+                    return await self._requeue_restored_file(record_id, record, kb_id, user_role)
                 return {
                     "success": True,
                     "code": 200,
@@ -1727,8 +1727,13 @@ class KnowledgeBaseService:
             record.get("indexingStatus") == ProgressStatus.NOT_STARTED.value
         )
 
-    async def _requeue_restored_file(self, record: dict, kb_id: str, user_role: str | None) -> dict:
-        """A retried restore of a file that is back but whose re-index never went out."""
+    async def _requeue_restored_file(
+        self, record_id: str, record: dict, kb_id: str, user_role: str | None
+    ) -> dict:
+        """A retried restore of a file that is back but whose re-index never went out.
+
+        ``record_id`` is passed apart from ``record``: ``get_document`` returns the generic
+        ``id`` on Arango, with no ``_key``."""
         if user_role not in RESTORE_FILE_ROLES:
             return {
                 "success": False,
@@ -1739,7 +1744,6 @@ class KnowledgeBaseService:
                 ),
             }
         processor = await self.processor_for_kb(kb_id)
-        record_id = record["_key"]
         reembed_ids = {record_id} if reembeds_from_storage(record) else set()
         response = await self._finish_restore(processor, None, [], {}, [record_id], reembed_ids=reembed_ids)
         response["message"] = (

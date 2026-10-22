@@ -27,19 +27,30 @@ async def read_platform_feature_flag(
     *,
     default: bool,
     use_cache: bool = False,
+    fail_closed: bool = False,
 ) -> bool:
     """Return a platform feature flag's boolean value from encrypted settings.
 
     Reads with ``use_cache=False`` by default so flipping a flag in Labs takes
     effect on the next request instead of after a service restart. A hot path
     may pass ``use_cache=True``: a save in Labs invalidates the cached key in
-    every process. On missing settings, an absent flag key, or a read failure,
-    returns ``default``.
+    every process. On missing settings or an absent flag key, returns ``default``.
+
+    ``get_config`` answers ``default`` for a store outage or an undecryptable
+    value, which here reads as "flag absent". For a flag whose default is on,
+    that would silently undo an admin's saved opt-out, so ``fail_closed=True``
+    asks ``get_config`` to raise and returns ``False`` when the saved value
+    cannot be read. Without it, a read failure also returns ``default``.
     """
     try:
-        settings = await config_service.get_config(
-            PLATFORM_SETTINGS_KEY, default={}, use_cache=use_cache,
-        )
+        if fail_closed:
+            settings = await config_service.get_config(
+                PLATFORM_SETTINGS_KEY, default={}, use_cache=use_cache, raise_on_error=True,
+            )
+        else:
+            settings = await config_service.get_config(
+                PLATFORM_SETTINGS_KEY, default={}, use_cache=use_cache,
+            )
         flags = settings.get("featureFlags") if isinstance(settings, dict) else None
         if not isinstance(flags, dict):
             return default
@@ -49,15 +60,16 @@ async def read_platform_feature_flag(
             return default
         return bool(normalized[str(flag_name).upper()])
     except Exception as e:
+        fallback = False if fail_closed else default
         logger.error(
-            "Failed to read %s for feature flag %s; using default=%s: %s",
+            "Failed to read %s for feature flag %s; using %s: %s",
             PLATFORM_SETTINGS_KEY,
             flag_name,
-            default,
+            fallback,
             e,
             exc_info=True,
         )
-        return default
+        return fallback
 
 
 async def _platform_flag(
@@ -97,8 +109,7 @@ async def _platform_flag(
 async def is_actions_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
     """Deployment-level gate for Actions: agents may only load/use toolset
     (connector) tools when this is true. Source of truth is the
-    ``ENABLE_ACTIONS`` platform feature flag. Defaults to ENABLED — unlike
-    ``ENABLE_MCP``, toolsets/actions are pre-existing functionality; admins
+    ``ENABLE_ACTIONS`` platform feature flag. Defaults to ENABLED; admins
     may opt out from Labs.
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_ACTIONS, default=True)
@@ -108,7 +119,7 @@ async def is_skills_enabled(config_service: Optional["ConfigurationService"] = N
     """Org-level gate for the whole Skills subsystem: UI, REST, agent-runtime
     skill tools, and builtin seeding. Source of truth is the ``ENABLE_SKILLS``
     platform feature flag. Defaults to ENABLED (Beta) — mirrors
-    ``is_actions_enabled``, not ``is_mcp_enabled``.
+    ``is_actions_enabled``.
 
     This is layered *under* the deployment-level ``PIPESHUB_ENABLE_SKILLS`` env
     kill-switch (see ``skills_wiring.skills_enabled()``); both must be true for

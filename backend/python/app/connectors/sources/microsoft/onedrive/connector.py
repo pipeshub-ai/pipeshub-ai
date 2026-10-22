@@ -124,9 +124,6 @@ class DrivePageIncompleteError(Exception):
 # How many runs a delta page is read again for a temporary failure before its
 # unreadable items are skipped (keeping what is stored) so the rest can move on.
 MAX_PAGE_ATTEMPTS = 5
-# The user group of the tenant's members (guests excluded), which an
-# organization-scoped sharing link reaches. Kept in step with the users each sync.
-TENANT_MEMBERS_GROUP_ID = "tenant-members"
 
 # A 403 or 404 on one item's members or access won't clear up by trying again.
 _PERMANENT_READ_STATUSES = frozenset({403, 404})
@@ -615,19 +612,9 @@ class OneDriveConnector(BaseConnector):
                                 entity_type=EntityType.USER
                             ))
 
-                # An organization-scoped link reaches the tenant's members, never its
-                # guests, so it is a grant to the tenant-members group and not an org
-                # grant (every PipesHub user). An anonymous link names no grantee and
-                # is not stored.
-                if hasattr(perm, 'link') and perm.link:
-                    link = perm.link
-                    if link.scope == "organization":
-                        permissions.append(Permission(
-                            external_id=TENANT_MEMBERS_GROUP_ID,
-                            email=None,
-                            type=map_msgraph_roles_to_permission_type(perm.roles or [link.type or "read"]),
-                            entity_type=EntityType.GROUP
-                        ))
+                # A link grants only the identities Graph lists on it. An organization or
+                # anonymous link opens the item only to the people who redeem it, and Graph
+                # does not list them, so they get no grant here: under-shared, never over-shared.
 
             except Exception as e:
                 self.logger.error(f"❌ Error converting permission: {e}", exc_info=True)
@@ -1792,19 +1779,6 @@ class OneDriveConnector(BaseConnector):
             self.logger.error("❌ Error checking if user has OneDrive: %s", e)
             raise
     
-    async def _sync_tenant_members_group(self, users: list[AppUser]) -> None:
-        """Write the group an organization-scoped link grants: active members, no guests."""
-        group = AppUserGroup(
-            source_user_group_id=TENANT_MEMBERS_GROUP_ID,
-            app_name=self.connector_name,
-            connector_id=self.connector_id,
-            name="Organization members",
-            description="Members of the Microsoft 365 tenant, guests excluded; whom an organization-wide sharing link reaches.",
-            source_created_at=get_epoch_timestamp_in_ms(),
-        )
-        members = [user for user in users if user.is_active and not user.is_guest]
-        await self.data_entities_processor.on_new_user_groups([(group, members)])
-
     async def _sync_users(self) -> List[AppUser]:
         """
         Syncs OneDrive users.
@@ -1812,7 +1786,6 @@ class OneDriveConnector(BaseConnector):
         try:
             users = await self.msgraph_client.get_all_users()
             await self.data_entities_processor.on_new_app_users(users)
-            await self._sync_tenant_members_group(users)
             self.logger.info(f"✅ Successfully synced {len(users)} users")
             return users
         except ODataError as e:

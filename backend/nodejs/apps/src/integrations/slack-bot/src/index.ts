@@ -865,6 +865,17 @@ async function processSlackMessage(
         });
     };
 
+    const resetAnswerStream = (): void => {
+      clearAnswerFlushTimer();
+      pendingAppendText = '';
+      streamedAnswerLength = 0;
+      queuedStreamAppend = queuedStreamAppend
+        .then(async () => deleteStreamMessages())
+        .catch((error: unknown) => {
+          console.error('Error clearing Slack answer preamble:', error);
+        });
+    };
+
     const aguiHandler = createSlackAGUIEventHandler({
       onStatus: (message) => {
         activityBuilder.setStatus(message);
@@ -879,6 +890,26 @@ async function processSlackMessage(
           activityBuilder.finishReasoning();
           scheduleActivityUpdate();
         }
+      },
+      onModelCallDiscarded: () => {
+        activityBuilder.dropTrailingReasoning();
+        scheduleActivityUpdate();
+        // A table in the failed attempt paused streaming; its retry may have none.
+        if (tablePauseHintSent) {
+          resetAnswerStream();
+          // With no stream open yet, the hint replaced the activity message.
+          queuedStreamAppend = queuedStreamAppend
+            .then(async () => updateActivityMessage(activityBuilder.format()))
+            .catch((error: unknown) => {
+              console.error(
+                'Error restoring Slack activity after a discard:',
+                error,
+              );
+            });
+        }
+        tableStreamingDisabled = false;
+        streamTableProbeText = '';
+        tablePauseHintSent = false;
       },
       onNarration: (text) => {
         activityBuilder.appendNarration(text);
@@ -908,16 +939,7 @@ async function processSlackMessage(
         scheduleActivityUpdate();
       },
       onAnswerAccumulated: handleAnswerAccumulated,
-      onClearAnswerPreamble: () => {
-        clearAnswerFlushTimer();
-        pendingAppendText = "";
-        streamedAnswerLength = 0;
-        queuedStreamAppend = queuedStreamAppend
-          .then(async () => deleteStreamMessages())
-          .catch((error) => {
-            console.error("Error clearing Slack answer preamble:", error);
-          });
-      },
+      onClearAnswerPreamble: resetAnswerStream,
       onAskUserQuestion: handleAskUserQuestion,
       onArtifact: handleArtifact,
       onConversationCreated: (conversationId) => {

@@ -122,7 +122,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'Enable MCP Servers',
     description:
       'Allow agents to use MCP (Model Context Protocol) servers and show MCP server management in the UI. Disable to hide MCP everywhere and stop agents from loading MCP tools.',
-    defaultEnabled: false,
+    defaultEnabled: true,
   },
   {
     key: 'ENABLE_ACTIONS',

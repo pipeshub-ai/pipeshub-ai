@@ -33,6 +33,7 @@ vi.mock('@/config', () => ({
   useUserPermission: (key: string) => !permissions.denied.has(key),
   PermissionLockIcon: () => <span>Locked</span>,
   InheritedConfigNotice: () => null,
+  McpAgentApprovalsNotice: () => null,
 }));
 
 // Nothing here may reach the network: every API module below is faked, and

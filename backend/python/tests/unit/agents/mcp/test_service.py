@@ -321,10 +321,28 @@ class TestGetAuthenticatedMcpServers:
         assert [r["instanceId"] for r in result] == ["inst-1"]
 
 
+class _FailingSettingsStore:
+    """Mirrors `ConfigurationService.get_config`: a failed read answers `default`
+    (so "store down" looks like "key absent") unless `raise_on_error` is passed."""
+
+    def __init__(self, settings: dict[str, object] | None = None, *, fail: bool = False) -> None:
+        self._settings = settings
+        self._fail = fail
+
+    async def get_config(
+        self, key: str, default: object = None, use_cache: bool = False, *, raise_on_error: bool = False,
+    ) -> object:
+        if self._fail:
+            if raise_on_error:
+                raise RuntimeError("store unreachable")
+            return default
+        return self._settings if self._settings is not None else default
+
+
 class TestIsMcpEnabled:
     """No env override exists anymore — resolution is `config_service` (via
     the shared `read_platform_feature_flag` helper) -> `FeatureFlagService`
-    fallback -> default False."""
+    fallback. An absent flag is on; a saved value that cannot be read is off."""
 
     @pytest.mark.asyncio
     async def test_reads_platform_settings_flag(self) -> None:
@@ -335,16 +353,44 @@ class TestIsMcpEnabled:
         assert await is_mcp_enabled(cfg) is True
 
     @pytest.mark.asyncio
-    async def test_platform_settings_flag_absent_defaults_false(self) -> None:
+    async def test_stored_false_disables(self) -> None:
+        cfg = MagicMock()
+        cfg.get_config = AsyncMock(
+            return_value={"featureFlags": {"ENABLE_MCP": False}}
+        )
+        assert await is_mcp_enabled(cfg) is False
+
+    @pytest.mark.asyncio
+    async def test_platform_settings_flag_absent_defaults_true(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(return_value={"featureFlags": {}})
-        assert await is_mcp_enabled(cfg) is False
+        assert await is_mcp_enabled(cfg) is True
 
     @pytest.mark.asyncio
     async def test_platform_settings_read_failure_disables(self) -> None:
         cfg = MagicMock()
         cfg.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
         assert await is_mcp_enabled(cfg) is False
+
+    @pytest.mark.asyncio
+    async def test_store_outage_does_not_undo_a_saved_opt_out(self) -> None:
+        """The store answers `default` for a failed read unless asked to raise, so a
+        helper that does not ask would read the outage as "flag absent" -> on."""
+        store = _FailingSettingsStore({"featureFlags": {"ENABLE_MCP": False}}, fail=True)
+        assert await is_mcp_enabled(store) is False  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_store_outage_with_no_saved_value_disables(self) -> None:
+        assert await is_mcp_enabled(_FailingSettingsStore(fail=True)) is False  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_healthy_store_without_settings_is_enabled(self) -> None:
+        assert await is_mcp_enabled(_FailingSettingsStore()) is True  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_healthy_store_with_saved_opt_out_is_disabled(self) -> None:
+        store = _FailingSettingsStore({"featureFlags": {"ENABLE_MCP": False}})
+        assert await is_mcp_enabled(store) is False  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
     async def test_falls_back_to_feature_flag_service(self) -> None:
@@ -357,7 +403,7 @@ class TestIsMcpEnabled:
             assert await is_mcp_enabled(None) is True
 
     @pytest.mark.asyncio
-    async def test_feature_flag_service_unavailable_defaults_false(self) -> None:
+    async def test_feature_flag_service_unavailable_disables(self) -> None:
         with patch(
             "app.services.featureflag.featureflag.FeatureFlagService.get_service",
             side_effect=RuntimeError("unwired"),

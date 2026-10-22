@@ -2237,8 +2237,7 @@ class TestSharePointConvertToPermissions:
         perm.link = link
 
         result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ORG
+        assert result == []  # an organization link alone is not a grant
 
     @pytest.mark.asyncio
     async def test_empty_permissions_list(self):
