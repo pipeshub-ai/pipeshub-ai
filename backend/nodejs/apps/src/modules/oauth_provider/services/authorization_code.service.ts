@@ -6,8 +6,8 @@ import { AuthorizationCode } from '../schema/authorization_code.schema'
 import { OAuthAccessToken } from '../schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema'
 import { InvalidGrantError } from '../../../libs/errors/oauth.errors'
-import { AuthCodeExchangeResult, KnowledgeLimit } from '../types/oauth.types'
-import { toKnowledgeLimit } from '../schema/knowledge_limit.schema'
+import { AuthCodeExchangeResult, KnowledgeLimit } from '../types/oauth.types';
+import { toKnowledgeLimit } from '../schema/knowledge_limit.schema';
 
 const CODE_LENGTH = 32
 const CODE_EXPIRY_SECONDS = 600 // 10 minutes

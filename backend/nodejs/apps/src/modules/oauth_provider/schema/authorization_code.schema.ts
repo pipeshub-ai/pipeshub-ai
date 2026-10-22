@@ -1,6 +1,6 @@
 import mongoose, { Document, Schema, Model, Types } from 'mongoose'
-import { KnowledgeLimit } from '../types/oauth.types'
-import { knowledgeLimitField } from './knowledge_limit.schema'
+import { KnowledgeLimit } from '../types/oauth.types';
+import { knowledgeLimitField } from './knowledge_limit.schema';
 
 export interface IAuthorizationCode extends Document {
   code: string
@@ -11,7 +11,7 @@ export interface IAuthorizationCode extends Document {
   orgId: Types.ObjectId
   redirectUri: string
   scopes: string[]
-  knowledgeLimit?: KnowledgeLimit
+  knowledgeLimit?: KnowledgeLimit;
   expiresAt: Date
   isUsed: boolean
   usedAt?: Date

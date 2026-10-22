@@ -34,7 +34,9 @@ export const sameKnowledgeLimit = (
   a: KnowledgeLimit | null | undefined,
   b: KnowledgeLimit | null | undefined,
 ): boolean => {
-  const sorted = (limit: KnowledgeLimit | null | undefined) => {
+  const sorted = (
+    limit: KnowledgeLimit | null | undefined,
+  ): KnowledgeLimit | undefined => {
     const plain = toKnowledgeLimit(limit);
     return (
       plain && {

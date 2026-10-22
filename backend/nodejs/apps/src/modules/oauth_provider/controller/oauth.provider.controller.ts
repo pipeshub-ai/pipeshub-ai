@@ -33,7 +33,10 @@ import {
   OAuthErrorResponse,
 } from '../types/oauth.types';
 import { Users } from '../../user_management/schema/users.schema';
-import { sameKnowledgeLimit, toKnowledgeLimit } from '../schema/knowledge_limit.schema';
+import {
+  sameKnowledgeLimit,
+  toKnowledgeLimit,
+} from '../schema/knowledge_limit.schema';
 import { Org } from '../../user_management/schema/org.schema';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
 import { OAuthDeviceService } from '../services/oauth.device.service';
