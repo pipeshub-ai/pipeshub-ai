@@ -454,6 +454,15 @@ config:
   governorHeavyParseSlotsPerCpu: ""   # (1.0) heavy parse slots per CPU
   governorLightParseSlotsPerCpu: ""   # (10.0) light parse slots per CPU
   governorLightParseMax: ""           # (256) absolute cap on the light ceiling
+  parseMaxOrgShare: ""                # (0.5) share of a parse pool one org may hold while another org waits
+  codeEdgeBuildReconcileIntervalSeconds: ""  # (600)
+  codeEdgeFullRebuildIntervalSeconds: ""  # (604800)
+  codeEdgeBuildMaxConcurrent: ""  # (2)
+  codeEdgeBuildMaxPerOrg: ""  # (1)
+  codeEdgeBuildMaxBlocks: ""  # (300000)
+  codeEdgeBuildMaxFailures: ""  # (6)
+  codeGraphEnabled: "true"  # false: code indexed for search, no blocks or edges
+  codeGraphBackfill: "false"  # true: re-index repos of an older code-graph version on start
   governorIndexHeadroom: ""           # (2.0) in-flight records per parse slot
   governorIndexMax: ""                # (512) absolute cap per index tier
   governorIndexHeavyWorkingSetGb: ""  # (0.15) RAM assumed per in-flight heavy record

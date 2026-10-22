@@ -39,7 +39,13 @@ from .catalog import ConnectorCatalog
 from .models import NavigationView
 from .navigator import GraphNavigator
 from .ops.results import result_text, search_result_summary
-from .ops.scope import ids_within_scope, resolve_scope, selection_browse_refusal
+from .ops.scope import (
+    _has_selection,
+    ids_within_scope,
+    navigation_nameable_ids,
+    resolve_scope,
+    selection_browse_refusal,
+)
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
 from .views import render_lookup_result_with_ids, render_navigation_view_with_ids
@@ -186,6 +192,21 @@ def _time_range_error_message(error_json: str) -> str:
         return parsed.get("message", error_json) if isinstance(parsed, dict) else error_json
     except (json.JSONDecodeError, AttributeError):
         return error_json
+
+
+def _copies_outside_selection(identifier: str, matches: list) -> str:
+    """Where the readable copies of an issue key or URL live, when none of
+    them is inside this conversation. Success, not a failed tool call."""
+    places = []
+    for match in matches:
+        name = getattr(match, "name", None) or match.id
+        where = getattr(match, "connector_name", None) or "another source"
+        places.append(f"{name} ({where})")
+    found = "; ".join(places)
+    return (
+        f"{identifier} is outside what this conversation is limited to. "
+        f"A copy the user can open elsewhere: {found}."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -433,8 +454,11 @@ class KnowledgeGraph:
         connector_ids = list(scope.app_ids)
         kb_ids = list(scope.kb_ids)
 
-        if not connector_ids and not kb_ids:
-            # Chat-mode fallback: use all user-visible connectors
+        if not connector_ids and not kb_ids and not _has_selection(state.get("filters") or {}):
+            # Chat-mode fallback: use all user-visible connectors. A selection
+            # below app level is already the scope; substituting the connector
+            # catalog would hide a collection folder's children, because a
+            # collection is not one of those connectors.
             if not state.get("has_knowledge"):
                 return False, "No knowledge sources configured for this agent."
             logger.debug(
@@ -460,7 +484,17 @@ class KnowledgeGraph:
                 )
                 result = await resolver.resolve_many([node_id])
                 if result.matches:
-                    node_id = result.matches[0].id
+                    # The same issue key can exist on more than one connector.
+                    # The copy inside this conversation wins; another connector's
+                    # copy is named so the miss is not a broken tool.
+                    inside = await ids_within_scope(
+                        state, graph_provider, user_key, org_id,
+                        [match.id for match in result.matches],
+                    )
+                    chosen = next((match for match in result.matches if match.id in inside), None)
+                    if chosen is None:
+                        return True, _copies_outside_selection(node_id, result.matches)
+                    node_id = chosen.id
 
         refusal = await selection_browse_refusal(state, graph_provider, user_key, org_id, node_id)
         if refusal:
@@ -491,13 +525,21 @@ class KnowledgeGraph:
                 node_types=node_types,
                 app_names=app_names,
             )
-            # A linked record is named from any source the user reads, not
-            # only from those the turn is limited to.
-            if view.related:
-                inside = await ids_within_scope(
-                    state, graph_provider, user_key, org_id, [row.id for row in view.related],
-                )
-                view.related = [row for row in view.related if row.id in inside]
+            # The listing names every ancestor the user can open, and every
+            # child under the opened node. Neither is the conversation's
+            # limit: a parent above a selected group would be named and
+            # offered as the place to see siblings, and a child the user
+            # cannot read would be offered to fetch.
+            ancestors, rows, related = await navigation_nameable_ids(
+                state, graph_provider, user_key, org_id,
+                ancestor_ids=[crumb.id for crumb in view.breadcrumbs],
+                row_ids=[row.id for row in view.rows],
+                related_ids=[row.id for row in view.related],
+            )
+            if ancestors is not None:
+                view.breadcrumbs = [crumb for crumb in view.breadcrumbs if crumb.id in ancestors]
+            view.rows = [row for row in view.rows if row.id in rows]
+            view.related = [row for row in view.related if row.id in related]
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
@@ -1253,6 +1295,16 @@ class KnowledgeGraph:
                 required=False,
                 default="desc",
             ),
+            ToolParameter(
+                name="cursor",
+                type=ParameterType.STRING,
+                description=(
+                    "The next-page token from the selection listed in the prompt. "
+                    "Pass it with any query; the cursor chooses the page. "
+                    "Omit it to start at the first page."
+                ),
+                required=False,
+            ),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
         args_summary=lambda args: (
@@ -1273,12 +1325,14 @@ class KnowledgeGraph:
         limit: int = 20,
         sort_by: str = "updatedAt",
         sort_order: str = "desc",
+        cursor: str | None = None,
     ) -> tuple[bool, str]:
         """Name-based listing — calls ops/listing.py execute_list_files."""
         from .ops.listing import execute_list_files
         return await execute_list_files(
             self.state,
             query=query,
+            cursor=cursor,
             source_ids=source_ids,
             node_types=node_types,
             record_types=record_types,

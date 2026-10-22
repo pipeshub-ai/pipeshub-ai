@@ -696,6 +696,13 @@
     "message": "Dokument se znovu zaindexuje od začátku, což může znamenat dodatečné náklady. Použijte to, když jsou výsledky vyhledávání zastaralé nebo když dokument nelze vyhledat ani po dokončení indexování.",
     "confirm": "Potvrdit"
   },
+  "reindexBlocked": {
+    "title": "Tento záznam nelze přeindexovat samostatně",
+    "message": "Soubory z GitHubu a GitLabu tvoří jeden graf kódu pro celý repozitář. Přeindexováním jediného souboru by se tento soubor dostal před zbytek repozitáře a vazby mezi soubory by se porušily. Chcete-li jej obnovit, přeindexujte celý repozitář ze znalostní báze – tím se všechny soubory přeindexují společně. Synchronizace konektoru zachytí jen změněné soubory.",
+    "folderTitle": "Tuto složku nelze přeindexovat samostatně",
+    "folderMessage": "Soubory z GitHubu a GitLabu tvoří jeden graf kódu pro celý repozitář. Přeindexováním složky by se aktualizovaly jen její soubory, které by se tak dostaly před zbytek repozitáře, a vazby mezi soubory by se porušily. Chcete-li ji obnovit, přeindexujte celý repozitář ze znalostní báze – tím se všechny soubory přeindexují společně. Synchronizace konektoru zachytí jen změněné soubory.",
+    "goToConnectors": "Přejít na konektory"
+  },
   "kb": {
     "viewToggle": "Přepínač zobrazení",
     "collectionsView": "Zobrazení kolekcí",
@@ -1901,6 +1908,7 @@
         "createDisabledScopesTooltip": "Pro vytvoření aplikace vyberte alespoň jeden rozsah oprávnění.",
         "tabGeneral": "Obecné",
         "tabPermissions": "Oprávnění a rozsahy",
+        "tabGranular": "Podrobná oprávnění",
         "appNameLabel": "Název aplikace",
         "appNamePlaceholder": "Moje aplikace",
         "descriptionLabel": "Popis",
@@ -2901,6 +2909,20 @@
         "retryFailedClassification": "Zopakovat neúspěšnou klasifikaci",
         "retryClassificationSuccess": "Opakování klasifikace zařazeno do fronty",
         "retryClassificationError": "Klasifikaci se nepodařilo zopakovat",
+        "codeGraph": {
+          "title": "Graf kódu",
+          "status": {
+            "never_built": "Zatím nevytvořen",
+            "building": "Vytváří se",
+            "ready": "Připraven",
+            "stale": "Aktualizuje se",
+            "waiting_on_indexing": "Čeká na indexaci",
+            "retrying": "Nový pokus",
+            "failed": "Selhalo",
+            "too_large": "Příliš velký",
+            "unknown": "Neznámý"
+          }
+        },
         "lastRun": {
           "title": "Poslední synchronizace",
           "outcome": {
@@ -4943,6 +4965,36 @@
     "doneLine": "Můžete se vrátit do terminálu. Toto okno lze zavřít.",
     "deniedTitle": "Žádost zamítnuta",
     "deniedLine": "Zařízení nebyl udělen přístup."
+  },
+  "knowledgeLimit": {
+    "title": "Co může {{appName}} vidět?",
+    "help": "Může vyhledávat a číst jen to, co zde povolíte, a nikdy víc, než vidíte vy.",
+    "everything": "Vše, co vidím",
+    "everythingHint": "Zahrnuje i zdroje, které přidáte později.",
+    "only": "Jen to, co vyberu",
+    "onlyHint": "Vyberte celé zdroje, nebo otevřete zdroj a vyberte prostory, složky či soubory.",
+    "pickOne": "Vyberte alespoň jeden zdroj, prostor, složku nebo soubor.",
+    "tooMany": "Vyberte nejvýše {{max}} položek, nebo místo toho vyberte celý zdroj.",
+    "selectedCount_one": "Vybrána {{count}} položka",
+    "selectedCount_few": "Vybrány {{count}} položky",
+    "selectedCount_many": "Vybráno {{count}} položky",
+    "selectedCount_other": "Vybráno {{count}} položek",
+    "canSeeEverything": "Vidí: vše, co vidíte vy",
+    "canSeeSome_one": "Vidí: {{count}} vybranou položku",
+    "canSeeSome_few": "Vidí: {{count}} vybrané položky",
+    "canSeeSome_many": "Vidí: {{count}} vybrané položky",
+    "canSeeSome_other": "Vidí: {{count}} vybraných položek",
+    "thisToken": "tento token",
+    "app": {
+      "thisApp": "tato aplikace",
+      "help": "Uživatelé, kteří tuto aplikaci připojí, mohou prohledávat a číst jen to, co zde vyberete, a nikdy víc, než sami vidí.",
+      "everything": "Vše, co vidí každý uživatel",
+      "everythingHint": "Zahrnuje i zdroje přidané později."
+    },
+    "appLimited_one": "{{appName}} vidí jen {{count}} položku vybranou tvůrcem, a jen pokud ji vidíte i vy.",
+    "appLimited_few": "{{appName}} vidí jen {{count}} položky vybrané tvůrcem, a jen ty, které vidíte i vy.",
+    "appLimited_many": "{{appName}} vidí jen {{count}} položky vybrané tvůrcem, a jen ty, které vidíte i vy.",
+    "appLimited_other": "{{appName}} vidí jen {{count}} položek vybraných tvůrcem, a jen ty, které vidíte i vy."
   },
   "auth": {
     "titleSection": {

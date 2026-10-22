@@ -393,12 +393,17 @@ class GraphTransactionStore(TransactionStore):
         self._memo_forget_record(key)
         # The node with its edges: on Neo4j that is the same single DETACH DELETE,
         # and on ArangoDB the edges no longer dangle after the record is gone.
-        return await self.graph_provider.delete_nodes_and_edges(
+        result = await self.graph_provider.delete_nodes_and_edges(
             [key],
             CollectionNames.RECORDS.value,
             graph_name="knowledgeGraph",
             transaction=self.txn,
         )
+        # A code file's blocks hang off it by recordId, not by an edge, so removing
+        # the record vertex alone strands the whole file's symbol projection. After
+        # the record, so a write that fails here cannot leave the record live.
+        await self.graph_provider.delete_blocks_for_records([key], transaction=self.txn)
+        return result
 
     async def delete_record_by_external_id(
         self, connector_id: str, external_id: str, user_id: str | None = None, *, soft_delete: bool = False,

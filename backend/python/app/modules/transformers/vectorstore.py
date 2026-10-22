@@ -37,7 +37,9 @@ from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record
 from app.modules.parsers.link_text import anchor_text_only
+from app.modules.parsers.table_titles import table_titles
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
+from app.modules.transformers.code_units import code_units
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
 from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
@@ -144,6 +146,8 @@ _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 # MAX_TOKENS_PER_REQUEST, above which it silently splits one aembed_documents
 # call into several *sequential* HTTP requests inside that one timeout.
 _DEFAULT_DOCUMENT_BATCH_CHARS = 100_000
+# Document metadata key for text that feeds the sparse (keyword) vector only.
+_SPARSE_EXTRA = "_sparseExtra"
 _LOCAL_CPU_DOCUMENT_BATCH_CHARS = 40_000
 
 # OpenAI and Azure OpenAI batches are bounded by tokens instead of by document
@@ -515,6 +519,10 @@ def _chunk_oversized_text(
     return chunks or [text]
 
 
+def _with_title(title: str | None, text: str) -> str:
+    return f"{title}: {text}" if title else text
+
+
 def _bounded_documents(text: str, metadata: dict) -> list[Document]:
     """Documents for one piece of table or SQL text, split to the model's token
     ceiling. Table rows, summaries, DDL and view text are otherwise unbounded,
@@ -599,33 +607,65 @@ def _build_text_documents(
     return documents
 
 
+def _record_context_line(record: "Record | None") -> str:
+    """``name — path`` for the record a block belongs to, or "".
+
+    The words that identify a file live in its name and path, and none of them
+    appear in the source text of the symbols inside it. An abstract method is
+    the worst case: `BaseConnector.stream_record` is a signature and a
+    docstring, so a search for "stream record implementation" matched it on
+    almost nothing and returned six test files instead. Repeating this line on
+    every block is what puts those terms in front of the index at all.
+    """
+    if record is None:
+        return ""
+    name = (getattr(record, "record_name", None) or "").strip()
+    path = (getattr(record, "external_record_id", None) or "").strip()
+    # Repo-hosting connectors prefix the path with routing noise
+    # ("/org/repo/-/blob/HEAD/") that is identical for every file in the repo
+    # and so separates nothing.
+    for marker in ("/-/blob/HEAD/", "/-/raw/HEAD/", "/blob/HEAD/"):
+        if marker in path:
+            path = path.split(marker, 1)[1]
+            break
+    parts = [p for p in (name, path) if p]
+    if len(parts) == 2 and parts[0] == parts[1]:
+        parts = parts[:1]
+    return " — ".join(parts)
+
+
 def _build_code_documents(
     code_blocks: List,
     virtual_record_id: str,
     org_id: str,
+    context: str = "",
 ) -> List[Document]:
-    """One embeddable Document per code symbol.
+    """Embeddable Documents for a record's code symbols (see ``code_units``).
 
-    Sentence-splitting is meaningless for code, so each symbol is embedded
-    whole from ``block.data["text"]`` — the raw source text produced by the
-    parser, same pattern every other block type follows.
+    Each carries ``context`` (see ``_record_context_line``) and the symbol's
+    qualified name, so a block says WHERE it lives and not only what it
+    contains. A symbol over the unit budget becomes several Documents, each
+    repeating its signature; the block's subtokens go to keyword search only.
     """
+    def header_of(block: object) -> str:
+        code_meta = getattr(block, "code_metadata", None)
+        qualified_name = (getattr(code_meta, "qualified_name", None) or "").strip()
+        return " · ".join(p for p in (context, qualified_name) if p)
+
     documents: List[Document] = []
-    for block in code_blocks:
-        data = block.data if isinstance(block.data, dict) else {}
-        text = data.get("text") or ""
-        if not text.strip():
-            continue
+    for unit in code_units(code_blocks, header_of, exceeds=_exceeds_token_ceiling,
+                           token_len=_token_len, split_long_line=_split_to_token_ceiling):
         metadata = {
             "virtualRecordId": virtual_record_id,
-            "blockId": block.id,
-            "blockIndex": block.index,
+            "blockId": unit.block.id,
+            "blockIndex": unit.block.index,
             "orgId": org_id,
             "isBlockGroup": False,
+            "isBlock": unit.whole,
         }
-        documents.append(
-            Document(page_content=text, metadata={**metadata, "isBlock": True})
-        )
+        if unit.sparse_extra:
+            metadata[_SPARSE_EXTRA] = unit.sparse_extra
+        documents.append(Document(page_content=unit.text, metadata=metadata))
     return documents
 
 
@@ -771,6 +811,8 @@ class VectorStore(Transformer):
         org_id = record.org_id
         block_ids_to_delete = None
         is_reconciliation = False
+        # A changed row's heading may be an unchanged block left out below.
+        titles = table_titles(block_containers.blocks, block_containers.block_groups)
 
         if (
             ctx.reconciliation_context
@@ -803,6 +845,7 @@ class VectorStore(Transformer):
             block_ids_to_delete=block_ids_to_delete,
             is_reconciliation=is_reconciliation,
             record=record,
+            titles=titles,
         )
 
     # ------------------------------------------------------------------
@@ -1618,16 +1661,23 @@ class VectorStore(Transformer):
         ):
             dense_embeddings = await self._embed_documents_with_retry(texts, record_id)
 
-        # Sparse embeddings (provider-dependent)
+        # Sparse embeddings (provider-dependent). Code adds its subtokens here only.
         with stage("embed.sparse", detail=f"batch of {len(texts)} texts"):
-            sparse_embeddings = await self._compute_sparse_embeddings(texts)
+            sparse_embeddings = await self._compute_sparse_embeddings([
+                f"{doc.page_content}\n{doc.metadata[_SPARSE_EXTRA]}"
+                if doc.metadata.get(_SPARSE_EXTRA) else doc.page_content
+                for doc in documents
+            ])
 
         points: List[VectorPoint] = [
             VectorPoint(
                 id=deterministic_point_id(doc.metadata, doc.page_content),
                 dense_vector=dense,
                 sparse_vector=sparse,
-                payload=vector_point_payload(doc.metadata, doc.page_content),
+                payload=vector_point_payload(
+                    {k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA},
+                    doc.page_content,
+                ),
             )
             for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
         ]
@@ -1772,6 +1822,7 @@ class VectorStore(Transformer):
         block_ids_to_delete: set | None = None,
         is_reconciliation: bool = False,
         record: Optional["Record"] = None,
+        titles: dict[int, str] | None = None,
     ) -> bool | None:
         try:
             with stage("embed.setup"):
@@ -1789,6 +1840,8 @@ class VectorStore(Transformer):
         # deployment with no chat model configured.
         blocks = block_containers.blocks
         block_groups = block_containers.block_groups
+        if titles is None:
+            titles = table_titles(blocks, block_groups)
 
         tokens = await self._bind_membership(virtual_record_id, record)
         try:
@@ -1867,7 +1920,10 @@ class VectorStore(Transformer):
             # ── Code blocks ──
             if code_blocks:
                 documents_to_embed.extend(
-                    _build_code_documents(code_blocks, virtual_record_id, org_id)
+                    _build_code_documents(
+                        code_blocks, virtual_record_id, org_id,
+                        _record_context_line(record),
+                    )
                 )
                 self.logger.info("✅ Added code documents for embedding")
 
@@ -2031,7 +2087,7 @@ class VectorStore(Transformer):
                         table_summary = anchor_text_only(table_data.get("table_summary", ""))
                         if table_summary:
                             documents_to_embed.extend(_bounded_documents(
-                                table_summary,
+                                _with_title(titles.get(block_group.index), table_summary),
                                 {
                                     "virtualRecordId": virtual_record_id,
                                     "blockId": block_group.id,
@@ -2099,7 +2155,7 @@ class VectorStore(Transformer):
                         )
                         if row_text:
                             documents_to_embed.extend(_bounded_documents(
-                                row_text,
+                                _with_title(titles.get(block.parent_index), row_text),
                                 {
                                     "virtualRecordId": virtual_record_id,
                                     "blockId": block.id,

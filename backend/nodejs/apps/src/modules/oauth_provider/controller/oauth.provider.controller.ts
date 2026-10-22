@@ -33,6 +33,10 @@ import {
   OAuthErrorResponse,
 } from '../types/oauth.types';
 import { Users } from '../../user_management/schema/users.schema';
+import {
+  sameKnowledgeLimit,
+  toKnowledgeLimit,
+} from '../schema/knowledge_limit.schema';
 import { Org } from '../../user_management/schema/org.schema';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
 import { OAuthDeviceService } from '../services/oauth.device.service';
@@ -167,6 +171,7 @@ export class OAuthProviderController {
           homepageUrl: app.homepageUrl,
           privacyPolicyUrl: app.privacyPolicyUrl,
           isDynamic: app.isDynamic === true,
+          knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
         },
         scopes: toScopeInfo(granted),
         notGrantedScopes: toScopeInfo(notGranted),
@@ -287,6 +292,7 @@ export class OAuthProviderController {
         granted,
         code_challenge,
         code_challenge_method,
+        toKnowledgeLimit(app.knowledgeLimit),
       );
 
       // Build redirect URL with code
@@ -664,6 +670,14 @@ export class OAuthProviderController {
       throw new InvalidGrantError(APP_WORKSPACE_MISMATCH_MESSAGE);
     }
 
+    // The user agreed to the limit the code was issued under, and an edit
+    // since then revokes tokens but cannot reach a code.
+    if (!sameKnowledgeLimit(codeResult.knowledgeLimit, app.knowledgeLimit)) {
+      throw new InvalidGrantError(
+        "The application's permissions changed after you allowed it. Sign in again.",
+      );
+    }
+
     // Look up user details to embed in token
     let fullName: string | undefined;
     let accountType: string | undefined;
@@ -819,6 +833,7 @@ export class OAuthProviderController {
       false, // No refresh token
       fullName,
       accountType,
+      { recheckAppScopes: true },
     );
 
     this.logger.info('Client credentials grant completed', { clientId });

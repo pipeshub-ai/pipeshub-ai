@@ -47,6 +47,7 @@ import * as userAccountRoutes from '../src/modules/auth/routes/userAccount.route
 import * as orgAuthConfigRoutes from '../src/modules/auth/routes/orgAuthConfig.routes';
 import * as storageRoutes from '../src/modules/storage/routes/storage.routes';
 import * as esRoutes from '../src/modules/enterprise_search/routes/es.routes';
+import * as codeGraphRoutes from '../src/modules/enterprise_search/routes/code-graph.routes';
 import * as connectorRoutes from '../src/modules/tokens_manager/routes/connectors.routes';
 import * as oauthRoutes from '../src/modules/tokens_manager/routes/oauth.routes';
 import * as kbRoutes from '../src/modules/knowledge_base/routes/kb.routes';
@@ -177,6 +178,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(esRoutes, 'createSemanticSearchRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createAgentConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createChatSpeechRouter').returns(dummyRouter);
+  sandbox.stub(codeGraphRoutes, 'createCodeGraphRouter').returns(dummyRouter);
   sandbox.stub(connectorRoutes, 'createConnectorRouter').returns(dummyRouter);
   sandbox.stub(oauthRoutes, 'createOAuthRouter').returns(dummyRouter);
   sandbox.stub(kbRoutes, 'createKnowledgeBaseRouter').returns(dummyRouter);

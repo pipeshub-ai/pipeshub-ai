@@ -97,6 +97,7 @@ def _hub(documents: dict[str, dict] | None = None) -> KnowledgeHubService:
 
     graph = MagicMock()
     graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+    graph.get_hidden_app_ids = AsyncMock(return_value=[])
     graph.get_knowledge_hub_access_context_v2 = AsyncMock(return_value=_GATE)
     graph.get_knowledge_hub_access_v3 = AsyncMock(return_value={**_GATE, "by_connector": _GRANTS})
     graph.get_knowledge_hub_root_nodes_v2 = AsyncMock(side_effect=root_listing)

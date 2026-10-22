@@ -28,7 +28,10 @@ from app.agents.agent_loop.prompt_cache import (
     without_cache_markers,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.error.stream_errors import map_source_status
+from app.connectors.core.base.error.stream_errors import (
+    map_source_status,
+    not_downloadable,
+)
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.excel.prompt_template import RowDescriptions
 from app.services.llm_gateway.gateway import Invocable, get_llm_gateway, provider_key
@@ -159,11 +162,13 @@ async def stream_content(
     log_parts.append(f"File path: {file_path_info}")
     log_prefix = " | ".join(log_parts)
 
+    # Never the query: it carries the signature.
     logger.debug(f"Fetching presigned URL: {file_path_info}")
 
     try:
         # Use a timeout to prevent hanging requests
-        timeout = aiohttp.ClientTimeout(total=300, connect=10)
+        # No total limit: it would cut off a large file that is still downloading.
+        timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_read=60)
 
         # Create session - AWS presigned URLs must be used exactly as generated
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -206,6 +211,12 @@ async def stream_content(
                         logger.error(
                             f"❌ HTTP {response.status}: Failed to fetch file content. {log_prefix}{error_details}"
                         )
+                    if response.headers.get("x-ms-error-code") == "BlobArchived":
+                        raise not_downloadable(
+                            "This file is in the Archive tier in Azure. Rehydrate it to the Hot or "
+                            "Cool tier to read it.",
+                            connector=connector,
+                        )
                     # error_details stays in the log: it can contain presigned
                     # URL internals and bucket names.
                     raise map_source_status(
@@ -224,7 +235,8 @@ async def stream_content(
         ) from e
     except aiohttp.ClientError as e:
         logger.error(
-            f"❌ NETWORK ERROR: Failed to fetch file content from signed URL: {str(e)} | {log_prefix}"
+            # Only the type: the message of a redirect or URL error holds the whole signed URL.
+            f"❌ NETWORK ERROR: Failed to fetch file content from signed URL: {type(e).__name__} | {log_prefix}"
         )
         raise map_source_status(
             HttpStatusCode.BAD_GATEWAY.value, connector=connector

@@ -3991,10 +3991,10 @@ class TestParseStages:
         assert raised.value.status_code == 400
 
     def test_the_reindex_event_carries_the_stages(self) -> None:
-        from app.connectors.api.router import _build_reindex_event
+        from app.connectors.services.reindex_events import build_reindex_event
 
-        event = _build_reindex_event(
+        event = build_reindex_event(
             event_type="gmail.reindex", org_id="o", connector_id="c", status_filters=["FAILED"], stages=["classify"]
         )
         assert event["payload"]["stages"] == ["classify"]
-        assert "stages" not in _build_reindex_event(event_type="gmail.reindex", org_id="o", connector_id="c")["payload"]
+        assert "stages" not in build_reindex_event(event_type="gmail.reindex", org_id="o", connector_id="c")["payload"]

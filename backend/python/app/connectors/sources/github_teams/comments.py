@@ -45,6 +45,7 @@ from app.models.blocks import (
     GroupType,
 )
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
+from app.modules.parsers.code_parser.secret_scan import redact_secrets
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 from .constants import ATTACHMENT_MAX_SIZE_BYTES, PR_FILE_INLINE_CONTENT_MAX_BYTES
@@ -272,6 +273,9 @@ class CommentsHelper:
         if not body_content:
             return ""
         cleaned_text, attachments = await self.clean_github_content(body_content)
+        # Every issue/PR body and comment passes here; images are still tokens,
+        # so the scan neither sees base64 nor breaks attachment URLs.
+        cleaned_text = redact_secrets(cleaned_text).text
         c = self.c
         for attach in attachments:
             slot = attach.get("slot")
@@ -745,7 +749,7 @@ class CommentsHelper:
                 continue
             status = getattr(file, "status", "")
             diff = getattr(file, "patch", None)
-            patch = diff or "(no textual diff available — binary or too large)"
+            patch = redact_secrets(diff or "(no textual diff available — binary or too large)").text
             file_content: str | None = None
             oversized = False
             content_bytes: int | None = None
@@ -778,7 +782,7 @@ class CommentsHelper:
                     f"{PR_FILE_INLINE_CONTENT_MAX_BYTES}-byte inline limit)"
                 )
             elif file_content:
-                data_parts.append(f"Full File Content:\n{file_content}")
+                data_parts.append(f"Full File Content:\n{redact_secrets(file_content).text}")
             # No diff and nothing fetched: say only what the listing shows.
             # GitHub counts a binary's lines as 0/0 even when its bytes
             # changed, so "no changes" is never claimed for a rename or copy.
@@ -886,7 +890,7 @@ class CommentsHelper:
                 type=BlockType.TEXT.value,
                 sub_type=BlockSubType.COMMIT.value,
                 format=DataFormat.MARKDOWN,
-                data=message,
+                data=redact_secrets(message or "").text,
                 weburl=getattr(commit, "html_url", None),
                 source_id=getattr(commit, "sha", None),
                 source_creation_date=date,

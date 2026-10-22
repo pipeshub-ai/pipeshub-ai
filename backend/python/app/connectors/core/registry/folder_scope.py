@@ -21,7 +21,7 @@ from app.services.graph_db.common.record_visibility import RecordVisibility
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Container
 
     from app.config.configuration_service import ConfigurationService
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -177,6 +177,22 @@ async def recorded_ids(
     }
 
 
+async def recorded_record_ids(
+    data_entities_processor: DataSourceEntitiesProcessor,
+    connector_id: str,
+    container_name: str,
+) -> dict[str, str]:
+    """External id -> record id of this connector's records in ``container_name``, read before a listing.
+
+    Kept for the removal pass too (``remove_recorded_not_listed``), so a sync reads the container's
+    records once instead of before and again after the listing.
+    """
+    return {
+        record.external_record_id: record.id
+        async for record, _ in _records_in(data_entities_processor, connector_id, container_name)
+    }
+
+
 async def _remove_records(
     data_entities_processor: DataSourceEntitiesProcessor,
     connector_id: str,
@@ -274,6 +290,38 @@ async def remove_records_not_listed(
     )
 
 
+async def remove_recorded_not_listed(
+    data_entities_processor: DataSourceEntitiesProcessor,
+    container_name: str,
+    prefixes: list[str],
+    recorded: dict[str, str],
+    listed: set[str],
+    written: Container[str],
+    logger: logging.Logger,
+) -> CleanupResult:
+    """``remove_records_not_listed`` from the records read before the listing (``recorded_record_ids``).
+
+    A record written during this sync (``written``: record ids) is never removed, though its
+    id may still be under its old path in ``recorded``: it moved, or was renamed, to a listed blob.
+    Records created during the sync are listed, so they need no second read either.
+    """
+    removed = failed = 0
+    prefix = f"{container_name}/"
+    for external_id, record_id in recorded.items():
+        path = external_id[len(prefix):]
+        if external_id in listed or record_id in written or not any(_under_prefix(path, p) for p in prefixes):
+            continue
+        try:
+            await data_entities_processor.on_record_deleted(record_id)
+            removed += 1
+        except Exception as e:  # one failed delete must not stop the rest
+            failed += 1
+            logger.warning(f"Failed to remove {external_id} missing from the latest listing: {e}")
+    if removed:
+        logger.info(f"Removed {removed} records in {container_name} missing from the latest listing")
+    return CleanupResult(removed, failed)
+
+
 def _names(names_filter: Filter) -> frozenset[str]:
     raw = names_filter.value if isinstance(names_filter.value, list) else [names_filter.value]
     return frozenset(name for name in raw if isinstance(name, str) and name)
@@ -333,24 +381,29 @@ async def remove_deselected_containers(
     if saved_filter.operator_value != current.operator_value or _names(saved_filter) != _names(current):
         return
 
-    from app.config.constants.arangodb import CollectionNames
-    from app.models.entities import RecordGroupType
-
     try:
-        groups = await data_entities_processor.get_nodes_by_filters(
-            collection=CollectionNames.RECORD_GROUPS.value,
-            filters={"connectorId": connector_id, "groupType": RecordGroupType.BUCKET.value},
-        )
+        stored = await stored_containers(data_entities_processor, connector_id)
     except Exception as e:  # retried on the next sync
         logger.warning(f"Not removing de-selected {filter_name}: the stored ones could not be read: {e}")
         return
-    stored = {g.get("externalGroupId") for g in groups if isinstance(g, dict)} - {None, ""}
     stale = sorted(name for name in stored if not name_passes_filter(saved, filter_name, name))
     for container_name in stale:
         await remove_container(
             data_entities_processor, connector_id, container_name,
             f"now that the {filter_name} filter leaves {container_name} out", logger,
         )
+
+
+async def stored_containers(data_entities_processor: DataSourceEntitiesProcessor, connector_id: str) -> set[str]:
+    """The names of this connector's stored bucket or container record groups."""
+    from app.config.constants.arangodb import CollectionNames
+    from app.models.entities import RecordGroupType
+
+    groups = await data_entities_processor.get_nodes_by_filters(
+        collection=CollectionNames.RECORD_GROUPS.value,
+        filters={"connectorId": connector_id, "groupType": RecordGroupType.BUCKET.value},
+    )
+    return {g.get("externalGroupId") for g in groups if isinstance(g, dict)} - {None, ""}
 
 
 async def remove_container(

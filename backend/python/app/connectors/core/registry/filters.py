@@ -243,6 +243,8 @@ class SyncFilterKey(str, Enum):
     GROUP_IDS = "group_ids"
     ORG_IDS = "org_ids"
     REPO_IDS = "repo_ids"
+    # Code repositories: gitignore-style paths whose files get no record
+    EXCLUDE_PATHS = "exclude_paths"
 
     # Content filters
     CONTENT_STATUS = "content_status"
@@ -317,6 +319,7 @@ class IndexingFilterKey(str, Enum):
     # GitLab
     MERGE_REQUESTS = "merge_requests"
     CODE_FILES = "code_files"
+    TEST_FILES = "test_files"
 
     # Knowledge base
     KNOWLEDGE_BASE = "knowledge_base"

@@ -1,4 +1,4 @@
-import React, { StrictMode, useState } from 'react';
+import React, { StrictMode, useEffect, useState } from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import { DRAFT_SAVE_DEBOUNCE_MS, useComposerDraft } from '../use-composer-draft';
@@ -16,9 +16,14 @@ interface HarnessProps {
   initial?: string;
 }
 
+let controls: ReturnType<typeof useComposerDraft> | null = null;
+
 function Harness({ draftKey, slotId, paused, initial = '', userId = 'u1' }: HarnessProps) {
   const [message, setMessage] = useState(initial);
-  useComposerDraft({ draftKey, userId, slotId, message, setMessage, paused });
+  const result = useComposerDraft({ draftKey, userId, slotId, message, setMessage, paused });
+  useEffect(() => {
+    controls = result;
+  });
   return (
     <textarea
       aria-label="Message"
@@ -35,6 +40,7 @@ const stored = (key: string) => window.localStorage.getItem(key);
 
 beforeEach(() => {
   window.localStorage.clear();
+  controls = null;
   vi.useFakeTimers();
 });
 
@@ -369,5 +375,124 @@ describe('useComposerDraft — a different person on the same tab', () => {
     rerender(<Harness draftKey={KEY_A} slotId="s1" userId="u1" />);
 
     expect(box().value).toBe('follow-up while it answers');
+  });
+});
+
+describe('useComposerDraft — a message that was just sent', () => {
+  const sent = () => act(() => controls?.markSent());
+
+  it('removes the stored draft straight away', () => {
+    saveDraft(KEY_A, 'about to be sent');
+    render(<Harness draftKey={KEY_A} slotId="s1" />);
+
+    sent();
+
+    expect(stored(KEY_A)).toBeNull();
+  });
+
+  it('does not save the sent text when the pause after typing ends', () => {
+    render(<Harness draftKey={KEY_A} slotId="s1" />);
+    type('about to be sent');
+
+    sent();
+    wait(DRAFT_SAVE_DEBOUNCE_MS * 3);
+
+    expect(stored(KEY_A)).toBeNull();
+  });
+
+  it('does not save the sent text when the composer goes away while it still holds it', () => {
+    const { unmount } = render(<Harness draftKey={KEY_A} slotId="s1" />);
+    type('about to be sent');
+
+    sent();
+    unmount();
+
+    expect(stored(KEY_A)).toBeNull();
+  });
+
+  it('does not save the sent text when the page is left', () => {
+    render(<Harness draftKey={KEY_A} slotId="s1" />);
+    type('about to be sent');
+
+    sent();
+    window.dispatchEvent(new Event('pagehide'));
+
+    expect(stored(KEY_A)).toBeNull();
+  });
+
+  it('does not file the sent text under the id a new chat gets', () => {
+    const { rerender } = render(<Harness draftKey={KEY_NEW} slotId="s1" />);
+    type('about to be sent');
+
+    sent();
+    rerender(<Harness draftKey={KEY_A} slotId="s1" />);
+    wait(DRAFT_SAVE_DEBOUNCE_MS * 3);
+
+    expect(stored(KEY_A)).toBeNull();
+    expect(stored(KEY_NEW)).toBeNull();
+  });
+
+  it('does not keep the sent text when the reader opens another conversation', () => {
+    const { rerender } = render(<Harness draftKey={KEY_A} slotId="s1" />);
+    type('about to be sent');
+
+    sent();
+    rerender(<Harness draftKey={KEY_B} slotId="s2" />);
+
+    expect(stored(KEY_A)).toBeNull();
+  });
+
+  it('does not bring the sent text back in a composer that replaces this one', () => {
+    const first = render(<Harness draftKey={KEY_NEW} slotId={null} />);
+    type('about to be sent');
+    wait(DRAFT_SAVE_DEBOUNCE_MS + 10);
+
+    sent();
+    first.unmount();
+    render(<Harness draftKey={KEY_NEW} slotId="s1" />);
+
+    expect(box().value).toBe('');
+  });
+
+  it('saves again as soon as the reader types something new', () => {
+    render(<Harness draftKey={KEY_A} slotId="s1" />);
+    type('first message');
+    sent();
+
+    type('the next question');
+    wait(DRAFT_SAVE_DEBOUNCE_MS + 10);
+
+    expect(loadDraft(KEY_A)).toBe('the next question');
+  });
+
+  it('keeps the text as a draft again when the send did not go through', () => {
+    render(<Harness draftKey={KEY_A} slotId="s1" />);
+    type('refused message');
+    sent();
+
+    act(() => controls?.unmarkSent('refused message'));
+    wait(DRAFT_SAVE_DEBOUNCE_MS + 10);
+
+    expect(loadDraft(KEY_A)).toBe('refused message');
+  });
+
+  it('does not restore a draft for text that is not the reader\u2019s own', () => {
+    const { rerender } = render(<Harness draftKey={KEY_A} slotId="s1" />);
+    rerender(<Harness draftKey={KEY_A} slotId="s1" paused />);
+
+    act(() => controls?.unmarkSent('edit prompt'));
+
+    expect(stored(KEY_A)).toBeNull();
+  });
+
+  it('does nothing harmful when drafts are off', () => {
+    render(<Harness draftKey={null} slotId="s1" />);
+    type('private');
+
+    expect(() => {
+      sent();
+      act(() => controls?.unmarkSent('private'));
+    }).not.toThrow();
+    expect(window.localStorage.length).toBe(0);
   });
 });

@@ -528,6 +528,7 @@ components:
             connector:write: Create and update connectors
             connector:sync: Trigger connector synchronization
             connector:delete: Delete connectors
+            code:read: Read indexed code repositories and their code graph
             config:read: Read system configuration
             config:write: Update system configuration
             crawl:read: Read crawling jobs
@@ -571,6 +572,7 @@ components:
             connector:write: Create and update connectors
             connector:sync: Trigger connector synchronization
             connector:delete: Delete connectors
+            code:read: Read indexed code repositories and their code graph
             config:read: Read system configuration
             config:write: Update system configuration
             crawl:read: Read crawling jobs
@@ -2133,6 +2135,30 @@ components:
 
     # ==================== OAUTH PROVIDER SCHEMAS ====================
 
+    KnowledgeLimit:
+      type: object
+      additionalProperties: false
+      description: |
+        What a connected app may see: an OAuth app's limit is picked by its
+        creator and holds for every user who connects it; a personal access
+        token's by its owner. Search, chat, agent chat and every record read by
+        id stay inside it, and inside the connecting user's own permissions.
+        Omit it for everything the user can see. Sent, it must name at least one id and at
+        most 50 in all, since it is signed into every token the app gets.
+      properties:
+        apps:
+          type: array
+          items: { type: string, format: uuid }
+          description: Whole connectors and collections.
+        recordGroups:
+          type: array
+          items: { type: string, format: uuid }
+          description: Record groups (a drive, space or project), with the groups nested in them.
+        records:
+          type: array
+          items: { type: string, format: uuid }
+          description: Folders or records, with everything under them.
+
     OAuthConsentRequest:
       type: object
       description: Request to submit user consent for OAuth authorization
@@ -2775,6 +2801,8 @@ components:
           maximum: 31536000
           default: 2592000
           example: 2592000
+        knowledgeLimit:
+          $ref: '#/components/schemas/KnowledgeLimit'
       required:
         - name
         - allowedScopes
@@ -2836,6 +2864,13 @@ components:
           type: integer
           minimum: 3600
           maximum: 31536000
+        knowledgeLimit:
+          description: |
+            `null` lifts the limit. Any change, a lift included, revokes the
+            app's outstanding tokens, so users connect again.
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/KnowledgeLimit'
 
     OAuthAppResponse:
       type: object
@@ -2914,6 +2949,8 @@ components:
         refreshTokenLifetime:
           type: integer
           description: Refresh token lifetime in seconds
+        knowledgeLimit:
+          $ref: '#/components/schemas/KnowledgeLimit'
         createdAt:
           type: string
           format: date-time
@@ -3251,6 +3288,8 @@ components:
             no literal null option).
           default: 30
           example: 30
+        knowledgeLimit:
+          $ref: '#/components/schemas/KnowledgeLimit'
 
     PatListItem:
       type: object
@@ -3293,6 +3332,8 @@ components:
             Last time this token successfully authenticated a request.
             Throttled server-side to update at most once per 5 minutes per
             token; absent if the token has never been used.
+        knowledgeLimit:
+          $ref: '#/components/schemas/KnowledgeLimit'
 
     PatWithSecret:
       allOf:
@@ -5487,6 +5528,12 @@ components:
             lastExtractionTimestamp:
               type: integer
               format: int64
+            secretsRedacted:
+              type: integer
+              description: >-
+                Credentials (keys, tokens, passwords) removed from a code repository
+                file before it was indexed. Present once the file has been scanned,
+                0 when nothing was found.
             processingStartedAt:
               type: integer
               format: int64
@@ -14826,6 +14873,7 @@ components:
         - IAM_ROLE
         - ACCOUNT_KEY
         - CONNECTION_STRING
+        - ENTRA_ID
         - CUSTOM
         - NONE
 
@@ -29701,7 +29749,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/reIndexRecordResponseSchema'
         '400':
-          description: Invalid request body or parameters
+          description: >-
+            Invalid request body or parameters, or the record belongs to a
+            GitHub/GitLab repository-wide code graph and cannot be reindexed
+            on its own. Reindex the whole repository with
+            `POST /knowledgeBase/reindex/record-group/{recordGroupId}`, or run
+            a connector sync to pick up changes from the repository.
           content:
             application/json:
               schema:
@@ -30419,8 +30472,10 @@ paths:
           required: false
           description: |
             Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
-            response. Send it with the same path, filters and sort as the request that returned
-            it; a cursor issued for another place, user or listing mode is refused with 400.
+            response. It decides the listing mode, parent, filters and sort. `include` and
+            `limit` come from this request. A next cursor returns the following page, and a previous
+            cursor returns the page before. A cursor whose parent disagrees with the URL, or
+            that was issued for another user, is refused with 400.
           schema:
             type: string
         - name: limit
@@ -30937,8 +30992,10 @@ paths:
           required: false
           description: |
             Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
-            response. Send it with the same path, filters and sort as the request that returned
-            it; a cursor issued for another place, user or listing mode is refused with 400.
+            response. It decides the listing mode, parent, filters and sort. `include` and
+            `limit` come from this request. A next cursor returns the following page, and a previous
+            cursor returns the page before. A cursor whose parent disagrees with the URL, or
+            that was issued for another user, is refused with 400.
           schema:
             type: string
         - name: limit
@@ -40912,7 +40969,7 @@ paths:
         An <code>OAUTH</code> connector answers once it has completed sign-in. A connector with
         any other auth type (<code>API_TOKEN</code>, <code>BEARER_TOKEN</code>,
         <code>OAUTH_ADMIN_CONSENT</code>, <code>BASIC_AUTH</code>, <code>ACCESS_KEY</code>,
-        <code>ACCOUNT_KEY</code>, <code>CONNECTION_STRING</code>, <code>CUSTOM</code>) answers once its settings,
+        <code>ACCOUNT_KEY</code>, <code>CONNECTION_STRING</code>, <code>ENTRA_ID</code>, <code>CUSTOM</code>) answers once its settings,
         including the auth section, are saved. A <code>NONE</code> connector (for example RSS)
         needs saved settings but no auth section. Otherwise the request is refused with
         <code>400</code>.
@@ -49417,127 +49474,6 @@ paths:
           description: Another real login graph user already has this email
         '500':
           description: Failed to write the graph user
-  /connectors/internal/all-scheduled:
-    get:
-      tags:
-        - Connectors
-      summary: List all connectors configured for SCHEDULED sync (internal)
-      description: |
-        <b>Internal service-to-service endpoint.</b> Used exclusively by the Node.js
-        scheduled-jobs backfill migration to enumerate connector instances whose etcd
-        sync config has <code>selectedStrategy = SCHEDULED</code>.<br><br>
-
-        <b>Pagination:</b> Callers step through 1-based pages. Each response returns
-        up to <code>limit</code> items that are active (<code>isActive: true</code>)
-        and have a SCHEDULED strategy, plus a <code>hasMore</code> flag so the caller
-        knows when to stop. Database-level <code>LIMIT/OFFSET</code> is used so memory
-        stays proportional to <code>limit</code> regardless of total connector count.<br><br>
-
-        <b>Auth:</b> Requires a scoped service JWT with <code>CONNECTOR_READ</code>
-        scope. Not intended for end-user clients.
-      operationId: getAllScheduledConnectorInstancesInternal
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: page
-          in: query
-          required: false
-          description: 1-based page number (default 1)
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-          example: 1
-        - name: limit
-          in: query
-          required: false
-          description: Maximum active-connector candidates to fetch from the database per call (default 50, max 200)
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 200
-            default: 50
-          example: 50
-        - name: connectorIds
-          in: query
-          required: false
-          description: |
-            Comma-separated connector ids (at most 200). The response then holds exactly these
-            connectors, active or not and whatever their strategy, in one page with
-            <code>hasMore: false</code>. A connector that does not exist comes back as
-            <code>missing: true</code>, and one whose settings could not be read as
-            <code>unreadable: true</code>.
-          schema:
-            type: string
-          example: "8f792208-6d61-4e16-9eda-5b1b62f28e8a,1c0b3a52-2f7e-4f3e-9d65-4c1e8f0b7a11"
-      responses:
-        '200':
-          description: Page of scheduled connector instances
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  items:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        connectorId:
-                          type: string
-                          description: Connector instance UUID (_key in ArangoDB)
-                          example: "8f792208-6d61-4e16-9eda-5b1b62f28e8a"
-                        type:
-                          type: string
-                          description: Connector type (e.g. Confluence, Slack)
-                          example: "Confluence"
-                        orgId:
-                          type: string
-                          description: Organisation identifier
-                          example: "69f4b91882152b165f748e2c"
-                        ownerUserId:
-                          type: string
-                          description: User who created the connector
-                          example: "69f4b91882152b165f748e2d"
-                        isActive:
-                          type: boolean
-                          example: true
-                        missing:
-                          type: boolean
-                          description: Only with connectorIds. No connector has this id.
-                        unreadable:
-                          type: boolean
-                          description: Only with connectorIds. Its settings could not be read; sync is null.
-                        sync:
-                          type: object
-                          nullable: true
-                          description: Full sync block from etcd config; null when unreadable
-                          properties:
-                            selectedStrategy:
-                              type: string
-                              example: "SCHEDULED"
-                            scheduledConfig:
-                              type: object
-                              properties:
-                                intervalMinutes:
-                                  type: integer
-                                  example: 5
-                                timezone:
-                                  type: string
-                                  example: "UTC"
-                  hasMore:
-                    type: boolean
-                    description: True if more pages remain; false when this is the last page
-                    example: false
-        '401':
-          description: Unauthorized — missing or invalid JWT
-        '404':
-          description: No organisations found in the system
-        '500':
-          description: Internal server error
 
   /mcp:
     post:

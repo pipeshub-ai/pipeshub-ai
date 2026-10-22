@@ -333,6 +333,8 @@ record_schema = {
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
+            # Credentials redacted from the content before indexing (S-2).
+            "secretsRedacted": {"type": ["integer", "null"], "minimum": 0},
             # Promoted duplicates of this record still need its taxonomy copied.
             "duplicateReconcilePending": {"type": "boolean"},
             # app.modules.indexing.duplicate_reconcile
@@ -757,7 +759,54 @@ code_file_record_schema={
             # source | test | config | build | migration | script |
             # type_definition | generated -- see parsers/code_parser/file_role.py
             "fileRole": {"type": ["string", "null"]},
+            "commitSha": {"type": ["string", "null"]},
+            # Symbol names referenced by this file (calls, imports, type refs).
+            # Used by the edge builder to find files that need re-resolution
+            # when a touched file adds or removes a symbol definition.
+            "referencedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            # Names the file stopped defining in recent projections, and when the
+            # last was added; the next build re-resolves the files that use them.
+            "changedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            "changedNamesAt": {"type": ["number", "null"]},
         },
+    },
+}
+
+# Deliberately loose: no additionalProperties:false. (ArangoDB's `level`
+# already defaults to "strict"; it is the missing additionalProperties that
+# lets unknown fields through.) update_collection_schema re-applies this on
+# every boot, so a closed schema would hard-reject existing documents the
+# moment a field is added.
+block_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "recordId": {"type": "string"},
+            "recordGroupId": {"type": ["string", "null"]},
+            "connectorId": {"type": ["string", "null"]},
+            "filePath": {"type": ["string", "null"]},
+            "qualifiedName": {"type": ["string", "null"]},
+            "name": {"type": ["string", "null"]},
+            "nameFolded": {"type": ["string", "null"]},
+            "parserVersion": {"type": ["string", "null"]},
+            "kind": {"type": ["string", "null"]},
+            "subType": {"type": ["string", "null"]},
+            "isBlockGroup": {"type": "boolean"},
+            "isExternal": {"type": "boolean"},
+            "index": {"type": ["number", "null"]},
+            "startLine": {"type": ["number", "null"]},
+            "endLine": {"type": ["number", "null"]},
+            "language": {"type": ["string", "null"]},
+            "contentHash": {"type": ["string", "null"]},
+            "parentBlockId": {"type": ["string", "null"]},
+            "pendingEdges": {"type": ["array", "null"], "items": {"type": "object"}},
+            "typeTable": {"type": ["object", "null"]},
+            "referencedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            "createdAtTimestamp": {"type": ["number", "null"]},
+            "updatedAtTimestamp": {"type": ["number", "null"]},
+        },
+        "required": ["orgId", "recordId"],
     },
 }
 sql_table_record_schema = {

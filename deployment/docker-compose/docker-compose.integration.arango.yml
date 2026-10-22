@@ -85,6 +85,7 @@ services:
       - PARSING_SERVICE_URL=http://localhost:8092
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
+      - CODE_FILE_CLASSIFICATION=${CODE_FILE_CLASSIFICATION:-true}
       # run_code needs a sandbox, and an unset SANDBOX_MODE turns it off. This
       # stack is single-user CI with no Docker daemon for sandbox containers, so run it locally.
       - SANDBOX_MODE=${SANDBOX_MODE:-local}
@@ -149,7 +150,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}

@@ -2377,6 +2377,7 @@ class DataSourceEntitiesProcessor:
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
         stored_under_its_id = False
+        same_id: dict | None = None
         if existing_record is None:
             # A rename can arrive under a new external id but reuse the id of the
             # record it renames; if that record is in the trash, upserting would
@@ -2476,7 +2477,22 @@ class DataSourceEntitiesProcessor:
             # COMPLETED for KB folders, ...) is kept.
             if record.indexing_status == ProgressStatus.QUEUED.value:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
-            if publishes_event:
+            if (
+                isinstance(same_id, dict)
+                and record.origin != OriginTypes.UPLOAD
+                and same_id.get("indexingStatus") == ProgressStatus.COMPLETED.value
+                and record.external_revision_id
+                and record.external_revision_id == same_id.get("externalRevisionId")
+                # A move to another group must reindex: the vectors carry the group ids.
+                and record.external_record_group_id == same_id.get("externalGroupId")
+                # A rename to another file type needs a new parse of the same bytes.
+                and not self._file_type_changed(record, renamed := Record.from_arango_base_record(same_id))
+            ):
+                # A move or rename that kept its record id and content is already indexed;
+                # its vectors stay keyed by the stored virtualRecordId.
+                self._preserve_indexing_state(record, renamed)
+                record.virtual_record_id = record.virtual_record_id or renamed.virtual_record_id
+            elif publishes_event:
                 self._stamp_queued_at(record)
             await self._handle_new_record(record, tx_store)
         else:
@@ -2954,6 +2970,15 @@ class DataSourceEntitiesProcessor:
             await self._mark_queued_after_publish([record.id])
 
     @staticmethod
+    def _code_path_changed(new_record: Record, old_record: Record) -> bool:
+        """A code file's path is in what was embedded -- its block headers and
+        summary name it -- so a rename re-indexes it even when the bytes are the same (P-8)."""
+        return (
+            getattr(new_record.record_type, "value", new_record.record_type) == RecordType.CODE_FILE.value
+            and getattr(new_record, "file_path", None) != getattr(old_record, "file_path", None)
+        )
+
+    @staticmethod
     def _file_type_changed(new_record: Record, old_record: Record) -> bool:
         """A rename to another file type (.txt to .md) needs a new parse of the same bytes."""
         if (
@@ -3189,8 +3214,10 @@ class DataSourceEntitiesProcessor:
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
                     )
-                    needs_reindex = content_changed or self._file_type_changed(
-                        new_record, old_record
+                    needs_reindex = (
+                        content_changed
+                        or self._file_type_changed(new_record, old_record)
+                        or self._code_path_changed(new_record, old_record)
                     )
 
                     is_kb_item = new_record.origin == OriginTypes.UPLOAD

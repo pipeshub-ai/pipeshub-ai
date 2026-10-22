@@ -2237,6 +2237,8 @@ class TestDeleteRecordsAndRelations:
         connected_provider.http_client.get_document.return_value = _arango_record(key="r1")
         connected_provider._edge_collections_of_graph = AsyncMock(return_value=["inheritPermissions", "entityRelations"])
         connected_provider.http_client.execute_aql.return_value = []
+        # Code blocks go in their own statements; this record has none.
+        connected_provider.delete_blocks_for_records = AsyncMock(return_value=0)
 
         assert await connected_provider.delete_records_and_relations("r1", hard_delete=True) is True
 
@@ -3520,6 +3522,24 @@ class TestDeleteConnectorInstance:
         assert result["success"] is True
         assert result["connector_id"] == "c1"
 
+    async def test_blocks_go_before_the_transaction_opens(self, connected_provider) -> None:
+        """A code connector's blocks, deleted inside the transaction, could exceed
+        its size or time limit and roll the whole delete back on every retry."""
+        order: list[str] = []
+        await self.test_success_empty_connector(connected_provider)
+        connected_provider.delete_blocks_by_connector_id = AsyncMock(
+            side_effect=lambda *a, **k: order.append("blocks") or 0
+        )
+        connected_provider.begin_transaction = AsyncMock(
+            side_effect=lambda *a, **k: order.append("txn") or "txn1"
+        )
+
+        result = await connected_provider.delete_connector_instance("c1", "org1")
+
+        assert result["success"] is True
+        assert order == ["blocks", "txn"]
+        connected_provider.delete_blocks_by_connector_id.assert_awaited_once_with("c1")
+
     async def test_exception_returns_failure(self, connected_provider):
         connected_provider.get_document = AsyncMock(side_effect=Exception("db err"))
         result = await connected_provider.delete_connector_instance("c1", "org1")
@@ -3905,6 +3925,47 @@ class TestCheckConnectorNameExists:
 
 
 # ===================================================================
+# delete_blocks_for_records
+# ===================================================================
+
+class TestDeleteBlocksForRecords:
+    async def test_empty_record_ids_is_a_noop(self, connected_provider) -> None:
+        assert await connected_provider.delete_blocks_for_records([]) == 0
+        connected_provider.http_client.execute_aql.assert_not_called()
+
+    async def test_deletes_edges_before_blocks(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[["b1", "b2"], [1, 1, 1], [1, 1]]
+        )
+
+        removed = await connected_provider.delete_blocks_for_records(["r1", "r2"], transaction="txn1")
+
+        assert removed == 2
+        select_call, edge_call, node_call = connected_provider.http_client.execute_aql.call_args_list
+        assert select_call.kwargs["bind_vars"]["record_ids"] == ["r1", "r2"]
+        # Edges first: dropping the block documents first would strand every
+        # CONTAINS/CALLS edge pointing at them.
+        assert "recordLinks" in edge_call.args[0]
+        assert edge_call.kwargs["bind_vars"] == {"block_ids": ["blocks/b1", "blocks/b2"]}
+        assert "REMOVE key IN blocks" in node_call.args[0]
+        assert node_call.kwargs["bind_vars"] == {"keys": ["b1", "b2"]}
+        for call in (select_call, edge_call, node_call):
+            assert call.kwargs["txn_id"] == "txn1"
+
+    async def test_a_large_delete_pages_until_a_short_batch(self, connected_provider, monkeypatch) -> None:
+        from app.services.graph_db.arango import arango_http_provider as module
+
+        monkeypatch.setattr(module, "BLOCK_DELETE_BATCH_SIZE", 2)
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=[
+            ["b1", "b2"], [], [1, 1],   # a full batch: look for more
+            ["b3"], [], [1],            # a short one: done
+        ])
+
+        assert await connected_provider.delete_blocks_by_connector_id("c1") == 3
+        assert connected_provider.http_client.execute_aql.await_count == 6
+
+
+# ===================================================================
 # delete_records_recursive  (lines 11953-12092)
 # ===================================================================
 
@@ -3938,6 +3999,7 @@ class TestDeleteRecordsRecursive:
         connected_provider._delete_isoftype_targets_from_collected = AsyncMock(
             return_value=(1, [])
         )
+        connected_provider.delete_blocks_for_records = AsyncMock(return_value=0)
         connected_provider._remove_records_or_raise = AsyncMock()
         connected_provider.commit_transaction = AsyncMock()
         connected_provider._create_deleted_record_event_payload = AsyncMock(
@@ -3948,6 +4010,11 @@ class TestDeleteRecordsRecursive:
         assert result["successfully_deleted"] == 1
         assert len(result["deleted_records"]) == 1
         connected_provider.commit_transaction.assert_called_once_with("txn1")
+        # A code file's blocks are joined to it by recordId, so nothing in the
+        # edge/type-doc sweep above reaches them.
+        connected_provider.delete_blocks_for_records.assert_awaited_once_with(
+            ["r1"], transaction="txn1"
+        )
 
     async def test_invalid_record_ids_marked_failed(self, connected_provider):
         connected_provider._get_all_edge_collections = AsyncMock(
@@ -4278,3 +4345,29 @@ class TestGetRecordsByStatusField:
             result = []
         assert result == []
         typed_provider.http_client.execute_aql.assert_not_awaited()
+
+
+class TestDeleteEdgesTouchingNodes:
+    @pytest.mark.asyncio
+    async def test_looks_up_each_direction_by_equality_so_the_edge_index_serves_it(
+        self, connected_provider
+    ) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[1, 1])
+        deleted = await connected_provider.delete_edges_touching_nodes(
+            ["b1", "b2"], CollectionNames.BLOCKS.value, CollectionNames.RECORD_LINKS.value,
+        )
+        assert deleted == 2
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        assert "UNION_DISTINCT" in query
+        assert "e._from == nid" in query and "e._to == nid" in query
+        assert " OR " not in query
+        bind_vars = connected_provider.http_client.execute_aql.await_args.kwargs["bind_vars"]
+        assert bind_vars == {"node_ids": ["blocks/b1", "blocks/b2"]}
+
+    @pytest.mark.asyncio
+    async def test_no_nodes_is_no_query(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock()
+        assert await connected_provider.delete_edges_touching_nodes(
+            [], CollectionNames.BLOCKS.value, CollectionNames.RECORD_LINKS.value,
+        ) == 0
+        connected_provider.http_client.execute_aql.assert_not_awaited()

@@ -108,7 +108,9 @@ def build_pipeline_runtime(
                 record_name=record_name,
                 record_type=record_type,
             )
-        return await document_extraction.classify(blocks.blocks, org_id, departments, record_name, record_type)
+        return await document_extraction.classify(
+            blocks.blocks, org_id, departments, record_name, record_type, block_groups=blocks.block_groups
+        )
 
     classify = classifier or default_classifier
     registry = StageRegistry()
