@@ -215,18 +215,8 @@ check_process() {
 
 cleanup() {
     log "Shutting down all services..."
-
-    # Node first: answers still streaming get its drain (SHUTDOWN_DRAIN_MS),
-    # and they need Python until Node has saved them.
-    if [ -n "$NODEJS_PID" ] && kill "$NODEJS_PID" 2>/dev/null; then
-        local drain_ms="${SHUTDOWN_DRAIN_MS:-8000}"
-        case "$drain_ms" in ''|*[!0-9]*) drain_ms=8000 ;; esac
-        local wait_s=$((drain_ms / 1000 + 10))
-        while [ "$wait_s" -gt 0 ] && kill -0 "$NODEJS_PID" 2>/dev/null; do
-            sleep 1
-            wait_s=$((wait_s - 1))
-        done
-    fi
+    
+    [ -n "$NODEJS_PID" ] && kill "$NODEJS_PID" 2>/dev/null || true
     [ -n "$SLACKBOT_PID" ] && kill "$SLACKBOT_PID" 2>/dev/null || true
     [ -n "$EMBEDDING_PID" ] && kill "$EMBEDDING_PID" 2>/dev/null || true
     [ -n "$DOCLING_PID" ] && kill "$DOCLING_PID" 2>/dev/null || true
@@ -235,8 +225,7 @@ cleanup() {
     [ -n "$QUERY_PID" ] && kill "$QUERY_PID" 2>/dev/null || true
     [ -n "$PARSING_PID" ] && kill "$PARSING_PID" 2>/dev/null || true
     [ -n "$EXTRACTION_PID" ] && kill "$EXTRACTION_PID" 2>/dev/null || true
-    [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null || true
-
+    
     wait
     log "All services stopped."
     exit 0
@@ -275,11 +264,8 @@ start_indexing
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
 
 while true; do
-    # In the background: bash runs the stop trap only after a foreground command ends.
-    sleep "$CHECK_INTERVAL" &
-    SLEEP_PID=$!
-    wait "$SLEEP_PID"
-
+    sleep "$CHECK_INTERVAL"
+    
     if ! check_process "$NODEJS_PID" "Node.js"; then
         start_nodejs
     fi

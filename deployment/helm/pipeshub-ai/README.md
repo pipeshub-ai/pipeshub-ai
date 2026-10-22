@@ -131,8 +131,6 @@ want to point at a different Service or expose port 8088 (see below).
 
 Only **port 3001** (UI + Node API) is exposed via the Ingress by default. Query (8000), indexing (8091), embedding (8002), docling (8081), and connector (8088) stay on the in-cluster `ClusterIP` Service because the Node API calls them directly inside the cluster.
 
-**Live notifications with `replicaCount > 1`.** The Node API pushes notifications over Socket.IO (`/socket.io/`), and the pushes reach every replica through Redis. Browsers connect over WebSocket and fall back to HTTP long-polling, which needs sticky sessions. Make sure the Ingress passes WebSocket upgrades to the pods, or turn on cookie affinity: for example `nginx.ingress.kubernetes.io/affinity: cookie` on ingress-nginx, or target-group stickiness on the AWS Load Balancer Controller.
-
 **When to expose 8088:** if you use OAuth-based connectors (Google, Microsoft, Slack, ...) or receive provider webhooks. Add a second ingress host *and* set `config.connectorPublicBackend` to that public URL so OAuth callbacks resolve correctly:
 
 ```bash

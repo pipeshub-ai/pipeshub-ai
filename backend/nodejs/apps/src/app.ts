@@ -154,12 +154,12 @@ const SERVER_KEEP_ALIVE_TIMEOUT_MS = 65_000;
 // How long requests and answers in flight get to finish once a stop begins.
 // The default is well under docker-compose.yml's 30s stop grace period,
 // leaving time to close Mongo, Redis and the brokers after a drain that runs
-// the full time. Helm sets SHUTDOWN_DRAIN_MS within its 300s.
+// the full time. Keep SHUTDOWN_DRAIN_MS under the platform's grace period.
 const DEFAULT_SHUTDOWN_DRAIN_MS = 8_000;
 // Answers still running after the drain are stopped, saving what they have, within this.
 const RUN_STOP_MS = 5_000;
-// A schedule-repair pass gets at most this before the drain starts (main's cap): with Helm's 240s drain, waiting
-// a whole drain for it as well would run past the 300s grace period.
+// A schedule-repair pass gets at most this before the drain starts (main's cap): waiting a whole drain for it
+// as well could run past the platform's grace period.
 const SCHEDULE_REPAIR_WAIT_MS = 8_000;
 const SHUTDOWN_IDLE_SWEEP_MS = 50;
 
