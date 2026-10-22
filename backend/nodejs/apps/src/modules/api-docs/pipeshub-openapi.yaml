@@ -5490,6 +5490,20 @@ components:
             virtualRecordId:
               type: string
               nullable: true
+            contentRev:
+              type: string
+              nullable: true
+              description: |
+                Revision of the record's content, 16 lowercase hex characters:
+                the start of the SHA-256 of the source file's bytes, or, when a
+                re-index works from the stored parsed content instead of the
+                source, of a digest of the parsed blocks. Identical content gives
+                the same value, and a copy whose content matches another record
+                carries that record's value. `stageStates` describes this
+                revision. Set when indexing starts; absent on records not
+                indexed since pipeline stages were introduced, and null where
+                it has been cleared.
+              example: "78f3f276290c9f81"
             summaryDocumentId:
               type: string
               nullable: true
@@ -10814,6 +10828,13 @@ components:
         virtualRecordId:
           type: string
           nullable: true
+        contentRev:
+          type: string
+          nullable: true
+          description: |
+            Revision of the record's content (16 lowercase hex characters); see
+            `contentRev` on GET /knowledgeBase/record/{recordId}. Absent on
+            records not indexed since pipeline stages were introduced.
         previewRenderable:
           type: boolean
           nullable: true
