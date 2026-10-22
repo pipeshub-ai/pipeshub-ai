@@ -265,7 +265,10 @@ def _rejected_settings_message(
     configuration = model_config.get("configuration") or {}
     name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
     if _normalize_provider_key(model_config.get("provider")) == "bedrock":
-        from app.utils.aimodels import bedrock_inference_profile_hint, bedrock_is_openai_gpt
+        from app.utils.aimodels import (
+            bedrock_inference_profile_hint,
+            bedrock_is_openai_gpt,
+        )
 
         profiles = bedrock_inference_profile_hint(model)
         if profiles and code in ("invalid_request", "model_not_found"):
