@@ -84,8 +84,16 @@ def svc(service: KnowledgeBaseService, mock_processor: AsyncMock) -> KnowledgeBa
     gp.get_typed_records_batch = AsyncMock(side_effect=lambda ids: {i: MagicMock(id=i) for i in ids})
     gp.get_file_record_by_id = AsyncMock(side_effect=lambda rid: MagicMock(id=rid, record_name="old"))
     mock_processor.restore_trashed_records = AsyncMock(side_effect=lambda kb, batch, items, **kw: [i["id"] for i in items])
-    mock_processor.reindex_existing_records = AsyncMock(side_effect=lambda records: [r.id for r in records])
+    mock_processor.reindex_existing_records = AsyncMock(side_effect=lambda records, **kw: [r.id for r in records])
     return service
+
+
+def _reindexed(mock_processor: AsyncMock) -> dict[bool, list[str]]:
+    """Record ids per reindex call, keyed by whether it re-embeds from stored content."""
+    return {
+        c.kwargs.get("vector_db_only", False): [r.id for r in c.args[0]]
+        for c in mock_processor.reindex_existing_records.await_args_list
+    }
 
 
 def _batch(svc, record: dict, members: list[dict]) -> None:
@@ -188,6 +196,18 @@ class TestWhatComesBack:
         assert [r.id for r in reindexed] == ["c1"]
         assert "reindexPending" not in result
 
+    async def test_an_indexed_file_is_re_embedded_from_its_stored_content(self, svc, mock_processor) -> None:
+        """Its vectors went with the delete; a plain reindex would find the content unchanged and write none."""
+        indexed = _doc("c1", virtualRecordId="vr-1")
+        never_indexed = _doc("c2", name="b.pdf", indexingStatus=ProgressStatus.FAILED.value, virtualRecordId="vr-2")
+        no_content = _doc("c3", name="c.pdf")
+        _batch(svc, indexed, [_member(indexed), _member(never_indexed), _member(no_content)])
+
+        result = await svc.restore_record("c1", "u1", ORG)
+
+        assert result["success"] is True and "reindexPending" not in result, result
+        assert _reindexed(mock_processor) == {True: ["c1"], False: ["c2", "c3"]}
+
     async def test_the_folder_it_was_in_must_be_restored_first(self, svc, mock_processor) -> None:
         child = _doc("c1", name="a.pdf")
         _batch(svc, child, [_member(child, parent="f1", parent_deleted=True, parent_name="Docs")])
@@ -257,6 +277,18 @@ class TestWhatComesBack:
         (reindexed,) = mock_processor.reindex_existing_records.await_args.args
         assert [r.id for r in reindexed] == ["r1"]
         mock_processor.restore_trashed_records.assert_not_called()
+
+    @pytest.mark.parametrize("fields, reembeds", [
+        ({"virtualRecordId": "vr-1", "hasIndexedCopy": True}, True),
+        ({"virtualRecordId": "vr-1"}, False),
+    ], ids=["was indexed", "never indexed"])
+    async def test_a_retry_re_embeds_a_file_that_was_indexed(self, svc, mock_processor, fields, reembeds) -> None:
+        _batch(svc, _doc("r1", deleted=False, indexingStatus=ProgressStatus.NOT_STARTED.value,
+                         **{RESTORED_AT_FIELD: 1700}, **fields), [])
+
+        await svc.restore_record("r1", "u1", ORG)
+
+        assert _reindexed(mock_processor) == {reembeds: ["r1"]}
 
     async def test_a_retry_whose_queueing_fails_again_reports_it_pending(self, svc, mock_processor) -> None:
         _batch(svc, _doc("r1", deleted=False, indexingStatus=ProgressStatus.NOT_STARTED.value,

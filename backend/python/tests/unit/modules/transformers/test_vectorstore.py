@@ -137,6 +137,25 @@ class TestVectorStoreApply:
     """Tests for VectorStore.apply."""
 
     @pytest.mark.asyncio
+    async def test_a_reindex_of_unchanged_content_writes_nothing(self):
+        """The reconciliation diff decides: no block changed, so no point is written or deleted."""
+        from app.modules.transformers.transformer import ReconciliationContext
+
+        vs = _make_vectorstore()
+        vs.index_documents = AsyncMock(return_value=True)
+        vs.delete_blocks_by_ids = AsyncMock()
+        record = MagicMock(id="rec-1", virtual_record_id="vr-1", org_id="org-1")
+        ctx = MagicMock(record=record)
+        ctx.reconciliation_context = ReconciliationContext(
+            new_metadata={}, blocks_to_index_ids=set(), block_ids_to_delete=set()
+        )
+
+        assert await vs.apply(ctx) is True
+
+        vs.index_documents.assert_not_awaited()
+        vs.delete_blocks_by_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_apply_delegates_to_index_documents(self):
         """apply should extract record info and call index_documents."""
         vs = _make_vectorstore()

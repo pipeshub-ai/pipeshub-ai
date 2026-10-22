@@ -38,6 +38,7 @@ from app.connectors.services.vector_cleanup_events import (
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
 from app.models.entities import FileRecord, RecordType
+from app.modules.indexing.record_republish import reembeds_from_storage
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
@@ -1630,7 +1631,7 @@ class KnowledgeBaseService:
                 return err
             if is_live_record(record):
                 if self._owes_restore_reindex(record):
-                    return await self._requeue_restored_file(record_id, kb_id, user_role)
+                    return await self._requeue_restored_file(record, kb_id, user_role)
                 return {
                     "success": True,
                     "code": 200,
@@ -1680,6 +1681,12 @@ class KnowledgeBaseService:
                 and item["record"].get("indexingStatus") != ProgressStatus.AUTO_INDEX_OFF.value
             ]
             to_reindex = set(reindex_ids)
+            # Read before the restore, while the record still shows how it was indexed.
+            reembed_ids = {
+                item["record"]["_key"]
+                for item in members
+                if item["record"]["_key"] in to_reindex and reembeds_from_storage(item["record"])
+            }
             now = get_epoch_timestamp_in_ms()
             # Written with the restore itself: the re-index is published after it
             # commits, and if that publish is lost the marker is what lets a retry
@@ -1707,7 +1714,9 @@ class KnowledgeBaseService:
             except RestoreRefused as refused:
                 return await self._restore_refused_response(refused, name, kb_id, batch_id, org_id)
 
-            return await self._finish_restore(processor, batch_id, members, renames, reindex_ids)
+            return await self._finish_restore(
+                processor, batch_id, members, renames, reindex_ids, reembed_ids=reembed_ids
+            )
         except Exception as e:
             self.logger.error("❌ Failed to restore record %s: %s", record_id, e, exc_info=True)
             return {"success": False, "code": 500, "reason": action_failed("restore this item")}
@@ -1718,7 +1727,7 @@ class KnowledgeBaseService:
             record.get("indexingStatus") == ProgressStatus.NOT_STARTED.value
         )
 
-    async def _requeue_restored_file(self, record_id: str, kb_id: str, user_role: str | None) -> dict:
+    async def _requeue_restored_file(self, record: dict, kb_id: str, user_role: str | None) -> dict:
         """A retried restore of a file that is back but whose re-index never went out."""
         if user_role not in RESTORE_FILE_ROLES:
             return {
@@ -1730,7 +1739,9 @@ class KnowledgeBaseService:
                 ),
             }
         processor = await self.processor_for_kb(kb_id)
-        response = await self._finish_restore(processor, None, [], {}, [record_id])
+        record_id = record["_key"]
+        reembed_ids = {record_id} if reembeds_from_storage(record) else set()
+        response = await self._finish_restore(processor, None, [], {}, [record_id], reembed_ids=reembed_ids)
         response["message"] = (
             "This item was already restored but isn't searchable yet, and we couldn't queue it for "
             "indexing. Try again in a few minutes."
@@ -1841,10 +1852,14 @@ class KnowledgeBaseService:
         members: list[dict],
         renames: dict[str, str],
         reindex_ids: list[str],
+        *,
+        reembed_ids: set[str] | None = None,
     ) -> dict:
         """After the restore committed: rename what clashed, then index the files again.
 
-        Neither step can undo the restore, so a failure is reported, not raised.
+        Files in *reembed_ids* are re-embedded from their stored blocks; the rest
+        are indexed from their source. Neither step can undo the restore, so a
+        failure is reported, not raised.
         """
         rename_failed: list[str] = []
         for record_id, new_name in renames.items():
@@ -1864,9 +1879,13 @@ class KnowledgeBaseService:
         if reindex_ids:
             try:
                 typed = await self.graph_provider.get_typed_records_batch(reindex_ids)
-                published = await processor.reindex_existing_records(
-                    [typed[i] for i in reindex_ids if i in typed]
-                )
+                reembed = reembed_ids or set()
+                for vector_db_only in (True, False):
+                    batch = [typed[i] for i in reindex_ids if i in typed and (i in reembed) == vector_db_only]
+                    if batch:
+                        published += await processor.reindex_existing_records(
+                            batch, vector_db_only=vector_db_only
+                        )
             except Exception as e:
                 self.logger.error("❌ Restored batch %s but could not queue it for indexing: %s", batch_id, e)
 
