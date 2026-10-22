@@ -45,7 +45,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        node-version: [20]
+        node-version: [22, 24]
 
     steps:
       - name: Checkout code
@@ -95,7 +95,7 @@ jobs:
         if: ${{ always() && inputs.generate-coverage-reports == true }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: nodejs-coverage-report-${{ matrix.os }}
+          name: nodejs-coverage-report-${{ matrix.os }}-node${{ matrix.node-version }}
           path: backend/nodejs/apps/coverage-report.zip
           retention-days: 7
           if-no-files-found: ignore
@@ -265,7 +265,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install Node dependencies
         working-directory: backend/nodejs/apps

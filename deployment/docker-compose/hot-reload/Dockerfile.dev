@@ -59,7 +59,7 @@ RUN uv pip install --system -e . && \
 # -----------------------------------------------------------------------------
 # Stage 3: Node.js Backend (DEV - keep devDependencies for nodemon + ts-node)
 # -----------------------------------------------------------------------------
-FROM node:20-slim AS nodejs-backend
+FROM node:24-slim AS nodejs-backend
 WORKDIR /app/backend
 
 COPY backend/nodejs/apps/package*.json ./
@@ -86,7 +86,7 @@ COPY backend/nodejs/apps/src ./src
 # Stage 4: Frontend (DEV - source + deps; compose runs Next.js dev server)
 # Memory optimization: NODE_OPTIONS for heap limit set via docker-compose env
 # -----------------------------------------------------------------------------
-FROM node:20-slim AS frontend-dev
+FROM node:24-slim AS frontend-dev
 WORKDIR /app/frontend
 
 COPY frontend/package*.json ./
@@ -125,7 +125,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Install Node.js runtime
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
