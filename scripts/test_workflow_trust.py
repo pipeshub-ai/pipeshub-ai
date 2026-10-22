@@ -6,6 +6,7 @@ installing anything.
 
 import os
 import re
+import time
 import unittest
 from pathlib import Path
 
@@ -45,23 +46,41 @@ PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml", "dco.yml"}
 # Privileged workflows that name the PR head only to fetch its commits and read
 # them with git log. They never check them out or run anything from them.
 PR_HEAD_READ_ONLY = {"dco.yml"}
-# A checkout `ref:` that names the head, or a git command that puts a fetched commit
-# into the worktree. Comments and echo/printf lines (a fix-it hint) run nothing.
-_HEAD_CHECKOUT_REF = re.compile(
-    r"^\s*ref:.*(?:github\.event\.pull_request\.head\.|github\.head_ref|refs/pull/)"
-)
-_WORKTREE_GIT = re.compile(
-    r"\bgit\s+(?:-[cC]\s+\S+\s+|-\S+\s+)*(?:checkout|switch|worktree|reset|restore|merge|cherry-pick|rebase|pull|am)\b"
-)
-_NOT_RUN = re.compile(r"^\s*(?:#|(?:-\s*)?(?:run:\s*)?(?:echo|printf)\b)")
+# Any checkout `ref:` but the base commit, or a git command that puts a fetched commit
+# into the worktree. Quoted text (a fix-it hint) and full-line comments run nothing.
+_CHECKOUT_REF = re.compile(r"^\s*ref:\s*(.*)$")
+_BASE_REF = re.compile(r"^['\"]?\$\{\{\s*github\.(?:event\.pull_request\.base\.sha|sha)\s*\}\}['\"]?$")
+_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+_COMMAND_BREAK = re.compile(r"&&|\|\||[;|&()]")
+_WORKTREE_VERBS = {
+    "checkout", "switch", "worktree", "reset", "restore", "merge", "cherry-pick", "rebase", "pull", "am",
+}
+_GIT_OPTIONS_WITH_VALUE = {"-c", "-C", "--git-dir", "--work-tree", "--namespace"}
+
+
+def _git_verb(words: list[str]) -> str | None:
+    """The subcommand of a `git ...` command, skipping git's own options."""
+    i = 1
+    while i < len(words) and words[i].startswith("-"):
+        i += 2 if words[i] in _GIT_OPTIONS_WITH_VALUE else 1
+    return words[i] if i < len(words) else None
 
 
 def _checks_out(text: str) -> bool:
-    return any(
-        _HEAD_CHECKOUT_REF.search(line) or _WORKTREE_GIT.search(line)
-        for line in text.splitlines()
-        if not _NOT_RUN.match(line)
-    )
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        ref = _CHECKOUT_REF.match(line)
+        if ref and not _BASE_REF.match(ref.group(1).split(" #")[0].strip()):
+            return True
+        for command in _COMMAND_BREAK.split(_QUOTED.sub(" ", line)):
+            words = command.split()
+            while words and words[0] in ("-", "run:", "|", ">"):
+                words = words[1:]
+            for i, word in enumerate(words):
+                if word == "git" and _git_verb(words[i:]) in _WORKTREE_VERBS:
+                    return True
+    return False
 
 
 _PULL_REQUEST_TRIGGER = _trigger("pull_request")
@@ -229,9 +248,15 @@ class TestHeadReadOnly(unittest.TestCase):
             "          ref: ${{ github.event.pull_request.base.sha }}\n"
             + self._FETCH
             + '          git log -1 --format=%ae "$HEAD"\n'
-            '          echo "Sign off with: git rebase --signoff $BASE"\n'
+            '          echo "Sign off with: git rebase --signoff $BASE && git push --force-with-lease"\n'
+            "          ref: ${{ github.sha }}\n"
         )
         self.assertFalse(_checks_out(text))
+
+    def test_a_long_run_of_git_options_is_read_quickly(self) -> None:
+        start = time.monotonic()
+        self.assertFalse(_checks_out("git " + "-C -! " * 5000 + "zz\n"))
+        self.assertLess(time.monotonic() - start, 1)
 
     def test_putting_the_head_in_the_worktree_is_a_checkout(self) -> None:
         for line in (
@@ -245,6 +270,13 @@ class TestHeadReadOnly(unittest.TestCase):
             '          git -c advice.detachedHead=false switch --detach "$HEAD"\n',
             '          git rebase "$HEAD"\n',
             "          git pull origin pull/1/head\n",
+            "          ref: ${{ env.HEAD }}\n",
+            "          ref: ${{ github.event.pull_request.head['sha'] }}\n",
+            '          ref: "${{ github.event.pull_request.head.sha }}"\n',
+            '          echo x && git merge "$HEAD"\n',
+            '      - run: echo ok && git checkout "$HEAD"\n',
+            "          printf '%s' ok; git cherry-pick \"$HEAD\"\n",
+            '          git -C . --no-pager checkout "$HEAD"\n',
         ):
             with self.subTest(line=line.strip()):
                 self.assertTrue(_checks_out(self._FETCH + line))
