@@ -14,6 +14,7 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthToken,
     RefreshTokenInvalidError,
 )
+from app.utils.oauth_config import get_oauth_config
 from tests.support.slack_oauth import TOKEN_URL as SLACK_TOKEN_URL
 from tests.support.slack_oauth import FakeSlackOAuth
 
@@ -557,6 +558,40 @@ class TestGetAuthorizationUrl:
         url = provider._get_authorization_url(state="s")
         params = parse_qs(urlparse(url).query)
         assert params["token_access_type"] == ["offline"]
+
+    def test_token_access_type_left_out_when_unset(self, oauth_provider):
+        """Only Dropbox-style providers take token_access_type; the rest must not get "None"."""
+        url = oauth_provider._get_authorization_url(state="s")
+        params = parse_qs(urlparse(url).query)
+        assert "token_access_type" not in params, params
+
+    def test_unset_extra_params_are_left_out(self, mock_config_service):
+        config = _make_oauth_config(additional_params={"prompt": None, "access_type": "offline"})
+        provider = OAuthProvider(config, mock_config_service, "/path")
+        url = provider._get_authorization_url(state="s", login_hint=None)
+        params = parse_qs(urlparse(url).query)
+        assert "prompt" not in params, params
+        assert "login_hint" not in params, params
+        assert params["access_type"] == ["offline"]
+
+    @pytest.mark.asyncio
+    async def test_jira_authorize_url_carries_no_none_values(self, mock_config_service):
+        """The connector authorize route builds Jira's URL this way; the nightly saw token_access_type=None."""
+        config = get_oauth_config({
+            "clientId": "jira-client",
+            "clientSecret": "jira-secret",
+            "redirectUri": "http://localhost:3000/connectors/oauth/callback/Jira",
+            "authorizeUrl": "https://auth.atlassian.com/authorize",
+            "tokenUrl": "https://auth.atlassian.com/oauth/token",
+            "scopes": ["read:jira-work", "offline_access"],
+            "additionalParams": {"audience": "api.atlassian.com", "prompt": "consent"},
+        })
+        provider = OAuthProvider(config, mock_config_service, "/path")
+        url = await provider.start_authorization()
+        params = parse_qs(urlparse(url).query)
+        assert "token_access_type" not in params, params
+        assert [key for key, values in params.items() if "None" in values] == [], params
+        assert params["audience"] == ["api.atlassian.com"]
 
 
 # ---------------------------------------------------------------------------

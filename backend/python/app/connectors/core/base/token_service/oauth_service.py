@@ -242,6 +242,10 @@ class OAuthProvider:
         params.update(self.config.additional_params)
         params.update(kwargs)
 
+        # urlencode writes None as the text "None", so an unset optional parameter
+        # (token_access_type is Dropbox's, unset for every other provider) is left out.
+        params = {key: value for key, value in params.items() if value is not None}
+
         return f"{self.config.authorize_url}?{urlencode(params)}"
 
     async def _make_token_request(self, data: dict) -> dict:
