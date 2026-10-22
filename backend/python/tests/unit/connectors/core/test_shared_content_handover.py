@@ -208,8 +208,9 @@ class FakeGraph:
         for key in keys:
             self.mappings.pop(key, None)
 
-    async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> None:
+    async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> int:
         self.released_stage_states = list(virtual_record_ids)
+        return len(self.released_stage_states)
 
 
 class FakeConfig:
