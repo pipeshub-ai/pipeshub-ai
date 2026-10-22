@@ -353,9 +353,9 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
     ),
     _on_a_connector("get_connector_instance", "GET", "/{target}", 200),
     _on_a_connector("get_connector_instance_config", "GET", "/{target}/config", 200),
-    # The plain connector has no sign-in, which this route cannot list filters for.
+    # The plain connector has no saved settings, which this route lists filters from.
     _on_a_connector("get_connector_instance_filters", "GET", "/{target}/filters", 400,
-                    "Unsupported authentication type"),
+                    "Configuration not found"),
     _on_a_connector("get_filter_field_options", "GET",
                     "/{target}/filters/it-no-such-filter/options", 404,
                     "Filter field 'it-no-such-filter' not found"),

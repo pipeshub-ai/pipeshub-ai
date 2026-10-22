@@ -14777,6 +14777,7 @@ components:
         - IAM_ROLE
         - ACCOUNT_KEY
         - CONNECTION_STRING
+        - ENTRA_ID
         - CUSTOM
         - NONE
 
@@ -40838,7 +40839,7 @@ paths:
         An <code>OAUTH</code> connector answers once it has completed sign-in. A connector with
         any other auth type (<code>API_TOKEN</code>, <code>BEARER_TOKEN</code>,
         <code>OAUTH_ADMIN_CONSENT</code>, <code>BASIC_AUTH</code>, <code>ACCESS_KEY</code>,
-        <code>ACCOUNT_KEY</code>, <code>CONNECTION_STRING</code>, <code>CUSTOM</code>) answers once its settings,
+        <code>ACCOUNT_KEY</code>, <code>CONNECTION_STRING</code>, <code>ENTRA_ID</code>, <code>CUSTOM</code>) answers once its settings,
         including the auth section, are saved. A <code>NONE</code> connector (for example RSS)
         needs saved settings but no auth section. Otherwise the request is refused with
         <code>400</code>.
