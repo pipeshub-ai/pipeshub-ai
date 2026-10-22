@@ -537,3 +537,16 @@ def idle_write(graph: AsyncMock) -> dict[str, Any]:
     writes = [c.args[2] for c in graph.update_node.await_args_list if c.args[2].get("status") == AppStatus.IDLE.value]
     assert len(writes) == 1, writes
     return writes[0]
+
+
+async def sync_with_failed_listing(connector: BaseConnector) -> None:
+    """Azure Blob fails the run when a listing fails, so it shows as failed (PP-334); the others return."""
+    import pytest
+
+    from app.connectors.sources.azure_blob.connector import AzureBlobConnector
+
+    if isinstance(connector, AzureBlobConnector):
+        with pytest.raises(RuntimeError, match="sync failed"):
+            await connector.run_incremental_sync()
+    else:
+        await connector.run_incremental_sync()

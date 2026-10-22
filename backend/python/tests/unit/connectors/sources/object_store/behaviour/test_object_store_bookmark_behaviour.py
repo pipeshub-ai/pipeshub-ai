@@ -14,6 +14,7 @@ from object_store_behaviour_fakes import (
     FakeObjectStore,
     FakeRecordsDb,
     make_connector,
+    sync_with_failed_listing,
 )
 
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -74,7 +75,7 @@ class TestFailedPage:
         saved = bookmarks(checkpoints)
 
         store.fail_page, store.fail_mode = 1, mode
-        await connector.run_incremental_sync()
+        await sync_with_failed_listing(connector)
         assert bookmarks(checkpoints) == saved
 
         store.fail_page = None
