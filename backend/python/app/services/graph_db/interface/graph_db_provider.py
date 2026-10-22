@@ -2400,6 +2400,23 @@ class IGraphDBProvider(ABC):
         """
 
     @abstractmethod
+    async def get_record_ids_by_stage_status(
+        self,
+        org_id: str,
+        connector_id: str,
+        stage: str,
+        status_filters: list[str],
+        *,
+        limit: int,
+        after_key: str | None = None,
+    ) -> list[str]:
+        """Keys of the connector's live, non-placeholder records whose current revision's
+        ``stage`` state has a status in ``status_filters``, ascending, after ``after_key``.
+
+        For stages with no status field on the record. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
     async def compare_and_set_record_fields(
         self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
     ) -> list[str]:

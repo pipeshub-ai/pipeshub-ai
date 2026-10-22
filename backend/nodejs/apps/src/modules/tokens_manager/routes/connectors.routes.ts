@@ -352,7 +352,7 @@ const resyncConnectorSchema = z.object({
 /**
  * Schema for reindexing connector records
  */
-export const REINDEX_STAGES = ['classify'] as const;
+export const REINDEX_STAGES = ['classify', 'entities'] as const;
 
 export const reindexConnectorSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),

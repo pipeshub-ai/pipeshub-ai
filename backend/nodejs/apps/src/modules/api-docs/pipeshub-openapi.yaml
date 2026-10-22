@@ -6983,19 +6983,23 @@ components:
           description: |
             Statuses to reindex. Omitting this reindexes everything for a KB
             connector; other connector types default server-side to `FAILED`.
-            When `stages` is set, these match the stage's own status field
-            instead of `indexingStatus`.
+            When `stages` is set, these match the stage's own status
+            instead of `indexingStatus`; with `stages` they default to `FAILED`
+            for every connector.
         stages:
           type: array
           minItems: 1
           items:
             type: string
-            enum: [classify]
+            enum: [classify, entities]
           description: |
             Re-run only these pipeline stages instead of the full pipeline.
-            Records are selected by the stage's status field (`classify` ->
-            `extractionStatus`) using `statusFilters`, and are not re-parsed
-            or re-embedded. Omit to reindex the full pipeline.
+            Records are selected by the stage's status using `statusFilters`:
+            `classify` by `extractionStatus`, `entities` (named-entity
+            extraction, which has no record field) by its entry in the
+            record's `stageStates`. Selected records are not re-parsed or
+            re-embedded. Stages selected differently cannot be combined in one
+            request (400). Omit to reindex the full pipeline.
 
     ResyncConnectorRequestBody:
       type: object

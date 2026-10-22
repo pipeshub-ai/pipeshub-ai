@@ -1230,6 +1230,9 @@ class EventService:
                 if record_id is not None or record_group_id is not None:
                     self.logger.error("Re-running pipeline stages is connector-wide only; ignoring this event")
                     return False
+                if len({RETRYABLE_STAGES[s] for s in stages}) > 1:
+                    self.logger.error(f"Stages re-run together must be selected the same way: {stages!r}")
+                    return False
                 # Records are selected by the stages' own status, and a retry is for what failed.
                 status_filters = raw_status_filters if raw_status_filters else [ProgressStatus.FAILED.value]
 
@@ -1339,6 +1342,7 @@ class EventService:
         # republished: that would run two pipelines against the same
         # virtualRecordId. Everything else, including AUTO_INDEX_OFF, is fair game.
         exclude_statuses = [ProgressStatus.IN_PROGRESS.value]
+        selector = RETRYABLE_STAGES[stages[0]] if stages else HeadlineField.INDEXING
 
         while True:
             if record_id is not None:
@@ -1367,6 +1371,21 @@ class EventService:
                     after_key=after_key,
                     exclude_statuses=exclude_statuses,
                 )
+            elif selector is None and stages:
+                # Mode 3b: a stage with no record field, selected by its own stage state
+                keys = await self.graph_provider.get_record_ids_by_stage_status(
+                    org_id,
+                    connector_id,
+                    stages[0],
+                    status_filters or [ProgressStatus.FAILED.value],
+                    limit=batch_size,
+                    after_key=after_key,
+                )
+                typed = await self.graph_provider.get_typed_records_batch(keys) if keys else {}
+                # The cursor and page size follow the keys: a record that could not be
+                # built must not end the run or rewind it.
+                fetched_count, last_id = len(keys), (keys[-1] if keys else None)
+                records = [typed[key] for key in keys if key in typed]
             else:
                 # Mode 3: Reindex by status
                 records = await self.graph_provider.get_records_by_status(
@@ -1377,11 +1396,12 @@ class EventService:
                     after_key=after_key,
                     exclude_statuses=exclude_statuses,
                     is_placeholder=False,
-                    status_field=(RETRYABLE_STAGES[stages[0]] if stages else HeadlineField.INDEXING).value,
+                    status_field=(selector or HeadlineField.INDEXING).value,
                 )
 
-            fetched_count = len(records)
-            last_id = records[-1].id if records else None
+            if not (selector is None and stages):
+                fetched_count = len(records)
+                last_id = records[-1].id if records else None
             records = [r for r in records if not r.is_placeholder]
             # The children a user may reindex are the ones the permission model
             # lets them access, not the providers' own user filter.

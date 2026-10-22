@@ -15449,6 +15449,45 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return deleted
 
     @override
+    async def get_record_ids_by_stage_status(
+        self,
+        org_id: str,
+        connector_id: str,
+        stage: str,
+        status_filters: list[str],
+        *,
+        limit: int,
+        after_key: str | None = None,
+    ) -> list[str]:
+        if not status_filters or limit <= 0:
+            return []
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        # From the states (indexed on connectorId): a stage's failures are few next to its records.
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (state:{label} {{connectorId: $connector_id}})
+            WHERE state.orgId = $org_id AND state.stage = $stage AND state.status IN $statuses
+            MATCH (r:{record_label} {{virtualRecordId: state.virtualRecordId}})
+            WHERE r.orgId = $org_id AND r.contentRev = state.rev AND r.connectorId = $connector_id
+              AND coalesce(r.isPlaceholder, false) <> true
+              AND {cypher_record_visibility("r", RecordVisibility.LIVE)}
+              AND ($after_key IS NULL OR r.id > $after_key)
+            WITH DISTINCT r.id AS id
+            RETURN id ORDER BY id LIMIT $limit
+            """,
+            {
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "stage": stage,
+                "statuses": status_filters,
+                "after_key": after_key,
+                "limit": limit,
+            },
+        )
+        return [str(row["id"]) for row in rows]
+
+    @override
     async def compare_and_set_record_fields(
         self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
     ) -> list[str]:

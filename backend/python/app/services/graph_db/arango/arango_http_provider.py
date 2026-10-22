@@ -2767,6 +2767,49 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return deleted
 
     @override
+    async def get_record_ids_by_stage_status(
+        self,
+        org_id: str,
+        connector_id: str,
+        stage: str,
+        status_filters: list[str],
+        *,
+        limit: int,
+        after_key: str | None = None,
+    ) -> list[str]:
+        if not status_filters or limit <= 0:
+            return []
+        # From the states (indexed on connectorId): a stage's failures are few next to its records.
+        return [str(key) for key in await self._stage_aql(
+            f"""
+            LET matched = UNIQUE(
+                FOR state IN @@collection
+                    FILTER state.connectorId == @connector_id AND state.orgId == @org_id
+                        AND state.stage == @stage AND state.status IN @statuses
+                    FOR record IN {CollectionNames.RECORDS.value}
+                        FILTER record.virtualRecordId == state.virtualRecordId AND record.orgId == @org_id
+                            AND record.contentRev == state.rev AND record.connectorId == @connector_id
+                            AND record.isPlaceholder != true
+                            AND {aql_record_visibility("record", RecordVisibility.LIVE)}
+                            AND (@after_key == null OR record._key > @after_key)
+                        RETURN record._key
+            )
+            FOR key IN matched
+                SORT key
+                LIMIT @limit
+                RETURN key
+            """,
+            {
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "stage": stage,
+                "statuses": status_filters,
+                "after_key": after_key,
+                "limit": limit,
+            },
+        )]
+
+    @override
     async def compare_and_set_record_fields(
         self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
     ) -> list[str]:

@@ -234,6 +234,57 @@ class TestDeletingTheStageStatesOfVirtualRecords:
             await provider.stage_states_delete_for_virtual_records(["vr-1"])
 
 
+
+class TestRecordsSelectedByStageState:
+    """A stage with no record field (entities) is retried by its own state on the record's revision."""
+
+    @pytest.mark.asyncio
+    async def test_arango_joins_live_records_on_the_states_revision(self) -> None:
+        provider = _arango(["r1", "r2"])
+        got = await provider.get_record_ids_by_stage_status(
+            "org-1", "conn-1", "entities", ["FAILED"], limit=100, after_key="r0"
+        )
+        assert got == ["r1", "r2"]
+        query = _query(provider.http_client.execute_aql)
+        assert "state.connectorId == @connector_id" in query and "state.stage == @stage" in query
+        assert "record.virtualRecordId == state.virtualRecordId" in query
+        assert "record.contentRev == state.rev" in query
+        assert "record.isPlaceholder != true" in query and "isDeleted" in query
+        assert "SORT key LIMIT @limit" in query
+        bind = provider.http_client.execute_aql.await_args.args[1]
+        assert bind == {
+            "@collection": "stageStates", "connector_id": "conn-1", "org_id": "org-1", "stage": "entities",
+            "statuses": ["FAILED"], "after_key": "r0", "limit": 100,
+        }
+
+    @pytest.mark.asyncio
+    async def test_neo4j_joins_live_records_on_the_states_revision(self) -> None:
+        provider = _neo4j([{"id": "r1"}, {"id": "r2"}])
+        got = await provider.get_record_ids_by_stage_status("org-1", "conn-1", "entities", ["FAILED"], limit=100)
+        assert got == ["r1", "r2"]
+        query = _query(provider.client.execute_query)
+        assert "MATCH (state:StageState {connectorId: $connector_id})" in query
+        assert "MATCH (r:Record {virtualRecordId: state.virtualRecordId})" in query
+        assert "r.contentRev = state.rev" in query and "coalesce(r.isPlaceholder, false) <> true" in query
+        assert "isDeleted" in query and "RETURN id ORDER BY id LIMIT $limit" in query
+        params = provider.client.execute_query.await_args.kwargs["parameters"]
+        assert params["after_key"] is None and params["statuses"] == ["FAILED"] and params["stage"] == "entities"
+
+    @pytest.mark.asyncio
+    async def test_no_status_or_no_room_is_no_query(self) -> None:
+        arango, neo4j = _arango(), _neo4j()
+        assert await arango.get_record_ids_by_stage_status("o", "c", "entities", [], limit=10) == []
+        assert await neo4j.get_record_ids_by_stage_status("o", "c", "entities", ["FAILED"], limit=0) == []
+        arango.http_client.execute_aql.assert_not_awaited()
+        neo4j.client.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_outage_raises(self) -> None:
+        provider = _arango(side_effect=ArangoQueryError("Query failed", 503, "unavailable"))
+        with pytest.raises(ArangoQueryError):
+            await provider.get_record_ids_by_stage_status("o", "c", "entities", ["FAILED"], limit=10)
+
+
 def _connector_delete_ready(provider: ArangoHTTPProvider | Neo4jProvider, *, stages_ok: bool = True) -> None:
     """Stub every step of a connector delete but the stage states, which are what is checked."""
     provider.get_document = AsyncMock(return_value={"_key": "c1", "type": "Drive"})

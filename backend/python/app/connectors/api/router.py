@@ -2484,7 +2484,10 @@ def _parse_stages(request_body: dict[str, Any] | None) -> list[str] | None:
             status_code=400, detail=f"unknown stages {unknown}; stages that can be re-run: {sorted(RETRYABLE_STAGES)}"
         )
     if len({RETRYABLE_STAGES[s] for s in names}) > 1:
-        raise HTTPException(status_code=400, detail="stages re-run together must report the same status field")
+        raise HTTPException(
+            status_code=400,
+            detail="stages re-run together must be selected the same way: by the same record status, or each on its own",
+        )
     return list(dict.fromkeys(names))
 
 
@@ -2895,8 +2898,9 @@ async def reindex_connector(
     Request Body (optional):
         statusFilters: list[str] - indexing statuses to reindex (e.g. ["FAILED"]).
                        Omit to reindex everything.
-        stages: list[str] - re-run only these pipeline stages (e.g. ["classify"]) on
-                records whose stage status matches statusFilters (default FAILED);
+        stages: list[str] - re-run only these pipeline stages (["classify"] or ["entities"]) on
+                records whose stage status matches statusFilters (default FAILED):
+                extractionStatus for classify, the entities stage state for entities;
                 nothing is re-parsed or re-embedded.
     """
     try:

@@ -571,6 +571,52 @@ class TestStageReruns:
         service.graph_provider.update_indexing_status_for_record_ids.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_stage_without_a_record_field_is_selected_by_its_stage_state(self, service) -> None:
+        connector = AsyncMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        r1, r3 = _make_mock_record("r1"), _make_mock_record("r3")
+        service.graph_provider.get_record_ids_by_stage_status = AsyncMock(return_value=["r1", "r2", "r3"])
+        # r2 could not be built as a typed record: skipped, and the run still ends on this page.
+        service.graph_provider.get_typed_records_batch = AsyncMock(return_value={"r1": r1, "r3": r3})
+        service.graph_provider.get_records_by_status = AsyncMock()
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        await service._run_reindex(
+            connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=["FAILED"], stages=["entities"],
+        )
+
+        service.graph_provider.get_record_ids_by_stage_status.assert_awaited_once_with(
+            "org1", "c1", "entities", ["FAILED"], limit=100, after_key=None
+        )
+        service.graph_provider.get_records_by_status.assert_not_awaited()
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with(
+            [r1, r3], stages=["entities"]
+        )
+        service.graph_provider.update_indexing_status_for_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stage_state_selection_pages_on_the_last_key(self, service) -> None:
+        connector = AsyncMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        page = [f"r{i:03d}" for i in range(100)]
+        service.graph_provider.get_record_ids_by_stage_status = AsyncMock(side_effect=[page, ["r100"]])
+        service.graph_provider.get_typed_records_batch = AsyncMock(
+            side_effect=lambda keys: {k: _make_mock_record(k) for k in keys}
+        )
+
+        await service._run_reindex(
+            connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=["FAILED"], stages=["entities"],
+        )
+
+        calls = service.graph_provider.get_record_ids_by_stage_status.await_args_list
+        assert [c.kwargs["after_key"] for c in calls] == [None, "r099"]
+        assert connector.data_entities_processor.reindex_existing_records.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_a_plain_reindex_still_selects_by_indexing_status(self, service) -> None:
         connector = AsyncMock()
         service.graph_provider.get_records_by_status = AsyncMock(return_value=[])
@@ -583,7 +629,8 @@ class TestStageReruns:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("payload", [
         {"orgId": "o1", "connectorId": "c1", "recordId": "r1", "stages": ["classify"]},
-        {"orgId": "o1", "connectorId": "c1", "stages": ["entities"]},
+        {"orgId": "o1", "connectorId": "c1", "stages": ["embed"]},
+        {"orgId": "o1", "connectorId": "c1", "stages": ["classify", "entities"]},
         {"orgId": "o1", "connectorId": "c1", "stages": "classify"},
     ])
     async def test_stage_reruns_are_connector_wide_and_name_known_stages(self, service, payload) -> None:

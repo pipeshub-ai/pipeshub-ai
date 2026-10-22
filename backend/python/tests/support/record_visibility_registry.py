@@ -65,6 +65,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_accessible_virtual_record_ids": (Rule.LIVE, "the search permission map"),
     "filter_accessible_virtual_record_ids": (Rule.LIVE, "search permission check"),
     "filter_accessible_record_ids": (Rule.LIVE, "search permission check"),
+    "get_record_ids_by_stage_status": (
+        Rule.LIVE, "picks records to re-run a stage on; a trashed record is not re-run",
+    ),
     "find_duplicate_records": (Rule.LIVE, "a copy must not take COMPLETED from a record without vectors"),
     "find_next_queued_duplicate": (Rule.LIVE, "dedup never hands work to a trashed record"),
     "update_queued_duplicates_status": (Rule.LIVE, "dedup never copies status onto a trashed record"),

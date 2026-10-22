@@ -3979,8 +3979,9 @@ class TestParseStages:
         from app.connectors.api.router import _parse_stages
 
         assert _parse_stages({"stages": ["classify", "classify"]}) == ["classify"]
+        assert _parse_stages({"stages": ["entities"]}) == ["entities"]
 
-    @pytest.mark.parametrize("raw", [None, [], "classify", [1], ["entities"]])
+    @pytest.mark.parametrize("raw", [None, [], "classify", [1], ["embed"], ["classify", "entities"]])
     def test_anything_else_is_a_400(self, raw) -> None:
         from fastapi import HTTPException
 
