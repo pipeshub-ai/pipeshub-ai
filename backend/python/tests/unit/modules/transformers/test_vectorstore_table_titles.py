@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -10,7 +10,8 @@ from app.models.blocks import (
     CitationMetadata,
     GroupType,
 )
-from app.modules.transformers.vectorstore import table_titles
+from app.modules.parsers.table_titles import table_titles
+from app.modules.transformers.transformer import ReconciliationContext
 from tests.unit.modules.transformers.test_vectorstore_deep import _make_vectorstore
 
 
@@ -73,11 +74,36 @@ async def test_rows_and_summary_are_embedded_under_their_title() -> None:
     blocks = [_text(0, "Submission of Matters to a Vote of Security Holders.", page=2),
               _text(1, "Item 5.07.", page=2), row]
 
-    await vs.index_documents(BlocksContainer(blocks=blocks, block_groups=[table]),
-                             "org-1", "rec-1", "vr-1", "application/pdf")
+    await vs.index_documents(BlocksContainer(blocks=blocks, block_groups=[table]), "org-1", "rec-1", "vr-1")
 
     embedded = {d.metadata["blockId"]: d.page_content for d in vs._create_embeddings.call_args[0][0]}
     title = "Submission of Matters to a Vote of Security Holders. Item 5.07."
     assert embedded[row.id] == f"{title}: Richard A. Johnson received 16,105,005 votes against."
     assert embedded[table.id] == f"{title}: Voting results for ten individuals."
     assert row.data["row_natural_language_text"].startswith("Richard")
+
+
+def test_a_filtered_list_is_read_by_position_not_by_block_index() -> None:
+    blocks = [_text(10, "Consolidated Balance Sheets"), _row(11, group=3)]
+    assert table_titles(blocks, [_table(index=3)]) == {3: "Consolidated Balance Sheets"}
+
+
+@pytest.mark.asyncio
+async def test_a_reindexed_row_keeps_the_title_of_its_unchanged_heading() -> None:
+    """Reconciliation hands index_documents only the changed blocks; the heading
+    above a changed row is usually not one of them."""
+    vs = _make_vectorstore()
+    vs.get_embedding_model_instance = AsyncMock(return_value=False)
+    vs._process_document_chunks = AsyncMock()
+    vs.delete_blocks_by_ids = AsyncMock()
+    row = _row(1)
+    record = MagicMock(id="rec-1", virtual_record_id="vr-1", org_id="org-1", semantic_metadata=None,
+                       block_containers=BlocksContainer(blocks=[_text(0, "Consolidated Balance Sheets"), row],
+                                                        block_groups=[_table()]))
+    ctx = MagicMock(record=record, reconciliation_context=ReconciliationContext(
+        blocks_to_index_ids={row.id}, block_ids_to_delete=set()))
+
+    await vs.apply(ctx)
+
+    embedded = {d.metadata["blockId"]: d.page_content for d in vs._process_document_chunks.call_args[0][0]}
+    assert embedded == {row.id: "Consolidated Balance Sheets: Total current assets is 1,200"}

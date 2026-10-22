@@ -182,6 +182,7 @@ class TestVectorStoreApply:
             block_ids_to_delete=None,
             is_reconciliation=False,
             record=record,
+            titles={},
         )
         assert result is True
 
@@ -233,6 +234,7 @@ class TestVectorStoreApply:
             block_ids_to_delete=None,
             is_reconciliation=False,
             record=record,
+            titles={},
         )
 
 
@@ -1342,6 +1344,7 @@ class TestApply:
             block_ids_to_delete=None,
             is_reconciliation=False,
             record=mock_ctx.record,
+            titles={},
         )
 
 
