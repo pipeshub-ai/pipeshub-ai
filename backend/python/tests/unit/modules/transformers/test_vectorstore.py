@@ -2661,9 +2661,11 @@ class TestRecordPresenceAcrossBatches:
 
         vs = self._store(AsyncMock(return_value={"_key": "rec-1"}))
 
-        await vs._process_document_chunks(
-            self._docs(10 * _DEFAULT_DOCUMENT_BATCH_SIZE), "rec-1", "test_collection"
-        )
+        # The real 2 s age can pass on a busy CI runner; expiry has its own test below.
+        with patch("app.modules.transformers.vectorstore._RECORD_PRESENCE_MAX_AGE_S", 3600.0):
+            await vs._process_document_chunks(
+                self._docs(10 * _DEFAULT_DOCUMENT_BATCH_SIZE), "rec-1", "test_collection"
+            )
 
         assert vs.vector_db_service.upsert_points.await_count == 10
         vs.graph_provider.get_document.assert_awaited_once()
