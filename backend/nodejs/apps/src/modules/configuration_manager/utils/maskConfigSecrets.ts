@@ -78,7 +78,10 @@ export function restoreCredentialTemplates(
     const storedTemplate = previous[name];
     if (template !== CONFIG_SECRET_PLACEHOLDER) {
       out[name] = template;
-    } else if (typeof storedTemplate === 'string' && storedTemplate.length > 0) {
+    } else if (
+      typeof storedTemplate === 'string' &&
+      storedTemplate.length > 0
+    ) {
       out[name] = storedTemplate;
     }
   }

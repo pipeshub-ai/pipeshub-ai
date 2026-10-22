@@ -825,7 +825,9 @@ const identityHeaderName = z
   .string()
   .min(1)
   .max(128)
-  .regex(/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/, { message: 'Not a valid header name' });
+  .regex(/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/, {
+    message: 'Not a valid header name',
+  });
 
 export const identityPolicyBodySchema = z
   .object({
@@ -835,7 +837,10 @@ export const identityPolicyBodySchema = z
     groups: z
       .object({
         enabled: z.boolean().default(true),
-        allowList: z.array(z.string().trim().min(1).max(256)).max(500).default([]),
+        allowList: z
+          .array(z.string().trim().min(1).max(256))
+          .max(500)
+          .default([]),
         maxForwarded: z.number().int().min(1).max(500).default(50),
       })
       .strict()
@@ -843,11 +848,18 @@ export const identityPolicyBodySchema = z
     pseudonymize: z.boolean().default(false),
     onMissingIdentity: z.enum(['service', 'block']).default('service'),
     queryEmbeddingIdentity: z.enum(['user', 'service']).default('user'),
-    serviceIdentityPrefix: z.string().trim().min(1).max(64).default('svc:pipeshub'),
+    serviceIdentityPrefix: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .default('svc:pipeshub'),
   })
   .strict();
 
-export const identityPolicySchema = z.object({ body: identityPolicyBodySchema });
+export const identityPolicySchema = z.object({
+  body: identityPolicyBodySchema,
+});
 
 export const connectionIdentityForwardingSchema = z.object({
   params: z.object({ connectionId: z.string().min(1) }),
@@ -856,12 +868,21 @@ export const connectionIdentityForwardingSchema = z.object({
       enabled: z.boolean(),
       mode: z.enum(['headers', 'template', 'signedJwt']).default('headers'),
       preset: z
-        .enum(['litellm', 'portkey', 'helicone', 'cloudflare', 'apim', 'custom'])
+        .enum([
+          'litellm',
+          'portkey',
+          'helicone',
+          'cloudflare',
+          'apim',
+          'custom',
+        ])
         .default('litellm'),
-      headerTemplates: z.record(identityHeaderName, z.string().max(512)).refine(
-        (templates) => Object.keys(templates).length <= 16,
-        { message: 'At most 16 header templates' },
-      ).default({}),
+      headerTemplates: z
+        .record(identityHeaderName, z.string().max(512))
+        .refine((templates) => Object.keys(templates).length <= 16, {
+          message: 'At most 16 header templates',
+        })
+        .default({}),
       jwtAudience: z.string().trim().max(256).optional(),
       serviceAuth: z.enum(['apiKey', 'jwt']).default('apiKey'),
       // Absent keeps the stored key; an empty string clears it.

@@ -938,9 +938,11 @@ export function createConfigurationManagerRouter(container: Container): Router {
     rotateConnectionCredentials(keyValueStoreService, appConfig),
   );
 
+  const authenticate = authMiddleware.authenticate.bind(authMiddleware);
+
   router.put(
     '/ai-models/connections/:connectionId/identity-forwarding',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(connectionIdentityForwardingSchema),
@@ -949,7 +951,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
 
   router.get(
     '/ai-models/identity-policy',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
     getIdentityPolicy(keyValueStoreService),
@@ -957,7 +959,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
 
   router.put(
     '/ai-models/identity-policy',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(identityPolicySchema),
@@ -966,7 +968,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
 
   router.post(
     '/ai-models/identity/preview',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
     ValidationMiddleware.validate(identityPreviewSchema),
