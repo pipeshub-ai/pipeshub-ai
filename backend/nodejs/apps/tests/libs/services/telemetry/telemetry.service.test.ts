@@ -327,6 +327,49 @@ describe('TelemetryService', () => {
     });
   });
 
+  describe('consent withdrawal', () => {
+    it('keeps an opt-out when an older reload finishes after it', async () => {
+      const kv = mockKvStore();
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+      sandbox.stub(svc as any, 'startOrStopMetricCollection').resolves();
+
+      let finishOlder!: (raw: string) => void;
+      kv.get.onCall(1).returns(new Promise<string>((resolve) => (finishOlder = resolve)));
+      kv.get.onCall(2).resolves(storedConfig({ enableMetricCollection: 'false' }));
+
+      const older = (svc as any).initializeMetricsCollection();
+      await (svc as any).initializeMetricsCollection();
+      finishOlder(storedConfig({ enableMetricCollection: 'true' }));
+      await older;
+
+      expect((svc as any).enableMetricCollection).to.be.false;
+    });
+
+    it('aborts a shipment still in flight when consent is withdrawn', async () => {
+      const kv = mockKvStore(storedConfig({ enableMetricCollection: 'true' }));
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+      sandbox.stub(svc as any, 'startOrStopMetricCollection').resolves();
+      let signal: AbortSignal | undefined;
+      sandbox.stub(axios, 'post').callsFake((_url, _body, config) => {
+        signal = config?.signal as AbortSignal;
+        return new Promise((_resolve, reject) =>
+          signal!.addEventListener('abort', () => reject(new axios.CanceledError())),
+        );
+      });
+      recordEvent('gathered_before_opt_out');
+      const shipping = (svc as any).shipEventsToServer();
+      await flushAsync();
+
+      kv.get.resolves(storedConfig({ enableMetricCollection: 'false' }));
+      await (svc as any).initializeMetricsCollection();
+
+      expect(signal?.aborted).to.be.true;
+      await shipping; // settles without throwing
+    });
+  });
+
   describe('pushMetricsToServer', () => {
     it('should reset the metric registry when the collector responds 413', async () => {
       sandbox.stub(metricsBackend, 'serialize').resolves('x{a="b"} 1\n');

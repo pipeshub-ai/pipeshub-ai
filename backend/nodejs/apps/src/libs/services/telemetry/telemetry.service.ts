@@ -69,6 +69,10 @@ export class TelemetryService implements ITelemetryService {
   private pushInterval: NodeJS.Timeout | null = null;
   private isStarting: boolean = false;
   private mutex: Mutex = new Mutex();
+  // Each config reload takes a number; only the newest may write consent and push state.
+  private reloadGeneration = 0;
+  // Pushes and shipments under way, aborted when consent is withdrawn.
+  private readonly inFlight = new Set<AbortController>();
 
   constructor(
     @inject('KeyValueStoreService') private kvStore: KeyValueStoreService,
@@ -91,9 +95,12 @@ export class TelemetryService implements ITelemetryService {
   }
 
   private async initializeMetricsCollection(): Promise<void> {
+    const generation = ++this.reloadGeneration;
     try {
       const config = await this.getConfig();
       await this.persistMissingDefaults(config);
+      // A newer reload started while this one awaited: its state is the current one.
+      if (generation !== this.reloadGeneration) return;
 
       this.metricsServerUrl =
         config[keyValues.SERVER_URL] ??
@@ -122,6 +129,7 @@ export class TelemetryService implements ITelemetryService {
       setCollectionConsent(this.enableMetricCollection);
       if (!this.enableMetricCollection) {
         // Switched off: what was gathered before must never be sent later.
+        this.abortInFlight();
         metricsBackend.reset();
         eventBuffer.drain();
       }
@@ -255,6 +263,11 @@ export class TelemetryService implements ITelemetryService {
     }
   }
 
+  private abortInFlight(): void {
+    for (const controller of this.inFlight) controller.abort();
+    this.inFlight.clear();
+  }
+
   private stopMetricsPush(): void {
     if (this.pushInterval) {
       clearInterval(this.pushInterval);
@@ -275,6 +288,8 @@ export class TelemetryService implements ITelemetryService {
       logger.debug('Skipping metrics push - installId not initialized');
       return;
     }
+    const controller = new AbortController();
+    this.inFlight.add(controller);
     try {
       const metricsText = await metricsBackend.serialize();
 
@@ -282,6 +297,7 @@ export class TelemetryService implements ITelemetryService {
         logger.debug('Skipping metrics push - no actual metrics data');
         return;
       }
+      if (controller.signal.aborted) return;
 
       await axios.post(
         this.metricsServerUrl,
@@ -299,10 +315,12 @@ export class TelemetryService implements ITelemetryService {
           maxContentLength: Infinity,
           maxBodyLength: Infinity,
           decompress: true,
+          signal: controller.signal,
         },
       );
       logger.debug('Successfully pushed metrics to server');
     } catch (error: unknown) {
+      if (axios.isCancel(error)) return;
       // The registry only grows, so a 413 would otherwise recur until restart.
       if (axios.isAxiosError(error) && error.response?.status === 413) {
         logger.warn(
@@ -313,6 +331,8 @@ export class TelemetryService implements ITelemetryService {
         return;
       }
       this.handlePushError(error);
+    } finally {
+      this.inFlight.delete(controller);
     }
   }
 
@@ -341,6 +361,8 @@ export class TelemetryService implements ITelemetryService {
     if (events.length === 0) {
       return;
     }
+    const controller = new AbortController();
+    this.inFlight.add(controller);
     try {
       await axios.post(
         this.deriveEventsUrl(),
@@ -356,11 +378,15 @@ export class TelemetryService implements ITelemetryService {
           headers: this.buildHeaders(),
           timeout: TIMEOUT_MS,
           httpsAgent: this.createHttpsAgent(),
+          signal: controller.signal,
         },
       );
       logger.debug(`Shipped ${String(events.length)} event(s) to collector`);
     } catch (error: unknown) {
+      if (axios.isCancel(error)) return;
       this.handlePushError(error);
+    } finally {
+      this.inFlight.delete(controller);
     }
   }
 

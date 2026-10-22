@@ -143,13 +143,13 @@ class MetricsPusher:
                         )
                 else:
                     self._waiting_for_config_logged = False
-                    set_collection_consent(cfg["enabled"])
                     set_metric_collection_enabled(self._service_name, cfg["enabled"])
                     if not cfg["enabled"]:
                         # Switched off: what was gathered before must never be sent later.
+                        event_buffer.switch_off()
                         METRICS_BACKEND.reset()
-                        event_buffer.drain()
                     else:
+                        set_collection_consent(True)
                         now = time.monotonic()
                         if now >= next_push:
                             next_push = now + cfg["interval_s"]

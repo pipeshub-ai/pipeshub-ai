@@ -8,7 +8,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
-from app.telemetry.flag import telemetry_collecting
+from app.telemetry.flag import set_collection_consent, telemetry_collecting
 
 MAX_EVENTS = 5000
 
@@ -20,9 +20,16 @@ class EventBuffer:
 
     def enqueue(self, event: dict) -> None:
         with self._lock:
-            if len(self._events) >= MAX_EVENTS:
-                return  # drop on overflow
+            # Checked under the lock: an event that raced an opt-out cannot outlive switch_off's drop.
+            if not telemetry_collecting() or len(self._events) >= MAX_EVENTS:
+                return  # opted out, or drop on overflow
             self._events.append(event)
+
+    def switch_off(self) -> None:
+        """Withdraw consent and drop every buffered event, atomically with enqueue."""
+        with self._lock:
+            set_collection_consent(False)
+            self._events = []
 
     def drain(self) -> list[dict[str, Any]]:
         with self._lock:
