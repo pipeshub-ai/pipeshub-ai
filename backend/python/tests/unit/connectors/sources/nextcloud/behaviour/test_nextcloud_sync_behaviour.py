@@ -1756,3 +1756,415 @@ class TestTrashbinAddresses:
         request = server.requests[-1]
         assert request.method == "DELETE"
         assert request.url.path == f"/remote.php/dav/trashbin/alice/trash/{item}"
+
+
+def runner_graph() -> AsyncMock:
+    """The graph provider ``run_sync_task`` writes the app's status to; its unlink step strips
+    the edges of every node a full sync did not write."""
+    from app.config.constants.arangodb import AppStatus
+
+    graph = AsyncMock()
+    graph.get_document = AsyncMock(return_value={"id": CONNECTOR_ID, "status": AppStatus.FULL_SYNCING.value})
+    graph.unlink_nodes_missed_by_full_sync = AsyncMock(return_value=(0, True))
+    return graph
+
+
+async def run_full_sync_task(connector: NextcloudConnector, graph: AsyncMock) -> None:
+    """A full sync as the UI's Full Sync button (or a filter change) runs it: sync points gone, through run_sync_task."""
+    from app.config.constants.arangodb import AppStatus
+    from app.connectors.core.sync.sync_runner import run_sync_task
+
+    await run_sync_task(
+        connector, CONNECTOR_ID, graph, logging.getLogger("test.nextcloud.runner"),
+        start_status=AppStatus.FULL_SYNCING.value,
+    )
+
+
+def idle_write(graph: AsyncMock) -> dict[str, Any]:
+    from app.config.constants.arangodb import AppStatus
+
+    writes = [c.args[2] for c in graph.update_node.await_args_list if c.args[2].get("status") == AppStatus.IDLE.value]
+    assert len(writes) == 1, writes
+    return writes[0]
+
+
+class TestReviewFixesPP366:
+    """One or more tests per PP-366 subtask; each fails on the code before the fix."""
+
+    # ---- PP-367 (S1): only the creator reaches the app ----
+
+    async def test_the_nextcloud_profile_email_never_gets_access(self, server, db, store) -> None:
+        server.email = "bob@pipeshub.test"  # another PipesHub user's address, typed into the Nextcloud profile
+        seed_drive(server)
+        connector = await make_connector(server, db, store)
+
+        assert await sync(connector)
+
+        assert [u.email for u in db.app_users] == [CREATOR_EMAIL]
+
+    async def test_a_creator_who_cannot_be_looked_up_fails_the_sync_before_any_write(self, server, db, store) -> None:
+        store.users.clear()
+        seed_drive(server)
+        connector = await make_connector(server, db, store)
+
+        assert not await sync(connector)
+
+        assert db.app_users == [] and db.records == {} and store.cursor() is None
+
+    # ---- PP-368 (S2) and PP-370 (S4): where requests may go ----
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            pytest.param("https://cloud.example.com/?", id="query"),
+            pytest.param("https://cloud.example.com/nc#x", id="fragment"),
+            pytest.param("https://user:pw@cloud.example.com", id="credentials"),
+            pytest.param("ftp://cloud.example.com", id="not-http"),
+            pytest.param("http://cloud.example.com", id="plain-http"),
+            pytest.param("https://169.254.169.254", id="cloud-metadata"),
+            pytest.param("https://127.0.0.1", id="loopback"),
+            pytest.param("https://localhost", id="localhost"),
+        ],
+    )
+    async def test_an_unsafe_server_url_is_refused_before_any_request(self, server, db, store, base_url) -> None:
+        connector = build(server, db, store, config=auth_config(server, baseUrl=base_url))
+
+        assert await connector.init() is False
+
+        assert connector.data_source is None
+        assert server.requests == []
+
+    async def test_plain_http_needs_the_operator_opt_in(self, server, db, store, monkeypatch) -> None:
+        monkeypatch.setenv("PIPESHUB_NEXTCLOUD_ALLOW_INSECURE_HTTP", "true")
+        seed_drive(server)
+        connector = await make_connector(server, db, store, config=auth_config(server, baseUrl="http://cloud.example.com"))
+
+        assert await sync(connector)
+
+        assert "q1.pdf" in db.names()
+        assert {r.url.scheme for r in server.requests} == {"http"}
+
+    async def test_a_host_that_resolves_to_cloud_metadata_is_never_contacted(self, server, db, store) -> None:
+        server.dns["cloud.example.com"] = "169.254.169.254"
+        connector = build(server, db, store)
+
+        await connector.init()
+        assert not await sync(connector)
+
+        assert server.requests == []
+
+    async def test_a_private_server_works_unless_the_deployment_blocks_private_addresses(
+        self, server, db, store, monkeypatch
+    ) -> None:
+        server.dns["cloud.example.com"] = "10.20.30.40"
+        seed_drive(server)
+        assert await sync(await make_connector(server, db, store))
+        assert "q1.pdf" in db.names()
+
+        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
+        server.requests.clear()
+        connector = build(server, db, store)
+        await connector.init()
+        assert not await sync(connector)
+        assert server.requests == []
+
+    async def test_a_download_redirected_to_another_host_is_refused(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.redirect_downloads_to = "http://169.254.169.254/latest/meta-data/"
+
+        with pytest.raises(HTTPException) as refused:
+            await connector.stream_record(db.by_name("q1.pdf"))
+
+        assert refused.value.status_code >= 500
+        assert not [r for r in server.requests if "meta-data" in r.url.path], "the redirect was never followed"
+
+    # ---- PP-369 (S3): shares ----
+
+    async def test_a_folder_shared_with_the_user_is_synced_and_removed_once_unshared(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+
+        server.share_in("SharedProj", {"plan.txt": b"shared plan"})
+        assert await sync(connector)
+        assert db.path_of("plan.txt") == "SharedProj/plan.txt"
+
+        server.unshare("SharedProj")
+        assert await sync(connector)
+        assert not {"SharedProj", "plan.txt"} & db.names()
+        assert store.cursor() == str(server.latest_activity_id)
+
+    # ---- PP-372 (S6): remote wipe ----
+
+    async def test_a_remote_wipe_removes_everything_synced_and_is_confirmed(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notifications = listen_for_notifications(connector)
+        server.wipe_requested = True
+
+        with pytest.raises(ConnectorInitError, match="remote wipe"):
+            await connector.run_sync()
+
+        assert db.records == {}
+        assert server.wipe_confirmed
+        assert not store.cursor(), "a new app password starts with a full listing"
+        sent = await notifications()
+        assert any("synced Nextcloud data removed" in n["title"] and connector.display_name in n["title"] for n in sent)
+
+    async def test_a_rejected_password_without_a_wipe_keeps_the_records(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        kept = set(db.records)
+        server.app_password = "revoked"
+
+        with pytest.raises(ConnectorInitError, match="rejected the app password"):
+            await connector.run_sync()
+
+        assert set(db.records) == kept and not server.wipe_confirmed
+
+    # ---- PP-373 (S7): defusedxml ----
+
+    def test_an_answer_with_entity_declarations_is_refused(self) -> None:
+        hostile = (
+            b'<?xml version="1.0"?><!DOCTYPE d [<!ENTITY x "boom">]>'
+            b'<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:response>'
+            b'<d:href>/remote.php/dav/files/alice/&x;.txt</d:href><d:propstat><d:prop>'
+            b'<oc:fileid>1</oc:fileid></d:prop></d:propstat></d:response></d:multistatus>'
+        )
+
+        assert nextcloud_connector.parse_webdav_propfind_response(hostile) == []
+        assert nextcloud_connector.is_multistatus(hostile) is False
+
+    # ---- PP-374 (B1): a full sync that fails unlinks nothing; the next one heals ----
+
+    async def test_a_ui_full_sync_that_cannot_list_the_drive_unlinks_nothing(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        store.sync_points.clear()  # what the Full Sync button and a filter change do first
+        server.outage("PROPFIND", lambda p: True, lambda: httpx.Response(503))  # maintenance mode
+        graph = runner_graph()
+
+        with pytest.raises(NextcloudSyncError):
+            await run_full_sync_task(connector, graph)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert idle_write(graph).get("pendingFullSync") is True, "a full sync stays owed"
+        assert {"q1.pdf", "notes.txt", "cat.png", "readme.txt"} <= db.names()
+
+    async def test_a_ui_full_sync_rewrites_every_record_so_earlier_unlinks_heal(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        written = len(db.batches)
+        store.sync_points.clear()
+        graph = runner_graph()
+
+        await run_full_sync_task(connector, graph)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        seen = graph.unlink_nodes_missed_by_full_sync.await_args.args[1]
+        assert {r.id for r in db.records.values()} <= set(seen["records"])
+        rewritten = {name for batch in db.batches[written:] for name in batch}
+        assert {"q1.pdf", "notes.txt", "cat.png", "readme.txt"} <= rewritten, "unchanged records are written again"
+
+        # The daily reconcile that follows stays cheap: unchanged records are only noted.
+        written = len(db.batches)
+        await connector._run_full_sync_internal()
+        assert len(db.batches) == written
+
+    # ---- PP-375 (B2): changes during the full sync ----
+
+    async def test_a_change_made_while_the_full_sync_runs_is_applied_next(self, server, db, store) -> None:
+        seed_drive(server)
+        connector = await make_connector(server, db, store)
+        listing = connector._sync_user_files
+
+        async def listing_then_upload(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+            done = await listing(*args, **kwargs)
+            server.add_file("during.txt", b"uploaded mid-sync")
+            return done
+
+        connector._sync_user_files = listing_then_upload
+        assert await sync(connector)
+        connector._sync_user_files = listing
+        assert "during.txt" not in db.names()
+
+        assert await sync(connector)
+        assert "during.txt" in db.names()
+
+    # ---- PP-376 (B3): what the feed never reports ----
+
+    async def test_the_daily_full_listing_finds_what_the_feed_missed(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.add_file("scanned.txt", b"written on disk", log=False)  # occ files:scan logs nothing
+        assert await sync(connector)
+        assert "scanned.txt" not in db.names()
+
+        store.checkpoint()["last_full_sync_ms"] -= nextcloud_connector.FULL_SYNC_INTERVAL_MS
+        assert await sync(connector)
+        assert "scanned.txt" in db.names()
+
+    async def test_a_copied_folder_is_saved_with_what_it_holds(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+
+        server.copy("Docs", "DocsCopy")
+        assert await sync(connector)
+
+        copied = {r.record_name for r in db.records.values()
+                  if r.external_record_id in {n.file_id for p, n in server.nodes.items() if p.startswith("DocsCopy")}}
+        assert copied == {"DocsCopy", "Reports", "q1.pdf", "notes.txt"}
+
+    # ---- PP-377 (B4): a change failing past five runs is not dropped ----
+
+    async def test_a_change_that_fails_five_runs_is_retried_until_it_applies(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notifications = listen_for_notifications(connector)
+        server.change("Docs/notes.txt", b"v2")
+        outage = server.outage("PROPFIND", lambda p: p.endswith("/Docs/notes.txt"), lambda: httpx.Response(503))
+
+        for _ in range(MAX_HELD_ATTEMPTS):
+            await sync(connector)
+        assert store.checkpoint()["pending_changes"] == ["/Docs/notes.txt"]
+        assert store.cursor() == str(server.latest_activity_id), "later changes are not held up"
+        assert any(n["type"] == NotificationType.CONNECTOR_SYNC_ERROR for n in await notifications())
+
+        outage.end()
+        assert await sync(connector)
+        assert db.by_name("notes.txt").external_revision_id == server.nodes["Docs/notes.txt"].etag
+        assert store.checkpoint()["pending_changes"] == []
+
+    # ---- PP-378 (B5): failures are reported ----
+
+    async def test_a_failed_activity_fetch_fails_the_run(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        server.change("Docs/notes.txt", b"v2")
+        server.outage("GET", lambda p: p == ACTIVITY_PATH, lambda: httpx.Response(503))
+
+        with pytest.raises(NextcloudSyncError, match="Failed to fetch Nextcloud activities"):
+            await connector.run_sync()
+
+    async def test_a_full_sync_that_cannot_list_fails_the_run(self, server, db, store) -> None:
+        seed_drive(server)
+        connector = await make_connector(server, db, store)
+        server.outage("PROPFIND", lambda p: True, lambda: httpx.Response(503))
+
+        with pytest.raises(NextcloudSyncError, match="could not be read or saved in full"):
+            await connector.run_sync()
+
+    async def test_a_disabled_activity_app_is_reported_once_and_the_drive_listed_instead(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        notifications = listen_for_notifications(connector)
+        server.activity_enabled = False
+        server.add_file("new.txt", b"new")
+
+        assert await sync(connector)
+        assert await sync(connector)
+
+        assert "new.txt" in db.names()
+        warned = [n for n in await notifications() if "Activity app" in n["title"]]
+        assert len(warned) == 1 and connector.display_name in warned[0]["title"]
+
+    # ---- PP-379 (B6): never a namesake's bytes ----
+
+    async def test_a_file_whose_folder_link_is_broken_still_downloads_its_own_bytes(self, server, db, store) -> None:
+        server.add_file("report.pdf", b"the top-level report")
+        server.add_file("Projects/report.pdf", b"the projects report")
+        connector = await make_connector(server, db, store)
+        assert await sync(connector)
+        record = db.records[server.nodes["Projects/report.pdf"].file_id]
+        db.edges.pop(record.id)  # the parent link went missing
+        db.unreadable_paths.add(record.id)
+
+        response = await connector.stream_record(record)
+
+        assert await body_of(response) == b"the projects report"
+
+    async def test_without_an_id_lookup_a_partial_path_is_not_downloaded(self, server, db, store) -> None:
+        server.add_file("report.pdf", b"the top-level report")
+        server.add_file("Projects/report.pdf", b"the projects report")
+        connector = await make_connector(server, db, store)
+        assert await sync(connector)
+        server.search_supported = False
+        record = db.records[server.nodes["Projects/report.pdf"].file_id]
+        db.unreadable_paths.add(record.id)
+        downloads = len(server.calls("GET", WEBDAV_PREFIX))
+
+        with pytest.raises(HTTPException):
+            await connector.stream_record(record)
+
+        assert len(server.calls("GET", WEBDAV_PREFIX)) == downloads
+
+    # ---- PP-380 (B7): login name is not the user id ----
+
+    async def test_an_email_login_syncs_the_users_own_files(self, server, db, store) -> None:
+        server.login = "alice@example.com"
+        seed_drive(server)
+        connector = await make_connector(server, db, store, config=auth_config(server, username="alice@example.com"))
+
+        assert await sync(connector)
+
+        assert connector.current_user_id == "alice"
+        assert "q1.pdf" in db.names()
+        assert all(unquote(r.url.path).startswith(f"{WEBDAV_PREFIX}alice/") for r in server.calls("PROPFIND"))
+
+    # ---- PP-382 (B9) ----
+
+    def test_the_created_date_filter_is_not_offered(self) -> None:
+        fields = NextcloudConnector._connector_metadata["config"]["filters"]["sync"]["schema"]["fields"]
+
+        assert "created" not in {f["name"] for f in fields}
+        assert "modified" in {f["name"] for f in fields}
+
+    # ---- PP-383 (B10) ----
+
+    async def test_a_file_renamed_to_an_excluded_type_leaves_the_index(self, server, db, store) -> None:
+        seed_drive(server)
+        connector = await make_connector(server, db, store, filters={
+            "file_extensions": {"type": "multiselect", "operator": "not_in", "value": ["txt"]}})
+        server.add_file("draft.md", b"draft")
+        assert await sync(connector)
+        assert "draft.md" in db.names()
+
+        server.move("draft.md", "draft.txt")
+        assert await sync(connector)
+
+        assert not {"draft.md", "draft.txt"} & db.names()
+
+    # ---- PP-385 (P2) ----
+
+    async def test_cleanup_closes_the_http_client(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+        http = connector.data_source.client.client
+
+        await connector.cleanup()
+
+        assert http.is_closed
+
+    # ---- PP-386 (P3) ----
+
+    async def test_a_full_sync_reads_stored_records_once_not_per_file(self, server, db, store) -> None:
+        seed_drive(server)
+        connector = await make_connector(server, db, store)
+
+        assert await sync(connector)
+
+        assert db.lookups == 0, "no single-record lookup per listed entry"
+        assert db.edge_deletes == 0, "a new record has no parent link to delete"
+
+    # ---- PP-388 (O1) ----
+
+    async def test_a_move_keeps_the_real_etag_and_is_not_reindexed(self, server, db, store) -> None:
+        connector = await synced(server, db, store)
+
+        server.move("Docs/notes.txt", "Photos/notes.txt")
+        assert await sync(connector)
+
+        notes = db.by_name("notes.txt")
+        assert notes.external_revision_id == server.nodes["Photos/notes.txt"].etag
+        assert db.moves == ["notes.txt"], "saved in place, keeping its indexing state"
+        assert db.path_of("notes.txt") == "Photos/notes.txt"
+
+    # ---- PP-390 (O3) ----
+
+    async def test_the_batch_size_setting_is_used(self, server, db, store) -> None:
+        seed_drive(server)
+        config = {**auth_config(server), "sync": {"batchSize": "2"}}
+        connector = await make_connector(server, db, store, config=config)
+
+        assert await sync(connector)
+
+        assert connector.batch_size == 2
+        assert max(len(b) for b in db.batches) == 2

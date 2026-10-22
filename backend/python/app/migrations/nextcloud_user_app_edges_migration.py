@@ -1,9 +1,13 @@
 from typing import Any
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.arangodb import CollectionNames
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
+# The @ConnectorBuilder name, which an app document stores as its type.
+CONNECTOR_TYPE = "Nextcloud"
 
 
 def _edge_source_key(edge: dict) -> str:
@@ -52,7 +56,7 @@ class NextcloudUserAppEdgesMigrationService:
         unresolved: list[str] = []
         try:
             apps = await self.graph_provider.get_nodes_by_filters(
-                CollectionNames.APPS.value, {"type": Connectors.NEXTCLOUD.value}, raise_on_error=True
+                CollectionNames.APPS.value, {"type": CONNECTOR_TYPE}, raise_on_error=True
             )
             for app in apps:
                 app_key = app.get("_key") or app.get("id")

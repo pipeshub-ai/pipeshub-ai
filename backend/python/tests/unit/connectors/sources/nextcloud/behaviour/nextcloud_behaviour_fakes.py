@@ -125,12 +125,12 @@ class FakeNextcloud:
         self._clock += timedelta(minutes=1)
         return self._clock
 
-    def _log(self, kind: str, subject: str, targets: dict[str, str]) -> int:
+    def _log(self, kind: str, subject: str, targets: dict[str, str], app: str = "files") -> int:
         activity_id = next(self._activity_ids)
         first_id, first_path = next(iter(targets.items()))
         self.activities.append({
             "activity_id": activity_id,
-            "app": "files",
+            "app": app,
             "type": kind,
             "subject": subject,
             "object_type": "files",
@@ -212,6 +212,35 @@ class FakeNextcloud:
         self._tick()
         self._log("file_restored", "restored_self", {node.file_id: f"/{node.path}"})
 
+    def copy(self, source: str, target: str) -> Node:
+        """A server-side copy: new ids for the whole subtree, but one activity for the top folder only (seen live)."""
+        for p in sorted(p for p in self.nodes if p == source or p.startswith(source + "/")):
+            old = self.nodes[p]
+            path = target + p[len(source):]
+            self.nodes[path] = Node(str(next(self._ids)), path, old.is_dir, f"e{next(self._ids)}", self._tick(),
+                                    old.content, old.content_type)
+        self._log("file_created", "created_self", {self.nodes[target].file_id: f"/{target}"})
+        return self.nodes[target]
+
+    def share_in(self, path: str, files: dict[str, bytes]) -> Node:
+        """Another user shares a folder with this one: it appears with what it holds, and the
+        only activity is one ``shared`` entry from files_sharing, outside the 'files' stream (seen live)."""
+        folder = Node(str(next(self._ids)), path, True, f"e{next(self._ids)}", self._tick())
+        self.nodes[path] = folder
+        for name, content in files.items():
+            node = Node(str(next(self._ids)), f"{path}/{name}", False, f"e{next(self._ids)}", self._tick(), content, "text/plain")
+            self.nodes[node.path] = node
+        self._log("shared", "shared_with_by", {folder.file_id: f"/{path}"}, app="files_sharing")
+        return folder
+
+    def unshare(self, path: str) -> None:
+        """The owner removes the share: the folder leaves this user's tree, logged like the share itself."""
+        folder = self.nodes[path]
+        for p in [p for p in self.nodes if p == path or p.startswith(path + "/")]:
+            del self.nodes[p]
+        self._tick()
+        self._log("shared", "unshared_by", {folder.file_id: f"/{path}"}, app="files_sharing")
+
     def fail(self, method: str, matches: Callable[[str], bool], *responses: httpx.Response | Exception) -> Fault:
         """Answer the next matching requests with ``responses`` (one each; an exception is raised), then behave normally."""
         fault = Fault(method.upper(), matches, list(responses))
@@ -287,7 +316,8 @@ class FakeNextcloud:
                 return httpx.Response(200, content=node.content, headers={"content-type": node.content_type})
         if request.method == "SEARCH" and path.rstrip("/") == "/remote.php/dav":
             return self._search(request.content.decode())
-        if request.method == "GET" and path == ACTIVITY_PATH:
+        # Every stream answers alike: the fake logs only what the user's view of the feed holds.
+        if request.method == "GET" and path.startswith(ACTIVITY_PATH.rsplit("/", 1)[0] + "/"):
             return self._activity(request.url.params)
         if request.method == "GET" and path in (USERS_PREFIX + self.user, CURRENT_USER_PATH):
             return ocs({"id": self.user, "email": self.email, "displayname": self.user.title()})
@@ -444,9 +474,29 @@ class FakeRecordsDb:
         self.messaging_producer: Any = None
         self.kept_records: list[str] = []
         self.moves: list[str] = []
+        self.full_sync_run: Any = None
+        self.lookups = 0
+        self.edge_deletes = 0
 
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
         self.kept_records.extend(record_ids)
+        self._seen("records", record_ids)
+
+    # ---- full-sync tracking, as the processor does it for run_sync_task ----
+
+    def begin_full_sync_run(self, connector_id: str) -> Any:
+        from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
+
+        self.full_sync_run = FullSyncSeen()
+        return self.full_sync_run
+
+    def end_full_sync_run(self, connector_id: str, run: Any) -> None:
+        self.full_sync_run = None
+
+    def _seen(self, collection: str, node_ids: list[str]) -> None:
+        if self.full_sync_run is not None:
+            for node_id in node_ids:
+                self.full_sync_run.add(collection, node_id)
 
     def _by_id(self, record_id: str) -> Optional[FileRecord]:
         return next((r for r in self.records.values() if r.id == record_id), None)
@@ -481,6 +531,7 @@ class FakeRecordsDb:
         """A base Record, as both graph stores rebuild it: no ``is_file``, ``path`` or ``etag``."""
         from app.models.entities import Record
 
+        self.lookups += 1
         if external_record_id in self.fail_lookup_for:
             raise RuntimeError(f"database unavailable for {external_record_id}")
         found = self.records.get(external_record_id)
@@ -513,6 +564,7 @@ class FakeRecordsDb:
         self.batches.append([r.record_name for r, _ in records_with_permissions])
         for record, permissions in records_with_permissions:
             self._upsert(record)
+            self._seen("records", [record.id])
             kept = self.permissions.setdefault(record.external_record_id, [])
             for p in permissions:
                 if all((p.email, p.type) != (k.email, k.type) for k in kept):
@@ -583,6 +635,7 @@ class FakeRecordsDb:
                 if r.parent_external_record_id == parent_external_record_id and is_live_record(r)]
 
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
+        self.edge_deletes += 1
         return 1 if self.edges.pop(record_id, None) else 0
 
     async def on_new_app_users(self, users: list[Any]) -> None:
@@ -591,6 +644,7 @@ class FakeRecordsDb:
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, permissions in groups:
             self.record_groups[group.external_group_id] = group
+            self._seen("recordGroups", [group.id])
             self.record_group_permissions[group.external_group_id] = list(permissions)
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
