@@ -325,6 +325,10 @@ def _status_code(exc: BaseException) -> int | None:
     if _from(exc, ("google.genai",)) and isinstance(code, int):
         return code
     response = getattr(exc, "response", None)
+    # botocore's ClientError keeps the parsed response as a dict.
+    if isinstance(response, dict):
+        value = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+        return value if isinstance(value, int) else None
     value = getattr(response, "status_code", None)
     return value if isinstance(value, int) else None
 

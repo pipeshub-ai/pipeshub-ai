@@ -99,7 +99,11 @@ export const AIModelsApi = {
       payload.provider === 'default' && modelName
         ? { ...rest, configuration: { model: modelName } }
         : rest;
-    const { data } = await apiClient.post(`${BASE}/ai-models/providers`, body);
+    // The model dialog shows the check failure itself; the global toast would
+    // repeat it under a generic "Invalid Request" title.
+    const { data } = await apiClient.post(`${BASE}/ai-models/providers`, body, {
+      suppressErrorToast: true,
+    });
     return data;
   },
 
@@ -117,7 +121,8 @@ export const AIModelsApi = {
   ) => {
     const { data } = await apiClient.put(
       `${BASE}/ai-models/providers/${modelType}/${modelKey}`,
-      payload
+      payload,
+      { suppressErrorToast: true }
     );
     return data;
   },

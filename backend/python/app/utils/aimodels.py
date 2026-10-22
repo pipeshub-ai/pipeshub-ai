@@ -1521,7 +1521,7 @@ def _reasoning_effort_kwargs(
 
 # Bedrock Converse: gpt-oss only accepts low/medium/high for
 # additionalModelRequestFields.reasoning_effort (no none/max/xhigh).
-# GPT-5.6 Sol/Terra/Luna accept a wider set (including max); do not clamp.
+# GPT-5.x / GPT-6 take reasoning.effort with none..max; do not clamp.
 _BEDROCK_GPT_OSS_EFFORT_MAP: Dict[str, str] = {
     "none": "low",
     "low": "low",
@@ -1576,14 +1576,63 @@ def _bedrock_is_gpt_oss(model_name: str | None) -> bool:
     return bool(model_name) and "gpt-oss" in model_name.lower()
 
 
-def _bedrock_is_openai_gpt(model_name: str | None) -> bool:
-    """GPT-5.x / GPT-6 on Bedrock Converse (Sol/Terra/Luna/Astra), not gpt-oss."""
+def bedrock_is_openai_gpt(model_name: str | None) -> bool:
+    """GPT-5.x / GPT-6 on Bedrock Converse (Sol/Terra/Luna/Astra), not gpt-oss.
+
+    On Converse these take ``reasoning.effort``, reject temperature, reject an
+    ``image`` block inside ``toolResult``, and need ``bedrock:InvokeModel`` on
+    the account's default project as well as on the inference profile.
+    """
     if not model_name:
         return False
     lowered = model_name.lower()
     if "gpt-oss" in lowered:
         return False
     return bool(_BEDROCK_OPENAI_GPT_RE.search(lowered))
+
+
+def bedrock_inference_profile_hint(model_name: str | None) -> str | None:
+    """The inference-profile IDs to use instead of a bare ``openai.gpt-*`` id.
+
+    GPT-5.x / GPT-6 have no in-Region throughput on bedrock-runtime, so
+    Converse only accepts the ``us.`` / ``global.`` profile, never the base id.
+    """
+    if not model_name or not bedrock_is_openai_gpt(model_name):
+        return None
+    name = model_name.strip()
+    if not name.lower().startswith("openai."):
+        return None
+    return f"us.{name} or global.{name}"
+
+
+def bedrock_access_denied_cause(exc: BaseException | None) -> str | None:
+    """Why Bedrock refused a call: ``account``, ``marketplace``, ``scp``, ``iam``,
+    ``other``, or None when there is no exception to read.
+
+    Every one of these is a 403 AccessDeniedException, but only ``iam`` is
+    fixed by the caller's policy. ``account`` (the model is not enabled for
+    the AWS account) needs AWS Support; ``marketplace`` (the model's
+    subscription failed, e.g. INVALID_PAYMENT_INSTRUMENT) needs billing fixed;
+    ``scp`` needs the Organizations admin. An unrecognised denial is
+    ``other`` so it is not mistaken for an IAM problem.
+    """
+    if exc is None:
+        return None
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        text = str(current).lower()
+        if "not available for this account" in text:
+            return "account"
+        if "marketplace subscription" in text or "payment instrument" in text:
+            return "marketplace"
+        if "service control policy" in text:
+            return "scp"
+        if "not authorized to perform" in text:
+            return "iam"
+        current = current.__cause__ or current.__context__
+    return "other"
 
 
 def _bedrock_is_openai(provider: str, model_name: str | None) -> bool:
@@ -1675,11 +1724,10 @@ def _bedrock_additional_model_request_fields(
     if _bedrock_is_openai(provider, model_name):
         if _bedrock_is_gpt_oss(model_name):
             effort = _BEDROCK_GPT_OSS_EFFORT_MAP.get(effort_input, effort_input)
-        else:
-            # GPT-5.6 / GPT-6 Converse models: pass UI effort through.
-            # ``none`` is already floored to low above.
-            effort = effort_input
-        return {"reasoning_effort": effort}
+            return {"reasoning_effort": effort}
+        # GPT-5.x / GPT-6 take the Responses-style nested object and reject a
+        # flat ``reasoning_effort`` with 400 unknown_parameter.
+        return {"reasoning": {"effort": effort_input}}
 
     if provider == LLMProvider.ANTHROPIC.value or (
         model_name and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
@@ -1762,7 +1810,7 @@ def _bedrock_temperature(
         and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
     )
 
-    if _bedrock_is_openai_gpt(model_name):
+    if bedrock_is_openai_gpt(model_name):
         return None
 
     if is_anthropic and not _anthropic_supports_sampling_params(model_name):
