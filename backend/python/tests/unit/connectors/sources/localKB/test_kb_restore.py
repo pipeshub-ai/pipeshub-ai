@@ -281,6 +281,18 @@ class TestWhatComesBack:
         assert [r.id for r in reindexed] == ["r1"]
         mock_processor.restore_trashed_records.assert_not_called()
 
+    async def test_a_retry_queues_a_file_read_without_a_key(self, svc, mock_processor) -> None:
+        """Arango's get_document returns the generic id and no _key."""
+        doc = _doc("r1", deleted=False, indexingStatus=ProgressStatus.NOT_STARTED.value, **{RESTORED_AT_FIELD: 1700})
+        doc["id"] = doc.pop("_key")
+        _batch(svc, doc, [])
+
+        result = await svc.restore_record("r1", "u1", ORG)
+
+        assert result["success"] is True, result
+        (reindexed,) = mock_processor.reindex_existing_records.await_args.args
+        assert [r.id for r in reindexed] == ["r1"]
+
     @pytest.mark.parametrize("fields, reembeds", [
         ({"virtualRecordId": "vr-1", "hasIndexedCopy": True}, True),
         ({"virtualRecordId": "vr-1"}, False),
