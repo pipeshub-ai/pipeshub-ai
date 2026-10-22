@@ -40,6 +40,11 @@ def _make_event_processor():
     sink_orchestrator.persist_named_entities = AsyncMock()
     sink_orchestrator.blob_storage = MagicMock()
     sink_orchestrator.blob_storage.apply = AsyncMock()
+
+    async def _write_blob(ctx: object) -> None:
+        await sink_orchestrator.blob_storage.apply(ctx)
+
+    sink_orchestrator.write_blob = _write_blob
     sink_orchestrator.vector_store = MagicMock()
     sink_orchestrator.vector_store.index_record_summary = AsyncMock()
 

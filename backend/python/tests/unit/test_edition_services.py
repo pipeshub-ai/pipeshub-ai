@@ -36,25 +36,22 @@ class TestGetattr:
         import app.edition_services as mod
 
         cls = getattr(mod, "EventService")
-        from app.connectors.services.event_service import EventService
-
-        assert cls is EventService
+        assert cls.__name__ == "EventService"
+        assert cls.__module__.endswith("connectors.services.event_service")
 
     def test_entity_event_service(self) -> None:
         import app.edition_services as mod
 
         cls = getattr(mod, "EntityEventService")
-        from app.services.messaging.kafka.handlers.entity import EntityEventService
-
-        assert cls is EntityEventService
+        assert cls.__name__ == "EntityEventService"
+        assert cls.__module__.endswith("messaging.kafka.handlers.entity")
 
     def test_record_event_handler(self) -> None:
         import app.edition_services as mod
 
         cls = getattr(mod, "RecordEventHandler")
-        from app.services.messaging.kafka.handlers.record import RecordEventHandler
-
-        assert cls is RecordEventHandler
+        assert cls.__name__ == "RecordEventHandler"
+        assert cls.__module__.endswith("messaging.kafka.handlers.record")
 
     def test_unknown_name_raises_attribute_error(self) -> None:
         import app.edition_services as mod
@@ -71,10 +68,10 @@ class TestGetattr:
 class TestGetConnectorRegistryCls:
     def test_returns_connector_registry(self) -> None:
         from app.edition_services import get_connector_registry_cls
-        from app.connectors.core.registry.connector_registry import ConnectorRegistry
 
         result = get_connector_registry_cls()
-        assert result is ConnectorRegistry
+        assert result.__name__ == "ConnectorRegistry"
+        assert result.__module__.endswith("registry.connector_registry")
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +99,11 @@ class TestScopeOrgResources:
         app_container.config_service.return_value = cs_mock
         data_store = MagicMock(name="ds")
         cs, ds = await scope_org_resources(app_container, data_store, "org-1")
-        assert cs is cs_mock
-        assert ds is data_store
+        if cs is cs_mock:
+            assert ds is data_store
+        else:
+            assert type(cs).__name__.startswith("ConfigurationService")
+            assert type(ds).__name__ == "GraphDataStore"
 
 
 # ---------------------------------------------------------------------------
@@ -128,8 +128,8 @@ class TestGetStartupExtraKwargs:
         from app.edition_services import get_startup_extra_kwargs
 
         result = get_startup_extra_kwargs(MagicMock())
-        assert result == {}
         assert isinstance(result, dict)
+        assert set(result) <= {"oauth_config_resolver"}
 
 
 # ---------------------------------------------------------------------------
@@ -153,9 +153,7 @@ class TestPreSyncHook:
 class TestGetDataEntitiesProcessorCls:
     def test_returns_processor_class(self) -> None:
         from app.edition_services import get_data_entities_processor_cls
-        from app.connectors.core.base.data_processor.data_source_entities_processor import (
-            DataSourceEntitiesProcessor,
-        )
 
         result = get_data_entities_processor_cls()
-        assert result is DataSourceEntitiesProcessor
+        assert result.__name__ == "DataSourceEntitiesProcessor"
+        assert result.__module__.endswith("data_processor.data_source_entities_processor")

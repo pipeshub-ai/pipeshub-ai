@@ -31,6 +31,11 @@ def _sink_mock() -> MagicMock:
     sink = MagicMock()
     sink.extract_named_entities = AsyncMock(return_value=MagicMock(entities=[]))
     sink.persist_named_entities = AsyncMock()
+
+    async def _write_blob(ctx: object) -> None:
+        await sink.blob_storage.apply(ctx)
+
+    sink.write_blob = _write_blob
     return sink
 
 

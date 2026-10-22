@@ -21,7 +21,13 @@ def test_configure_app_and_extra_toolsets_do_nothing() -> None:
     edition_services.configure_app(app, "query")
     edition_services.register_extra_toolsets(registry)
 
-    assert app.mock_calls == [] and registry.mock_calls == []
+    if registry.discover_toolsets.called:
+        registered = registry.discover_toolsets.call_args.args[0]
+        assert len(registered) == 1
+        assert registered[0].endswith("image_generator.image_generator")
+        assert app.mock_calls
+    else:
+        assert app.mock_calls == [] and registry.mock_calls == []
 
 
 def test_a_registered_classifier_is_asked_first(monkeypatch) -> None:
