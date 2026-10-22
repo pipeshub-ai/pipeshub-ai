@@ -2,6 +2,8 @@
 Data Collection on: nothing may be recorded that the admin cannot see or stop."""
 
 import asyncio
+from collections.abc import Iterator
+from typing import NoReturn
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,7 +16,7 @@ from app.telemetry.pusher import MetricsPusher
 
 
 @pytest.fixture(autouse=True)
-def _consent_back_on():
+def _consent_back_on() -> Iterator[None]:
     yield
     flag.set_collection_consent(True)
     event_buffer.drain()
@@ -92,7 +94,7 @@ async def test_requests_are_recorded_once_consent_is_on(monkeypatch) -> None:
 
 
 async def _one_tick(pusher: MetricsPusher) -> None:
-    async def stop(_seconds):
+    async def stop(_seconds: float) -> NoReturn:
         raise asyncio.CancelledError
 
     with patch("app.telemetry.pusher.asyncio.sleep", stop), pytest.raises(asyncio.CancelledError):
@@ -137,7 +139,7 @@ async def test_consent_is_read_every_few_seconds_not_once_per_push_interval() ->
     pusher = _pusher("true")
     slept: list[float] = []
 
-    async def record_sleep(seconds):
+    async def record_sleep(seconds: float) -> NoReturn:
         slept.append(seconds)
         raise asyncio.CancelledError
 
