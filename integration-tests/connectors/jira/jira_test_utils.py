@@ -873,12 +873,14 @@ async def count_visible_jira_projects(datasource: JiraDataSource) -> int:
             raise RuntimeError(f"search_projects failed: HTTP {resp.status} startAt={start_at}")
         data = resp.json() or {}
         batch = data.get("values") or []
-        total += len(batch)
-        # As the connector pages it: isLast decides; a short page is the end only without it.
-        is_last = data.get("isLast")
-        if not batch or is_last or (is_last is None and len(batch) < 50):
+        if not batch:
             return total
+        total += len(batch)
         start_at += len(batch)
+        # Same stop rule as the connector's _paginate_project_search, so the count is what it syncs.
+        listed = data.get("total", 0)
+        if data.get("isLast", False) or (listed > 0 and start_at >= listed):
+            return total
 
 
 async def search_issues_jql(

@@ -4721,14 +4721,13 @@ class DataSourceEntitiesProcessor:
     async def withdraw_app_user_access(self, connector_id: str, users: list[AppUser]) -> None:
         """Remove the user-app relation of stored app users (``get_all_app_users``, so each id is
         the user's node). Without it no grant of the connector reaches the user."""
-        async with self.data_store_provider.transaction() as tx_store:
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             for user_id in {u.id for u in users if u.id}:
                 await tx_store.delete_edge(
                     user_id, CollectionNames.USERS.value,
                     connector_id, CollectionNames.APPS.value,
                     CollectionNames.USER_APP_RELATION.value,
                 )
-        await self._access_changed([connector_id])
         self.logger.info(f"Withdrew connector {connector_id} from {len(users)} user(s) no longer eligible at the source")
 
     @retry_on_deadlock()

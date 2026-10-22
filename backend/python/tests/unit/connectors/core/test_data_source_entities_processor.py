@@ -200,6 +200,27 @@ class TestPlaceholdersAreRestricted:
         )
 
     @pytest.mark.asyncio
+    async def test_withdraw_drops_the_access_cache_when_a_later_delete_fails(self) -> None:
+        # Without explicit transactions the first delete has already committed.
+        from app.config.constants.arangodb import Connectors
+        from app.models.entities import AppUser
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.delete_edge = AsyncMock(side_effect=[None, RuntimeError("boom")])
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc._access_changed = AsyncMock()
+        users = [
+            AppUser(id=f"node-{i}", app_name=Connectors.JIRA, connector_id="c", source_user_id=str(i),
+                    email=f"{i}@x.com", full_name=str(i))
+            for i in (1, 2)
+        ]
+
+        with pytest.raises(RuntimeError):
+            await proc.withdraw_app_user_access("conn-1", users)
+
+        proc._access_changed.assert_awaited_once_with({"conn-1"})
+
+    @pytest.mark.asyncio
     async def test_a_placeholder_parent_group_is_restricted(self) -> None:
         from app.config.constants.arangodb import AccessRule
         from app.models.entities import RecordGroup, RecordGroupType
