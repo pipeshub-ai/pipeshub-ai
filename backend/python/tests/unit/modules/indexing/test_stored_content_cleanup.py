@@ -202,6 +202,26 @@ class TestPipelineUsesTheStorageStep:
         pipeline.graph_provider.delete_nodes.assert_awaited_once_with(keys=["vr-1"], collection=MAPPING)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_storage_step", [True, False])
+    async def test_a_forgotten_virtual_record_loses_its_stage_states(self, with_storage_step):
+        stored = AsyncMock() if with_storage_step else None
+        if stored is not None:
+            stored.release_virtual_records = AsyncMock(return_value=[])
+        pipeline = self._pipeline(stored)
+
+        await pipeline._forget_virtual_record_mappings(["vr-1", "vr-2"], org_id="org-1")
+
+        pipeline.graph_provider.stage_states_delete_for_virtual_records.assert_awaited_once_with(["vr-1", "vr-2"])
+
+    @pytest.mark.asyncio
+    async def test_a_stage_state_failure_still_releases_the_content_and_row(self):
+        pipeline = self._pipeline(None)
+        pipeline.graph_provider.stage_states_delete_for_virtual_records.side_effect = RuntimeError("down")
+
+        assert await pipeline._forget_virtual_record_mappings(["vr-1"]) == []
+        pipeline.graph_provider.delete_nodes.assert_awaited_once_with(keys=["vr-1"], collection=MAPPING)
+
+    @pytest.mark.asyncio
     async def test_uploads_cannot_be_purged_without_the_storage_step(self):
         pipeline = self._pipeline(None)
 

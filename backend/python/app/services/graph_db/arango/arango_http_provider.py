@@ -600,8 +600,13 @@ _PURGE_WALK_FIELDS = ("orgId", "deletedAtTimestamp", "_key")
 _PURGE_LOCK_TIMEOUT_SECONDS = 30
 
 
-# The sweeper scans stage states by status and age; the coordinator reads one revision.
-_STAGE_STATE_INDEXES: tuple[tuple[str, ...], ...] = (("status", "updatedAtMs"), ("virtualRecordId", "rev"))
+# The sweeper scans stage states by status and age; the coordinator reads one revision;
+# a connector's delete removes its stage states by connectorId.
+_STAGE_STATE_INDEXES: tuple[tuple[str, ...], ...] = (
+    ("status", "updatedAtMs"),
+    ("virtualRecordId", "rev"),
+    ("connectorId",),
+)
 
 
 class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
@@ -2651,6 +2656,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {"statuses": statuses, "before": updated_before_ms, "limit": limit},
         )
         return [self._stage_doc_from_arango(row) for row in rows]
+
+    @override
+    async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> int:
+        ids = sorted({vrid for vrid in virtual_record_ids if vrid})
+        if not ids:
+            return 0
+        rows = await self._stage_aql(
+            """
+            FOR doc IN @@collection
+                FILTER doc.virtualRecordId IN @ids
+                REMOVE doc IN @@collection
+                RETURN 1
+            """,
+            {"ids": ids},
+        )
+        return len(rows)
 
     @override
     async def compare_and_set_record_fields(
@@ -10313,6 +10334,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 CollectionNames.ROLES.value,
                 CollectionNames.GROUPS.value,
                 CollectionNames.SYNC_POINTS.value,
+                CollectionNames.STAGE_STATES.value,
                 CollectionNames.FILES.value,
                 CollectionNames.MAILS.value,
                 CollectionNames.WEBPAGES.value,
@@ -10446,6 +10468,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if not sync_success:
                     raise Exception(
                         "CRITICAL: Failed to delete sync points. Transaction will be rolled back."
+                    )
+
+                # Stage states hang off no edge, so nothing above reaches them.
+                _, stages_success = await self._delete_nodes_by_connector_id(
+                    transaction,
+                    connector_id,
+                    CollectionNames.STAGE_STATES.value
+                )
+                if not stages_success:
+                    raise Exception(
+                        "CRITICAL: Failed to delete pipeline stage states. Transaction will be rolled back."
                     )
 
                 # Step 13: Delete the app itself (CRITICAL - must succeed completely)

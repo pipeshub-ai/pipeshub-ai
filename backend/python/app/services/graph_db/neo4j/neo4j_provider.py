@@ -527,10 +527,12 @@ def _purge_walk_query(hint: str) -> str:
     """
 
 
-# The sweeper scans stage states by status and age; the coordinator reads one revision.
+# The sweeper scans stage states by status and age; the coordinator reads one revision;
+# a connector's delete removes its stage states by connectorId.
 _STAGE_STATE_INDEXES = (
     "CREATE INDEX stage_state_status_updated IF NOT EXISTS FOR (n:StageState) ON (n.status, n.updatedAtMs)",
     "CREATE INDEX stage_state_revision IF NOT EXISTS FOR (n:StageState) ON (n.virtualRecordId, n.rev)",
+    "CREATE INDEX stage_state_connector IF NOT EXISTS FOR (n:StageState) ON (n.connectorId)",
 )
 
 
@@ -9849,6 +9851,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 CollectionNames.ROLES.value,
                 CollectionNames.GROUPS.value,
                 CollectionNames.SYNC_POINTS.value,
+                CollectionNames.STAGE_STATES.value,
                 CollectionNames.FILES.value,
                 CollectionNames.MAILS.value,
                 CollectionNames.WEBPAGES.value,
@@ -9914,6 +9917,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 if not sync_success:
                     raise Exception("CRITICAL: Failed to delete sync points.")
+
+                # Stage states hang off no edge, so nothing above reaches them.
+                _, stages_success = await self._delete_nodes_by_connector_id(
+                    transaction,
+                    connector_id,
+                    CollectionNames.STAGE_STATES.value
+                )
+                if not stages_success:
+                    raise Exception("CRITICAL: Failed to delete pipeline stage states.")
 
                 # User -> User link is not attached to any node deleted above
                 await self.remove_authenticated_as(connector_id, transaction=transaction)
@@ -13998,6 +14010,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {"statuses": statuses, "before": updated_before_ms, "limit": limit},
         )
         return [dict(row["doc"]) for row in rows]
+
+    @override
+    async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> int:
+        ids = sorted({vrid for vrid in virtual_record_ids if vrid})
+        if not ids:
+            return 0
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        # The rev predicate lets the planner use the (virtualRecordId, rev) index.
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (n:{label})
+            WHERE n.virtualRecordId IN $ids AND n.rev IS NOT NULL
+            DETACH DELETE n
+            RETURN count(n) AS deleted
+            """,
+            {"ids": ids},
+        )
+        return int(rows[0]["deleted"]) if rows else 0
 
     @override
     async def compare_and_set_record_fields(

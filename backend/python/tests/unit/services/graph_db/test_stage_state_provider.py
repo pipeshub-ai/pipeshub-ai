@@ -186,3 +186,90 @@ class TestStageStateSchema:
         properties = set(stage_state_schema["rule"]["properties"])
         assert properties == aliases - {"key"}
         assert set(stage_state_schema["rule"]["required"]) <= properties
+
+
+class TestDeletingTheStageStatesOfVirtualRecords:
+    @pytest.mark.asyncio
+    async def test_arango_removes_every_revision_in_one_statement(self) -> None:
+        provider = _arango([1, 1, 1])
+        assert await provider.stage_states_delete_for_virtual_records(["vr-2", "vr-1", "vr-2", ""]) == 3
+        query = _query(provider.http_client.execute_aql)
+        assert "FILTER doc.virtualRecordId IN @ids" in query and "REMOVE doc IN @@collection" in query
+        assert "rev" not in query
+        bind = provider.http_client.execute_aql.await_args.args[1]
+        assert bind["ids"] == ["vr-1", "vr-2"] and bind["@collection"] == "stageStates"
+
+    @pytest.mark.asyncio
+    async def test_neo4j_removes_every_revision_in_one_statement(self) -> None:
+        provider = _neo4j([{"deleted": 6}])
+        assert await provider.stage_states_delete_for_virtual_records(["vr-2", "vr-1"]) == 6
+        query = _query(provider.client.execute_query)
+        assert "MATCH (n:StageState) WHERE n.virtualRecordId IN $ids AND n.rev IS NOT NULL DETACH DELETE n" in query
+        assert provider.client.execute_query.await_args.kwargs["parameters"] == {"ids": ["vr-1", "vr-2"]}
+
+    @pytest.mark.asyncio
+    async def test_no_virtual_record_is_no_query(self) -> None:
+        arango, neo4j = _arango(), _neo4j()
+        assert await arango.stage_states_delete_for_virtual_records([""]) == 0
+        assert await neo4j.stage_states_delete_for_virtual_records([]) == 0
+        arango.http_client.execute_aql.assert_not_awaited()
+        neo4j.client.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_outage_raises(self) -> None:
+        provider = _arango(side_effect=ArangoQueryError("Query failed", 503, "unavailable"))
+        with pytest.raises(ArangoQueryError):
+            await provider.stage_states_delete_for_virtual_records(["vr-1"])
+
+
+def _connector_delete_ready(provider: ArangoHTTPProvider | Neo4jProvider, *, stages_ok: bool = True) -> None:
+    """Stub every step of a connector delete but the stage states, which are what is checked."""
+    provider.get_document = AsyncMock(return_value={"_key": "c1", "type": "Drive"})
+    provider._collect_connector_entities = AsyncMock(return_value={
+        "record_keys": [], "record_ids": [], "virtual_record_ids": [], "record_group_keys": [],
+        "role_keys": [], "group_keys": [], "all_node_ids": [],
+    })
+    provider._get_all_edge_collections = AsyncMock(return_value=["permission"])
+    provider._collect_isoftype_targets = AsyncMock(return_value=([], True))
+    provider._delete_edges_by_connector_id = AsyncMock(return_value=(0, []))
+    provider._delete_isoftype_targets_from_collected = AsyncMock(return_value=(0, []))
+    provider._delete_nodes_by_keys = AsyncMock(return_value=(1, 0))
+    provider.remove_authenticated_as = AsyncMock()
+    provider.kh_scope_forget = AsyncMock()
+
+    async def by_connector(transaction: str, connector_id: str, collection: str) -> tuple[int, bool]:
+        return (3, stages_ok or collection != "stageStates")
+
+    provider._delete_nodes_by_connector_id = AsyncMock(side_effect=by_connector)
+    provider.begin_transaction = AsyncMock(return_value="txn1")
+    provider.commit_transaction = AsyncMock()
+    provider.rollback_transaction = AsyncMock()
+
+
+def _providers() -> list[ArangoHTTPProvider | Neo4jProvider]:
+    return [_arango(), _neo4j()]
+
+
+class TestAConnectorDeleteTakesItsStageStates:
+    @pytest.mark.parametrize("provider", _providers(), ids=["arango", "neo4j"])
+    @pytest.mark.asyncio
+    async def test_its_stage_states_go_in_the_delete_transaction(self, provider) -> None:
+        _connector_delete_ready(provider)
+
+        result = await provider.delete_connector_instance("c1", "org1")
+
+        assert result["success"] is True
+        provider._delete_nodes_by_connector_id.assert_any_await("txn1", "c1", "stageStates")
+        assert "stageStates" in provider.begin_transaction.await_args.kwargs["write"]
+        provider.commit_transaction.assert_awaited_once_with("txn1")
+
+    @pytest.mark.parametrize("provider", _providers(), ids=["arango", "neo4j"])
+    @pytest.mark.asyncio
+    async def test_a_failed_stage_state_delete_rolls_the_delete_back(self, provider) -> None:
+        _connector_delete_ready(provider, stages_ok=False)
+
+        result = await provider.delete_connector_instance("c1", "org1")
+
+        assert result["success"] is False
+        provider.rollback_transaction.assert_awaited_once_with("txn1")
+        provider.commit_transaction.assert_not_awaited()
