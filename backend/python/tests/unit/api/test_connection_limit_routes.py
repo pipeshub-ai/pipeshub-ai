@@ -201,8 +201,8 @@ class TestBrowsing:
                         navigator: MagicMock | None = None) -> dict:
         catalog = MagicMock(connector_ids=MagicMock(return_value=apps or ["app-in", "app-out"]), connectors=[])
         with patch(f"{ROUTER}.ConnectorCatalog.build", AsyncMock(return_value=catalog)), \
-             patch(f"{ROUTER}.GraphNavigator", navigator or MagicMock()) as navigator:
-            navigator.return_value.navigate = AsyncMock(return_value=view or NavigationView(
+             patch(f"{ROUTER}.GraphNavigator", navigator or MagicMock()) as patched:
+            patched.return_value.navigate = AsyncMock(return_value=view or NavigationView(
                 current=None, breadcrumbs=[], related=[], pagination=None, web_url=None,
                 indexing_status=None, connector=None,
                 rows=[
