@@ -203,7 +203,7 @@ class TestPipelineUsesTheStorageStep:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("with_storage_step", [True, False])
-    async def test_a_forgotten_virtual_record_loses_its_stage_states(self, with_storage_step):
+    async def test_a_forgotten_virtual_record_loses_its_stage_states(self, with_storage_step: bool) -> None:
         stored = AsyncMock() if with_storage_step else None
         if stored is not None:
             stored.release_virtual_records = AsyncMock(return_value=[])
@@ -214,7 +214,7 @@ class TestPipelineUsesTheStorageStep:
         pipeline.graph_provider.stage_states_delete_for_virtual_records.assert_awaited_once_with(["vr-1", "vr-2"])
 
     @pytest.mark.asyncio
-    async def test_a_stage_state_failure_still_releases_the_content_and_row(self):
+    async def test_a_stage_state_failure_still_releases_the_content_and_row(self) -> None:
         pipeline = self._pipeline(None)
         pipeline.graph_provider.stage_states_delete_for_virtual_records.side_effect = RuntimeError("down")
 
