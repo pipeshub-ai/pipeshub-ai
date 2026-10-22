@@ -1,5 +1,8 @@
 import type { QueryModeConfig } from './types';
 
+/** Fired on `window` when the agents a person can use change outside the sidebar's list (for example one created from a chat): the list reloads. */
+export const AGENTS_CHANGED_EVENT = 'pipeshub:agents-changed';
+
 // ── LLM Model Metadata Maps ──────────────────────────────────────────
 
 /**

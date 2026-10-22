@@ -12,6 +12,8 @@ type RunStop = (reason: RunStopReason) => Promise<void>;
 const stops = new Set<RunStop>();
 const stopsByRunId = new Map<string, RunStop>();
 let shuttingDown = false;
+// Set once `stopAllRuns` ran: a run that registers later (it passed the shutdown check just before) is stopped too.
+let stoppedAll = false;
 let drained: (() => void) | undefined;
 
 /** True once a shutdown began: no new run may start here. */
@@ -31,6 +33,8 @@ export const refuseRunWhileShuttingDown = (): void => {
 export const trackRun = (stop: RunStop, runId?: string): (() => void) => {
   stops.add(stop);
   if (runId !== undefined) stopsByRunId.set(runId, stop);
+  // Next tick: the caller finishes registering first, as `stopAllRuns` would have found it.
+  if (stoppedAll) setImmediate(() => void stop('shutdown'));
   return () => {
     stops.delete(stop);
     if (runId !== undefined) stopsByRunId.delete(runId);
@@ -71,6 +75,7 @@ export const drainRuns = async (ms: number): Promise<void> => {
 
 /** Stops every run still going and waits at most `ms` for their saves; returns how many there were. */
 export const stopAllRuns = async (ms: number): Promise<number> => {
+  stoppedAll = true;
   const running = [...stops];
   if (running.length > 0) {
     await atMost(
@@ -86,5 +91,6 @@ export const resetActiveRunsForTests = (): void => {
   stops.clear();
   stopsByRunId.clear();
   shuttingDown = false;
+  stoppedAll = false;
   drained = undefined;
 };

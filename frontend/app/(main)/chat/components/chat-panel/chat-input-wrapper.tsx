@@ -156,7 +156,7 @@ export function ChatInputWrapper() {
   ) => {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
-    const store = useChatStore.getState();
+    let store = useChatStore.getState();
 
     // Search mode: direct API call, no slots/runtime (disabled for agent-scoped chat)
     // Attachments are not supported in search mode — silently ignored.
@@ -170,14 +170,16 @@ export function ChatInputWrapper() {
     // `false` tells the composer to keep the draft.
     if (handled === 'keep') return false;
     if (handled) return;
+    // The extension may have waited (a confirm dialog): decide on the chat as it is now.
+    store = useChatStore.getState();
 
     // ── Chat mode ──
     // Block a second send while a run is in flight, but allow Enter after
     // Stop (`stopping`) so a follow-up can start with a new runId before
-    // the old run's grace timer fires.
+    // the old run's grace timer fires. `false` keeps the refused text in the composer.
     const active = store.activeSlotId ? store.slots[store.activeSlotId] : undefined;
     if (active?.isStreaming && !active.stopping) {
-      return;
+      return false;
     }
     if (active?.remoteRunInProgress) {
       showRemoteRunInProgressToast();

@@ -158,6 +158,9 @@ const SERVER_KEEP_ALIVE_TIMEOUT_MS = 65_000;
 const DEFAULT_SHUTDOWN_DRAIN_MS = 8_000;
 // Answers still running after the drain are stopped, saving what they have, within this.
 const RUN_STOP_MS = 5_000;
+// A schedule-repair pass gets at most this before the drain starts (main's cap): with Helm's 240s drain, waiting
+// a whole drain for it as well would run past the 300s grace period.
+const SCHEDULE_REPAIR_WAIT_MS = 8_000;
 const SHUTDOWN_IDLE_SWEEP_MS = 50;
 
 const shutdownDrainMs = (): number => {
@@ -1028,13 +1031,16 @@ export class Application {
       const drainMs = shutdownDrainMs();
       if (this.scheduleRepairTimer) clearInterval(this.scheduleRepairTimer);
       // A pass still running calls the scheduler: let it end before its services are disposed, but
-      // never hold the shutdown longer than the request drain does.
+      // never hold the shutdown longer than the request drain does, nor than main's cap.
       if (this.scheduleRepairPass) {
         let waited: NodeJS.Timeout | undefined;
         await Promise.race([
           this.scheduleRepairPass,
           new Promise<void>((resolve) => {
-            waited = setTimeout(resolve, drainMs);
+            waited = setTimeout(
+              resolve,
+              Math.min(drainMs, SCHEDULE_REPAIR_WAIT_MS),
+            );
           }),
         ]).finally(() => clearTimeout(waited));
       }

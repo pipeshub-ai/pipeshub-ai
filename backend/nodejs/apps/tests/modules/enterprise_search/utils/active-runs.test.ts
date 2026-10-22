@@ -112,6 +112,26 @@ describe('active runs', () => {
     })
   })
 
+  describe('a run that registers after the stop (F13)', () => {
+    it('is stopped as a shutdown on the next tick: it passed the check just before the drain began', async () => {
+      await drainRuns(10)
+      expect(await stopAllRuns(10)).to.equal(0)
+      const stop = sinon.stub().resolves()
+      trackRun(stop, 'late-run')
+      expect(stop.called, 'not while it is still registering').to.equal(false)
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(stop.calledOnceWithExactly('shutdown')).to.equal(true)
+    })
+
+    it('is left alone while no shutdown stopped the runs', async () => {
+      await drainRuns(10)
+      const stop = sinon.stub().resolves()
+      trackRun(stop)
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(stop.called).to.equal(false)
+    })
+  })
+
   describe('stop one run', () => {
     it('stops only the run with that id, as a stop, and waits for its save', async () => {
       let saved = false

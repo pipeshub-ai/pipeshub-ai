@@ -1094,6 +1094,21 @@ describe('Application', () => {
       expect(mockLogger.warn.calledWithMatch('Stopped answers still running after the drain', { stopped: 1, drainMs: 30 })).to.be.true;
     });
 
+    it('waits at most 8 s for a schedule-repair pass, however long the drain (F14: Helm drains 240 s of a 300 s grace)', async () => {
+      (app as any).notificationContainer = new Container();
+      process.env.SHUTDOWN_DRAIN_MS = '240000';
+      (app as any).scheduleRepairPass = new Promise<void>(() => undefined);
+      const clock = sandbox.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      let done = false;
+      const stopping = app.stop().then(() => { done = true; });
+      await clock.tickAsync(7_999);
+      expect(done, 'still waiting for the pass').to.equal(false);
+      await clock.tickAsync(1);
+      await stopping;
+      expect(done).to.equal(true);
+      expect(isShuttingDown()).to.equal(true);
+    });
+
     it('does not wait for the drain when no answer is running', async () => {
       (app as any).notificationContainer = new Container();
       process.env.SHUTDOWN_DRAIN_MS = '60000';

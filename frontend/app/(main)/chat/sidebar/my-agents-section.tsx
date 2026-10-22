@@ -17,6 +17,7 @@ import { SidebarItem } from './sidebar-item';
 import { AgentSidebarListRow, useUserPermission, usePermissionDeniedDialog } from '@/config';
 import { ChatItemSkeleton } from './chat-section-element';
 import {
+  AGENTS_CHANGED_EVENT,
   MAX_VISIBLE_AGENTS_IN_SIDEBAR,
   SIDEBAR_AGENTS_PREVIEW_FETCH_LIMIT,
 } from '../constants';
@@ -71,6 +72,9 @@ export const MyAgentsSection = React.memo(function MyAgentsSection() {
 
   useEffect(() => {
     load();
+    const reload = () => void load();
+    window.addEventListener(AGENTS_CHANGED_EVENT, reload);
+    return () => window.removeEventListener(AGENTS_CHANGED_EVENT, reload);
   }, [load]);
 
   const visible = agents.slice(0, MAX_VISIBLE_AGENTS_IN_SIDEBAR);

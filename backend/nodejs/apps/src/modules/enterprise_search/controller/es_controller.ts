@@ -5604,25 +5604,28 @@ export const updateAgentConversationTitle = async (
       timestamp: new Date().toISOString(),
     });
 
-    const conversation = await ChatSession.findOne({
-      _id: conversationGrantOf(req).session._id,
-      orgId,
-      agentKey,
-      isDeleted: false,
-      ...ONLY_AGENT,
-    });
-
-    if (!conversation) {
-      throw new NotFoundError('Agent conversation not found');
-    }
-
     const title = req.body.title?.trim();
     if (!title) {
       throw new BadRequestError('Title is required and cannot be empty');
     }
 
-    conversation.title = title;
-    await conversation.save();
+    // One `$set`: a load-and-save would write back the defaults Mongoose filled in on load (`rev`, `aclVersion`)
+    // over a concurrent bump.
+    const conversation = await ChatSession.findOneAndUpdate(
+      {
+        _id: conversationGrantOf(req).session._id,
+        orgId,
+        agentKey,
+        isDeleted: false,
+        ...ONLY_AGENT,
+      },
+      { $set: { title } },
+      { new: true },
+    );
+
+    if (!conversation) {
+      throw new NotFoundError('Agent conversation not found');
+    }
 
     logger.debug('Agent conversation title updated successfully', {
       requestId,

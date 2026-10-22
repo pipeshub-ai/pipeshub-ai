@@ -14535,9 +14535,10 @@ describe('Enterprise Search Controller', () => {
       expect((update.firstCall.args[0] as any).sessionType).to.equal('agent')
     })
 
-    it('updateAgentConversationTitle scopes the lookup to sessionType agent', async () => {
-      const mockConversation = createMockConversationDoc({ agentKey: 'agent-1', title: 'old title' })
-      const findOne = sinon.stub(ChatSession, 'findOne').resolves(mockConversation)
+    it('updateAgentConversationTitle scopes the lookup to sessionType agent and writes only the title', async () => {
+      const mockConversation = createMockConversationDoc({ agentKey: 'agent-1', title: 'new title' })
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      const findOne = sinon.stub(ChatSession, 'findOneAndUpdate').resolves(mockConversation)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
@@ -14549,6 +14550,8 @@ describe('Enterprise Search Controller', () => {
       await updateAgentConversationTitle(req, res, next)
 
       expect((findOne.firstCall.args[0] as any).sessionType).to.equal('agent')
+      // One `$set` of the title: a load-and-save would write `rev` / `aclVersion` defaults back (F15).
+      expect(findOne.firstCall.args[1]).to.deep.equal({ $set: { title: 'new title' } })
     })
 
     it('updateAgentFeedback scopes the session lookup to sessionType agent', async () => {
