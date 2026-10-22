@@ -5495,14 +5495,15 @@ components:
               nullable: true
               description: |
                 Revision of the record's content, 16 lowercase hex characters:
-                the start of the SHA-256 of the source file's bytes, or, when a
-                re-index works from the stored parsed content instead of the
-                source, of a digest of the parsed blocks. Identical content gives
-                the same value, and a copy whose content matches another record
-                carries that record's value. `stageStates` describes this
-                revision. Set when indexing starts; absent on records not
-                indexed since pipeline stages were introduced, and null where
-                it has been cleared.
+                the start of the SHA-256 of the content the indexer received
+                for the record. A record that reaches the end of indexing
+                without one (its content arrived on a path that did not carry
+                those bytes) gets a digest of its parsed blocks instead.
+                Identical content gives the same value, and a copy whose content
+                matches another record carries that record's value.
+                `stageStates` describes this revision. Set when indexing
+                starts; absent on records not indexed since pipeline stages
+                were introduced.
               example: "78f3f276290c9f81"
             summaryDocumentId:
               type: string
