@@ -13,6 +13,7 @@ import base64
 import itertools
 import json
 import re
+import socket
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -34,10 +35,13 @@ if TYPE_CHECKING:
     from app.models.entities import FileRecord, Record, RecordGroup
 
 WEBDAV_PREFIX = "/remote.php/dav/files/"
-ACTIVITY_PATH = "/ocs/v2.php/apps/activity/api/v2/activity/files"
+ACTIVITY_PATH = "/ocs/v2.php/apps/activity/api/v2/activity/all"
 SHARES_PATH = "/ocs/v2.php/apps/files_sharing/api/v1/shares"
 CAPABILITIES_PATH = "/ocs/v1.php/cloud/capabilities"
 USERS_PREFIX = "/ocs/v1.php/cloud/users/"
+CURRENT_USER_PATH = "/ocs/v1.php/cloud/user"
+WIPE_CHECK_PATH = "/index.php/core/wipe/check"
+WIPE_SUCCESS_PATH = "/index.php/core/wipe/success"
 
 HTTP_DATE = "%a, %d %b %Y %H:%M:%S GMT"
 
@@ -88,6 +92,11 @@ class FakeNextcloud:
 
     user: str = "alice"
     app_password: str = "Xk3p9-QmT7r-Ab2Cd-Ef4Gh-Ij5Kl"
+    # The name typed into the form, when it isn't the user id (an email or LDAP login).
+    login: Optional[str] = None
+    # Set by marking the app password for remote wipe; every request then answers 401.
+    wipe_requested: bool = False
+    wipe_confirmed: bool = False
     email: Optional[str] = "alice@example.com"
     base_path: str = ""
     nodes: dict[str, Node] = field(default_factory=dict)
@@ -98,6 +107,11 @@ class FakeNextcloud:
     faults: list[Fault] = field(default_factory=list)
     trash: dict[str, list[Node]] = field(default_factory=dict)
     search_supported: bool = True
+    redirect_downloads_to: Optional[str] = None
+    # False: the Activity app is disabled, and its endpoint answers 404 as Nextcloud does.
+    activity_enabled: bool = True
+    # What each host name resolves to: the client connects only to an address it checked.
+    dns: dict[str, str] = field(default_factory=lambda: {"cloud.example.com": "93.184.215.14"})
 
     def __post_init__(self) -> None:
         self._ids = itertools.count(100)
@@ -220,8 +234,20 @@ class FakeNextcloud:
     # ---- serving requests ----
 
     def _authorised(self, request: httpx.Request) -> bool:
-        expected = base64.b64encode(f"{self.user}:{self.app_password}".encode()).decode()
+        if self.wipe_requested:
+            return False
+        expected = base64.b64encode(f"{self.login or self.user}:{self.app_password}".encode()).decode()
         return request.headers.get("authorization") == f"Basic {expected}"
+
+    def _wipe(self, request: httpx.Request, path: str) -> httpx.Response:
+        """Nextcloud's remote wipe calls: unauthenticated, keyed by the app password in a form body."""
+        token = dict(httpx.QueryParams(request.content.decode())).get("token")
+        if not self.wipe_requested or token != self.app_password:
+            return httpx.Response(404, content=b"[]")
+        if path == WIPE_SUCCESS_PATH:
+            self.wipe_confirmed = True
+            return httpx.Response(200, content=b"[]")
+        return httpx.Response(200, content=b'{"wipe":true}')
 
     def calls(self, method: str, path_prefix: str = "") -> list[httpx.Request]:
         return [r for r in self.requests if r.method == method.upper()
@@ -241,6 +267,8 @@ class FakeNextcloud:
                 if isinstance(answer, Exception):
                     raise answer
                 return answer
+        if request.method == "POST" and path[len(self.base_path):] in (WIPE_CHECK_PATH, WIPE_SUCCESS_PATH):
+            return self._wipe(request, path[len(self.base_path):])
         if not self._authorised(request):
             return httpx.Response(401, content=b'{"message":"Current user is not logged in"}')
         if not path.startswith(self.base_path):
@@ -251,6 +279,8 @@ class FakeNextcloud:
             if request.method == "PROPFIND":
                 return self._propfind(rel, request.headers.get("depth", "1"))
             if request.method == "GET":
+                if self.redirect_downloads_to:
+                    return httpx.Response(302, headers={"location": self.redirect_downloads_to})
                 node = self.nodes.get(rel)
                 if node is None or node.is_dir:
                     return httpx.Response(404)
@@ -259,7 +289,7 @@ class FakeNextcloud:
             return self._search(request.content.decode())
         if request.method == "GET" and path == ACTIVITY_PATH:
             return self._activity(request.url.params)
-        if request.method == "GET" and path == USERS_PREFIX + self.user:
+        if request.method == "GET" and path in (USERS_PREFIX + self.user, CURRENT_USER_PATH):
             return ocs({"id": self.user, "email": self.email, "displayname": self.user.title()})
         if request.method == "GET" and path == CAPABILITIES_PATH:
             return ocs({"version": {"major": 30}, "capabilities": {}})
@@ -341,6 +371,8 @@ class FakeNextcloud:
         )
 
     def _activity(self, params: httpx.QueryParams) -> httpx.Response:
+        if not self.activity_enabled:
+            return ocs([], status=404)
         if not self.activities:
             return httpx.Response(204)
         since = int(params["since"]) if "since" in params else None
@@ -359,6 +391,12 @@ class FakeNextcloud:
         response = ocs(page)
         response.headers.update(headers)
         return response
+
+    def getaddrinfo(self, host: str, port: object, *args: object, **kwargs: object) -> list[tuple]:
+        """A stand-in for ``socket.getaddrinfo`` that answers from ``dns``."""
+        if host not in self.dns:
+            raise socket.gaierror(socket.EAI_NONAME, f"{host} not known")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (self.dns[host], port or 0))]
 
     def network(self) -> Callable[[httpx.AsyncHTTPTransport, httpx.Request], Awaitable[httpx.Response]]:
         """A stand-in for ``httpx.AsyncHTTPTransport.handle_async_request``.
@@ -405,6 +443,7 @@ class FakeRecordsDb:
         self.fail_record_scan = False
         self.messaging_producer: Any = None
         self.kept_records: list[str] = []
+        self.moves: list[str] = []
 
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
         self.kept_records.extend(record_ids)
@@ -478,6 +517,15 @@ class FakeRecordsDb:
             for p in permissions:
                 if all((p.email, p.type) != (k.email, k.type) for k in kept):
                     kept.append(p)
+
+    async def on_records_moved(self, moves: list[tuple[str, Any, list[Any]]], **_: object) -> None:
+        """Saves each record in place under its id, re-pointing its parent link, as the processor does."""
+        for _old_external_id, record, _permissions in moves:
+            if record.record_name in self.fail_write_for:
+                raise RuntimeError(f"write failed for {record.record_name}")
+        self.moves.extend(record.record_name for _, record, _ in moves)
+        for _, record, _ in moves:
+            self._upsert(record)
 
     async def on_record_content_update(self, record: FileRecord) -> None:
         self.content_updates.append(record)
@@ -596,6 +644,8 @@ class FakeStore:
 
     def __init__(self, records: FakeRecordsDb | None = None) -> None:
         self.sync_points: dict[str, dict[str, Any]] = {}
+        # The PipesHub users by user id; "creator-user-1" created the connector in these tests.
+        self.users: dict[str, dict[str, Any]] = {"creator-user-1": {"_key": "u-creator", "email": "creator@pipeshub.test"}}
         self.fail_reads = 0
         self.records = records
         self.fail_path_lookups = False
@@ -605,6 +655,9 @@ class FakeStore:
             self.fail_reads -= 1
             raise RuntimeError("database unavailable")
         return self.sync_points.get(key)
+
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> Optional[dict[str, Any]]:
+        return self.users.get(user_id)
 
     async def update_sync_point(self, key: str, data: dict[str, Any]) -> None:
         """Merges into the stored document, as Arango's UPDATE and Neo4j's ``SET +=`` do.
