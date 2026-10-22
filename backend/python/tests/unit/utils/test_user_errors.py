@@ -475,6 +475,15 @@ class TestBedrockDenialReason:
         exc = _wrapped(EmbeddingError("Dense embedding failed"), error)
         assert ue.to_user_reason(exc) == ue.to_user_reason(_stored(error))
 
+    @pytest.mark.parametrize("status", (400, 401))
+    def test_an_embedding_not_authorized_error_asks_for_access(self, status: int) -> None:
+        error = _bedrock_error(
+            "NotAuthorized", "You do not have permission to perform this action.", "InvokeModel", status=status,
+        )
+        assert ue.provider_error_code(error) == "auth_error"
+        assert ue.bedrock_access_denied_cause(error) == "iam"
+        assert ue.to_user_reason(_stored(error)) == ue._ai_messages("embedding model")["permission_denied"]
+
     def test_bedrock_throttling_while_storing_is_the_model_being_busy(self) -> None:
         error = _bedrock_error("ThrottlingException", "Too many requests", "InvokeModel", status=429)
         assert ue.to_user_reason(_stored(error)) == ue._ai_messages("embedding model")["rate_limit"]

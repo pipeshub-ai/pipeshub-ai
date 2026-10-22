@@ -174,6 +174,21 @@ def test_bedrock_iam_denial_names_the_streaming_action_too() -> None:
     assert "bedrock:InvokeModelWithResponseStream" in message
 
 
+def test_bedrock_not_authorized_400_names_the_iam_actions() -> None:
+    error = ClientError(
+        {
+            "Error": {"Code": "NotAuthorized", "Message": "You do not have permission to perform this action."},
+            "ResponseMetadata": {"HTTPStatusCode": 400},
+        },
+        "Converse",
+    )
+    code = provider_error_code(error)
+    assert code == "auth_error"
+    message = _rejected_settings_message(code, "chat model", _BEDROCK, "us.anthropic.claude-sonnet-5", error)
+    assert "bedrock:InvokeModelWithResponseStream" in message
+    assert "refused these chat model settings" not in message
+
+
 def test_bedrock_access_denied_is_classified_as_auth_error() -> None:
     assert provider_error_code(_ACCOUNT_DENIAL) == "auth_error"
 

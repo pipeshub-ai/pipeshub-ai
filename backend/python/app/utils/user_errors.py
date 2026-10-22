@@ -384,9 +384,19 @@ def bedrock_access_denied_cause(exc: BaseException | None) -> str | None:
             return "marketplace"
         if "service control policy" in text:
             return "scp"
-        if "not authorized to perform" in text:
+        if "not authorized to perform" in text or "(notauthorized)" in text:
             return "iam"
     return "other"
+
+
+def _aws_error_code(exc: BaseException) -> str | None:
+    """botocore's error code (``AccessDeniedException``, ``NotAuthorized``, ...)."""
+    if not _from(exc, ("botocore",)):
+        return None
+    response = getattr(exc, "response", None)
+    error = response.get("Error") if isinstance(response, dict) else None
+    code = error.get("Code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
 
 
 def _bad_request_code(exc: BaseException) -> str:
@@ -402,6 +412,10 @@ def _provider_code(chain: list[BaseException]) -> str:
     """
     theirs = [e for e in chain if not _ours(e)]
     for e in theirs:
+        # Bedrock documents NotAuthorized, a missing permission, as HTTP 400,
+        # which would otherwise read as a request the model could not process.
+        if _aws_error_code(e) == "NotAuthorized":
+            return "auth_error"
         status = _status_code(e)
         if status == 429:
             return "rate_limit"
