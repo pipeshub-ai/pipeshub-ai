@@ -29,7 +29,7 @@ class TestHTMLParserProtocol:
         from app.modules.parsers.html_parser.html_parser import HTMLParserProtocol
 
         class _Concrete(HTMLParserProtocol):
-            pass
+            """Inherits the Protocol's default method bodies unchanged."""
 
         assert _Concrete().extract_and_replace_images("") is None
 
