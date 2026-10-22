@@ -24332,6 +24332,7 @@ paths:
 
         The Community build answers without checking a token.
       operationId: getServiceAccountDelegationCapability
+      security: []
       responses:
         '400':
           $ref: '#/components/responses/XssRejected'
