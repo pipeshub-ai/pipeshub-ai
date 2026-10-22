@@ -27,7 +27,6 @@ describe('default chat extension (today’s chat)', () => {
     expect(ext.formatConversationTitle(undefined)).toBeUndefined();
     expect(ext.conversationFields({ access: { isOwner: false } })).toEqual({});
     expect(ext.agentStreamBodyFields(request)).toEqual({});
-    expect(ext.contentMaxWidth).toBeUndefined();
     expect(ext.slot.defaults(true)).toEqual({});
     expect(ext.slot.ownerFields()).toEqual({});
     expect(ext.slot.isRetired(slot)).toBe(false);

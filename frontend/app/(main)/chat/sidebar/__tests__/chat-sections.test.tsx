@@ -1,6 +1,6 @@
 /**
- * The sidebar's chat lists. By default they sit under a "Recents" toggle that starts closed, and "Your Chats" is split
- * by day; an edition's layout can show both lists when the page opens, with "Your Chats" as one list.
+ * The sidebar's chat lists sit under a "Recents" toggle that starts closed, with "Your Chats" split by day; an
+ * edition can leave rows out of both lists.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -24,7 +24,6 @@ vi.mock('../chat-section-element', () => ({
 
 import { chatSlots } from '@/config';
 import { useChatStore } from '@/chat/store';
-import { defaultChatSlots } from '../../chat-extension';
 import { ChatSections } from '../chat-sections';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -47,8 +46,7 @@ afterEach(() => {
 });
 
 describe('ChatSections', () => {
-  it('by default the lists sit under a closed Recents toggle, and Your Chats is split by day', () => {
-    expect(defaultChatSlots.useSidebarLayout()).toEqual({ collapsibleRecents: true, timeGroupedChats: true });
+  it('the lists sit under a closed Recents toggle, and Your Chats is split by day', () => {
     render(<ChatSections onOpenMoreChats={() => {}} />);
     expect(screen.queryByText('Shared Chats')).toBeNull();
     expect(rows()).toEqual([]);
@@ -60,15 +58,10 @@ describe('ChatSections', () => {
     expect(rows()).toEqual(['Shared plan', 'Today chat', 'Old chat']);
   });
 
-  it('a layout without the toggle shows both lists on load, Your Chats as one list with new chats first', () => {
-    vi.spyOn(chatSlots, 'useSidebarLayout').mockReturnValue({ collapsibleRecents: false, timeGroupedChats: false });
-    const slotId = useChatStore.getState().createSlot(null);
-    useChatStore.setState({ pendingConversations: { [slotId]: { slotId, title: null, isGenerating: true, createdAt: Date.now() } } });
+  it('leaves out the rows the edition hides, in both lists', () => {
+    vi.spyOn(chatSlots, 'useVisibleConversations').mockImplementation((rows) => rows.filter((row) => row.id !== 's1' && row.id !== 'c2'));
     render(<ChatSections onOpenMoreChats={() => {}} />);
-    expect(screen.queryByText('Recents')).toBeNull();
-    expect(screen.getByText('Shared Chats')).toBeTruthy();
-    expect(screen.getByText('Your Chats')).toBeTruthy();
-    expect(screen.queryByText('Today')).toBeNull();
-    expect(rows()).toEqual(['Shared plan', 'Generating', 'Today chat', 'Old chat']);
+    fireEvent.click(screen.getByText('Recents'));
+    expect(rows()).toEqual(['Today chat']);
   });
 });

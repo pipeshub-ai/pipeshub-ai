@@ -98,8 +98,6 @@ export interface ChatExtension {
   agentStreamBodyFields(request: StreamChatRequest): Record<string, unknown>;
   /** Base path of a conversation's routes; its detail, stream, regenerate and cancel calls build on it. */
   conversationPath(conversationId: string, agentId?: string | null): string;
-  /** Width of the thread and composer column. */
-  contentMaxWidth?: string;
   slot: {
     /** Fields of a fresh slot. */
     defaults(isNew: boolean): Partial<ChatSlot>;
@@ -426,14 +424,6 @@ export interface ChatRowExtension {
   interceptProjectChange(projectId: string | null): boolean;
 }
 
-/** How the chat sidebar lays out its lists of chats. */
-export interface ChatSidebarLayout {
-  /** The lists sit under a "Recents" toggle, closed when the page opens. */
-  collapsibleRecents: boolean;
-  /** "Your Chats" is split into Today, Yesterday and older. */
-  timeGroupedChats: boolean;
-}
-
 export interface ChatSlots {
   useChatAccess(slotId: string | null): ChatAccess;
   usePageEffects(slotId: string | null): void;
@@ -457,7 +447,6 @@ export interface ChatSlots {
   /** Conversations of an agent shared with the user, shown in their own section. */
   useAgentSharedConversations(rows: Conversation[]): Conversation[];
   useChatRow(opts: ChatRowOptions): ChatRowExtension;
-  useSidebarLayout(): ChatSidebarLayout;
 }
 
 function useOwnerAccess(slotId: string | null): ChatAccess {
@@ -472,8 +461,6 @@ function useLegacyShareAdapter(conversationId: string | null, agentId: string | 
     [conversationId, agentId],
   );
 }
-
-const RECENTS_LAYOUT: ChatSidebarLayout = { collapsibleRecents: true, timeGroupedChats: true };
 
 // The page's header overlay positions the share group; the default adds nothing around it.
 const NO_HEADER: ChatHeaderExtension = { render: (shareGroup) => shareGroup };
@@ -528,5 +515,4 @@ export const defaultChatSlots: ChatSlots = {
   useVisibleConversations: (rows) => rows,
   useAgentSharedConversations: (rows) => rows,
   useChatRow: ({ ownerMenu }) => ({ rightSlot: ownerMenu, dialogs: null, interceptProjectChange: () => false }),
-  useSidebarLayout: () => RECENTS_LAYOUT,
 };

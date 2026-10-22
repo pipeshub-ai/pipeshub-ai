@@ -72,9 +72,7 @@ export const ChatSections = React.memo(function ChatSections({
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
   const isMobile = useIsMobile();
 
-  const layout = chatSlots.useSidebarLayout();
   const [recentsCollapsed, setRecentsCollapsed] = useState(true);
-  const listsShown = !layout.collapsibleRecents || !recentsCollapsed;
 
   const handleNewChat = () => {
     if (!dispatch('newChat')) router.push('/chat/');
@@ -122,47 +120,45 @@ export const ChatSections = React.memo(function ChatSections({
       {/* Recents — collapsible wrapper for both Shared and Your Chats */}
       <Flex
         direction="column"
-        style={listsShown ? { flex: 1, minHeight: 0, overflow: 'hidden' } : undefined}
+        style={recentsCollapsed ? undefined : { flex: 1, minHeight: 0, overflow: 'hidden' }}
       >
         {/* Recents header with collapse toggle */}
-        {layout.collapsibleRecents && (
-          <Flex
-            align="center"
-            justify="between"
-            onClick={() => setRecentsCollapsed((c) => !c)}
+        <Flex
+          align="center"
+          justify="between"
+          onClick={() => setRecentsCollapsed((c) => !c)}
+          style={{
+            height: 32,
+            padding: '0 var(--space-3)',
+            flexShrink: 0,
+            cursor: 'pointer',
+            borderRadius: 'var(--radius-2)',
+            userSelect: 'none',
+          }}
+        >
+          <Text
             style={{
-              height: 32,
-              padding: '0 var(--space-3)',
-              flexShrink: 0,
-              cursor: 'pointer',
-              borderRadius: 'var(--radius-2)',
-              userSelect: 'none',
+              fontSize: 13,
+              fontWeight: 600,
+              color: 'var(--slate-12)',
+              lineHeight: 1,
             }}
           >
-            <Text
-              style={{
-                fontSize: 13,
-                fontWeight: 600,
-                color: 'var(--slate-12)',
-                lineHeight: 1,
-              }}
-            >
-              {t('chat.recents')}
-            </Text>
-            <MaterialIcon
-              name="chevron_right"
-              size={16}
-              color="var(--slate-11)"
-              style={{
-                transform: recentsCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
-                transition: 'transform 0.2s ease',
-                display: 'block',
-              }}
-            />
-          </Flex>
-        )}
+            {t('chat.recents')}
+          </Text>
+          <MaterialIcon
+            name="chevron_right"
+            size={16}
+            color="var(--slate-11)"
+            style={{
+              transform: recentsCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
+              transition: 'transform 0.2s ease',
+              display: 'block',
+            }}
+          />
+        </Flex>
 
-        {listsShown && (
+        {!recentsCollapsed && (
           <Flex
             direction="column"
             gap="3"
@@ -183,10 +179,10 @@ export const ChatSections = React.memo(function ChatSections({
               emptyStateText={t('chat.noSharedChats')}
             />
 
-            {/* Your Chats — time-grouped, or one list by last activity */}
+            {/* Your Chats — time-grouped */}
             <ChatSection
               title={t('chat.yourChats')}
-              {...(layout.timeGroupedChats ? { timeGroups: yourNonEmptyGroups } : { conversations: visibleYour })}
+              timeGroups={yourNonEmptyGroups}
               isLoading={isConversationsLoading}
               hasError={!!conversationsError}
               currentConversationId={currentConversationId}
