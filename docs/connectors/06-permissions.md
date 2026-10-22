@@ -121,6 +121,17 @@ A record with `parent_external_record_id` inherits from its parent record, so at
 - **Storage connectors with no per-object ACL** (S3, GCS, Azure Blob, SMB, databases) declare `APP_LEVEL`, write their groups with `inherit_permissions=True`, and write no per-record grants. In **team scope only**, they call `self.data_entities_processor.ensure_team_app_edge(connector_id)` so the org's "All" team passes the gate. In personal scope they gate the creator only; calling `ensure_team_app_edge` there opens one user's data to the whole org.
 - **Personal connectors** call `ensure_creator_user_app_relation()` so the creator passes the gate, and let records inherit up to the App. `ensure_connector_group_permission()` is legacy; do not use it.
 
+### When the source will not tell you who can read
+
+- **No members and no ACL.** Stop and ask (`04-intake-questions.md`). The hide-by-default write is the authorizing user only, as an `AppUser` plus a grant on each node, with `inherit_permissions=False` on anything you cannot prove is shared. Do not switch the connector to `APP_LEVEL` or add an `ORG` grant to make search return results. A share the source calls "org" or "anyone in the company at the source" is not the PipesHub org unless the source itself makes it org-wide for the same people.
+- **Emails that never appear.** Pseudo-groups and `migrate_group_to_user_by_external_id` are for an email the source hides now and returns later (Confluence). They do nothing for a source that has no email at all (Discord). `on_new_user_groups` skips a member with no email and logs a warning, so that member is not in the group. Ask where an id-to-email mapping comes from. Without one, do not invent addresses, and do not write those users: they cannot pass the App gate.
+- **Users that exist only on an ACL**, with no directory. Build `AppUser` from the ACL entries that carry an email. Set `is_guest=True` when the source marks them external or their domain is outside the customer's. Left at the default `False`, `on_new_app_users` adds an org membership, and once that user is active they receive every `ORG` grant.
+- **A role that is not read.** Interface-only access, `permissionLevel: none`, invite links, and `ANYONE_WITH_LINK` grant nothing. Do not map them to `USER` or `ORG`.
+- **A bitset plus allow and deny overwrites** (Discord roles, channel overwrites). Evaluate the whole set of roles the user holds, including denies. A grant per role is wrong when one role denies what another allows. `RECORD_GROUP_LEVEL` on the parent opens every nested channel and thread to that audience; Slack does this on channels, and copying it over-shares private threads. Use it only when every nested node has that audience.
+- **An effective-permission endpoint.** Prefer the list of users who can view the item over reconstructing owner, team, and super-admin rules. Ownership alone is not a grant unless the source says the owner can always view it.
+- **An activity with several parents and no ACL of its own** (a note or email on many CRM records). Do not inherit from one of those parents. Leave it `RESTRICTED`, `inherit_permissions=False`, with no grants, until you can read who may see it.
+- **Unknown content and unknown links.** The same rule as an unknown ACL. A failed property read is not an empty record. A failed association read is not `related_external_records=[]`, because that write replaces the stored links (`02-low-level-design.md`). A 200 with an empty body is that same failure. So is a 200 that returns the items with their content fields blank, such as Discord messages when the Message Content intent is missing.
+
 ## Changes after the first sync
 
 | Change | Call |
@@ -148,7 +159,7 @@ In a full sync, the first write of an existing record replaces its grants. At th
 | Pattern | Where |
 | --- | --- |
 | Wiki: `RESTRICTED` spaces inheriting from the App; pages `STRICT`, or `RESTRICTED` when they carry a read restriction | Confluence Cloud, `connectors/sources/atlassian/confluence_cloud/connector.py` (space and page builders) |
-| Storage with per-file ACLs and broken inheritance | Google Drive team, `connectors/sources/google/drive/team/drive_access.py`; Box, `connectors/sources/box/connector.py` |
+| Storage with per-file ACLs and broken inheritance | Google Drive team: ACL mapping in `connectors/sources/google/drive/team/drive_access.py`. When that read fails, `team/connector.py` calls the processor's `inheritance_when_unreadable` and keeps the stored inheritance. `note_kept_records` is the processor method for a node you did not rewrite; Jira Cloud calls it. Box, `connectors/sources/box/connector.py` |
 | Ticketing: project groups with grants from the permission scheme; projects whose scheme is unreadable held back with their stored access kept; issues inherit | Jira Cloud, `connectors/sources/atlassian/jira_cloud/connector.py` |
 | Groups before record groups before records; `ORG` grant for a public team | Linear, `connectors/sources/linear/connector.py` |
 | `APP_LEVEL`, inherit up to the App | S3, `connectors/sources/s3/base_connector.py` |

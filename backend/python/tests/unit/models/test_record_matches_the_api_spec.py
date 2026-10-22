@@ -18,6 +18,7 @@ from pathlib import Path
 import yaml
 
 from app.models.entities import Record
+from app.schema.arango.documents import record_schema
 from tests.unit.models.test_entities import _record_kwargs
 
 _REPO = Path(__file__).resolve().parents[5]
@@ -69,3 +70,56 @@ def test_the_rename_this_test_allows_is_still_real() -> None:
     assert _STORED_ONLY <= _model_record_keys(), (
         "the model no longer writes " + ", ".join(sorted(_STORED_ONLY - _model_record_keys()))
     )
+
+
+# Fields the stored record can carry that the spec does not describe yet. Each
+# one fails the response-validation tests on any record that has it, so this
+# list should only shrink; it exists so that a new field fails here instead.
+_UNDOCUMENTED_STORED_FIELDS = frozenset({
+    "definition",
+    "deleteBatchId",
+    "deleteSource",
+    "deletedAtTimestamp",
+    "duplicateReconcileAttempts",
+    "duplicateReconcileDueAt",
+    "duplicateReconcilePending",
+    "entityExtractionStatus",
+    "entityExtractionStrategy",
+    "entityExtractorVersion",
+    "lastEntityExtractionTimestamp",
+    "lastRepublishedAt",
+    "purgeAttempts",
+    "purgeLastError",
+    "rateLimitedSince",
+    "republishCount",
+    "restoredAtTimestamp",
+    "retryNotBefore",
+    "rowCount",
+    "sourceTables",
+    "trashedExternalRecordId",
+})
+
+
+def _stored_record_fields() -> set[str]:
+    """Every field the records collection accepts.
+
+    Services other than the model write fields onto a record (the indexing
+    pipeline writes `contentRev` with the status), so the model alone does not
+    cover what the API returns. The strict ArangoDB schema has to declare all
+    of them, whichever backend is running.
+    """
+    return set(record_schema["rule"]["properties"])
+
+
+def test_the_spec_knows_every_field_the_records_collection_stores() -> None:
+    missing = sorted(_stored_record_fields() - _STORED_ONLY - _UNDOCUMENTED_STORED_FIELDS - _spec_record_properties())
+    assert missing == [], (
+        "the records collection stores these but GetRecordByIdResponseSchema does "
+        "not describe them, so the response-validation tests will reject any "
+        "record that has one: " + ", ".join(missing)
+    )
+
+
+def test_the_undocumented_list_holds_only_real_gaps() -> None:
+    stale = sorted((_UNDOCUMENTED_STORED_FIELDS & _spec_record_properties()) | (_UNDOCUMENTED_STORED_FIELDS - _stored_record_fields()))
+    assert stale == [], "remove from _UNDOCUMENTED_STORED_FIELDS: " + ", ".join(stale)

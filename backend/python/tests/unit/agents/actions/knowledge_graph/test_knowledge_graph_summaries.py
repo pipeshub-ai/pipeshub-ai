@@ -479,6 +479,33 @@ class TestLookupRecord:
         mock_remember.assert_called_once_with(kg.state, ["rec-1"], names={"rec-1": "Login bug"})
 
     @pytest.mark.asyncio
+    @patch("app.utils.chat_helpers.get_record_id_shortener_if_enabled", return_value=None)
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph.render_lookup_result_with_ids", return_value=("Record ID: rec-1", ["rec-1"]))
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph.resolve_scope", new_callable=AsyncMock)
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph.RecordResolver")
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph.ConnectorCatalog.build", new_callable=AsyncMock)
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph._get_user_key", new_callable=AsyncMock, return_value="k1")
+    async def test_match_cut_by_the_byte_cap_is_not_remembered(self, mock_uk, mock_catalog_build, mock_resolver_cls,
+                                                               mock_resolve_scope, mock_render, mock_shortener) -> None:
+        catalog = MagicMock()
+        catalog.is_empty.return_value = False
+        mock_catalog_build.return_value = catalog
+        mock_resolve_scope.return_value = SimpleNamespace(app_ids=("app-1",))
+
+        resolver_instance = AsyncMock()
+        resolver_instance.resolve_many.return_value = SimpleNamespace(matches=[
+            SimpleNamespace(id="rec-1", name="Login bug"),
+            SimpleNamespace(id="rec-2", name="Cut by the cap"),
+        ])
+        mock_resolver_cls.return_value = resolver_instance
+
+        state = {"graph_provider": AsyncMock(), "org_id": "o1", "user_id": "u1"}
+        ok, _ = await self._make_kg(state=state).lookup_record(["JIRA-1", "JIRA-2"])
+        assert ok is True
+        assert state["known_record_ids"] == {"rec-1"}
+        assert state["known_record_names"] == {"rec-1": "Login bug"}
+
+    @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.ConnectorCatalog.build", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.knowledge_graph._get_user_key", new_callable=AsyncMock, return_value="k1")
     async def test_empty_catalog_no_knowledge(self, mock_uk, mock_catalog_build) -> None:

@@ -11,7 +11,10 @@ from object_store_behaviour_fakes import (
     FakeConfigService,
     FakeObjectStore,
     FakeRecordsDb,
+    Response,
     make_connector,
+    run_full_sync_task,
+    runner_graph,
 )
 
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -270,3 +273,201 @@ class TestFileExtensionsFilter:
         # on_record_deleted is the processor's one delete path (graph, vectors, blob and Mongo).
         assert set(db.deleted) == excluded | {notes_folder}
         assert {p for p, r in db.by_path().items() if r.is_file} == {path("report.pdf"), path("Makefile")}
+
+
+class TestPageWithoutContents:
+    """S3 leaves ``Contents`` out of an empty page; a truncated one is not the end of the listing."""
+
+    @staticmethod
+    def _serve_one_empty_page(connector: BaseConnector, *, token: str | None) -> None:
+        real = connector.data_source.list_objects_v2
+        served: list[bool] = []
+
+        async def list_objects_v2(**kwargs: object) -> Response:
+            if kwargs.get("ContinuationToken") == "2" and not served:
+                served.append(True)
+                data = {"IsTruncated": True, "KeyCount": 0}
+                if token is not None:
+                    data["NextContinuationToken"] = token
+                return Response(True, data)
+            return await real(**kwargs)
+
+        connector.data_source.list_objects_v2 = list_objects_v2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    async def test_an_empty_truncated_page_does_not_end_the_listing(self, connector, store, db) -> None:
+        for key in ("a.txt", "b.txt", "c.txt", "d.txt", "e.txt"):
+            store.put(key)
+        await connector.run_sync()
+        store.delete("a.txt")
+        doomed = db.by_path()[path("a.txt")].id
+
+        self._serve_one_empty_page(connector, token="2")
+        await connector.run_incremental_sync()
+
+        assert db.deleted == [doomed]
+        assert {path(k) for k in ("b.txt", "c.txt", "d.txt", "e.txt")} <= db.paths()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    async def test_a_truncated_page_without_a_token_deletes_nothing(self, connector, store, db, checkpoints) -> None:
+        for key in ("a.txt", "b.txt", "c.txt", "d.txt", "e.txt"):
+            store.put(key)
+        await connector.run_sync()
+        store.delete("a.txt")
+        saved = {k: dict(v) for k, v in checkpoints.sync_points.items()}
+
+        self._serve_one_empty_page(connector, token=None)
+        await connector.run_incremental_sync()
+
+        assert db.deleted == []
+        assert {path(k) for k in ("a.txt", "b.txt", "c.txt", "d.txt", "e.txt")} <= db.paths()
+        assert {k: v.get("last_sync_time") for k, v in checkpoints.sync_points.items()} == {
+            k: v.get("last_sync_time") for k, v in saved.items()
+        }
+
+
+class TestBucketDeletedAtTheSource:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    async def test_a_deleted_bucket_takes_its_records_and_group_with_it(self, connector, store, db) -> None:
+        store.put("a.txt")
+        store.put("docs/b.txt")
+        await connector.run_sync()
+        assert BUCKET in db.record_groups
+
+        del connector.data_source.stores[BUCKET]
+        await connector.run_sync()
+        await connector.run_sync()
+
+        assert db.paths() == set()
+        assert BUCKET not in db.record_groups
+
+        # Created again under the same name, with an object older than the last bookmark.
+        connector.data_source.stores[BUCKET] = store
+        store.objects = {"a.txt": store.objects["a.txt"]}
+        await connector.run_incremental_sync()
+
+        assert db.paths() == {path("a.txt")}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    @pytest.mark.parametrize("sync", ["run_sync", "run_incremental_sync"])
+    async def test_a_deleted_bucket_leaves_the_index_with_no_bucket_filter(self, connector, store, db, sync) -> None:
+        # Unfiltered, a deleted bucket drops out of ListBuckets; only its stored group still names it.
+        connector.bucket_name = None
+        store.put("a.txt")
+        await connector.run_sync()
+        assert BUCKET in db.record_groups
+
+        del connector.data_source.stores[BUCKET]
+        await getattr(connector, sync)()
+        await getattr(connector, sync)()
+
+        assert db.paths() == set()
+        assert BUCKET not in db.record_groups
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    async def test_one_no_such_bucket_keeps_the_records(self, connector, store, db) -> None:
+        # A MinIO restarted without its volume answers NoSuchBucket once, then has the bucket again.
+        store.put("a.txt")
+        await connector.run_sync()
+
+        del connector.data_source.stores[BUCKET]
+        await connector.run_sync()
+
+        assert db.paths() == {path("a.txt")}
+        assert db.deleted == []
+        assert BUCKET in db.record_groups
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    async def test_a_listing_between_two_no_such_bucket_answers_keeps_the_records(self, connector, store, db) -> None:
+        store.put("a.txt")
+        await connector.run_sync()
+
+        del connector.data_source.stores[BUCKET]
+        await connector.run_sync()
+        connector.data_source.stores[BUCKET] = store
+        await connector.run_incremental_sync()
+        del connector.data_source.stores[BUCKET]
+        await connector.run_sync()
+
+        assert db.paths() == {path("a.txt")}
+        assert BUCKET in db.record_groups
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    async def test_a_bucket_that_cannot_be_listed_keeps_its_records(self, connector, store, db) -> None:
+        store.put("a.txt")
+        await connector.run_sync()
+
+        store.fail_page = 0
+        await connector.run_sync()
+
+        assert db.paths() == {path("a.txt")}
+        assert BUCKET in db.record_groups
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["s3", "minio"])
+    @pytest.mark.parametrize("failure", ["no_such_bucket", "listing_error"])
+    async def test_a_full_sync_past_a_failed_listing_unlinks_nothing(self, connector, store, db, failure) -> None:
+        # The runner strips the edges of every record a full sync did not write, unless it reports a partial read.
+        connector.bucket_name = None
+        connector.data_source.add_bucket("bucket-2").put("b.txt")
+        store.put("a.txt")
+        await run_full_sync_task(connector, runner_graph())
+
+        if failure == "no_such_bucket":
+            del connector.data_source.stores[BUCKET]
+        else:
+            store.fail_page = 0
+        graph = runner_graph()
+        await run_full_sync_task(connector, graph)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert db.paths() == {path("a.txt"), "bucket-2/b.txt"}
+
+        if failure == "no_such_bucket":
+            connector.data_source.stores[BUCKET] = store
+        else:
+            store.fail_page = None
+        graph = runner_graph()
+        await run_full_sync_task(connector, graph)
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+
+
+class TestDateFilters:
+    """PP-118: narrowing a date filter removes what it now leaves out, through the delete path."""
+
+    @pytest.mark.asyncio
+    async def test_a_modified_filter_removes_what_it_now_leaves_out(self, connector, store, db, config) -> None:
+        store.put("old.txt")
+        cutoff = store.tick()
+        store.put("new.txt")
+        await connector.run_sync()
+        old = db.by_path()[path("old.txt")].id
+
+        config.set_dates("modified", after=cutoff)
+        await connector.run_incremental_sync()
+
+        assert db.deleted == [old]
+        assert db.paths() == {path("new.txt")}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["gcs", "azure_blob"])
+    async def test_a_created_filter_judges_the_creation_time(self, connector, store, db, config) -> None:
+        store.put("old.txt")
+        cutoff = store.tick()
+        store.put("new.txt")
+        store.put("old.txt", "old, edited after the cutoff")
+        await connector.run_sync()
+        old = db.by_path()[path("old.txt")].id
+
+        config.set_dates("created", after=cutoff)
+        await connector.run_incremental_sync()
+
+        assert db.deleted == [old]
+        assert db.paths() == {path("new.txt")}

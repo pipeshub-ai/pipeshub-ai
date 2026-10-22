@@ -26,6 +26,17 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
 from app.agents.actions.knowledge_graph.ops.entity_records import (
     resolve_entity_virtual_ids,
 )
+from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
+from app.agents.actions.knowledge_graph.ops.outside_dates import (
+    OUTSIDE_DATES_SEARCH_LIMIT,
+    OutsideDatesRecord,
+    outside_dates_for_model,
+    outside_dates_pointer,
+    pick_outside_dates,
+    quietly,
+    shown_ids,
+    wants_outside_dates,
+)
 from app.agents.actions.knowledge_graph.ops.results import (
     compose_result_tail,
     dedupe_append_final_results,
@@ -38,6 +49,17 @@ from app.modules.agents.qna.chat_state import remember_shown_results
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
 from app.modules.retrieval.context.ordering import relevance_ordered_context
 from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
+from app.modules.retrieval.context.targeted import (
+    PassageCap,
+    already_shown,
+    cap_passages_per_record,
+    more_passages_list,
+    more_passages_note,
+    passages_per_record,
+    remember_shown,
+    search_max_chars,
+    targeted_retrieval_enabled,
+)
 from app.modules.retrieval.context.units import unit_children
 from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
@@ -173,11 +195,17 @@ def _result_frame(
     pm_hint: str,
     by_relevance: bool,
     preamble: str = "",
+    passage_cap: PassageCap | None = None,
+    per_record: int = 0,
 ) -> _ResultFrame:
     """The summary, fetch plan and tail a result showing ``selection`` gets.
 
     Reads the request state and changes nothing in it, so it can be sized for
     more than one selection.
+
+    ``passage_cap`` (``TARGETED_RETRIEVAL``) says which records lost passages
+    to the per-record cap; the ones shown are named at the end, with how to
+    read the rest, and a line at the top points there.
     """
     from app.modules.agents.record_escalation import (
         analyze_coverage,
@@ -223,6 +251,20 @@ def _result_frame(
         coverage_note = render_coverage_note(
             plan, needs_whole_document=needs_whole_doc, read_in_full=read_in_full,
         )
+    trim_note = ""
+    if passage_cap is not None and selection.ranked:
+        shown_omitted = {
+            vrid: count for vrid, count in passage_cap.omitted.items() if vrid in shown_records
+        }
+        # Under the full-read policy the fetch tool takes no `query`.
+        focused_reads = not state.get(READ_RECORDS_IN_FULL_STATE_KEY)
+        trim_note = more_passages_note(
+            per_record, len(shown_omitted), passage_cap.repeats_dropped, focused_reads=focused_reads,
+        )
+        # Before the candidate table, which closes the result with its own call to action.
+        candidate_suffix = more_passages_list(
+            shown_omitted, shown_records, focused_reads=focused_reads,
+        ) + candidate_suffix
     shown_candidates = candidate_suffix
     if candidate_suffix and selection.record_id_shortener is not None:
         shown_candidates = selection.record_id_shortener.copy().shorten_record_ids_in_text(candidate_suffix)
@@ -234,7 +276,7 @@ def _result_frame(
             selection.omitted_records,
             by_relevance=by_relevance,
         )
-        summary = f"{preamble}{header}\n\n{entity_notes}{coverage_note}"
+        summary = f"{preamble}{header}\n\n{entity_notes}{coverage_note}{trim_note}"
     else:
         n_pm = len(pm_shown)
         summary = (
@@ -388,6 +430,32 @@ def _search_gap_notes(*, failed_sources: int, search_incomplete: str | None) -> 
     return "".join(f"{note}\n\n" for note in notes)
 
 
+async def _outside_dates_found(
+    task: asyncio.Task[Any],
+    time_range: dict[str, int],
+    *,
+    shown: list[dict[str, Any]],
+    shown_records: dict[str, Any],
+    log: logging.Logger,
+) -> list[OutsideDatesRecord]:
+    """What the search without dates (``task``) found that the bounds
+    ``time_range`` left out, apart from what the bounded search shows."""
+    found = await task
+    if found is None:
+        return []
+    results, records, error = found
+    if error is not None:
+        log.info("knowledgegraph__search: the search without dates found nothing to add: %s", error)
+        return []
+    shown_virtual_ids, shown_record_ids = shown_ids(shown, shown_records)
+    return pick_outside_dates(
+        {"searchResults": results, "virtual_to_record_map": records},
+        time_range,
+        shown_virtual_ids=shown_virtual_ids,
+        shown_record_ids=shown_record_ids,
+    )
+
+
 def normalize_source_ids(value: Any) -> list[str] | None:
     """Normalize source_ids parameter (a string or list of strings)."""
     if value is None:
@@ -422,7 +490,27 @@ async def execute_search(
     empty one searches nothing, and grep, which knows no such scope, stays off.
     ``preamble`` opens the result: the rendered text, where it counts toward
     the result size, or the ``entities`` field of a JSON result.
+
+    Without a scope, dates over a span longer than a month run the timeline
+    tool's search instead (``ops/timeline.automatic_timeline_search``).
+
+    With dates, the same search also runs once without them, and its best
+    matches written outside the dates are listed after the results
+    (``ops/outside_dates``).
     """
+    if scope_virtual_record_ids is None:
+        from app.agents.actions.knowledge_graph.ops.timeline import (
+            automatic_timeline_search,
+        )
+
+        timeline = await automatic_timeline_search(
+            state, query,
+            created_after=created_after, created_before=created_before,
+            modified_after=modified_after, modified_before=modified_before,
+            source_ids=source_ids, entity_ids=entity_ids,
+        )
+        if timeline is not None:
+            return timeline
     result = await _execute_search(
         state, query, source_ids,
         created_after=created_after, created_before=created_before,
@@ -505,8 +593,10 @@ async def _execute_search(
     if time_error is not None:
         return time_error
 
-    # Declared outside the try so the finally can always cancel it.
+    # Declared outside the try so the finally can always cancel them.
     pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
+    # The same search without its date bounds (``ops/outside_dates``).
+    outside_dates_task: asyncio.Task[Any] | None = None
     grep_coverage = PatternMatchCoverage()
     try:
         logger_instance = state.get("logger", logger)
@@ -612,6 +702,12 @@ async def _execute_search(
                 })
             virtual_record_ids_from_tool = scoped
 
+        outside_dates: list[OutsideDatesRecord] = []
+
+        def _outside_dates_text() -> str:
+            """The records the date bounds left out, listed for the model."""
+            return outside_dates_for_model(state, outside_dates, FETCH_RECORD_TOOL_NAME)
+
         def _empty_result() -> str:
             if failed_sources:
                 # Nothing found where the search ran, but some sources were never searched.
@@ -621,7 +717,7 @@ async def _execute_search(
                         f"{failed_sources} of the sources you named could not be searched "
                         "and the rest returned nothing, so this does not show the information is missing. "
                         "Try again, or search with source_ids omitted."
-                    ),
+                    ) + _outside_dates_text(),
                     "results": [],
                     "result_count": 0,
                 })
@@ -631,7 +727,7 @@ async def _execute_search(
                     "message": (
                         f"{search_incomplete} The rest returned nothing, so this does not show "
                         "the information is missing. Try again."
-                    ),
+                    ) + _outside_dates_text(),
                     "results": [],
                     "result_count": 0,
                 })
@@ -654,6 +750,7 @@ async def _execute_search(
             coverage_note = render_pattern_match_coverage_note(grep_coverage)
             if coverage_note:
                 message = f"{message}{coverage_note}"
+            message += _outside_dates_text()
             return json.dumps({
                 "status": "success",
                 "message": message,
@@ -710,6 +807,8 @@ async def _execute_search(
             fg: dict[str, list[str]],
             entity_fg: dict[str, list[str]],
             vrids: list[str] | None,
+            bounds: dict[str, int] | None,
+            limit: int,
         ) -> dict[str, Any] | None:
             filter_groups_for_call: dict[str, Any] = merge_filter_groups(fg, entity_fg)
             if strict_scope:
@@ -720,15 +819,19 @@ async def _execute_search(
                 queries=[query],
                 org_id=org_id,
                 user_id=user_id,
-                limit=adjusted_limit,
+                limit=limit,
                 filter_groups=filter_groups_for_call,
-                time_range=time_range,
+                time_range=bounds,
                 virtual_record_ids_from_tool=vrids,
             )
 
         async def _attempt(
             entity_fg: dict[str, list[str]],
             vrids: list[str] | None = None,
+            *,
+            bounds: dict[str, int] | None = time_range,
+            limit: int = adjusted_limit,
+            record_gaps: bool = True,
         ) -> tuple[list[dict[str, Any]], dict[str, Any], str | None]:
             """Run one full search attempt (fan-out or single) with *entity_fg*
             as the entity filter and *vrids* (record_group scoping, if any) to
@@ -738,11 +841,23 @@ async def _execute_search(
             so the caller can decide whether to retry. *failed_sources* is
             reset per attempt, so it always describes the attempt whose
             results the caller keeps.
+
+            *bounds* and *limit* are each search's date bounds and hits.
+            Without *record_gaps* (the search without dates, run beside the
+            main one) the attempt leaves *failed_sources* and
+            *search_incomplete* alone: they describe the results shown.
             """
-            nonlocal failed_sources, search_incomplete
-            search_incomplete = None
+            failed = 0
+            incomplete: str | None = None
+
+            def _keep_gaps() -> None:
+                nonlocal failed_sources, search_incomplete
+                if record_gaps:
+                    search_incomplete = incomplete
+                    if fan_out_sources:
+                        failed_sources = failed
+
             if fan_out_sources:
-                failed_sources = 0
                 tasks: list[Any] = []
                 for app_id in resolved_apps:
                     tasks.append(_search_one(
@@ -751,6 +866,8 @@ async def _execute_search(
                         ),
                         entity_fg,
                         vrids,
+                        bounds,
+                        limit,
                     ))
                 for kb_id in resolved_kbs:
                     tasks.append(_search_one(
@@ -759,6 +876,8 @@ async def _execute_search(
                         ),
                         entity_fg,
                         vrids,
+                        bounds,
+                        limit,
                     ))
 
                 raw_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -771,25 +890,26 @@ async def _execute_search(
                 for raw in raw_results:
                     if isinstance(raw, Exception):
                         logger_instance.warning("Per-source search failed: %s", raw, exc_info=raw)
-                        failed_sources += 1
+                        failed += 1
                         continue
                     if raw is None:
-                        failed_sources += 1
+                        failed += 1
                         continue
                     status_code = raw.get("status_code", 200)
                     if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
-                        failed_sources += 1
+                        failed += 1
                         error_status = error_status or status_code
                         error_message = raw.get("message", error_message)
                         continue
                     any_success = True
-                    search_incomplete = search_incomplete or raw.get("searchIncomplete") or None
+                    incomplete = incomplete or raw.get("searchIncomplete") or None
                     per_source.append(CollectionResults(
                         collection_name=f"source-{len(per_source)}",
                         results=raw.get("searchResults", []),
                     ))
                     attempt_map.update(raw.get("virtual_to_record_map", {}))
 
+                _keep_gaps()
                 if not any_success:
                     if error_status is not None:
                         return [], {}, json.dumps({
@@ -801,7 +921,8 @@ async def _execute_search(
                     return [], {}, json.dumps({"status": "error", "message": error_message})
                 return _fuse_sources(per_source), attempt_map, None
 
-            results = await _search_one(filter_groups, entity_fg, vrids)
+            _keep_gaps()
+            results = await _search_one(filter_groups, entity_fg, vrids, bounds, limit)
             if results is None:
                 return [], {}, json.dumps({"status": "error", "message": "Retrieval service returned no results"})
             status_code = results.get("status_code", 200)
@@ -811,10 +932,23 @@ async def _execute_search(
                     "status_code": status_code,
                     "message": results.get("message", "Retrieval service unavailable"),
                 })
-            search_incomplete = results.get("searchIncomplete") or None
+            incomplete = results.get("searchIncomplete") or None
+            _keep_gaps()
             return results.get("searchResults", []), results.get("virtual_to_record_map", {}), None
 
         entity_filter_dropped = False
+
+        def _search_without_dates(entity_fg: dict[str, list[str]]) -> asyncio.Task[Any]:
+            """The same search without its dates, with the entity filter of the
+            results shown: the matches the dates left out (ops/outside_dates)."""
+            return asyncio.create_task(quietly(_attempt(
+                entity_fg, virtual_record_ids_from_tool,
+                bounds=None, limit=OUTSIDE_DATES_SEARCH_LIMIT, record_gaps=False,
+            ), logger_instance))
+
+        if wants_outside_dates(time_range):
+            # Beside the main search, so it adds no wait of its own.
+            outside_dates_task = _search_without_dates(entity_filter_groups)
         search_results, virtual_to_record_map, error_json = await _attempt(
             entity_filter_groups, virtual_record_ids_from_tool,
         )
@@ -845,6 +979,11 @@ async def _execute_search(
             if fallback_results:
                 search_results, virtual_to_record_map = fallback_results, fallback_map
                 entity_filter_dropped = True
+                if outside_dates_task is not None:
+                    # The results shown dropped the entity filter, so the
+                    # search without dates drops it too.
+                    await cancel_task_if_running(outside_dates_task)
+                    outside_dates_task = _search_without_dates({})
 
         raw_pattern_records: list[dict[str, Any]] = []
         if pattern_match_task is not None:
@@ -858,6 +997,17 @@ async def _execute_search(
                 logger_instance.info(
                     "Pattern match: %d raw record(s)", len(raw_pattern_records),
                 )
+
+        if outside_dates_task is not None and time_range:
+            outside_dates = await _outside_dates_found(
+                outside_dates_task,
+                time_range,
+                # Not the grep hits: those outside the dates are dropped by the
+                # merge below, and those inside are never listed anyway.
+                shown=search_results,
+                shown_records=virtual_to_record_map,
+                log=logger_instance,
+            )
 
         if not search_results and not raw_pattern_records:
             return _empty_result()
@@ -917,6 +1067,20 @@ async def _execute_search(
         if not knowledge.ranked and not pm_record_entries:
             return _empty_result()
 
+        # TARGETED_RETRIEVAL: a smaller result, a few passages per record, and
+        # what an earlier search of this request showed giving way to new text.
+        targeted = targeted_retrieval_enabled()
+        result_max_chars = search_max_chars() if targeted else DEFAULT_MAX_RESULT_CHARS
+        per_record = passages_per_record(adjusted_limit) if targeted else 0
+        passage_cap: PassageCap | None = None
+        if targeted and knowledge.ranked:
+            passage_cap = cap_passages_per_record(
+                knowledge.ranked,
+                per_record,
+                already_shown=already_shown(state),
+            )
+            knowledge.ranked = passage_cap.units
+
         has_semantic_blocks = bool(knowledge.ranked)
 
         def keyword_hint(selection: Selection) -> tuple[list[dict[str, Any]], str]:
@@ -932,7 +1096,7 @@ async def _execute_search(
                 *pm_record_entries,
                 *grep_hits_within(
                     dropped, virtual_record_id_to_result,
-                    DEFAULT_MAX_RESULT_CHARS // _DROPPED_GREP_HINT_SHARE,
+                    result_max_chars // _DROPPED_GREP_HINT_SHARE,
                 ),
             ]
             try:
@@ -959,6 +1123,10 @@ async def _execute_search(
             scope_truncated=entity_scope_truncated,
             entities_skipped=entities_skipped,
         )
+        # Closes the result; a line at the top points there.
+        outside_dates_text = _outside_dates_text()
+        if outside_dates_text:
+            entity_notes += outside_dates_pointer(len(outside_dates))
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
@@ -1004,6 +1172,8 @@ async def _execute_search(
                 pm_hint=pm_hint,
                 by_relevance=by_relevance,
                 preamble=preamble,
+                passage_cap=passage_cap,
+                per_record=per_record,
             )
 
         # Everything else in the result is sized first, so the records are cut
@@ -1014,17 +1184,17 @@ async def _execute_search(
         result_frame = frame(selection)
         for _ in range(_MAX_FIT_PASSES if knowledge.ranked else 0):
             selection = renderer.select(
-                knowledge.ranked, DEFAULT_MAX_RESULT_CHARS - result_frame.chars,
+                knowledge.ranked, result_max_chars - result_frame.chars - len(outside_dates_text),
             )
             result_frame = frame(selection)
-            if (selection.chars or 0) <= DEFAULT_MAX_RESULT_CHARS - result_frame.chars:
+            if (selection.chars or 0) <= result_max_chars - result_frame.chars - len(outside_dates_text):
                 break
         else:
             if knowledge.ranked:
                 logger_instance.warning(
                     "knowledgegraph__search: result still over %d chars after %d fits; "
                     "the tool-result cap will cut it",
-                    DEFAULT_MAX_RESULT_CHARS, _MAX_FIT_PASSES,
+                    result_max_chars, _MAX_FIT_PASSES,
                 )
         rendered = renderer.render(selection)
         pm_shown, pm_hint = keyword_hint(selection)
@@ -1057,11 +1227,14 @@ async def _execute_search(
 
         _note_provenance(state, final_results, shown_records, raw_pattern_records)
         remember_shown_results(state, [*final_results, *pm_shown], shown_records)
+        if targeted:
+            remember_shown(state, final_results)
         text = (
             result_frame.summary
             + rendered.text
             + compose_result_tail(shown_records, candidate_suffix)
             + pm_hint
+            + outside_dates_text
         )
         return tool_output(text, rendered.images, state)
 
@@ -1072,3 +1245,4 @@ async def _execute_search(
     finally:
         # No-op once awaited; stops the grep + LLM call when semantic search fails.
         await cancel_task_if_running(pattern_match_task)
+        await cancel_task_if_running(outside_dates_task)

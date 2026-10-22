@@ -105,6 +105,7 @@ All variables are optional. When set, they suppress the corresponding interactiv
 | `PIPESHUB_PUBLIC_URL` | public HTTPS URL | _(none)_ |
 | `APP_MEMORY_LIMIT` | memory ceiling for the app container | derived from the machine (see below) |
 | `APP_MEMSWAP_LIMIT` | combined memory+swap ceiling | `APP_MEMORY_LIMIT` + 6G |
+| `QDRANT_MEMORY_LIMIT` | memory ceiling for the Qdrant container; size it from [vector DB sizing](../../docs/deployment/vector-db-sizing.md) | `6G` |
 | `TELEMETRY_COLLECTION_FLAG` | `true` \| `false` — product metrics/event collection in every service; `false` turns all telemetry code off | empty: on |
 
 ### App container memory

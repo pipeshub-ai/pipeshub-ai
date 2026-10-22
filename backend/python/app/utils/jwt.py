@@ -42,8 +42,8 @@ def is_jwt_expired(token: str) -> bool:
     if 'exp' not in payload_data:
         return True
 
-    # Get current timestamp
-    current_time = datetime.utcnow().timestamp()
+    # Get current timestamp (timezone-aware UTC)
+    current_time = datetime.now(timezone.utc).timestamp()
 
     # Check if token is expired
     return payload_data['exp'] < current_time

@@ -211,6 +211,9 @@ zookeeper:
 # are inherited from values.yaml and apply unchanged.
 qdrant:
   replicaCount: 2
+  # Per pod. Search slows sharply once the index outgrows the memory limit; size
+  # it from docs/deployment/vector-db-sizing.md. The chart passes the limit to
+  # the app as QDRANT_MEMORY_LIMIT for the warning on the Services page.
   resources:
     requests:
       cpu: 1

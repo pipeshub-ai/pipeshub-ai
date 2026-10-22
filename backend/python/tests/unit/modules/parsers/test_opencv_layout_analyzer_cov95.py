@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from reportlab.pdfgen.canvas import Canvas
 
 import app.modules.parsers.pdf.opencv_layout_analyzer as ola
 from app.modules.parsers.pdf.opencv_layout_analyzer import (
@@ -23,7 +28,8 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     _build_line_side_meta,
     _clamp_bbox,
     _classify_text_blocks,
-    _crop_image_bytes,
+    _crop_image,
+    _detect_aligned_tables,
     _detect_borderless_tables,
     _detect_images,
     _detect_page_columns,
@@ -33,7 +39,9 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     _detect_uniform_fill_stripe_regions,
     _extract_list_items,
     _find_vector_bullets,
+    _grid_by_projection,
     _grid_to_text,
+    _group_words_into_lines,
     _gutter_relax_merge_pair,
     _hyperlink_anchor_for_region,
     _hyperlink_bbox,
@@ -48,11 +56,15 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     _is_monospace_font_name,
     _is_plausible_table,
     _line_side,
+    _link_captions,
     _merge_regions,
     _merge_row_tables,
     _merge_small_text_regions,
     _overlap_ratio,
     _page_hyperlinks,
+    _prefer_model_pictures,
+    _prefer_model_tables,
+    _rasterize_page,
     _reading_order,
     _reextract_grid_for_bbox,
     _reextract_region_payload,
@@ -61,17 +73,18 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     _region_is_predominantly_monospace,
     _region_side,
     _render_all_pages,
+    _rescue_columns_if_single,
     _resolve_line_sides,
     _resolve_overlaps,
-    _rasterize_page,
-    _rescue_columns_if_single,
     _safe_text_in_bbox,
     _segment_blocks_native,
     _segment_vector_blocks,
     _split_lines_into_runs,
     _split_region_by_gutters,
+    _split_words_around_tables,
     _stray_line_to_region,
     _table_contained_in_text,
+    _table_grid_by_words,
     _table_overlap_with_large_neighbor_allowed,
     _table_proximity_neighbor_allowed,
     _text_is_table_top_header,
@@ -87,10 +100,8 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     _word_count,
     _x_projections_overlap,
     _y_projections_overlap,
-    _group_words_into_lines,
     extract_layout_regions,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / factories
@@ -146,11 +157,21 @@ def _two_col_words(
     return words
 
 
+def _char_level_table_extraction(test: Callable[..., None]) -> Callable[..., None]:
+    """Route word-level grid extraction back to the mocked pdfplumber calls,
+    for tests that stub ``extract_table`` / ``Table.extract`` on mocks."""
+    def by_page(page: MagicMock, settings: Optional[dict[str, object]] = None) -> object:
+        return page.extract_table(settings) if settings else page.extract_table()
+
+    return patch.object(ola, "_extract_table_by_words", new=by_page)(
+        patch.object(ola, "_table_grid_by_words", new=lambda t: t.extract())(test)
+    )
+
 def _make_pdf_page(draw_fn):
     pytest.importorskip("reportlab")
+    import pdfplumber
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
-    import pdfplumber
 
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=letter)
@@ -580,8 +601,14 @@ class TestRasterHelpers:
         img[20:40, 20:40] = 0
         bbox = (14.4, 14.4, 28.8, 28.8)
         assert _ink_density(img, bbox, scale=2.0) > 0
-        data = _crop_image_bytes(img, bbox, scale=2.0)
-        assert data is not None and data[:8] == b"\x89PNG\r\n\x1a\n"
+        data, ext = _crop_image(img, bbox, scale=2.0)
+        assert ext == "png" and data[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_photo_crop_is_stored_as_jpeg(self) -> None:
+        rng = np.random.default_rng(0)
+        photo = rng.integers(0, 255, size=(400, 400, 3), dtype=np.uint8)
+        data, ext = _crop_image(photo, (0, 0, 200, 200), scale=2.0)
+        assert ext == "jpeg" and data[:2] == b"\xff\xd8"
 
     def test_tighten_to_content(self):
         img = np.full((100, 100, 3), 255, dtype=np.uint8)
@@ -649,11 +676,11 @@ class TestExtractLayoutRegions:
 
     def test_table_pdf(self):
         pytest.importorskip("reportlab")
+        import pdfplumber
         from reportlab.lib import colors
-        from reportlab.platypus import Table, TableStyle
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
-        import pdfplumber
+        from reportlab.platypus import Table, TableStyle
 
         buf = BytesIO()
         c = canvas.Canvas(buf, pagesize=letter)
@@ -770,11 +797,11 @@ class TestExtractLayoutRegions:
 class TestDetectTablesDirect:
     def test_detect_tables_on_table_page(self):
         pytest.importorskip("reportlab")
+        import pdfplumber
         from reportlab.lib import colors
-        from reportlab.platypus import Table, TableStyle
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
-        import pdfplumber
+        from reportlab.platypus import Table, TableStyle
 
         buf = BytesIO()
         c = canvas.Canvas(buf, pagesize=letter)
@@ -801,6 +828,18 @@ class TestDocumentRasterCache:
             img, scale = cache.get(1)
         assert img.shape == (10, 10, 3)
         assert scale == 2.0
+
+    def test_windowed_cache_renders_one_window_at_a_time(self) -> None:
+        def fake_batch(path: str, page_numbers: list[int], dpi: int) -> dict[int, Any]:
+            return {n: (np.full((2, 2, 3), n, dtype=np.uint8), 1.0) for n in page_numbers}
+
+        cache = DocumentRasterCache("/tmp/fake.pdf", num_pages=5, window=2)
+        with patch.object(ola, "_render_page_batch", side_effect=fake_batch) as batch, \
+                patch.object(ola, "_render_all_pages") as render_all:
+            got = [int(cache.get(n)[0][0, 0, 0]) for n in range(1, 6)]
+        assert got == [1, 2, 3, 4, 5]
+        assert [c.args[1] for c in batch.call_args_list] == [[1, 2], [3, 4], [5]]
+        render_all.assert_not_called()
 
 
 class TestReextractAndSafeText:
@@ -1043,6 +1082,277 @@ class TestImageHelpers:
         assert any(r.type == LayoutRegionType.IMAGE for r in regions)
 
 
+class TestImagesKeepTextOut:
+    """An IMAGE block carries only pixels, so text it swallows is lost."""
+
+    PARAGRAPH = " ".join(f"word{i}" for i in range(40))
+
+    @staticmethod
+    def _vector_page(rects: list[dict[str, float]]) -> MagicMock:
+        page = MagicMock()
+        page.width = 612
+        page.height = 792
+        page.images = []
+        page.lines = []
+        page.rects = rects
+        page.curves = []
+        return page
+
+    @staticmethod
+    def _white_raster() -> tuple[np.ndarray, float]:
+        return np.full((792, 612, 3), 255, dtype=np.uint8), 1.0
+
+    def test_table_rects_do_not_make_text_block_a_figure(self) -> None:
+        rects = [{"x0": 90, "x1": 500, "top": 260 + 6 * i, "bottom": 264 + 6 * i} for i in range(20)]
+        table = _region(LayoutRegionType.TABLE, (90, 250, 500, 400))
+        words = [_w(f"line{i}", 90, 340, 100 + 14 * i, 110 + 14 * i) for i in range(10)]
+        regions = _detect_images(
+            self._vector_page(rects), self._white_raster, [(90, 100, 500, 400)],
+            existing=[table], all_words=words,
+        )
+        assert regions == []
+
+    def test_word_heavy_rect_block_is_not_a_figure(self) -> None:
+        rects = [{"x0": 90 + 20 * i, "x1": 100 + 20 * i, "top": 100, "bottom": 400} for i in range(20)]
+        words = [
+            _w(f"{r}{c}", 95 + 40 * c, 105 + 40 * c, 105 + 4 * r, 108 + 4 * r)
+            for r in range(8) for c in range(10)
+        ]
+        regions = _detect_images(
+            self._vector_page(rects), self._white_raster, [(90, 100, 500, 400)],
+            existing=[], all_words=words,
+        )
+        assert regions == []
+
+    def test_paragraph_touching_image_stays_separate(self) -> None:
+        image = _region(LayoutRegionType.IMAGE, (300, 0, 400, 100))
+        para = _region(LayoutRegionType.TEXT, (200, 90, 380, 300), self.PARAGRAPH)
+        out = _resolve_overlaps([image, para], page_w=612, page_h=792)
+        assert sorted(r.type for r in out) == [LayoutRegionType.IMAGE, LayoutRegionType.TEXT]
+
+    def test_label_inside_image_still_merges(self) -> None:
+        image = _region(LayoutRegionType.IMAGE, (100, 100, 400, 400))
+        label = _region(LayoutRegionType.TEXT, (150, 150, 250, 170), "Revenue")
+        out = _resolve_overlaps([image, label], page_w=612, page_h=792)
+        assert [r.type for r in out] == [LayoutRegionType.IMAGE]
+
+    def test_image_does_not_absorb_overlapping_table(self) -> None:
+        image = _region(LayoutRegionType.IMAGE, (150, 280, 450, 320))
+        table = _region(LayoutRegionType.TABLE, (20, 100, 590, 300), "t", table_grid=[["a"]])
+        out = _resolve_overlaps([image, table], page_w=612, page_h=792)
+        assert sorted(r.type for r in out) == [LayoutRegionType.IMAGE, LayoutRegionType.TABLE]
+
+    def test_label_absorption_does_not_snowball(self) -> None:
+        image = _region(LayoutRegionType.IMAGE, (100, 100, 200, 200))
+        small = _region(LayoutRegionType.TEXT, (100, 205, 200, 225), "Q1 Q2 Q3")
+        # Under a quarter of the image once grown by ``small``, but not of the image as detected.
+        larger = _region(LayoutRegionType.TEXT, (100, 230, 200, 260), "Sales by region")
+        out = _absorb_labels_into_images([image, small, larger], 612, 792)
+        assert [r.text for r in out if r.type == LayoutRegionType.TEXT] == ["Sales by region"]
+
+    def test_image_carries_words_no_other_region_holds(self) -> None:
+        image = _region(LayoutRegionType.IMAGE, (0, 0, 300, 300))
+        caption = _region(LayoutRegionType.TEXT, (0, 250, 300, 300), "Figure 1")
+        words = [
+            _w("1,600", 10, 40, 20, 30), _w("2019", 50, 80, 20, 30),
+            _w("Figure", 10, 50, 260, 270), _w("outside", 400, 450, 20, 30),
+        ]
+        ola._attach_image_text([image, caption], words)
+        assert image.text == "1,600 2019"
+
+    def test_long_text_under_image_is_kept(self) -> None:
+        image = _region(LayoutRegionType.IMAGE, (0, 0, 612, 400))
+        words = [_w(f"w{i}", 50 + 12 * (i % 40), 60 + 12 * (i % 40), 100 + 12 * (i // 40), 110 + 12 * (i // 40))
+                 for i in range(80)]
+        regions = _classify_text_blocks([(40, 90, 540, 130)], [image], words)
+        assert regions and all(r.type == LayoutRegionType.TEXT for r in regions)
+
+
+class TestTablesSurviveTextBlocks:
+    def test_word_straddling_a_column_line_stays_whole(self) -> None:
+        def draw(c: "Canvas") -> None:
+            for x in (100, 250, 400):
+                c.line(x, 640, x, 700)
+            for y in (640, 660, 680, 700):
+                c.line(100, y, 400, y)
+            c.drawString(215, 686, "Quarterlyrevenue")
+            for i, y in enumerate((666, 646)):
+                c.drawString(110, y, f"row{i}")
+                c.drawString(260, y, f"{i}00")
+
+        page = _make_pdf_page(draw)
+        grid = _table_grid_by_words(page.find_tables()[0])
+        cells = [c for row in grid for c in row if c]
+        assert "Quarterlyrevenue" in cells
+        assert cells.count("row0") == 1 and "100" not in cells[0]
+
+    def test_stacked_rule_only_tables_are_found_separately(self) -> None:
+        def table(c: "Canvas", top: float) -> None:
+            for y in (top, top - 18, top - 34, top - 50, top - 66, top - 82):
+                c.line(72, y, 540, y)
+            for x, head in ((80, "Media"), (200, "UM1"), (300, "UM2"), (400, "UM3")):
+                c.drawString(x, top - 13, head)
+            for i in range(4):
+                c.drawString(80, top - 32 - 16 * i, f"M{i}")
+                for x in (200, 300, 400):
+                    c.drawString(x, top - 32 - 16 * i, f"{i}.{x // 100}5")
+
+        def draw(c: "Canvas") -> None:
+            table(c, 700)
+            c.drawString(72, 590, "Values followed by the same letter are not different at five percent.")
+            c.drawString(72, 576, "TABLE 3 - Enzyme and specific activities of the isolates in the media.")
+            table(c, 560)
+
+        page = _make_pdf_page(draw)
+        words = page.extract_words(extra_attrs=["fontname", "size"])
+        tables = [r for r in _detect_tables(page, 612, 792, words) if r.type == LayoutRegionType.TABLE]
+        assert len(tables) == 2
+        assert all(len(t.table_grid) == 5 and len(t.table_grid[0]) == 4 for t in tables)
+
+    def test_text_block_is_split_around_a_table(self) -> None:
+        table = (50, 200, 550, 300)
+        words = [
+            _w("above", 60, 100, 150, 160),
+            _w("cell", 60, 100, 250, 260),
+            _w("below", 60, 100, 350, 360),
+        ]
+        parts = _split_words_around_tables(words, [table])
+        assert sorted(w["text"] for p in parts for w in p) == ["above", "below"]
+        assert len(parts) == 2
+
+    def test_classified_text_does_not_enclose_a_table(self) -> None:
+        table = _region(LayoutRegionType.TABLE, (50, 200, 550, 300))
+        words = [_w(f"w{i}", 60, 100, 100 + 20 * i, 110 + 20 * i) for i in range(15)]
+        regions = _classify_text_blocks([(50, 90, 550, 400)], [table], words)
+        assert regions
+        assert all(_overlap_ratio(table.bbox, r.bbox) < 0.05 for r in regions)
+
+    def test_unruled_aligned_table_is_found_and_prose_is_not(self) -> None:
+        def draw(c: "Canvas") -> None:
+            c.drawString(72, 740, "The results of the survey are summarised in the table below for each region.")
+            for i, (name, a, b) in enumerate((("Region", "2021", "2022"), ("North", "12.4", "13.1"),
+                                              ("South", "9.8", "10.2"), ("East", "15.0", "14.7"))):
+                y = 700 - 16 * i
+                c.drawString(72, y, name)
+                c.drawString(250, y, a)
+                c.drawString(400, y, b)
+            c.drawString(72, 600, "Growth was strongest in the north, while the east saw a small decline overall.")
+
+        page = _make_pdf_page(draw)
+        words = page.extract_words(extra_attrs=["fontname", "size"])
+        tables = _detect_aligned_tables(page, 612, 792, words, existing=[])
+        assert len(tables) == 1
+        assert tables[0].table_grid[1] == ["North", "12.4", "13.1"]
+        assert 60 < tables[0].bbox[1] < 100 and tables[0].bbox[3] < 150
+
+    def test_large_text_brushing_a_table_does_not_merge(self) -> None:
+        table = _region(LayoutRegionType.TABLE, (50, 200, 550, 300))
+        text = _region(LayoutRegionType.TEXT, (50, 100, 550, 205))
+        assert not _table_overlap_with_large_neighbor_allowed(table, text)
+        dup = _region(LayoutRegionType.TEXT, (60, 210, 540, 290))
+        assert _table_overlap_with_large_neighbor_allowed(table, dup)
+
+    def test_projection_grid_keeps_every_word(self) -> None:
+        words = [_w("Revenue by segment and year", 80, 330, 90, 100)]  # spans the columns
+        for i, top in enumerate((110, 126, 142)):
+            words += [_w(f"Seg {i}", 80, 120, top, top + 10), _w(f"{i}1.5", 250, 280, top, top + 10),
+                      _w(f"{i}2.0", 360, 390, top, top + 10)]
+        grid = _grid_by_projection(words)
+        assert [len(r) for r in grid] == [3, 3, 3, 3]
+        assert grid[1] == ["Seg 0", "01.5", "02.0"]
+        kept = " ".join(c for r in grid for c in r)
+        assert all(w["text"] in kept for w in words)
+
+    def test_model_table_replaces_the_rule_table_it_overlaps(self) -> None:
+        def draw(c: "Canvas") -> None:
+            for i, y in enumerate((700, 684, 668)):
+                for x, v in ((80, f"item{i}"), (250, f"{i}0"), (400, f"{i}5")):
+                    c.drawString(x, y, v)
+
+        page = _make_pdf_page(draw)
+        w, h = float(page.width), float(page.height)
+        partial = _region(LayoutRegionType.TABLE, (78, 80, 300, 104))
+        elsewhere = _region(LayoutRegionType.TABLE, (78, 500, 300, 560))
+        box = (70 / w, 75 / h, 440 / w, 130 / h)
+        out = _prefer_model_tables(page, w, h, [partial, elsewhere], page.extract_words(), [(box, 0.9)])
+        assert elsewhere in out and partial not in out
+        model = next(r for r in out if r is not elsewhere)
+        assert model.bbox[2] == pytest.approx(440)
+        assert ["item0", "00", "05"] in model.table_grid
+
+        assert _prefer_model_tables(page, w, h, [partial], page.extract_words(), []) == [partial]
+
+    def test_model_table_with_one_column_grid_falls_back_to_whitespace_columns(self) -> None:
+        def draw(c: "Canvas") -> None:
+            for i, y in enumerate((700, 684, 668, 652)):
+                c.drawString(80, y, f"Setting{i}")
+                c.drawString(300, y, f"Value{i}")
+
+        page = _make_pdf_page(draw)
+        w, h = float(page.width), float(page.height)
+        box = (70 / w, 80 / h, 400 / w, 150 / h)
+        one_column = [[f"Setting{i} Value{i}"] for i in range(4)]
+        with patch.object(ola, "_reextract_grid_for_bbox", return_value=one_column):
+            out = _prefer_model_tables(page, w, h, [], page.extract_words(), [(box, 0.9)])
+        assert [r.table_grid for r in out] == [[[f"Setting{i}", f"Value{i}"] for i in range(4)]]
+
+    def test_model_picture_replaces_overlapping_rule_images_but_not_tables(self) -> None:
+        merged = _region(LayoutRegionType.IMAGE, (50, 100, 550, 300))  # two figures as one
+        elsewhere = _region(LayoutRegionType.IMAGE, (50, 600, 200, 700))
+        table = _region(LayoutRegionType.TABLE, (50, 400, 550, 500))
+        def frac(x0: float, y0: float, x1: float, y1: float) -> tuple[float, float, float, float]:
+            return (x0 / 600, y0 / 800, x1 / 600, y1 / 800)
+
+        boxes = [
+            (frac(50, 100, 290, 300), 0.9), (frac(310, 100, 550, 300), 0.8),
+            (frac(55, 405, 545, 495), 0.7),  # the table, also boxed as a picture
+        ]
+        out, tables = _prefer_model_pictures(
+            [merged, elsewhere], [table], boxes, 600, 800, table_boxes=[(frac(50, 400, 550, 500), 0.9)],
+        )
+        assert merged not in out and elsewhere in out
+        assert sorted(r.bbox[0] for r in out if r is not elsewhere) == [pytest.approx(50), pytest.approx(310)]
+        assert tables == [table]
+
+    def test_model_picture_replaces_a_chart_read_as_a_rule_table(self) -> None:
+        gridlines = _region(LayoutRegionType.TABLE, (60, 110, 540, 290))
+        real = _region(LayoutRegionType.TABLE, (50, 400, 550, 500))
+        logo = (0.15, 0.51, 0.2, 0.53)  # a picture inside the real table
+        chart = (50 / 600, 100 / 800, 550 / 600, 300 / 800)
+        images, tables = _prefer_model_pictures([], [gridlines, real], [(chart, 0.9), (logo, 0.6)], 600, 800)
+        assert tables == [real]
+        assert [r.bbox[0] for r in images] == [pytest.approx(50)]
+
+    def test_right_column_with_absorbed_header_reads_after_left_column(self) -> None:
+        right = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(310, 30, 560, 760), text="HEADER right body")
+        left = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(50, 60, 300, 750), text="left body")
+        footer = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(50, 770, 560, 780), text="footer")
+        assert _reading_order([right, left, footer], 612, 792) == [left, right, footer]
+
+    def test_figure_gets_the_nearest_caption_below_or_above_it(self) -> None:
+        def text(bbox: tuple[float, float, float, float], t: str) -> LayoutRegion:
+            return LayoutRegion(type=LayoutRegionType.TEXT, bbox=bbox, text=t)
+
+        chart = LayoutRegion(type=LayoutRegionType.IMAGE, bbox=(72, 100, 300, 300))
+        photo = LayoutRegion(type=LayoutRegionType.IMAGE, bbox=(320, 100, 540, 300))
+        below = text((72, 306, 300, 320), "Figure 3: Revenue by region")
+        boxed = text((320, 80, 540, 94), "Our plant in Ohio")  # boxed as a caption by the model
+        prose = text((72, 330, 540, 400), "Revenue grew in every region.")
+        far = text((72, 700, 300, 712), "Figure 9: Unrelated")
+        _link_captions([chart, photo, below, boxed, prose, far], 792, [(318, 78, 542, 96)])
+        assert chart.caption == "Figure 3: Revenue by region"
+        assert photo.caption == "Our plant in Ohio"
+
+    def test_overlapping_model_pictures_are_not_merged(self) -> None:
+        def pair(*, from_model: bool) -> list[LayoutRegion]:
+            return [
+                LayoutRegion(type=LayoutRegionType.IMAGE, bbox=(50, 100, 290, 300), from_model=from_model),
+                LayoutRegion(type=LayoutRegionType.IMAGE, bbox=(280, 100, 550, 300), from_model=from_model),
+            ]
+        assert len(_resolve_overlaps(pair(from_model=True), page_w=600, page_h=800)) == 2
+        assert len(_resolve_overlaps(pair(from_model=False), page_w=600, page_h=800)) == 1
+
+
 class TestVectorBulletsAndStripes:
     def test_find_vector_bullets(self):
         page = MagicMock()
@@ -1108,11 +1418,11 @@ class TestReextractPayload:
     def test_reextract_region_payload_table(self):
         page = _make_pdf_page(lambda c: None)
         pytest.importorskip("reportlab")
+        import pdfplumber
         from reportlab.lib import colors
-        from reportlab.platypus import Table, TableStyle
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
-        import pdfplumber
+        from reportlab.platypus import Table, TableStyle
 
         buf = BytesIO()
         c = canvas.Canvas(buf, pagesize=letter)
@@ -1250,10 +1560,11 @@ class TestRasterize:
 
     def test_render_all_pages(self):
         pytest.importorskip("reportlab")
+        import os
+        import tempfile
+
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
-        import tempfile
-        import os
 
         buf = BytesIO()
         c = canvas.Canvas(buf, pagesize=letter)
@@ -1627,11 +1938,11 @@ class TestCoveragePush:
 
     def test_extract_layout_table_and_header(self):
         pytest.importorskip("reportlab")
+        import pdfplumber
         from reportlab.lib import colors
-        from reportlab.platypus import Table, TableStyle
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
-        import pdfplumber
+        from reportlab.platypus import Table, TableStyle
 
         buf = BytesIO()
         c = canvas.Canvas(buf, pagesize=letter)
@@ -1663,10 +1974,11 @@ class TestCoveragePush:
 
     def test_rasterize_page_with_pdf_path(self):
         pytest.importorskip("reportlab")
+        import os
+        import tempfile
+
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
-        import tempfile
-        import os
 
         buf = BytesIO()
         c = canvas.Canvas(buf, pagesize=letter)
@@ -2543,8 +2855,8 @@ class TestCoveragePush95:
                     ):
                         with patch.object(
                             ola,
-                            "_crop_image_bytes",
-                            return_value=b"\x89PNG\r\n\x1a\nfake",
+                            "_crop_image",
+                            return_value=(b"\x89PNG\r\n\x1a\nfake", "png"),
                         ):
                             regions = extract_layout_regions(page)
         image_regions = [r for r in regions if r.type == LayoutRegionType.IMAGE]
@@ -2611,10 +2923,10 @@ class TestCoveragePush95:
         img = np.full((10, 10, 3), 255, dtype=np.uint8)
         assert _ink_density(img, (0, 0, 1, 1), scale=1.0) == 0.0
 
-    def test_crop_image_bytes_none_and_tiny(self):
-        assert _crop_image_bytes(None, (0, 0, 10, 10), 1.0) is None
+    def test_crop_image_none_and_tiny(self):
+        assert _crop_image(None, (0, 0, 10, 10), 1.0) == (None, "png")
         img = np.full((5, 5, 3), 255, dtype=np.uint8)
-        assert _crop_image_bytes(img, (0, 0, 0.1, 0.1), 1.0) is None
+        assert _crop_image(img, (0, 0, 0.1, 0.1), 1.0) == (None, "png")
 
     def test_hyperlink_anchor_partial_overlap(self):
         words = [_w("click here now", 10, 80, 10, 20)]
@@ -2634,6 +2946,7 @@ class TestCoveragePush95:
 
     # -- reextract_grid strategies (2316-2345) ---------------------------------
 
+    @_char_level_table_extraction
     def test_reextract_grid_picks_best_columns(self):
         page = MagicMock()
         sub = MagicMock()
@@ -2800,6 +3113,7 @@ class TestCoveragePush95Phase2:
         type(page).chars = property(lambda self: (_ for _ in ()).throw(RuntimeError))
         assert _region_is_predominantly_monospace(page, (0, 0, 100, 100)) is False
 
+    @_char_level_table_extraction
     def test_borderless_tables_returns_table_region(self):
         words = [_w("Months ended December", 72, 250, 720, 730)]
         y = 700.0
@@ -3179,6 +3493,7 @@ class TestCoveragePush95Phase3:
         tables = _detect_tables(page, 612, 792, words, stripe_frames=[])
         assert isinstance(tables, list)
 
+    @_char_level_table_extraction
     def test_detect_tables_vector_success(self):
         page = MagicMock()
         page.images = []
@@ -3358,6 +3673,7 @@ class TestCoveragePush95Phase3:
 class TestCoveragePush95Phase4:
     """Integration and direct branch tests for final coverage push."""
 
+    @_char_level_table_extraction
     def test_financial_borderless_via_detect_tables(self):
         words = []
         words.append(_w("Three months ended September", 72, 280, 720, 730))
@@ -3502,6 +3818,7 @@ class TestCoveragePush95Phase4:
         regions = _detect_borderless_tables(page, 612, 792, words, [])
         assert isinstance(regions, list)
 
+    @_char_level_table_extraction
     def test_merge_row_tables_expand_best_grid(self):
         page = MagicMock()
         page.curves = []
@@ -3730,11 +4047,11 @@ class TestCoveragePush95Phase4:
 
     def test_full_pipeline_two_column_table_image(self):
         pytest.importorskip("reportlab")
+        import pdfplumber
         from reportlab.lib import colors
-        from reportlab.platypus import Table, TableStyle
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
-        import pdfplumber
+        from reportlab.platypus import Table, TableStyle
 
         buf = BytesIO()
         c = canvas.Canvas(buf, pagesize=letter)
@@ -4013,6 +4330,7 @@ class TestCoveragePush95Phase5:
         tables = _detect_tables(page, 612, 792, words, stripe_frames=[])
         assert isinstance(tables, list)
 
+    @_char_level_table_extraction
     def test_reextract_grid_default_strategy(self):
         page = MagicMock()
         sub = MagicMock()
@@ -4392,6 +4710,7 @@ class TestCoveragePush95Phase6:
             merged2 = _merge_row_tables(singles, page2, 612, 792)
         assert len(merged2) >= 1
 
+    @_char_level_table_extraction
     def test_merge_row_tables_expand_best_grid_selected(self):
         page = MagicMock()
         page.curves = []
@@ -4584,6 +4903,7 @@ class TestCoveragePush95Phase6:
         page2.within_bbox.return_value = sub
         assert _reextract_grid_for_bbox(page2, (72, 600, 300, 700), 612, 792) is None
 
+    @_char_level_table_extraction
     def test_rescue_columns_curve_abort_and_alt_strategies(self):
         page = MagicMock()
         curves = [
@@ -4913,6 +5233,7 @@ class TestCoveragePush95Phase6:
             )
         assert len(ordered) == 3
 
+    @_char_level_table_extraction
     def test_reextract_region_payload_table_grid(self):
         page = MagicMock()
         sub = MagicMock()
@@ -5581,6 +5902,7 @@ class TestCoveragePush95Phase6:
         tables = _detect_tables(page, 612, 792, words, stripe_frames=[])
         assert isinstance(tables, list)
 
+    @_char_level_table_extraction
     def test_detect_tables_vector_overlap_existing_skip(self):
         page = MagicMock()
         page.images = []
@@ -5615,6 +5937,7 @@ class TestCoveragePush95Phase6:
         boxes = _detect_table_boxes_from_vectors(page, 612, 792)
         assert boxes
 
+    @_char_level_table_extraction
     def test_borderless_returns_table_with_headers(self):
         words = [_w("months ended June", 72, 250, 735, 745)]
         y = 700.0
@@ -5764,7 +6087,7 @@ class TestCoveragePush95Phase6:
                             ola, "_rasterize_page", return_value=(fake_img, 150 / 72.0),
                         ) as mock_raster:
                             with patch.object(
-                                ola, "_crop_image_bytes", return_value=b"png",
+                                ola, "_crop_image", return_value=(b"png", "png"),
                             ):
                                 regions = extract_layout_regions(page, pdf_path="/tmp/x.pdf")
         assert mock_raster.called
@@ -5914,9 +6237,9 @@ class TestCoveragePush95Phase6:
 
     def test_reportlab_financial_table_borderless(self):
         pytest.importorskip("reportlab")
+        import pdfplumber
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
-        import pdfplumber
 
         buf = BytesIO()
         c = canvas.Canvas(buf, pagesize=letter)
@@ -6387,6 +6710,7 @@ class TestCoveragePush95Phase6:
         tables = _detect_tables(page, 612, 792, [], stripe_frames=[])
         assert tables == []
 
+    @_char_level_table_extraction
     def test_detect_tables_vector_iou_skip_existing(self):
         page = MagicMock()
         page.images = []
@@ -6416,3 +6740,136 @@ class TestCoveragePush95Phase6:
         } for _ in range(8)]
         page.lines = []
         assert _detect_uniform_fill_stripe_regions(page) == []
+
+
+class TestHeadingLinesSplitOffParagraphs:
+    """A heading set on a paragraph's first (or a short block's last) line becomes its own region."""
+
+    @staticmethod
+    def _line(text: str, y: float, *, bold: bool = False, size: float = 8.0) -> list[dict]:
+        font = "Times-Bold" if bold else "Times-Roman"
+        words, x = [], 50.0
+        for w in text.split():
+            words.append({"text": w, "x0": x, "x1": x + 6 * len(w), "top": y, "bottom": y + size,
+                          "size": size, "fontname": font})
+            x += 6 * len(w) + 4
+        return words
+
+    def _texts(self, head, body, trailing) -> tuple[str, list[str], list[str]]:
+        from app.modules.parsers.pdf.opencv_layout_analyzer import _line_text
+
+        return " ".join(w["text"] for w in head), [_line_text(line) for line in body], [_line_text(line) for line in trailing]
+
+    def test_numbered_first_line(self) -> None:
+        from app.modules.parsers.pdf.opencv_layout_analyzer import _split_headings
+
+        lines = [self._line("Item 7. Management's Discussion", 0), self._line("Sales grew in 2018.", 10)]
+        assert self._texts(*_split_headings(lines)) == ("Item 7. Management's Discussion", ["Sales grew in 2018."], [])
+
+    def test_numbered_title_run_into_its_paragraph(self) -> None:
+        from app.modules.parsers.pdf.opencv_layout_analyzer import _split_headings
+
+        lines = [self._line("Item 1. Busines s. 3M Company was incorporated", 0), self._line("in 1929.", 10)]
+        assert self._texts(*_split_headings(lines)) == (
+            "Item 1. Busines s.", ["3M Company was incorporated", "in 1929."], []
+        )
+
+    def test_part_closing_a_short_block(self) -> None:
+        from app.modules.parsers.pdf.opencv_layout_analyzer import _split_headings
+
+        lines = [self._line("3M COMPANY", 0, bold=True), self._line("ANNUAL REPORT", 10, bold=True),
+                 self._line("PART I", 20, bold=True)]
+        assert self._texts(*_split_headings(lines)) == ("", ["3M COMPANY", "ANNUAL REPORT"], ["PART I"])
+
+    def test_a_bold_or_larger_first_line_stays_in_its_paragraph(self) -> None:
+        """It is as often a figure caption or chart title, which must stay one block."""
+        from app.modules.parsers.pdf.opencv_layout_analyzer import _split_headings
+
+        bold = [self._line("Figure 3 Revenue by region", 0, bold=True), self._line("Unit: %", 10)]
+        large = [self._line("Figure 3 Revenue by region", 0, size=11), self._line("Unit: %", 10)]
+        for lines in (bold, large):
+            assert self._texts(*_split_headings(lines)) == ("", ["Figure 3 Revenue by region", "Unit: %"], [])
+
+    @pytest.mark.parametrize(("text", "is_title"), [
+        ("Item 7. Management's Discussion", True),
+        ("ITEM 1A. RISK FACTORS", True),
+        ("PART II", True),
+        ("NOTE 5 LONG-TERM DEBT", True),
+        ("Note 12: Leases", True),
+        ("Item 6. [Reserved]", True),
+        ("Item 8B for additional information on our agreements", False),
+        ("Note 5 shows that revenue grew", False),
+        ("Item 7 of this report discusses", False),
+        ("note 3. the company", False),
+    ])
+    def test_only_a_numbered_title_is_a_heading(self, text: str, is_title: bool) -> None:
+        """A paragraph that opens with a reference ("Note 5 shows ...") is not split."""
+        from app.modules.parsers.pdf.opencv_layout_analyzer import _split_headings
+
+        lines = [self._line(text, 0), self._line("Cash rose.", 10)]
+        head = self._texts(*_split_headings(lines))[0]
+        assert bool(head) is is_title
+
+    def test_a_reference_inside_a_paragraph_is_not_a_heading(self) -> None:
+        from app.modules.parsers.pdf.opencv_layout_analyzer import _split_headings
+
+        lines = [self._line("Sales rose as described in", 0), self._line("Item 7 of this report.", 10),
+                 self._line("Costs fell.", 20), self._line("More text.", 30), self._line("End.", 40)]
+        assert self._texts(*_split_headings(lines)) == ("", [
+            "Sales rose as described in", "Item 7 of this report.", "Costs fell.", "More text.", "End."], [])
+
+    def test_text_regions_mark_the_heading(self) -> None:
+        from app.modules.parsers.pdf.opencv_layout_analyzer import (
+            _text_regions_from_words,
+        )
+
+        words = self._line("Item 7. Management's Discussion", 0) + self._line("Sales grew in 2018 across segments.", 10)
+        regions = _text_regions_from_words(words)
+        assert [(r.text, r.heading) for r in regions] == [
+            ("Item 7. Management's Discussion", True), ("Sales grew in 2018 across segments.", False)
+        ]
+
+    def test_a_small_heading_is_not_merged_into_its_neighbour(self) -> None:
+        from app.modules.parsers.pdf.opencv_layout_analyzer import (
+            LayoutRegion,
+            LayoutRegionType,
+            _merge_small_text_regions,
+        )
+
+        heading = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(50, 0, 200, 8), text="PART I", heading=True)
+        small = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(50, 10, 200, 18), text="short line")
+        body = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(50, 300, 200, 400), text="far away " * 20)
+        out = _merge_small_text_regions([heading, small, body], max_gap=None)
+        assert out[0].text == "PART I" and out[0].heading
+
+
+class TestHeadingsInsideARun:
+    """A numbered heading on a middle line of a text run opens its own region."""
+
+    _line = staticmethod(TestHeadingLinesSplitOffParagraphs._line)
+
+    def test_an_item_between_two_paragraphs_is_split_off(self) -> None:
+        from app.modules.parsers.pdf.opencv_layout_analyzer import (
+            _text_regions_from_words,
+        )
+
+        # 3M_2022_10K p.43: "... natural gas." / "Item 8. Financial Statements ..." / "Report of ..."
+        words = (self._line("primarily electricity and natural gas.", 0)
+                 + self._line("Item 8. Financial Statements and Supplementary Data.", 10)
+                 + self._line("Report of Independent Registered Public Accounting Firm", 20)
+                 + self._line("To the Shareholders and Board of Directors of 3M Company", 30))
+        regions = _text_regions_from_words(words)
+        assert [(r.text.split("\n")[0], r.heading) for r in regions] == [
+            ("primarily electricity and natural gas.", False),
+            ("Item 8. Financial Statements and Supplementary Data.", True),
+            ("Report of Independent Registered Public Accounting Firm", False),
+        ]
+
+    def test_a_reference_wrapped_onto_a_new_line_is_not_a_heading(self) -> None:
+        from app.modules.parsers.pdf.opencv_layout_analyzer import (
+            _split_at_inner_headings,
+        )
+
+        lines = [self._line("Sales rose, as discussed in", 0), self._line("Item 7 of this report, on", 10),
+                 self._line("higher volumes.", 20), self._line("Item 7A covers market risk in detail", 30)]
+        assert len(_split_at_inner_headings(lines)) == 1  # "in" ends no sentence; "Item 7A covers" ...

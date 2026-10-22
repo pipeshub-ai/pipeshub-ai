@@ -1,6 +1,8 @@
 import json
 import logging
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Dict, Optional  # noqa: UP035 - keep aliases for legacy callers
 from urllib.parse import urlparse
 
@@ -248,6 +250,52 @@ def check_salesforce_login_url_setting(connector_type: str, settings: dict[str, 
     if (connector_type or "").replace(" ", "").lower() != "salesforce":
         return
     normalize_salesforce_login_url((settings or {}).get(AuthFieldKeys.LOGIN_URL))
+
+
+@dataclass(frozen=True)
+class OAuthUrlRule:
+    """A connector's own rule for where its OAuth requests may go.
+
+    The code exchange and refresh send the client secret from the server, so a
+    connector whose endpoints are fixed by its settings registers one of these
+    instead of trusting the saved URL fields. ``check`` runs on save, ``pin``
+    rewrites the flow's URLs before every request; both raise ValueError with a
+    message fit to show the admin. ``settings`` are the keys ``pin`` reads.
+    """
+
+    check: Callable[[dict[str, Any]], None]
+    pin: Callable[[dict[str, Any]], None]
+    settings: tuple[str, ...] = ()
+
+
+_OAUTH_URL_RULES: dict[str, OAuthUrlRule] = {}
+
+
+def _rule_for(connector_type: str) -> OAuthUrlRule | None:
+    return _OAUTH_URL_RULES.get((connector_type or "").replace(" ", "").lower())
+
+
+def register_oauth_url_rule(connector_type: str, rule: OAuthUrlRule) -> None:
+    _OAUTH_URL_RULES[connector_type.replace(" ", "").lower()] = rule
+
+
+def check_oauth_url_settings(connector_type: str, settings: dict[str, Any] | None) -> None:
+    rule = _rule_for(connector_type)
+    if rule:
+        rule.check(settings or {})
+
+
+def pin_oauth_urls(connector_type: str, flow_config: dict[str, Any]) -> None:
+    rule = _rule_for(connector_type)
+    if rule:
+        rule.pin(flow_config)
+
+
+def carry_oauth_url_settings(connector_type: str, source: dict[str, Any], flow_config: dict[str, Any]) -> None:
+    rule = _rule_for(connector_type)
+    for key in rule.settings if rule else ():
+        if not flow_config.get(key) and source.get(key):
+            flow_config[key] = source[key]
 
 
 def get_oauth_config(auth_config: dict) -> OAuthConfig:

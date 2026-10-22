@@ -41,14 +41,18 @@ export interface ActionTypeDetailsLayoutProps {
   /** In-place update (e.g. after OAuth): keep list visible with a light busy state instead of a full loading swap. */
   listRefreshing?: boolean;
   onBack: () => void;
-  /** When omitted (e.g. personal browse), the add button is hidden. */
+  /** When omitted, the add button is hidden. */
   onAddInstance?: () => void;
+  /** The add button's label (default: "Add instance"). */
+  addInstanceLabel?: string;
   onOpenDocs?: () => void;
   onAuthenticateInstance: (instance: BuilderSidebarToolset) => void;
   /** Opens user credential / sign-in panel (personal). */
   onConfigureInstance: (instance: BuilderSidebarToolset) => void;
-  /** Admin: OAuth app / instance management (gear). */
+  /** Admin: OAuth app / instance management (gear); personal: the owner's own actions. */
   onManageInstance?: (instance: BuilderSidebarToolset) => void;
+  /** Which rows get the manage gear (default: every row). */
+  canManageInstance?: (instance: BuilderSidebarToolset) => boolean;
   /** When set, shows instance tabs, search, refresh, and optional banner (admin team detail). */
   instanceFilter?: ActionTypeInstanceFilter | null;
   /** Server-paginated instance list (type detail). */
@@ -63,10 +67,12 @@ export function ActionTypeDetailsLayout({
   listRefreshing = false,
   onBack,
   onAddInstance,
+  addInstanceLabel,
   onOpenDocs,
   onAuthenticateInstance,
   onConfigureInstance,
   onManageInstance,
+  canManageInstance,
   instanceFilter,
   pagination = null,
 }: ActionTypeDetailsLayoutProps) {
@@ -245,7 +251,7 @@ export function ActionTypeDetailsLayout({
           {onAddInstance ? (
             <Button variant="solid" size="2" onClick={onAddInstance} style={{ cursor: 'pointer' }}>
               <MaterialIcon name="add" size={16} color="white" />
-              {t('workspace.actions.typeDetail.addInstance')}
+              {addInstanceLabel ?? t('workspace.actions.typeDetail.addInstance')}
             </Button>
           ) : null}
         </Flex>
@@ -324,7 +330,9 @@ export function ActionTypeDetailsLayout({
                 instance={inst}
                 onAuthenticate={() => onAuthenticateInstance(inst)}
                 onConfigure={() => onConfigureInstance(inst)}
-                onManage={onManageInstance ? () => onManageInstance(inst) : undefined}
+                onManage={
+                  onManageInstance && (canManageInstance?.(inst) ?? true) ? () => onManageInstance(inst) : undefined
+                }
               />
             ))}
             {pagination && pagination.totalPages > 1 ? (

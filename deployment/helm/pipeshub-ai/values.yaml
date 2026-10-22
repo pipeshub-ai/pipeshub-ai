@@ -367,9 +367,28 @@ config:
   # search_by_entities, which links named people, organizations, products or
   # places to extracted entities and searches the records that mention them.
   # It stays off under this mode unless set, and needs named-entity extraction.
+  # TIMELINE_SUMMARIES is not part of this mode: it is on unless set to
+  # "false" through extraEnv. With it on, the agent has search_timeline, which
+  # searches a span of time period by period and returns the matches in date
+  # order, and questions about a span ("between March and May", "how did X
+  # evolve") are pointed to it. A search bounded on one date over more than
+  # 31 days runs period by period too.
+  # DATE_FILTER_SAFETY_NET is not part of this mode: it is on unless set to
+  # "false" through extraEnv. With it on, a search with a date filter also
+  # runs once without dates and names its best 3 matches written outside the
+  # dates, such as release notes written after the period, apart from the
+  # results.
   # FETCH_SIZE_BY_CHARS is not part of this mode: it is on unless set to
   # "false" through extraEnv. With it on, fetch_record reads as much of each
   # record as fits a share of the context window instead of a block count.
+  # TARGETED_RETRIEVAL is not part of this mode either: it is on unless set to
+  # "false" through extraEnv. With it on, a search returns fewer passages per
+  # record and fetch_record takes a query that reads the part of a record it
+  # names.
+  # SEARCH_SOURCE_DIVERSITY is not part of this mode: it is off unless set to
+  # "true" through extraEnv. With it on, no one connector type holds more than
+  # 4 of the first 10 records of a search API result; the records it pushes
+  # down come back after the first page.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network
@@ -869,6 +888,9 @@ qdrant:
       - ReadWriteOnce
     size: 10Gi
     storageClass: "" # Fill
+  # Per pod. Search slows sharply once the index outgrows the memory limit; size
+  # it from docs/deployment/vector-db-sizing.md. The chart passes the limit to
+  # the app as QDRANT_MEMORY_LIMIT for the warning on the Services page.
   resources:
     limits:
       cpu: 2000m

@@ -85,7 +85,6 @@ services:
       - PARSING_SERVICE_URL=http://localhost:8092
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
-      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
       # run_code needs a sandbox, and an unset SANDBOX_MODE turns it off. This
       # stack is single-user CI with no Docker daemon for sandbox containers, so run it locally.
       - SANDBOX_MODE=${SANDBOX_MODE:-local}
@@ -135,6 +134,7 @@ services:
       # Qdrant config
       - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
       - QDRANT_HOST=qdrant
+      - QDRANT_MEMORY_LIMIT=${QDRANT_MEMORY_LIMIT:-4G}
       - QDRANT_GRPC_PORT=6334
       - QDRANT_PORT=6333
 
@@ -178,7 +178,15 @@ services:
       - THOROUGH_RETRIEVAL=${THOROUGH_RETRIEVAL:-}
       - MULTI_STEP_ANSWER_RULES=${MULTI_STEP_ANSWER_RULES:-}
       - ENTITY_SEARCH_TOOL=${ENTITY_SEARCH_TOOL:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TIMELINE_SUMMARIES=${TIMELINE_SUMMARIES:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - DATE_FILTER_SAFETY_NET=${DATE_FILTER_SAFETY_NET:-}
       - FETCH_SIZE_BY_CHARS=${FETCH_SIZE_BY_CHARS:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-true}
@@ -455,6 +463,7 @@ services:
       /bin/sh -c "
       mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-pipeshubtest} ${MINIO_ROOT_PASSWORD:-pipeshubtest123} &&
       mc mb --ignore-existing local/${MINIO_TEST_BUCKET:-pipeshub-connector-test} &&
+      mc mb --ignore-existing local/${MINIO_SECOND_TEST_BUCKET:-pipeshub-connector-test-2} &&
       echo 'minio bucket ready'
       "
 
@@ -530,7 +539,10 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 4G
+          # Search slows sharply once the index outgrows this; size it from
+          # docs/deployment/vector-db-sizing.md. QDRANT_MEMORY_LIMIT also tells
+          # the app the figure, for the warning on the Services page.
+          memory: ${QDRANT_MEMORY_LIMIT:-4G}
         reservations:
           cpus: '2'
           memory: 2G

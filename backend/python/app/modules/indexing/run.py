@@ -1044,10 +1044,10 @@ class IndexingPipeline:
     async def _forget_virtual_record_mappings(
         self, virtual_record_ids: List[str], *, org_id: str | None = None
     ) -> List[str]:
-        """Let go of virtual records whose points are gone: stored content first, mapping row last.
+        """Let go of virtual records whose points are gone: stored content and stage states first, mapping row last.
 
-        Returns the ids whose stored content could not be removed. Their mapping
-        rows stay, so the orphan sweeper finds them and tries again.
+        Returns the ids not fully released. Their mapping rows stay, so the
+        orphan sweeper finds them and tries again.
         """
         if not virtual_record_ids:
             return []
@@ -1063,6 +1063,16 @@ class IndexingPipeline:
                     failed[:20],
                 )
             return failed
+        try:
+            await self.graph_provider.stage_states_delete_for_virtual_records(list(virtual_record_ids))
+        except Exception as e:
+            self.logger.error(
+                "Failed to delete the pipeline stage states of %d virtual record(s); keeping their "
+                "mapping rows for the orphan sweeper: %s",
+                len(virtual_record_ids),
+                e,
+            )
+            return list(virtual_record_ids)
         try:
             await self.graph_provider.delete_nodes(
                 keys=virtual_record_ids,

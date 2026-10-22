@@ -6,7 +6,7 @@ import re
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from logging import Logger
-from typing import AsyncContextManager, Optional, TypeVar
+from typing import Any, AsyncContextManager, Optional, TypeVar
 
 # Import Neo4j exceptions with fallback for compatibility
 try:
@@ -386,8 +386,8 @@ class GraphTransactionStore(TransactionStore):
             record_id, transaction=self.txn, raise_on_error=raise_on_error
         )
 
-    async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
-        return await self.graph_provider.get_user_by_user_id(user_id)
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> Optional[User]:
+        return await self.graph_provider.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
 
     async def delete_record_by_key(self, key: str) -> None:
         self._memo_forget_record(key)
@@ -567,7 +567,13 @@ class GraphTransactionStore(TransactionStore):
         app_users_dict = await self.graph_provider.get_app_users(
             org_id, connector_id, raise_on_error=raise_on_error
         )
-        return [AppUser.from_arango_user(user_dict) for user_dict in app_users_dict if user_dict is not None]
+        # A membership the source names no user for, as an external collaborator's
+        # (on_external_app_users), is no app user: AppUser cannot be built without the
+        # source's id, and one such row would fail the whole list.
+        return [
+            AppUser.from_arango_user(user_dict) for user_dict in app_users_dict
+            if user_dict is not None and user_dict.get("sourceUserId")
+        ]
 
     async def get_user_groups(
         self, connector_id: str, org_id: str, *, raise_on_error: bool = False
@@ -743,7 +749,7 @@ class GraphTransactionStore(TransactionStore):
         collection: str,
         *,
         raise_on_error: bool = False,
-    ) -> Optional[dict]:
+    ) -> Optional[dict[str, Any]]:
         return await self.graph_provider.get_edge(
             from_id, from_collection, to_id, to_collection, collection,
             transaction=self.txn, raise_on_error=raise_on_error,
@@ -1123,7 +1129,7 @@ class GraphTransactionStore(TransactionStore):
                 transaction=self.txn
             )
 
-    async def batch_create_edges(self, edges: list[dict], collection: str) -> bool:
+    async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str) -> bool:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
     async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
@@ -1275,10 +1281,11 @@ class GraphDataStore(DataStoreProvider):
         is off. It holds its locks until commit, so keep such a block to a few
         writes, with no slow calls inside.
         """
+        options = {} if explicit is None else {"explicit": explicit}
         txn = await self.graph_provider.begin_transaction(
             read=read_collections,
             write=write_collections,
-            explicit=explicit,
+            **options,
         )
         self.logger.debug(f"✅ Transaction started with ID: {txn}")
 

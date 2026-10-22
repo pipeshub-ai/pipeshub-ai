@@ -9,7 +9,9 @@
       "reindexFailedStart": "正在重新索引失败的记录…",
       "reindexFailedError": "重新索引失败的记录时出错",
       "manualIndexStart": "正在索引手动索引记录…",
-      "manualIndexError": "启动手动索引失败"
+      "manualIndexError": "启动手动索引失败",
+      "retryClassificationStart": "分类重试已加入队列",
+      "retryClassificationError": "重试分类失败"
     },
     "trash": {
       "menuLabel": "最近删除",
@@ -684,7 +686,21 @@
     "chatSelectionLimit": "聊天最多可带入 {{max}} 个所选项目。请取消勾选部分项目后重试。",
     "chatTooManyCollections": "聊天一次最多可搜索 {{max}} 个集合，而您的集合更多。请打开一个集合，或勾选要提问的集合。",
     "chatCollectionsLoadFailed": "无法为聊天加载您的集合。请重试。",
-    "chatNoCollections": "您还没有可提问的集合。"
+    "chatNoCollections": "您还没有可提问的集合。",
+    "indexingStatus": {
+      "completed": "已完成",
+      "inProgress": "进行中",
+      "failed": "失败",
+      "fileTypeNotSupported": "不支持的文件类型",
+      "notStarted": "未开始",
+      "queued": "已排队",
+      "manualIndexing": "手动索引",
+      "empty": "空",
+      "paused": "已暂停",
+      "needsMultimodalModel": "需要多模态模型",
+      "skipped": "已跳过",
+      "pending": "待处理"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -824,6 +840,8 @@
     "like": "有帮助",
     "dislike": "没帮助",
     "copy": "复制",
+    "fork": "分叉对话",
+    "forkFromHere": "从此处分叉",
     "regenerate": "重新生成",
     "readAloud": "朗读",
     "stopReading": "停止朗读",
@@ -867,6 +885,11 @@
     "rename": "重命名",
     "archive": "归档",
     "deleteChat": "删除",
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "pinned": "已置顶",
+    "pinFailed": "无法置顶聊天",
+    "unpinFailed": "无法取消置顶聊天",
     "export": {
       "menuItem": "导出",
       "exporting": "正在导出聊天…",
@@ -951,7 +974,9 @@
       "editComingSoonDescription": "我们正在开发编辑功能",
       "deprecatedTools": "此智能体包含已不可用的工具。请打开智能体构建器将其移除。",
       "openAgentBuilder": "打开智能体构建器",
-      "loadConversationFailed": "无法打开此对话。请刷新页面后重试。"
+      "loadConversationFailed": "无法打开此对话。请刷新页面后重试。",
+      "forkSuccess": "已从此处开始新对话",
+      "forkError": "无法分叉此对话，请重试。"
     },
     "queryModes": {
       "chat": {
@@ -1330,7 +1355,7 @@
       "showAll": "显示全部",
       "showLess": "收起",
       "partial": "仅显示详细信息的开头部分：完整调用更长。",
-      "deletesData": "删除数据",
+      "cantBeUndone": "无法撤销",
       "allow": "允许",
       "dontAskAgain": "此工具不再询问",
       "answerFailed": "无法发送你的回答，请重试。",
@@ -2199,7 +2224,7 @@
       "title": "操作",
       "subtitle": "配置自动化操作，例如创建记录、更新字段或触发工作流。每个应用都有针对其支持功能定制的操作。",
       "yourActionsTitle": "您的操作",
-      "yourActionsSubtitle": "对管理员为您的账户开放的操作进行身份验证和管理。",
+      "yourActionsSubtitle": "登录管理员为您开放的操作，或添加您自己的操作。",
       "tabs": {
         "all": "全部",
         "configured": "已配置",
@@ -2219,7 +2244,7 @@
         "manage": "管理",
         "unavailable": "不可用",
         "notConfigured": "未配置",
-        "adminSetupRequired": "需要管理员设置"
+        "add": "添加"
       },
       "trailingYourActions": "您的操作",
       "loading": "正在加载操作…",
@@ -2279,7 +2304,7 @@
         "refreshingList": "正在更新列表…",
         "searchInstances": "搜索实例…",
         "teamInstanceInfo": "对您所在组织的操作实例进行身份验证。已验证的操作可添加到您的智能体中。",
-        "personalInstanceInfo": "对您所在组织的操作实例进行身份验证。验证完成后，您即可在智能体中使用这些操作。",
+        "personalInstanceInfo": "登录组织的操作或添加您自己的操作。登录后即可在智能体中使用。",
         "instanceTabs": {
           "all": "全部（{{count}}）",
           "authenticated": "已验证（{{count}}）",
@@ -2343,14 +2368,30 @@
         "numberMin": "请输入不小于 {{min, number}} 的整数。",
         "numberMax": "请输入不大于 {{max, number}} 的整数。"
       },
-      "adminRequiredToast": "只有管理员可以添加新操作。请让管理员先配置此操作。",
-      "personalNonAdminHint": "标记为「未配置」的操作需要管理员先完成设置，您才能使用。",
       "toolRules": {
         "open": "工具审批",
         "title": "工具审批：{{name}}",
         "description": "当助手或智能体想使用这些工具时会发生什么。这些规则对您组织中的每个人都相同。",
         "readOnly": "只有管理员可以更改这些规则。",
-        "toolsError": "无法加载此工具集的工具。"
+        "toolsError": "无法加载此工具集的工具。",
+        "defaults": "读取或更改数据的工具会直接运行。删除数据、清空表格或发送邮件的工具会先在 PipesHub 应用的聊天中询问，在无人能回应的地方（如 Slack 机器人或 API）不会运行。",
+        "enterpriseTitle": "组织工具审批",
+        "enterpriseDescription": "为组织中的所有人选择此工具集中的哪些工具直接运行、先询问或从不运行。"
+      },
+      "personal": {
+        "setupCallout": "只有您可以查看和使用此操作，且不能添加到与组织共享的智能体中。添加后请登录。",
+        "yours": "我的",
+        "addOwn": "添加我的",
+        "added": "操作已添加。",
+        "delete": "删除操作",
+        "deleteTitle": "删除 {{name}}？",
+        "deleteBody": "您对该操作的登录信息和工具审批也会一并删除。删除后无法恢复。",
+        "deleted": "操作已删除。",
+        "adminOnly": "只有管理员可以添加 {{name}}：它通过主机名连接服务器。请让管理员为您的组织添加。"
+      },
+      "enterprise": {
+        "userActionsTitle": "成员自己的操作",
+        "userActionsDescription": "查看并移除组织成员为自己添加的操作。"
       }
     },
     "rightPanel": {
@@ -2771,6 +2812,11 @@
         "noRecordTypes": "没有可用的记录类型",
         "localWatcherLabel": "本地监视器",
         "localWatcherStatus": "{{state}} · {{pending}} 个待处理 · {{failed}} 个失败",
+        "classification": "分类",
+        "classificationSkipped": "已跳过",
+        "retryFailedClassification": "重试失败的分类",
+        "retryClassificationSuccess": "分类重试已加入队列",
+        "retryClassificationError": "重试分类失败",
         "lastRun": {
           "title": "上次同步",
           "outcome": {
@@ -3346,7 +3392,7 @@
           "none": "服务器没有说明此工具的作用，因此将其视为会更改数据。"
         },
         "group": {
-          "destructive": "删除数据",
+          "destructive": "无法撤销",
           "write": "更改数据",
           "read": "只读",
           "notOffered": "当前未提供",
@@ -3951,6 +3997,12 @@
           "label": "提取服务",
           "description": "基于 LLM 的文档分类和元数据提取"
         }
+      },
+      "vectorDbMemory": {
+        "title": "搜索索引超出了向量数据库的内存",
+        "message": "搜索索引需要约 {{needed}} GB 内存才能保持快速；向量数据库只有约 {{available}} GB，因此搜索会从磁盘读取，多个搜索同时运行时会更慢。",
+        "messageHost": "搜索索引需要约 {{needed}} GB 内存才能保持快速；运行向量数据库的服务器总共只有约 {{available}} GB，因此搜索会从磁盘读取，多个搜索同时运行时会更慢。",
+        "guide": "向量数据库容量规划指南"
       }
     },
     "tenants": {
@@ -4210,7 +4262,43 @@
       "disableTitle": "停用此服务账号？",
       "disableDescription": "{{name}} 会立即停止工作——包括它已持有的所有令牌，而不只是等到下次登录。在您重新启用之前，使用这些令牌的一切都会持续失败。",
       "disableConfirm": "停用",
-      "memberBadge": "服务账户"
+      "memberBadge": "服务账户",
+      "manageDelegations": "可代表哪些人",
+      "delegations": {
+        "title": "代表他人执行操作",
+        "explainer": "可以允许此服务账号代表指定的人员执行操作。此时它读取的内容与该人员完全一致，所获得的令牌有效期为五分钟。此处不能指定管理员。",
+        "unavailableTitle": "代表某个人行事属于企业版功能",
+        "unavailableBody": "允许此服务账户以指定同事的身份行事 —— 允许名单、以该人名义签发的五分钟令牌，以及每次尝试的记录 —— 属于企业版，本版本不包含该功能。",
+        "unavailableAvailableHere": "本版本包含：服务账户本身、它对您授予的知识库的自有访问权限，以及您可以签发和吠回的令牌。这足以满足任何使用自身权限而非他人权限的集成。",
+        "addTitle": "允许代表某人",
+        "subjectLabel": "人员",
+        "subjectPlaceholder": "name@example.com",
+        "subjectHelp": "输入此服务账号可代表的人员的电子邮件地址。",
+        "reasonLabel": "原因",
+        "reasonPlaceholder": "为什么需要",
+        "reasonHelp": "将显示给日后审核此列表的人。",
+        "addConfirm": "允许",
+        "listTitle": "可代表",
+        "none": "此服务账号不能代表任何人，只能以自己的权限读取。",
+        "loading": "加载中…",
+        "inactive": "不再可用",
+        "revoke": "移除",
+        "revokeTitle": "移除此权限？",
+        "revokeDescription": "此服务账号将不能再代表 {{subject}}。",
+        "revokeSuccessTitle": "权限已移除",
+        "revokeErrorTitle": "无法移除权限",
+        "grantSuccessTitle": "权限已授予",
+        "grantErrorTitle": "无法授予权限",
+        "loadErrorTitle": "无法加载委托设置",
+        "logTitle": "近期活动",
+        "logHelp": "此列表的每次变更，以及此服务账号每次请求代表他人的记录，包括被拒绝的请求。",
+        "logNone": "尚无记录。",
+        "outcomeIssued": "已允许",
+        "outcomeRefused": "已拒绝",
+        "outcomeGranted": "已添加权限",
+        "outcomeRevoked": "已移除权限",
+        "byAdmin": "由 {{admin}}"
+      }
     }
   },
   "filePreview": {
@@ -4570,7 +4658,8 @@
     "mcpAgentApprovals": "按智能体设置工具审批",
     "limitSource": "选择 {{name}} 的搜索范围",
     "limitSourceHint": "保持勾选整个来源，或取消勾选后勾选智能体可以搜索的文件夹和项目。",
-    "limitSourceCount": "仅限所选的 {{count}} 项"
+    "limitSourceCount": "仅限所选的 {{count}} 项",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} 是您的个人操作，不能添加到与组织共享或以服务账号运行的智能体中。"
   },
   "recordView": {
     "sections": {
@@ -4598,6 +4687,12 @@
       "noRecordMetadata": "此项目没有其他记录元数据。"
     },
     "indexingReasonAria": "索引失败详情",
+    "stageTrackLabel": "处理流程",
+    "stageParsed": "已解析",
+    "stageSearchable": "可搜索",
+    "stageClassified": "已分类",
+    "stageAttempt": "第 {{n}} 次尝试",
+    "stageDetailsAria": "阶段详情",
     "tabRecordInformation": "记录信息",
     "tabDocumentDetails": "文档详情",
     "chat": "聊天",
@@ -4840,6 +4935,7 @@
     },
     "desktopHandoff": {
       "title": "登录已发送到 PipesHub",
+      "integrationTitle": "授权已发送到 PipesHub",
       "description": "您可以关闭此标签页并返回 PipesHub 应用。",
       "openApp": "打开 PipesHub"
     }

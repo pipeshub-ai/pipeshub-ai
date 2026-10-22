@@ -25,7 +25,6 @@ from app.connectors.sources.dropbox_individual.connector import (
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import FileRecord, RecordGroupType, RecordType
-from app.models.permission import EntityType, Permission, PermissionType
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 MODULE = "app.connectors.sources.dropbox_individual.connector"
@@ -634,25 +633,17 @@ class TestProcessDropboxEntry:
         assert result.record.parent_external_record_id == "id:parent"
 
     @pytest.mark.asyncio
-    async def test_permission_fallback_on_exception(self):
+    async def test_a_record_stores_no_grant_and_inherits_from_the_account(self):
         c, _, _ = _make_connector()
         entry = _make_file_entry()
         _mock_temp_link(c)
         _mock_sharing_success(c)
 
-        with patch(f"{MODULE}.Permission") as mock_perm_cls:
-            mock_perm_cls.side_effect = [
-                Exception("perm fail"),
-                Permission(
-                    external_id="uid",
-                    email="u@test.com",
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER,
-                ),
-            ]
-            result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
+        result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
 
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == [] and result.permissions_changed is True
+        assert result.record.inherit_permissions is True
+        assert result.record.rewrite_permissions is True
 
     @pytest.mark.asyncio
     async def test_entry_processing_exception_returns_none(self):

@@ -14,7 +14,7 @@ type AvailableFlag = {
 };
 
 const FLAGS: AvailableFlag[] = [
-  { key: 'ENABLE_MCP', label: 'Enable MCP Servers', description: 'mcp', defaultEnabled: false },
+  { key: 'ENABLE_MCP', label: 'Enable MCP Servers', description: 'mcp', defaultEnabled: true },
   { key: 'ENABLE_ACTIONS', label: 'Enable Actions', description: 'actions', defaultEnabled: true },
   { key: 'ENABLE_PROJECTS', label: 'Enable Projects', description: 'projects', defaultEnabled: false },
   { key: 'ENABLE_SKILLS', label: 'Enable Skills (Beta)', description: 'skills', defaultEnabled: true },
@@ -22,13 +22,6 @@ const FLAGS: AvailableFlag[] = [
     key: 'ENABLE_VECTOR_STORE_REBUILD',
     label: 'Enable Vector Store Rebuild',
     description: 'rebuild',
-    defaultEnabled: false,
-    advanced: true,
-  },
-  {
-    key: 'ENABLE_CONTAINER_PERMISSION_FILTER',
-    label: 'Enable Container Permission Filter',
-    description: 'filter',
     defaultEnabled: false,
     advanced: true,
   },
@@ -138,7 +131,6 @@ import { useLabsStore } from '../store';
 
 const ADVANCED_LABELS = [
   'Enable Vector Store Rebuild',
-  'Enable Container Permission Filter',
   'Move Deleted Records to the Trash',
   'Extract Named Entities',
   'Send User & Organization Context to Agents',

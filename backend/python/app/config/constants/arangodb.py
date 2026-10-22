@@ -75,6 +75,7 @@ class Connectors(Enum):
     AZURE_FILES = "AZURE FILES"
     LINEAR = "LINEAR"
     ZAMMAD = "ZAMMAD"
+    ZENDESK = "ZENDESK"
     ZOOM = "ZOOM"
 
     GITLAB = "GITLAB"
@@ -159,6 +160,7 @@ class AppGroups(Enum):
     LINEAR = "Linear"
     SLACK = "Slack"
     ZAMMAD = "Zammad"
+    ZENDESK = "Zendesk"
     ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
     DEMO = "Demo"
@@ -288,6 +290,7 @@ class CollectionNames(Enum):
 
     # Storage mappings
     VIRTUAL_RECORD_TO_DOC_ID_MAPPING = "virtualRecordToDocIdMapping"
+    STAGE_STATES = "stageStates"
     # Agent Builder collections
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
@@ -623,6 +626,8 @@ class ProgressStatus(Enum):
     EMPTY = "EMPTY"
     ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
     QUEUED = "QUEUED"
+    # A stage that does not apply to this record (policy off, nothing to process).
+    SKIPPED = "SKIPPED"
 
 
 class DeleteSource(str, Enum):
@@ -672,6 +677,9 @@ class RecordRelations(Enum):
     IMPLEMENTS = "IMPLEMENTS"
     REVIEWS = "REVIEWS"
     CAUSES = "CAUSES"
+    # Inverse of CAUSES. A link edge always runs from the record being synced, so a
+    # source that names the cause on the effect (Zendesk's problem_id) needs this.
+    CAUSED_BY = "CAUSED_BY"
     RELATED = "RELATED"
     FOREIGN_KEY = "FOREIGN_KEY"
     # An output artifact (chart, PDF, spreadsheet, ...) was produced by

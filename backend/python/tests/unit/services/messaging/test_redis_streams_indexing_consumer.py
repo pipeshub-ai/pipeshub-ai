@@ -867,6 +867,54 @@ class TestProcessMessageWrapper:
         assert consumer.indexing_semaphore._value == 1
 
     @pytest.mark.asyncio
+    async def test_ownership_check_timeout_leaves_entry_pending(self, consumer) -> None:
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        consumer.redis.xpending_range.side_effect = TimeoutError()
+        consumer.main_loop = asyncio.get_running_loop()
+        consumer.message_handler = MagicMock()
+        consumer._ack_message = AsyncMock()
+        consumer._pending_message_is_owned = (
+            IndexingRedisStreamsConsumer._pending_message_is_owned.__get__(
+                consumer, IndexingRedisStreamsConsumer
+            )
+        )
+
+        result = await consumer._process_message_wrapper(
+            "stream-a", "1-0", _valid_fields(payload={"recordId": "r1"})
+        )
+
+        assert result is False
+        consumer.message_handler.assert_not_called()
+        consumer._ack_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_retry_counter_timeout_leaves_failed_entry_pending(self, consumer) -> None:
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.retry_manager = AsyncMock()
+        consumer.retry_manager.get_count = AsyncMock(return_value=0)
+        consumer.retry_manager.increment_and_check = AsyncMock(side_effect=TimeoutError())
+        consumer._requeue_message = AsyncMock()
+        consumer._ack_message = AsyncMock()
+
+        async def handler(msg: object) -> AsyncGenerator[PipelineEvent, None]:
+            raise ConnectionError("embedding endpoint unreachable")
+            yield  # pragma: no cover
+
+        consumer.message_handler = handler
+
+        result = await consumer._process_message_wrapper(
+            "stream-a", "1-0", _valid_fields(payload={"recordId": "r1"})
+        )
+
+        assert result is False
+        consumer._requeue_message.assert_not_called()
+        consumer._ack_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_successful_processing_with_xack(self, consumer):
         """Full happy path: handler yields both events, xack succeeds."""
         consumer.parsing_semaphore = asyncio.Semaphore(1)
@@ -1315,8 +1363,8 @@ class TestProcessMessageWrapper:
         mock_main_loop.is_running.return_value = True
         consumer.main_loop = mock_main_loop
 
+        # Never resolved: a reply that already arrived is not a timeout.
         ack_future = Future()
-        ack_future.set_result(1)
 
         with patch(
             "asyncio.run_coroutine_threadsafe",
@@ -2058,6 +2106,35 @@ class TestProcessMessageWrapperWithGovernor:
         governor_consumer._ack_message.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_paused_dependency_hand_back_waits_its_delay_and_is_not_a_crash_loop(
+        self, governor_consumer
+    ) -> None:
+        """However long an outage lasts, a job waiting on it is never dead-lettered for waiting."""
+
+        class DependencyPaused(concurrency.RequeueWithoutAttempt):
+            counts_toward_backstop = False
+
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.retry_manager = AsyncMock()
+        governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._ack_message = AsyncMock()
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            raise DependencyPaused("provider down", delay_s=42.0)
+            yield  # an async generator, like every handler
+
+        governor_consumer.message_handler = handler
+        result = await governor_consumer._process_message_wrapper("stream-a", "1-0", _valid_fields())
+
+        assert result is False
+        assert governor_consumer._requeue_message.await_args.kwargs["delay_s"] == 42.0
+        governor_consumer.retry_manager.record_delivery.assert_not_awaited()
+        governor_consumer.retry_manager.clear_deliveries.assert_awaited_once()
+        governor_consumer.retry_manager.increment_and_check.assert_not_awaited()
+        governor_consumer._ack_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_admission_requeues_stop_at_the_delivery_backstop(
         self, governor_consumer, monkeypatch
     ) -> None:
@@ -2180,6 +2257,19 @@ class TestRetryDelayBeforeSemaphore:
         assert sent_payload["_retry_tracking_id"] == "stable-id"
         # retry_count=2 -> ~60s backoff
         assert before + 59.0 <= sent_payload["_retry_not_before"] <= before + 61.0
+
+    @pytest.mark.asyncio
+    async def test_requeue_message_holds_for_a_given_delay(self, consumer) -> None:
+        consumer.producer = AsyncMock()
+        before = time.time()
+
+        await consumer._requeue_message(
+            "stream-a", StreamMessage(eventType="stageJob", payload={"jobId": "j1"}), "stable-id",
+            retry_count=0, delay_s=90.0,
+        )
+
+        sent_payload = consumer.producer.send_event.await_args.kwargs["payload"]
+        assert before + 89.0 <= sent_payload["_retry_not_before"] <= before + 91.0
 
     @pytest.mark.asyncio
     async def test_requeue_requires_producer(self, consumer):

@@ -19,6 +19,7 @@ import * as cmConfigModule from '../src/modules/configuration_manager/config/con
 import * as messageBrokerModule from '../src/libs/services/message-broker.factory';
 import * as kvMigrationModule from '../src/libs/keyValueStore/migration/kvStoreMigration.service';
 import * as oauthProviderModule from '../src/libs/services/oauth-token-service.provider';
+import * as rateLimitModule from '../src/libs/middlewares/rate-limit.middleware';
 import { RedisConnectionProviderFactory } from '../src/libs/services/redis/connectionProviderFactory';
 import * as redisConnectionProviderFactoryModule from '../src/libs/services/redis/connectionProviderFactory';
 import { TokenManagerContainer } from '../src/modules/tokens_manager/container/token-manager.container';
@@ -59,12 +60,17 @@ import * as oauthProviderRoutes from '../src/modules/oauth_provider/routes/oauth
 import * as oauthClientsRoutes from '../src/modules/oauth_provider/routes/oauth.clients.routes';
 import * as patRoutes from '../src/modules/oauth_provider/routes/pat.routes';
 import * as mcpRoutes from '../src/modules/mcp/routes/mcp.routes';
+import {
+  MCP_BODY_TOO_LARGE_MESSAGE,
+  MCP_JSON_BODY_LIMIT_BYTES,
+} from '../src/modules/mcp/middlewares/mcp-body.middleware';
 import * as oidcRoutes from '../src/modules/oauth_provider/routes/oid.provider.routes';
 import * as apiDocsRoutes from '../src/modules/api-docs/docs.routes';
 import * as toolsetsRoutes from '../src/modules/toolsets/routes/toolsets_routes';
 import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes';
 import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
+import * as delegationRoutes from '../src/modules/oauth_provider/routes/delegation.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
 import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
@@ -191,6 +197,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
   sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
   sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
+  sandbox.stub(delegationRoutes, 'createDelegationRouter').returns(dummyRouter);
 }
 
 /**
@@ -251,7 +258,9 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
   } as any);
   containers.oauth!.bind('ServiceTokenService').toConstantValue({
     revokeAllForServiceAccount: sandbox.stub().resolves(),
+    revokeDelegatedTokensForServiceAccount: sandbox.stub().resolves(),
   } as any);
+
 
   // NotificationService mock — needed for initialize() to call .initialize(server)
   const mockNotificationService = {
@@ -708,6 +717,159 @@ describe('Application', () => {
       } finally {
         restoreEnv('STRICT_MODE', original);
       }
+    });
+
+    it('runs the operator-key guard after the global rate limiter, so rejected requests still count', async () => {
+      const globalRateLimiter: express.RequestHandler = (_req, _res, next) => next();
+      sandbox.stub(rateLimitModule, 'createGlobalRateLimiter').returns(globalRateLimiter);
+      const orderedApp = new Application();
+      await orderedApp.initialize();
+
+      const expressApp = (orderedApp as any).app as express.Express;
+      const layerNames: string[] = (expressApp as any)._router.stack.map((layer: any) => layer.name);
+      const limiterAt = layerNames.indexOf('globalRateLimiter');
+      const guardAt = layerNames.indexOf('operatorKeyGuardMiddleware');
+      expect(limiterAt).to.be.greaterThan(-1);
+      expect(guardAt).to.be.greaterThan(limiterAt);
+    });
+
+    it('writes an access-log line for API requests in any letter case, and none for pages', async () => {
+      const expressApp = (app as any).app as express.Express;
+      const server = http.createServer(expressApp);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      const get = (path: string) =>
+        new Promise<void>((resolve, reject) => {
+          http
+            .get({ host: '127.0.0.1', port, path }, (res) => {
+              res.resume();
+              res.on('end', resolve);
+            })
+            .on('error', reject);
+        });
+      try {
+        for (const path of ['/api/v1/access-log-probe', '/API/v1/access-log-probe-upper', '/access-log-probe-page']) {
+          await get(path);
+        }
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+
+      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((line) => line.includes('access-log-probe'));
+      expect(accessLines.some((line) => line.includes('GET /api/v1/access-log-probe '))).to.equal(true);
+      expect(accessLines.some((line) => line.includes('GET /API/v1/access-log-probe-upper '))).to.equal(true);
+      expect(accessLines.some((line) => line.includes('/access-log-probe-page'))).to.equal(false);
+    });
+  });
+
+  // =========================================================================
+  // /mcp body limit — sent through the real middleware stack
+  // =========================================================================
+  describe('/mcp body limit', () => {
+    let server: http.Server;
+    let origin: string;
+
+    /**
+     * A tools/call body of exactly `bytes` bytes, made of 1,000-character ids:
+     * the XSS check refuses any single string over 100,000 characters.
+     */
+    const toolCallOfSize = (bytes: number): string => {
+      const shape = (apps: string[]) =>
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'pipeshub_search', arguments: { query: 'q', apps } },
+        });
+      const id = 'a'.repeat(1000);
+      // Each id after the first adds its quotes and a comma.
+      const apps = new Array<string>(
+        Math.floor((bytes - shape([]).length) / (id.length + 3)),
+      ).fill(id);
+      const rest = bytes - shape(apps).length;
+      if (rest >= 3) apps.push('a'.repeat(rest - 3));
+      else apps[apps.length - 1] += 'a'.repeat(rest);
+      const body = shape(apps);
+      expect(body.length).to.equal(bytes);
+      return body;
+    };
+
+    const post = (path: string, body: string) =>
+      fetch(`${origin}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+
+    beforeEach(async () => {
+      sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
+      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
+      sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
+      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+      stubAllContainers(sandbox);
+
+      const bodySize = (req: express.Request, res: express.Response) => {
+        res.json({ receivedBytes: JSON.stringify(req.body).length });
+      };
+      const mcpRouter = express.Router();
+      mcpRouter.post('/', bodySize);
+      const healthRouter = express.Router();
+      healthRouter.post('/', bodySize);
+      (mcpRoutes.createMCPRouter as sinon.SinonStub).returns(mcpRouter);
+      (healthRoutes.createHealthRouter as sinon.SinonStub).returns(healthRouter);
+
+      const app = new Application();
+      await app.initialize();
+      server = http.createServer((app as any).app as express.Express);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    });
+
+    afterEach(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it('answers a body one byte over 5 MB with a 413 JSON-RPC error that says what to do', async () => {
+      const res = await post('/mcp', toolCallOfSize(MCP_JSON_BODY_LIMIT_BYTES + 1));
+
+      expect(res.status).to.equal(413);
+      const body = await res.json();
+      expect(body).to.deep.include({ jsonrpc: '2.0', id: null });
+      expect(body.error.code).to.equal(-32000);
+      expect(body.error.message).to.equal(MCP_BODY_TOO_LARGE_MESSAGE);
+      expect(body.error.message).to.include('5 MB');
+      expect(body.error.message).to.include('try again');
+    });
+
+    it('passes a normal MCP request', async () => {
+      const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+      const res = await post('/mcp', body);
+
+      expect(res.status).to.equal(200);
+      expect((await res.json()).receivedBytes).to.equal(body.length);
+    });
+
+    it('passes a request of about 1 MB', async () => {
+      const res = await post('/mcp', toolCallOfSize(1024 * 1024));
+
+      expect(res.status).to.equal(200);
+      expect((await res.json()).receivedBytes).to.equal(1024 * 1024);
+    });
+
+    it('passes a request of exactly 5 MB', async () => {
+      const res = await post('/mcp', toolCallOfSize(MCP_JSON_BODY_LIMIT_BYTES));
+
+      expect(res.status).to.equal(200);
+      expect((await res.json()).receivedBytes).to.equal(MCP_JSON_BODY_LIMIT_BYTES);
+    });
+
+    it('leaves the shared 10 MB limit on other routes', async () => {
+      const res = await post('/api/v1/health', toolCallOfSize(6 * 1024 * 1024));
+
+      expect(res.status).to.equal(200);
+      expect((await res.json()).receivedBytes).to.equal(6 * 1024 * 1024);
     });
   });
 

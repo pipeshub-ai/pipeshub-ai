@@ -22,16 +22,16 @@ Copy this list into the PR description and tick each item, or say why it does no
 ## 2. Authentication
 
 - [ ] Every declared auth method connects end to end. Every secret auth field has `is_secret=True` (or a `PASSWORD` field type), so the API returns it masked.
-- [ ] `test_connection_and_access()` checks the granted scopes or permissions, and a missing one fails with a message that names it.
+- [ ] `test_connection_and_access()` checks the granted scopes or permissions. A missing one raises `ConnectorInitError` and the message names it. Returning `False` shows only "Connection test failed. Please verify your credentials have proper access."
 - [ ] Wrong credentials raise `ConnectorInitError` with a message the user can act on, and the log has the vendor's reason.
-- [ ] A sync that outlives the token keeps working: the token is re-read from config before each batch, and a 401 mid-sync refreshes once and retries (`TokenRefreshService.refresh_now`, as `gitlab/runtime.py` does) instead of failing the sync.
+- [ ] A sync that outlives an OAuth token keeps working: the token is re-read from config before each batch, and a 401 mid-sync calls `TokenRefreshService.refresh_now` with the refresh token already held, then retries, instead of failing the sync. Re-reading config and passing the new refresh token rotates a rotating token a second time (`02-low-level-design.md`). A static API token or bot token has no refresh: a 401 stops the sync and notifies the user, and is not retried.
 
 ## 3. Data model
 
 - [ ] Every source object maps to the right entity and record type ([03-decisions.md](./docs/connectors/03-decisions.md) §4).
 - [ ] Every record has external id, name, type, mime type, `weburl` that opens the item in the source, source timestamps in epoch milliseconds, and `version=0`.
-- [ ] `external_record_id` is immutable: renaming or moving an item does not create a second record. (Behaviour test.)
-- [ ] `external_revision_id` changes exactly when content changes: a title-only edit is not re-indexed; a content edit is. (Behaviour test.)
+- [ ] `external_record_id` is immutable: renaming or moving an item does not create a second record. Ids that collide across object types are namespaced. A message segment id does not change when a message is added. (Behaviour test.) Do not copy Slack's burst id, which is an MD5 of message timestamps.
+- [ ] `external_revision_id` changes exactly when content changes: a title-only edit is not re-indexed; a content edit is. A wall-clock timestamp on every read is not that. (Behaviour test.) Do not copy Slack's burst revision, which is `get_epoch_timestamp_in_ms()`.
 - [ ] Containers are record groups with the right type and their real nesting.
 - [ ] Sync points: one per kind, keyed per container by the container's immutable id.
 - [ ] Composed content (tickets, threads, CRM objects) streams as `MimeTypes.BLOCKS`; each comment carries its own link.
@@ -41,7 +41,7 @@ Copy this list into the PR description and tick each item, or say why it does no
 ## 4. Streaming and preview
 
 - [ ] `stream_record` works for every record type written, streams files in chunks, and maps source failures through `stream_errors`, converting the client's own `HTTPException`s with `map_source_status` so a source 401 reaches the user as 409, never 401.
-- [ ] `get_signed_url` returns a real, short-lived source URL or `None`.
+- [ ] `get_signed_url` returns a real, short-lived source URL or `None`. A URL that expires before indexing is resolved again at fetch time, not stored on the record at sync.
 
 ## 5. Hierarchy
 
@@ -76,6 +76,8 @@ Copy this list into the PR description and tick each item, or say why it does no
 - [ ] Every listing is paginated to the end: users, groups, members, containers, items, comments, attachments and permissions. (Behaviour test with more than one page of each.)
 - [ ] One bad item or container is logged, counted in `FailedItems` or reported as `FullSyncCoverage(complete=False)`, and skipped; the sync continues. A date-window filter is reported as `window_start_ms`, not `complete=False`. A failure that makes the whole run meaningless (auth, missing scope) fails the sync.
 - [ ] `SyncStrategy.WEBHOOK` is not declared: the platform does not call `handle_webhook_notification`.
+- [ ] A scheduled run is not described as a full sync. Deletions that depend on full-sync cleanup name the event that sets `fullSync` or `pendingFullSync`.
+- [ ] Adding the connector to `ROOT_SCOPED_CONNECTOR_TYPES`, or a new `RecordType` / `RecordGroupType` / `SyncFilterKey`, was asked for as a framework change. Slack's `RECORD_GROUP_LEVEL` on a channel was not copied onto a container that has a private child.
 
 ## 8. Deletions in the source
 
@@ -125,4 +127,4 @@ Copy this list into the PR description and tick each item, or say why it does no
 
 - [ ] Behaviour tests under `backend/python/tests/unit/connectors/sources/<name>/` against a fake source with network blocked, covering the cases in [08-testing.md](./docs/connectors/08-testing.md), including corner cases: an empty container, a very large file, unicode names, a deleted user, a restricted item, an archived container.
 - [ ] `pytest tests/unit` passes from `backend/python`, and coverage stays at or above the gate. Ruff reports no new findings on the changed files.
-- [ ] An integration suite in `integration-tests/connectors/<registry key>/`, with its marker, workflow shard, secrets and env-template entries, plugged into the scenario matrix, passing on both Neo4j and ArangoDB, including revoked access and connector deletion. If there is no test account, the human agreed to the `scripts/connector_coverage_baseline.json` entry, and the PR says so.
+- [ ] An integration suite in `integration-tests/connectors/<registry key>/`, with its marker, workflow shard, secrets and env-template entries, plugged into the scenario matrix, passing on both Neo4j and ArangoDB, including revoked access and connector deletion. If there is no test account, the human agreed to the `scripts/connector_coverage_baseline.json` entry, and the PR says so. Without that agreement, the connector does not ship: a skip-only suite fails the nightly run. Behaviour tests cover a cross-type id collision, an association-only change, a permission-only change, a list cap, a 200 with an empty body, an expiring URL, and a role-set deny, where the source has that case.

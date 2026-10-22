@@ -34,7 +34,9 @@ from helper.admin_route_table import (
     NODE_ADMIN_ROUTES,
     NODE_REFUSAL_MESSAGE,
     OLD_NODE_REFUSAL_MESSAGE,
+    ORG_TOOL_RULES_OFF,
     PYTHON_ADMIN_ROUTES,
+    TOOL_RULES_HANDLERS,
     AdminRoute,
 )
 from helper.http.session_client import SessionClient
@@ -128,6 +130,8 @@ class TestMembersAreRefused:
         )
         if route.handler.startswith("api/routes/mcp_servers.py") and _MCP_DISABLED in text:
             pytest.skip("MCP is switched off on this stack, so its admin check is never reached")
+        if route.handler in TOOL_RULES_HANDLERS and status == 404 and ORG_TOOL_RULES_OFF in text:
+            pytest.skip("Organization tool rules are off in this edition, so the admin check is never reached")
         assert status == route.refusal_status and route.refusal_words.lower() in text.lower(), (
             f"A member calling {route.id} got HTTP {status}, not the admin refusal "
             f"({route.refusal_status} mentioning {route.refusal_words!r}). "
@@ -147,6 +151,8 @@ class TestTheAdminGetsThrough:
         )
         if route.handler.startswith("api/routes/mcp_servers.py") and _MCP_DISABLED in text:
             pytest.skip("MCP is switched off on this stack, so its admin check is never reached")
+        if route.handler in TOOL_RULES_HANDLERS and status == 404 and ORG_TOOL_RULES_OFF in text:
+            pytest.skip("Organization tool rules are off in this edition, so the admin check is never reached")
         lowered = text.lower()
         refused = (
             status in (401, 403)

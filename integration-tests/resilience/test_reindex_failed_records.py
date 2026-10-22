@@ -158,6 +158,9 @@ async def test_retry_indexing_on_one_failed_record_from_all_records(
     assert await vector_store.count_for_virtual_record(_virtual_id(kb_client, target)) > 0, (
         "the retried record is COMPLETED but has no embeddings, so search cannot find it"
     )
+    # COMPLETED is written before enrichment, and a deferred enrichment step re-runs the
+    # record's indexing; the retry is done only once enrichment is.
+    await wait_until_enriched(kb_client, target, timeout=RECOVERY_TIMEOUT)
     untouched = statuses(kb_client, others)
     assert set(untouched.values()) == {"FAILED"}, (
         f"retrying one record changed other failed records in the same collection: {untouched}"
@@ -171,6 +174,8 @@ async def test_reindex_failed_from_connector_settings_retries_only_the_failed_re
     remaining = failed_records.failed[1:]
     assert set(statuses(kb_client, remaining).values()) == {"FAILED"}, "nothing left FAILED to retry"
     retried_first = failed_records.failed[0]
+    # Settled first: a mark read while the first retry is still enriching changes on its own.
+    await wait_until_enriched(kb_client, retried_first, timeout=RECOVERY_TIMEOUT)
     retried_first_before = await _index_marks(graph_provider, vector_store, kb_client, retried_first)
 
     resp = pipeshub_client.request(

@@ -92,8 +92,35 @@ def get_toolset_instances_path(org_id: str) -> str:
     return "/services/toolset-instances"
 
 
+def get_toolset_user_instance_path(org_id: str, user_id: str, instance_id: str) -> str:
+    """etcd path of a personal toolset instance, one a user added for themselves.
+
+    One key per instance, not the shared org list: every save rewrites that list whole, so users
+    saving at the same time would overwrite each other. Not under ``/services/toolsets/``, which
+    the token refresh service reads as credentials.
+    """
+    return f"/services/toolset-user-instances/{org_id}/{user_id}/{instance_id}"
+
+
+def get_toolset_user_instances_prefix(org_id: str, user_id: str) -> str:
+    """etcd prefix of `user_id`'s personal toolset instances."""
+    return f"/services/toolset-user-instances/{org_id}/{user_id}/"
+
+
+def get_toolset_personal_owner_path(instance_id: str) -> str:
+    """etcd path naming the org and owner of personal instance `instance_id`, so code without the
+    owner at hand (a tool client, token refresh) reads one key instead of listing every user's."""
+    return f"/services/toolset-personal-owners/{instance_id}"
+
+
+def get_toolset_org_user_instances_prefix(org_id: str | None = None) -> str:
+    """etcd prefix of every user's personal toolset instances in `org_id`, or in every org."""
+    return f"/services/toolset-user-instances/{org_id}/" if org_id else "/services/toolset-user-instances/"
+
+
 def get_toolset_tool_rules_path(instance_id: str) -> str:
-    """etcd path for a toolset instance's tool approval rules, set by an admin.
+    """etcd path for a toolset instance's tool approval rules: set by an admin for an org
+    instance, by its owner for a personal one.
 
     Not under ``/services/toolsets/``: everything there is read as a user's credentials
     (``{instanceId}/{userId}``) by the token refresh service.

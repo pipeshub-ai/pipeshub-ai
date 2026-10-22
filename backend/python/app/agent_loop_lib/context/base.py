@@ -7,6 +7,10 @@ from pydantic import BaseModel
 from app.agent_loop_lib.core.messages import Message
 from app.agent_loop_lib.modules.providers.budget.pricing import get_context_window
 
+# The budget the shapers' trigger ratios were tuned on: the 128K default window
+# less the 8K output reserve, before the prompt was reserved out of it.
+_RATIO_TUNED_BUDGET = 128_000 - 8_000
+
 
 class ContextWindow(ABC):
     """Manages the active message window passed to the LLM.
@@ -66,6 +70,18 @@ class ContextBudget(BaseModel):
     def effective_max_tokens(self) -> int:
         """Budget available to the shaping pipeline after all reserves."""
         return max(self.max_tokens - self.reserved_artifact_tokens, min(1_000, self.max_tokens))
+
+    def trigger_tokens(self, ratio: float) -> int:
+        """Message tokens above which a shaper set to fire at `ratio` of the
+        budget acts.
+
+        Up to the tuned budget this is that fraction. Past it the headroom the
+        ratio left there is kept instead: what has to fit in it is the next
+        turn's tool results, which are capped per result and do not grow with
+        the window, so a 300K window is not cleared when half of it is free.
+        """
+        budget = self.effective_max_tokens
+        return int(max(budget * ratio, budget - (1 - ratio) * _RATIO_TUNED_BUDGET))
 
     @classmethod
     def for_model(

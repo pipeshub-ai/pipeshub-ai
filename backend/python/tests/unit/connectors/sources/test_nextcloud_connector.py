@@ -1123,14 +1123,29 @@ class TestReindexRecords:
         await nextcloud_connector.reindex_records([])
 
     @pytest.mark.asyncio
-    async def test_no_user_permission_skips(self, nextcloud_connector):
-        nextcloud_connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+    async def test_no_connected_user_skips(self, nextcloud_connector) -> None:
         nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=MagicMock())
         nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/test.txt")
         nextcloud_connector.data_source = MagicMock()
-        nextcloud_connector.current_user_id = "admin"
+        nextcloud_connector.current_user_id = None
+        nextcloud_connector.current_user_email = "admin@example.com"
         record = MagicMock(id="r1", record_name="test.txt")
         await nextcloud_connector.reindex_records([record])
+        nextcloud_connector.data_source.list_directory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unread_profile_email_does_not_stop_the_reindex(self, nextcloud_connector) -> None:
+        nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=MagicMock())
+        nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/test.txt")
+        nextcloud_connector.data_source = MagicMock()
+        nextcloud_connector.data_source.list_directory = AsyncMock(return_value=MagicMock(status=500))
+        nextcloud_connector.current_user_id = "admin"
+        nextcloud_connector.current_user_email = None
+        record = MagicMock(id="r1", record_name="test.txt")
+        await nextcloud_connector.reindex_records([record])
+        nextcloud_connector.data_source.list_directory.assert_awaited_once_with(
+            user_id="admin", path="/test.txt", depth=0
+        )
 
 
 # ===========================================================================

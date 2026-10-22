@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import (
     Mapping,  # noqa: TC003  # FastAPI resolves route annotations at runtime
 )
@@ -27,6 +28,7 @@ from app.api.middlewares.auth import (
     service_token_org,
 )
 from app.config.constants.service import TokenScopes
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import BlocksContainer  # noqa: TC001  # pydantic field type
 from app.modules.named_entities.domain.config import (
     NamedEntityBudgets,  # noqa: TC001  # pydantic field type
@@ -35,8 +37,9 @@ from app.modules.named_entities.domain.kinds import EntityKind
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
 from app.modules.transformers.document_extraction import (
-    semantic_metadata_from_classification,
+    ExtractionLLMError,
 )
+from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +75,13 @@ class ClassifyResponse(BaseModel):
     success: bool
     classification: dict | None = None
     error: str | None = None
+    error_code: str | None = None
 
 
 # ---------------------------------------------------------------------------
 # POST /api/v1/extract/classify
 # ---------------------------------------------------------------------------
+
 
 
 @router.post(
@@ -104,14 +109,53 @@ async def classify(
             fallback_service="extraction",
             config_service=_config_service(request),
         ):
-            classification = await document_extraction.classify(
+            metadata = await document_extraction.classify(
                 blocks=body.block_container.blocks,
                 org_id=org_id,
                 departments=body.departments or None,
                 record_name=body.record_name,
                 record_type=body.record_type,
             )
-        metadata = None if classification is None else semantic_metadata_from_classification(classification)
+    except LLMNotConfiguredError as exc:
+        # 4xx: a configuration state, not an outage — the client must neither retry it
+        # nor count it against its circuit breaker.
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content=ClassifyResponse(
+                success=False, error=str(exc), error_code=LLMNotConfiguredError.code
+            ).model_dump(),
+        )
+    except LLMUnavailableError as exc:
+        # 424, not 5xx: this service is up and its model provider is not. A 5xx would be
+        # retried and counted by the caller's breaker, whose health probe cannot see the
+        # provider; the code tells the caller to pause the work instead.
+        logger.warning("Model provider unavailable while classifying for org '%s': %s", org_id, exc)
+        retry_after = getattr(exc, "retry_after", None)
+        return JSONResponse(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            # Set while the provider's circuit is open: how long the caller's job should wait.
+            headers={"Retry-After": str(math.ceil(retry_after))} if retry_after else None,
+            content=ClassifyResponse(
+                success=False, error=str(exc), error_code=LLMUnavailableError.code
+            ).model_dump(),
+        )
+    except ExtractionLLMError as exc:
+        # The model answered but produced nothing usable for this document: retried a few times.
+        logger.warning("LLM failed to classify a document for org '%s': %s", org_id, exc)
+        return JSONResponse(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            content=ClassifyResponse(
+                success=False, error=str(exc), error_code=ExtractionLLMError.code
+            ).model_dump(),
+        )
+    except NonRetryableError as exc:
+        # Not a 5xx: the client resends those, and this would refuse the
+        # whole document again.
+        logger.warning("Classification for org '%s' was refused: %s", org_id, exc)
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content=ClassifyResponse(success=False, error=str(exc)).model_dump(),
+        )
     except Exception as exc:
         logger.exception(
             "Unexpected error during classification for org '%s'", org_id

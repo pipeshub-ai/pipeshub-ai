@@ -236,7 +236,7 @@ class CifsConnector(BaseConnector):
     async def init(self) -> bool:
         try:
             config = await self.config_service.get_config(
-                ConfigPaths.CONNECTOR_CONFIG.format(connector_id=self.connector_id)
+                ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=self.connector_id)
             )
             if not config:
                 await self._auth_error("Configuration not found", "CIFS configuration not found.")

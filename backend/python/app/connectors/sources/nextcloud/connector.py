@@ -17,7 +17,6 @@ from fastapi.responses import StreamingResponse
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     PermissionModel,
-    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -2433,7 +2432,6 @@ class NextcloudConnector(BaseConnector):
 
         for record in record_results:
             try:
-                user_with_permission = await self.data_entities_processor.get_first_user_with_permission_to_node(record.id, CollectionNames.RECORDS.value)
                 file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
                 path = None
                 if file_record:
@@ -2442,7 +2440,10 @@ class NextcloudConnector(BaseConnector):
                 if file_record and (path is None or path.strip() == ""):
                     path = record.record_name or file_record.record_name
 
-                if not user_with_permission or not file_record or not path:
+                # Records inherit from the app and carry no user grant to look up; the
+                # drive is only ever read as the connecting user, whose email a reindex
+                # does not need.
+                if not self.current_user_id or not file_record or not path:
                     failed_count += 1
                     continue
 
@@ -2476,8 +2477,8 @@ class NextcloudConnector(BaseConnector):
 
                 record_update = await self._process_nextcloud_entry(
                     entries[0],
-                    user_with_permission.source_user_id,
-                    user_with_permission.email,
+                    self.current_user_id,
+                    self.current_user_email,
                     file_record.external_record_group_id,
                     user_root_path=None,
                     path_to_external_id=temp_cache

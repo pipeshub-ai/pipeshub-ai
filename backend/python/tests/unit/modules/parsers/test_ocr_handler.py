@@ -94,6 +94,17 @@ class TestOCRStrategyNeedsOcr:
 
         assert OCRStrategy.needs_ocr(page, logger) is False
 
+    def test_needs_ocr_when_text_layer_is_unmapped_glyphs(self, logger: MagicMock) -> None:
+        """Glyphs without a Unicode mapping come out as (cid:N); only OCR recovers the words."""
+        words = [(0, 0, 200, 30, "word", 0, 0, 0)] * 20
+        page = self._make_page(text="X" * 150, words=words, width=612, height=792)
+        page.chars = [{"text": f"(cid:{i})"} for i in range(60)] + [{"text": "a"}] * 40
+        assert OCRStrategy.needs_ocr(page, logger) is True
+
+        # A few unmapped bullet glyphs in otherwise readable text are fine.
+        page.chars = [{"text": "(cid:127)"}] * 25 + [{"text": "a"}] * 500
+        assert OCRStrategy.needs_ocr(page, logger) is False
+
     def test_needs_ocr_for_dominant_image_with_little_text(self, logger):
         """A flattened page image must not be mistaken for native PDF text."""
         page = self._make_page(

@@ -226,6 +226,7 @@ services:
       # Qdrant
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - QDRANT_HOST=qdrant
+      - QDRANT_MEMORY_LIMIT=${QDRANT_MEMORY_LIMIT:-6G}
       - QDRANT_GRPC_PORT=6334
       - QDRANT_PORT=6333
 
@@ -292,6 +293,8 @@ services:
       # only — the shrink brake always reads true cgroup occupancy.
       - GOVERNOR_BASELINE_MEMORY_MB=${GOVERNOR_BASELINE_MEMORY_MB:-}
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-}
+      - RECORD_PROCESSING_TIMEOUT=${RECORD_PROCESSING_TIMEOUT:-}
+      - PDF_RECORD_PROCESSING_TIMEOUT=${PDF_RECORD_PROCESSING_TIMEOUT:-}
       - QUERY_UVICORN_WORKERS=${QUERY_UVICORN_WORKERS:-}
       # Query-service runtime tuning. Defaults reproduce current behaviour:
       # langchain transport, accessible-records cache on, signed-URL cache off.
@@ -320,7 +323,15 @@ services:
       - THOROUGH_RETRIEVAL=${THOROUGH_RETRIEVAL:-}
       - MULTI_STEP_ANSWER_RULES=${MULTI_STEP_ANSWER_RULES:-}
       - ENTITY_SEARCH_TOOL=${ENTITY_SEARCH_TOOL:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TIMELINE_SUMMARIES=${TIMELINE_SUMMARIES:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - DATE_FILTER_SAFETY_NET=${DATE_FILTER_SAFETY_NET:-}
       - FETCH_SIZE_BY_CHARS=${FETCH_SIZE_BY_CHARS:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}
@@ -398,8 +409,6 @@ services:
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       # Set to "true" to route indexing through the standalone parsing/extraction services
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
-      # Set to "true" to defer graph enrichment until after vectordb indexing completes
-      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
       - VECTOR_COLLECTION_STRATEGY=${VECTOR_COLLECTION_STRATEGY:-single}
 
@@ -578,7 +587,10 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 6G
+          # Search slows sharply once the index outgrows this; size it from
+          # docs/deployment/vector-db-sizing.md. QDRANT_MEMORY_LIMIT also tells
+          # the app the figure, for the warning on the Services page.
+          memory: ${QDRANT_MEMORY_LIMIT:-6G}
         reservations:
           cpus: '2'
           memory: 2G

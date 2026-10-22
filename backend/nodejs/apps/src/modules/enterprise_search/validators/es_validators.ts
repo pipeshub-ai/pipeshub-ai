@@ -1047,6 +1047,23 @@ export const regenerateAnswersParamsSchema = z.object({
   body: regenerateBodySchema,
 });
 
+/** Schema for POST /:conversationId/message/:messageId/fork */
+export const forkConversationParamsSchema = z.object({
+  params: z.object({
+    ...conversationIdParam,
+    ...messageIdParam,
+  }),
+});
+
+/** Schema for POST /:agentKey/conversations/:conversationId/message/:messageId/fork */
+export const forkAgentConversationParamsSchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+    ...conversationIdParam,
+    ...messageIdParam,
+  }),
+});
+
 export const regenerateAgentAnswersParamsSchema = z.object({
   params: z.object({
     ...agentKeyParam,
@@ -1159,6 +1176,16 @@ export const enterpriseSearchSearchSchema = z.object({
     createdBefore: searchDateSchema,
     modifiedAfter: searchDateSchema,
     modifiedBefore: searchDateSchema,
+    // false searches the query exactly as sent, with no model rewrite or
+    // expanded variants: for callers that write their own queries, such as
+    // an agent. Left out, the AI service rewrites and expands as before.
+    rewriteQuery: z.boolean().optional(),
+    // Set, the AI service searches the span the matching date bounds give
+    // period by period, as the assistant's timeline tool does, and returns
+    // the matches in date order, each labelled with its period. The value is
+    // the date records are placed by. Left out, bounds on one date over more
+    // than a month run as a timeline on it; 'off' is always a plain ranked search.
+    timeline: z.enum(['created', 'modified', 'off']).optional(),
   }),
 });
 

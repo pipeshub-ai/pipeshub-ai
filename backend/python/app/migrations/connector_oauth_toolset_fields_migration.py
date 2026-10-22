@@ -122,7 +122,7 @@ class ConnectorOAuthToolsetFieldsRepair:
             )
             return 0, 1
 
-        path = ConfigPaths.OAUTH_CONFIG.format(connector_type=connector_type.lower().replace(" ", ""))
+        path = ConfigPaths.OAUTH_CONFIG_PATH.format(connector_type=connector_type.lower().replace(" ", ""))
         # Without raise_on_error a failed read answers the default, and an empty list would mark this done.
         apps = await self.config_service.get_config(path, default=[], use_cache=False, raise_on_error=True)
         if not isinstance(apps, list):

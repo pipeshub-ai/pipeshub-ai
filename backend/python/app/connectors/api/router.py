@@ -13,7 +13,7 @@ import tempfile
 import time
 from collections.abc import AsyncGenerator, Mapping
 from pathlib import Path
-from typing import Annotated, Any, NamedTuple
+from typing import Annotated, Any, NamedTuple, cast
 from urllib.parse import parse_qs, urlencode, urlparse
 from uuid import uuid4
 
@@ -116,6 +116,7 @@ from app.connectors.core.sync.sync_coordinator import get_coordinator
 from app.edition_services import max_connector_workers, sync_executor_enabled
 from app.connectors.core.sync.sync_dispatcher import get_dispatcher
 from app.connectors.core.sync.sync_runner import write_app_status
+from app.connectors.core.registry.folder_scope import folder_path_problems
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.vector_cleanup_events import (
     build_soft_delete_events,
@@ -136,6 +137,8 @@ from app.edition_containers import ConnectorAppContainer
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
 from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
+from app.modules.pipeline.models import RETRYABLE_STAGES
+from app.modules.pipeline.state import stage_summaries
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
 from app.services.featureflag.platform_settings import (
@@ -160,11 +163,15 @@ from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import (
     SALESFORCE_LOGIN_URL_ERROR,
+    check_oauth_url_settings,
     check_salesforce_login_url_setting,
     extract_oauth_error_message,
     get_oauth_config,
+    pin_oauth_urls,
 )
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
+from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
+from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
@@ -1063,11 +1070,20 @@ def _without_masked_secrets(auth: dict[str, Any], secret_auth_fields: frozenset[
     }
 
 
-def _require_filter_sections_are_objects(filters: object) -> None:
-    """400 when ``filters.sync`` / ``filters.indexing`` is present but not an object.
+def _require_auth_is_object(auth: object, *, allow_null: bool = False) -> None:
+    """400 when a supplied ``auth`` is not an object; the save paths read it as a dict."""
+    if not isinstance(auth, dict) and not (allow_null and auth is None):
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="Auth configuration must be an object.",
+        )
 
-    The merge below stores the section verbatim, and a stored ``null`` later
-    breaks ``load_connector_filters`` (``.get`` on ``None``) at sync time.
+
+def _require_filter_sections_are_objects(filters: object) -> None:
+    """400 when ``filters.sync`` / ``filters.indexing`` or its ``values`` is present but not an object.
+
+    The merge below stores the section verbatim, and a stored ``null`` section or
+    a non-object ``values`` later breaks ``load_connector_filters`` at sync time.
     """
     if not isinstance(filters, dict):
         return
@@ -1077,6 +1093,22 @@ def _require_filter_sections_are_objects(filters: object) -> None:
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"filters.{key} must be an object",
             )
+        values = filters.get(key, {}).get("values")
+        if values is not None and not isinstance(values, dict):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"filters.{key}.values must be an object",
+            )
+
+
+def _require_valid_auth_config(connector_type: str, auth_config: dict[str, Any]) -> None:
+    """400 when the connector rejects the auth settings a save would store."""
+    connector_cls = ConnectorFactory.get_connector_class(connector_type.replace(" ", ""))
+    if connector_cls is None:
+        return
+    problems = connector_cls.auth_config_problems(auth_config)
+    if problems:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
 
 
 async def _validate_sync_filter_selections(
@@ -1105,9 +1137,8 @@ async def _validate_sync_filter_selections(
     )
     schema_fields = [f for f in schema_fields if isinstance(f, dict)]
     sync_values = ((config.get("filters") or {}).get("sync") or {}).get("values") or {}
-    problems = sync_filter_selection_problems(
-        schema_fields, sync_values if isinstance(sync_values, dict) else {}, action
-    )
+    sync_values = sync_values if isinstance(sync_values, dict) else {}
+    problems = sync_filter_selection_problems(schema_fields, sync_values, action) + folder_path_problems(sync_values)
     if problems:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
 
@@ -1763,6 +1794,23 @@ async def convert_buffer_to_pdf_stream(
             fallback_filename="converted_file.pdf"
         )
 
+async def _stage_states_of(graph_provider: IGraphDBProvider, record: object) -> list[dict[str, Any]]:
+    """Pipeline stage states for the record's current revision; empty when it has none yet."""
+    if not isinstance(record, dict):
+        return []
+    doc = cast("dict[str, object]", record)
+    vrid, rev = doc.get("virtualRecordId"), doc.get("contentRev")
+    if not (isinstance(vrid, str) and vrid and isinstance(rev, str) and rev):
+        return []
+    try:
+        summaries = await stage_summaries(graph_provider, vrid, rev)
+    except Exception:
+        # Stage detail is diagnostics; the record itself is still worth returning.
+        logging.getLogger(__name__).warning("Could not read stage states for revision %s:%s", vrid, rev, exc_info=True)
+        return []
+    return [s.model_dump(mode="json", by_alias=True) for s in summaries]
+
+
 @router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def get_record_by_id(
@@ -1790,6 +1838,8 @@ async def get_record_by_id(
             await _refuse_hidden_demo_record(
                 graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
             )
+            record: object = cast("dict[str, object]", has_access).get("record")
+            has_access["stageStates"] = await _stage_states_of(graph_provider, record)
             return has_access
         else:
             raise HTTPException(
@@ -2352,6 +2402,27 @@ def _parse_status_filters(request_body: dict | None) -> list[str] | None:
     return raw_filters if raw_filters else None
 
 
+def _parse_stages(request_body: dict[str, Any] | None) -> list[str] | None:
+    """Parse optional ``stages``: only these stages re-run, on records selected by their own status."""
+    body = cast("dict[str, object]", request_body or {})
+    if "stages" not in body:
+        return None
+    # An explicit null is not "omitted": it would turn a stage retry into a full reindex.
+    raw = body["stages"]
+    items = cast("list[object]", raw) if isinstance(raw, list) else []
+    names = [s for s in items if isinstance(s, str)]
+    if not names or len(names) != len(items):
+        raise HTTPException(status_code=400, detail="stages must be a non-empty array of stage names")
+    unknown = sorted(set(names) - RETRYABLE_STAGES.keys())
+    if unknown:
+        raise HTTPException(
+            status_code=400, detail=f"unknown stages {unknown}; stages that can be re-run: {sorted(RETRYABLE_STAGES)}"
+        )
+    if len({RETRYABLE_STAGES[s] for s in names}) > 1:
+        raise HTTPException(status_code=400, detail="stages re-run together must report the same status field")
+    return list(dict.fromkeys(names))
+
+
 def _build_reindex_event(
     *,
     event_type: str,
@@ -2363,6 +2434,7 @@ def _build_reindex_event(
     depth: int | None = None,
     user_key: str | None = None,
     status_filters: list[str] | None = None,
+    stages: list[str] | None = None,
 ) -> dict:
     """Build the {eventType, topic, payload} envelope for a '*.reindex' sync-event.
 
@@ -2384,6 +2456,8 @@ def _build_reindex_event(
         payload["userKey"] = user_key
     if status_filters:
         payload["statusFilters"] = status_filters
+    if stages:
+        payload["stages"] = stages
     return {"eventType": event_type, "topic": "sync-events", "payload": payload}
 
 
@@ -2782,6 +2856,9 @@ async def reindex_connector(
     Request Body (optional):
         statusFilters: list[str] - indexing statuses to reindex (e.g. ["FAILED"]).
                        Omit to reindex everything.
+        stages: list[str] - re-run only these pipeline stages (e.g. ["classify"]) on
+                records whose stage status matches statusFilters (default FAILED);
+                nothing is re-parsed or re-embedded.
     """
     try:
         container = request.app.container
@@ -2800,6 +2877,7 @@ async def reindex_connector(
         except (json.JSONDecodeError, TypeError):
             request_body = None
         status_filters = _parse_status_filters(request_body)
+        stages = _parse_stages(request_body)
 
         instance = await connector_registry.get_connector_instance(
             connector_id=connector_id,
@@ -2864,6 +2942,7 @@ async def reindex_connector(
             connector_id=connector_id,
             connector_name=connector_normalized,
             status_filters=status_filters,
+            stages=stages,
         )
 
         try:
@@ -3875,13 +3954,17 @@ def _mirror_shared_client_fields(
             auth.pop(alias, None)
 
 
-def _check_salesforce_login_url(connector_type: str, settings: dict[str, Any] | None) -> None:
-    """Refuse a Salesforce login URL off salesforce.com before it is saved: the token request
+def _check_oauth_app_urls(connector_type: str, settings: dict[str, Any] | None) -> None:
+    """Refuse an OAuth host off the provider's domain before it is saved: the token request
     sends the client secret there from the server."""
     try:
         check_salesforce_login_url_setting(connector_type, settings)
     except ValueError as e:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=SALESFORCE_LOGIN_URL_ERROR) from e
+    try:
+        check_oauth_url_settings(connector_type, settings)
+    except ValueError as e:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e  # user-written message
 
 
 async def _link_to_shared_oauth_app(
@@ -4230,12 +4313,8 @@ async def _prepare_connector_config(
 
         redirect_uri = selected_auth_schema.get(AuthFieldKeys.REDIRECT_URI, "")
         if redirect_uri:
-            if base_url:
-                redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-            else:
-                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-                fallback_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                redirect_uri = f"{fallback_url.rstrip('/')}/{redirect_uri}"
+            oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+            redirect_uri = f"{oauth_base_url}/{redirect_uri}"
 
         prepared_config[OAuthConfigKeys.AUTH].update({
             AuthFieldKeys.AUTHORIZE_URL: authorize_url,
@@ -4302,6 +4381,9 @@ async def create_connector_instance(
         connector_type = body.get(ConnectorRequestKeys.CONNECTOR_TYPE)
         instance_name = (body.get(ConnectorRequestKeys.INSTANCE_NAME) or "").strip()
         config = _trim_connector_config(body.get(ConnectorRequestKeys.CONFIG, {})) if body.get(ConnectorRequestKeys.CONFIG) else {}
+        if isinstance(config, dict):
+            # A null auth on create means no auth section yet.
+            _require_auth_is_object(config.get(OAuthConfigKeys.AUTH), allow_null=True)
         oauth_config_id = body.get(ConnectorRequestKeys.OAUTH_CONFIG_ID)
         selected_auth_type = body.get(ConnectorRequestKeys.AUTH_TYPE)
         base_url = body.get(ConnectorRequestKeys.BASE_URL, "")
@@ -4422,6 +4504,9 @@ async def create_connector_instance(
                 logger=logger,
                 container=container,
             )
+
+        if config and isinstance(config.get(OAuthConfigKeys.AUTH), dict):
+            _require_valid_auth_config(connector_type, config[OAuthConfigKeys.AUTH])
 
         # ============================================================
         # 8. Create Connector Instance in Database
@@ -5020,6 +5105,7 @@ async def update_connector_instance_auth_config(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="Auth configuration is required"
             )
+        _require_auth_is_object(body["auth"])
 
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
@@ -5194,6 +5280,7 @@ async def update_connector_instance_auth_config(
         merged_auth_config = existing_auth_config.copy()
         merged_auth_config.update(auth_config_clean)
 
+        _require_valid_auth_config(connector_type, merged_auth_config)
         new_config[OAuthConfigKeys.AUTH] = merged_auth_config
         if connector_type:
             merged_auth_config["connectorType"] = connector_type
@@ -5232,15 +5319,8 @@ async def update_connector_instance_auth_config(
             selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_schemas else {}
             redirect_uri = selected_auth_schema.get(AuthFieldKeys.REDIRECT_URI, "")
             if redirect_uri:
-                if base_url:
-                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-                else:
-                    endpoints = await config_service.get_config(
-                        "/services/endpoints",
-                        use_cache=False
-                    )
-                    base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                    redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+                redirect_uri = f"{oauth_base_url}/{redirect_uri}"
 
             # Only use registry defaults if user hasn't provided these values
             oauth_updates = {
@@ -5530,6 +5610,8 @@ async def update_connector_instance_config(
         # Trim whitespace from config values before processing
         body = _trim_connector_config(body)
         _require_filter_sections_are_objects(body.get("filters"))
+        if "auth" in body:
+            _require_auth_is_object(body["auth"])
         secret_auth_fields = await _secret_auth_field_names(connector_registry, connector_type)
         if isinstance(body.get("auth"), dict):
             body["auth"] = _without_masked_secrets(
@@ -5619,6 +5701,8 @@ async def update_connector_instance_config(
                 connector_registry, instance.get("type", ""), new_config, "saving"
             )
 
+        if auth_updated and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
+            _require_valid_auth_config(connector_type, new_config[OAuthConfigKeys.AUTH])
         if auth_updated and connector_type and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
             new_config[OAuthConfigKeys.AUTH]["connectorType"] = connector_type
 
@@ -5780,15 +5864,8 @@ async def update_connector_instance_config(
                 selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_schemas else {}
                 redirect_uri = selected_auth_schema.get(AuthFieldKeys.REDIRECT_URI, "")
                 if redirect_uri:
-                    if base_url:
-                        redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
-                    else:
-                        endpoints = await config_service.get_config(
-                            "/services/endpoints",
-                            use_cache=False
-                        )
-                        base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                        redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
+                    oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+                    redirect_uri = f"{oauth_base_url}/{redirect_uri}"
 
                 new_config[OAuthConfigKeys.AUTH].update({
                     AuthFieldKeys.AUTHORIZE_URL: authorize_url,
@@ -6275,12 +6352,8 @@ async def _update_oauth_infrastructure_fields(
     if AuthFieldKeys.REDIRECT_URI not in oauth_config:
         redirect_uri_path = oauth_registry_config.redirect_uri
         if redirect_uri_path:
-            if base_url:
-                oauth_config[AuthFieldKeys.REDIRECT_URI] = f"{base_url.rstrip('/')}/{redirect_uri_path}"
-            else:
-                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-                fallback_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
-                oauth_config[AuthFieldKeys.REDIRECT_URI] = f"{fallback_url.rstrip('/')}/{redirect_uri_path}"
+            oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+            oauth_config[AuthFieldKeys.REDIRECT_URI] = f"{oauth_base_url}/{redirect_uri_path}"
         else:
             oauth_config[AuthFieldKeys.REDIRECT_URI] = ""
 
@@ -6461,6 +6534,11 @@ async def _build_oauth_flow_config(
         connector_type, {**oauth_flow_config, **connector_settings}, raw_scopes
     )
 
+    try:
+        pin_oauth_urls(connector_type, oauth_flow_config)
+    except ValueError as e:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e  # user-written message
+
     return oauth_flow_config
 
 
@@ -6469,6 +6547,8 @@ async def get_oauth_authorization_url(
     connector_id: str,
     request: Request,
     base_url: str | None = Query(None),
+    *,
+    desktop: Annotated[bool, Query()] = False,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> dict[str, Any]:
     """
@@ -6616,7 +6696,9 @@ async def get_oauth_authorization_url(
             if not original_state:
                 raise ValueError("No state parameter in authorization URL")
 
-            encoded_state = _encode_state_with_instance(original_state, connector_id)
+            encoded_state = mark_desktop_state(
+                _encode_state_with_instance(original_state, connector_id), desktop=desktop
+            )
             query_params["state"] = [encoded_state]
 
             final_auth_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{urlencode(query_params, doseq=True)}"
@@ -6672,6 +6754,10 @@ async def handle_oauth_callback(
 
     settings_base_path = await _get_settings_base_path(graph_provider)
     connector_id = None  # For error handling
+    base_url = await resolve_oauth_base_url(
+        resolve_config_service(container, request.state.user.get("orgId")), base_url
+    )
+    state = strip_desktop_state(state)
 
     try:
         # ============================================================
@@ -6686,7 +6772,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": error,
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error={error}"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error={error}"
             }
 
         if not code or not state:
@@ -6694,7 +6780,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "missing_parameters",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=missing_parameters"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=missing_parameters"
             }
 
         # ============================================================
@@ -6721,7 +6807,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "invalid_state",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=invalid_state"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=invalid_state"
             }
 
         # ============================================================
@@ -6739,7 +6825,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "instance_not_found",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=instance_not_found"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=instance_not_found"
             }
 
         connector_type = instance.get("type", "").replace(" ", "")
@@ -6769,7 +6855,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "config_not_found",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=config_not_found"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=config_not_found"
             }
 
         auth_config = config[OAuthConfigKeys.AUTH]
@@ -6791,7 +6877,7 @@ async def handle_oauth_callback(
             return {
                 "success": False,
                 "error": "oauth_config_fetch_error",
-                "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=oauth_config_fetch_error"
+                "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=oauth_config_fetch_error"
             }
 
         logger.info(f"Callback redirect URI: {oauth_flow_config.get(AuthFieldKeys.REDIRECT_URI, '')}")
@@ -6922,7 +7008,7 @@ async def handle_oauth_callback(
             "success": False,
             "error": "server_error",
             "error_message": error_message,
-            "redirect_url": f"{base_url or ''}/connectors/oauth/callback?oauth_error=server_error"
+            "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=server_error"
         }
 
 
@@ -7252,21 +7338,16 @@ async def get_connector_instance_filters(
                 )
             token_or_credentials = OAuthToken.from_dict(config[OAuthConfigKeys.CREDENTIALS])
 
-        elif auth_type in ["OAUTH_ADMIN_CONSENT", "API_TOKEN", "USERNAME_PASSWORD"]:
-            if not config or not config.get(OAuthConfigKeys.AUTH):
+        else:
+            # Every other auth type (API token, basic auth, access keys, ...) keeps its
+            # settings in the instance's auth section.
+            if not config or (auth_type != AuthType.NONE and not config.get(OAuthConfigKeys.AUTH)):
                 logger.error("Configuration not found. Please configure first.")
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail="Configuration not found. Please configure first."
                 )
-            token_or_credentials = config.get(OAuthConfigKeys.AUTH, {})
-
-        else:
-            logger.error(f"Unsupported authentication type: {auth_type}")
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Unsupported authentication type: {auth_type}"
-            )
+            token_or_credentials = config.get(OAuthConfigKeys.AUTH) or {}
 
         # Get filter options
         filter_options = await _get_connector_filter_options_from_config(
@@ -9159,7 +9240,7 @@ async def _create_or_update_oauth_config(
         logger = logging.getLogger(__name__)
 
     # Raised before the try below, which turns every failure into a None return.
-    _check_salesforce_login_url(connector_type, auth_config)
+    _check_oauth_app_urls(connector_type, auth_config)
 
     try:
         # Get OAuth field names from registry (dynamic, no hardcoding)
@@ -9365,7 +9446,7 @@ async def _validate_admin_oauth_config_before_creation(
     Raises:
         HTTPException: If OAuth name conflicts are detected
     """
-    _check_salesforce_login_url(connector_type, config.get(OAuthConfigKeys.AUTH))
+    _check_oauth_app_urls(connector_type, config.get(OAuthConfigKeys.AUTH))
 
     oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
     has_oauth_credentials = any(
@@ -9550,7 +9631,7 @@ async def create_oauth_config(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail="config is required"
             )
-        _check_salesforce_login_url(connector_type, config)
+        _check_oauth_app_urls(connector_type, config)
 
         # Get OAuth config from registry (completely independent)
         # OAuth configs are self-contained and don't depend on connector/toolset registries
@@ -9905,7 +9986,7 @@ async def update_oauth_config(
             existing_cfg = oauth_config.get(OAuthConfigKeys.CONFIG, {}) or {}
             cleaned = strip_redacted_fields(new_config)
             merged = {**existing_cfg, **cleaned}
-            _check_salesforce_login_url(connector_type, merged)
+            _check_oauth_app_urls(connector_type, merged)
             oauth_config[OAuthConfigKeys.CONFIG] = merged
 
         # Ensure OAuth infrastructure fields are present (if missing, add from registry)

@@ -43,17 +43,21 @@ def grants_to_store(
     inherited_permissions_disabled: bool,
     is_drive: bool,
     organizer_permissions: list = (),
+    inherits_from_drive: bool = True,
 ) -> list:
     """Shared Drive items store only grants written on the item.
 
     Limited access still marks some entries inherited. Those people can open
     metadata, not the file, so they are not stored as readers. Managers are the
     exception: they keep access, and the item no longer inherits it from the drive.
+    An item filed outside its drive (a drive this connector does not sync) has no
+    drive group to take the members from, so it keeps the whole list.
     """
     if saw_permission_details and not is_drive:
         if inherited_permissions_disabled:
             return direct_permissions + [p for p in organizer_permissions if p not in direct_permissions]
-        return direct_permissions
+        if inherits_from_drive:
+            return direct_permissions
     return permissions
 
 

@@ -111,7 +111,7 @@ class TestDeselectedBucket:
             await connector.run_sync()
 
         assert OTHER in db.record_groups
-        assert any(f"record group of de-selected {OTHER}" in r.getMessage() for r in caplog.records)
+        assert any(f"record group of {OTHER}" in r.getMessage() for r in caplog.records)
 
         db.refused_group_deletes.clear()
         await connector.run_sync()

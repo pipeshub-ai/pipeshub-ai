@@ -40,6 +40,14 @@ function makeRes(): any {
       res.body = data
       return res
     },
+    type(contentType: string) {
+      res.contentType = contentType
+      return res
+    },
+    send(data: any) {
+      res.body = data
+      return res
+    },
     setHeader: sinon.stub(),
   }
   return res
@@ -818,6 +826,11 @@ describe('StorageController', () => {
 
       await controller.getDocumentBuffer(req, res, next)
       expect(res.statusCode).to.equal(HTTP_STATUS.OK)
+      expect(next.called).to.be.false
+      // Raw bytes, not a JSON array of numbers: a large file's JSON would overflow V8.
+      expect(res.contentType).to.equal('application/octet-stream')
+      expect(Buffer.isBuffer(res.body)).to.be.true
+      expect(res.body.toString()).to.equal('file-data')
     })
 
     it('should throw NotFoundError when document not found', async () => {

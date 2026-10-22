@@ -44,6 +44,7 @@ from app.agents.agent_loop.web_tool_adapter import WebToolAdapter
 from app.agents.mcp.tool_kind import toolset_tool_kind
 from app.agents.tools.factories.base import ToolsetAuthError
 from app.agents.tools.factories.registry import ClientFactoryRegistry
+from app.services.artifact_registry.models import artifact_owner_id
 
 if TYPE_CHECKING:
     from langchain_core.tools import StructuredTool
@@ -103,15 +104,16 @@ def _has_tool_decorated_methods(cls: type) -> bool:
 
 def _record_for_approvals(
     context: "AgentContext", tool: "Tool", instance: tuple[str, str] | None, *, fallback_owner: str,
+    personal: bool = False,
 ) -> None:
     """Records an external toolset's tool for the approval gate: the instance its calls run on
-    (whose rules apply) and what it does to data."""
+    (whose rules apply, and whether it is the person's own) and what it does to data."""
     instance_id, owner = instance or ("", fallback_owner)
     tool_name = tool.path.rsplit("/", 1)[-1]
     type_tag = next((tag.value for tag in tool.tags if tag.key == "type"), None)
     context.tool_state.setdefault(TOOLSET_TOOLS_BY_PATH, {})[tool.path] = ApprovalTarget(
         source="toolset", instance_id=instance_id, tool_name=tool_name, owner=owner,
-        kind=toolset_tool_kind(tool_name, type_tag), tool=tool,
+        kind=toolset_tool_kind(tool_name, type_tag), tool=tool, personal=personal,
     )
 
 
@@ -189,6 +191,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 blob_store=state.get("blob_store"),
                 user_id=state.get("user_id"),
                 allowed_connector_ids=allowed_sql_connector_ids,
+                artifact_owner_user_id=artifact_owner_id(state),
             )
             setattr(execute_query_tool, "_original_name", "sql.execute_sql_query")
             app_name, tool_name = split_original_tool_name(execute_query_tool)
@@ -392,6 +395,7 @@ class PipesHubToolLoader:
                 # An external toolset's calls pass the approval gate, under its instance's rules.
                 gated = has_factory and not is_internal
                 approval_instance = instance_creator.instance_for_app(ts_name) if gated else None
+                personal = bool(approval_instance) and instance_creator.instance_is_personal(approval_instance[0])
                 for t in tools:
                     try:
                         registry.register_tool(t)
@@ -401,7 +405,7 @@ class PipesHubToolLoader:
                             state_logger.warning("Skipping duplicate: %s", t.name)
                         continue
                     if gated:
-                        _record_for_approvals(context, t, approval_instance, fallback_owner=group_name)
+                        _record_for_approvals(context, t, approval_instance, fallback_owner=group_name, personal=personal)
 
                 registered_names = [t.name for t in toolset.tools if registry.has(t.name)]
                 if registered_names:

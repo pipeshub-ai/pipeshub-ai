@@ -124,14 +124,14 @@ def shape_deterministic_compact(
 ):
     """Deterministic replacement for ``shape_auto_compact``.
 
-    Only fires when context exceeds ``trigger_ratio * budget`` and there
-    are enough messages to compact.
+    Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``
+    and there are enough messages to compact.
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
         messages = ctx.messages
-        budget = ctx.budget.effective_max_tokens
-        if count_tokens(messages) <= budget * trigger_ratio:
+        total = count_tokens(messages)
+        if total <= ctx.budget.trigger_tokens(trigger_ratio):
             await next_fn()
             return
         if len(messages) <= pin_first_n + keep_last_n_messages:
@@ -177,8 +177,10 @@ def shape_deterministic_compact(
 
         ctx.messages = [*head, *compacted_middle, *tail]
         logger.info(
-            "deterministic_compact: compacted %d middle messages "
-            "(head=%d, tail=%d)", len(middle), len(head), len(tail),
+            "deterministic_compact: compacted %d middle messages (head=%d, tail=%d), "
+            "%d→%d tokens (turn=%d, budget=%d)",
+            len(middle), len(head), len(tail), total, count_tokens(ctx.messages),
+            ctx.turn_index, ctx.budget.effective_max_tokens,
         )
         await next_fn()
 

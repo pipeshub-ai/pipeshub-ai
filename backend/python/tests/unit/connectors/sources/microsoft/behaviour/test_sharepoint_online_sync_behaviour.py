@@ -298,7 +298,7 @@ class TestDriveDelta:
 
 
 class TestPermissions:
-    async def test_item_sharing_is_mapped_to_users_groups_and_org_links_and_an_anonymous_link_names_no_one(
+    async def test_item_sharing_is_mapped_to_users_and_groups_and_an_org_or_anonymous_link_alone_names_no_one(
         self, connector, api, db
     ) -> None:
         delta_pages(api, {None: page([file_item("i1", "plan.pdf")], delta_link=delta_url("d1"))})
@@ -315,7 +315,6 @@ class TestPermissions:
         assert mapped == {
             (EntityType.USER, "u1", PermissionType.OWNER),
             (EntityType.GROUP, "g-eng", PermissionType.WRITE),
-            (EntityType.ORG, "anyone_in_org", PermissionType.READ),
         }
         assert next(p.email for p in db.record_permissions["i1"] if p.external_id == "u1") == "ana@contoso.com"
 
@@ -689,6 +688,19 @@ class TestSiteGroups:
 
         assert db.user_groups[f"{SITE_ID}-7"] == ["ana@contoso.com"]
 
+    async def test_a_sharing_links_group_is_saved_with_the_people_who_redeemed_the_link(self, connector, api, db) -> None:
+        """A link's group is hidden in the SharePoint UI but is a site group; its members are the link's redeemers."""
+        serve_site(api)
+        api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
+        api.on("GET", "/v1.0/groups", page([]))
+        api.on("GET", f"{SITE_REST}/sitegroups", rest_users({"Id": 31, "Title": "SharingLinks.0f6e.OrganizationEdit.9a1b"}))
+        api.on("GET", f"{SITE_REST}/sitegroups/GetById(31)/users", rest_users(
+            {"Id": 12, "Title": "Raj", "Email": "raj@contoso.com", "PrincipalType": 1, "LoginName": "i:0#.f|membership|raj"}))
+
+        await connector._sync_user_groups()
+
+        assert db.user_groups[f"{SITE_ID}-31"] == ["raj@contoso.com"]
+
     @pytest.mark.xfail(strict=True, reason=(
         "When a SharePoint site group's members can't be read, the group is saved with no members, removing its "
         "members' access (sharepoint_online/connector.py:3145-3194)"))
@@ -864,6 +876,28 @@ class TestUniquePermissions:
         }
         assert db.records["i-shared"].inherit_permissions is False, "sharepointIds.listItemUniqueId is read too"
         assert db.records[f"{DRIVE_ID}:root:{ROOT_ITEM_ID}"].inherit_permissions is True
+
+    async def test_an_organization_links_redeemers_come_from_its_group_in_the_role_assignments(
+        self, connector, api, db
+    ) -> None:
+        """Graph lists no grantee on an organization link; SharePoint holds its redeemers in the link's group."""
+        link_group = "SharingLinks.0f6e.OrganizationEdit.9a1b"
+        serve_library_permissions(api, unique_items=((9, SHARED_PDF_ID),))
+        api.on("GET", f"{LIBRARY_REST}/items(9)/roleassignments", rest_results(
+            role_assignment(sp_group(3, "IT Team Site Owners"), "Full Control"),
+            role_assignment(sp_group(31, link_group), "Contribute"),
+        ))
+        delta_pages(api, {None: page([
+            file_item("i-shared", "letter.pdf", etag="e9", list_item_unique_id=SHARED_PDF_ID),
+        ], delta_link=delta_url("d1"))})
+        serve_item(api, "i-shared", [link_grant("organization", "edit")])
+
+        await sync_site(connector)
+
+        assert mapped(db.record_permissions["i-shared"]) == {
+            (EntityType.GROUP, f"{SITE_ID}-3", PermissionType.OWNER),
+            (EntityType.GROUP, f"{SITE_ID}-31", PermissionType.WRITE),
+        }, "the link's group carries its role; the link adds no organization-wide grant"
 
     async def test_an_item_that_inherits_is_saved_as_before(self, connector, api, db) -> None:
         serve_library_permissions(api, unique_items=((7, ADMIN_FOLDER_ID),))

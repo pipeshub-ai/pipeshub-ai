@@ -1028,6 +1028,50 @@ class TestCreateExecuteQueryTool:
         assert csv_lines == ["x", "1", "2"]
 
     @pytest.mark.asyncio
+    async def test_csv_export_goes_to_the_artifact_owner_and_access_is_the_run_users(self) -> None:
+        """A service-account agent queries with its creator's access; the CSV it
+        makes belongs to the person chatting."""
+        from app.utils.execute_query import create_execute_query_tool
+
+        mock_blob_store = AsyncMock()
+        mock_blob_store.save_versioned_artifact_to_storage = AsyncMock(
+            return_value={"documentId": "doc-1", "fileName": "q.csv"}
+        )
+        graph = MagicMock()
+
+        with patch(
+            "app.utils.execute_query._execute_query_impl",
+            new_callable=AsyncMock,
+            return_value={
+                "ok": True, "markdown_result": "| x |", "row_count": 1, "column_count": 1,
+                "raw_columns": ["x"], "raw_rows": [(1,)],
+            },
+        ), patch(
+            "app.utils.execute_query.register_task",
+        ) as mock_register, patch(
+            "app.sandbox.artifact_upload.create_artifact_record",
+            AsyncMock(return_value="rec-1"),
+        ) as create, patch(
+            "app.utils.execute_query._connector_is_accessible",
+            AsyncMock(return_value=True),
+        ) as accessible:
+            tool = create_execute_query_tool(
+                config_service=MagicMock(),
+                graph_provider=graph,
+                org_id="org-1",
+                conversation_id="conv-1",
+                blob_store=mock_blob_store,
+                user_id="u-alice",
+                allowed_connector_ids={"conn-1"},
+                artifact_owner_user_id="u-bob",
+            )
+            await tool.ainvoke({"query": "SELECT x", "source_name": "PostgreSQL", "connector_id": "conn-1"})
+            await mock_register.call_args[0][1]
+
+        assert accessible.await_args.args[2] == "u-alice"
+        assert create.await_args.kwargs["user_id"] == "u-bob"
+
+    @pytest.mark.asyncio
     async def test_csv_export_not_registered_without_conversation_id(self):
         from app.utils.execute_query import create_execute_query_tool
 

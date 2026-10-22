@@ -306,6 +306,20 @@ class TestThrottledInvoke:
             await _ainvoke_throttled(Llm(), [])
         assert calls == [1]
 
+    async def test_a_budget_refusal_does_not_trip_the_provider_breaker(self):
+        from app.services.llm_gateway.gateway import LLMGateway
+
+        gateway = LLMGateway(2, failure_threshold=1)
+
+        class Llm:
+            async def ainvoke(self, messages, **kwargs):
+                raise RuntimeError(f"Error code: 429 - {BUDGET_BODY!r}")
+
+        for _ in range(3):
+            with pytest.raises(RuntimeError):
+                await gateway.invoke(Llm(), [], provider="litellm")
+        assert not gateway.breaker("litellm").is_open
+
     async def test_a_gateway_rate_limit_waits_for_retry_after(self, monkeypatch):
         from app.utils import streaming
 

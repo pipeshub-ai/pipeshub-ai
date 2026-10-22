@@ -52,7 +52,10 @@ class TestEnrichRecordsWithAddressLinks:
 
         links = hits["vrid-pr"]["address_links"]
         assert links["mentioned_in"] == [
-            {"record_id": "slack-1", "record_name": "eng_2026-09-26", "connector_name": "SLACK WORKSPACE"},
+            {
+                "record_id": "slack-1", "record_name": "eng_2026-09-26",
+                "connector_name": "SLACK WORKSPACE", "record_type": "",
+            },
         ]
         assert [row["record_id"] for row in links["links_to"]] == ["jira-1"]
         graph.get_address_links_batch.assert_awaited_once()

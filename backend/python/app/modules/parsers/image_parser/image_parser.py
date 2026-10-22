@@ -29,7 +29,10 @@ VALID_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp','.svg']
 VIEWBOX_NUM_COMPONENTS = 4
 # Image URLs come from document bodies (uploads, synced mail, crawled pages), so a
 # document's author chooses them: they must never reach internal addresses.
-_IMAGE_FETCH_LIMITS = PublicFetchLimits(max_bytes=20 * 1024 * 1024, timeout_s=10.0)
+# A larger image is dropped rather than buffered whole: a document's image URL can
+# serve any amount. downscale_to_limits fits accepted images to each model.
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+_IMAGE_FETCH_LIMITS = PublicFetchLimits(max_bytes=_MAX_IMAGE_BYTES, timeout_s=10.0)
 _logger = logging.getLogger(__name__)
 
 

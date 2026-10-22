@@ -1742,9 +1742,9 @@ class LocalFsConnector(BaseConnector):
         payload: JsonValue | bytes | bytearray,
     ) -> bytes:
         """
-        The storage service's GET /buffer route returns
-        ``res.json(buffer)``. Across local / S3 / Azure providers, that
-        always serializes a Node Buffer as ``{"type":"Buffer","data":[...]}``.
+        The storage service's GET /buffer route returns the raw bytes. Older
+        versions returned ``res.json(buffer)``, a Node Buffer serialised as
+        ``{"type":"Buffer","data":[...]}``, which is still accepted.
 
         Some legacy callers wrap it once more as ``{"data": <buffer>}``.
         """
@@ -1792,7 +1792,8 @@ class LocalFsConnector(BaseConnector):
                             response.status, record.record_name, (await response.text())[:500],
                         )
                         raise internal_service_status(response.status)
-                    raw_text = await response.text()
+                    is_raw = "application/octet-stream" in response.headers.get("Content-Type", "").lower()
+                    raw = await response.read()
         except asyncio.TimeoutError as exc:
             raise HTTPException(
                 status_code=HttpStatusCode.GATEWAY_TIMEOUT.value,
@@ -1815,11 +1816,12 @@ class LocalFsConnector(BaseConnector):
                 ),
             ) from exc
 
-        payload: JsonValue | bytes
-        try:
-            payload = json.loads(raw_text) if raw_text else {}
-        except json.JSONDecodeError:
-            payload = raw_text.encode("utf-8")
+        payload: JsonValue | bytes = raw
+        if not is_raw:
+            try:
+                payload = json.loads(raw) if raw else {}
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                payload = raw
 
         body = self._decode_storage_buffer_payload(payload)
         media = record.mime_type or "application/octet-stream"

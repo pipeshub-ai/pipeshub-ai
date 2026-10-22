@@ -8,6 +8,8 @@ import {
   conversationIdParamsSchema,
   conversationTitleParamsSchema,
   conversationShareParamsSchema,
+  forkConversationParamsSchema,
+  forkAgentConversationParamsSchema,
   messageIdParamsSchema,
   enterpriseSearchSearchSchema,
   searchIdParamsSchema,
@@ -243,6 +245,38 @@ describe('enterprise_search/validators/es_validators', () => {
       if (absent.success) expect(absent.data.body.keywordSearchBudget).to.equal(undefined)
       expect(parse({ keywordSearchBudget: 'full' }).success).to.be.true
       expect(parse({ keywordSearchBudget: 'off' }).success).to.be.false
+    })
+  })
+
+  describe('forkConversationParamsSchema', () => {
+    it('should accept valid conversation and message ids', () => {
+      const result = forkConversationParamsSchema.safeParse({
+        params: {
+          conversationId: '507f1f77bcf86cd799439011',
+          messageId: '507f1f77bcf86cd799439012',
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject a missing message id', () => {
+      const result = forkConversationParamsSchema.safeParse({
+        params: { conversationId: '507f1f77bcf86cd799439011' },
+      })
+      expect(result.success).to.be.false
+    })
+  })
+
+  describe('forkAgentConversationParamsSchema', () => {
+    it('should accept valid agent, conversation, and message ids', () => {
+      const result = forkAgentConversationParamsSchema.safeParse({
+        params: {
+          agentKey: 'agent-1',
+          conversationId: '507f1f77bcf86cd799439011',
+          messageId: '507f1f77bcf86cd799439012',
+        },
+      })
+      expect(result.success).to.be.true
     })
   })
 
@@ -604,6 +638,42 @@ describe('enterprise_search/validators/es_validators', () => {
         modifiedAfter: '2026-09-01',
         modifiedBefore: '2026-09-30T12:00:00+05:30',
       })
+    })
+
+    it('keeps rewriteQuery when the caller sets it, and leaves it out otherwise', () => {
+      for (const rewriteQuery of [true, false]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', rewriteQuery } })
+        expect(result.success).to.be.true
+        expect(result.data!.body.rewriteQuery).to.equal(rewriteQuery)
+      }
+      const omitted = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q' } })
+      expect(omitted.success).to.be.true
+      expect(omitted.data!.body).to.not.have.property('rewriteQuery')
+    })
+
+    it('rejects a rewriteQuery that is not a boolean', () => {
+      for (const rewriteQuery of ['false', 0, null]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', rewriteQuery } })
+        expect(result.success, JSON.stringify(rewriteQuery)).to.be.false
+      }
+    })
+
+    it('keeps timeline when the caller sets it, and leaves it out otherwise', () => {
+      for (const timeline of ['created', 'modified', 'off']) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', timeline } })
+        expect(result.success).to.be.true
+        expect(result.data!.body.timeline).to.equal(timeline)
+      }
+      const omitted = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q' } })
+      expect(omitted.success).to.be.true
+      expect(omitted.data!.body).to.not.have.property('timeline')
+    })
+
+    it('rejects a timeline that is not created, modified or off', () => {
+      for (const timeline of ['updated', '', 'none', true, false, null, 1]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', timeline } })
+        expect(result.success, JSON.stringify(timeline)).to.be.false
+      }
     })
 
     it('rejects an empty or overlong date bound', () => {

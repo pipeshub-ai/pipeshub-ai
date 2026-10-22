@@ -130,6 +130,15 @@ import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
 } from '../utils/chat-error-messages';
+import {
+  copyArtifactsForFork,
+  copySessionUpToMessage,
+  ForkChatSessionResult,
+  ForkSessionFields,
+  resolveForkProjectId,
+} from '../utils/fork-conversation';
+import { ArtifactCopier, ArtifactCopyOutcome } from '../utils/fork-artifacts';
+import { executeConnectorCommand } from '../../tokens_manager/utils/connector.utils';
 import { ProjectService } from '../../projects/services/project.service';
 import {
   assignAgentCapabilitiesToPayload,
@@ -658,7 +667,7 @@ export const streamChat =
     try {
       // Set SSE headers
       res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
+        'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
         'Access-Control-Allow-Origin': '*',
@@ -1263,7 +1272,9 @@ export const streamChat =
       }
 
       if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+        res.writeHead(500, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+        });
       }
       logger.error('Error in streamChat', {
         requestId,
@@ -1404,7 +1415,7 @@ export const addMessageStream =
     try {
       // Set SSE headers
       res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
+        'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
         'Access-Control-Allow-Origin': '*',
@@ -2019,7 +2030,9 @@ export const addMessageStream =
       }
 
       if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+        res.writeHead(500, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+        });
       }
 
       const errorEvent = isAGUI(protocol)
@@ -2085,9 +2098,10 @@ export const getAllConversations = async (
     }
 
     const { skip, limit, page } = getPaginationParams(req);
-    const sortOptions = buildSortOptions(req);
-
     const isOwned = source === 'owned';
+    // A pin belongs to its owner, so only the owner's own list is pinned-first.
+    const sortOptions = buildSortOptions(req, { pinnedFirst: isOwned });
+
     let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
     if (req.query.search) {
       const escapedSearch = validateAndEscapeSearch(req.query.search);
@@ -2118,7 +2132,7 @@ export const getAllConversations = async (
       .limit(limit)
       .select('-__v');
     if (!isOwned) {
-      selection = selection.select('-sharedWith') as typeof selection;
+      selection = selection.select('-sharedWith -isPinned') as typeof selection;
     }
 
     const [conversations, totalCount] = await Promise.all([
@@ -3754,7 +3768,9 @@ async function regenerateAnswersInternal(
     });
 
     if (!res.headersSent) {
-      res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+      res.writeHead(500, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+      });
     }
 
     try {
@@ -3971,6 +3987,265 @@ export const updateTitle = async (
   }
 };
 
+interface ForkConversationBody {
+  id: string;
+  title: string | undefined;
+  projectId: string | undefined;
+  forkedFrom: { conversationId: string; messageId: string };
+  messageCount: number;
+  meta: { requestId: string | undefined; timestamp: string; duration: number };
+}
+
+const forkConversationResponse = (
+  { conversation, messageCount }: ForkChatSessionResult,
+  conversationId: string,
+  messageId: string,
+  requestId: string | undefined,
+  startTime: number,
+): ForkConversationBody => ({
+  id: String(conversation._id),
+  title: conversation.title,
+  projectId: conversation.projectId
+    ? String(conversation.projectId)
+    : undefined,
+  forkedFrom: { conversationId, messageId },
+  messageCount,
+  meta: {
+    requestId,
+    timestamp: new Date().toISOString(),
+    duration: Date.now() - startTime,
+  },
+});
+
+interface ForkTarget {
+  /** Names the kind of chat in the error log. */
+  label: string;
+  fields: Omit<ForkSessionFields, 'projectId'>;
+  findSource: (
+    orgId: string,
+    userId: string,
+    conversationId: string,
+  ) => Promise<IChatSessionDocument | null>;
+  copyArtifacts: ArtifactCopier;
+  /** Removes the artifacts copied under a fork that could not be created. */
+  discardArtifacts: (forkId: string) => Promise<void>;
+}
+
+const FORK_ARTIFACT_COPY_BATCH = 50;
+// Copying re-uploads every version's bytes, so allow far longer than a lookup.
+const FORK_ARTIFACT_COPY_TIMEOUT_MS = 180_000;
+
+/**
+ * Asks the connectors service to copy artifacts as the caller. One attempt
+ * only (`retries` counts attempts): a repeat after a timeout would leave a
+ * second, unused copy.
+ */
+export const forkArtifactCopier =
+  (appConfig: AppConfig, req: AuthenticatedUserRequest): ArtifactCopier =>
+  async (conversationId, refs) => {
+    const outcome: ArtifactCopyOutcome = { copies: [], failed: [] };
+    for (let i = 0; i < refs.length; i += FORK_ARTIFACT_COPY_BATCH) {
+      const response = await executeConnectorCommand<ArtifactCopyOutcome>(
+        `${appConfig.connectorBackend}/api/v1/artifacts/copy`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+        {
+          conversationId,
+          artifacts: refs.slice(i, i + FORK_ARTIFACT_COPY_BATCH),
+        },
+        { retries: 1, timeoutMs: FORK_ARTIFACT_COPY_TIMEOUT_MS },
+      );
+      if (
+        response.statusCode < 200 ||
+        response.statusCode >= 300 ||
+        !response.data
+      ) {
+        throw handleBackendError(response, 'copy artifacts for fork');
+      }
+      outcome.copies.push(...response.data.copies);
+      outcome.failed.push(...response.data.failed);
+    }
+    return outcome;
+  };
+
+const runFork = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+  target: ForkTarget,
+): Promise<void> => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  let session: ClientSession | null = null;
+  const conversationId = req.params.conversationId ?? '';
+  const messageId = req.params.messageId ?? '';
+  // Allocated up front: the artifacts are copied under this id before the chat
+  // exists, and a retried transaction must reuse them, not copy again.
+  const forkId = new mongoose.Types.ObjectId();
+  const copy = { started: false };
+  try {
+    const userId = req.user?.userId as string | undefined;
+    const orgId = req.user?.orgId as string | undefined;
+    if (!conversationId || !messageId) {
+      throw new BadRequestError('conversationId and messageId are required');
+    }
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+
+    const source = await target.findSource(orgId, userId, conversationId);
+    if (!source) {
+      throw new NotFoundError('Conversation not found');
+    }
+
+    const fields: ForkSessionFields = {
+      ...target.fields,
+      projectId: await resolveForkProjectId(source, orgId, userId),
+    };
+    // Outside the transaction: this call can take minutes, longer than MongoDB
+    // lets a transaction live.
+    const artifacts = await copyArtifactsForFork(
+      source,
+      messageId,
+      forkId,
+      (id, refs) => {
+        copy.started = true;
+        return target.copyArtifacts(id, refs);
+      },
+    );
+    const performFork = (
+      txnSession: ClientSession | null,
+    ): Promise<ForkChatSessionResult> =>
+      copySessionUpToMessage(
+        source,
+        messageId,
+        userId,
+        orgId,
+        fields,
+        txnSession,
+        artifacts,
+      );
+
+    let result: ForkChatSessionResult;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      result = await session.withTransaction(() => performFork(session));
+    } else {
+      result = await performFork(null);
+    }
+
+    res
+      .status(HTTP_STATUS.CREATED)
+      .json(
+        forkConversationResponse(
+          result,
+          conversationId,
+          messageId,
+          requestId,
+          startTime,
+        ),
+      );
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    logger.error(`Error forking ${target.label}`, {
+      requestId,
+      conversationId,
+      messageId,
+      error: failure.message,
+      stack: failure.stack,
+      duration: Date.now() - startTime,
+    });
+    if (copy.started) {
+      // The artifacts live outside MongoDB, so no rollback reaches them.
+      try {
+        await target.discardArtifacts(String(forkId));
+      } catch (cleanupError) {
+        logger.warn('Could not remove the artifacts of a failed fork', {
+          requestId,
+          forkId: String(forkId),
+          error:
+            cleanupError instanceof Error
+              ? cleanupError.message
+              : String(cleanupError),
+        });
+      }
+    }
+    next(error);
+  } finally {
+    if (session) {
+      await session.endSession();
+      session = null;
+    }
+  }
+};
+
+/**
+ * Copy a conversation into a new private chat owned by the caller, including
+ * every message up to and including `messageId`. The original is unchanged.
+ *
+ * Owner only: a shared recipient's access to the original's attachments and
+ * artifacts is revoked on unshare, which would leave a fork pointing at files
+ * it can no longer open.
+ */
+export const forkConversation =
+  (appConfig: AppConfig) =>
+  (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> =>
+    runFork(req, res, next, {
+      label: 'conversation',
+      fields: { sessionType: 'chat' },
+      copyArtifacts: forkArtifactCopier(appConfig, req),
+      discardArtifacts: (forkId) =>
+        deleteConversationArtifacts(appConfig, forkId, req),
+      findSource: (orgId, userId, conversationId) =>
+        ChatSession.findOne({
+          ...(buildFilter(
+            req,
+            orgId,
+            userId,
+            conversationId,
+            true,
+            false,
+          ) as FilterQuery<IChatSessionDocument>),
+          ...EXCLUDE_AGENT,
+        }),
+    });
+
+/** Owner only, for the same reason as `forkConversation`. */
+export const forkAgentConversation =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const agentKey = req.params.agentKey ?? '';
+    if (!agentKey) {
+      next(new BadRequestError('agentKey is required'));
+      return;
+    }
+    await runFork(req, res, next, {
+      label: 'agent conversation',
+      fields: { sessionType: 'agent', agentKey },
+      copyArtifacts: forkArtifactCopier(appConfig, req),
+      discardArtifacts: (forkId) =>
+        deleteConversationArtifacts(appConfig, forkId, req),
+      findSource: (orgId, userId, conversationId) =>
+        ChatSession.findOne(
+          buildAgentConversationFilter(
+            req,
+            orgId,
+            userId,
+            agentKey,
+            conversationId,
+          ) as FilterQuery<IChatSessionDocument>,
+        ),
+    });
+  };
+
 async function performFeedbackUpdate(params: {
   query: Record<string, any>;
   conversationId: string;
@@ -4168,6 +4443,9 @@ export const archiveConversation = async (
               archivedBy: userId,
               lastActivityAt: Date.now(),
             },
+            // An archived chat is out of the list; restoring it should not
+            // bring back a pin the owner no longer remembers setting.
+            $unset: { isPinned: 1 },
           },
           {
             new: true,
@@ -4333,6 +4611,77 @@ export const unarchiveConversation = async (
     next(error);
   }
 };
+
+/**
+ * Pin is the owner's own ordering of their chat list, so unlike archive it is
+ * not open to people the chat is shared with. Re-pinning a pinned chat (or
+ * unpinning an unpinned one) succeeds without change, so a double click or a
+ * retry after a dropped response is safe.
+ */
+const setConversationPinned =
+  (
+    pinned: boolean,
+  ): ((
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ) => Promise<void>) =>
+  async (req, res, next) => {
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    try {
+      const { conversationId } = req.params;
+      const userId = req.user?.userId as string | undefined;
+      const orgId = req.user?.orgId as string | undefined;
+      if (!userId || !orgId) {
+        throw new BadRequestError('User ID and Organization ID are required');
+      }
+
+      const updated = await ChatSession.findOneAndUpdate(
+        {
+          _id: conversationId,
+          userId,
+          orgId,
+          initiator: userId,
+          isDeleted: false,
+          // An archived chat is out of the list, so there is nothing to pin.
+          // Unpinning stays allowed so a stale pin can always be cleared.
+          ...(pinned ? { isArchived: false } : {}),
+          ...EXCLUDE_AGENT,
+        },
+        // Unpinning removes the field rather than storing `false`; see the schema.
+        pinned ? { $set: { isPinned: true } } : { $unset: { isPinned: 1 } },
+        // Pinning is not an edit of the chat, so it must not change `updatedAt`.
+        { new: true, timestamps: false },
+      ).exec();
+
+      if (!updated) {
+        throw new NotFoundError(
+          'Conversation not found or not owned by caller',
+        );
+      }
+
+      res.status(HTTP_STATUS.OK).json({
+        id: updated._id,
+        isPinned: pinned,
+        meta: {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+        },
+      });
+    } catch (error: unknown) {
+      logger.error(`Error ${pinned ? 'pinning' : 'unpinning'} conversation`, {
+        requestId,
+        message: `Error ${pinned ? 'pinning' : 'unpinning'} conversation`,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      next(error);
+    }
+  };
+
+export const pinConversation = setConversationPinned(true);
+export const unpinConversation = setConversationPinned(false);
 
 export const listAllArchivesConversation = async (
   req: AuthenticatedUserRequest,
@@ -4650,7 +4999,7 @@ export const search =
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
     try {
-      const { query, limit, filters } = req.body;
+      const { query, limit, filters, rewriteQuery, timeline } = req.body;
       // Only the bounds the caller set, so a search without dates sends what it always did.
       const body = req.body as Record<string, unknown>;
       const dateBounds: Record<string, string> = {};
@@ -4679,7 +5028,15 @@ export const search =
         uri: `${aiBackendUrl}/api/v1/search`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
-        body: { query, limit, filters, ...dateBounds },
+        body: {
+          query,
+          limit,
+          filters,
+          ...dateBounds,
+          // Sent only when the caller set it, so other searches send what they always did.
+          ...(typeof rewriteQuery === 'boolean' ? { rewriteQuery } : {}),
+          ...(typeof timeline === 'string' ? { timeline } : {}),
+        },
       });
 
       let aiResponse;
@@ -4732,8 +5089,15 @@ export const search =
         recordsArray.forEach((record) => {
           // Use either _id or _key as the unique key for each record
           const key = record._id || record._key;
+          // `linkedRecords` was filtered for the user who ran this search. A
+          // saved search can be shared, and its records are returned as
+          // stored, so the links are kept out of what is saved.
+          const stored: Record<string, unknown> = {
+            ...(record as Record<string, unknown>),
+          };
+          delete stored.linkedRecords;
           // Convert the record object to a string since your schema expects Map<string, string>
-          recordsMap.set(key, JSON.stringify(record));
+          recordsMap.set(key, JSON.stringify(stored));
         });
       }
       // Save the entire search operation as a single document
@@ -5703,7 +6067,7 @@ export const deleteAgent =
     try {
       // Set SSE headers
       res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
+        'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
         'Access-Control-Allow-Origin': '*',
@@ -6311,7 +6675,9 @@ export const deleteAgent =
       }
 
       if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+        res.writeHead(500, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+        });
       }
 
       const errorEvent = isAGUI(protocol)
@@ -6466,7 +6832,7 @@ export const addMessageStreamToAgentConversation =
     try {
       // Set SSE headers
       res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
+        'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
         'Access-Control-Allow-Origin': '*',
@@ -7082,7 +7448,9 @@ export const addMessageStreamToAgentConversation =
       }
 
       if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'text/event-stream' });
+        res.writeHead(500, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+        });
       }
 
       const errorEvent = isAGUI(protocol)

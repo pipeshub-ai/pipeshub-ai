@@ -939,7 +939,7 @@ class TestParseBookstackPermissions:
     @pytest.mark.asyncio
     async def test_fallback_inheriting_book_write(self, connector):
         roles_details = {
-            1: {"permissions": ["book-create-all", "book-update-all"]},
+            1: {"permissions": ["book-view-all", "book-create-all", "book-update-all"]},
         }
         data = {
             "owner": None,
@@ -949,6 +949,19 @@ class TestParseBookstackPermissions:
         result = await connector._parse_bookstack_permissions(data, roles_details, "book")
         assert len(result) == 1
         assert result[0].type == PermissionType.WRITE
+
+    @pytest.mark.asyncio
+    async def test_fallback_inheriting_book_write_without_view_grants_nothing(self, connector) -> None:
+        roles_details = {
+            1: {"permissions": ["book-create-all", "book-update-all"]},
+        }
+        data = {
+            "owner": None,
+            "role_permissions": [],
+            "fallback_permissions": {"inheriting": True},
+        }
+        result = await connector._parse_bookstack_permissions(data, roles_details, "book")
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_fallback_inheriting_book_no_permissions(self, connector):

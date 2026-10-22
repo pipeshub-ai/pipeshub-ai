@@ -9,18 +9,26 @@ The expected surface lives in ``golden/mcp_surface_<version>.json`` where
 ``<version>`` is the ``@pipeshub-ai/mcp`` pin in
 ``backend/nodejs/apps/package.json``. Bumping the pin therefore needs a new
 golden, generated with ``pytest response-validation/mcp --update-mcp-golden``.
+
+The tool tests call every tool with a client_credentials token from the same
+app, against a document and an agent created for the session.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 import pytest
 
+from helper.clients.agents_client import AgentsClient
+from helper.clients.kb_client import KBClient
+from helper.indexing_progress import wait_until_finished
 from helper.local_auth import obtain_user_session_token
 from helper.mcp_client import read_mcp_surface
 from helper.mcp_oauth import (
@@ -31,6 +39,9 @@ from helper.mcp_oauth import (
     delete_oauth_app,
 )
 from helper.mcp_pin import mcp_package_pin
+from helper.stored_names import stored_name
+
+logger = logging.getLogger("mcp-tools")
 
 _THIS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _THIS_DIR.parents[2]
@@ -78,6 +89,80 @@ def mcp_access_token(mcp_base_url: str, mcp_user_jwt: str, mcp_oauth_app: OAuthA
 @pytest.fixture(scope="session")
 def mcp_client_credentials_token(mcp_base_url: str, mcp_oauth_app: OAuthApp) -> str:
     return client_credentials_token(mcp_base_url, mcp_oauth_app)["access_token"]
+
+
+@pytest.fixture(scope="session")
+def mcp_seeded_record(kb_client: KBClient, ai_models_configured) -> Iterator[dict[str, str]]:
+    """An indexed document with a phrase nothing else contains, in a collection of its own.
+
+    The tools can only find, read, download and cite it if upload, indexing,
+    embedding and retrieval all worked during this run.
+    """
+    token = uuid.uuid4().hex[:12]
+    needle = f"quillfeather {token} rollback drill"
+    name = f"mcp-tools-{token}.md"
+    body = (
+        f"# Release runbook {token}\n\n"
+        f"The {needle} is owned by the platform reliability team. It runs every "
+        f"second Tuesday, and the {needle} must finish within 45 minutes.\n\n"
+        "## Steps\n\nFreeze deploys, roll back the canary, then confirm the error budget.\n"
+    ).encode()
+
+    kb_name = f"mcp-tools-{token}"
+    kb_id = kb_client.create_kb(kb_name)["id"]
+    try:
+        upload = kb_client.upload_file(kb_id, name, body, mimetype="text/markdown")
+        record_id = upload["records"][0]["recordId"]
+        final = asyncio.run(wait_until_finished(kb_client, [record_id]))
+        assert final.get(record_id) == "COMPLETED", (
+            f"the seeded document did not finish indexing ({final.get(record_id)}), "
+            "so the tools have nothing to find"
+        )
+        yield {
+            "kb_id": kb_id,
+            "kb_name": kb_name,
+            "record_id": record_id,
+            "name": stored_name(name),
+            "needle": needle,
+            "body": body.decode(),
+        }
+    finally:
+        try:
+            kb_client.delete_kb(kb_id)
+        except Exception:  # noqa: BLE001 - teardown must not mask test results
+            logger.warning("could not delete the seeded knowledge base %s", kb_id)
+
+
+@pytest.fixture(scope="session")
+def mcp_seeded_agent(
+    agents_client: AgentsClient, ai_models_configured, mcp_seeded_record: dict[str, str]
+) -> Iterator[dict[str, Any]]:
+    """An agent with the seeded collection as its knowledge, for ``pipeshub_agents`` to list.
+
+    It is never run, so the seeded LLM stands in for the reasoning model an
+    agent must name to be created.
+    """
+    name = f"mcp-tools-agent-{uuid.uuid4().hex[:8]}"
+    resp = agents_client.create_agent(
+        name=name,
+        description="Answers release runbook questions for the MCP tool tests.",
+        models=[{
+            "modelKey": ai_models_configured.model_key,
+            "modelName": ai_models_configured.model_name,
+            "provider": ai_models_configured.provider,
+            "isReasoning": True,
+        }],
+        knowledge=[{"connectorId": mcp_seeded_record["kb_id"], "filters": {}}],
+    )
+    assert resp.status_code in (200, 201), f"creating the agent: {resp.status_code} {resp.text[:500]}"
+    agent_key = (resp.json().get("agent") or {}).get("_key")
+    assert agent_key, f"agent create returned no agent._key: {resp.text[:500]}"
+    try:
+        yield {"agent_id": agent_key, "name": name}
+    finally:
+        deleted = agents_client.delete_agent(agent_key)
+        if deleted.status_code >= 300 and deleted.status_code != 404:
+            logger.warning("could not delete agent %s: %s", agent_key, deleted.text[:300])
 
 
 @pytest.fixture(scope="session")

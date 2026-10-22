@@ -23,7 +23,12 @@ from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import 
     is_jira_ticket_record,
 )
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.models.blocks import BlockType, GroupType, SemanticMetadata
+from app.models.blocks import (
+    BlockType,
+    GroupType,
+    SemanticMetadata,
+    summary_with_captions,
+)
 from app.models.entities import (
     CodeFileRecord,
     Connectors,
@@ -76,6 +81,7 @@ valid_group_labels = [
     ]
 
 from app.utils.record_block_selection import (  # noqa: E402
+    API_READ_HINTS,
     FETCH_RECORD_HINTS,
     RECORD_CLOSE,
     ReadHints,
@@ -86,6 +92,7 @@ from app.utils.record_block_selection import (  # noqa: E402
     selection_hint,
 )
 from app.utils.render_budget import RenderBudget  # noqa: E402
+from app.utils.slack_replies import corrected_has_replies, replies_note  # noqa: E402
 
 # Larger than any record: what a caller that passes no budget gets, so its
 # rendering is bounded only by `max_blocks` exactly as it was before budgets
@@ -219,13 +226,25 @@ def build_record_page_web_url(frontend_url: str, record_id: str) -> str:
     return f"{base}/record/{record_id}"
 
 
-def table_summary_text(group_data: object) -> str:
-    """A table's summary as the model reads it, led by its DDL for a SQL table."""
+def table_summary_text(group_data: object, captions: list[str] | None = None) -> str:
+    """A table's summary as the model reads it: led by its DDL for a SQL table,
+    and by any of *captions* the summary lacks."""
     if not isinstance(group_data, dict):
-        return ""
-    summary = group_data.get("table_summary", "") or ""
+        return summary_with_captions("", captions)
+    summary = summary_with_captions(group_data.get("table_summary", "") or "", captions)
     ddl = group_data.get("ddl", "") or ""
     return f"DDL:\n{ddl}\n\n{summary}" if ddl else summary
+
+
+def table_group_summary_text(group: dict[str, Any]) -> str:
+    """``table_summary_text`` for a stored table group, with its captions.
+
+    The captions are read from ``table_metadata``, not the summary, so a table
+    indexed before enrichment kept them still shows which table a row is from.
+    """
+    metadata = group.get("table_metadata") or {}
+    captions = metadata.get("captions") if isinstance(metadata, dict) else None
+    return table_summary_text(group.get("data"), captions)
 
 
 def flattened_result_sort_key(result: dict[str, Any]) -> tuple[str, int]:
@@ -977,6 +996,8 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "creator_name": graph_doc.get("creatorName"),
                 "creator_email": graph_doc.get("creatorEmail"),
                 "labels": graph_doc.get("labels"),
+                "resolved_at": graph_doc.get("resolvedAtTimestamp"),
+                "due_date": graph_doc.get("dueDateTimestamp"),
             }
             return TicketRecord(**base_args, **specific_args)
 
@@ -1086,6 +1107,8 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "review_email": graph_doc.get("reviewEmail"),
                 "labels": graph_doc.get("labels"),
                 "last_commit_sha": graph_doc.get("lastCommitSha"),
+                "merged_at": graph_doc.get("mergedAtTimestamp"),
+                "closed_at": graph_doc.get("closedAtTimestamp"),
             }
             return PullRequestRecord(**base_args, **specific_args)
         else:
@@ -1978,6 +2001,60 @@ MAX_ADDRESS_LINKS_PER_HIT = 10
 _MAX_LINKED_NAME_CHARS = 200
 _ADDRESS_LINK_SECTIONS = (("mentioned_in", "Mentioned in"), ("links_to", "Links to"))
 
+# The record types that carry a state of their own: open or done, merged or
+# closed, and when. Every other type (a page, a message, a file) has none, so
+# its type-specific document is never read for a status.
+_STATUS_RECORD_TYPES = frozenset({
+    RecordType.TICKET.value,
+    RecordType.PULL_REQUEST.value,
+    RecordType.PROJECT.value,
+})
+# A status phrase is one line of data, like a linked record's name.
+_MAX_STATUS_CHARS = 160
+
+
+def status_summary_from_graph(
+    base_doc: dict[str, Any], type_doc: dict[str, Any] | None,
+) -> str | None:
+    """``Record.status_summary`` of a record read from the graph: its base
+    document (``records``) and its type-specific one (``tickets``, ``prs``)."""
+    if not type_doc or base_doc.get("recordType") not in _STATUS_RECORD_TYPES:
+        return None
+    record = create_record_instance_from_dict(_build_record_dict_from_graph_base(base_doc), type_doc)
+    summary = record.status_summary() if record else None
+    if not summary:
+        return None
+    return " ".join(summary.split())[:_MAX_STATUS_CHARS]
+
+
+async def status_summaries_by_id(
+    graph_provider: IGraphDBProvider,
+    base_docs: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    """Each record's status phrase, by id, for those that have one.
+
+    One query per type collection, for the records whose type has a state.
+    A status is never what decides whether a record is shown, so a read that
+    fails leaves those records without one rather than failing the caller.
+    """
+    wanted = [
+        rid for rid, doc in base_docs.items()
+        if isinstance(doc, dict) and doc.get("recordType") in _STATUS_RECORD_TYPES
+    ]
+    if not wanted:
+        return {}
+    try:
+        type_docs = await _fetch_type_specific_docs_batched(graph_provider, wanted, base_docs)
+    except Exception as e:
+        logger.warning("Record status read skipped: %s", e)
+        return {}
+    summaries: dict[str, str] = {}
+    for rid in wanted:
+        summary = status_summary_from_graph(base_docs[rid], type_docs.get(rid))
+        if summary:
+            summaries[rid] = summary
+    return summaries
+
 
 async def enrich_records_with_address_links(
     virtual_record_id_to_result: dict[str, dict[str, Any]],
@@ -1995,7 +2072,9 @@ async def enrich_records_with_address_links(
     records ``user_id`` may read are shown; if that check cannot run, nothing
     is added. Sets ``record["address_links"]`` to
     ``{"mentioned_in": [...], "links_to": [...]}``, each item
-    ``{"record_id", "record_name", "connector_name"}``.
+    ``{"record_id", "record_name", "connector_name", "record_type"}`` and,
+    for a ticket, pull request or project, ``"status"``: "the pull request
+    this thread links was merged on X" needs no second search.
     """
     if not graph_provider or not user_id or not org_id:
         return
@@ -2063,18 +2142,27 @@ async def enrich_records_with_address_links(
     by_id = {
         (doc.get("id") or doc.get("_key")): doc for doc in docs or [] if isinstance(doc, dict)
     }
+    statuses = await status_summaries_by_id(graph_provider, by_id)
+
+    def _row(rid: str) -> dict[str, Any]:
+        row = {
+            "record_id": rid,
+            "record_name": " ".join(_record_name_from_graph_doc(by_id[rid]).split())[
+                :_MAX_LINKED_NAME_CHARS
+            ],
+            "connector_name": by_id[rid].get("connectorName") or "",
+            "record_type": by_id[rid].get("recordType") or "",
+        }
+        if rid in statuses:
+            row["status"] = statuses[rid]
+        return row
+
     for record_id, record in hits.items():
         found = (links or {}).get(record_id) or {}
         attached: dict[str, list[dict[str, Any]]] = {}
         for direction, _title in _ADDRESS_LINK_SECTIONS:
             rows = [
-                {
-                    "record_id": rid,
-                    "record_name": " ".join(_record_name_from_graph_doc(by_id[rid]).split())[
-                        :_MAX_LINKED_NAME_CHARS
-                    ],
-                    "connector_name": by_id[rid].get("connectorName") or "",
-                }
+                _row(rid)
                 for rid in found.get(direction) or []
                 if rid in by_id and rid != record_id
             ][:MAX_ADDRESS_LINKS_PER_HIT]
@@ -2082,6 +2170,79 @@ async def enrich_records_with_address_links(
                 attached[direction] = rows
         if attached:
             record["address_links"] = attached
+
+
+async def enrich_read_records_with_address_links(
+    records: list[dict[str, Any]],
+    graph_provider: IGraphDBProvider | None,
+    org_id: str | None,
+    *,
+    user_id: str | None,
+) -> None:
+    """``enrich_records_with_address_links`` for records read by id (a fetch,
+    the record-content API), which do not pass through the search pipeline:
+    the pull request a thread links, with whether and when it merged."""
+    if not records:
+        return
+    await enrich_records_with_address_links(
+        {str(i): record for i, record in enumerate(records) if isinstance(record, dict)},
+        graph_provider,
+        org_id or "",
+        user_id=user_id or "",
+    )
+
+
+# How a linked record's direction is named in the search API's JSON.
+_SEARCH_LINK_RELATIONS = {"mentioned_in": "mentionedIn", "links_to": "linksTo"}
+
+
+async def describe_search_records(
+    records: list[dict[str, Any]],
+    graph_provider: IGraphDBProvider | None,
+    org_id: str,
+    *,
+    user_id: str,
+) -> None:
+    """Add to each record document the search API returns where it stands
+    and what it links to, so an API caller sees what the assistant sees.
+
+    Sets ``statusSummary`` on a ticket, pull request or project ("Merged
+    2026-09-25 by alice"), and ``linkedRecords`` on a record that names, or
+    is named by, records the user may read: each ``{relation, recordId,
+    recordName, recordType, connector, status?}``. Both keys are left out
+    when there is nothing to say.
+    """
+    docs: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        record.pop("statusSummary", None)
+        record.pop("linkedRecords", None)
+        rid = record.get("_key") or record.get("id")
+        if rid:
+            docs[rid] = record
+    if not docs or not graph_provider:
+        return
+    for rid, summary in (await status_summaries_by_id(graph_provider, docs)).items():
+        docs[rid]["statusSummary"] = summary
+    holders = {rid: {"id": rid} for rid in docs}
+    await enrich_records_with_address_links(holders, graph_provider, org_id, user_id=user_id)
+    for rid, holder in holders.items():
+        links = holder.get("address_links") or {}
+        linked = [
+            {
+                "relation": relation,
+                "recordId": row["record_id"],
+                "recordName": row["record_name"],
+                "recordType": row.get("record_type") or "",
+                "connector": row.get("connector_name") or "",
+                **({"status": row["status"]} if row.get("status") else {}),
+            }
+            for direction, relation in _SEARCH_LINK_RELATIONS.items()
+            for row in links.get(direction) or []
+        ]
+        if linked:
+            docs[rid]["linkedRecords"] = linked
 
 
 def build_address_links_info(record: dict[str, Any]) -> str:
@@ -2102,11 +2263,35 @@ def build_address_links_info(record: dict[str, Any]) -> str:
             record_id = html.escape(str(row.get("record_id", "")), quote=True)
             source = html.escape(str(row.get("connector_name") or ""), quote=True)
             name = html.escape(str(row.get("record_name") or "Unknown"), quote=False)
+            # Type and status only when known, so a row from an older
+            # enrichment renders exactly as it did.
+            extra = ""
+            if row.get("record_type"):
+                extra += f' type="{html.escape(str(row["record_type"]), quote=True)}"'
+            if row.get("status"):
+                extra += f' status="{html.escape(str(row["status"]), quote=True)}"'
             lines.append(
-                f'  <linked_record record_id="{record_id}" source="{source}">'
+                f'  <linked_record record_id="{record_id}" source="{source}"{extra}>'
                 f"<record_name>{name}</record_name></linked_record>"
             )
     return "\n".join(lines) + "\n" if lines else ""
+
+
+def record_header_metadata(record: dict[str, Any], hints: ReadHints = FETCH_RECORD_HINTS) -> str:
+    """A read record's metadata as its header shows it: its own fields, then
+    the records that name it and that it names, when those were attached.
+
+    A Slack record whose messages have replies also says how many and how to
+    read them (`hints.thread`): the replies are records of their own.
+    """
+    metadata = record.get("context_metadata")
+    if not isinstance(metadata, str):
+        metadata = ""
+    replies = replies_note(record, hints.thread)
+    if replies:
+        metadata = f"{metadata}\n{replies}" if metadata else replies
+    links = build_address_links_info(record)
+    return f"{metadata}{links.rstrip()}" if links else metadata
 
 
 def build_node_relations_info(record: dict[str, Any]) -> str:
@@ -2915,7 +3100,6 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             on_repeat_hit[chunk_id] = functools.partial(_raise_pending_row, chunk_id)
             continue
         elif block_type == GroupType.TABLE.value:
-            table_data = block.get("data",{})
             table_metadata = block.get("table_metadata", {})
             children = block.get("children")
 
@@ -2947,10 +3131,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                     is_large_table = True
                 else:
                     is_large_table = num_of_cells > MAX_CELLS_IN_TABLE_THRESHOLD
-                table_summary = table_data.get("table_summary","")
-                ddl = table_data.get("ddl", "") or ""
-                if ddl:
-                    table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
+                table_summary = table_group_summary_text(block)
 
                 if not is_large_table:
                     child_results=[]
@@ -3110,11 +3291,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             )
             continue
         block_group = block_groups[block_group_index]
-        data = block_group.get("data", {})
-        table_summary = data.get("table_summary","")
-        ddl = data.get("ddl", "") or ""
-        if ddl:
-            table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
+        table_summary = table_group_summary_text(block_group)
         child_results = []
         for row_index, row_score, qdrant_content in sorted_rows_tuple:
             if row_index < len(blocks):
@@ -3470,6 +3647,13 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                         logger.error(f"Error fetching type-specific metadata for record {record_key}: {str(e)}")
 
                 record_instance = create_record_instance_from_dict(record, graph_doc)
+                if isinstance(record_instance, MessageRecord):
+                    # Records that bundle several Slack messages, and the first
+                    # record of a thread, were stored with hasReplies False; the
+                    # messages' own "Reply Count" lines say otherwise.
+                    record_instance.has_replies = corrected_has_replies(
+                        record, has_replies=record_instance.has_replies,
+                    )
                 if record_instance:
                     if isinstance(record_instance, DealRecord):
                         record["context_metadata"] = await record_instance.to_llm_context_with_graph(
@@ -4488,7 +4672,7 @@ def record_to_message_content(
 
     try:
         content = []
-        context_metadata = record.get("context_metadata", "") or ""
+        context_metadata = record_header_metadata(record, hints)
         fk_text = _fk_lines_text(record)
         trailer_reserve = record_trailer_reserve(
             record, selection=include_blocks is not None, hints=hints,
@@ -4767,7 +4951,7 @@ def record_to_message_content(
                         # `[index|ref]` prefix are part of what the model reads,
                         # so they are charged with the rows, along with room for
                         # the "rest did not fit" line should the rows run out.
-                        summary = _TABLE_CONTINUED if continuing else table_summary_text(data)
+                        summary = _TABLE_CONTINUED if continuing else table_group_summary_text(corresponding_block_group)
                         framing = _TableFraming(block_group_index, summary)
                         image_table_header = f"[Table #{block_group_index}: {summary}]\n"
                         truncation_reserve = framing.row(
@@ -5115,7 +5299,8 @@ def record_to_text(record: dict[str, Any]) -> str:
     """
     try:
         content: list[str] = []
-        context_metadata = record.get("context_metadata", "")
+        # This string is what the record-content API returns.
+        context_metadata = record_header_metadata(record, API_READ_HINTS)
         content.append(f"""<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n""")
 
         block_containers = record.get("block_containers", {})

@@ -12,7 +12,7 @@ import { NodeHandles } from './node-handles';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL, getFlowNodeChrome } from '../flow-theme';
 import { McpLiveServersContext, mcpLiveView, toolsMissingFromServer } from '../mcp-live-servers';
 import { McpStatusBadge } from '../../../workspace/mcp-servers/connection-state';
-import { EnterpriseBadge } from '@/app/components/ui/enterprise-badge';
+import { McpAgentApprovalsNotice } from '@/config';
 
 /**
  * One attached MCP server instance. With "All tools" on, the agent gets whatever the server
@@ -389,14 +389,7 @@ export function McpFlowNode({
               ))}
             </Box>
           )}
-          {/* Per-agent tool approvals are an Enterprise Edition feature; each person's own apply here. */}
-          <Flex align="center" gap="2" mt="3" data-testid="mcp-agent-approvals-ee">
-            <MaterialIcon name="rule" size={14} color="var(--agent-flow-text-muted)" />
-            <Text size="1" style={{ color: 'var(--agent-flow-text-muted)' }}>
-              {t('agentBuilder.mcpAgentApprovals')}
-            </Text>
-            <EnterpriseBadge tooltip={t('agentBuilder.mcpAgentApprovalsEnterprise')} />
-          </Flex>
+          <McpAgentApprovalsNotice />
         </Box>
       </Box>
     </div>

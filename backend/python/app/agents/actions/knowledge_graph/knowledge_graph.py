@@ -638,7 +638,6 @@ class KnowledgeGraph:
         if len(inside) < len(result.matches):
             kept = [m for m in result.matches if m.id in inside]
             result = result.model_copy(update={"matches": kept, "ambiguous": result.ambiguous and len(kept) > 1})
-        remember_record_ids(state, [m.id for m in result.matches])
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
@@ -803,7 +802,7 @@ class KnowledgeGraph:
                if args.get("source_ids") else "")
             if args.get("query") else None
         ),
-        result_summary=search_result_summary,
+        result_summary=lambda args, result: _timeline_result_summary(args, result),
         display_name="Searched the knowledge base",
     )
     async def search(
@@ -1169,8 +1168,11 @@ class KnowledgeGraph:
     def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
         """This request's tools: ``search_by_entities`` and the descriptions
         that go with it only where the deployment offers it
-        (``entity_search_surface``)."""
+        (``entity_search_surface``); ``search_timeline`` unless
+        ``TIMELINE_SUMMARIES`` is false."""
         from .entity_search_surface import tools_for_request
+        from .ops.timeline import without_timeline_unless_enabled
+        tools = without_timeline_unless_enabled(tools)
         return tools_for_request(self, tools, offered=entity_search_offered_in(self.state))
 
     # -----------------------------------------------------------------------
@@ -1287,6 +1289,122 @@ class KnowledgeGraph:
         )
 
     # -----------------------------------------------------------------------
+    # search_timeline — date-ordered search over a span (TIMELINE_SUMMARIES)
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/search_timeline",
+        short_description="Search a span of time period by period and return the matches in date order",
+        description=(
+            "Gather what happened over a span of time, in date order: what came up in a channel, "
+            "project or ticket between two dates, how something evolved, what was decided over a "
+            "period, where things stand after a run of exchanges.\n\n"
+            "It splits the span into up to 6 periods (calendar months, or weeks within one month), "
+            "searches each period separately, and returns each period's best-matching blocks under "
+            "its own heading, oldest first. A plain search returns the top matches overall, which "
+            "bunch around the single best-matching moment and miss the rest of the span; here every "
+            "period gets its own share. The whole result is about the size of one search result.\n\n"
+            "Pass start and end when the question names a period ('between March and May 2026' -> "
+            "start='2026-03-01', end='2026-05-31'), widened by a week or so where it is vague "
+            "('late July', 'mid-September'). With no start it covers the year before end, reaching "
+            "further back when the best matches are older; pass only start for 'since ...'. "
+            "Matches whose record has no source date are listed last. To keep to one channel, "
+            "project or space, pass its record_group entityId from "
+            "knowledgegraph__search_entities in entity_ids.\n\n"
+            "Each period shows a sample, not every record. Answer period by period and cite the "
+            "blocks under each period's heading. For a period that matters and looks thin, search "
+            "it with knowledgegraph__search and its date filters, or read a record in full."
+        ),
+        parameters=[
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description="What to look for in every period — the topic, not the dates.",
+                required=True,
+            ),
+            ToolParameter(
+                name="start",
+                type=ParameterType.STRING,
+                description=(
+                    "First day of the span, 'YYYY-MM-DD' (start of that day, UTC) or an ISO 8601 "
+                    "datetime with a timezone. Omit to cover the year before end, or further back "
+                    "to the earliest of the best matches."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="end",
+                type=ParameterType.STRING,
+                description=(
+                    "Last day of the span, inclusive, same formats as start. Omit to end today."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="date_field",
+                type=ParameterType.STRING,
+                description=(
+                    "'created' (default) places each record by when it was created at its source: "
+                    "a Slack thread by its first message, a ticket by when it was filed. 'modified' "
+                    "places it by its last update, for tickets or pages that changed over the span."
+                ),
+                required=False,
+                default="created",
+            ),
+            ToolParameter(
+                name="source_ids",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Limit to these sources (app-connector or KB-collection IDs from the Knowledge "
+                    "Sources section). Omit to search every accessible source."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
+                name="entity_ids",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Optional entityIds returned by search_entities in this turn: a record_group "
+                    "(a Slack channel, Jira project, Confluence space, Drive folder) keeps the "
+                    "timeline to that group's records; a department/category/topic narrows by it."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Searched "{args.get("query", "")}" period by period'
+            + (f' from {args["start"]}' if args.get("start") else "")
+            + (f' to {args["end"]}' if args.get("end") else "")
+            if args.get("query") else None
+        ),
+        result_summary=lambda args, result: _timeline_result_summary(args, result),
+        display_name="Searched the knowledge base over time",
+    )
+    async def search_timeline(
+        self,
+        query: str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        date_field: str | None = None,
+        source_ids: list[str] | None = None,
+        entity_ids: list[str] | None = None,
+    ) -> str | list[Part]:
+        """Date-ordered search — calls ops/timeline.py execute_timeline_search."""
+        from .ops.timeline import execute_timeline_search
+        return await execute_timeline_search(
+            self.state,
+            query,
+            start=start,
+            end=end,
+            date_field=date_field,
+            source_ids=source_ids,
+            entity_ids=entity_ids,
+        )
+
+    # -----------------------------------------------------------------------
     # fetch_record — full document read (dynamically granted)
     # -----------------------------------------------------------------------
     # NOTE: this method is declared here for discoverability but the tool is
@@ -1360,6 +1478,11 @@ def _find_records_by_entity_result_summary(args: dict[str, Any], result: "ToolRe
     if result.is_error:
         return f"Lookup failed: {first_line}"
     return first_line or "Found records"
+
+
+def _timeline_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    from .ops.timeline import timeline_result_summary
+    return timeline_result_summary(args, result)
 
 
 def _list_files_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:

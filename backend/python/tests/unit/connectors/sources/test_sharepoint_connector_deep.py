@@ -239,8 +239,7 @@ class TestConvertToPermissions:
         perm.roles = []
 
         result = await c._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ORG
+        assert result == []  # an organization link alone is not a grant
 
     @pytest.mark.asyncio
     async def test_exception_in_permission_continues(self):

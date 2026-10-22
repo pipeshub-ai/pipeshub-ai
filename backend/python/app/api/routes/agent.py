@@ -404,6 +404,25 @@ async def _resolve_service_account_caller_identity(
     return enriched_user_info
 
 
+async def _service_account_artifact_owner(
+    user_context: dict[str, Any], graph_provider: IGraphDBProvider, org_id: str,
+) -> str | None:
+    """The caller who owns what a service-account agent makes in their chat.
+
+    The agent runs as its creator, but the conversation is the caller's, and so
+    are the files made in it. Only a signed-in user of the agent's org can own
+    them: a service JWT (the Slack bot's) has no user to grant them to, so
+    they stay the creator's, as do those of a caller who is not found.
+    """
+    if user_context.get("isServiceAccount"):
+        return None
+    caller_id = user_context.get("userId")
+    caller = await get_user_or_503(graph_provider, caller_id)
+    if not caller or str(caller.get("orgId") or "") != str(org_id or ""):
+        return None
+    return caller_id
+
+
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
     """Get user document with validation"""
     try:
@@ -632,13 +651,17 @@ def _format_web_search_for_response(raw_web_search: Any) -> dict[str, Any] | Non
     return formatted
 
 
-def _is_web_search_enabled(selected_tools: list[str] | None) -> bool:
+def _is_web_search_enabled(selected_tools: list[str] | None, *, is_universal_agent: bool = False) -> bool:
     """Whether web_search should remain enabled for this request.
 
     `selected_tools is None` means "all actions", so web_search stays enabled.
     When an explicit tools list is provided, require a web_search entry.
+
+    The universal agent's tool pickers (composer and project) never list web search; its
+    Web Search switch (`agentCapabilities.webSearch`) is the control. A narrowed or
+    project-scoped tool list there must not switch web search off behind that switch.
     """
-    if selected_tools is None:
+    if selected_tools is None or is_universal_agent:
         return True
 
     for tool in selected_tools:
@@ -1321,6 +1344,72 @@ def _assert_no_personal_mcp_servers(
     if personal:
         raise InvalidRequestError(
             f"Personal MCP servers ({', '.join(personal)}) can't be attached to an agent that is shared "
+            "with the organization or runs as a service account."
+        )
+
+
+async def _assert_toolsets_visible(
+    toolsets_with_tools: dict[str, dict[str, Any]],
+    config_service: ConfigurationService,
+    org_id: str,
+    user_id: str,
+) -> dict[str, dict[str, Any]]:
+    """An agent may only attach toolset instances the editor can see — the org's, or their own
+    personal ones; anything else would save fine and then fail every chat. Attachments without an
+    instance (saved before instances existed) are left as they are. Returns the instances by id."""
+    from app.agents.toolset_store import is_personal
+    from app.edition_config import get_toolset_by_id
+
+    attached = {ts["instanceId"]: ts for ts in toolsets_with_tools.values() if ts.get("instanceId")}
+    found = await asyncio.gather(*[get_toolset_by_id(instance_id, config_service, org_id) for instance_id in attached])
+    visible = {
+        instance_id: instance
+        for instance_id, instance in zip(attached, found)
+        if instance and (not is_personal(instance) or instance.get("createdBy") == user_id)
+    }
+    missing = [ts.get("instanceName") or ts.get("displayName") or instance_id for instance_id, ts in attached.items() if instance_id not in visible]
+    if missing:
+        raise InvalidRequestError(f"Action(s) not found: {', '.join(missing)}.")
+    return visible
+
+
+def _names_an_instance(toolsets_with_tools: dict[str, dict[str, Any]]) -> bool:
+    return any(ts.get("instanceId") for ts in toolsets_with_tools.values())
+
+
+async def _attached_personal_toolsets(
+    instance_ids: set[str], config_service: ConfigurationService, org_id: str,
+) -> dict[str, dict[str, Any]]:
+    """The personal toolset instances among `instance_ids`, whoever owns them (as for MCP servers,
+    a co-editor can't resolve the owner's, and dropping what it can't see would let sharing past)."""
+    from app.agents.toolset_store import find_personal_instance
+
+    found = await asyncio.gather(*[
+        find_personal_instance(config_service, org_id, instance_id, raise_on_error=True) for instance_id in instance_ids
+    ])
+    return {instance["_id"]: instance for instance in found if instance}
+
+
+def _toolset_attachments_unreadable() -> AgentError:
+    return AgentError(
+        "This agent's actions couldn't be checked, so it can't be shared right now. Please try again in a moment.",
+        status_code=503,
+    )
+
+
+def _assert_no_personal_toolsets(
+    instances: dict[str, dict[str, Any]], *, shared_with_org: bool, service_account: bool,
+) -> None:
+    """A personal action holds one user's sign-in and is visible to that user only; an agent other
+    people run could never use it."""
+    if not (shared_with_org or service_account):
+        return
+    from app.agents.toolset_store import is_personal
+
+    personal = [instance.get("instanceName") or instance_id for instance_id, instance in instances.items() if is_personal(instance)]
+    if personal:
+        raise InvalidRequestError(
+            f"Personal actions ({', '.join(personal)}) can't be attached to an agent that is shared "
             "with the organization or runs as a service account."
         )
 
@@ -2045,6 +2134,16 @@ async def _enrich_agent_models(agent: dict[str, Any], config_service: Configurat
         logger.warning(f"Failed to enrich models: {e}")
 
 
+
+# The base implementations, under names nothing rebinds. An edition may replace
+# get_services, _enrich_agent_models and sa_forces_org_sharing when it loads
+# (handlers look them up as module globals at call time); tests of the base
+# behaviour pin these back.
+_base_get_services = get_services
+_base_enrich_agent_models = _enrich_agent_models
+_base_sa_forces_org_sharing = sa_forces_org_sharing
+
+
 def _parse_request_body(body: bytes) -> dict[str, Any]:
     """Parse and validate JSON request body"""
     if not body:
@@ -2347,6 +2446,10 @@ async def create_agent(request: Request) -> JSONResponse:
 
         # Parse toolsets, knowledge, skills, and MCP servers BEFORE starting transaction
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+        attached_toolsets = (
+            await _assert_toolsets_visible(toolsets_with_tools, services["config_service"], org_key, user_context["userId"])
+            if _names_an_instance(toolsets_with_tools) else {}
+        )
         mcp_servers_with_tools = _parse_mcp_servers(body.get("mcpServers", []))
         attached_mcp_instances = (
             await _assert_mcp_servers_exist(
@@ -2369,6 +2472,7 @@ async def create_agent(request: Request) -> JSONResponse:
         _assert_no_personal_mcp_servers(
             attached_mcp_instances, shared_with_org=share_with_org, service_account=is_service_account,
         )
+        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org, service_account=is_service_account)
 
         # Create agent document
         agent_key = str(uuid.uuid4())
@@ -3011,6 +3115,11 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             if mcp_servers_with_tools else {}
         )
         mcp_servers_with_tools = _bind_mcp_attachments_to_instances(mcp_servers_with_tools, attached_mcp_instances)
+        toolsets_in_body = _parse_toolsets(body.get("toolsets", [])) if "toolsets" in body else {}
+        attached_toolsets = (
+            await _assert_toolsets_visible(toolsets_in_body, services["config_service"], org_key, user_context["userId"])
+            if _names_an_instance(toolsets_in_body) else {}
+        )
 
         # Check permissions first, then fetch full agent data
         perm = await services["graph_provider"].check_agent_permission(agent_id, user_key, org_key)
@@ -3060,6 +3169,16 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         _assert_no_personal_mcp_servers(
             attached_mcp_instances, shared_with_org=final_shared, service_account=final_service_account,
         )
+        if sharing_turned_on and "toolsets" not in body:
+            existing_toolset_ids = {ts["instanceId"] for ts in agent.get("toolsets") or [] if ts.get("instanceId")}
+            try:
+                attached_toolsets = await _attached_personal_toolsets(
+                    existing_toolset_ids, services["config_service"], org_key,
+                ) if existing_toolset_ids else {}
+            except Exception as e:
+                logger.error(f"Could not check the actions of agent {agent_id} before sharing it: {e}")
+                raise _toolset_attachments_unreadable() from e
+        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared, service_account=final_service_account)
 
         # Handle shareWithOrg flag changes
         if "shareWithOrg" in body:
@@ -3117,8 +3236,8 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
         # Update toolsets if provided in request (even if empty array - means delete all)
         if "toolsets" in body:
-            # Parse toolsets first to validate before anything is written
-            toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+            # Parsed and checked before the update above
+            toolsets_with_tools = toolsets_in_body
 
             graph_provider = services["graph_provider"]
             transaction_id = None
@@ -3803,6 +3922,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             _apply_user_context_gate(enriched_user_info, enabled=user_context_enabled)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
             is_service_account = False
+            artifact_owner_user_id = None
 
         else:
             actions_enabled = mcp_enabled = None
@@ -3815,6 +3935,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             if not agent:
                 raise AgentNotFoundError(agent_id)
             is_service_account = agent.get("isServiceAccount", False)
+            artifact_owner_user_id = None
 
             if is_service_account:
                 enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
@@ -3822,6 +3943,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 )
                 enriched_user_info = await _resolve_service_account_caller_identity(
                     enriched_user_info, chat_query, user_context, graph_provider, logger,
+                )
+                artifact_owner_user_id = await _service_account_artifact_owner(
+                    user_context, graph_provider, org_key,
                 )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
                 logger.debug(f"loaded service account agent. enriched_user_info: {enriched_user_info}")
@@ -4277,15 +4401,27 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 web_search_tool_config = await web_search_coro if web_search_coro is not None else None
                 connector_configs = await connector_task
                 timer.mark("connector_cfg")
-                if not _is_web_search_enabled(chat_query.tools):
+                # Capabilities can only narrow, never expand beyond what the agent is configured with.
+                if web_search_tool_config is None:
+                    web_search_off = "not_configured"
+                elif not _is_web_search_enabled(
+                    chat_query.tools, is_universal_agent=agent_id == UNIVERSAL_AGENT_ID,
+                ):
+                    web_search_off = "tools_filter"
+                elif not caps.web_search:
+                    web_search_off = "capability_off"
+                else:
+                    web_search_off = None
+                if web_search_off:
                     web_search_provider = None
                     web_search_tool_config = None
-
-                # Apply user-requested capability overrides (capabilities can only narrow,
-                # never expand beyond what the agent is configured with).
-                if not caps.web_search:
-                    web_search_provider = None
-                    web_search_tool_config = None
+                # Without this line a turn that silently lost web search looks like any other.
+                logger.info(
+                    "chat_stream: web search %s (agent_id=%s)",
+                    f"off, reason={web_search_off}" if web_search_off
+                    else f"on, provider={web_search_tool_config.get('provider')}",
+                    agent_id,
+                )
                 if not caps.internal_search:
                     filters = {"apps": [], "kb": [NO_KB_SELECTED_FILTER]}
                     agent_knowledge = []
@@ -4336,6 +4472,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "toolsetConfigs": toolset_configs,
                     "conversationId": chat_query.conversationId,
                     "is_service_account": is_service_account,
+                    "artifact_owner_user_id": artifact_owner_user_id,
                     "isPlaceholderAgent": is_placeholder,
                     "modelName": model_name,
                     "modelKey": model_key,
