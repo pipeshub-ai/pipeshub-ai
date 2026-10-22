@@ -75,7 +75,11 @@ async def folder_tree(kb_client: KBClient) -> AsyncGenerator[dict[str, Any], Non
             "b": f"b-record-{tag}.md",
         }
         folder_a = _folder_id(kb_client.create_folder(kb_id, names["folder_a"]))
-        sub = _folder_id(kb_client.create_folder(kb_id, names["sub_folder"], parent_id=folder_a))
+        sub = _folder_id(
+            kb_client.create_folder(
+                kb_id, names["sub_folder"], parent_id=folder_a, use_subfolder_route=False
+            )
+        )
         folder_b = _folder_id(kb_client.create_folder(kb_id, names["folder_b"]))
         yield {
             "kb_id": kb_id,
