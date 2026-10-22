@@ -237,6 +237,8 @@ export class TelemetryService implements ITelemetryService {
     try {
       this.stopMetricsPush();
       await new Promise((resolve) => setTimeout(resolve, START_DELAY_MS));
+      // An opt-out during the delay has already stopped the push; don't restart it.
+      if (!this.enableMetricCollection) return;
       this.pushInterval = setInterval(() => {
         if (!this.isServerUrlValid()) {
           logger.debug(

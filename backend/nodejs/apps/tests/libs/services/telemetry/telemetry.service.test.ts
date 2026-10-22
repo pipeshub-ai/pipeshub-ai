@@ -346,6 +346,19 @@ describe('TelemetryService', () => {
       expect((svc as any).enableMetricCollection).to.be.false;
     });
 
+    it('starts no push loop when consent is withdrawn during the start delay', async () => {
+      const svc = new TelemetryService(mockKvStore() as any);
+      await flushAsync();
+
+      (svc as any).enableMetricCollection = true;
+      const starting = (svc as any).startOrStopMetricCollection();
+      (svc as any).enableMetricCollection = false;
+      await (svc as any).startOrStopMetricCollection();
+      await starting;
+
+      expect((svc as any).pushInterval).to.be.null;
+    });
+
     it('aborts a shipment still in flight when consent is withdrawn', async () => {
       const kv = mockKvStore(storedConfig({ enableMetricCollection: 'true' }));
       const svc = new TelemetryService(kv as any);
