@@ -16,9 +16,11 @@ a message the admin can act on).
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import re
+import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -211,6 +213,11 @@ def _template_problem(name: str, template: Any) -> str | None:  # noqa: ANN401 -
     return None
 
 
+# Keys the in-process memo digest of the service API key, which is only ever
+# compared within this process; it is change detection, not password storage.
+_KEY_DIGEST_SALT = secrets.token_bytes(16)
+
+
 @dataclass(frozen=True, slots=True)
 class ConnectionForwardingSettings:
     enabled: bool = False
@@ -227,7 +234,7 @@ class ConnectionForwardingSettings:
         # Part of every memo key, so it is computed once here. The key is
         # hashed rather than included so it never sits in a cache key or a log.
         key_digest = (
-            hashlib.blake2b(self.service_api_key.encode(), digest_size=6).hexdigest()
+            hmac.new(_KEY_DIGEST_SALT, self.service_api_key.encode(), "sha256").hexdigest()[:12]
             if self.service_api_key
             else ""
         )

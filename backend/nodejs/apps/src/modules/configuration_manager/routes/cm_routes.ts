@@ -938,11 +938,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     rotateConnectionCredentials(keyValueStoreService, appConfig),
   );
 
-  const authenticate = authMiddleware.authenticate.bind(authMiddleware);
-
+  // AuthMiddleware binds `authenticate` in its constructor, so passing the
+  // reference is safe; the route guard test also needs that exact reference.
+  /* eslint-disable @typescript-eslint/unbound-method */
   router.put(
     '/ai-models/connections/:connectionId/identity-forwarding',
-    authenticate,
+    authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(connectionIdentityForwardingSchema),
@@ -951,7 +952,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
 
   router.get(
     '/ai-models/identity-policy',
-    authenticate,
+    authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
     getIdentityPolicy(keyValueStoreService),
@@ -959,7 +960,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
 
   router.put(
     '/ai-models/identity-policy',
-    authenticate,
+    authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(identityPolicySchema),
@@ -968,12 +969,13 @@ export function createConfigurationManagerRouter(container: Container): Router {
 
   router.post(
     '/ai-models/identity/preview',
-    authenticate,
+    authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
     ValidationMiddleware.validate(identityPreviewSchema),
     previewIdentityForwarding(keyValueStoreService, appConfig),
   );
+  /* eslint-enable @typescript-eslint/unbound-method */
 
   /**
    * @route GET /api/v1/configurationManager/ai-models/:modelType
