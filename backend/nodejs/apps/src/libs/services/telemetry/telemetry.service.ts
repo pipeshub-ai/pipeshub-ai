@@ -152,7 +152,10 @@ export class TelemetryService implements ITelemetryService {
       [keyValues.INSTALL_ID, () => this.generateInstallId()],
       [keyValues.APP_VERSION, () => DEFAULTS.APP_VERSION],
       [keyValues.PUSH_INTERVAL, () => String(DEFAULTS.PUSH_INTERVAL)],
-      [keyValues.ENABLE_METRIC_COLLECTION, () => String(METRICS_CONSENT_DEFAULT)],
+      [
+        keyValues.ENABLE_METRIC_COLLECTION,
+        () => String(METRICS_CONSENT_DEFAULT),
+      ],
     ];
     let changed = false;
     for (const [key, makeDefault] of defaults) {
