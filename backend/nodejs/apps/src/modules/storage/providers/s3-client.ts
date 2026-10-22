@@ -90,15 +90,12 @@ function annotateError(error: unknown): never {
       $metadata?: { httpStatusCode?: number };
     };
     if (record.code === undefined || record.code === '') {
-      if (record.name === 'NoSuchKey') {
-        record.code = 'NoSuchKey';
-      } else if (
-        record.name === 'NotFound' ||
-        record.$metadata?.httpStatusCode === 404
-      ) {
-        record.code = 'NotFound';
-      } else if (record.name !== undefined && record.name !== '') {
+      // A 404 is not always a missing object: `NoSuchBucket` read as
+      // `NotFound` would let callers delete a document whose object is fine.
+      if (record.name !== undefined && record.name !== '') {
         record.code = record.name;
+      } else if (record.$metadata?.httpStatusCode === 404) {
+        record.code = 'NotFound';
       }
     }
   }
@@ -145,6 +142,11 @@ export function createS3Service(config: S3ServiceConfig): S3Service {
     endpoint,
     forcePathStyle,
     maxAttempts: 9,
+    // The WHEN_SUPPORTED default signs a CRC32 of the empty presign body into
+    // put/part URLs, so S3 rejects the real upload; GET URLs gain
+    // x-amz-checksum-mode, which S3-compatible stores refuse.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
     credentials:
       accessKeyId !== undefined && secretAccessKey !== undefined
         ? { accessKeyId, secretAccessKey }
