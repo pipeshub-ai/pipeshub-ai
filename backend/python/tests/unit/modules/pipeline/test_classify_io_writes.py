@@ -254,3 +254,29 @@ async def test_named_entities_are_persisted_under_each_records_lease(second_rev:
     assert await io.save(_job("entities"), ["rec-1", "rec-2"], _extraction()) == "kept"
     expected = [("rec-1", True), ("rec-2", True)] if second_rev == "rev-a" else [("rec-1", True)]
     assert seen == expected
+
+
+@pytest.mark.asyncio
+async def test_classification_and_entities_are_written_under_the_jobs_virtual_record() -> None:
+    # The summary point is keyed by the record's virtual record id; written without one it
+    # lands under "None", outside the record, where search filters and deletes never reach it.
+    seen: list[str | None] = []
+    sink = _sink()
+
+    async def write_enrichment(ctx: TransformContext, index_summary: bool = True) -> None:
+        seen.append(ctx.record.virtual_record_id)
+
+    async def persist(ctx: TransformContext, extraction: NamedEntityExtraction) -> str:
+        seen.append(ctx.record.virtual_record_id)
+        return "kept"
+
+    sink.write_enrichment = AsyncMock(side_effect=write_enrichment)
+    sink.persist_named_entities = AsyncMock(side_effect=persist)
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    await _classify_io(blob, sink=sink).save(_job(), ["rec-1"], SemanticMetadata(summary="s"))
+    entities = GraphEntitiesIO(
+        _job("entities"), Deadline(30), policy=DEFAULT_POLICY, graph=_graph("rev-a"), blob_storage=blob,  # type: ignore[arg-type]
+        sink=sink, config_service=MagicMock(), record_from_document=_record, record_leases=RecordLeases(),
+    )
+    await entities.save(_job("entities"), ["rec-1"], _extraction())
+    assert seen == ["vr-1", "vr-1"]

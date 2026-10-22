@@ -122,6 +122,10 @@ class RecordStageIO:
         if document is None:
             return None
         record = self._record_from_document(document)
+        # The graph document's converter leaves the virtual record id unset. The summary
+        # point is keyed by it, and the blocks and stored record are this job's content,
+        # so the outputs go under the job's virtual record id.
+        record.virtual_record_id = self._job.virtual_record_id
         record.block_containers = blocks
         return TransformContext(record=record)
 
