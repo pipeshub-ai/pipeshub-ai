@@ -24,8 +24,23 @@ def reembeds_from_storage(record: Mapping[str, object]) -> bool:
     reindex compares the parsed blocks with that stored content, finds nothing
     changed and writes no vectors, so only a re-embed brings its content back to
     search. A file never indexed has no stored content and is indexed afresh.
+
+    The stored blocks must also be of the current upload. Replacing a
+    collection file sets ``externalRevisionId`` to the replace time (epoch ms)
+    and leaves the old indexed copy in place until the reindex writes
+    ``lastIndexTimestamp``; a trash in between drops that reindex. A revision
+    newer than the last index, or one that cannot be compared, is indexed from
+    the source.
     """
-    return bool(record.get("virtualRecordId")) and is_searchable_record(record)
+    if not (record.get("virtualRecordId") and is_searchable_record(record)):
+        return False
+    revision = record.get("externalRevisionId")
+    if revision in (None, ""):
+        return True
+    try:
+        return int(str(revision)) <= int(str(record.get("lastIndexTimestamp")))
+    except (TypeError, ValueError):
+        return False
 
 
 def record_event(

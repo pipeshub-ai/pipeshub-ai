@@ -2868,6 +2868,17 @@ class TestRepublishStrandedRecords:
         assert kwargs["payload"]["vectorDbOnly"] is True
 
     @pytest.mark.asyncio
+    async def test_a_restored_upload_replaced_since_its_index_is_reindexed_from_source(self) -> None:
+        record = self._restored_upload(hasIndexedCopy=True, externalRevisionId="2000", lastIndexTimestamp=1000)
+        graph = _sweep_graph({ProgressStatus.NOT_STARTED.value: [record]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+        assert "vectorDbOnly" not in producer.send_event.await_args.kwargs["payload"]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("status, overrides", [
         (ProgressStatus.NOT_STARTED.value, {"restoredAtTimestamp": None}),
         (ProgressStatus.NOT_STARTED.value, {"isDeleted": True}),

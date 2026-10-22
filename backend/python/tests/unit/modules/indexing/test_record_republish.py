@@ -11,7 +11,19 @@ from app.modules.indexing.record_republish import record_event, reembeds_from_st
     ({"virtualRecordId": "vr-1", "indexingStatus": ProgressStatus.NOT_STARTED.value, "hasIndexedCopy": True}, True),
     ({"virtualRecordId": "vr-1", "indexingStatus": ProgressStatus.FAILED.value}, False),
     ({"indexingStatus": ProgressStatus.COMPLETED.value}, False),
-], ids=["indexed", "restored with an indexed copy", "never indexed", "no stored content"])
+    ({"virtualRecordId": "vr-1", "hasIndexedCopy": True, "indexingStatus": ProgressStatus.COMPLETED.value,
+      "externalRevisionId": "2000", "lastIndexTimestamp": 1000}, False),
+    ({"virtualRecordId": "vr-1", "hasIndexedCopy": True, "indexingStatus": ProgressStatus.FAILED.value,
+      "externalRevisionId": "2000", "lastIndexTimestamp": 1000}, False),
+    ({"virtualRecordId": "vr-1", "hasIndexedCopy": True, "externalRevisionId": "1000", "lastIndexTimestamp": 1000}, True),
+    ({"virtualRecordId": "vr-1", "hasIndexedCopy": True, "externalRevisionId": None, "lastIndexTimestamp": 1000}, True),
+    ({"virtualRecordId": "vr-1", "hasIndexedCopy": True, "externalRevisionId": "etag-7", "lastIndexTimestamp": 1000}, False),
+    ({"virtualRecordId": "vr-1", "hasIndexedCopy": True, "externalRevisionId": "2000"}, False),
+], ids=[
+    "indexed", "restored with an indexed copy", "never indexed", "no stored content",
+    "replaced since, completed", "replaced since, failed", "same revision", "no revision",
+    "revision that cannot be compared", "never indexed under a revision",
+])
 def test_only_a_file_with_an_indexed_copy_re_embeds(record: dict, expected: bool) -> None:
     assert reembeds_from_storage(record) is expected
 
