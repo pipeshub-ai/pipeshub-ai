@@ -227,7 +227,7 @@ class ConnectionForwardingSettings:
         # Part of every memo key, so it is computed once here. The key is
         # hashed rather than included so it never sits in a cache key or a log.
         key_digest = (
-            hashlib.sha256(self.service_api_key.encode()).hexdigest()[:12]
+            hashlib.blake2b(self.service_api_key.encode(), digest_size=6).hexdigest()
             if self.service_api_key
             else ""
         )

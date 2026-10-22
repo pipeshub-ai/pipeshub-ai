@@ -41,7 +41,7 @@ export const AI_PUBLIC_CONFIG_KEYS = [
 ] as const;
 
 const CREDENTIAL_HEADER_HINT =
-  /auth|cookie|key|token|secret|password|credential|signature|subscription|assertion/i;
+  /auth|cookie|(api|access|subscription|functions|private)[-_]?key|token|secret|password|credential|signature|assertion/i;
 
 /**
  * A header template may carry a literal credential (e.g. a static bearer token

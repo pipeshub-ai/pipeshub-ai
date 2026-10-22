@@ -45909,7 +45909,7 @@ paths:
       summary: Get models by type
       description: |
         Get all configured models of a specific type. Each entry's `configuration`
-        includes `model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the saved `identityForwarding*` settings (when stored). The service API key is never returned; a credential-bearing header template value reads as `****************`.
+        includes `model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`, and the saved `identityForwarding*` settings (when stored). Unless `reveal=true` is passed, the service API key is omitted and a credential-bearing header template value reads as `****************`.
       operationId: getModelsByType
       security:
         - bearerAuth: []
