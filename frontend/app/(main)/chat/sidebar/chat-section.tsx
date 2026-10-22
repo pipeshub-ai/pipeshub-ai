@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { ChatSectionHeader } from './chat-section-header';
-import { ChatSectionElement, StartChatButton, ChatItemSkeleton } from './chat-section-element';
+import { ChatSectionElement, StartChatButton, ChatItemSkeleton, GeneratingTitleItem } from './chat-section-element';
 import { SidebarItem } from './sidebar-item';
 import { TimeGroup } from './time-group';
 import type { Conversation } from '@/chat/types';
@@ -29,7 +29,7 @@ interface ChatSectionBaseProps {
   hasMore?: boolean;
   /** Called when "More" button is clicked */
   onMore?: () => void;
-  /** Pending conversations to show as "Generating Title…" shimmers in Today group */
+  /** Pending conversations to show as "Generating Title…" shimmers first (in the Today group when time-grouped) */
   pendingConversations?: PendingConversation[];
   /** When provided, show this text as the empty state instead of StartChatButton */
   emptyStateText?: string;
@@ -136,7 +136,7 @@ export function ChatSection({
             emptyStateText ? (
               <Text
                 size="1"
-                style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-10)' }}
+                style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-11)' }}
               >
                 {emptyStateText}
               </Text>
@@ -172,6 +172,11 @@ export function ChatSection({
           ) : (
             /* Flat list (Shared Chats) */
             <Flex direction="column" gap="1">
+              {[...pendingConversations]
+                .sort((a, b) => b.createdAt - a.createdAt)
+                .map((pending) => (
+                  <GeneratingTitleItem key={pending.slotId} slotId={pending.slotId} />
+                ))}
               {conversations!.map((conv) => (
                 <ChatSectionElement
                   key={conv.id}

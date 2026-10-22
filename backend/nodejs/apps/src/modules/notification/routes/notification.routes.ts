@@ -1,9 +1,12 @@
 import { Router } from 'express';
 import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../config';
+import { conversationExtensions } from '../../enterprise_search/services/conversation/conversation-extensions';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
+  INotificationContextResolver,
   listNotifications,
+  NOTIFICATION_CONTEXT_RESOLVER,
   getNotificationStats,
   markAllRead,
   markRead,
@@ -27,14 +30,25 @@ export function createNotificationRouter(
   userManagerContainer: Container,
 ): Router {
   const router = Router();
-  const authMiddleware = userManagerContainer.get<AuthMiddleware>('AuthMiddleware');
+  const authMiddleware =
+    userManagerContainer.get<AuthMiddleware>('AuthMiddleware');
   const auth = authMiddleware.authenticate.bind(authMiddleware);
+  conversationExtensions().routes.mountNotificationRoutes(
+    router,
+    userManagerContainer,
+  );
 
   router.get(
     '/',
     auth,
     ValidationMiddleware.validate(listNotificationsSchema),
-    listNotifications,
+    listNotifications(
+      userManagerContainer.isBound(NOTIFICATION_CONTEXT_RESOLVER)
+        ? userManagerContainer.get<INotificationContextResolver>(
+            NOTIFICATION_CONTEXT_RESOLVER,
+          )
+        : undefined,
+    ),
   );
 
   router.get(
@@ -63,7 +77,7 @@ export function createNotificationRouter(
     auth,
     ValidationMiddleware.validate(markUnreadSchema),
     markUnread,
-  )
+  );
 
   router.patch(
     '/:id/archive',

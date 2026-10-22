@@ -16,6 +16,10 @@ import logging
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.modules.authz.chat_content_access import (
+    ChatContentAccess,
+    get_chat_content_access,
+)
 
 from .models import Actor
 
@@ -85,8 +89,9 @@ class AccessPolicy:
     `COLLECTION_TO_LABEL`/`EDGE_COLLECTION_TO_RELATIONSHIP` mapping for
     `records`/`permission`)."""
 
-    def __init__(self, graph_provider: Any) -> None:
+    def __init__(self, graph_provider: Any, chat_access: ChatContentAccess | None = None) -> None:
         self._graph_provider = graph_provider
+        self._chat_access = chat_access
 
     async def resolve_user_key(self, actor: Actor) -> str:
         """`actor.user_id` is the external/auth `userId`; permission edges
@@ -105,8 +110,9 @@ class AccessPolicy:
     async def authorize_read(self, actor: Actor, artifact_id: str) -> dict:
         """Verify `actor` may read `artifact_id`'s base record. Returns the
         base `records` document on success. Any `USER -> RECORD` PERMISSION
-        edge suffices: OWNER for the creator, READER for users a conversation
-        was shared with."""
+        edge suffices (OWNER for the creator, or a READER grant unless the
+        installed `ChatContentAccess` says graph edges do not grant chat
+        content); without one, that `ChatContentAccess` decides."""
         return await self._authorize(actor, artifact_id, require_owner=False)
 
     async def authorize_write(self, actor: Actor, artifact_id: str) -> dict:
@@ -131,7 +137,19 @@ class AccessPolicy:
             to_collection=CollectionNames.RECORDS.value,
             collection=CollectionNames.PERMISSION.value,
         )
+        access = self._chat_access or get_chat_content_access()
+        if not require_owner and edge and edge.get("role") != "OWNER" and not access.graph_grants_chat_content:
+            edge = None  # only the creator's edge grants; `access` decides every other reader
         if not edge:
+            if not require_owner and await access.can_read_chat_content(
+                self._graph_provider,
+                user_id=actor.user_id,
+                org_id=actor.org_id,
+                record=record,
+                conversation_id=actor.conversation_id,
+                acl_version=actor.acl_version,
+            ):
+                return record
             logger.warning(
                 "Access denied: user=%s has no permission edge for artifact=%s",
                 actor.user_id, artifact_id,

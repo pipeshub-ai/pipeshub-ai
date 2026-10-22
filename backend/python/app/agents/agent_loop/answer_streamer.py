@@ -134,6 +134,9 @@ class TerminalAnswerStreamer:
             # never throttled does not pay for a second full-size frame.
             if self._withheld and self._buffer:
                 await self._emit_state_delta()
+        elif event.event_type == EventType.CANCELLATION:
+            # A stopped run never completes: its answer so far is the turn still on screen.
+            self.streamed_answer = self._buffer
         elif event.event_type == EventType.REASONING_MESSAGE_START:
             self._reasoning_buffer = ""
         elif event.event_type == EventType.REASONING_MESSAGE_CONTENT:

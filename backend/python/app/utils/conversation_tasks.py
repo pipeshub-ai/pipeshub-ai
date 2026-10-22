@@ -3,12 +3,16 @@
 Tools (e.g. execute_query) can register asyncio.Tasks here.  The streaming
 layer awaits them before closing the SSE stream so the results (signed URLs,
 etc.) can be sent to the client.
+
+Within a run (`set_task_run`) they are kept per run too, so a run's answer
+collects only what its own tools started.
 """
 from __future__ import annotations
 
 import asyncio
 import csv
 import io
+from contextvars import ContextVar
 from typing import Any
 
 from app.utils.logger import create_logger
@@ -23,18 +27,33 @@ _DRAIN_OVERALL_TIMEOUT_S = 60.0
 # conversation finished. With a well-behaved tool this is always 1 or 2.
 _MAX_DRAIN_PASSES = 10
 
-_conversation_tasks: dict[str, list[asyncio.Task]] = {}
+_conversation_tasks: dict[str | tuple[str, str], list[asyncio.Task]] = {}
+
+# The run in flight: set at the top of each run's producer task, and inherited
+# by the tasks it starts. Unset, tasks are kept per conversation only.
+_task_run: ContextVar[str | None] = ContextVar("conversation_task_run", default=None)
+
+
+def set_task_run(run_id: str) -> None:
+    """Tasks registered in this context from now on belong to run *run_id*."""
+    _task_run.set(run_id)
+
+
+def _key(conversation_id: str) -> str | tuple[str, str]:
+    run_id = _task_run.get()
+    return (conversation_id, run_id) if run_id else conversation_id
 
 
 def register_task(conversation_id: str, task: asyncio.Task) -> None:
-    """Append an asyncio.Task to the list for *conversation_id*."""
-    if conversation_id not in _conversation_tasks:
-        _conversation_tasks[conversation_id] = []
-    _conversation_tasks[conversation_id].append(task)
+    """Append an asyncio.Task to the list for *conversation_id* (and the current run)."""
+    key = _key(conversation_id)
+    if key not in _conversation_tasks:
+        _conversation_tasks[key] = []
+    _conversation_tasks[key].append(task)
     logger.info(
         "Registered task for conversation %s (total: %d)",
         conversation_id,
-        len(_conversation_tasks[conversation_id]),
+        len(_conversation_tasks[key]),
     )
 
 def _rows_to_csv_bytes(columns: list[str], rows: list[tuple]) -> bytes:
@@ -46,8 +65,16 @@ def _rows_to_csv_bytes(columns: list[str], rows: list[tuple]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 def pop_tasks(conversation_id: str) -> list[asyncio.Task]:
-    """Remove and return all tasks for *conversation_id*."""
-    return _conversation_tasks.pop(conversation_id, [])
+    """Remove and return all tasks for *conversation_id* (and the current run)."""
+    return _conversation_tasks.pop(_key(conversation_id), [])
+
+
+def cancel_run_tasks(conversation_id: str) -> None:
+    """Cancel the tasks the current run registered and never collected (it
+    stopped, failed or had no answer to put them in): no other run collects them."""
+    for task in pop_tasks(conversation_id):
+        if not task.done():
+            task.cancel()
 
 
 async def await_and_collect_results(conversation_id: str) -> list[dict[str, Any]]:

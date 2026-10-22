@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.modules.authz.chat_content_access import get_chat_content_access
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
 from app.utils.chat_helpers import ImageBudget, is_base64_image
 from app.utils.image_admission import (
@@ -41,6 +42,37 @@ def is_chat_attachment(record: dict | None, org_id: str) -> bool:
     )
 
 
+async def _chat_attachments_readable(
+    graph_provider: "IGraphDBProvider",
+    vrids: set[str],
+    *,
+    org_id: str,
+    user_id: str,
+    conversation_id: str | None,
+    acl_version: int | None,
+) -> dict[str, str]:
+    """The chat attachments among ``vrids`` the installed `ChatContentAccess`
+    lets the user read, as ``{virtualRecordId: recordId}``."""
+    access = get_chat_content_access()
+    rows = await graph_provider.get_nodes_by_field_in(
+        CollectionNames.RECORDS.value, "virtualRecordId", sorted(vrids),
+        return_fields=["id", "virtualRecordId", "orgId", "origin", "connectorId"],
+        raise_on_error=True,
+    )
+    readable: dict[str, str] = {}
+    for row in rows or []:
+        record_id, vrid = row.get("id") or row.get("_key"), row.get("virtualRecordId")
+        if (
+            record_id and vrid not in readable and is_chat_attachment(row, org_id)
+            and await access.can_read_chat_content(
+                graph_provider, user_id=user_id, org_id=org_id, record=record_id,
+                conversation_id=conversation_id, acl_version=acl_version,
+            )
+        ):
+            readable[vrid] = record_id
+    return readable
+
+
 async def keep_accessible_attachments(
     graph_provider: "IGraphDBProvider",
     *,
@@ -50,6 +82,8 @@ async def keep_accessible_attachments(
     attachments: list[dict[str, Any]],
     previous_conversations: list[dict[str, Any]],
     logger: logging.Logger,
+    conversation_id: str | None = None,
+    acl_version: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """This turn's attachments and the history's, without those whose record the
     user may not access.
@@ -59,7 +93,10 @@ async def keep_accessible_attachments(
     ``recordId`` is replaced by the record the check found for its
     ``virtualRecordId``: the client's copy is never trusted, since the tools
     read an attached ``recordId`` past the turn's scope. A service account has
-    no User node to check, so it keeps only this org's chat attachments.
+    no User node to check, so it keeps only this org's chat attachments. A chat
+    attachment the graph grants the user nothing on (another member's file in
+    a shared chat) is left to the installed `ChatContentAccess`, for this chat
+    and ``acl_version``, as every later read of it is.
     """
     history_attachments = [a for conv in previous_conversations or [] for a in conv.get("attachments") or []]
     vrids = {a.get("virtualRecordId") for a in [*(attachments or []), *history_attachments]} - {None, ""}
@@ -84,6 +121,11 @@ async def keep_accessible_attachments(
             record_by_vrid = dict((await graph_provider.check_access(
                 user_key, org_id, virtual_record_ids=vrids,
             )).records_by_vrid)
+        if user_id and (ungranted := vrids - record_by_vrid.keys()):
+            record_by_vrid |= await _chat_attachments_readable(
+                graph_provider, ungranted, org_id=org_id, user_id=user_id,
+                conversation_id=conversation_id, acl_version=acl_version,
+            )
 
     def keep(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
         return [
@@ -115,6 +157,8 @@ async def resolve_attachments(
     user_id: str | None = None,
     graph_provider: Any = None,
     is_service_account: bool = False,
+    conversation_id: str | None = None,
+    acl_version: int | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch user-uploaded attachments and return LangChain content blocks.
 
@@ -199,6 +243,8 @@ async def resolve_attachments(
                 user_id=user_id,
                 graph_provider=graph_provider,
                 is_service_account=is_service_account,
+                conversation_id=conversation_id,
+                acl_version=acl_version,
             )
             if img_content:
                 blocks.extend(img_content)
@@ -222,6 +268,8 @@ async def resolve_attachments(
                 user_id=user_id,
                 graph_provider=graph_provider,
                 is_service_account=is_service_account,
+                conversation_id=conversation_id,
+                acl_version=acl_version,
             )
             if doc_content:
                 blocks.extend(doc_content)
@@ -249,6 +297,8 @@ async def _resolve_attachment_content(
     user_id: str | None = None,
     graph_provider: Any = None,
     is_service_account: bool = False,
+    conversation_id: str | None = None,
+    acl_version: int | None = None,
 ) -> tuple[list[dict[str, Any]], Any]:
     """Fetch a stored attachment record and convert it via ``record_to_message_content``.
 
@@ -270,6 +320,8 @@ async def _resolve_attachment_content(
         virtual_record_id=virtual_record_id,
         logger=logger,
         is_service_account=is_service_account,
+        conversation_id=conversation_id,
+        acl_version=acl_version,
     ):
         return [], ref_mapper
 

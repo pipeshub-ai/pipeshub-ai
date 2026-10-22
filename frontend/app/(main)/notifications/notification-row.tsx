@@ -8,13 +8,15 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
+import type { NotificationRowDecoration, NotificationRowExtraAction } from './notification-extension';
 
 export type NotificationRowAction =
   | 'markRead'
   | 'markUnread'
   | 'archive'
   | 'unarchive'
-  | 'dismiss';
+  | 'dismiss'
+  | 'extra';
 
 /** App-relative paths from the API may omit a leading slash; Next.js Link needs one. */
 /**
@@ -64,7 +66,7 @@ function formatRelativeTime(
   return rtf.format(-days, 'day');
 }
 
-function severityIcon(severity: NotificationSeverity): string {
+export function severityIcon(severity: NotificationSeverity): string {
   switch (severity) {
     case 'info':
       return 'info';
@@ -210,6 +212,8 @@ export function NotificationRow({
   dismissLabel,
   compactTime = false,
   pendingAction = null,
+  decoration = null,
+  extraAction = null,
   onOpenLink,
 }: {
   notification: NotificationListItem;
@@ -227,6 +231,9 @@ export function NotificationRow({
   dismissLabel: string;
   compactTime?: boolean;
   pendingAction?: NotificationRowAction | null;
+  /** Overrides of the row's text, link and icon. */
+  decoration?: NotificationRowDecoration | null;
+  extraAction?: NotificationRowExtraAction | null;
 }) {
   const { i18n } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -240,13 +247,15 @@ export function NotificationRow({
 
   const timeLabel = formatRelativeTime(n.createdAt, i18n.language, compactTime);
   const severity = n.severity ?? 'error';
-  const title = n.title ?? '';
-  const message = n.message ?? '';
-  const href = notificationHref(n.redirectLink ?? '');
+  const title = decoration?.title ?? n.title ?? '';
+  const message = decoration?.message ?? n.message ?? '';
+  const href =
+    decoration && 'href' in decoration ? decoration.href ?? null : notificationHref(n.redirectLink ?? '');
 
   const isRead = n.status === 'read' || n.status === 'archived';
   const readOpacity = isRead ? 0.65 : 1;
   const titleStyle = { color: 'var(--slate-12)' };
+  const subtitle = decoration?.subtitle;
   const isBusy = pendingAction != null;
 
   const measureMessageTruncation = useCallback(() => {
@@ -300,9 +309,9 @@ export function NotificationRow({
           }}
         >
           <MaterialIcon
-            name={severityIcon(severity)}
+            name={decoration?.icon ?? severityIcon(severity)}
             size={16}
-            color={severityColor(severity)}
+            color={decoration?.iconColor ?? severityColor(severity)}
           />
         </Box>
 
@@ -319,65 +328,84 @@ export function NotificationRow({
                 }}
               />
             </Box>
-            <Box ref={messageContainerRef} style={{ position: 'relative', minWidth: 0, width: '100%' }}>
-              {/* Invisible unclamped clone — used only to measure full text height */}
-              <div
-                ref={measureRef}
-                aria-hidden="true"
+            {subtitle ? (
+              <Text
+                data-ph-notification-subtitle=""
+                size="1"
+                title={subtitle}
                 style={{
-                  visibility: 'hidden',
-                  pointerEvents: 'none',
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  fontSize: 'var(--font-size-1)',
-                  lineHeight: 'var(--line-height-1)',
-                  letterSpacing: 'var(--letter-spacing-1)',
-                  whiteSpace: 'normal',
-                  overflow: 'visible',
-                }}
-              >
-                {message}
-              </div>
-              <div
-                style={{
-                  display: isExpanded ? 'block' : '-webkit-box',
-                  WebkitLineClamp: isExpanded ? undefined : 2,
-                  WebkitBoxOrient: 'vertical',
+                  color: 'var(--slate-12)',
+                  fontWeight: 500,
                   overflow: 'hidden',
-                  paddingRight: (isTruncated && !isExpanded) ? '58px' : '0',
-                  fontSize: 'var(--font-size-1)',
-                  lineHeight: 'var(--line-height-1)',
-                  letterSpacing: 'var(--letter-spacing-1)',
-                  color: 'var(--gray-11)',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
                 }}
               >
-                {message}
-              </div>
-              {isTruncated && !isExpanded && (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setIsExpanded(true)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') setIsExpanded(true);
-                  }}
+                {subtitle}
+              </Text>
+            ) : null}
+            {message ? (
+              <Box ref={messageContainerRef} style={{ position: 'relative', minWidth: 0, width: '100%' }}>
+                {/* Invisible unclamped clone — used only to measure full text height */}
+                <div
+                  ref={measureRef}
+                  aria-hidden="true"
                   style={{
+                    visibility: 'hidden',
+                    pointerEvents: 'none',
                     position: 'absolute',
-                    bottom: 0,
-                    right: 0,
-                    cursor: 'pointer',
-                    color: 'var(--accent-11)',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
                     fontSize: 'var(--font-size-1)',
                     lineHeight: 'var(--line-height-1)',
-                    userSelect: 'none',
+                    letterSpacing: 'var(--letter-spacing-1)',
+                    whiteSpace: 'normal',
+                    overflow: 'visible',
                   }}
                 >
-                  show more
-                </span>
-              )}
-            </Box>
+                  {message}
+                </div>
+                <div
+                  style={{
+                    display: isExpanded ? 'block' : '-webkit-box',
+                    WebkitLineClamp: isExpanded ? undefined : 2,
+                    WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden',
+                    paddingRight: (isTruncated && !isExpanded) ? '58px' : '0',
+                    fontSize: 'var(--font-size-1)',
+                    lineHeight: 'var(--line-height-1)',
+                    letterSpacing: 'var(--letter-spacing-1)',
+                    color: 'var(--gray-11)',
+                  }}
+                >
+                  {message}
+                </div>
+                {isTruncated && !isExpanded && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setIsExpanded(true)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') setIsExpanded(true);
+                    }}
+                    style={{
+                      position: 'absolute',
+                      bottom: 0,
+                      right: 0,
+                      cursor: 'pointer',
+                      // accent-11 is 4.35:1 on the row at this size, under AA's 4.5:1.
+                      color: 'var(--accent-12)',
+                      fontSize: 'var(--font-size-1)',
+                      lineHeight: 'var(--line-height-1)',
+                      userSelect: 'none',
+                    }}
+                  >
+                    show more
+                  </span>
+                )}
+              </Box>
+            ) : null}
             {isExpanded && isTruncated && (
               <span
                 role="button"
@@ -390,7 +418,7 @@ export function NotificationRow({
                   display: 'inline-block',
                   marginTop: '2px',
                   cursor: 'pointer',
-                  color: 'var(--accent-11)',
+                  color: 'var(--accent-12)',
                   fontSize: 'var(--font-size-1)',
                   lineHeight: 'var(--line-height-1)',
                   userSelect: 'none',
@@ -423,6 +451,15 @@ export function NotificationRow({
                   onClick={() => onMarkUnread(n)}
                   disabled={isBusy}
                   loading={pendingAction === 'markUnread'}
+                />
+              ) : null}
+              {extraAction ? (
+                <NotificationActionButton
+                  label={extraAction.label}
+                  icon={extraAction.icon}
+                  onClick={extraAction.onClick}
+                  disabled={isBusy}
+                  loading={pendingAction === 'extra'}
                 />
               ) : null}
               {n.status !== 'archived' ? (

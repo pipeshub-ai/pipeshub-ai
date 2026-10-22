@@ -14,7 +14,10 @@ from __future__ import annotations
 
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.factory import PipesHubAgentFactory, _convert_conversation_turn
+from app.agents.agent_loop.factory import (
+    PipesHubAgentFactory,
+    _convert_conversation_turn,
+)
 
 
 def _make_context(**overrides: object) -> AgentContext:
@@ -352,3 +355,9 @@ class TestSeedConversationHistory:
         await PipesHubAgentFactory._seed_conversation_history(agent, [], _make_context())
 
         assert await agent.context.messages() == []
+
+
+def test_solo_ignores_author_ref() -> None:
+    turn = {"role": "user_query", "content": "hi", "authorRef": "participant_1"}
+    (msg,) = _convert_conversation_turn(turn)
+    assert msg.content == "hi"

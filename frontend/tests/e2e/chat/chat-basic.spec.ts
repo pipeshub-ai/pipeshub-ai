@@ -72,7 +72,7 @@ test.describe('Chat — page structure', () => {
     await mockBaselineApis(page);
     await page.goto('/chat/');
     // Wait for the React tree to hydrate (input must be present)
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
   });
 
   test('page loads and URL is /chat/', async ({ page }) => {
@@ -80,19 +80,19 @@ test.describe('Chat — page structure', () => {
   });
 
   test('chat textarea is visible', async ({ page }) => {
-    const textarea = page.locator('textarea').last();
+    const textarea = page.getByTestId('chat-composer');
     await expect(textarea).toBeVisible();
   });
 
   test('chat textarea is interactive — accepts typed text', async ({ page }) => {
-    const textarea = page.locator('textarea').last();
+    const textarea = page.getByTestId('chat-composer');
     await textarea.click();
     await textarea.fill('Hello from Playwright');
     await expect(textarea).toHaveValue('Hello from Playwright');
   });
 
   test('textarea clears when Escape is pressed (edit cancel)', async ({ page }) => {
-    const textarea = page.locator('textarea').last();
+    const textarea = page.getByTestId('chat-composer');
     await textarea.fill('some text');
     await expect(textarea).toHaveValue('some text');
     // Clearing manually mirrors the UX — actual Escape behaviour is
@@ -102,7 +102,7 @@ test.describe('Chat — page structure', () => {
   });
 
   test('send/submit button is disabled when input is empty', async ({ page }) => {
-    const textarea = page.locator('textarea').last();
+    const textarea = page.getByTestId('chat-composer');
     // Ensure input is blank
     await textarea.fill('');
 
@@ -118,7 +118,7 @@ test.describe('Chat — page structure', () => {
   });
 
   test('send button becomes enabled when input has text', async ({ page }) => {
-    const textarea = page.locator('textarea').last();
+    const textarea = page.getByTestId('chat-composer');
     await textarea.fill('test query');
 
     const sendBtn = page
@@ -173,7 +173,7 @@ test.describe('Chat — toolbar', () => {
   test.beforeEach(async ({ page }) => {
     await mockBaselineApis(page);
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
   });
 
   test('search-view toggle icon is present', async ({ page }) => {
@@ -190,7 +190,7 @@ test.describe('Chat — new chat navigation', () => {
   test.beforeEach(async ({ page }) => {
     await mockBaselineApis(page);
     await page.goto('/chat/');
-    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="chat-composer"]', { timeout: 15_000 });
   });
 
   test('new chat button is accessible in the sidebar', async ({ page }) => {
@@ -223,6 +223,6 @@ test.describe('Chat — new chat navigation', () => {
     await page.goto('/chat/');
     await expect(page).toHaveURL(/\/chat\//);
     // Textarea should still be available
-    await expect(page.locator('textarea').last()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId('chat-composer')).toBeVisible({ timeout: 10_000 });
   });
 });

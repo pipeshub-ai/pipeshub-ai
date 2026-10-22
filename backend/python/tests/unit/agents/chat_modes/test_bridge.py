@@ -37,6 +37,7 @@ from app.agents.chat_modes.policy import (
 from app.agents.chat_modes.prefetch import PrefetchResult
 from app.config.constants.arangodb import Connectors
 from app.utils.chat_helpers import CitationRefMapper
+from app.utils.conversation_tasks import _conversation_tasks, register_task
 from tests.unit.agents.chat_modes.test_internal_search_prompt import (
     _BEFORE_THE_SWITCHES,
 )
@@ -1216,6 +1217,40 @@ class TestRunChatStream:
         assert events[0].startswith("event: error\n")
         payload = json.loads(events[0].split("data: ", 1)[1].strip())
         assert "transport exploded" not in payload["message"]
+
+    async def test_background_tasks_belong_to_the_run_and_are_cancelled_when_left(self) -> None:
+        started: list[tuple[asyncio.Task, list[Any]]] = []
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            task = asyncio.create_task(asyncio.sleep(10))
+            register_task(context.conversation_id, task)
+            started.append((task, list(_conversation_tasks)))
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, **kwargs) -> dict[str, str]:
+            return {"answer": "stopped"}
+
+        kwargs = self._base_kwargs()
+        kwargs["query_info"] = {**kwargs["query_info"], "runId": "run-1"}
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello", "conversation_id": "conv-1"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        ((task, keys),) = started
+        assert ("conv-1", "run-1") in keys
+        (outcome,) = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
+        assert isinstance(outcome, asyncio.CancelledError)
+        assert ("conv-1", "run-1") not in _conversation_tasks
 
     async def test_sandbox_manager_destroyed_on_completion(self) -> None:
         sandbox_manager = MagicMock()

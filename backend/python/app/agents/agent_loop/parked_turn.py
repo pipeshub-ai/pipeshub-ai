@@ -3,8 +3,9 @@
 A turn can stop on an approval card (`tool_approvals.py`) or an ask-user question. The answer comes
 as a new request, and the history Node sends it has each earlier tool result only as its summary
 ("Found 4 results", a page's title): the ids the model had looked up are gone, so it looks them up
-again, guesses, or can't act on them. So the turn as the model had it is kept (per conversation,
-until it is answered) and put back in place of its summarised copy, with the tools the run could see.
+again, guesses, or can't act on them. So the turn as the model had it is kept (per person and
+conversation, until it is answered) and put back in place of its summarised copy, with the tools the
+run could see.
 
 A kept turn is used only by its owner, in its conversation, and only when it holds the call being
 answered. One that would be too large isn't kept; the answer then uses the history as it is.
@@ -45,8 +46,11 @@ _MAX_RESULT_CHARS = 20_000
 _MESSAGE = TypeAdapter(Message)
 
 
-def _path(conversation_id: str) -> str:
-    return f"/services/agents/parked-turns/{conversation_id}"
+def _path(conversation_id: str, user_id: str | None = None) -> str:
+    """One kept turn per person in a conversation. Without `user_id`: the per-conversation key turns
+    were kept under before."""
+    path = f"/services/agents/parked-turns/{conversation_id}"
+    return f"{path}/{user_id}" if user_id else path
 
 
 def question_index(messages: list[Any]) -> int:
@@ -120,7 +124,8 @@ async def keep(context: "AgentContext", agent: "Agent", *, call_id: Optional[str
             logger.info("The turn waiting for the person is too large to keep; its answer uses the history")
             return
         await context.config_service.set_config(
-            _path(context.conversation_id), record, ttl_seconds=max(stopped.values()), keep_in_cache=False,
+            _path(context.conversation_id, context.user_id), record, ttl_seconds=max(stopped.values()),
+            keep_in_cache=False,
         )
     except Exception as e:
         logger.warning(f"Couldn't keep the turn waiting for the person: {e}")
@@ -138,8 +143,13 @@ async def restore(context: "AgentContext", history: "ContextManager", *, call_id
         return None
     try:
         raw = await context.config_service.get_config(
-            _path(context.conversation_id), default=None, use_cache=False, keep_in_cache=False,
+            _path(context.conversation_id, context.user_id), default=None, use_cache=False, keep_in_cache=False,
         )
+        if raw is None:
+            # shortcut: turns kept before they were kept per person; drop this read one release on.
+            raw = await context.config_service.get_config(
+                _path(context.conversation_id), default=None, use_cache=False, keep_in_cache=False,
+            )
         if (
             not isinstance(raw, dict) or call_id not in (raw.get("callIds") or [])
             or (raw.get("orgId"), raw.get("userId")) != (context.org_id, context.user_id)

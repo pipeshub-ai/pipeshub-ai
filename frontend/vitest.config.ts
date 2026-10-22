@@ -23,6 +23,7 @@ export default defineConfig({
       ? ['--no-experimental-webstorage']
       : [],
     globals: false,
+    setupFiles: ['./vitest.setup.ts'],
     // Every unit test under app/ and lib/. A hand-kept list let new test
     // files sit unrun: three never ran, and one of them caught a real bug.
     // Playwright (tests/e2e) and Electron (electron/, run by

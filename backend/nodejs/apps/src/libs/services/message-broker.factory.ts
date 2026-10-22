@@ -164,6 +164,9 @@ export function createMessageConsumer(
 
 const NOTIFICATION_CONSUMER_GROUP = 'notification-consumer-group';
 const NOTIFICATION_CLIENT_ID = 'notification-consumer';
+// Above the longest one message can take: the consumer retries a failed
+// delivery for about 30 s, then tries once more and re-queues it.
+const NOTIFICATION_CONSUMER_LIVENESS_MS = 120_000;
 
 /** Dedicated consumer group/stream group for the notification topic (Kafka + Redis). */
 export function createNotificationMessageConsumer(
@@ -176,6 +179,9 @@ export function createNotificationMessageConsumer(
       ...resolved.kafka,
       clientId: NOTIFICATION_CLIENT_ID,
       groupId: NOTIFICATION_CONSUMER_GROUP,
+      manualCommit: true,
+      sessionTimeout: NOTIFICATION_CONSUMER_LIVENESS_MS,
+      rebalanceTimeout: NOTIFICATION_CONSUMER_LIVENESS_MS,
     };
     return createMessageConsumerByParts(
       MessageBrokerType.KAFKA,
@@ -184,10 +190,15 @@ export function createNotificationMessageConsumer(
       logger,
     );
   }
-  const redis = buildRedisBrokerConfig(appConfig.redis, {
-    clientId: NOTIFICATION_CLIENT_ID,
-    groupId: NOTIFICATION_CONSUMER_GROUP,
-  });
+  const redis: RedisBrokerConfig = {
+    ...buildRedisBrokerConfig(appConfig.redis, {
+      clientId: NOTIFICATION_CLIENT_ID,
+      groupId: NOTIFICATION_CONSUMER_GROUP,
+    }),
+    claimMinIdleMs: NOTIFICATION_CONSUMER_LIVENESS_MS,
+    // As for mail: a batch would idle later entries into a reclaim while one is retried.
+    readCount: 1,
+  };
   return createMessageConsumerByParts(
     MessageBrokerType.REDIS,
     undefined,

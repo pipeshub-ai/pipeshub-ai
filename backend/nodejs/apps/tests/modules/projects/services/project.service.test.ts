@@ -5,6 +5,8 @@ import mongoose from 'mongoose';
 import { ProjectService } from '../../../../src/modules/projects/services/project.service';
 import { Project } from '../../../../src/modules/projects/schema/project.schema';
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema';
+import { useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions';
+import { testAcl } from '../../enterprise_search/helpers/test-extensions';
 import {
   BadRequestError,
   ForbiddenError,
@@ -34,6 +36,7 @@ const OTHER_ORG_ID = new mongoose.Types.ObjectId().toString();
 const OWNER_ID = new mongoose.Types.ObjectId().toString();
 const MEMBER_ID = new mongoose.Types.ObjectId().toString();
 const OUTSIDER_ID = new mongoose.Types.ObjectId().toString();
+const VISIBLE = { $and: [{ userId: new mongoose.Types.ObjectId(OWNER_ID) }] };
 
 function makeProjectDoc(overrides: Record<string, any> = {}): any {
   const doc: any = {
@@ -63,6 +66,9 @@ function makeProjectDoc(overrides: Record<string, any> = {}): any {
 }
 
 describe('ProjectService', () => {
+  beforeEach(() => useConversationExtensions({ acl: testAcl }));
+  afterEach(() => useConversationExtensions(undefined));
+
   afterEach(() => {
     sinon.restore();
   });
@@ -253,6 +259,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       const filter = findStub.firstCall.args[0];
@@ -271,6 +278,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'all',
         includeArchived: true,
+        visibleConversations: VISIBLE,
       });
 
       const filter = findStub.firstCall.args[0];
@@ -287,6 +295,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'all',
         includeArchived: false,
+        visibleConversations: VISIBLE,
         isArchived: true,
       });
 
@@ -303,6 +312,7 @@ describe('ProjectService', () => {
         scope: 'all',
         includeArchived: true,
         isArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       expect(findStub.firstCall.args[0].isArchived).to.equal(false);
@@ -317,14 +327,14 @@ describe('ProjectService', () => {
       await ProjectService.list(
         ORG_ID,
         OWNER_ID,
-        { page: 1, limit: 20, scope: 'all', includeArchived: true },
+        { page: 1, limit: 20, scope: 'all', includeArchived: true, visibleConversations: VISIBLE },
         [teamId],
       );
 
       const filter = findStub.firstCall.args[0];
       expect(filter.$or).to.have.lengthOf(4);
-      const teamBranch = filter.$or.find((clause: any) => clause['members.principalType'] === 'team');
-      expect(teamBranch['members.principalId'].$in.map((id: any) => id.toString())).to.deep.equal([teamId]);
+      const teamBranch = filter.$or.find((clause: any) => clause.members?.$elemMatch?.principalType === 'team');
+      expect(teamBranch.members.$elemMatch.principalId.$in.map((id: any) => id.toString())).to.deep.equal([teamId]);
     });
 
     it('applies a case-insensitive name regex when search is provided', async () => {
@@ -337,6 +347,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
         search: 'road',
       });
 
@@ -357,6 +368,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       expect(totalCount).to.equal(1);
@@ -373,6 +385,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
         search: 'Q3 (draft).*',
       });
 
@@ -401,9 +414,34 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       expect(projects.map((p) => p.conversationCount)).to.deep.equal([5, 0]);
+    });
+
+    it('counts only the conversations the list filter admits, cast so string ids still match', async () => {
+      const projectId = new mongoose.Types.ObjectId();
+      stubFindChain([
+        { _id: projectId, orgId: new mongoose.Types.ObjectId(ORG_ID), userId: new mongoose.Types.ObjectId(OWNER_ID), members: [], visibility: 'private' },
+      ]);
+      sinon.stub(Project, 'countDocuments').resolves(1);
+      const aggregateStub = sinon.stub(ChatSession, 'aggregate').resolves([]);
+
+      await ProjectService.list(ORG_ID, OWNER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'mine',
+        includeArchived: false,
+        visibleConversations: { $and: [{ orgId: ORG_ID, isDeleted: false, $or: [{ userId: OWNER_ID }] }] },
+      });
+
+      const match = (aggregateStub.firstCall.args[0][0] as any).$match;
+      const [visible, scoped] = match.$and;
+      expect(visible.$and[0].orgId).to.be.instanceOf(mongoose.Types.ObjectId);
+      expect(visible.$and[0].$or[0].userId).to.be.instanceOf(mongoose.Types.ObjectId);
+      expect(visible.$and[0].$or[0].userId.toString()).to.equal(OWNER_ID);
+      expect(scoped.projectId.$in.map(String)).to.deep.equal([projectId.toString()]);
     });
 
     it('skips the aggregate entirely when there are no projects on the page', async () => {
@@ -416,6 +454,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       expect(aggregateStub.called).to.equal(false);
@@ -423,6 +462,17 @@ describe('ProjectService', () => {
   });
 
   describe('update', () => {
+    it('bumps aclVersion only when visibility actually changes', async () => {
+      const project = makeProjectDoc({ aclVersion: 2 });
+      sinon.stub(Project, 'findOne').resolves(project);
+      await ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), { visibility: 'private' });
+      expect(project.aclVersion).to.equal(2);
+      await ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), { visibility: 'org' });
+      expect(project.aclVersion).to.equal(3);
+      await ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), { name: 'x' });
+      expect(project.aclVersion).to.equal(3);
+    });
+
     it('throws BadRequestError when clearing the name to blank', async () => {
       const project = makeProjectDoc();
       sinon.stub(Project, 'findOne').resolves(project);
@@ -694,7 +744,9 @@ describe('ProjectService', () => {
       expect(updateManyStub.firstCall.args[0]).to.deep.equal({ projectId: project._id });
       expect(updateManyStub.firstCall.args[1]).to.deep.equal({
         $unset: { projectId: '', projectVisibility: '' },
+        $inc: { aclVersion: 1 },
       });
+      expect(project.aclVersion).to.equal(1);
       expect(project.isDeleted).to.equal(true);
       expect(project.deletedBy?.toString()).to.equal(OWNER_ID);
     });
@@ -830,6 +882,15 @@ describe('ProjectService', () => {
       );
     });
 
+    it('bumps aclVersion from an unset value in the same save', async () => {
+      const project = makeProjectDoc();
+      sinon.stub(Project, 'findOne').resolves(project);
+      const updated = await ProjectService.upsertMembers(ORG_ID, OWNER_ID, project._id.toString(), [
+        { principalId: MEMBER_ID, role: 'viewer' },
+      ]);
+      expect(updated.aclVersion).to.equal(1);
+    });
+
     it('never adds the owner as a member row', async () => {
       const project = makeProjectDoc();
       sinon.stub(Project, 'findOne').resolves(project);
@@ -921,6 +982,7 @@ describe('ProjectService', () => {
         MEMBER_ID,
       );
       expect(updated.members).to.have.lengthOf(0);
+      expect(updated.aclVersion).to.equal(1);
     });
 
     it('only removes the team row when principalType="team" is given, leaving a same-id user row intact', async () => {
@@ -980,6 +1042,8 @@ describe('ProjectService', () => {
       const [filter, update] = updateManyStub.firstCall.args;
       expect((filter as any).orgId.toString()).to.equal(ORG_ID);
       expect((update as any).$pull.members.principalId.toString()).to.equal(MEMBER_ID);
+      expect((update as any).$inc).to.deep.equal({ aclVersion: 1 });
+      expect((filter as any).members.$elemMatch.principalId.toString()).to.equal(MEMBER_ID);
     });
 
     it('propagates DB failures so the caller can abort and retry', async () => {

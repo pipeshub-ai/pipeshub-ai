@@ -105,6 +105,8 @@ export function UserAvatar({
         radius={radius}
         fallback={getInitials({ fullName, firstName, lastName, email })}
         src={src}
+        // Decorative: every caller shows the name beside it or sits inside a labelled control.
+        alt=""
         style={{ width: `${size}px`, height: `${size}px`, flexShrink: 0 }}
       />
     );
@@ -114,7 +116,8 @@ export function UserAvatar({
     <Badge
       style={{
         backgroundColor: 'var(--accent-a3)',
-        color: 'var(--accent-a11)',
+        // accent-a11 on accent-a3 is 4.2:1 at this size, under WCAG AA's 4.5:1.
+        color: 'var(--accent-12)',
         padding: 'var(--space-1)',
         borderRadius: 'var(--radius-2)',
         flexShrink: 0,

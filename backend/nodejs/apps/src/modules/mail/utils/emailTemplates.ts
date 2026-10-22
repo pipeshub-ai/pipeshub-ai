@@ -3,7 +3,7 @@ import Handlebars from 'handlebars';
 import fs from 'fs';
 import { getBrandConfig } from '../../../libs/branding';
 const cwd = process.cwd();
-const loadTemplate = (path: string): string => fs.readFileSync(`${cwd}/${path}`, 'utf8');
+export const loadTemplate = (path: string): string => fs.readFileSync(`${cwd}/${path}`, 'utf8');
 
 const loginTemplate = loadTemplate('src/modules/mail/views/layouts/user/login.hbs');
 const suspiciousLoginTemplate = loadTemplate('src/modules/mail/views/layouts/user/suspiciousLogin.hbs');
@@ -63,7 +63,7 @@ function withBrand(
   return { ...getBrandConfig(), ...templateData };
 }
 
-const compileTemplate = (template: string, templateData:Record<string,any>): string => {
+export const compileTemplate = (template: string, templateData:Record<string,any>): string => {
   if (!templateData) {
     throw new Error(`Invalid templateData ${JSON.stringify(templateData)}`);
   }

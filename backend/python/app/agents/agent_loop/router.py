@@ -55,6 +55,7 @@ from app.agents.agent_loop.intent import IntentRouteDecision, parse_intent_and_r
 from app.agents.agent_loop.loops.orchestrator import OrchestratorLoop
 from app.agents.agent_loop.loops.plan_execute import PlanCritiqueExecuteLoop
 from app.agents.agent_loop.modes import ModeDefinition, resolve_mode
+from app.modules.agents.chat_extension import get_chat_extension
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -84,8 +85,12 @@ def _context_to_query_info(context: "AgentContext", query: str) -> dict[str, Any
         "connector_configs": context.connector_configs or {},
         "filters": context.filters or {},
         "toolsets": context.agent_toolsets or [],
-        "previous_conversations": context.previous_conversations,
+        # The goal is rewritten from these: a reply like "yes, do it" binds only to the sender's turns.
+        "previous_conversations": get_chat_extension().sender_history(context),
         "attachments": context.tool_state.get("attachments") or [],
+        # Scopes the access checks on earlier attachments to this chat.
+        "conversationId": context.conversation_id,
+        "aclVersion": context.acl_version,
     }
 
 

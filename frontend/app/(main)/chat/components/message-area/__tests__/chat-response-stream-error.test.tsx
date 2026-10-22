@@ -48,3 +48,50 @@ describe('ChatResponse for a run stopped on MCP servers', () => {
     expect(screen.getByText('The model is not responding.')).toBeTruthy();
   });
 });
+
+describe('ChatResponse retry on a failed answer', () => {
+  it('hands back the whole turn, attachments and filters included', async () => {
+    const onRetry = vi.fn();
+    const attachments = [
+      { recordId: 'r1', recordName: 'plan.pdf', mimeType: 'application/pdf', extension: 'pdf', virtualRecordId: 'v1' },
+    ];
+    const appliedFilters = { apps: [{ id: 'app-1', name: 'Drive', nodeType: '', connector: '' }], kb: [] };
+    renderInTheme(
+      <ChatResponse
+        question=""
+        answer="The model is not responding."
+        failed
+        isLastMessage
+        attachments={attachments}
+        appliedFilters={appliedFilters}
+        onRetry={onRetry}
+      />,
+    );
+
+    screen.getByTestId('answer-failed-retry').click();
+
+    expect(onRetry).toHaveBeenCalledWith({ question: '', attachments, collections: undefined, appliedFilters });
+  });
+});
+
+describe('ChatResponse regenerate', () => {
+  it('offers Regenerate only to someone who can send in this chat', () => {
+    const { unmount } = renderInTheme(<ChatResponse question="Q" answer="An answer." isLastMessage messageId="m1" />);
+    expect(screen.getByRole('button', { name: 'Regenerate' })).toBeTruthy();
+    unmount();
+
+    renderInTheme(<ChatResponse question="Q" answer="An answer." isLastMessage messageId="m1" canSend={false} />);
+    expect(screen.queryByRole('button', { name: 'Regenerate' })).toBeNull();
+  });
+});
+
+describe('ChatResponse for a stopped run', () => {
+  it('marks the words it kept as stopped, and says so when it stopped before any answer', () => {
+    renderInTheme(<ChatResponse question="Q" answer="The first part." status="stopped" />);
+    expect(screen.getByTestId('chat-stopped-marker').textContent).toBe('Stopped');
+    cleanup();
+
+    renderInTheme(<ChatResponse question="Q" answer="" status="stopped" />);
+    expect(screen.getByTestId('chat-stopped-marker').textContent).toBe('Stopped before an answer began');
+  });
+});

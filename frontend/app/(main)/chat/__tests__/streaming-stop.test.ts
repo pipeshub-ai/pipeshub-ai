@@ -94,7 +94,10 @@ function makeSlot(overrides: Partial<ChatSlot> = {}): ChatSlot {
     remoteRunInProgress: false,
     messagePagination: null,
     lastAccessedAt: Date.now(),
-    isOwner: true,
+    access: null,
+    activeRun: null,
+    rev: null,
+    accessLost: false,
     ...overrides,
   };
 }

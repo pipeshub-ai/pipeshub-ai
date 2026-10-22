@@ -556,4 +556,64 @@ describe('AIServiceCommand', () => {
       }
     })
   })
+
+  describe('retries after a network error', () => {
+    // undici's shape: the socket error and its code sit in `cause`.
+    const fetchFailed = (code: string) =>
+      Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error(code), { code }),
+      })
+
+    const command = () =>
+      new AIServiceCommand({
+        uri: 'http://ai.local/stream',
+        method: HttpMethod.POST,
+        headers: { 'content-type': 'application/json' },
+        body: { prompt: 'run once' },
+      })
+
+    for (const code of ['ECONNRESET', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT']) {
+      it(`does not retry a stream POST after ${code}`, async () => {
+        fetchStub.rejects(fetchFailed(code))
+
+        try {
+          await command().executeStream()
+          expect.fail('Should have thrown')
+        } catch (err: any) {
+          expect(err.cause.code).to.equal(code)
+        }
+        expect(fetchStub.calledOnce).to.be.true
+      })
+    }
+
+    it('retries a stream POST whose connection was refused', async () => {
+      fetchStub.onFirstCall().rejects(fetchFailed('ECONNREFUSED'))
+      fetchStub.onSecondCall().resolves({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: new Headers(),
+        body: {
+          getReader: () => ({
+            read: async () => ({ done: true, value: undefined }),
+          }),
+        },
+      } as unknown as Response)
+
+      const readable = await command().executeStream()
+
+      expect(readable).to.exist
+      expect(fetchStub.calledTwice).to.be.true
+    })
+
+    it('still retries a non-stream call after a connection reset', async () => {
+      fetchStub.onFirstCall().rejects(fetchFailed('ECONNRESET'))
+      fetchStub.onSecondCall().resolves(makeFetchResponse(200, { ok: true }))
+
+      const result = await command().execute()
+
+      expect(result.statusCode).to.equal(200)
+      expect(fetchStub.calledTwice).to.be.true
+    })
+  })
 })

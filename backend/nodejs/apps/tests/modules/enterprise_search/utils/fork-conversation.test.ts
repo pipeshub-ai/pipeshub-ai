@@ -169,13 +169,33 @@ describe('copySessionUpToMessage', () => {
     expect(copied.map((m) => m.seq)).to.deep.equal(Array.from({ length: total }, (_, i) => i + 1))
   })
 
+  it('leaves out rows the conversation removed, and cannot fork from one', async () => {
+    const store = new InMemoryChatStore()
+    store.install()
+    const { source, rows, owner, orgId } = seed(store, 4)
+    rows[1]!.set({ removedAt: new Date(), content: '' })
+
+    const result = await copySessionUpToMessage(source, String(rows[3]!._id), String(owner), String(orgId), { sessionType: 'chat' })
+
+    expect(result.messageCount).to.equal(3)
+    expect(store.messagesOf(result.conversation._id).map((m) => m.content)).to.deep.equal(['m1', 'm3', 'm4'])
+    let refused: unknown
+    try {
+      await copySessionUpToMessage(source, String(rows[1]!._id), String(owner), String(orgId), { sessionType: 'chat' })
+    } catch (error) {
+      refused = error
+    }
+    expect(refused).to.be.instanceOf(NotFoundError)
+  })
+
   it('removes the new session and what it already copied when the copy fails without a transaction', async () => {
     const store = new InMemoryChatStore()
     store.install()
     const { source, rows, owner, orgId } = seed(store, FORK_COPY_BATCH_SIZE + 5)
     ;(ChatSessionMessage.insertMany as unknown as sinon.SinonStub).onSecondCall().rejects(new InternalServerError('disk full'))
-    const deleteMessages = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    const deleteSession = sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
+    // The store's own stubs: they record the calls and remove the rows.
+    const deleteMessages = ChatSessionMessage.deleteMany as unknown as sinon.SinonStub
+    const deleteSession = ChatSession.deleteOne as unknown as sinon.SinonStub
 
     try {
       await copySessionUpToMessage(source, String(rows[rows.length - 1]!._id), String(owner), String(orgId), {
@@ -197,8 +217,9 @@ describe('copySessionUpToMessage', () => {
     store.install()
     const { source, rows, owner, orgId } = seed(store, 3)
     ;(ChatSessionMessage.insertMany as unknown as sinon.SinonStub).onFirstCall().rejects(new Error('boom'))
-    const deleteMessages = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    const deleteSession = sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
+    // The store's own stubs: they record the calls and remove the rows.
+    const deleteMessages = ChatSessionMessage.deleteMany as unknown as sinon.SinonStub
+    const deleteSession = ChatSession.deleteOne as unknown as sinon.SinonStub
 
     try {
       await copySessionUpToMessage(

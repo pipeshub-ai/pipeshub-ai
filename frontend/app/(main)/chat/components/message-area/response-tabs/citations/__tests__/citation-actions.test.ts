@@ -7,6 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { installMemoryStorage, jwtExpiringIn } from '@/lib/api/__tests__/sse-response';
+import { en } from '@/lib/__tests__/test-i18n';
 import type { CitationApiResponse } from '@/chat/types';
 import type { CitationData, CitationMaps, StreamingCitationData } from '../types';
 
@@ -245,6 +246,19 @@ describe('clicking a citation', () => {
       fakeApi({ [`GET ${KB}/record/r1`]: { status: 200, data: {} } });
       await actions().onPreview(citation());
       expect(preview()).toMatchObject({ isLoading: false, error: 'Record details unavailable' });
+    });
+
+    it.each([403, 404])('says the document cannot be opened when the server answers %i', async (status) => {
+      fakeApi({ [`GET ${KB}/record/r1`]: { status } });
+      await actions().onPreview(citation());
+      expect(preview()).toMatchObject({ isLoading: false, error: en.chat.cannotOpenSource });
+    });
+
+    it('keeps the general error for any other failure', async () => {
+      fakeApi({ [`GET ${KB}/record/r1`]: { status: 500 } });
+      await actions().onPreview(citation());
+      expect(preview()?.error).toBeTruthy();
+      expect(preview()?.error).not.toBe(en.chat.cannotOpenSource);
     });
   });
 });

@@ -148,6 +148,10 @@ from app.services.graph_db.entity_index_queries import (
     build_entity_index_source_page_cypher,
     entity_index_source,
 )
+from app.services.graph_db.errors import (
+    UniqueConstraintViolation,
+    violates_unique_constraint,
+)
 from app.services.graph_db.interface.graph_db_provider import (
     ACCESS_WALK_MAX_DEPTH,
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -1669,6 +1673,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert nodes failed: {str(e)}")
+            if violates_unique_constraint(str(e)):
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     def _nodes_for_upsert(self, nodes: list[dict], collection: str) -> list[dict]:
@@ -1863,6 +1869,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Update node failed: {str(e)}")
+            if violates_unique_constraint(str(e)):
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     async def update_node_if_match(

@@ -55,6 +55,8 @@ vi.mock('../response-tabs/citations/inline-citation-popover-host', () => ({
   InlineCitationPopoverHost: () => null,
 }));
 
+const renderedPairs = vi.hoisted(() => [] as unknown[]);
+
 vi.mock('../chat-response', () => ({
   ChatResponse: (props: {
     question: string;
@@ -62,13 +64,27 @@ vi.mock('../chat-response', () => ({
     isStreaming: boolean;
     streamingContent?: string;
     unanswered?: boolean;
-  }) => (
-    <article aria-label={props.question} data-streaming={props.isStreaming ? 'yes' : 'no'}>
-      <h3>{props.question}</h3>
-      {props.unanswered ? null : <p>{props.answer}</p>}
-      {props.streamingContent ? <p>{props.streamingContent}</p> : null}
-    </article>
-  ),
+    attachments?: unknown;
+    collections?: unknown;
+    appliedFilters?: unknown;
+    pair?: unknown;
+    onRetry?: (turn: object) => void;
+  }) => {
+    renderedPairs.push(props.pair);
+    const { question, attachments, collections, appliedFilters, onRetry } = props;
+    return (
+      <article aria-label={question} data-streaming={props.isStreaming ? 'yes' : 'no'}>
+        <h3>{question}</h3>
+        {props.unanswered ? null : <p>{props.answer}</p>}
+        {props.streamingContent ? <p>{props.streamingContent}</p> : null}
+        {onRetry ? (
+          <button type="button" onClick={() => onRetry({ question, attachments, collections, appliedFilters })}>
+            Retry
+          </button>
+        ) : null}
+      </article>
+    );
+  },
 }));
 
 import { MessageList } from '../message-list';
@@ -122,6 +138,7 @@ beforeEach(() => {
   useInlineCitationPopoverStore.setState({ activeKey: null });
   thread.messages = [];
   thread.append.mockReset();
+  renderedPairs.length = 0;
   loadOlder.mockReset();
   loadOlder.mockResolvedValue(undefined);
   geometry.viewportHeight = 500;
@@ -315,6 +332,70 @@ describe('MessageList — what the reader sees', () => {
     rerender(<MessageList />);
 
     expect(useInlineCitationPopoverStore.getState().activeKey).toBeNull();
+  });
+});
+
+describe('MessageList — retrying a failed answer', () => {
+  const ATTACHMENT = {
+    recordId: 'r1',
+    recordName: 'plan.pdf',
+    mimeType: 'application/pdf',
+    extension: 'pdf',
+    virtualRecordId: 'v1',
+  };
+  const failedTurn = (text: string): ThreadMessage[] => [
+    { ...user('u1', text), metadata: { custom: { attachments: [ATTACHMENT] } } },
+    { ...assistant('a1', 'The model is not responding.'), metadata: { custom: { failed: true } } },
+  ];
+
+  it('resends the question with its attachments', () => {
+    thread.messages = failedTurn('Summarise this');
+    openConversation('conv-1');
+    render(<MessageList />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(thread.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: [{ type: 'text', text: 'Summarise this' }],
+        metadata: { custom: expect.objectContaining({ attachments: [ATTACHMENT] }) },
+        startRun: true,
+      }),
+    );
+  });
+
+  it('resends a turn that had only attachments', () => {
+    thread.messages = failedTurn('');
+    openConversation('conv-1');
+    render(<MessageList />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(thread.append).toHaveBeenCalledTimes(1);
+    expect(thread.append.mock.calls[0][0].metadata.custom.attachments).toEqual([ATTACHMENT]);
+  });
+
+  it('offers no retry to someone who cannot send in this conversation', () => {
+    thread.messages = failedTurn('Summarise this');
+    openConversation('conv-1', { isOwner: false });
+    render(<MessageList />);
+
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+});
+
+describe('MessageList — row identity', () => {
+  it('hands an unchanged row the same pair object when another row changes', () => {
+    thread.messages = TWO_TURNS;
+    openConversation('conv-1');
+    const { rerender } = render(<MessageList />);
+    const firstRender = renderedPairs.slice(0, 2);
+
+    thread.messages = [...TWO_TURNS.slice(0, 3), assistant('a2', 'Edited answer.')];
+    rerender(<MessageList />);
+
+    expect(renderedPairs.at(-2)).toBe(firstRender[0]);
+    expect(renderedPairs.at(-1)).not.toBe(firstRender[1]);
   });
 });
 

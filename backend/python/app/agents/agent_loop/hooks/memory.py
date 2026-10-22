@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.agents.agent_loop.parked_turn import VISIBLE_TOOLS
+from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.agents.qna.conversation_memory import ConversationMemory
 
 if TYPE_CHECKING:
@@ -43,8 +44,9 @@ def conversation_enrichment(context: AgentContext) -> "Middleware[TurnContext]":
             return
 
         goal = ctx.scope.run.goal
-        if ConversationMemory.should_reuse_tool_results(goal.description, context.previous_conversations):
-            memory = ConversationMemory.extract_tool_context_from_history(context.previous_conversations)
+        history = get_chat_extension().sender_history(context)
+        if ConversationMemory.should_reuse_tool_results(goal.description, history):
+            memory = ConversationMemory.extract_tool_context_from_history(history)
             reminder = ConversationMemory.build_context_reminder(memory).strip()
             note = f"{_FOLLOW_UP_NOTE}\n{reminder}" if reminder else _FOLLOW_UP_NOTE
             goal.constraints.append(note)

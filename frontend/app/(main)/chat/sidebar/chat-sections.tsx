@@ -11,6 +11,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatSection } from './chat-section';
+import { chatSlots } from '@/config';
 import { groupConversationsWithPinned } from './time-group';
 import { orderPinnedFirst } from '@/chat/utils/pinned-conversations';
 
@@ -40,8 +41,8 @@ export const ChatSections = React.memo(function ChatSections({
   const currentConversationId = searchParams?.get('conversationId') ?? null;
   const { t } = useTranslation();
 
-  const conversations = useChatStore((s) => s.conversations);
-  const sharedConversations = useChatStore((s) => s.sharedConversations);
+  const conversations = chatSlots.useVisibleConversations(useChatStore((s) => s.conversations));
+  const sharedConversations = chatSlots.useVisibleConversations(useChatStore((s) => s.sharedConversations));
   const isConversationsLoading = useChatStore((s) => s.isConversationsLoading);
   const conversationsError = useChatStore((s) => s.conversationsError);
   const pendingConversations = useChatStore((s) => s.pendingConversations);
@@ -71,7 +72,9 @@ export const ChatSections = React.memo(function ChatSections({
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
   const isMobile = useIsMobile();
 
+  const layout = chatSlots.useSidebarLayout();
   const [recentsCollapsed, setRecentsCollapsed] = useState(true);
+  const listsShown = !layout.collapsibleRecents || !recentsCollapsed;
 
   const handleNewChat = () => {
     if (!dispatch('newChat')) router.push('/chat/');
@@ -119,45 +122,47 @@ export const ChatSections = React.memo(function ChatSections({
       {/* Recents — collapsible wrapper for both Shared and Your Chats */}
       <Flex
         direction="column"
-        style={recentsCollapsed ? undefined : { flex: 1, minHeight: 0, overflow: 'hidden' }}
+        style={listsShown ? { flex: 1, minHeight: 0, overflow: 'hidden' } : undefined}
       >
         {/* Recents header with collapse toggle */}
-        <Flex
-          align="center"
-          justify="between"
-          onClick={() => setRecentsCollapsed((c) => !c)}
-          style={{
-            height: 32,
-            padding: '0 var(--space-3)',
-            flexShrink: 0,
-            cursor: 'pointer',
-            borderRadius: 'var(--radius-2)',
-            userSelect: 'none',
-          }}
-        >
-          <Text
+        {layout.collapsibleRecents && (
+          <Flex
+            align="center"
+            justify="between"
+            onClick={() => setRecentsCollapsed((c) => !c)}
             style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: 'var(--slate-12)',
-              lineHeight: 1,
+              height: 32,
+              padding: '0 var(--space-3)',
+              flexShrink: 0,
+              cursor: 'pointer',
+              borderRadius: 'var(--radius-2)',
+              userSelect: 'none',
             }}
           >
-            {t('chat.recents')}
-          </Text>
-          <MaterialIcon
-            name="chevron_right"
-            size={16}
-            color="var(--slate-11)"
-            style={{
-              transform: recentsCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
-              transition: 'transform 0.2s ease',
-              display: 'block',
-            }}
-          />
-        </Flex>
+            <Text
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: 'var(--slate-12)',
+                lineHeight: 1,
+              }}
+            >
+              {t('chat.recents')}
+            </Text>
+            <MaterialIcon
+              name="chevron_right"
+              size={16}
+              color="var(--slate-11)"
+              style={{
+                transform: recentsCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
+                transition: 'transform 0.2s ease',
+                display: 'block',
+              }}
+            />
+          </Flex>
+        )}
 
-        {!recentsCollapsed && (
+        {listsShown && (
           <Flex
             direction="column"
             gap="3"
@@ -178,10 +183,10 @@ export const ChatSections = React.memo(function ChatSections({
               emptyStateText={t('chat.noSharedChats')}
             />
 
-            {/* Your Chats — time-grouped */}
+            {/* Your Chats — time-grouped, or one list by last activity */}
             <ChatSection
               title={t('chat.yourChats')}
-              timeGroups={yourNonEmptyGroups}
+              {...(layout.timeGroupedChats ? { timeGroups: yourNonEmptyGroups } : { conversations: visibleYour })}
               isLoading={isConversationsLoading}
               hasError={!!conversationsError}
               currentConversationId={currentConversationId}

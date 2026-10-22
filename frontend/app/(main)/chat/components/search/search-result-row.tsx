@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
 import { formatConversationDateForSearch } from '@/lib/utils/formatters';
 import type { Conversation } from '@/chat/types';
+import { chatExtension } from '@/config';
 
 interface SearchResultRowProps {
   conversation: Conversation;
@@ -38,7 +39,7 @@ export function SearchResultRow({ conversation, onClick }: SearchResultRowProps)
           whiteSpace: 'nowrap',
         }}
       >
-        {conversation.title}
+        {chatExtension.formatConversationTitle(conversation.title)}
       </Text>
       <Text
         size="1"

@@ -107,6 +107,10 @@ export interface AiChatTurnContext {
   /** Set on the turn that creates the conversation; follow-ups drop `recordIds`. */
   isNewConversation: boolean;
   project?: IProjectDocument;
+  /** Fields the turn extension adds to the payload. */
+  extraPayload?: Record<string, unknown>;
+  /** Another agent answers this turn: the caller's assistant-side `tools` and capabilities are not its settings and are not forwarded. */
+  guestAgent?: boolean;
 }
 
 export interface AiChatRequest {
@@ -116,6 +120,18 @@ export interface AiChatRequest {
 }
 
 const nullable = (value: unknown): unknown => value || null;
+
+/** The card a follow-up answers; the AI backend ignores it until it reads it. */
+const resumeOf = (
+  body: Record<string, unknown>,
+  context: AiChatTurnContext,
+): { resume?: { toolCallMessageId: string } } => {
+  const id = (body.resume as { toolCallMessageId?: unknown } | undefined)
+    ?.toolCallMessageId;
+  return !context.isNewConversation && typeof id === 'string'
+    ? { resume: { toolCallMessageId: id } }
+    : {};
+};
 
 /**
  * The AI-backend request for one chat turn, shared by the streaming and
@@ -155,6 +171,8 @@ export const buildAiChatRequest = (
     currentTime: nullable(body.currentTime),
     conversationId: nullable(context.conversationId),
     runId: nullable(body.runId),
+    ...context.extraPayload,
+    ...resumeOf(body, context),
   };
   assignRetrievalContextToPayload(payload, body);
   assignKeywordSearchBudgetToPayload(payload, body);
@@ -162,11 +180,15 @@ export const buildAiChatRequest = (
   let path: string;
   if (target.kind === 'agent') {
     path = `/api/v1/agent/${encodeURIComponent(target.agentKey)}/chat`;
-    payload.chatMode = body.chatMode || 'quick';
+    payload.chatMode = context.guestAgent
+      ? parseChatMode(body.chatMode as string | undefined).chatMode
+      : body.chatMode || 'quick';
     if (context.isNewConversation) payload.quickMode = body.quickMode || false;
-    assignToolsToPayload(payload, body.tools);
-    assignCallerContextToAiPayload(payload, body);
-    assignAgentCapabilitiesToPayload(payload, body);
+    if (!context.guestAgent) {
+      assignToolsToPayload(payload, body.tools);
+      assignCallerContextToAiPayload(payload, body);
+      assignAgentCapabilitiesToPayload(payload, body);
+    }
     assignToolApprovalToPayload(payload, body);
   } else {
     const { chatMode, agentMode } = parseChatMode(

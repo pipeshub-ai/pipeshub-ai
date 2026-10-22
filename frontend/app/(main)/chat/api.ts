@@ -1,5 +1,6 @@
 import { apiClient, streamSSERequest } from '@/lib/api';
 import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
+import { isGoneError } from '@/lib/api/api-error';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import {
   Conversation,
@@ -31,6 +32,7 @@ import {
 import { hasAnyFilter } from './utils/tree-selection';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import { createAGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
+import { chatExtension } from '@/config';
 
 export interface FeedbackPayload {
   isHelpful: boolean;
@@ -61,6 +63,8 @@ export interface StreamMessageCallbacks {
   /** Backend is discarding partial output (citation verify / re-parse) — clear UI buffer */
   onRestreaming?: () => void;
   onAskUserQuestion?: (data: SSEAskUserQuestionEvent) => void;
+  /** An AG-UI `CUSTOM` event the handler has no callback of its own for. */
+  onCustomEvent?: (name: string, value: unknown) => void;
   /**
    * The answer is settled and only persistence remains (AG-UI protocol only —
    * `AnswerFinalizer`'s `snapshot.final` STATE_SNAPSHOT, which reaches us
@@ -82,6 +86,8 @@ export interface StreamMessageCallbacks {
    */
   onParts?: (parts: MessagePart[]) => void;
   onError?: (error: Error) => void;
+  /** The `X-Run-Id` response header, when the server sends one. */
+  onRunId?: (runId: string) => void;
   signal?: AbortSignal;
 }
 
@@ -98,8 +104,13 @@ async function runChatStream(
   const body = { ...payload, protocol: 'agui' };
   const tracking: AGUIStreamTracking = { receivedComplete: false };
   let transportFailed = false;
-  await streamSSERequest(endpoint, body, {
+  // `frame=turn`: the final frame carries only this turn's rows; a send merges them by id, a regenerate reloads.
+  await streamSSERequest(`${endpoint}?frame=turn`, body, {
     onEvent: createAGUIEventHandler(callbacks, tracking),
+    onResponse: (response) => {
+      const runId = response.headers.get('X-Run-Id');
+      if (runId) callbacks.onRunId?.(runId);
+    },
     onError: (error) => {
       transportFailed = true;
       callbacks.onError?.(error);
@@ -117,7 +128,7 @@ async function runChatStream(
 export function mapApiConversationToConversation(conv: ConversationApiResponse): Conversation {
   return {
     id: conv._id,
-    title: conv.title,
+    title: chatExtension.formatConversationTitle(conv.title) ?? conv.title,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
     isShared: conv.isShared,
@@ -128,10 +139,18 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     isOwner: conv.isOwner,
     ...(conv.isPinned === true ? { isPinned: true } : {}),
     sharedBy: conv.sharedBy,
+    projectId: conv.projectId,
+    projectVisibility: conv.projectVisibility,
+    ...chatExtension.conversationFields(conv),
   };
 }
 
 const transformConversation = mapApiConversationToConversation;
+
+/** A row of an archive list: membership means the caller archived it. */
+export function mapArchivedConversation(conv: ConversationApiResponse): Conversation {
+  return { ...mapApiConversationToConversation(conv), ...chatExtension.conversationFields(conv, { archived: true }) };
+}
 
 export interface FetchConversationsOptions {
   /** 'owned' fetches the user's own chats; 'shared' fetches chats shared with them. */
@@ -242,6 +261,7 @@ export const ChatApi = {
     conversationId: string,
     page: number = 1,
     limit: number = CONVERSATION_MESSAGES_PAGE_SIZE,
+    options?: { quietWhenGone?: boolean },
   ): Promise<{
     conversation: {
       id: string;
@@ -280,8 +300,9 @@ export const ChatApi = {
       };
       filters: Record<string, unknown>;
       meta: Record<string, unknown>;
-    }>(`/api/v1/conversations/${conversationId}/`, {
+    }>(`${chatExtension.conversationPath(conversationId)}/`, {
       params: { page, limit },
+      ...(options?.quietWhenGone ? { suppressErrorToast: isGoneError } : {}),
     });
 
     const pagination = data.conversation.pagination ?? {
@@ -314,7 +335,7 @@ export const ChatApi = {
     if (request.agentId) {
       const agentChatMode = streamChatModeToAgentApiChatMode(request.chatMode);
       endpoint = request.conversationId
-        ? `/api/v1/agents/${request.agentId}/conversations/${request.conversationId}/messages/stream`
+        ? `${chatExtension.conversationPath(request.conversationId, request.agentId)}/messages/stream`
         : `/api/v1/agents/${request.agentId}/conversations/stream`;
       const f = request.filters;
       payload = {
@@ -339,10 +360,11 @@ export const ChatApi = {
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),
         ...(request.projectId ? { projectId: request.projectId } : {}),
         ...(request.toolApproval ? { toolApproval: request.toolApproval } : {}),
+        ...chatExtension.agentStreamBodyFields(request),
       };
     } else {
       endpoint = request.conversationId
-        ? `/api/v1/conversations/${request.conversationId}/messages/stream`
+        ? `${chatExtension.conversationPath(request.conversationId)}/messages/stream`
         : `/api/v1/conversations/stream`;
       // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
       // uniformly for both agent and non-agent paths) and validate filters.
@@ -389,7 +411,7 @@ export const ChatApi = {
       runId?: string;
     }
   ): Promise<void> {
-    const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
+    const endpoint = `${chatExtension.conversationPath(conversationId)}/message/${messageId}/regenerate`;
 
     const body: Record<string, unknown> = {
       modelKey: request.modelKey,
@@ -438,7 +460,7 @@ export const ChatApi = {
       runId?: string;
     }
   ): Promise<void> {
-    const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
+    const endpoint = `${chatExtension.conversationPath(conversationId, agentId)}/message/${messageId}/regenerate`;
 
     const agentRegenBody: Record<string, unknown> = {
       modelKey: model.modelKey,
@@ -482,9 +504,7 @@ export const ChatApi = {
     runId: string,
     agentId?: string | null,
   ): Promise<{ cancelled: boolean }> {
-    const endpoint = agentId
-      ? `/api/v1/agents/${agentId}/conversations/${conversationId}/cancel`
-      : `/api/v1/conversations/${conversationId}/cancel`;
+    const endpoint = `${chatExtension.conversationPath(conversationId, agentId)}/cancel`;
     const { data } = await apiClient.post<{ cancelled: boolean }>(
       endpoint,
       { runId },
@@ -617,7 +637,7 @@ export const ChatApi = {
     });
 
     return {
-      conversations: raw.map(transformConversation),
+      conversations: raw.map(mapArchivedConversation),
       messagesMap,
       pagination: data.pagination,
     };
@@ -665,7 +685,7 @@ export const ChatApi = {
 
     return {
       conversations: (data.conversations ?? []).map((c) => ({
-        ...transformConversation(c),
+        ...mapArchivedConversation(c),
         source: c.source,
         agentKey: c.agentKey,
       })),

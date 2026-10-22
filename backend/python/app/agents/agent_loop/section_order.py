@@ -68,6 +68,7 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     ("available_tools",            Volatility.CONV),
     ("knowledge_sources",          Volatility.CONV),
     ("capability_summary",         Volatility.CONV),
+    ("conversation_rules",         Volatility.CONV),
     ("user_context",               Volatility.CONV),
     ("answer_confidence",          Volatility.CONV),
     # Worked examples — injected for SMALL and MID tiers only; omitted for
@@ -90,6 +91,7 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     ("goal_brief",                 Volatility.TURN),
     ("time_context",               Volatility.TURN),
     ("request_context",            Volatility.TURN),
+    ("sender_context",             Volatility.TURN),
     ("attachments",                Volatility.TURN),
     # Citation rules for an agent that cites only what a question brought
     # (retrieved results, attachments); see `citation_rules` above otherwise.

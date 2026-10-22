@@ -5,7 +5,7 @@ import {
   connectNotificationSocket,
   disconnectNotificationSocket,
 } from '@/lib/socket/notification-socket';
-import { logoutAndRedirect, useAuthStore } from '@/config';
+import { logoutAndRedirect, useAuthStore, notificationExtension } from '@/config';
 import { useNotificationStore } from './store';
 import { NotificationsApi, type NotificationListItem } from './api';
 
@@ -40,6 +40,8 @@ export function useNotificationSocket(): void {
   const setStats = useNotificationStore((s) => s.setStats);
   const addNotification = useNotificationStore((s) => s.addNotification);
 
+  notificationExtension.useSocketEffects({ isHydrated, isAuthenticated, accessToken });
+
   useEffect(() => {
     if (!isHydrated || !isAuthenticated || !accessToken) {
       disconnectNotificationSocket();
@@ -50,6 +52,7 @@ export function useNotificationSocket(): void {
     if (!sock) return;
 
     const onConnect = async () => {
+      notificationExtension.onSocketConnect();
       try {
         const stats = await NotificationsApi.getStats();
         setStats(stats);

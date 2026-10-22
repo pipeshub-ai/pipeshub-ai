@@ -15,6 +15,10 @@ export interface KafkaConfig {
   // than sessionTimeout gets its partition reassigned and the message replayed.
   sessionTimeout?: number;
   rebalanceTimeout?: number;
+  // Commit a message's offset only once its handler returns, so a handler
+  // that throws gets the message again. Opt-in; the default commits every
+  // message, handled or not.
+  manualCommit?: boolean;
 }
 
 /** @deprecated Use StreamMessage from messaging.types instead */

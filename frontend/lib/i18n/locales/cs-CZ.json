@@ -965,6 +965,7 @@
     "showDiagramSource": "Zobrazit zdroj",
     "hideDiagramSource": "Skrýt zdroj",
     "stoppedMarker": "Zastaveno",
+    "stoppedBeforeAnswer": "Zastaveno před začátkem odpovědi",
     "toolCard": {
       "arguments": "Argumenty",
       "result": "Výsledek",
@@ -1424,7 +1425,8 @@
       "notice": {
         "expired": "{{tool}} na {{server}} se nespustil: platnost požadavku vypršela. Pokud je to stále potřeba, zeptejte se znovu.",
         "passed": "{{tool}} na {{server}} nebyl schválen, takže se nespustil.",
-        "waiting": "{{tool}} na {{server}} čeká na schválení vlastníkem konverzace."
+        "waiting": "{{tool}} na {{server}} čeká na schválení vlastníkem konverzace.",
+        "waitingFor": "{{tool}} na {{server}} čeká na schválení od {{name}}."
       },
       "receipt": {
         "allowed": "Povolili jste {{tool}}",
@@ -1465,7 +1467,10 @@
       "download": "Stáhnout artefakt",
       "downloading": "Stahování artefaktu"
     },
-    "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také."
+    "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také.",
+    "answerFailedTitle": "Tato odpověď selhala",
+    "answerFailedRetry": "Zkusit znovu",
+    "cannotOpenSource": "Tento dokument nelze otevřít. Mohl být odstraněn, nebo k němu nemáte přístup."
   },
   "workspaceMenu": {
     "appearance": "Vzhled",
@@ -5031,7 +5036,9 @@
     "back": "Zpět",
     "skip": "Přeskočit",
     "next": "Další",
-    "submit": "Odeslat"
+    "submit": "Odeslat",
+    "unknownPerson": "Bývalý člen",
+    "waitingFor": "Čeká se na odpověď od {{name}}"
   },
   "validation": {
     "password": {
@@ -5097,7 +5104,12 @@
     },
     "team": "Tým",
     "teamsNoRoles": "Týmy nemají role",
-    "invite": "Pozvat do Pipeshub"
+    "invite": "Pozvat do Pipeshub",
+    "removeSelection": "Odebrat {{name}}",
+    "peopleCanSee_one": "Tento chat vidí {{count}} osoba",
+    "peopleCanSee_few": "Tento chat vidí {{count}} osoby",
+    "peopleCanSee_many": "Tento chat vidí {{count}} osoby",
+    "peopleCanSee_other": "Tento chat vidí {{count}} osob"
   },
   "demoData": {
     "badge": {

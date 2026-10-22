@@ -546,6 +546,8 @@ export function createAGUIEventHandler(
           callbacks.onAskUserQuestion?.(value as SSEAskUserQuestionEvent);
         } else if (name === 'artifact') {
           callbacks.onArtifact?.(value as SSEArtifactEvent);
+        } else if (typeof name === 'string') {
+          callbacks.onCustomEvent?.(name, value);
         }
         break;
       }

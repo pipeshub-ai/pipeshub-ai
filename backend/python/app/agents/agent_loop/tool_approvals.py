@@ -41,7 +41,7 @@ from pydantic import Field, ValidationError
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
 from app.agent_loop_lib.core.types import ToolCall
 from app.agent_loop_lib.events.base import AgentEvent, EventType, ToolCallStatus
-from app.agent_loop_lib.hooks.middleware.decisions import PendingApproval
+from app.agent_loop_lib.hooks.middleware.decisions import PendingApproval, PreDecision
 from app.agent_loop_lib.tools.executor import ToolExecutor
 from app.agents.agent_loop import parked_turn
 from app.agents.constants.mcp_server_constants import (
@@ -500,8 +500,8 @@ def _card_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
-    """PreToolUse middleware; registered last, so nothing after it can still deny a call it
-    leaves pending."""
+    """PreToolUse middleware. It asks only once the middleware after it have passed the call, so
+    a call one of them denies never leaves a card waiting, whatever order they were added in."""
 
     async def _gate(ctx: "ToolCallContext", next_fn: Any) -> None:  # noqa: ANN401
         target = _target(context, ctx.tool_path)
@@ -526,9 +526,9 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
         )
         if verdict.rule == "block":
             ctx.deny(_blocked_message(verdict.reason, target))
-        elif verdict.rule == "ask":
-            await _ask(context, ctx, target)
         await next_fn()
+        if verdict.rule == "ask" and ctx.decision != PreDecision.DENY:
+            await _ask(context, ctx, target)
 
     return _gate
 

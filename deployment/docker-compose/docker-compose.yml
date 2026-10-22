@@ -222,6 +222,7 @@ services:
       - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-}@mongodb:27017/?authSource=admin
       - MONGO_DB_NAME=${MONGO_DB_NAME:-es}
       - REPLICA_SET_AVAILABLE=false
+      - MONGO_AUTO_INDEX=${MONGO_AUTO_INDEX:-true}
 
       # Qdrant
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}

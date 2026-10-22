@@ -7,7 +7,10 @@ import {
 import { ProjectService } from '../../projects/services/project.service';
 import { CONVERSATION_STATUS } from '../constants/constants';
 import { ChatSession } from '../schema/chat.session.schema';
-import { ChatSessionMessage } from '../schema/chat.session.message.schema';
+import {
+  ChatSessionMessage,
+  NOT_REMOVED,
+} from '../schema/chat.session.message.schema';
 import {
   IChatSession,
   IChatSessionDocument,
@@ -207,7 +210,7 @@ export async function copyArtifactsForFork(
   copyArtifacts: ArtifactCopier,
 ): Promise<ForkArtifacts> {
   const forkPoint = await ChatSessionMessage.findOne(
-    { _id: messageId, sessionId: source._id },
+    { _id: messageId, sessionId: source._id, ...NOT_REMOVED },
     { seq: 1 },
   ).lean();
   if (!forkPoint) {
@@ -245,7 +248,7 @@ export async function copySessionUpToMessage(
   const sourceId = source._id;
   const sessionOption = mongoSession ? { session: mongoSession } : undefined;
   const forkPoint = await ChatSessionMessage.findOne(
-    { _id: messageId, sessionId: sourceId },
+    { _id: messageId, sessionId: sourceId, ...NOT_REMOVED },
     undefined,
     sessionOption,
   ).lean();
@@ -294,7 +297,11 @@ export async function copySessionUpToMessage(
     let nextSeq = 0;
     for (;;) {
       const batch = await ChatSessionMessage.find(
-        { sessionId: sourceId, seq: { $gte: nextSeq, $lte: forkPoint.seq } },
+        {
+          sessionId: sourceId,
+          seq: { $gte: nextSeq, $lte: forkPoint.seq },
+          ...NOT_REMOVED,
+        },
         undefined,
         sessionOption,
       )
@@ -322,6 +329,7 @@ export async function copySessionUpToMessage(
     }
   } catch (error) {
     if (!mongoSession) {
+      // row-writer-exempt: undoes a fork that failed before it was returned, so no reader holds its rows
       await ChatSessionMessage.deleteMany({ sessionId: forkId });
       await ChatSession.deleteOne({ _id: forkId });
     }

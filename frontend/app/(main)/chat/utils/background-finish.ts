@@ -2,14 +2,16 @@
 
 import { i18n } from '@/lib/i18n';
 import { toast } from '@/lib/store/toast-store';
+import { chatExtension } from '@/config';
 import { buildChatHref } from '../build-chat-url';
 import { useChatStore } from '../store';
+import type { ChatSlot } from '../types';
 
 const TOAST_DURATION_MS = 8000;
 
-/** True when the user can see this slot's thread right now. */
-function isSlotInView(slotId: string, activeSlotId: string | null): boolean {
-  if (activeSlotId !== slotId) return false;
+/** True when the user can see this slot's thread right now: the active one, or one shown beside it. */
+function isSlotInView(slot: ChatSlot, slotId: string, activeSlotId: string | null): boolean {
+  if (activeSlotId !== slotId && !chatExtension.slot.isOnScreen(slot, activeSlotId)) return false;
   // The active slot stays set after leaving the chat area, so the route decides.
   return typeof window === 'undefined' || window.location.pathname.startsWith('/chat');
 }
@@ -33,7 +35,7 @@ export function notifyAnswerFinishedInBackground(slotId: string, wasStopped: boo
 
   const { slots, activeSlotId, markConversationUnread } = useChatStore.getState();
   const slot = slots[slotId];
-  if (!slot?.convId || isSlotInView(slotId, activeSlotId)) return;
+  if (!slot?.convId || isSlotInView(slot, slotId, activeSlotId)) return;
 
   markConversationUnread(slot.convId);
 

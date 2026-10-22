@@ -61,6 +61,7 @@
     "@pipeshub-ai/mcp": "4.3.0",
     "@qdrant/js-client-rest": "^1.14.1",
     "@slack/bolt": "^4.6.0",
+    "@socket.io/redis-adapter": "^8.3.0",
     "@types/bcrypt": "^5.0.2",
     "@types/mongodb": "^4.0.6",
     "@types/multer": "^1.4.12",

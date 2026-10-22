@@ -10,7 +10,7 @@ import {
 } from '../../../../src/modules/enterprise_search/utils/utils'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { AGUI_PROTOCOL, frameAGUI } from '../../../../src/modules/enterprise_search/utils/agui'
-import { StreamedContentAccumulator } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
+import { StreamedTranscript } from '../../../../src/modules/enterprise_search/utils/turn-stream'
 import { InternalServerError } from '../../../../src/libs/errors/http.errors'
 import { CONVERSATION_STATUS } from '../../../../src/modules/enterprise_search/constants/constants'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
@@ -32,6 +32,7 @@ interface ConversationError {
 interface FakeConversation {
   _id: mongoose.Types.ObjectId
   orgId: mongoose.Types.ObjectId
+  userId?: mongoose.Types.ObjectId
   status: string
   failReason?: string
   lastActivityAt?: number
@@ -54,6 +55,7 @@ interface ReplacedMessage {
   sessionId: mongoose.Types.ObjectId
   orgId: mongoose.Types.ObjectId
   seq: number
+  changeRev?: number
   status?: string
   citations?: Array<{ citationId: mongoose.Types.ObjectId }>
 }
@@ -72,6 +74,10 @@ const makeConversation = (overrides: Partial<FakeConversation> = {}): FakeConver
   if (!overrides.save) conversation.save.resolves(conversation)
   return conversation
 }
+
+/** The terminal session write is a conditional `updateOne`, never a whole-document `save()`. */
+const stubSessionWrite = (matchedCount = 1): sinon.SinonStub =>
+  sinon.stub(ChatSession, 'updateOne').resolves({ matchedCount } as never)
 
 const asDoc = (conversation: FakeConversation): IChatSessionDocument =>
   conversation as unknown as IChatSessionDocument
@@ -114,7 +120,7 @@ interface StreamCall {
   conversation?: FakeConversation | null
   messageId?: mongoose.Types.ObjectId | string | null
   onComplete?: (data: IAIResponse) => void
-  accumulator?: StreamedContentAccumulator
+  accumulator?: StreamedTranscript
   onAskUserQuestion?: (payload: unknown) => void
 }
 
@@ -134,7 +140,14 @@ const feed = (res: FakeResponse, call: StreamCall): string =>
     call.onAskUserQuestion,
   )
 
+/** The change stamp a row changed in place takes from the session before it is written. */
+const STAMP = 9
+
 describe('Regenerating an answer (enterprise search utils)', () => {
+  beforeEach(() => {
+    sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ rev: STAMP } as never)
+  })
+
   afterEach(() => {
     sinon.restore()
   })
@@ -160,7 +173,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
 
     it('forwards text deltas and remembers only the root run for a partial save', () => {
       const res = makeRes()
-      const accumulator = new StreamedContentAccumulator()
+      const accumulator = new StreamedTranscript()
       const chunk =
         frameAGUI('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'Revenue ' }) +
         frameAGUI('TEXT_MESSAGE_CONTENT', { runId: 'sub', parentRunId: 'root', delta: '[sub-agent notes]' }) +
@@ -174,13 +187,33 @@ describe('Regenerating an answer (enterprise search utils)', () => {
 
     it('still forwards a text delta whose data is not valid JSON', () => {
       const res = makeRes()
-      const accumulator = new StreamedContentAccumulator()
+      const accumulator = new StreamedTranscript()
       const chunk = 'event: TEXT_MESSAGE_CONTENT\ndata: {not json\n\n'
 
       feed(res, { chunk, accumulator })
 
       expect(written(res)).to.equal(chunk)
       expect(accumulator.hasContent()).to.equal(false)
+    })
+
+    it('keeps the tool steps for a stopped regeneration, as the turn stream does', () => {
+      const res = makeRes()
+      const accumulator = new StreamedTranscript()
+      const chunk =
+        frameAGUI('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'Checking the report.' }) +
+        frameAGUI('TOOL_CALL_START', { runId: 'root', toolCallId: 'c1', toolCallName: 'search' }) +
+        frameAGUI('TOOL_CALL_ARGS', { runId: 'root', toolCallId: 'c1', delta: '{}', argsSummary: 'Q3 report' }) +
+        frameAGUI('TOOL_CALL_RESULT', { runId: 'root', toolCallId: 'c1', status: 'completed', resultSummary: '2 files' })
+
+      feed(res, { chunk, accumulator })
+
+      expect(written(res)).to.equal(chunk)
+      expect(accumulator.getText()).to.equal('')
+      expect(accumulator.getParts()).to.deep.equal([
+        { type: 'text', content: 'Checking the report.' },
+        { type: 'tool_call', toolCallId: 'c1', toolName: 'search', status: 'completed', argsSummary: 'Q3 report', resultSummary: '2 files' },
+        { type: 'text', content: '', isFinal: true },
+      ])
     })
 
     it('hands RUN_FINISHED to the caller instead of the client, but keeps the frames around it', () => {
@@ -204,6 +237,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const existing = { _id: messageId, sessionId: conversation._id, orgId: conversation.orgId, seq: 4 }
       sinon.stub(ChatSessionMessage, 'findById').resolves(existing)
       const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves(existing)
+      const sessionWrite = stubSessionWrite()
       const frame = frameAGUI('RUN_ERROR', { message: 'The AI model is not configured.', code: 'llm_config' })
 
       feed(res, { chunk: frame, conversation, messageId })
@@ -216,10 +250,16 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       expect(replacement.messageType).to.equal('error')
       expect(replacement.content).to.equal('The AI model is not configured.')
       expect(replacement.seq).to.equal(4)
+      expect(replacement.changeRev).to.equal(STAMP)
       expect(conversation.status).to.equal(CONVERSATION_STATUS.FAILED)
       expect(conversation.failReason).to.equal('The AI model is not configured.')
       expect(at(conversation.conversationErrors).messageId?.toString()).to.equal(messageId.toString())
-      expect(conversation.save.calledOnce).to.equal(true)
+      expect(sessionWrite.calledOnce).to.equal(true)
+      const [writeFilter, update] = sessionWrite.firstCall.args as [Record<string, unknown>, Record<string, any>]
+      expect(writeFilter).to.deep.include({ _id: conversation._id, isDeleted: false })
+      expect(update.$set).to.include({ status: CONVERSATION_STATUS.FAILED, failReason: 'The AI model is not configured.' })
+      expect(update.$push.conversationErrors.$each[0].messageId.toString()).to.equal(messageId.toString())
+      expect(update.$inc, 'the row took its own stamp; the session write adds none').to.equal(undefined)
     })
 
     it('saves the standard failure text when RUN_ERROR carries no message', async () => {
@@ -228,6 +268,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const messageId = new mongoose.Types.ObjectId()
       sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 1 })
       const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
+      stubSessionWrite()
 
       feed(res, { chunk: frameAGUI('RUN_ERROR', { code: 'boom' }), conversation, messageId })
       await settle()
@@ -239,10 +280,11 @@ describe('Regenerating an answer (enterprise search utils)', () => {
 
     it('keeps streaming when saving the RUN_ERROR fails', async () => {
       const res = makeRes()
-      const conversation = makeConversation({ save: sinon.stub().rejects(new Error('mongo down')) })
+      const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
       sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 1 })
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
+      sinon.stub(ChatSession, 'updateOne').rejects(new Error('mongo down'))
       const frame = frameAGUI('RUN_ERROR', { message: 'Rate limited' })
       const unhandled = sinon.spy()
       process.on('unhandledRejection', unhandled)
@@ -262,6 +304,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const res = makeRes()
       const conversation = makeConversation()
       const findById = sinon.stub(ChatSessionMessage, 'findById')
+      const sessionWrite = stubSessionWrite()
       const frame = frameAGUI('RUN_ERROR', { message: 'nope' })
 
       feed(res, { chunk: frame, conversation, messageId: null })
@@ -269,7 +312,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
 
       expect(written(res)).to.equal(frame)
       expect(findById.called).to.equal(false)
-      expect(conversation.save.called).to.equal(false)
+      expect(sessionWrite.called).to.equal(false)
     })
 
     it('reports an ask_user_question for an agent regeneration and forwards it', async () => {
@@ -350,9 +393,11 @@ describe('Regenerating an answer (enterprise search utils)', () => {
 
   describe('handleRegenerationSuccess', () => {
     const stubCitationSave = (): sinon.SinonStub =>
-      sinon.stub(Citation.prototype, 'save').callsFake(function (this: unknown) {
-        return Promise.resolve(this)
-      })
+      sinon.stub(Citation, 'insertMany').callsFake(((docs: unknown) => Promise.resolve(docs)) as never)
+
+    beforeEach(() => {
+      stubSessionWrite()
+    })
 
     it('replaces the original message in place and stamps new citations with the caller org', async () => {
       const conversation = makeConversation()
@@ -404,6 +449,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       expect(replacement.content).to.equal('Revenue grew 12% quarter on quarter.')
       expect(replacement.messageType).to.equal('bot_response')
       expect(replacement.seq).to.equal(6)
+      expect(replacement.changeRev).to.equal(STAMP)
       expect(replacement.sessionId).to.equal(conversation._id)
       expect(at(replacement.citations ?? []).citationId.toString()).to.equal(
         (savedCitations[0] as unknown as { _id: mongoose.Types.ObjectId })._id.toString(),
@@ -411,7 +457,9 @@ describe('Regenerating an answer (enterprise search utils)', () => {
 
       expect(conversation.status).to.equal(CONVERSATION_STATUS.COMPLETE)
       expect(conversation.modelInfo).to.include({ modelKey: 'new-key', modelName: 'gpt-x', chatMode: 'deep' })
-      expect(conversation.save.calledOnce).to.equal(true)
+      const [, update] = (ChatSession.updateOne as sinon.SinonStub).firstCall.args as [unknown, Record<string, any>]
+      expect(update.$set).to.include({ status: CONVERSATION_STATUS.COMPLETE, 'modelInfo.modelKey': 'new-key', 'modelInfo.chatMode': 'deep' })
+      expect(update.$inc, 'the row took its own stamp; the session write adds none').to.equal(undefined)
 
       const body = response as { title: string; messages: Array<{ content: string; citations: Array<{ citationData?: unknown }> }> }
       expect(body.title).to.equal('Quarterly numbers')
@@ -471,8 +519,8 @@ describe('Regenerating an answer (enterprise search utils)', () => {
         mongoSession,
       )
 
-      expect(citationSave.firstCall.args[0]).to.deep.equal({ session: mongoSession })
-      expect(conversation.save.firstCall.args[0]).to.deep.equal({ session: mongoSession })
+      expect(citationSave.firstCall.args[1]).to.deep.equal({ session: mongoSession })
+      expect((ChatSession.updateOne as sinon.SinonStub).firstCall.args[2]).to.deep.equal({ session: mongoSession })
       expect(((findById.firstCall.args as unknown[])[2] as { session: unknown }).session).to.equal(mongoSession)
     })
 
@@ -490,14 +538,15 @@ describe('Regenerating an answer (enterprise search utils)', () => {
 
       expect(caught).to.be.instanceOf(InternalServerError)
       expect(replace.called).to.equal(false)
-      expect(conversation.save.called).to.equal(false)
+      expect((ChatSession.updateOne as sinon.SinonStub).called).to.equal(false)
     })
 
     it('fails when the conversation cannot be saved', async () => {
-      const conversation = makeConversation({ save: sinon.stub().resolves(null) })
+      const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
       sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 1 })
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ toObject: () => ({}) })
+      ;(ChatSession.updateOne as sinon.SinonStub).resolves({ matchedCount: 0 })
 
       let caught: unknown
       try {
@@ -547,6 +596,33 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       expect(replacement.content).to.equal('')
       expect(conversation.status).to.equal(CONVERSATION_STATUS.STOPPED)
     })
+
+    it("a regeneration requested by someone other than the owner keeps the conversation's stored model; the owner's own sets it", async () => {
+      const owner = new mongoose.Types.ObjectId()
+      const modelInfo: IAIModel = { modelKey: 'new-key', modelName: 'gpt-x', modelProvider: 'openai', chatMode: 'deep' }
+      for (const [requestedBy, sets] of [
+        [new mongoose.Types.ObjectId(), false],
+        [owner, true],
+      ] as const) {
+        const conversation = makeConversation({ userId: owner })
+        const messageId = new mongoose.Types.ObjectId()
+        const findById = sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 1 })
+        const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ toObject: () => ({}) })
+        const update = ChatSession.updateOne as sinon.SinonStub
+        update.resetHistory()
+
+        await handleRegenerationSuccess(completeAnswer(), asDoc(conversation), messageId, 'org', null, modelInfo, undefined, undefined, { requestedBy })
+
+        const [, change] = update.firstCall.args as [unknown, { $set: Record<string, unknown> }]
+        const written = Object.keys(change.$set).filter((field) => field.startsWith('modelInfo'))
+        expect(written, `the owner's regeneration: ${String(sets)}`).to.deep.equal(
+          sets ? ['modelInfo.modelKey', 'modelInfo.modelName', 'modelInfo.modelProvider', 'modelInfo.chatMode'] : [],
+        )
+        expect(conversation.modelInfo).to.include(sets ? modelInfo : { modelKey: 'old-key', chatMode: 'quick' })
+        findById.restore()
+        replace.restore()
+      }
+    })
   })
 
   describe('handleRegenerationError', () => {
@@ -569,6 +645,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const messageId = new mongoose.Types.ObjectId()
       sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 2 })
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
+      stubSessionWrite()
       const reloaded = { _id: conversation._id, toObject: () => ({ _id: conversation._id, title: 'Reloaded', nextSeq: 3 }) }
       const findConversation = sinon.stub(ChatSession, 'findById').resolves(reloaded)
       stubMessagesQuery([{ _id: messageId, messageType: 'error', content: CHAT_ERROR_MESSAGES.unavailable, seq: 2, orgId: 'o' }])
@@ -597,6 +674,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const messageId = new mongoose.Types.ObjectId()
       sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 2 })
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
+      stubSessionWrite()
       sinon.stub(ChatSession, 'findById').resolves(null)
 
       await handleRegenerationError(
@@ -610,10 +688,11 @@ describe('Regenerating an answer (enterprise search utils)', () => {
 
     it('still tells the user when saving the error itself fails', async () => {
       const res = makeRes()
-      const conversation = makeConversation({ save: sinon.stub().rejects(new Error('write conflict')) })
+      const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
       sinon.stub(ChatSessionMessage, 'findById').resolves({ _id: messageId, seq: 2 })
       sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
+      sinon.stub(ChatSession, 'updateOne').rejects(new Error('write conflict'))
       const reload = sinon.stub(ChatSession, 'findById')
 
       await handleRegenerationError(
