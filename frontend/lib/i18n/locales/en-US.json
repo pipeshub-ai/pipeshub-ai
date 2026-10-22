@@ -11,7 +11,9 @@
       "manualIndexStart": "Indexing manual-indexing records…",
       "manualIndexError": "Failed to start manual indexing",
       "retryClassificationStart": "Classification retry queued",
-      "retryClassificationError": "Failed to retry classification"
+      "retryClassificationError": "Failed to retry classification",
+      "retryEntitiesStart": "Entity extraction retry queued",
+      "retryEntitiesError": "Failed to retry entity extraction"
     },
     "trash": {
       "menuLabel": "Recently deleted",
@@ -2921,6 +2923,9 @@
         "retryFailedClassification": "Retry failed classification",
         "retryClassificationSuccess": "Classification retry queued",
         "retryClassificationError": "Failed to retry classification",
+        "retryFailedEntities": "Retry failed entity extraction",
+        "retryEntitiesSuccess": "Entity extraction retry queued",
+        "retryEntitiesError": "Failed to retry entity extraction",
         "codeGraph": {
           "title": "Code graph",
           "status": {

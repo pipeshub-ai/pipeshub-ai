@@ -2768,6 +2768,9 @@
         "retryFailedClassification": "विफल वर्गीकरण पुनः प्रयास करें",
         "retryClassificationSuccess": "वर्गीकरण पुनः प्रयास कतार में है",
         "retryClassificationError": "वर्गीकरण पुनः प्रयास विफल रहा",
+        "retryFailedEntities": "विफल एंटिटी निष्कर्षण पुनः प्रयास करें",
+        "retryEntitiesSuccess": "एंटिटी निष्कर्षण पुनः प्रयास कतार में है",
+        "retryEntitiesError": "एंटिटी निष्कर्षण पुनः प्रयास विफल रहा",
         "codeGraph": {
           "title": "कोड ग्राफ़",
           "status": {
@@ -5190,6 +5193,8 @@
     "stats": {
       "retryClassificationStart": "वर्गीकरण पुनः प्रयास कतार में है",
       "retryClassificationError": "वर्गीकरण पुनः प्रयास विफल रहा",
+      "retryEntitiesStart": "एंटिटी निष्कर्षण पुनः प्रयास कतार में है",
+      "retryEntitiesError": "एंटिटी निष्कर्षण पुनः प्रयास विफल रहा",
       "title": "विश्लेषण",
       "menuLabel": "विश्लेषण",
       "fetchError": "इंडेक्सिंग आँकड़े लोड नहीं हो सके",

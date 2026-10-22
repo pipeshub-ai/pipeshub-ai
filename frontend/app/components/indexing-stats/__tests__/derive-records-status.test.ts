@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { deriveClassificationStatus } from '../derive-records-status';
+import { deriveClassificationStatus, deriveEntitiesStatus } from '../derive-records-status';
 import type {
   ConnectorStatsResponse,
   ExtractionStatusCounts,
 } from '@/app/(main)/workspace/connectors/types';
 
-function statsWith(extractionStatus?: ExtractionStatusCounts): ConnectorStatsResponse['data'] {
+function statsWith(
+  extractionStatus?: ExtractionStatusCounts,
+  entitiesStatus?: ExtractionStatusCounts
+): ConnectorStatsResponse['data'] {
   return {
     orgId: 'org-1',
     connectorId: 'conn-1',
@@ -25,6 +28,7 @@ function statsWith(extractionStatus?: ExtractionStatusCounts): ConnectorStatsRes
         PAUSED: 0,
       },
       ...(extractionStatus ? { extractionStatus } : {}),
+      ...(entitiesStatus ? { entitiesStatus } : {}),
     },
     byRecordType: [],
   };
@@ -43,5 +47,25 @@ describe('deriveClassificationStatus', () => {
       failed: 3,
       queued: 0,
     });
+  });
+});
+
+describe('deriveEntitiesStatus', () => {
+  it('returns null when the backend sends no entitiesStatus', () => {
+    expect(deriveEntitiesStatus(statsWith({ FAILED: 2 }))).toBeNull();
+    expect(deriveEntitiesStatus(null)).toBeNull();
+  });
+
+  it('maps entities-stage counts and defaults missing statuses to 0', () => {
+    expect(deriveEntitiesStatus(statsWith(undefined, { COMPLETED: 4, FAILED: 5, SKIPPED: 1 }))).toEqual({
+      completed: 4,
+      skipped: 1,
+      failed: 5,
+      queued: 0,
+    });
+  });
+
+  it('reads the entities stage, not classification', () => {
+    expect(deriveEntitiesStatus(statsWith({ FAILED: 9 }, { FAILED: 2 }))?.failed).toBe(2);
   });
 });

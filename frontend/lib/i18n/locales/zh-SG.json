@@ -11,7 +11,9 @@
       "manualIndexStart": "正在索引手动索引记录…",
       "manualIndexError": "启动手动索引失败",
       "retryClassificationStart": "分类重试已加入队列",
-      "retryClassificationError": "重试分类失败"
+      "retryClassificationError": "重试分类失败",
+      "retryEntitiesStart": "实体提取重试已加入队列",
+      "retryEntitiesError": "重试实体提取失败"
     },
     "trash": {
       "menuLabel": "最近删除",
@@ -2908,6 +2910,9 @@
         "retryFailedClassification": "重试失败的分类",
         "retryClassificationSuccess": "分类重试已加入队列",
         "retryClassificationError": "重试分类失败",
+        "retryFailedEntities": "重试失败的实体提取",
+        "retryEntitiesSuccess": "实体提取重试已加入队列",
+        "retryEntitiesError": "重试实体提取失败",
         "codeGraph": {
           "title": "代码图",
           "status": {

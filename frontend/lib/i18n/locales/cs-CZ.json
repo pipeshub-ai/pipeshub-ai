@@ -11,7 +11,9 @@
       "manualIndexStart": "Indexování záznamů s ručním indexováním…",
       "manualIndexError": "Nepodařilo se spustit ruční indexování",
       "retryClassificationStart": "Opakování klasifikace zařazeno do fronty",
-      "retryClassificationError": "Klasifikaci se nepodařilo zopakovat"
+      "retryClassificationError": "Klasifikaci se nepodařilo zopakovat",
+      "retryEntitiesStart": "Opakování extrakce entit zařazeno do fronty",
+      "retryEntitiesError": "Extrakci entit se nepodařilo zopakovat"
     },
     "trash": {
       "menuLabel": "Nedávno smazané",
@@ -3007,6 +3009,9 @@
         "retryFailedClassification": "Zopakovat neúspěšnou klasifikaci",
         "retryClassificationSuccess": "Opakování klasifikace zařazeno do fronty",
         "retryClassificationError": "Klasifikaci se nepodařilo zopakovat",
+        "retryFailedEntities": "Zopakovat neúspěšnou extrakci entit",
+        "retryEntitiesSuccess": "Opakování extrakce entit zařazeno do fronty",
+        "retryEntitiesError": "Extrakci entit se nepodařilo zopakovat",
         "codeGraph": {
           "title": "Graf kódu",
           "status": {

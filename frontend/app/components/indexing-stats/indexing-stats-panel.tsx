@@ -3,7 +3,11 @@
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Badge } from '@radix-ui/themes';
-import { deriveClassificationStatus, deriveRecordsStatus } from './derive-records-status';
+import {
+  deriveClassificationStatus,
+  deriveEntitiesStatus,
+  deriveRecordsStatus,
+} from './derive-records-status';
 import { StatCard } from './stat-card';
 import {
   OverviewStatsGridShimmer,
@@ -22,6 +26,8 @@ export interface IndexingStatsPanelProps {
   onManualIndex?: () => Promise<void>;
   /** Re-runs only the classify stage for records whose classification failed. */
   onRetryFailedClassification?: () => Promise<void>;
+  /** Re-runs only named-entity extraction for records whose entities stage failed. */
+  onRetryFailedEntities?: () => Promise<void>;
   onNavigateToRecords?: (statuses?: IndexingStatus[]) => void;
   /** Connector-only: shows a "Sync now" button beside Refresh. Omit for KB collections. */
   onSync?: () => Promise<void>;
@@ -40,6 +46,7 @@ export interface IndexingStatsPanelProps {
   isReindexFailedBusy?: boolean;
   isManualIndexBusy?: boolean;
   isRetryClassificationBusy?: boolean;
+  isRetryEntitiesBusy?: boolean;
 }
 
 export function IndexingStatsPanel({
@@ -49,6 +56,7 @@ export function IndexingStatsPanel({
   onReindexFailed,
   onManualIndex,
   onRetryFailedClassification,
+  onRetryFailedEntities,
   onNavigateToRecords,
   onSync,
   onStop,
@@ -60,10 +68,12 @@ export function IndexingStatsPanel({
   isReindexFailedBusy = false,
   isManualIndexBusy = false,
   isRetryClassificationBusy = false,
+  isRetryEntitiesBusy = false,
 }: IndexingStatsPanelProps) {
   const { t } = useTranslation();
   const showStatsShimmer = loading || isRefreshBusy;
-  const reindexActionsBusy = isReindexFailedBusy || isManualIndexBusy || isRetryClassificationBusy;
+  const reindexActionsBusy =
+    isReindexFailedBusy || isManualIndexBusy || isRetryClassificationBusy || isRetryEntitiesBusy;
 
   const recordsStatus = useMemo(
     () => (showStatsShimmer ? null : deriveRecordsStatus(stats)),
@@ -73,11 +83,16 @@ export function IndexingStatsPanel({
     () => (showStatsShimmer ? null : deriveClassificationStatus(stats)),
     [stats, showStatsShimmer]
   );
+  const entitiesStatus = useMemo(
+    () => (showStatsShimmer ? null : deriveEntitiesStatus(stats)),
+    [stats, showStatsShimmer]
+  );
 
   const byRecordType = stats?.byRecordType ?? [];
   const showReindexFailedAction = Boolean(recordsStatus && recordsStatus.failed > 0) && !showStatsShimmer;
   const showManualIndexAction = Boolean(recordsStatus && recordsStatus.autoIndexOff > 0) && !showStatsShimmer;
   const showRetryClassificationAction = Boolean(classificationStatus && classificationStatus.failed > 0);
+  const showRetryEntitiesAction = Boolean(entitiesStatus && entitiesStatus.failed > 0);
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
@@ -140,7 +155,11 @@ export function IndexingStatsPanel({
                   loading={isRefreshBusy}
                 />
               </Flex>
-              {(showReindexFailedAction || showManualIndexAction || showRetryClassificationAction) && recordsStatus && (
+              {(showReindexFailedAction ||
+                showManualIndexAction ||
+                showRetryClassificationAction ||
+                showRetryEntitiesAction) &&
+                recordsStatus && (
                 <Flex align="center" gap="1" wrap="wrap" justify="end">
                   {showRetryClassificationAction && onRetryFailedClassification && classificationStatus && (
                     <IndexActionButton
@@ -151,6 +170,17 @@ export function IndexingStatsPanel({
                       onClick={() => void onRetryFailedClassification()}
                       disabled={reindexActionsBusy || isSyncBusy}
                       loading={isRetryClassificationBusy}
+                    />
+                  )}
+                  {showRetryEntitiesAction && onRetryFailedEntities && entitiesStatus && (
+                    <IndexActionButton
+                      label={`${t('workspace.connectors.overview.retryFailedEntities')} (${entitiesStatus.failed})`}
+                      icon="replay"
+                      color="orange"
+                      iconColor="var(--orange-11)"
+                      onClick={() => void onRetryFailedEntities()}
+                      disabled={reindexActionsBusy || isSyncBusy}
+                      loading={isRetryEntitiesBusy}
                     />
                   )}
                   {showReindexFailedAction && onReindexFailed && (

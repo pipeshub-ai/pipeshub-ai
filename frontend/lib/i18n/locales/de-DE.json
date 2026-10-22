@@ -2773,6 +2773,9 @@
         "retryFailedClassification": "Fehlgeschlagene Klassifizierung wiederholen",
         "retryClassificationSuccess": "Klassifizierung erneut eingeplant",
         "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden",
+        "retryFailedEntities": "Fehlgeschlagene Entitätsextraktion wiederholen",
+        "retryEntitiesSuccess": "Entitätsextraktion erneut eingeplant",
+        "retryEntitiesError": "Entitätsextraktion konnte nicht wiederholt werden",
         "codeGraph": {
           "title": "Code-Graph",
           "status": {
@@ -5226,6 +5229,8 @@
     "stats": {
       "retryClassificationStart": "Klassifizierung erneut eingeplant",
       "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden",
+      "retryEntitiesStart": "Entitätsextraktion erneut eingeplant",
+      "retryEntitiesError": "Entitätsextraktion konnte nicht wiederholt werden",
       "title": "Analysen",
       "menuLabel": "Analysen",
       "fetchError": "Indexierungsstatistiken konnten nicht geladen werden",

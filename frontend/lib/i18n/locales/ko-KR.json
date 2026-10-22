@@ -11,7 +11,9 @@
       "manualIndexStart": "수동 인덱싱 레코드를 인덱싱하는 중…",
       "manualIndexError": "수동 인덱싱 시작에 실패했습니다",
       "retryClassificationStart": "분류 재시도가 대기열에 추가되었습니다",
-      "retryClassificationError": "분류 재시도에 실패했습니다"
+      "retryClassificationError": "분류 재시도에 실패했습니다",
+      "retryEntitiesStart": "개체 추출 재시도가 대기열에 추가되었습니다",
+      "retryEntitiesError": "개체 추출 재시도에 실패했습니다"
     },
     "trash": {
       "menuLabel": "최근 삭제한 항목",
@@ -2908,6 +2910,9 @@
         "retryFailedClassification": "실패한 분류 재시도",
         "retryClassificationSuccess": "분류 재시도가 대기열에 추가되었습니다",
         "retryClassificationError": "분류 재시도에 실패했습니다",
+        "retryFailedEntities": "실패한 개체 추출 재시도",
+        "retryEntitiesSuccess": "개체 추출 재시도가 대기열에 추가되었습니다",
+        "retryEntitiesError": "개체 추출 재시도에 실패했습니다",
         "codeGraph": {
           "title": "코드 그래프",
           "status": {

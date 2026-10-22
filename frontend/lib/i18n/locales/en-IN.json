@@ -2764,6 +2764,9 @@
         "retryFailedClassification": "Retry failed classification",
         "retryClassificationSuccess": "Classification retry queued",
         "retryClassificationError": "Failed to retry classification",
+        "retryFailedEntities": "Retry failed entity extraction",
+        "retryEntitiesSuccess": "Entity extraction retry queued",
+        "retryEntitiesError": "Failed to retry entity extraction",
         "codeGraph": {
           "title": "Code graph",
           "status": {
@@ -5230,6 +5233,8 @@
     "stats": {
       "retryClassificationStart": "Classification retry queued",
       "retryClassificationError": "Failed to retry classification",
+      "retryEntitiesStart": "Entity extraction retry queued",
+      "retryEntitiesError": "Failed to retry entity extraction",
       "title": "Analytics",
       "menuLabel": "Analytics",
       "fetchError": "Failed to load indexing stats",

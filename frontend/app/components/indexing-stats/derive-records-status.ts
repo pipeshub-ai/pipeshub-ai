@@ -21,6 +21,22 @@ export function deriveClassificationStatus(
   };
 }
 
+export type EntitiesStatus = ClassificationStatus;
+
+/** Null when the backend predates the entities stage and sends no entitiesStatus. */
+export function deriveEntitiesStatus(
+  stats?: ConnectorStatsResponse['data'] | null
+): EntitiesStatus | null {
+  const ent = stats?.stats?.entitiesStatus;
+  if (!ent) return null;
+  return {
+    completed: ent.COMPLETED ?? 0,
+    skipped: ent.SKIPPED ?? 0,
+    failed: ent.FAILED ?? 0,
+    queued: ent.QUEUED ?? 0,
+  };
+}
+
 export function deriveRecordsStatus(
   stats?: ConnectorStatsResponse['data'] | null
 ): RecordsStatus {

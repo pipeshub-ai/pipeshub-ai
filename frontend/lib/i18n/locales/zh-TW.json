@@ -11,7 +11,9 @@
       "manualIndexStart": "正在索引手動索引的記錄…",
       "manualIndexError": "啟動手動索引失敗",
       "retryClassificationStart": "分類重試已加入佇列",
-      "retryClassificationError": "重試分類失敗"
+      "retryClassificationError": "重試分類失敗",
+      "retryEntitiesStart": "實體擷取重試已加入佇列",
+      "retryEntitiesError": "重試實體擷取失敗"
     },
     "trash": {
       "menuLabel": "最近刪除",
@@ -2908,6 +2910,9 @@
         "retryFailedClassification": "重試失敗的分類",
         "retryClassificationSuccess": "分類重試已加入佇列",
         "retryClassificationError": "重試分類失敗",
+        "retryFailedEntities": "重試失敗的實體擷取",
+        "retryEntitiesSuccess": "實體擷取重試已加入佇列",
+        "retryEntitiesError": "重試實體擷取失敗",
         "codeGraph": {
           "title": "程式碼圖",
           "status": {

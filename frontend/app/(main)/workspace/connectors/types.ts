@@ -538,11 +538,14 @@ export interface IndexingStatus {
   PAUSED: number;
 }
 
-/** Record counts keyed by classify-stage status (`extractionStatus`). */
+/**
+ * Record counts keyed by a pipeline stage's status: classify (`extractionStatus`)
+ * or named-entity extraction (`entitiesStatus`).
+ */
 export type ExtractionStatusCounts = Partial<Record<string, number>>;
 
 /** Pipeline stages that can be re-run on their own via the reindex endpoint. */
-export type ReindexStage = 'classify';
+export type ReindexStage = 'classify' | 'entities';
 
 /** Stats breakdown by record type */
 export interface RecordTypeStats {
@@ -551,6 +554,8 @@ export interface RecordTypeStats {
   indexingStatus: IndexingStatus;
   /** Absent on backends that predate pipeline stages. */
   extractionStatus?: ExtractionStatusCounts;
+  /** Absent on backends that predate the entities stage. */
+  entitiesStatus?: ExtractionStatusCounts;
 }
 
 /** One entry of GET /api/v1/code-graph/repos */
@@ -586,6 +591,8 @@ export interface ConnectorStatsResponse {
       indexingStatus: IndexingStatus;
       /** Absent on backends that predate pipeline stages. */
       extractionStatus?: ExtractionStatusCounts;
+      /** Absent on backends that predate the entities stage. */
+      entitiesStatus?: ExtractionStatusCounts;
     };
     byRecordType: RecordTypeStats[];
   };

@@ -425,7 +425,8 @@ export const ConnectorsApi = {
    * indexing status. Omitting statusFilters reindexes everything for a KB
    * connector; other connector types default server-side to FAILED-only.
    * With `stages`, only those pipeline stages re-run and statusFilters match
-   * the stage's own status (classify -> extractionStatus).
+   * the stage's own status (classify -> extractionStatus,
+   * entities -> entitiesStatus).
    */
   async reindexConnector(
     connectorId: string,
