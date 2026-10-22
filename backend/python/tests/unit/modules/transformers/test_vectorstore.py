@@ -137,7 +137,7 @@ class TestVectorStoreApply:
     """Tests for VectorStore.apply."""
 
     @pytest.mark.asyncio
-    async def test_a_reindex_of_unchanged_content_writes_nothing(self):
+    async def test_a_reindex_of_unchanged_content_writes_nothing(self) -> None:
         """The reconciliation diff decides: no block changed, so no point is written or deleted."""
         from app.modules.transformers.transformer import ReconciliationContext
 
