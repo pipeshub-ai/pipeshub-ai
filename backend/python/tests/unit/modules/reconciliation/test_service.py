@@ -210,3 +210,14 @@ def test_a_changed_heading_marks_its_rows_and_summary_for_reindexing() -> None:
     to_index, to_delete, _ = service.compute_diff(old, new)
     assert to_index == {"h", "r", "t"}
     assert to_delete == {"h", "r", "t"}
+
+
+def test_a_parser_supplied_hash_is_replaced_when_the_table_has_a_title() -> None:
+    """JSON and SQL parsers set their own hashes, which know nothing of the title."""
+    container = _table("Consolidated Balance Sheets")
+    for item in (*container.blocks, *container.block_groups):
+        item.content_hash = "from-the-parser"
+    hashes = ReconciliationService().build_metadata(container).hash_to_block_ids
+
+    assert hashes["from-the-parser"] == ["h"]
+    assert "from-the-parser" not in {h for h, ids in hashes.items() if "r" in ids or "t" in ids}
