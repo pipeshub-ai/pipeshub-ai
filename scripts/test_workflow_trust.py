@@ -51,8 +51,15 @@ PR_HEAD_READ_ONLY = {"dco.yml"}
 # allowlisted, not blocklisted, so a verb this cannot read counts too. Only a full-line
 # comment and an echo/printf command (a fix-it hint) run nothing. A tripwire for review,
 # not a sandbox: the allowlist above still needs a security reviewer.
-_CHECKOUT_REF = re.compile(r"^\s*ref:\s*(.*)$")
-_BASE_REF = re.compile(r"^['\"]?\$\{\{\s*github\.(?:event\.pull_request\.base\.sha|sha)\s*\}\}['\"]?$")
+# A checkout's `ref` or `repository` key in block or flow form (`with: { ref: ... }`), with
+# or without space before the colon; its value runs to the next `,` or `}` of a flow
+# mapping, or a comment. Only the base commit and the base repository are allowed.
+_CHECKOUT_REF = re.compile(
+    r"(?:^|[\s{,])['\"]?(?:ref|repository)['\"]?\s*:\s*((?:\$\{\{[^}]*\}\}|[^,}#])*)"
+)
+_BASE_REF = re.compile(
+    r"^['\"]?\$\{\{\s*github\.(?:event\.pull_request\.base\.sha|sha|repository)\s*\}\}['\"]?$"
+)
 _GIT_WORD = re.compile(r"(?<![\w.-])git(?![\w.-])")
 # A whole quoted word (an unclosed quote runs to the end), or any other run of non-space.
 _WORD = re.compile(r"\"(?:\\.|[^\"\\])*\"?|'[^']*'?|\S+")
@@ -99,15 +106,15 @@ def _is_hint(command: str) -> bool:
     words = command.split()
     while words and words[0] in ("-", "run:", "run:|"):
         words = words[1:]
-    return bool(words) and words[0] in ("echo", "printf") and "$(" not in command and "`" not in command
+    # `$(...)`, `<(...)`, `>(...)` and backticks run a command even inside an echo.
+    return bool(words) and words[0] in ("echo", "printf") and "(" not in command and "`" not in command
 
 
 def _checks_out(text: str) -> bool:
     for line in text.splitlines():
         if line.lstrip().startswith("#"):
             continue
-        ref = _CHECKOUT_REF.match(line)
-        if ref and not _BASE_REF.match(ref.group(1).split(" #")[0].strip()):
+        if any(not _BASE_REF.match(ref.strip()) for ref in _CHECKOUT_REF.findall(line)):
             return True
         for command in _commands(line):
             if _is_hint(command):
@@ -289,6 +296,9 @@ class TestHeadReadOnly(unittest.TestCase):
             "          git fetch -q https://github.com/pipeshub-ai/pipeshub-ai.git +refs/heads/main:refs/x\n"
             '          echo "Sign off with: git rebase --signoff $BASE && git push --force-with-lease"\n'
             "          ref: ${{ github.sha }}\n"
+            '        with: { fetch-depth: 0, ref: "${{ github.sha }}" }  # the base\n'
+            "          prefer-ref: no  # not a ref key\n"
+            "          repository: ${{ github.repository }}\n"
         )
         self.assertFalse(_checks_out(text))
 
@@ -325,6 +335,13 @@ class TestHeadReadOnly(unittest.TestCase):
             "          git apply head.patch\n",
             '          "$(command -v git)" checkout "$HEAD"\n',
             "          gh pr checkout 1\n",
+            '        with: { ref: "${{ env.HEAD }}" }\n',
+            '        with: {fetch-depth: 0, ref: "${{ github.event.pull_request.head.sha }}"}\n',
+            "          ref : ${{ github.event.pull_request.head.sha }}\n",
+            '          echo >(git checkout "$HEAD")\n',
+            '          printf x <(git checkout "$HEAD")\n',
+            "          repository: ${{ github.event.pull_request.head.repo.full_name }}\n",
+            "          ref: >-\n",
         ):
             with self.subTest(line=line.strip()):
                 self.assertTrue(_checks_out(self._FETCH + line))
