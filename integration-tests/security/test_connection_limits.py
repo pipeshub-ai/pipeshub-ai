@@ -338,8 +338,9 @@ class TestMcp:
             ("pipeshub_get_record_content", {"mode": "navigate", "nodeId": corpus["kb_out"]}),
         )
         (control_root, _), = mcp(base_url, unlimited_pat, ("pipeshub_get_record_content", {"mode": "navigate"}))
-        assert corpus["kb_out"] in control_root, "the unlimited token should list both collections"
-        assert corpus["kb_in"] in root and corpus["kb_out"] not in root, root[:1500]
+        # The root lists records flattened across apps, not the collections themselves.
+        assert corpus["outside_record"] in control_root, "the unlimited token should list both collections' records"
+        assert corpus["inside_record"] in root and corpus["outside_record"] not in root, root[:1500]
         assert err_out or OUTSIDE_MESSAGE in opened_out, opened_out[:1000]
         assert corpus["outside_record"] not in opened_out
 
