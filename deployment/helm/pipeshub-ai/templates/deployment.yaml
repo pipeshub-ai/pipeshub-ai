@@ -275,6 +275,8 @@ spec:
               value: {{ .Values.messageBroker.type | default "redis" | quote }}
             - name: REDIS_STREAMS_MAXLEN
               value: {{ .Values.messageBroker.redisStreamsMaxLen | default "500000" | quote }}
+            - name: REDIS_STREAMS_RETENTION_MODE
+              value: {{ .Values.messageBroker.redisStreamsRetentionMode | default "after_ack" | quote }}
             - name: FAIR_SCHEDULING_LANE_COUNT
               value: {{ .Values.messageBroker.laneCount | default "8" | quote }}
             - name: FAIR_SCHEDULING_LANE_ASSIGNMENT

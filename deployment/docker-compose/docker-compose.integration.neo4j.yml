@@ -106,6 +106,7 @@ services:
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      - REDIS_STREAMS_RETENTION_MODE=${REDIS_STREAMS_RETENTION_MODE:-after_ack}
       # Indexing lanes on Redis Streams: how many (every service must agree), and
       # how a connector is given one: "assigned" (the least busy lane, recorded
       # once) or "hash", which switches assigned lanes off.

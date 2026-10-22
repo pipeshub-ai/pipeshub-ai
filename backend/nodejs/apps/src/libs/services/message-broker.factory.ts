@@ -280,7 +280,10 @@ export function buildRedisBrokerConfig(
     port: redisConfig.port,
     password: redisConfig.password,
     db: redisConfig.db,
-    maxLen: env.redisStreamsMaxLen,
+    maxLen:
+      env.redisStreamsRetentionMode === 'maxlen'
+        ? env.redisStreamsMaxLen
+        : undefined,
     clientId: options?.clientId,
     groupId: options?.groupId,
   };

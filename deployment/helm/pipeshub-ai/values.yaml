@@ -771,7 +771,11 @@ etcd:
 # Message broker: "kafka" or "redis" (uses Redis Streams, default)
 messageBroker:
   type: redis
+  # Applies only with REDIS_STREAMS_RETENTION_MODE=maxlen (legacy cap that drops unconsumed events);
+  # the default retention trims streams only behind their consumers.
   redisStreamsMaxLen: "500000"
+  # "after_ack" (default) or "maxlen" (legacy cap using redisStreamsMaxLen)
+  redisStreamsRetentionMode: "after_ack"
   # Indexing lanes on Redis Streams: how many, and how a connector is given
   # one -- "assigned" (the least busy lane, recorded once) or "hash" (as
   # before), which switches assigned lanes off.

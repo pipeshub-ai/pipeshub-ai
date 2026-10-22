@@ -708,6 +708,7 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | Lane backlog (what the stranded sweep asks the broker) | `lanes/backlog.py`, `redis_streams/backlog.py`, `kafka/consumer/backlog.py` |
 | Lane map: scripts, cache, router; the lane rule (edition hook); creation and delete | `lanes/assignment.py`, `lanes/assignment_policy.py`, `lanes/lifecycle.py` |
 | Lane upkeep, `/health` lane view | `backend/python/app/modules/indexing/lane_upkeep.py` |
+| Redis Streams retention (trim behind consumers, length alert) | `redis_streams/retention.py` |
 | Distributed leases, renewer, retry counters | `distributed_concurrency.py`, `lease.py`, `retry_manager.py`, `fail_safe_retry_tracker.py` |
 | Stale-record recovery budget | `backend/python/app/modules/indexing/recovery_budget.py` |
 | PDF inspection, pdfium rewrite, layout parse in a worker | `backend/python/app/modules/parsers/pdf/untrusted_pdf.py`, `pdf_inspection.py`, `layout_pages.py` |
@@ -738,6 +739,7 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | `MAX_PENDING_INDEXING_TASKS` | derived (`2 × index limits`, 64–256) | total dispatch budget; the heavy tier's ceiling is derived under it (see 4.2 layer 2) |
 | `RECORD_PROCESSING_TIMEOUT` | 1800s | active-processing budget and parse-slot wait bound |
 | `PDF_RECORD_PROCESSING_TIMEOUT` | 5400s | active-processing budget for PDFs (extension `pdf` or `application/pdf`); Docling parses them in page batches, so large filings need longer |
+| `REDIS_STREAMS_RETENTION_MODE` / `REDIS_STREAMS_MAXLEN` | `after_ack` / 500000 | Redis only. `after_ack`: producers never cap a stream; one replica (leader lease `redis_streams:retention:leader`) runs `XTRIM MINID ~` every 60s below the lowest point any consumer group still needs (oldest pending entry, else last-delivered id), skips streams with no group, and warns when a stream passes 500k entries. `maxlen`: the old producer-side `XADD MAXLEN ~ REDIS_STREAMS_MAXLEN`, which drops unconsumed events past the cap (logged at startup). `REDIS_STREAMS_MAXLEN` is ignored in `after_ack` |
 | `FAIR_SCHEDULING_ENABLED` / `_MAX_BUFFER` / `_MAX_PER_ENTITY` / `_LANE_COUNT` | true / 2000 / 500 / 8 | consumer buffering and lane routing; the Node service uses the same lane count to pre-create the lane streams |
 | `FAIR_SCHEDULING_LANE_ASSIGNMENT` | `assigned` | Redis only. `hash` puts every producer back on hashed lanes; set it on every service (section 4.9) |
 | `FAIR_SCHEDULING_LANE_CACHE_SECONDS` | 60 | how long a producer trusts a looked-up lane; a move is fenced this long plus 30s after it is made |
