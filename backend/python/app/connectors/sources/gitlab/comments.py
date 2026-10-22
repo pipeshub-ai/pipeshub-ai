@@ -21,6 +21,7 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
+from app.modules.parsers.code_parser.secret_scan import redact_secrets
 from app.utils.time_conversion import string_to_datetime
 
 from .common.utils import parse_item_id_from_url
@@ -318,6 +319,7 @@ class CommentsHelper:
             data = "\n\n".join(data_parts)
             if is_truncated_diff:
                 data = data + "\n\n[TRUNCATED] Diff"
+            data = redact_secrets(data).text
 
             file_comments = map_file_r_comments.get(file_path, [])
             comments_list = [file_comments] if file_comments else []

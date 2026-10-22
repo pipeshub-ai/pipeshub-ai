@@ -1272,3 +1272,32 @@ class TestServiceTokenOrg:
             service_token_org({"orgId": "org-1"}, "org-2")
         assert exc_info.value.status_code == 403
         assert exc_info.value.detail == "org_id does not match the service token"
+
+
+class TestKnowledgeLimitClaim:
+    """What a connected app may see rides on its OAuth / personal access token."""
+
+    def test_an_oauth_token_carries_its_limit_with_only_string_ids(self) -> None:
+        payload = auth_module._normalize_regular_payload({
+            "userId": "u", "tokenType": "oauth", "scope": "kb:read", "client_id": "c",
+            "knowledgeLimit": {"apps": ["a", 7, ""], "records": "not-a-list"},
+        }, "tok")
+        assert auth_module.connection_limit(payload) == {"apps": ["a"], "recordGroups": [], "records": []}
+
+    def test_an_oauth_token_without_the_claim_sees_everything(self) -> None:
+        payload = auth_module._normalize_regular_payload(
+            {"userId": "u", "tokenType": "oauth", "scope": "kb:read", "client_id": "c"}, "tok",
+        )
+        assert auth_module.connection_limit(payload) is None
+
+    def test_a_session_token_cannot_carry_a_limit(self) -> None:
+        """Node signs the claim only into OAuth tokens; a session never has one."""
+        payload = auth_module._normalize_regular_payload(
+            {"userId": "u", "knowledgeLimit": {"apps": ["a"]}}, "tok",
+        )
+        assert "knowledgeLimit" not in payload
+        assert auth_module.connection_limit(payload) is None
+
+    def test_a_service_token_drops_the_claim(self) -> None:
+        payload = auth_module._normalize_scoped_payload({"knowledgeLimit": {"apps": ["a"]}}, "tok")
+        assert auth_module.connection_limit(payload) is None

@@ -1,4 +1,4 @@
-"""The edition hooks keep the contract every edition shares."""
+"""The edition hooks leave the open-source behaviour unchanged."""
 
 from __future__ import annotations
 
@@ -15,14 +15,13 @@ def test_model_decorators_return_their_input() -> None:
     assert edition_services.decorate_embeddings(embeddings, "openAI", "embed", {}) is embeddings
 
 
-def test_extra_toolsets_are_only_discovered_never_replaced() -> None:
+def test_configure_app_and_extra_toolsets_do_nothing() -> None:
     app, registry = MagicMock(), MagicMock()
 
     edition_services.configure_app(app, "query")
     edition_services.register_extra_toolsets(registry)
 
-    # The shared toolsets are registered first; an edition may only add to them.
-    assert all(name == "discover_toolsets" for name, _, _ in registry.mock_calls)
+    assert app.mock_calls == [] and registry.mock_calls == []
 
 
 def test_a_registered_classifier_is_asked_first(monkeypatch) -> None:

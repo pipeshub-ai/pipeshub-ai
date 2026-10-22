@@ -553,6 +553,27 @@ export interface RecordTypeStats {
   extractionStatus?: ExtractionStatusCounts;
 }
 
+/** One entry of GET /api/v1/code-graph/repos */
+export interface CodeGraphRepo {
+  repo: string;
+  source: string;
+  connector_id: string;
+  graph_status: CodeGraphStatus;
+  last_built_at?: number;
+  last_error?: string;
+}
+
+export type CodeGraphStatus =
+  | 'never_built'
+  | 'building'
+  | 'ready'
+  | 'stale'
+  | 'waiting_on_indexing'
+  | 'retrying'
+  | 'failed'
+  | 'too_large'
+  | 'unknown';
+
 /** Response from GET /api/v1/connectors/{connectorId}/stats */
 export interface ConnectorStatsResponse {
   success: boolean;

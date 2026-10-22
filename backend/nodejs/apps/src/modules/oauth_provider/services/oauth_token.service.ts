@@ -9,6 +9,10 @@ import {
   IOAuthAccessToken,
 } from '../schema/oauth.access_token.schema';
 import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema';
+import {
+  sameKnowledgeLimit,
+  toKnowledgeLimit,
+} from '../schema/knowledge_limit.schema';
 import { IOAuthApp, OAuthApp } from '../schema/oauth.app.schema';
 import {
   InvalidGrantError,
@@ -23,6 +27,7 @@ import {
 import {
   OAuthTokenPayload,
   GeneratedTokens,
+  KnowledgeLimit,
   GenerateTokensOptions,
   IntrospectResponse,
   TokenListItem,
@@ -99,6 +104,10 @@ export class OAuthTokenService {
 
     const jti = randomUUID();
     const now = Math.floor(Date.now() / 1000);
+    // A personal access token names its own limit; every other token takes
+    // its app's, read here so a refresh picks up the creator's latest edit.
+    const knowledgeLimit =
+      opts?.knowledgeLimit ?? toKnowledgeLimit(app.knowledgeLimit);
     const accessTokenLifetime =
       opts?.accessTokenLifetimeOverrideSeconds ?? app.accessTokenLifetime;
 
@@ -126,6 +135,7 @@ export class OAuthTokenService {
       // Changing an app's identity revokes its outstanding tokens, so none
       // minted under the previous answer survives to be honoured.
       createdBy: (app.tokenIdentityUserId ?? app.createdBy)?.toString(),
+      knowledgeLimit,
     };
 
     // A delegated token speaks as the person named in `userId`, so every
@@ -169,6 +179,7 @@ export class OAuthTokenService {
         opts?.actorUserId === undefined
           ? undefined
           : new Types.ObjectId(opts.actorUserId),
+      knowledgeLimit,
     });
 
     const result: GeneratedTokens = {
@@ -232,7 +243,13 @@ export class OAuthTokenService {
     }
 
     if (opts?.recheckAppScopes) {
-      await this.revokeIfScopesWithdrawn(app.clientId, scopes, result);
+      await this.revokeIfAppChanged(
+        app.clientId,
+        scopes,
+        // A personal access token's own limit is not the app's to change.
+        opts.knowledgeLimit === undefined ? { knowledgeLimit } : undefined,
+        result,
+      );
     }
 
     this.logger.info('OAuth tokens generated', {
@@ -246,26 +263,32 @@ export class OAuthTokenService {
   }
 
   /**
-   * updateApp saves a reduced scope list and then revokes the app's tokens.
-   * A grant that read the app before that save can insert its tokens after
-   * the revocation. Reading the app again after the insert closes the gap:
-   * if this read still sees the old scopes, the save and its revocation come
-   * later and catch these tokens; if it sees the new ones, they are revoked
-   * here.
+   * updateApp saves a reduced scope list or a changed knowledge limit and
+   * then revokes the app's tokens. A grant that read the app before that save
+   * can insert its tokens after the revocation. Reading the app again after
+   * the insert closes the gap: if this read still sees the old values, the
+   * save and its revocation come later and catch these tokens; if it sees the
+   * new ones, they are revoked here.
    */
-  private async revokeIfScopesWithdrawn(
+  private async revokeIfAppChanged(
     clientId: string,
     scopes: string[],
+    signed: { knowledgeLimit: KnowledgeLimit | undefined } | undefined,
     tokens: GeneratedTokens,
   ): Promise<void> {
     const current = await OAuthApp.findOne({
       clientId: { $eq: clientId },
       isDeleted: false,
     })
-      .select('allowedScopes')
+      .select('allowedScopes knowledgeLimit')
       .lean()
       .exec();
-    if (current && isGrantCoveredBy(scopes, current.allowedScopes)) {
+    if (
+      current &&
+      isGrantCoveredBy(scopes, current.allowedScopes) &&
+      (signed === undefined ||
+        sameKnowledgeLimit(signed.knowledgeLimit, current.knowledgeLimit))
+    ) {
       return;
     }
 
@@ -780,6 +803,7 @@ export class OAuthTokenService {
       isRevoked: t.isRevoked,
       name: t.name,
       lastUsedAt: t.lastUsedAt,
+      knowledgeLimit: toKnowledgeLimit(t.knowledgeLimit),
     }));
   }
 
@@ -819,6 +843,7 @@ export class OAuthTokenService {
         isRevoked: t.isRevoked,
         name: t.name,
         lastUsedAt: t.lastUsedAt,
+        knowledgeLimit: toKnowledgeLimit(t.knowledgeLimit),
       })),
       total,
     };

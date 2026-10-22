@@ -360,6 +360,27 @@ def test_parsing_client_uses_document_parse_scope() -> None:
 
 
 @pytest.mark.asyncio
+async def test_parse_forwards_file_path_when_given() -> None:
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+
+    with patch.object(
+        client,
+        "_post_multipart",
+        new=AsyncMock(return_value=_make_response(200, _success_response())),
+    ) as post:
+        await client.parse(
+            file_content=b"x = 1\n",
+            record_name="a.py",
+            extension="py",
+            file_path="src/pkg/a.py",
+        )
+        assert post.await_args.kwargs["data"]["file_path"] == "src/pkg/a.py"
+
+        await client.parse(file_content=b"x = 1\n", record_name="a.py", extension="py")
+        assert "file_path" not in post.await_args.kwargs["data"]
+
+
+@pytest.mark.asyncio
 async def test_a_pdf_gets_a_read_timeout_from_its_own_budget() -> None:
     """The client-wide read timeout is sized from the generic record budget
     and capped at one Docling batch, so a long filing died there whatever its

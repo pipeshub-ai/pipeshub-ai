@@ -121,8 +121,13 @@ EPUB_NO_READABLE_CHAPTERS = (
     "save a fresh copy from there, and upload it again."
 )
 GENERATED_FILE_SKIPPED = (
-    "This is a generated file (a lock file, minified bundle, source map or test snapshot), "
+    "This is a generated file (a lock file, minified bundle, source map, test snapshot or "
+    "a file its generator marked DO NOT EDIT), "
     "so PipesHub skips it to keep search results useful. Nothing needs fixing."
+)
+LFS_POINTER_SKIPPED = (
+    "This file is stored with Git LFS, so the repository holds only a pointer to it, not "
+    "its content. PipesHub skips the pointer. Nothing needs fixing."
 )
 BINARY_FILE_SKIPPED = (
     "This file holds binary data rather than text, so PipesHub can't read it. If it is "

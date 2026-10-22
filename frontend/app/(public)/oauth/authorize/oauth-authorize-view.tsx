@@ -12,6 +12,8 @@ import { useAuthStore, switchToSignedInWorkspace } from '@/config';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LoadingButton } from '@/app/components/ui/loading-button';
+import { KnowledgeLimitNotice } from '@/app/components/knowledge-limit/knowledge-limit-summary';
+import type { KnowledgeLimit } from '@/app/components/knowledge-limit/knowledge-limit';
 import { OAuthConnectionOutcome } from '@/app/(public)/oauth/components/oauth-connection-outcome';
 
 const OAUTH_AUTHORIZE_PATH = '/oauth/authorize';
@@ -30,6 +32,7 @@ interface AppInfo {
   homepageUrl?: string;
   privacyPolicyUrl?: string;
   isDynamic?: boolean;
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 interface ConsentData {
@@ -707,6 +710,8 @@ export function OAuthAuthorizeView() {
               ) : null}
             </Flex>
           ) : null}
+
+          <KnowledgeLimitNotice appName={appName} limit={consentData.app.knowledgeLimit} />
 
           <Separator size="4" />
 

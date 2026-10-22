@@ -26,7 +26,7 @@ from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.api.middlewares.token_policy import is_service_token
 from app.api.routes.chatbot import (
     get_llm_for_chat,
@@ -70,6 +70,7 @@ from app.modules.retrieval.selection_scope import (
     max_selection_nodes,
     prepare_turn_scope,
     selection_error,
+    within_connection,
 )
 from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
@@ -810,6 +811,7 @@ async def _resolve_turn_filters(
     org_id: str,
     logger: Logger,
     project_sources: dict[str, list[str]] | None = None,
+    connection_sources: dict[str, list[str]] | None = None,
     retrieval_user_id: str | None = None,
     searches_knowledge: bool = True,
 ) -> dict[str, Any]:
@@ -858,8 +860,10 @@ async def _resolve_turn_filters(
         )
     # A turn with internal search switched off never uses the selection, so
     # one that cannot be searched must not fail it. A saved agent is bound to
-    # its sources even without a selection.
-    if searches_knowledge and (has_selection(filters) or not is_universal_agent):
+    # its sources even without a selection, and a connected app to its limit.
+    if searches_knowledge and (
+        has_selection(filters) or connection_sources is not None or not is_universal_agent
+    ):
         agent_sources = None
         if not is_universal_agent:
             # The caller's project collection was admitted above.
@@ -867,7 +871,10 @@ async def _resolve_turn_filters(
         filters = await prepare_turn_scope(
             graph_provider, retrieval_user_id or caller_user_id, org_id, filters,
             agent_sources=agent_sources, project_sources=project_sources,
+            connection_sources=connection_sources,
         )
+    elif connection_sources is not None:
+        filters = within_connection(filters, connection_sources)
     return filters
 
 
@@ -4338,6 +4345,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         org_id=org_key,
                         logger=logger,
                         project_sources=_project_sources(chat_query.allowedFilters),
+                        connection_sources=connection_limit(getattr(request.state, "user", None)),
                         retrieval_user_id=enriched_user_info.get("userId"),
                         searches_knowledge=caps.internal_search,
                     )
@@ -4435,6 +4443,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     attachments=chat_query.attachments,
                     previous_conversations=chat_query.previousConversations,
                     logger=logger,
+                    connection_sources=connection_limit(getattr(request.state, "user", None)),
                 )
                 # Build query info
                 query_info = {

@@ -121,17 +121,20 @@ vi.mock('@/app/components/file-preview', () => ({
     isLoading,
     error,
     onOpenChange,
+    onChat,
   }: {
     file: { name: string; url: string };
     isLoading?: boolean;
     error?: string;
     onOpenChange: (open: boolean) => void;
+    onChat?: () => void;
   }) => (
     <section aria-label="File preview">
       <h2>{file.name}</h2>
       {isLoading && <p>Loading preview</p>}
       {error && <p role="alert">{error}</p>}
       {file.url && <p>Showing {file.url}</p>}
+      {onChat && <button onClick={onChat}>Chat</button>}
       <button onClick={() => onOpenChange(false)}>Close preview</button>
     </section>
   ),
@@ -1054,6 +1057,25 @@ describe('Knowledge base page — working with files', () => {
     fireEvent.click(within(preview).getByRole('button', { name: 'Close preview' }));
     expect(screen.queryByRole('region', { name: 'File preview' })).toBeNull();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview');
+  });
+
+  it('opens a chat scoped to the file being previewed', async () => {
+    await openEngineering();
+    api.kb.getRecordDetails.mockResolvedValue({ record: { recordName: 'spec.pdf', mimeType: 'application/pdf', sizeInBytes: 2048 } });
+    api.kb.streamRecord.mockResolvedValue(new Blob(['%PDF'], { type: 'application/pdf' }));
+
+    fireEvent.click(row('spec.pdf'));
+
+    const preview = await screen.findByRole('region', { name: 'File preview' });
+    fireEvent.click(within(preview).getByRole('button', { name: 'Chat' }));
+
+    expect(router.push).toHaveBeenCalledWith('/chat');
+    expect(usePendingChatStore.getState().pending).toMatchObject({
+      message: '',
+      pageContext: {
+        selectedNodes: [{ id: 'rec-spec', name: 'spec.pdf', nodeType: 'record' }],
+      },
+    });
   });
 
   it('does not download a file the viewer cannot render', async () => {

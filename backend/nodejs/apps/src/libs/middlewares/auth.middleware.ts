@@ -7,11 +7,8 @@ import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
 import { AuthTokenService } from '../services/authtoken.service';
 import { inject, injectable } from 'inversify';
 import { IUserActivity, UserActivities } from '../../modules/auth/schema/userActivities.schema';
-import {
-  activityEndsSession,
-  SESSION_INVALIDATING_ACTIVITIES,
-  userActivitiesType,
-} from '../utils/userActivities.utils';
+import { userActivitiesType } from '../utils/userActivities.utils';
+import { findSessionRefusal } from '../utils/user-session.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
 import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
@@ -30,10 +27,6 @@ export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
 const { PASSWORD_CHANGED } = userActivitiesType;
 // Delay in milliseconds between password change activity and token generation
-
-function hasValidJwtRole(role: unknown): role is 'admin' | 'member' {
-  return role === 'admin' || role === 'member';
-}
 
 @injectable()
 export class AuthMiddleware {
@@ -92,61 +85,9 @@ export class AuthMiddleware {
     const decoded = await this.tokenService.verifyToken(token);
     req.user = decoded;
 
-    // User session JWTs must carry role (admin|member). Legacy tokens without
-    // role are rejected so the client re-logins and receives a new token.
-    if (!hasValidJwtRole(decoded?.role)) {
-      throw new UnauthorizedError('Session expired, please login again');
-    }
-
-    // search for user activities for this user
-    const userId = decoded?.userId;
-    const orgId = decoded?.orgId;
-    // The account and its latest session-invalidating activity are independent
-    // reads: asked together they cost one round trip to the database on every
-    // authenticated request instead of two.
-    const [user, userActivity] = await Promise.all([
-      Users.findOne({
-        _id: userId,
-        isDeleted: false,
-      }).lean()
-        .exec(),
-      userId && orgId
-        ? UserActivities.findOne({
-            userId: userId,
-            orgId: orgId,
-            isDeleted: false,
-            activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
-          })
-            .sort({ createdAt: -1 }) // sort by most recent first
-            .lean()
-            .exec()
-            .catch((activityError: unknown): null => {
-              this.logger.error('Failed to fetch user activity', activityError);
-              return null;
-            })
-        : Promise.resolve(null),
-    ]);
-    if (!user) {
-      throw new UnauthorizedError('User not found, please login again');
-    }
-
-    // Sessions already handed out have to be stopped too, not only the next
-    // sign-in. generateAuthToken refuses to issue one for a disabled account,
-    // but a session minted before it was disabled would otherwise keep working
-    // until it expired — which for the account an administrator has just
-    // switched off is the whole point of switching it off.
-    if (user.isDisabled) {
-      throw new UnauthorizedError('This account is disabled');
-    }
-
-    // A service account has no way to obtain a session in the first place, so
-    // one turning up here means something is wrong rather than merely stale.
-    if (user.kind === 'service') {
-      throw new UnauthorizedError('Service accounts cannot sign in');
-    }
-
-    if (userActivity && activityEndsSession(userActivity, decoded.iat)) {
-      throw new UnauthorizedError('Session expired, please login again');
+    const refusal = await findSessionRefusal(decoded, this.logger);
+    if (refusal) {
+      throw new UnauthorizedError(refusal);
     }
 
     this.logger.debug('User authenticated', decoded);

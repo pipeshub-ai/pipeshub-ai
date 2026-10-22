@@ -32,8 +32,15 @@ from app.models.blocks import (
     Point,
 )
 from app.models.entities import Record, RecordType
+from app.modules.code_graph import enabled as code_graph_switch
+from app.modules.code_graph.block_projection import (
+    BlockProjectionContext,
+    drop_code_file_blocks,
+    write_code_file_blocks_to_graph,
+)
 from app.modules.parsers import parse_pool
 from app.modules.parsers.code_parser import engine as code_parser_engine
+from app.modules.parsers.code_parser.lang_config import detect_language
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.markdown.image_references import extract_and_replace_images
 from app.modules.parsers.csv.csv_parser import CSVParser
@@ -1813,15 +1820,121 @@ class Processor:
             return None
 
     async def _skip_code_file(
-        self, record_name: str, record_id: str, size_bytes: int, cause: str, reason: str | None
+        self, record_name: str, record_id: str, size_bytes: int, cause: str, reason: str | None,
+        *, org_id: str, virtual_record_id: str | None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Mark a repository file as not indexed, with the reason people see."""
         self.logger.info(
             f"Not indexing {record_name} ({size_bytes} bytes): {cause}; marking as not supported"
         )
+        await self._drop_code_blocks(record_id)
+        await self._release_skipped_content(org_id, record_id, virtual_record_id)
         await self._mark_record(record_id, ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason=reason)
         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+
+    async def _release_skipped_content(
+        self, org_id: str, record_id: str, virtual_record_id: str | None
+    ) -> None:
+        """Remove the vectors and stored content a now-skipped file had indexed.
+
+        Its last version (possibly unredacted) stayed searchable. Detached
+        first: both purges keep whatever a record still references, so a twin
+        sharing the VRID keeps its content. Raises, like the block drop.
+        """
+        if not virtual_record_id:
+            return
+        if not await self.graph_provider.update_node(
+            record_id, CollectionNames.RECORDS.value, {"virtualRecordId": None}
+        ):
+            raise DocumentProcessingError(
+                "Failed to detach the virtual record of a skipped file", doc_id=record_id
+            )
+        await self.indexing_pipeline.rewrite_or_delete_vector_membership(virtual_record_id)
+        await self.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid(
+            org_id, virtual_record_id
+        )
+
+    async def _drop_code_blocks(self, record_id: str) -> None:
+        """Remove a code file's previous blocks when it no longer has any.
+
+        A file emptied, made unparseable or skipped kept the blocks of its last
+        version, and the edge builder went on resolving calls into code that no
+        longer exists. Raises, like the projection: the status written next
+        would otherwise claim a state the graph does not have.
+        """
+        await drop_code_file_blocks(self.graph_provider, record_id, self.logger)
+
+    async def project_code_blocks_to_graph(
+        self,
+        *,
+        record_id: str,
+        org_id: str,
+        record_group_id: str | None,
+        connector_id: str | None,
+        record_name: str,
+        file_path: str | None = None,
+        language: str | None = None,
+        content: bytes | None = None,
+        block_containers: BlocksContainer | None = None,
+        propagate_failure: bool = False,
+    ) -> None:
+        """Write a code file's blocks to the graph, carrying their unresolved
+        cross-file references for the corpus edge pass to resolve later.
+
+        Every indexing path has to reach this. The blob and the vectors are keyed
+        by virtualRecordId and dedupe safely; these nodes are keyed by record and
+        do not, so any path that skips this leaves the file searchable but absent
+        from the code graph.
+
+        Callers holding a parsed container pass it; the duplicate path passes raw
+        ``content`` and pays for a parse instead.
+
+        Swallows failures by default -- the blocks are already searchable and the
+        edge pass can be re-run. Callers that run this *before* the record is
+        marked COMPLETED pass ``propagate_failure=True``: there, silently losing
+        the blocks would let the edge builder resolve the repo against a symbol
+        table the file is missing from, which yields wrong edges rather than
+        absent ones.
+        """
+        if not code_graph_switch.CODE_GRAPH_ENABLED:
+            return
+        try:
+            if not file_path:
+                file_path = await self._lookup_code_file_path(record_id)
+            file_path = file_path or record_name
+            language = language or detect_language(record_name) or detect_language(file_path)
+            if not language:
+                return
+
+            if block_containers is None:
+                if not content:
+                    return
+                block_containers = await self.parsers[
+                    ExtensionTypes.CODE.value
+                ].parse_to_blocks_off_loop(content, record_name, file_path, language)
+            if block_containers is None:
+                return
+
+            await write_code_file_blocks_to_graph(
+                graph_provider=self.graph_provider,
+                context=BlockProjectionContext(
+                    org_id=org_id,
+                    record_id=record_id,
+                    record_group_id=record_group_id,
+                    connector_id=connector_id,
+                    language=language,
+                    file_path=file_path,
+                ),
+                block_containers=block_containers,
+                logger=self.logger,
+            )
+        except Exception as projection_error:
+            self.logger.error(
+                f"❌ Failed to project code blocks to graph for {record_id}: {projection_error}"
+            )
+            if propagate_failure:
+                raise
 
     async def process_code_document(
         self, recordName, recordId, code_binary, virtual_record_id, extension=None,
@@ -1864,7 +1977,8 @@ class Processor:
 
             if plan.route is CodeFileRoute.SKIP:
                 async for event in self._skip_code_file(
-                    recordName, recordId, len(code_binary), plan.skip_cause.value, plan.skip_reason
+                    recordName, recordId, len(code_binary), plan.skip_cause.value, plan.skip_reason,
+                    org_id=record.org_id, virtual_record_id=virtual_record_id,
                 ):
                     yield event
                 return
@@ -1909,7 +2023,7 @@ class Processor:
                 code_binary, recordName, file_path, plan.parser
             )
 
-            if block_containers is None:
+            if block_containers is None and len(code_binary) > code_parser_engine.MAX_FILE_SIZE_BYTES:
                 async for event in self._skip_code_file(
                     recordName, recordId, len(code_binary), "too_large",
                     text_file_too_large(
@@ -1917,17 +2031,55 @@ class Processor:
                         code_parser_engine.MAX_FILE_SIZE_BYTES,
                         repository_file=repository_file,
                     ),
+                    org_id=record.org_id, virtual_record_id=virtual_record_id,
+                ):
+                    yield event
+                return
+
+            if block_containers is None:
+                # Too many definitions for the code graph (or no grammar build):
+                # still searchable, just not as graph nodes.
+                self.logger.info(
+                    f"{recordName} has too many definitions for the code graph; indexing it as text"
+                )
+                await self._drop_code_blocks(recordId)
+                async for event in self.process_md_document(
+                    recordName=recordName,
+                    recordId=recordId,
+                    md_binary=decode_text(code_binary),
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
                 ):
                     yield event
                 return
 
             if not block_containers.blocks and not block_containers.block_groups:
+                await self._drop_code_blocks(recordId)
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            # Before the pipeline, which marks the record COMPLETED. That status
+            # is what tells the edge builder the repo has drained, so a file
+            # carrying it while its blocks are still missing gets the whole repo
+            # resolved against a symbol table it does not appear in -- wrong
+            # edges, not missing ones. Everything between the two used to run in
+            # that gap: extraction, re-upload, re-embed, graph enrichment.
+            await self.project_code_blocks_to_graph(
+                record_id=recordId,
+                org_id=record.org_id,
+                record_group_id=record.record_group_id,
+                connector_id=record.connector_id,
+                record_name=recordName,
+                file_path=file_path,
+                language=plan.parser,
+                block_containers=block_containers,
+                propagate_failure=True,
+            )
 
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id

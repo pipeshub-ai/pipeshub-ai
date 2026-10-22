@@ -5,6 +5,12 @@ import { Box, Button, Checkbox, Flex, IconButton, Text, TextField } from '@radix
 import { useTranslation } from 'react-i18next';
 import type { CheckedState } from '@radix-ui/react-checkbox';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import {
+  KnowledgeLimitChoice,
+  isKnowledgeLimitValid,
+  knowledgeLimitForApi,
+  type KnowledgeLimitValue,
+} from '@/app/components/knowledge-limit';
 import { FormField, WorkspaceRightPanel } from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
@@ -58,6 +64,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
   const [name, setName] = useState('');
   const [nameError, setNameError] = useState<string | undefined>(undefined);
   const [expiryDays, setExpiryDays] = useState<PatExpiryOption>(DEFAULT_EXPIRY_DAYS);
+  const [knowledgeLimit, setKnowledgeLimit] = useState<KnowledgeLimitValue>(null);
 
   const [scopes, setScopes] = useState<PatScopeItem[] | null>(null);
   const [scopesLoading, setScopesLoading] = useState(false);
@@ -118,6 +125,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
       setName('');
       setNameError(undefined);
       setExpiryDays(DEFAULT_EXPIRY_DAYS);
+      setKnowledgeLimit(null);
       setScopes(null);
       setScopesErrorKey(null);
       setSelectedScopes(new Set());
@@ -189,6 +197,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
         name: trimmedName,
         scopes: Array.from(selectedScopes),
         expiryDays,
+        knowledgeLimit: knowledgeLimitForApi(knowledgeLimit),
       });
       const accessToken = res?.token?.accessToken;
       if (!accessToken) {
@@ -212,7 +221,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
     } finally {
       setIsCreating(false);
     }
-  }, [name, selectedScopes, expiryDays, addToast, t, onCreated]);
+  }, [name, selectedScopes, expiryDays, knowledgeLimit, addToast, t, onCreated]);
 
   const onPrimaryClick = useCallback(() => {
     if (createdToken) {
@@ -223,7 +232,9 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
   }, [createdToken, handleClose, handleCreate]);
 
   const primaryDisabled =
-    createdToken ? false : !name.trim() || scopesLoading || selectedScopes.size === 0;
+    createdToken
+      ? false
+      : !name.trim() || scopesLoading || selectedScopes.size === 0 || !isKnowledgeLimitValid(knowledgeLimit);
 
   return (
     <WorkspaceRightPanel
@@ -407,6 +418,15 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
                 </Flex>
               ))}
             </Flex>
+          </Box>
+
+          <Box style={CARD_STYLE}>
+            <KnowledgeLimitChoice
+              appName={t('knowledgeLimit.thisToken')}
+              value={knowledgeLimit}
+              onChange={setKnowledgeLimit}
+              idPrefix="pat"
+            />
           </Box>
 
           <Flex align="start" justify="between" gap="3" wrap="wrap">

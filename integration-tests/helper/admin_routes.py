@@ -37,7 +37,7 @@ ADMIN_MIDDLEWARES = frozenset({"userAdminCheck", "adminValidator"})
 _METHODS = ("get", "post", "put", "patch", "delete")
 _ROUTE_CALL = re.compile(r"\brouter\s*\.\s*(get|post|put|patch|delete|use)\s*\(")
 _FACTORY = re.compile(r"export\s+(?:function\s+|const\s+)(create\w+Router)\b")
-_MOUNT = re.compile(r"\b(?:this\.)?app\.use\(\s*'([^']+)'\s*,\s*(create\w+Router)\s*\(", re.S)
+_MOUNT = re.compile(r"this\.app\.use\(\s*'([^']+)'\s*,\s*(create\w+Router)\s*\(", re.S)
 _STRING = re.compile(r"""^\s*(['"`])(.*?)\1\s*$""", re.S)
 
 
@@ -101,18 +101,10 @@ def _is_admin(arg: str) -> bool:
     return _middleware_name(arg) in ADMIN_MIDDLEWARES
 
 
-def _is_test_file(path: Path) -> bool:
-    return "/tests/" in path.as_posix() or path.name.endswith((".test.ts", ".spec.ts"))
-
-
 def router_mounts(node_src: Path = NODE_SRC) -> dict[str, str]:
-    """Router factory name -> the prefix it is mounted at: by ``app.ts``, or by
-    another module that is handed the app (``app.use('/api/v1/x', createXRouter(``)."""
-    mounts: dict[str, str] = {}
-    for path in sorted(node_src.rglob("*.ts")):
-        if not _is_test_file(path):
-            mounts.update((factory, prefix) for prefix, factory in _MOUNT.findall(path.read_text(encoding="utf-8")))
-    return mounts
+    """Router factory name -> the prefix ``app.ts`` mounts it at."""
+    app_ts = (node_src / "app.ts").read_text(encoding="utf-8")
+    return {factory: prefix for prefix, factory in _MOUNT.findall(app_ts)}
 
 
 def _join(prefix: str, path: str) -> str:
@@ -167,7 +159,7 @@ def discover_admin_routes(node_src: Path = NODE_SRC) -> list[DiscoveredRoute]:
     routes: list[DiscoveredRoute] = []
     unmounted: list[str] = []
     for path in sorted(node_src.rglob("*.ts")):
-        if _is_test_file(path):
+        if "/tests/" in str(path) or path.name.endswith((".test.ts", ".spec.ts")):
             continue
         text = path.read_text(encoding="utf-8")
         if not any(name in text for name in ADMIN_MIDDLEWARES):
@@ -183,7 +175,7 @@ def discover_admin_routes(node_src: Path = NODE_SRC) -> list[DiscoveredRoute]:
     if unmounted:
         raise AssertionError(
             "Router files that use an admin middleware but whose mount prefix "
-            "could not be read from any app.use(): " + ", ".join(unmounted)
+            "could not be read from app.ts: " + ", ".join(unmounted)
         )
     return routes
 

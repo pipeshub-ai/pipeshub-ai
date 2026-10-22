@@ -11,10 +11,6 @@ fields:
       - KB
       - WORKFLOW
       - USER
-      - DOMAIN_KNOWLEDGE
-  confidence:
-    required: false
-    type: number
   createdAtTimestamp:
     required: false
     type: integer

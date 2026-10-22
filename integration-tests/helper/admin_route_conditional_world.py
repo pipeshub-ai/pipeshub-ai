@@ -444,7 +444,7 @@ class World:
         self._later(f"toolset {made['toolset_oauth_name']}", lambda: self._delete_toolset(signed_in["_id"]))
         if not config_id:
             raise RuntimeError("The OAuth toolset was created without a sign-in app to list.")
-        return {"toolset": str(keyed["_id"]), "toolset_oauth_config": str(config_id), **made}
+        return {"toolset": str(keyed["_id"]), **made}
 
     # ----------------------------------------------------------------- records
 

@@ -50,6 +50,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType, OAuthScopeConfig
+from app.connectors.core.registry.code_indexing_flags import exclude_paths_filter_field
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -224,10 +225,16 @@ class GitHubPersonalProjectsSync(ProjectsSync):
             display_name="Index Pull Requests",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
         ))
+        .add_filter_field(exclude_paths_filter_field())
         .add_filter_field(FilterField(
             name=IndexingFilterKey.CODE_FILES.value,
             display_name="Index Code Files",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.TEST_FILES.value,
+            display_name="Index Test Files",
+            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=False,
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_agent_support(False)

@@ -580,6 +580,13 @@
     "message": "Esto reindexa el documento desde cero y puede generar costos adicionales. Úselo cuando los resultados de búsqueda estén desactualizados o el documento no sea buscable incluso después de completar la indexación.",
     "confirm": "Confirmar"
   },
+  "reindexBlocked": {
+    "title": "Este registro no se puede reindexar por separado",
+    "message": "Los archivos de GitHub y GitLab se indexan juntos como un único grafo de código para todo el repositorio. Reindexar un solo archivo lo dejaría en una versión más reciente que el resto del repositorio y rompería los vínculos entre archivos. Para actualizarlo, vuelve a indexar el repositorio completo desde el centro de conocimiento: así se reindexan todos los archivos juntos. Una sincronización del conector solo recoge los archivos que cambiaron.",
+    "folderTitle": "Esta carpeta no se puede reindexar por separado",
+    "folderMessage": "Los archivos de GitHub y GitLab se indexan juntos como un único grafo de código para todo el repositorio. Reindexar una carpeta dejaría solo esos archivos en una versión más reciente que el resto del repositorio y rompería los vínculos entre archivos. Para actualizarlo, vuelve a indexar el repositorio completo desde el centro de conocimiento: así se reindexan todos los archivos juntos. Una sincronización del conector solo recoge los archivos que cambiaron.",
+    "goToConnectors": "Ir a conectores"
+  },
   "kb": {
     "viewToggle": "Alternar vista",
     "collectionsView": "Vista de colecciones",
@@ -1768,6 +1775,7 @@
         "createDisabledScopesTooltip": "Select at least one permission scope to create the application.",
         "tabGeneral": "General",
         "tabPermissions": "Permissions & Scopes",
+        "tabGranular": "Permisos detallados",
         "appNameLabel": "App name",
         "appNamePlaceholder": "My Application",
         "descriptionLabel": "Description",
@@ -2646,6 +2654,20 @@
         "retryFailedClassification": "Reintentar clasificación fallida",
         "retryClassificationSuccess": "Reintento de clasificación en cola",
         "retryClassificationError": "No se pudo reintentar la clasificación",
+        "codeGraph": {
+          "title": "Grafo de código",
+          "status": {
+            "never_built": "Aún no creado",
+            "building": "Creando",
+            "ready": "Listo",
+            "stale": "Actualizando",
+            "waiting_on_indexing": "Esperando la indexación",
+            "retrying": "Reintentando",
+            "failed": "Error",
+            "too_large": "Demasiado grande",
+            "unknown": "Desconocido"
+          }
+        },
         "lastRun": {
           "title": "Última sincronización",
           "outcome": {
@@ -4985,6 +5007,33 @@
     "doneLine": "Puede volver al terminal. Ya puede cerrar esta ventana.",
     "deniedTitle": "Solicitud denegada",
     "deniedLine": "No se ha concedido acceso al dispositivo."
+  },
+  "knowledgeLimit": {
+    "title": "¿Qué puede ver {{appName}}?",
+    "help": "Solo puede buscar y leer lo que permitas aquí, y nunca más de lo que tú puedes ver.",
+    "everything": "Todo lo que puedo ver",
+    "everythingHint": "Incluye las fuentes que añadas más adelante.",
+    "only": "Solo lo que elija",
+    "onlyHint": "Elige fuentes completas, o abre una para elegir espacios, carpetas o archivos.",
+    "pickOne": "Elige al menos una fuente, espacio, carpeta o archivo.",
+    "tooMany": "Elige como máximo {{max}} elementos, o elige una fuente completa.",
+    "selectedCount_one": "{{count}} elemento elegido",
+    "selectedCount_other": "{{count}} elementos elegidos",
+    "selectedCount_many": "{{count}} de elementos elegidos",
+    "canSeeEverything": "Puede ver: todo lo que tú puedes",
+    "canSeeSome_one": "Puede ver: {{count}} elemento elegido",
+    "canSeeSome_other": "Puede ver: {{count}} elementos elegidos",
+    "canSeeSome_many": "Puede ver: {{count}} de elementos elegidos",
+    "thisToken": "este token",
+    "app": {
+      "thisApp": "esta aplicación",
+      "help": "Los usuarios que conecten esta aplicación solo pueden buscar y leer lo que elijas aquí, y nunca más de lo que ellos mismos pueden ver.",
+      "everything": "Todo lo que cada usuario puede ver",
+      "everythingHint": "Incluye las fuentes que se añadan después."
+    },
+    "appLimited_one": "{{appName}} solo puede ver {{count}} elemento elegido por su creador, y solo si tú puedes verlo.",
+    "appLimited_many": "{{appName}} solo puede ver {{count}} elementos elegidos por su creador, y solo los que tú puedes ver.",
+    "appLimited_other": "{{appName}} solo puede ver {{count}} elementos elegidos por su creador, y solo los que tú puedes ver."
   },
   "validation": {
     "password": {

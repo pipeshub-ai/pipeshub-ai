@@ -71,7 +71,7 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
     # A toolset with a stored API key, and one with its own sign-in app.
     "toolsets": (
         "toolset", "toolset_name", "toolset_key",
-        "toolset_oauth_name", "toolset_client_id", "toolset_secret", "toolset_oauth_config",
+        "toolset_oauth_name", "toolset_client_id", "toolset_secret",
     ),
     # The creator's personal toolset.
     "personal_toolsets": ("personal_toolset", "personal_toolset_name"),
@@ -353,9 +353,9 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
     ),
     _on_a_connector("get_connector_instance", "GET", "/{target}", 200),
     _on_a_connector("get_connector_instance_config", "GET", "/{target}/config", 200),
-    # The plain connector has no sign-in, which this route cannot list filters for.
+    # The plain connector has no saved settings, which this route lists filters from.
     _on_a_connector("get_connector_instance_filters", "GET", "/{target}/filters", 400,
-                    "Unsupported authentication type"),
+                    "Configuration not found"),
     _on_a_connector("get_filter_field_options", "GET",
                     "/{target}/filters/it-no-such-filter/options", 404,
                     "Filter field 'it-no-such-filter' not found"),
@@ -661,9 +661,3 @@ REQUIRED_CASES: dict[str, frozenset[tuple[str, str, bool]]] = {
 
 def whose(target: str) -> str:
     return target.removeprefix("fresh_").removeprefix("listed_")
-
-# Cases a subpackage adds for the admin checks it makes (helper/table_extensions.py).
-from helper.table_extensions import table_extensions  # noqa: E402
-
-for _extension in table_extensions("admin_route_conditional_table"):
-    CONDITIONAL_ROUTES += _extension.CONDITIONAL_ROUTES

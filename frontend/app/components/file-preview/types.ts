@@ -123,6 +123,12 @@ export interface FilePreviewProps {
   /** Callback when fullscreen toggle button is clicked */
   onToggleFullscreen?: () => void;
 
+  /**
+   * Start a chat scoped to the record being previewed. Omitted for previews
+   * that are not a knowledge record (a citation or a generated artifact).
+   */
+  onChat?: () => void;
+
   /** Loading state */
   isLoading?: boolean;
 

@@ -6,7 +6,6 @@ installing anything.
 
 import os
 import re
-import time
 import unittest
 from pathlib import Path
 
@@ -40,92 +39,7 @@ _SECRET = re.compile(
 # A workflow listed here may keep a privileged trigger; it must never check out
 # PR code. Add to it only with a security reviewer's sign-off. post-release-probe
 # runs on the release workflow (tag pushes only) and checks out the default branch.
-# dco runs on pull_request_target so a pull request cannot edit its own sign-off
-# check; it checks out the base branch.
-PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml", "dco.yml"}
-# Privileged workflows that name the PR head only to fetch its commits and read
-# them with git log. They never check them out or run anything from them.
-PR_HEAD_READ_ONLY = {"dco.yml"}
-# Any checkout `ref:` but the base commit, `gh pr checkout`, or a git command that is not
-# read-only, wherever it sits: chained, in `sh -c "..."`, in backticks or by path. Git is
-# allowlisted, not blocklisted, so a verb this cannot read counts too. Only a full-line
-# comment and an echo/printf command (a fix-it hint) run nothing. A tripwire for review,
-# not a sandbox: the allowlist above still needs a security reviewer.
-# A checkout's `ref` or `repository` key in block or flow form (`with: { ref: ... }`), with
-# or without space before the colon; its value runs to the next `,` or `}` of a flow
-# mapping, or a comment. Only the base commit and the base repository are allowed.
-_CHECKOUT_REF = re.compile(
-    r"(?:^|[\s{,])['\"]?(?:ref|repository)['\"]?\s*:\s*((?:\$\{\{[^}]*\}\}|[^,}#])*)",
-    re.IGNORECASE,  # action inputs are case-insensitive: REF is ref
-)
-_BASE_REF = re.compile(
-    r"^['\"]?\$\{\{\s*github\.(?:event\.pull_request\.base\.sha|sha|repository)\s*\}\}['\"]?$"
-)
-_GIT_WORD = re.compile(r"(?<![\w.-])git(?![\w.-])")
-# A whole quoted word (an unclosed quote runs to the end), or any other run of non-space.
-_WORD = re.compile(r"\"(?:\\.|[^\"\\])*\"?|'[^']*'?|\S+")
-_READ_ONLY_GIT_VERBS = {
-    "fetch", "log", "rev-list", "rev-parse", "show", "cat-file", "merge-base", "diff", "ls-remote",
-    "for-each-ref", "describe", "status",
-}
-_GH_PR_CHECKOUT = re.compile(r"(?<![\w.-])gh\s+pr\s+checkout\b")
-_GIT_OPTIONS_WITH_VALUE = {"-c", "-C", "--git-dir", "--work-tree", "--namespace"}
-
-
-def _commands(line: str) -> list[str]:
-    """The line split at `;`, `&`, `|`, `&&` and `||` outside quotes."""
-    parts, start, quote, i = [], 0, "", 0
-    while i < len(line):
-        ch = line[i]
-        if quote:
-            if ch == "\\" and quote == '"':
-                i += 1
-            elif ch == quote:
-                quote = ""
-        elif ch in "'\"":
-            quote = ch
-        elif ch in ";&|":
-            parts.append(line[start:i])
-            start = i + 2 if line[i:i + 2] in ("&&", "||") else i + 1
-            i = start
-            continue
-        i += 1
-    parts.append(line[start:])
-    return parts
-
-
-def _git_verb(rest: str) -> str | None:
-    """The subcommand after a `git`, skipping git's own options and their values."""
-    words = [w.strip("\"'`\\()") for w in _WORD.findall(rest)]
-    i = 0
-    while i < len(words) and words[i].startswith("-"):
-        i += 2 if words[i] in _GIT_OPTIONS_WITH_VALUE else 1
-    return words[i] if i < len(words) else None
-
-
-def _is_hint(command: str) -> bool:
-    words = command.split()
-    while words and words[0] in ("-", "run:", "run:|"):
-        words = words[1:]
-    # `$(...)`, `<(...)`, `>(...)` and backticks run a command even inside an echo.
-    return bool(words) and words[0] in ("echo", "printf") and "(" not in command and "`" not in command
-
-
-def _checks_out(text: str) -> bool:
-    for line in text.splitlines():
-        if line.lstrip().startswith("#"):
-            continue
-        if any(not _BASE_REF.match(ref.strip()) for ref in _CHECKOUT_REF.findall(line)):
-            return True
-        for command in _commands(line):
-            if _is_hint(command):
-                continue
-            if _GH_PR_CHECKOUT.search(command) or any(
-                _git_verb(command[m.end():]) not in _READ_ONLY_GIT_VERBS for m in _GIT_WORD.finditer(command)
-            ):
-                return True
-    return False
-
+PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml"}
 
 _PULL_REQUEST_TRIGGER = _trigger("pull_request")
 _SECRETS_INHERIT = re.compile(r"^\s+secrets:\s*inherit\s*$", re.M)
@@ -271,7 +185,6 @@ class TestWorkflowTrust(unittest.TestCase):
             p.name
             for p in WORKFLOWS
             if _PRIVILEGED_TRIGGER.search(_text(p)) and _PR_HEAD_REF.search(_text(p))
-            and (p.name not in PR_HEAD_READ_ONLY or _checks_out(_text(p)))
         ]
         self.assertEqual(offenders, [], "a privileged trigger checks out or references the PR head")
 
@@ -280,76 +193,6 @@ class TestWorkflowTrust(unittest.TestCase):
         # runner and keeps the intent explicit: secrets only for same-repo heads.
         offenders = [f"{p.name}:{job}" for p in WORKFLOWS for job in _unguarded_secret_jobs(_text(p))]
         self.assertEqual(offenders, [], "pull_request job reads secrets without its own fork guard")
-
-
-class TestHeadReadOnly(unittest.TestCase):
-    _FETCH = '      - run: |\n          git fetch -q origin "$HEAD"\n'
-
-    def test_fetching_the_head_and_reading_it_is_not_a_checkout(self) -> None:
-        text = (
-            "# fix a branch with `git rebase --signoff origin/main`\n"
-            "      - uses: actions/checkout@v4\n        with:\n"
-            "          ref: ${{ github.event.pull_request.base.sha }}\n"
-            + self._FETCH
-            + '          git log -1 --format=%ae "$HEAD"\n'
-            '          commits=$(git rev-list --no-merges "$HEAD" --not "$BASE")\n'
-            '          git -c core.quotepath=off show --stat "$HEAD"\n'
-            "          git fetch -q https://github.com/pipeshub-ai/pipeshub-ai.git +refs/heads/main:refs/x\n"
-            '          echo "Sign off with: git rebase --signoff $BASE && git push --force-with-lease"\n'
-            "          ref: ${{ github.sha }}\n"
-            '        with: { fetch-depth: 0, ref: "${{ github.sha }}" }  # the base\n'
-            "          prefer-ref: no  # not a ref key\n"
-            "          repository: ${{ github.repository }}\n"
-            "        with: { ref: ${{ github.sha }} }\n"
-        )
-        self.assertFalse(_checks_out(text))
-
-    def test_a_long_run_of_git_options_is_read_quickly(self) -> None:
-        start = time.monotonic()
-        self.assertTrue(_checks_out("git " + "-C -! " * 5000 + "zz\n"))
-        self.assertLess(time.monotonic() - start, 1)
-
-    def test_putting_the_head_in_the_worktree_is_a_checkout(self) -> None:
-        for line in (
-            "          ref: ${{ github.event.pull_request.head.sha }}\n",
-            "          ref: refs/pull/${{ github.event.number }}/merge\n",
-            "          ref: ${{ github.head_ref }}\n",
-            '          git checkout "$HEAD"\n',
-            '          git merge "$HEAD"\n',
-            '          git cherry-pick "$HEAD"\n',
-            '          git restore --source "$HEAD" .\n',
-            '          git -c advice.detachedHead=false switch --detach "$HEAD"\n',
-            '          git rebase "$HEAD"\n',
-            "          git pull origin pull/1/head\n",
-            "          ref: ${{ env.HEAD }}\n",
-            "          ref: ${{ github.event.pull_request.head['sha'] }}\n",
-            '          ref: "${{ github.event.pull_request.head.sha }}"\n',
-            '          echo x && git merge "$HEAD"\n',
-            '      - run: echo ok && git checkout "$HEAD"\n',
-            "          printf '%s' ok; git cherry-pick \"$HEAD\"\n",
-            '          git -C . --no-pager checkout "$HEAD"\n',
-            '          sh -c "git checkout \\"$HEAD\\""\n',
-            '          out=`git checkout "$HEAD"`\n',
-            '          /usr/bin/git checkout "$HEAD"\n',
-            '          git -C "$GITHUB_WORKSPACE" checkout "$HEAD"\n',
-            '          git -c "advice.detachedHead=false" checkout "$HEAD"\n',
-            '          echo "$(git checkout "$HEAD")"\n',
-            "          git apply head.patch\n",
-            '          "$(command -v git)" checkout "$HEAD"\n',
-            "          gh pr checkout 1\n",
-            '        with: { ref: "${{ env.HEAD }}" }\n',
-            "        with: { ref: ${{ github.event.pull_request.head.sha }} }\n",
-            "          REF: ${{ github.event.pull_request.head.sha }}\n",
-            '        with: { Repository: "${{ env.HEAD_REPO }}" }\n',
-            '        with: {fetch-depth: 0, ref: "${{ github.event.pull_request.head.sha }}"}\n',
-            "          ref : ${{ github.event.pull_request.head.sha }}\n",
-            '          echo >(git checkout "$HEAD")\n',
-            '          printf x <(git checkout "$HEAD")\n',
-            "          repository: ${{ github.event.pull_request.head.repo.full_name }}\n",
-            "          ref: >-\n",
-        ):
-            with self.subTest(line=line.strip()):
-                self.assertTrue(_checks_out(self._FETCH + line))
 
 
 class TestUnguardedSecretJobs(unittest.TestCase):

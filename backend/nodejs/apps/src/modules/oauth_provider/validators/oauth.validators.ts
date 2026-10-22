@@ -9,6 +9,44 @@ import { OAuthGrantType } from '../schema/oauth.app.schema';
  */
 const codeVerifierPattern = /^[A-Za-z0-9\-._~]{43,128}$/;
 
+/** Most ids one connected app's limit may hold. The limit is signed into each
+ * token it is given, and a token travels in a request header. */
+export const MAX_KNOWLEDGE_LIMIT_IDS = 50;
+
+const limitSize = (limit: {
+  apps: string[];
+  recordGroups: string[];
+  records: string[];
+}): number =>
+  limit.apps.length + limit.recordGroups.length + limit.records.length;
+
+// Graph ids are lowercase; an upper-case copy would match nothing.
+const uniqueIds = (ids: string[]): string[] => [
+  ...new Set(ids.map((id) => id.toLowerCase())),
+];
+
+/** What a connected app may see, as its user picked it. Absent from a request
+ * means everything the user can see; sent, it must name something. */
+export const knowledgeLimitSchema = z
+  .object({
+    apps: z.array(z.string().uuid()).default([]),
+    recordGroups: z.array(z.string().uuid()).default([]),
+    records: z.array(z.string().uuid()).default([]),
+  })
+  .strict()
+  .transform((limit) => ({
+    apps: uniqueIds(limit.apps),
+    recordGroups: uniqueIds(limit.recordGroups),
+    records: uniqueIds(limit.records),
+  }))
+  .refine((limit) => limitSize(limit) > 0, {
+    message:
+      'Pick at least one source, or let the app see everything you can see',
+  })
+  .refine((limit) => limitSize(limit) <= MAX_KNOWLEDGE_LIMIT_IDS, {
+    message: `Pick at most ${String(MAX_KNOWLEDGE_LIMIT_IDS)} sources, folders or items, or pick a whole source instead`,
+  });
+
 /**
  * RFC 7636 PKCE code_challenge validation (base64url encoded)
  * Must be 43-128 characters, only [A-Za-z0-9-_] allowed (no padding)
@@ -188,6 +226,7 @@ export const createAppSchema = z.object({
       isConfidential: z.boolean().optional(),
       accessTokenLifetime: z.number().int().min(300).max(86400).optional(),
       refreshTokenLifetime: z.number().int().min(3600).max(31536000).optional(),
+      knowledgeLimit: knowledgeLimitSchema.optional(),
     })
     .refine(
       (data) => {
@@ -232,6 +271,8 @@ export const updateAppSchema = z.object({
       termsOfServiceUrl: z.string().url().optional().nullable(),
       accessTokenLifetime: z.number().int().min(300).max(86400).optional(),
       refreshTokenLifetime: z.number().int().min(3600).max(31536000).optional(),
+      // null puts the app back to everything each user can see.
+      knowledgeLimit: knowledgeLimitSchema.nullable().optional(),
     })
     .refine(
       (data) => {

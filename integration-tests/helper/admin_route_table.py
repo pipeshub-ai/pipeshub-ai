@@ -50,8 +50,6 @@ class AdminRoute:
     why_no_admin: str = ""
     # Multipart upload instead of JSON (the org logo route checks the file first).
     upload: bool = False
-    # Behind smtpConfigCheck, which runs before the admin check: the suite stores SMTP first.
-    needs_smtp: bool = False
     # For Python routes: the handler in backend/python/app this row covers,
     # and the words its refusal carries.
     handler: str = ""
@@ -349,11 +347,3 @@ TOOL_RULES_HANDLERS = frozenset({
     "api/routes/toolsets.py::get_toolset_tool_rules",
     "api/routes/toolsets.py::update_toolset_tool_rules",
 })
-
-# Rows a subpackage adds for the routes it serves (helper/table_extensions.py).
-from helper.table_extensions import table_extensions  # noqa: E402
-
-for _extension in table_extensions("admin_route_table"):
-    NODE_ADMIN_ROUTES += _extension.NODE_ADMIN_ROUTES
-    PYTHON_ADMIN_ROUTES += _extension.PYTHON_ADMIN_ROUTES
-    PYTHON_CONDITIONAL_ADMIN |= _extension.PYTHON_CONDITIONAL_ADMIN

@@ -253,8 +253,6 @@ class TestSavingRefusesANonSalesforceHost:
         config_service = AsyncMock()
         body = {
             "oauthInstanceName": "Sandbox app",
-            # Salesforce offers both scopes, so an edition that requires one gets it.
-            "connectorScope": "team",
             "config": {"clientId": "c", "clientSecret": "s", "instance_url": MY_DOMAIN, "loginUrl": "https://evil.example"},
         }
         with patch(f"{_ROUTER}._get_user_context", return_value=_ADMIN), \
@@ -312,8 +310,6 @@ class TestSavingRefusesANonSalesforceHost:
         config_service.set_config = AsyncMock(return_value=True)
         body = {
             "oauthInstanceName": "Sandbox app",
-            # Salesforce offers both scopes, so an edition that requires one gets it.
-            "connectorScope": "team",
             "config": {"clientId": "c", "clientSecret": "s", "instance_url": SANDBOX_MY_DOMAIN, "loginUrl": SANDBOX},
         }
         with patch(f"{_ROUTER}._get_user_context", return_value=_ADMIN), \

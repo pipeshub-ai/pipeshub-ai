@@ -6,7 +6,8 @@ import { AuthorizationCode } from '../schema/authorization_code.schema'
 import { OAuthAccessToken } from '../schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema'
 import { InvalidGrantError } from '../../../libs/errors/oauth.errors'
-import { AuthCodeExchangeResult } from '../types/oauth.types'
+import { AuthCodeExchangeResult, KnowledgeLimit } from '../types/oauth.types';
+import { toKnowledgeLimit } from '../schema/knowledge_limit.schema';
 
 const CODE_LENGTH = 32
 const CODE_EXPIRY_SECONDS = 600 // 10 minutes
@@ -26,6 +27,8 @@ export class AuthorizationCodeService {
     scopes: string[],
     codeChallenge?: string,
     codeChallengeMethod?: 'S256',
+    // What the user was shown at consent, so an exchange after an edit is refused.
+    knowledgeLimit?: KnowledgeLimit,
   ): Promise<string> {
     const code = crypto.randomBytes(CODE_LENGTH).toString('hex')
     const expiresAt = new Date(Date.now() + CODE_EXPIRY_SECONDS * 1000)
@@ -37,6 +40,7 @@ export class AuthorizationCodeService {
       orgId: new Types.ObjectId(orgId),
       redirectUri,
       scopes,
+      knowledgeLimit,
       expiresAt,
       codeChallenge,
       codeChallengeMethod,
@@ -143,6 +147,7 @@ export class AuthorizationCodeService {
       userId: authCode.userId.toString(),
       orgId: authCode.orgId.toString(),
       scopes: authCode.scopes,
+      knowledgeLimit: toKnowledgeLimit(authCode.knowledgeLimit),
     }
   }
 

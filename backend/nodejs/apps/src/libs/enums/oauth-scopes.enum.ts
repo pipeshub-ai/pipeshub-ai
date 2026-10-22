@@ -59,6 +59,9 @@ export const OAuthScopeNames = Object.freeze({
   CONNECTOR_SYNC: 'connector:sync',
   CONNECTOR_DELETE: 'connector:delete',
 
+  // Code graph
+  CODE_READ: 'code:read',
+
   // Configuration
   CONFIG_READ: 'config:read',
   CONFIG_WRITE: 'config:write',
