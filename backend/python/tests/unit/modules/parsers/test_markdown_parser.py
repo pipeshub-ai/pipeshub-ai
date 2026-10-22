@@ -115,8 +115,10 @@ class TestDoclingParseFile:
         mock_result.status.value = "partial_success"
         docling_parser.converter.convert = MagicMock(return_value=mock_result)
 
-        with pytest.raises(DocumentProcessingError, match="Failed to parse Markdown"):
+        with pytest.raises(DocumentProcessingError) as exc_info:
             docling_parser.parse_file("/partial.md")
+        
+        assert "Failed to parse Markdown" in str(exc_info.value)
 
     def test_parse_file_error_status(self, docling_parser):
         mock_result = MagicMock()
