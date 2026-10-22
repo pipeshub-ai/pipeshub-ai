@@ -225,6 +225,25 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       expect(sharedWithOf(s)).to.deep.equal([String(RECIPIENT)])
     })
 
+    it('an id written in capitals is the same user: sharing with yourself that way is still refused', async () => {
+      const s = setup()
+
+      const out = await callJson(shareHandler(), request(owner, agentParams(s), share([String(OWNER).toUpperCase()])))
+
+      expect(out.error?.statusCode).to.equal(400)
+      expect(sharedWithOf(s)).to.deep.equal([])
+    })
+
+    it('an id written in capitals is the same user: it does not add a second entry for a recipient', async () => {
+      const s = setup()
+      shareWith(s, RECIPIENT)
+
+      const out = await callJson(shareHandler(), request(owner, agentParams(s), share([String(RECIPIENT).toUpperCase(), String(RECIPIENT)])))
+
+      expect(out.status).to.equal(200)
+      expect(sharedWithOf(s)).to.deep.equal([String(RECIPIENT)])
+    })
+
     it('sharing with a second person keeps the first', async () => {
       const s = setup()
       shareWith(s, RECIPIENT)
@@ -386,6 +405,19 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       const out = await callJson(getHandler(), request(recipient, agentParams(s)))
 
       expect(out.error?.statusCode).to.equal(404)
+    })
+
+    it('an id written in capitals still removes that recipient, and the revoke names them in one form', async () => {
+      const s = setup()
+      shareWith(s, RECIPIENT)
+
+      const out = await callJson(unshareHandler(), request(owner, agentParams(s), { userIds: [String(RECIPIENT).toUpperCase()] }))
+
+      expect(out.status).to.equal(200)
+      expect(sharedWithOf(s)).to.deep.equal([])
+      expect(s.store.session(s.agentChatId)?.isShared).to.equal(false)
+      const revoke = s.ai.calls.find((c) => /\/chat\/artifacts\/permissions$/.test(c.url))
+      expect(revoke?.body).to.deep.equal({ conversationId: s.agentChatId, userIds: [String(RECIPIENT)] })
     })
 
     it('unsharing someone who was never a recipient changes nothing', async () => {

@@ -854,7 +854,7 @@ export function createAgentConversationalRouter(container: Container): Router {
    */
   router.post(
     '/:agentKey/conversations/:conversationId/share',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     ValidationMiddleware.validate(agentConversationShareParamsSchema),
     shareAgentConversation(appConfig),
@@ -867,7 +867,7 @@ export function createAgentConversationalRouter(container: Container): Router {
    */
   router.post(
     '/:agentKey/conversations/:conversationId/unshare',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     ValidationMiddleware.validate(agentConversationUnshareParamsSchema),
     unshareAgentConversation(appConfig),

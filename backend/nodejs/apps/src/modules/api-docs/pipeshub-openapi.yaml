@@ -9772,6 +9772,11 @@ components:
         `Conversation` but omits `messages` to keep list payloads small.
         Fetch a single conversation to retrieve its messages.
       properties:
+        agentKey:
+          type: string
+          description: |
+            Only on agent conversations (returned by `GET /conversations?source=shared`). Open
+            them with `GET /agents/{agentKey}/conversations/{conversationId}`.
         _id:
           type: string
           format: objectId
@@ -13900,6 +13905,12 @@ components:
               accessLevel:
                 type: string
                 enum: [read]
+        unsharedUsers:
+          type: array
+          description: Only on the unshare response. The users that were asked to be removed.
+          items:
+            type: string
+            format: objectId
         meta:
           $ref: '#/components/schemas/RequestMeta'
 
@@ -38063,15 +38074,7 @@ paths:
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/AgentConversationShareResponse'
-                  - type: object
-                    properties:
-                      unsharedUsers:
-                        type: array
-                        items:
-                          type: string
-                          format: objectId
+                $ref: '#/components/schemas/AgentConversationShareResponse'
         '400':
           description: Malformed, empty or oversized `userIds`.
           content:

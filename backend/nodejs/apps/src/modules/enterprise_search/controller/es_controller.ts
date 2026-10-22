@@ -2127,7 +2127,9 @@ export const getAllConversations = async (
       // Chats shared with the user include agent chats, so the recipient can open them
       // from the sidebar without first finding the agent. Owned chats stay plain-chat only:
       // agent chats are listed per agent.
-      sessionType: isOwned ? EXCLUDE_AGENT.sessionType : { $in: [EXCLUDE_AGENT.sessionType, ONLY_AGENT.sessionType] },
+      sessionType: isOwned
+        ? EXCLUDE_AGENT.sessionType
+        : { $in: [EXCLUDE_AGENT.sessionType, ONLY_AGENT.sessionType] },
     };
     let selection = ChatSession.find(filter)
       .sort(sortOptions as any)
@@ -2744,19 +2746,24 @@ const createShareConversationHandler =
           );
         }
 
+        // An ObjectId is hex, so 'ABC…' and 'abc…' are the same user. Compare and de-duplicate on one form.
+        userIds = (userIds as unknown[]).map((id) => String(id).toLowerCase());
+
         if (readOnlyShares) {
           if (accessLevel && accessLevel !== 'read') {
             throw new BadRequestError(
               "Agent conversations can only be shared with 'read' access",
             );
           }
-          if (userIds.some((id: unknown) => String(id) === String(userId))) {
+          if ((userIds as string[]).includes(String(userId).toLowerCase())) {
             throw new BadRequestError(
               'You cannot share a conversation with yourself',
             );
           }
-          userIds = [...new Set(userIds.map((id: unknown) => String(id)))];
+          userIds = [...new Set(userIds as string[])];
         }
+
+        const recipientIds = userIds as string[];
 
         // Get conversation with access control
         const conversation = await ChatSession.findOne({
@@ -2780,13 +2787,13 @@ const createShareConversationHandler =
         // Handle user-specific sharing
         // Validate all user IDs
         const validUsers = await Promise.all(
-          userIds.map(async (id: string) => {
+          recipientIds.map(async (id) => {
             if (!mongoose.Types.ObjectId.isValid(id)) {
               throw new BadRequestError(`Invalid user ID format: ${id}`);
             }
             try {
               const iamCommand = new IAMServiceCommand({
-                uri: `${appConfig.iamBackend}/api/v1/users/${encodeURIComponent(String(id))}`,
+                uri: `${appConfig.iamBackend}/api/v1/users/${encodeURIComponent(id)}`,
                 method: HttpMethod.GET,
                 headers: req.headers as Record<string, string>,
               });
@@ -2801,7 +2808,7 @@ const createShareConversationHandler =
               throw new BadRequestError(`User not found: ${id}`);
             }
             return {
-              userId: id,
+              userId: new mongoose.Types.ObjectId(id),
               accessLevel: accessLevel || 'read',
             };
           }),
@@ -2865,8 +2872,9 @@ const createShareConversationHandler =
       }
 
       // Grant READER on chat attachments (message chips and ATTACHMENTS citations).
-      const attachmentRecordIds =
-        await loadConversationChatAttachmentRecordIds(String(conversationId));
+      const attachmentRecordIds = await loadConversationChatAttachmentRecordIds(
+        String(conversationId),
+      );
 
       const grantor = {
         appConfig,
@@ -2931,11 +2939,21 @@ const createShareConversationHandler =
     }
   };
 
-export const shareConversationById = (appConfig: AppConfig) =>
+type ConversationHandler = (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => Promise<void>;
+
+export const shareConversationById = (
+  appConfig: AppConfig,
+): ConversationHandler =>
   createShareConversationHandler(appConfig, plainChatShareScope);
 
 /** Owner-only, read-only share of an agent conversation. */
-export const shareAgentConversation = (appConfig: AppConfig) =>
+export const shareAgentConversation = (
+  appConfig: AppConfig,
+): ConversationHandler =>
   createShareConversationHandler(appConfig, agentChatShareScope, {
     readOnlyShares: true,
   });
@@ -2943,168 +2961,179 @@ export const shareAgentConversation = (appConfig: AppConfig) =>
 const createUnshareConversationHandler =
   (appConfig: AppConfig, scopeFor: ShareScope) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-  const requestId = req.context?.requestId;
-  const startTime = Date.now();
-  let session: ClientSession | null = null;
-  const { conversationId } = req.params;
-  const scope = scopeFor(req);
-  try {
-    const { userIds } = req.body;
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    let session: ClientSession | null = null;
+    const { conversationId } = req.params;
+    const scope = scopeFor(req);
+    try {
+      const { userIds } = req.body;
+      const userId = req.user?.userId;
+      const orgId = req.user?.orgId;
 
-    logger.debug('Attempting to unshare conversation', {
-      requestId,
-      conversationId,
-      userId,
-      timestamp: new Date().toISOString(),
-    });
-
-    // Validate request body
-    if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-      throw new BadRequestError('userIds is required and must be an array');
-    }
-
-    // Validate all user IDs format
-    userIds.forEach((id) => {
-      if (!mongoose.Types.ObjectId.isValid(id)) {
-        throw new BadRequestError(`Invalid user ID format: ${id}`);
-      }
-    });
-
-    async function performUnshareConversation(session?: ClientSession | null) {
-      // Get conversation with access control
-      const conversation = await ChatSession.findOne({
-        _id: conversationId,
-        orgId,
-        isDeleted: false,
-        initiator: userId, // Only initiator can unshare
-        ...scope,
+      logger.debug('Attempting to unshare conversation', {
+        requestId,
+        conversationId,
+        userId,
+        timestamp: new Date().toISOString(),
       });
 
-      if (!conversation) {
-        throw new NotFoundError('Conversation not found or unauthorized');
+      // Validate request body
+      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+        throw new BadRequestError('userIds is required and must be an array');
       }
 
-      // Get existing shared users
-      const existingSharedWith = conversation.sharedWith || [];
-
-      // Remove specified users from sharedWith array
-      const updatedSharedWith = existingSharedWith.filter(
-        (share) => !userIds.includes(share.userId.toString()),
+      // Validate all user IDs format
+      userIds.forEach((id) => {
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+          throw new BadRequestError(`Invalid user ID format: ${id}`);
+        }
+      });
+      // An ObjectId is hex, so 'ABC…' and 'abc…' are the same user.
+      const removedIds = (userIds as unknown[]).map((id) =>
+        String(id).toLowerCase(),
       );
 
-      // Prepare update object
-      const updateObject: Partial<IConversation> = {
-        sharedWith: updatedSharedWith,
-      };
+      async function performUnshareConversation(
+        session?: ClientSession | null,
+      ) {
+        // Get conversation with access control
+        const conversation = await ChatSession.findOne({
+          _id: conversationId,
+          orgId,
+          isDeleted: false,
+          initiator: userId, // Only initiator can unshare
+          ...scope,
+        });
 
-      // If no more shares exist, update isShared and remove shareLink
-      if (updatedSharedWith.length === 0) {
-        updateObject.isShared = false;
-        updateObject.shareLink = undefined;
-      }
+        if (!conversation) {
+          throw new NotFoundError('Conversation not found or unauthorized');
+        }
 
-      // Update the conversation
-      const updatedConversation = await ChatSession.findOneAndUpdate(
-        { _id: conversationId, ...scope },
-        updateObject,
-        {
-          new: true,
-          session,
-          runValidators: true,
-        },
-      );
+        // Get existing shared users
+        const existingSharedWith = conversation.sharedWith || [];
 
-      if (!updatedConversation) {
-        throw new InternalServerError(
-          'Failed to update conversation sharing settings',
+        // Remove specified users from sharedWith array
+        const updatedSharedWith = existingSharedWith.filter(
+          (share) => !removedIds.includes(share.userId.toString()),
         );
+
+        // Prepare update object
+        const updateObject: Partial<IConversation> = {
+          sharedWith: updatedSharedWith,
+        };
+
+        // If no more shares exist, update isShared and remove shareLink
+        if (updatedSharedWith.length === 0) {
+          updateObject.isShared = false;
+          updateObject.shareLink = undefined;
+        }
+
+        // Update the conversation
+        const updatedConversation = await ChatSession.findOneAndUpdate(
+          { _id: conversationId, ...scope },
+          updateObject,
+          {
+            new: true,
+            session,
+            runValidators: true,
+          },
+        );
+
+        if (!updatedConversation) {
+          throw new InternalServerError(
+            'Failed to update conversation sharing settings',
+          );
+        }
+        return updatedConversation;
       }
-      return updatedConversation;
-    }
 
-    let updatedConversation: IChatSessionDocument | null = null;
-    if (rsAvailable) {
-      session = await mongoose.startSession();
-      session.startTransaction();
-      updatedConversation = await performUnshareConversation(session);
-      await session.commitTransaction();
-    } else {
-      updatedConversation = await performUnshareConversation();
-    }
+      let updatedConversation: IChatSessionDocument | null = null;
+      if (rsAvailable) {
+        session = await mongoose.startSession();
+        session.startTransaction();
+        updatedConversation = await performUnshareConversation(session);
+        await session.commitTransaction();
+      } else {
+        updatedConversation = await performUnshareConversation();
+      }
 
-    // Revoke READER on chat attachments (message chips and ATTACHMENTS citations).
-    const attachmentRecordIds =
-      await loadConversationChatAttachmentRecordIds(String(conversationId));
+      // Revoke READER on chat attachments (message chips and ATTACHMENTS citations).
+      const attachmentRecordIds = await loadConversationChatAttachmentRecordIds(
+        String(conversationId),
+      );
 
-    const grantor = {
-      appConfig,
-      method: HttpMethod.DELETE,
-      grantorUserId: String(userId),
-      orgId: String(orgId),
-      requestId,
-      conversationId,
-    } as const;
-    if (attachmentRecordIds.length > 0) {
+      const grantor = {
+        appConfig,
+        method: HttpMethod.DELETE,
+        grantorUserId: String(userId),
+        orgId: String(orgId),
+        requestId,
+        conversationId,
+      } as const;
+      if (attachmentRecordIds.length > 0) {
+        await syncConversationRecordPermissions({
+          ...grantor,
+          records: 'attachments',
+          body: { userIds: removedIds, recordIds: attachmentRecordIds },
+        });
+      }
       await syncConversationRecordPermissions({
         ...grantor,
-        records: 'attachments',
-        body: { userIds, recordIds: attachmentRecordIds },
+        records: 'artifacts',
+        body: { conversationId, userIds: removedIds },
       });
-    }
-    await syncConversationRecordPermissions({
-      ...grantor,
-      records: 'artifacts',
-      body: { conversationId, userIds },
-    });
 
-    logger.debug('Conversation unshared successfully', {
-      requestId,
-      conversationId,
-      duration: Date.now() - startTime,
-    });
-
-    // Prepare response
-    const response = {
-      id: updatedConversation._id,
-      isShared: updatedConversation.isShared,
-      shareLink: updatedConversation.shareLink,
-      sharedWith: updatedConversation.sharedWith,
-      unsharedUsers: userIds,
-      meta: {
+      logger.debug('Conversation unshared successfully', {
         requestId,
-        timestamp: new Date().toISOString(),
+        conversationId,
         duration: Date.now() - startTime,
-      },
-    };
+      });
 
-    res.status(200).json(response);
-  } catch (error: any) {
-    logger.error('Error un-sharing conversation', {
-      requestId,
-      conversationId,
-      error: error.message,
-      stack: error.stack,
-      duration: Date.now() - startTime,
-    });
+      // Prepare response
+      const response = {
+        id: updatedConversation._id,
+        isShared: updatedConversation.isShared,
+        shareLink: updatedConversation.shareLink,
+        sharedWith: updatedConversation.sharedWith,
+        unsharedUsers: removedIds,
+        meta: {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+        },
+      };
 
-    if (session?.inTransaction()) {
-      await session.abortTransaction();
+      res.status(200).json(response);
+    } catch (error: any) {
+      logger.error('Error un-sharing conversation', {
+        requestId,
+        conversationId,
+        error: error.message,
+        stack: error.stack,
+        duration: Date.now() - startTime,
+      });
+
+      if (session?.inTransaction()) {
+        await session.abortTransaction();
+      }
+      next(error);
+    } finally {
+      if (session) {
+        session.endSession();
+        session = null;
+      }
     }
-    next(error);
-  } finally {
-    if (session) {
-      session.endSession();
-      session = null;
-    }
-  }
-};
+  };
 
-export const unshareConversationById = (appConfig: AppConfig) =>
+export const unshareConversationById = (
+  appConfig: AppConfig,
+): ConversationHandler =>
   createUnshareConversationHandler(appConfig, plainChatShareScope);
 
-export const unshareAgentConversation = (appConfig: AppConfig) =>
+export const unshareAgentConversation = (
+  appConfig: AppConfig,
+): ConversationHandler =>
   createUnshareConversationHandler(appConfig, agentChatShareScope);
 
 /**
@@ -7711,14 +7740,21 @@ export const getAllAgentConversations = async (
       ]);
 
     const processedConversations = conversations.map((conversation: any) => {
-      const { sharedWith: recipients, ...row } = addComputedFields(
+      const conversationWithComputedFields = addComputedFields(
         conversation as IAgentConversation,
         userId,
       );
-      // A project member sees another user's project-visible chat here; who it was shared with is
-      // the owner's business.
-      return row.isOwner ? { ...row, sharedWith: recipients } : row;
+      return {
+        ...conversationWithComputedFields,
+      };
     });
+    // A project member sees another user's project-visible chat here; who it was shared with is
+    // the owner's business.
+    const visibleConversations = processedConversations.map((conversation) =>
+      conversation.isOwner
+        ? conversation
+        : { ...conversation, sharedWith: undefined },
+    );
     const processedSharedWithMeConversations = await attachSharedBy(
       sharedWithMeConversations.map((sharedWithMeConversation: any) =>
         addComputedFields(
@@ -7726,12 +7762,12 @@ export const getAllAgentConversations = async (
           userId,
         ),
       ),
-      orgId,
+      orgId as string,
     );
 
     // Build response metadata
     const response = {
-      conversations: processedConversations,
+      conversations: visibleConversations,
       sharedWithMeConversations: processedSharedWithMeConversations,
       pagination: buildPaginationMetadata(totalCount, page, limit),
       filters: buildFiltersMetadata(filter, req.query),
@@ -7762,9 +7798,8 @@ export const getAllAgentConversations = async (
   }
 };
 
-export const getAgentConversationById =
-  (appConfig: AppConfig) =>
-  async (
+const getAgentConversationByIdOf = async (
+  appConfig: AppConfig,
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
@@ -7846,15 +7881,15 @@ export const getAgentConversationById =
 
     // A recipient may be on the conversation only through a share, so the
     // artifacts the owner created since sharing are granted on first view.
-    const initiatorId = session.initiator?.toString();
-    const isRecipient = Boolean(initiatorId) && initiatorId !== userId;
+    const initiatorId = session.initiator.toString();
+    const isRecipient = initiatorId !== userId;
     if (page === 1 && isRecipient) {
       await syncConversationRecordPermissions({
         appConfig,
         records: 'artifacts',
         method: HttpMethod.POST,
-        grantorUserId: initiatorId as string,
-        orgId,
+        grantorUserId: initiatorId,
+        orgId: orgId as string,
         body: { conversationId, userIds: [userId] },
         requestId,
         conversationId,
@@ -7888,8 +7923,8 @@ export const getAgentConversationById =
           appConfig,
           records: 'attachments',
           method: HttpMethod.POST,
-          grantorUserId: initiatorId as string,
-          orgId,
+          grantorUserId: initiatorId,
+          orgId: orgId as string,
           body: { userIds: [userId], recordIds: attachmentRecordIds },
           requestId,
           conversationId,
@@ -7924,11 +7959,11 @@ export const getAgentConversationById =
     );
     // The recipient list is the owner's business: a viewer is told who shared
     // the chat, never who else can read it.
-    const { sharedWith: _ownerOnlySharedWith, ...recipientSafeResponse } =
-      builtResponse;
     const conversationResponse = await attachSharedByIfRecipient(
-      builtResponse.access.isOwner ? builtResponse : recipientSafeResponse,
-      orgId,
+      builtResponse.access.isOwner
+        ? builtResponse
+        : { ...builtResponse, sharedWith: undefined },
+      orgId as string,
     );
 
     // Build filters metadata using existing helper
@@ -7970,6 +8005,11 @@ export const getAgentConversationById =
     next(error);
   }
 };
+
+export const getAgentConversationById =
+  (appConfig: AppConfig): ConversationHandler =>
+  (req, res, next) =>
+    getAgentConversationByIdOf(appConfig, req, res, next);
 
 export const deleteAgentConversationById =
   (appConfig: AppConfig) =>

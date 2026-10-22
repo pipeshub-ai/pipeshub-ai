@@ -755,7 +755,11 @@ describe('Chat page — agent chats', () => {
 
     renderPage('agentId=agent-7&conversationId=conv-1');
 
-    expect((await screen.findByLabelText('Agent header')).getAttribute('data-read-only')).toBe('true');
+    expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+    // Ownership is known only once the conversation has loaded; the header is up before that.
+    await waitFor(() => {
+      expect(screen.getByLabelText('Agent header').getAttribute('data-read-only')).toBe('true');
+    });
   });
 
   it('keeps the agent name and menu on a shared agent chat whose agent the user can open', async () => {
@@ -773,7 +777,8 @@ describe('Chat page — agent chats', () => {
 
     renderPage('agentId=agent-7&conversationId=conv-1');
 
-    expect((await screen.findByLabelText('Agent header')).getAttribute('data-read-only')).toBe('false');
+    expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+    expect(screen.getByLabelText('Agent header').getAttribute('data-read-only')).toBe('false');
   });
 
   it('still opens the chat when the agent cannot be loaded', async () => {
