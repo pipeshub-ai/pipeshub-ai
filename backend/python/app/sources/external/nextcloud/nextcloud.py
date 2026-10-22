@@ -52,10 +52,7 @@ class NextcloudDataSource:
         rel_path = f'/ocs/v1.php/cloud/users/{user_id}'
         return await self._ocs_request('GET', rel_path, headers=headers)
 
-    async def get_current_user(
-        self,
-        headers: Optional[Dict[str, Any]] = None
-    ) -> HTTPResponse:
+    async def get_current_user(self, headers: dict[str, Any] | None = None) -> HTTPResponse:
         """
         Get the authenticated user, whose ``id`` names their WebDAV and OCS paths.
         The login name can differ from it (an email or an LDAP name).

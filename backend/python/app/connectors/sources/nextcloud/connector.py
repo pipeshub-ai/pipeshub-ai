@@ -1021,6 +1021,7 @@ class NextcloudConnector(BaseConnector):
         record_group_id: str,
         resave: set[str] | None = None,
         listed: set[str] | None = None,
+        *,
         rewrite_unchanged: bool = False,
     ) -> bool:
         """
@@ -1427,7 +1428,7 @@ class NextcloudConnector(BaseConnector):
                 self.current_user_id,
                 resave,
                 listed,
-                rewrite_unchanged,
+                rewrite_unchanged=rewrite_unchanged,
             )
             if sorted(resave) != before:
                 await self.activity_sync_point.update_sync_point(

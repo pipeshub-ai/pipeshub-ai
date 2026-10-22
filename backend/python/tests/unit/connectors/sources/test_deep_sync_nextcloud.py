@@ -5,13 +5,12 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from app.connectors.sources.nextcloud.connector import FULL_SYNC_INTERVAL_MS, NextcloudSyncError
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 from app.config.constants.arangodb import MimeTypes
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.nextcloud.connector import (
-    NextcloudConnector,
+    FULL_SYNC_INTERVAL_MS,
+    NextcloudSyncError,
     extract_response_body,
     get_file_extension,
     get_mimetype_enum_for_nextcloud,
@@ -22,7 +21,7 @@ from app.connectors.sources.nextcloud.connector import (
 )
 from app.models.entities import AppUser, RecordGroupType
 from app.models.permission import EntityType, PermissionType
-
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # ---------------------------------------------------------------------------
 # Fixtures

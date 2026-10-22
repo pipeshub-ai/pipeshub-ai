@@ -12,7 +12,9 @@ exactly that folder.
 
 from __future__ import annotations
 
+import os
 import posixpath
+import subprocess
 from urllib.parse import quote
 from xml.etree import ElementTree
 
@@ -60,6 +62,60 @@ class NextcloudSourceHelper:
         if not response.json().get("installed"):
             raise RuntimeError("Nextcloud is not installed yet")
 
+    def set_email(self, email: str) -> None:
+        """Change the sync user's profile email, as the user may in Personal settings."""
+        self._ocs("PUT", f"users/{quote(self.user)}", self.admin, key="email", value=email)
+
+    def ensure_other_user(self, user: str, password: str) -> None:
+        """A second account, to share files with the sync user."""
+        found = self._ocs("GET", f"users?search={quote(user)}", self.admin)
+        if user not in (found.get("data") or {}).get("users", []):
+            meta = self._ocs("POST", "users", self.admin, userid=user, password=password)["meta"]
+            if meta.get("statuscode") != 100:
+                raise RuntimeError(f"Could not create Nextcloud user {user}: {meta}")
+
+    def delete_user(self, user: str) -> None:
+        requests.delete(
+            f"{self.base_url}/ocs/v1.php/cloud/users/{quote(user)}",
+            params={"format": "json"}, auth=self.admin, headers={"OCS-APIRequest": "true"}, timeout=self.timeout,
+        )
+
+    def share_with_sync_user(self, owner: tuple[str, str], path: str) -> str:
+        """``owner`` shares their ``path`` with the sync user; returns the share id."""
+        response = requests.post(
+            f"{self.base_url}/ocs/v2.php/apps/files_sharing/api/v1/shares",
+            params={"format": "json"},
+            data={"path": f"/{path.strip('/')}", "shareType": "0", "shareWith": self.user},
+            auth=owner, headers={"OCS-APIRequest": "true"}, timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return str(response.json()["ocs"]["data"]["id"])
+
+    def unshare(self, owner: tuple[str, str], share_id: str) -> None:
+        requests.delete(
+            f"{self.base_url}/ocs/v2.php/apps/files_sharing/api/v1/shares/{share_id}",
+            params={"format": "json"}, auth=owner, headers={"OCS-APIRequest": "true"}, timeout=self.timeout,
+        ).raise_for_status()
+
+    def occ(self, *args: str) -> str:
+        """Run ``occ`` on the server: the ``NEXTCLOUD_CONTAINER`` container, or the stack's nextcloud-source.
+
+        Raises ``ComposeUnavailable`` when neither can be reached, which tests turn into a skip.
+        """
+        from helper.compose_control import ComposeStack, ComposeUnavailable
+
+        container = os.getenv("NEXTCLOUD_CONTAINER")
+        if not container:
+            container = ComposeStack.from_env().container_id("nextcloud-source")
+        try:
+            done = subprocess.run(
+                ["docker", "exec", "-u", "www-data", container, "php", "occ", *args],
+                capture_output=True, text=True, timeout=120, check=True,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            raise ComposeUnavailable(f"could not run occ in {container}: {e}") from e
+        return done.stdout
+
     def ensure_user(self) -> None:
         """Create the sync user if needed, and give it the configured email."""
         found = self._ocs("GET", f"users?search={quote(self.user)}", self.admin)
@@ -74,8 +130,8 @@ class NextcloudSourceHelper:
 
     # -- files -------------------------------------------------------------
 
-    def _url(self, path: str) -> str:
-        return f"{self.base_url}/remote.php/dav/files/{quote(self.user)}/{quote(path.strip('/'))}"
+    def _url(self, path: str, user: str | None = None) -> str:
+        return f"{self.base_url}/remote.php/dav/files/{quote(user or self.user)}/{quote(path.strip('/'))}"
 
     def _dav(self, method: str, path: str, **kwargs: object) -> requests.Response:
         return requests.request(
@@ -94,11 +150,25 @@ class NextcloudSourceHelper:
             if response.status_code not in (201, 405):  # 405: it already exists
                 response.raise_for_status()
 
-    def put(self, path: str, content: str) -> None:
-        parent = posixpath.dirname(path.strip("/"))
-        if parent:
-            self.mkdir(parent)
-        self._dav("PUT", path, data=content.encode("utf-8")).raise_for_status()
+    def put(self, path: str, content: str, auth: tuple[str, str] | None = None) -> None:
+        """Write ``path`` as the sync user, or as ``auth``'s user (folders above it too)."""
+        user, password = auth or (self.user, self.password)
+        parts = [p for p in posixpath.dirname(path.strip("/")).split("/") if p]
+        for i in range(1, len(parts) + 1):
+            response = requests.request(
+                "MKCOL", self._url("/".join(parts[:i]), user), auth=(user, password), timeout=self.timeout
+            )
+            if response.status_code not in (201, 405):  # 405: it already exists
+                response.raise_for_status()
+        requests.put(
+            self._url(path, user), data=content.encode("utf-8"), auth=(user, password), timeout=self.timeout
+        ).raise_for_status()
+
+    def copy(self, path: str, new_path: str) -> None:
+        """A server-side copy; Nextcloud logs one activity for the top folder only."""
+        self._dav(
+            "COPY", path, headers={"Destination": self._url(new_path), "Overwrite": "F"}
+        ).raise_for_status()
 
     def delete(self, path: str) -> None:
         response = self._dav("DELETE", path)

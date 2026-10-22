@@ -5,7 +5,6 @@ from app.config.constants.arangodb import CollectionNames
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-
 # The @ConnectorBuilder name, which an app document stores as its type.
 CONNECTOR_TYPE = "Nextcloud"
 

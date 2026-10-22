@@ -23,10 +23,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from nextcloud_behaviour_fakes import (
     ACTIVITY_PATH,
-    CAPABILITIES_PATH,
     CURRENT_USER_PATH,
-    SHARES_PATH,
-    USERS_PREFIX,
     WEBDAV_PREFIX,
     FakeConfigService,
     FakeNextcloud,

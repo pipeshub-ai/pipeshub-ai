@@ -2,15 +2,17 @@
 
 import json
 import logging
+from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.connectors.core.base.connector.connector_service import ConnectorInitError
-from app.connectors.sources.nextcloud.connector import NextcloudSyncError
 
+from app.config.constants.arangodb import MimeTypes
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.nextcloud.connector import (
     NextcloudConnector,
+    NextcloudSyncError,
     extract_response_body,
     get_file_extension,
     get_mimetype_enum_for_nextcloud,
@@ -21,8 +23,7 @@ from app.connectors.sources.nextcloud.connector import (
     parse_webdav_propfind_response,
 )
 from app.models.permission import PermissionType
-from datetime import datetime, timezone
-from app.config.constants.arangodb import MimeTypes
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 # ---------------------------------------------------------------------------
@@ -1204,7 +1205,7 @@ class TestStreamRecordAdditional:
     """stream_record finds the file by its id and streams what Nextcloud sends."""
 
     @staticmethod
-    def _ready(connector, href=(True, "/remote.php/dav/files/admin/docs/doc.txt")):
+    def _ready(connector: NextcloudConnector, href: tuple = (True, "/remote.php/dav/files/admin/docs/doc.txt")) -> MagicMock:
         connector.data_source = MagicMock()
         connector.current_user_id = "admin"
         file_rec = MagicMock(mime_type=MimeTypes.PLAIN_TEXT, record_name="doc.txt",
@@ -1214,8 +1215,8 @@ class TestStreamRecordAdditional:
         return file_rec
 
     @staticmethod
-    def _download(status, chunks=(b"content",)):
-        async def body():
+    def _download(status: int, chunks: tuple = (b"content",)) -> MagicMock:
+        async def body() -> AsyncGenerator[bytes, None]:
             for chunk in chunks:
                 yield chunk
         response = MagicMock(status_code=status)

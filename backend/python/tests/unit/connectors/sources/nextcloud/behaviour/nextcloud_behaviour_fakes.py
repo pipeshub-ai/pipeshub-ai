@@ -32,6 +32,7 @@ from app.services.graph_db.common.record_visibility import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
+    from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
     from app.models.entities import FileRecord, Record, RecordGroup
 
 WEBDAV_PREFIX = "/remote.php/dav/files/"
@@ -484,13 +485,13 @@ class FakeRecordsDb:
 
     # ---- full-sync tracking, as the processor does it for run_sync_task ----
 
-    def begin_full_sync_run(self, connector_id: str) -> Any:
+    def begin_full_sync_run(self, connector_id: str) -> FullSyncSeen:
         from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
 
         self.full_sync_run = FullSyncSeen()
         return self.full_sync_run
 
-    def end_full_sync_run(self, connector_id: str, run: Any) -> None:
+    def end_full_sync_run(self, connector_id: str, run: FullSyncSeen) -> None:
         self.full_sync_run = None
 
     def _seen(self, collection: str, node_ids: list[str]) -> None:
