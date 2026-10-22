@@ -39,7 +39,13 @@ _SECRET = re.compile(
 # A workflow listed here may keep a privileged trigger; it must never check out
 # PR code. Add to it only with a security reviewer's sign-off. post-release-probe
 # runs on the release workflow (tag pushes only) and checks out the default branch.
-PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml"}
+# dco runs on pull_request_target so a pull request cannot edit its own sign-off
+# check; it checks out the base branch.
+PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml", "dco.yml"}
+# Privileged workflows that name the PR head only to fetch its commits and read
+# them with git log. They never check them out or run anything from them.
+PR_HEAD_READ_ONLY = {"dco.yml"}
+_CHECKS_OUT = re.compile(r"^\s*ref:|\bgit\s+(?:checkout|switch|worktree|reset)\b", re.M)
 
 _PULL_REQUEST_TRIGGER = _trigger("pull_request")
 _SECRETS_INHERIT = re.compile(r"^\s+secrets:\s*inherit\s*$", re.M)
@@ -185,6 +191,7 @@ class TestWorkflowTrust(unittest.TestCase):
             p.name
             for p in WORKFLOWS
             if _PRIVILEGED_TRIGGER.search(_text(p)) and _PR_HEAD_REF.search(_text(p))
+            and (p.name not in PR_HEAD_READ_ONLY or _CHECKS_OUT.search(_text(p)))
         ]
         self.assertEqual(offenders, [], "a privileged trigger checks out or references the PR head")
 

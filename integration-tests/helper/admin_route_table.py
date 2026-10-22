@@ -347,3 +347,11 @@ TOOL_RULES_HANDLERS = frozenset({
     "api/routes/toolsets.py::get_toolset_tool_rules",
     "api/routes/toolsets.py::update_toolset_tool_rules",
 })
+
+# Rows a subpackage adds for the routes it serves (helper/table_extensions.py).
+from helper.table_extensions import table_extensions  # noqa: E402
+
+for _extension in table_extensions("admin_route_table"):
+    NODE_ADMIN_ROUTES += _extension.NODE_ADMIN_ROUTES
+    PYTHON_ADMIN_ROUTES += _extension.PYTHON_ADMIN_ROUTES
+    PYTHON_CONDITIONAL_ADMIN |= _extension.PYTHON_CONDITIONAL_ADMIN

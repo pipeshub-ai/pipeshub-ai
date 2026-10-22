@@ -71,7 +71,7 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
     # A toolset with a stored API key, and one with its own sign-in app.
     "toolsets": (
         "toolset", "toolset_name", "toolset_key",
-        "toolset_oauth_name", "toolset_client_id", "toolset_secret",
+        "toolset_oauth_name", "toolset_client_id", "toolset_secret", "toolset_oauth_config",
     ),
     # The creator's personal toolset.
     "personal_toolsets": ("personal_toolset", "personal_toolset_name"),
@@ -661,3 +661,9 @@ REQUIRED_CASES: dict[str, frozenset[tuple[str, str, bool]]] = {
 
 def whose(target: str) -> str:
     return target.removeprefix("fresh_").removeprefix("listed_")
+
+# Cases a subpackage adds for the admin checks it makes (helper/table_extensions.py).
+from helper.table_extensions import table_extensions  # noqa: E402
+
+for _extension in table_extensions("admin_route_conditional_table"):
+    CONDITIONAL_ROUTES += _extension.CONDITIONAL_ROUTES
