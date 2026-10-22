@@ -414,7 +414,7 @@ class TestOAuthApps:
             create_oauth_app(base_url, user_jwt, name=f"pp7-it-{uuid.uuid4().hex[:10]}",
                              knowledge_limit={"apps": []})
 
-    def test_a_new_limit_revokes_the_apps_tokens_and_lifting_it_reaches_the_next_refresh(
+    def test_a_new_limit_and_a_lifted_one_both_revoke_the_apps_tokens(
         self, base_url, user_jwt, corpus,
     ) -> None:
         app = create_oauth_app(base_url, user_jwt, name=f"pp7-it-{uuid.uuid4().hex[:10]}")
@@ -431,10 +431,13 @@ class TestOAuthApps:
             after = authorization_code_token(base_url, user_jwt, app)
             assert _claims(after["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
 
+            # Users agreed to the limit, so lifting it makes them connect again.
             lifted = requests.put(edit, headers=_bearer(user_jwt), timeout=30, json={"knowledgeLimit": None})
             assert lifted.status_code == 200, f"{lifted.status_code} {lifted.text[:300]}"
-            refreshed = refresh_token_grant(base_url, app, after["refresh_token"])
-            assert "knowledgeLimit" not in _claims(refreshed["access_token"])
+            with pytest.raises(RuntimeError):
+                refresh_token_grant(base_url, app, after["refresh_token"])
+            again = authorization_code_token(base_url, user_jwt, app)
+            assert "knowledgeLimit" not in _claims(again["access_token"])
         finally:
             delete_oauth_app(base_url, user_jwt, app.id)
 

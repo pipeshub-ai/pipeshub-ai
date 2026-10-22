@@ -177,26 +177,31 @@ class TestRecordsById:
         fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_thread_read_leaves_out_replies_outside_the_limit(self) -> None:
+    async def test_a_thread_read_is_bounded_to_the_limit(self) -> None:
+        """The reader filters replies, so its note, summaries and skipped ids
+        name nothing outside the limit either."""
+        from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
+
         graph = self._graph_with_access()
-        thread = {"ok": True, "records": [{"id": "rec-in"}, {"id": "rec-out"}]}
-        read = AsyncMock(return_value={"content": ""})
+        fetch = AsyncMock(return_value={"ok": True, "records": []})
         with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=False)), \
              patch("app.api.routes.records._resolve_thread_record_group", AsyncMock(return_value={"id": "t"})), \
-             patch("app.api.routes.records._fetch_thread_records_impl", AsyncMock(return_value=thread)), \
-             patch("app.api.routes.records.read_thread", read):
+             patch("app.api.routes.records._fetch_thread_records_impl", fetch), \
+             patch("app.api.routes.records.read_thread", AsyncMock(return_value={"content": ""})):
             await read_record_content("rec-in", self._reader_request(graph), mode="thread", query=None,
                                       start_block=None, start_record=0, max_chars=40_000)
-        assert read.call_args.args[0] == [{"id": "rec-in"}]
+        state = fetch.call_args.kwargs["scope_state"]
+        assert await ids_within_scope(state, graph, "ukey-1", "org-1", ["rec-in", "rec-out"]) == {"rec-in"}
 
 
 class TestBrowsing:
     @staticmethod
     async def _navigate(request: MagicMock, graph: AsyncMock, node_id: str | None = None,
-                        view: NavigationView | None = None) -> dict:
-        catalog = MagicMock(connector_ids=MagicMock(return_value=["app-in", "app-out"]), connectors=[])
+                        view: NavigationView | None = None, apps: list[str] | None = None,
+                        navigator: MagicMock | None = None) -> dict:
+        catalog = MagicMock(connector_ids=MagicMock(return_value=apps or ["app-in", "app-out"]), connectors=[])
         with patch(f"{ROUTER}.ConnectorCatalog.build", AsyncMock(return_value=catalog)), \
-             patch(f"{ROUTER}.GraphNavigator") as navigator:
+             patch(f"{ROUTER}.GraphNavigator", navigator or MagicMock()) as navigator:
             navigator.return_value.navigate = AsyncMock(return_value=view or NavigationView(
                 current=None, breadcrumbs=[], related=[], pagination=None, web_url=None,
                 indexing_status=None, connector=None,
@@ -217,6 +222,22 @@ class TestBrowsing:
         result = await self._navigate(_request(), _graph())
         assert [row["id"] for row in result["rows"]] == ["app-in"]
         assert "app-out" not in result["text"]
+
+    @pytest.mark.asyncio
+    async def test_the_root_is_bounded_before_paging(self) -> None:
+        """Rows outside the limit never fill a page, so no page comes back empty."""
+        navigator = MagicMock()
+        await self._navigate(_request(), _graph(), navigator=navigator)
+        assert navigator.return_value.navigate.call_args.kwargs["connector_ids"] == ["app-in"]
+        await self._navigate(_request(None), _graph(), navigator=navigator)
+        assert navigator.return_value.navigate.call_args.kwargs["connector_ids"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_root_with_no_app_inside_the_limit_is_empty(self) -> None:
+        navigator = MagicMock()
+        result = await self._navigate(_request(), _graph(), apps=["app-out"], navigator=navigator)
+        assert result["rows"] == []
+        navigator.return_value.navigate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_opening_a_node_outside_the_limit_is_refused(self) -> None:

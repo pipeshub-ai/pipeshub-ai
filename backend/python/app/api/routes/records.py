@@ -16,12 +16,13 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.api.connection_limit import ids_outside_connection, refuse_outside_connection
-from app.api.middlewares.auth import require_scopes
+from app.api.connection_limit import refuse_outside_connection
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
 from app.modules.demo_data.access import is_hidden_demo_record
+from app.modules.retrieval.selection_scope import within_connection
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.fetch_slack_thread import (
     _fetch_thread_records_impl,
@@ -156,6 +157,7 @@ async def read_record_content(
                     "records only. Read this record without thread mode."
                 ),
             )
+        limit = connection_limit(request.state.user)
         try:
             result = await _fetch_thread_records_impl(
                 record_id=record_id,
@@ -165,6 +167,8 @@ async def read_record_content(
                 org_id=org_id,
                 config_service=container.config_service(),
                 user_id=user_id,
+                # Bounds the replies, and so the note, thread summaries and skipped ids.
+                scope_state=None if limit is None else {"filters": within_connection({}, limit)},
             )
         except Exception as exc:
             logger.error("Error reading the thread of %s: %s", record_id, exc, exc_info=True)
@@ -179,10 +183,6 @@ async def read_record_content(
                 detail="Failed to read the thread",
             )
         records = result.get("records") or []
-        outside = await ids_outside_connection(
-            request, graph_provider, org_id, user_id, [r.get("id") for r in records],
-        )
-        records = [r for r in records if r.get("id") not in outside]
         # A record in no single thread says what it holds: which of its
         # messages started threads, or that none has replies. Said once, at
         # the start, inside the caller's budget.

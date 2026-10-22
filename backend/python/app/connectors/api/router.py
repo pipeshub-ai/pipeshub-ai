@@ -34,6 +34,7 @@ from pydantic import BaseModel
 
 from app.agents.actions.knowledge_graph.catalog import ConnectorCatalog
 from app.agents.actions.knowledge_graph.identifiers import _BARE_ISSUE_KEY, _is_url
+from app.agents.actions.knowledge_graph.models import NavigationView
 from app.agents.actions.knowledge_graph.navigator import GraphNavigator
 from app.agents.actions.knowledge_graph.ops.time_range import (
     parse_time_range,
@@ -49,7 +50,12 @@ from app.api.connection_limit import (
     keep_path_inside_connection,
     refuse_outside_connection,
 )
-from app.api.middlewares.auth import is_request_admin, require_scopes, require_service_token
+from app.api.middlewares.auth import (
+    connection_limit,
+    is_request_admin,
+    require_scopes,
+    require_service_token,
+)
 from app.api.middlewares.token_policy import has_service_scope
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -2035,6 +2041,18 @@ async def knowledge_graph_navigate(
             node_id = resolved.matches[0].id
     if node_id:
         await refuse_outside_connection(request, graph_provider, org_id, user_id, node_id)
+    # Inside an admitted node every row is inside too; the root spans every
+    # app, so it is bounded before paging, or a page could come back empty.
+    root_apps = None
+    if node_id is None and connection_limit(request.state.user) is not None:
+        outside_apps = await ids_outside_connection(request, graph_provider, org_id, user_id, connector_ids)
+        root_apps = [app_id for app_id in connector_ids if app_id not in outside_apps]
+        if not root_apps:
+            view = NavigationView(
+                current=None, breadcrumbs=[], rows=[], related=[], pagination=None,
+                web_url=None, indexing_status=None, connector=None,
+            )
+            return {**view.model_dump(), "text": render_navigation_view(view, page)}
 
     navigator = GraphNavigator(
         graph_provider=graph_provider,
@@ -2049,7 +2067,7 @@ async def knowledge_graph_navigate(
             name_filter=None,
             page=page,
             limit=limit,
-            connector_ids=None,
+            connector_ids=root_apps,
             record_group_ids=None,
             depth=depth,
             created_at=created_at,

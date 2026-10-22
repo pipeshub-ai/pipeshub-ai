@@ -2815,8 +2815,8 @@ components:
           maximum: 31536000
         knowledgeLimit:
           description: |
-            A new limit revokes the app's outstanding tokens. `null` lifts the
-            limit; tokens get that at their next refresh.
+            `null` lifts the limit. Any change, a lift included, revokes the
+            app's outstanding tokens, so users connect again.
           nullable: true
           allOf:
             - $ref: '#/components/schemas/KnowledgeLimit'

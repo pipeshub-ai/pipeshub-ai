@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { CollectionsTab } from '@/chat/components/chat-panel/expansion-panels/connectors-collections';
@@ -32,9 +32,15 @@ export function KnowledgeLimitChoice({ appName, value, onChange, idPrefix, forAp
   const { t } = useTranslation();
   const size = value === null ? 0 : limitSize(limitFromSelection(value));
   const copy = forApp ? 'knowledgeLimit.app' : 'knowledgeLimit';
+  // Switching to "everything" and back must not lose what was picked.
+  const [lastPick, setLastPick] = useState(value ?? EMPTY_SELECTION);
+  const pick = (next: KnowledgeLimitValue) => {
+    if (next !== null) setLastPick(next);
+    onChange(next);
+  };
   const options = [
     { key: 'everything', checked: value === null, select: () => onChange(null), label: t(`${copy}.everything`), hint: t(`${copy}.everythingHint`) },
-    { key: 'only', checked: value !== null, select: () => value === null && onChange(EMPTY_SELECTION), label: t('knowledgeLimit.only'), hint: t('knowledgeLimit.onlyHint') },
+    { key: 'only', checked: value !== null, select: () => value === null && onChange(lastPick), label: t('knowledgeLimit.only'), hint: t('knowledgeLimit.onlyHint') },
   ];
 
   return (
@@ -78,7 +84,7 @@ export function KnowledgeLimitChoice({ appName, value, onChange, idPrefix, forAp
               padding: 'var(--space-2)',
             }}
           >
-            <CollectionsTab selection={value} onSelectionChange={onChange} />
+            <CollectionsTab selection={value} onSelectionChange={pick} />
           </Box>
           <Text
             size="1"

@@ -134,7 +134,7 @@ describe('updating what an OAuth app can see', () => {
     expect(tokens.revokeAllTokensForApp.called).to.equal(false);
   });
 
-  it('lifts the limit on null, without revoking: tokens widen at their next refresh', async () => {
+  it('lifts the limit on null and revokes: users agreed to less, so they connect again', async () => {
     const { service, tokens } = makeService();
     app.knowledgeLimit = { ...limit };
 
@@ -142,6 +142,14 @@ describe('updating what an OAuth app can see', () => {
 
     expect(app.knowledgeLimit).to.equal(undefined);
     expect(result.knowledgeLimit).to.equal(undefined);
+    expect(tokens.revokeAllTokensForApp.calledOnceWith('client123')).to.equal(true);
+  });
+
+  it('revokes nothing when an app with no limit is saved with none', async () => {
+    const { service, tokens } = makeService();
+
+    await service.updateApp(appId, orgId, userId, true, { knowledgeLimit: null });
+
     expect(tokens.revokeAllTokensForApp.called).to.equal(false);
   });
 

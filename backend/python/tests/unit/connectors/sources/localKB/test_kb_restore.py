@@ -384,3 +384,30 @@ class TestBulk:
             ("f1", True), ("c1", True), ("x1", False),
         ]
         assert (result["restoredCount"], result["failedCount"], result["success"]) == (2, 1, False)
+
+
+class TestConnectedAppLimit:
+    async def test_a_batch_holding_an_item_outside_the_limit_is_refused_whole(self, svc, mock_processor) -> None:
+        """The path names one item, but restore writes the whole batch, and the
+        refusal names nothing the app may not see."""
+        from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
+
+        inside, other = _doc("r1"), _doc("r2", name="b.pdf")
+        _batch(svc, inside, [_member(inside), _member(other)])
+        outside = AsyncMock(return_value={"r2"})
+
+        for result in (
+            await svc.restore_record("r1", "u1", ORG, outside),
+            (await svc.restore_records(["r1"], "u1", ORG, outside))["results"][0],
+        ):
+            assert (result["code"], result["reason"]) == (403, CONNECTION_OUTSIDE_MESSAGE)
+            assert "restoredRecords" not in result
+        assert outside.await_args.args[0] == ["r1", "r2"]
+        mock_processor.restore_trashed_records.assert_not_called()
+
+    async def test_a_batch_inside_the_limit_comes_back(self, svc, mock_processor) -> None:
+        record = _doc("r1")
+        _batch(svc, record, [_member(record)])
+        result = await svc.restore_record("r1", "u1", ORG, AsyncMock(return_value=set()))
+        assert result["success"] is True
+        mock_processor.restore_trashed_records.assert_awaited_once()

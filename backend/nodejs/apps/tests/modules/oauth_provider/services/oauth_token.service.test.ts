@@ -16,7 +16,7 @@ import {
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 // The re-read after a user grant stores its tokens.
-function stubCurrentApp(doc: { allowedScopes: string[] } | null) {
+function stubCurrentApp(doc: { allowedScopes: string[]; knowledgeLimit?: unknown } | null) {
   return sinon.stub(OAuthApp, 'findOne').returns({
     select: sinon.stub().returns({
       lean: sinon.stub().returns({ exec: sinon.stub().resolves(doc) }),
@@ -167,6 +167,35 @@ describe('OAuthTokenService', () => {
           expect(error).to.be.instanceOf(InvalidGrantError)
         }
         expect(accessRevoke.calledOnce).to.be.true
+      })
+
+      it("revokes the new tokens when the app's knowledge limit changed while they were minted", async () => {
+        stubCurrentApp({
+          allowedScopes: ['org:read', 'offline_access'],
+          knowledgeLimit: { apps: ['app-1'], recordGroups: [], records: [] },
+        })
+        const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+        sinon.stub(OAuthRefreshToken, 'updateOne').resolves({} as any)
+
+        try {
+          await mint()
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+        }
+        expect(accessRevoke.calledOnce).to.be.true
+      })
+
+      it("leaves a personal access token's own limit out of the recheck", async () => {
+        stubCurrentApp({ allowedScopes: ['org:read'] })
+        const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+
+        await service.generateTokens(
+          mockApp, userId, orgId, ['org:read'], false, undefined, undefined,
+          { recheckAppScopes: true, knowledgeLimit: { apps: ['app-1'], recordGroups: [], records: [] } },
+        )
+
+        expect(accessRevoke.called).to.be.false
       })
 
       it('does not read the app again without the option', async () => {
@@ -1390,6 +1419,8 @@ describe('OAuthTokenService - branch coverage', () => {
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
         const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
+        ;(OAuthApp.findOne as sinon.SinonStub).restore()
+        stubCurrentApp({ allowedScopes: ['user:read', 'offline_access'], knowledgeLimit })
 
         // The token was issued before the creator set the limit.
         const result = await service.refreshTokens(

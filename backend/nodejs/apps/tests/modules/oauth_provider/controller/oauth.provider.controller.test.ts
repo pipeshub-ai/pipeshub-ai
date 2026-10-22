@@ -610,6 +610,8 @@ describe('OAuthProviderController', () => {
       await controller.token(req, mockRes, mockNext)
       expect(mockRes.setHeader.calledWith('Cache-Control', 'no-store')).to.be.true
       expect(mockRes.setHeader.calledWith('Pragma', 'no-cache')).to.be.true
+      // A scope or knowledge limit changed mid-grant must not survive on this token.
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[7]).to.deep.equal({ recheckAppScopes: true })
     })
   })
 

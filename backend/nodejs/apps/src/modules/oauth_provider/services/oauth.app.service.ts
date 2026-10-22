@@ -12,7 +12,10 @@ import {
   OAuthAppStatus,
   OAuthGrantType,
 } from '../schema/oauth.app.schema'
-import { toKnowledgeLimit } from '../schema/knowledge_limit.schema';
+import {
+  sameKnowledgeLimit,
+  toKnowledgeLimit,
+} from '../schema/knowledge_limit.schema';
 import {
   InvalidClientError,
   InvalidRedirectUriError,
@@ -497,14 +500,11 @@ export class OAuthAppService {
     const removedScopes = previousScopes.filter(
       (scope) => !app.allowedScopes.includes(scope),
     )
-    // The knowledge limit rides in the claim the same way. Any new limit may
-    // hide something an outstanding token reaches, so those tokens go too;
-    // lifting the limit reaches tokens at their next refresh.
-    const nextLimit = toKnowledgeLimit(app.knowledgeLimit);
-    const limitNarrowed =
-      nextLimit !== undefined &&
-      JSON.stringify(nextLimit) !== JSON.stringify(previousLimit);
-    if (removedScopes.length > 0 || limitNarrowed) {
+    // The knowledge limit rides in the claim the same way. Any change goes:
+    // a new limit may hide what a token reaches, and a lifted one widens what
+    // users agreed to, so they connect again.
+    const limitChanged = !sameKnowledgeLimit(app.knowledgeLimit, previousLimit);
+    if (removedScopes.length > 0 || limitChanged) {
       try {
         await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
       } catch (error) {
@@ -513,11 +513,11 @@ export class OAuthAppService {
         await app.save()
         throw error
       }
-      this.logger.info('OAuth app access reduced; tokens revoked', {
+      this.logger.info('OAuth app access changed; tokens revoked', {
         appId: (app._id as Types.ObjectId).toString(),
         orgId,
         removedScopes,
-        limitNarrowed,
+        limitChanged,
       })
     }
 

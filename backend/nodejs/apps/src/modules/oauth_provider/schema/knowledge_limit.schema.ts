@@ -28,3 +28,10 @@ export const toKnowledgeLimit = (
         records: [...stored.records],
       }
     : undefined;
+
+/** Two limits name the same items; absent equals only absent. */
+export const sameKnowledgeLimit = (
+  a: KnowledgeLimit | null | undefined,
+  b: KnowledgeLimit | null | undefined,
+): boolean =>
+  JSON.stringify(toKnowledgeLimit(a)) === JSON.stringify(toKnowledgeLimit(b));

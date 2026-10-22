@@ -821,6 +821,7 @@ export class OAuthProviderController {
       false, // No refresh token
       fullName,
       accountType,
+      { recheckAppScopes: true },
     );
 
     this.logger.info('Client credentials grant completed', { clientId });

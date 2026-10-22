@@ -1,5 +1,6 @@
 # router.py fixes - Add return type annotations
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any, Dict, List, Optional, Union
 
 from dependency_injector.wiring import inject
@@ -7,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
 
 from app.api.connection_limit import ids_outside_connection, keep_path_inside_connection
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -1531,6 +1532,17 @@ async def delete_record_in_folder(
         )
 
 
+def _outside_connection(request: Request) -> Callable[[list[str]], Awaitable[set[str]]] | None:
+    """For a connected app with a limit: which of some ids it may not reach.
+    A restore brings back a whole delete batch, not only the ids it names."""
+    if connection_limit(request.state.user) is None:
+        return None
+    user = request.state.user
+    return lambda ids: ids_outside_connection(
+        request, request.app.state.graph_provider, user.get("orgId"), user.get("userId"), ids,
+    )
+
+
 def _raise_refusal(result: dict[str, Any] | None) -> None:
     error_code = int((result or {}).get("code", HTTP_INTERNAL_SERVER_ERROR))
     raise HTTPException(
@@ -1561,6 +1573,7 @@ async def restore_record(
             record_id=record_id,
             user_id=request.state.user.get("userId"),
             org_id=request.state.user.get("orgId"),
+            outside=_outside_connection(request),
         )
         if not result or result.get("success") is False:
             _raise_refusal(result)
@@ -1598,6 +1611,7 @@ async def restore_records(
             record_ids=record_ids,
             user_id=request.state.user.get("userId"),
             org_id=request.state.user.get("orgId"),
+            outside=_outside_connection(request),
         )
         if result.get("code") == status.HTTP_400_BAD_REQUEST:
             _raise_refusal(result)
