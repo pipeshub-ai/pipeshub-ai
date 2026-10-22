@@ -423,7 +423,7 @@ jobs:
         if: env.RUN_PLAYWRIGHT == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install frontend deps and Playwright browsers
         if: env.RUN_PLAYWRIGHT == 'true'
@@ -448,6 +448,7 @@ jobs:
             fi
             echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
           done
+          echo "PIPESHUB_BUILD_TARGET=runtime-slim" >> "$GITHUB_ENV"
 
       - name: Build Neo4j stack images
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'

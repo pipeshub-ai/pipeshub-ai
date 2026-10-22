@@ -1,0 +1,17 @@
+pandas
+matplotlib
+seaborn
+plotly
+kaleido
+openpyxl
+python-docx
+python-pptx
+Pillow
+reportlab
+fpdf2
+cairosvg
+numpy
+scipy
+tabulate
+xlsxwriter
+jinja2

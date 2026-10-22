@@ -969,7 +969,7 @@ class TestRunWorkersWarning:
 
         sys.executable is the app binary (its bootloader ignores "-m uvicorn") and
         uvicorn.run(workers=N) would need multiprocessing.freeze_support(). Refusing
-        beats crash-looping. backend/python/Dockerfile produces such a build.
+        beats crash-looping. A PyInstaller freeze produces such a build.
         """
         import os as _os
 

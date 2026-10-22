@@ -187,7 +187,6 @@ dependencies = [
     "aiohttp==3.14.4",
     "aiokafka==0.12.0",
     "aiolimiter==1.2.1",
-    "azure-ai-formrecognizer==3.3.3",
     "azure-identity==1.26.0",
     "azure-storage-blob==12.28.0",
     "azure-storage-file-share==12.19.0",
@@ -210,10 +209,8 @@ dependencies = [
     "dependency-injector==4.44.0",
     # Site-supplied XML (sitemaps): refuses entity expansion and external entities.
     "defusedxml>=0.7.1",
-    "discord.py==2.6.3",
     "docker>=7.0.0",
     "docling==2.133.0",
-    "einops>=0.8.0",
     "dropbox==12.0.2",
     "docx2python==3.5.0",
     "etcd3 @ git+https://github.com/kragniz/python-etcd3.git@e58a899579ba416449c4e225b61f039457c8072a",
@@ -246,7 +243,6 @@ dependencies = [
     "langchain-cohere==0.5.0",
     "langchain-community==0.4.1",
     "langchain-core==1.5.3",
-    "langchain-experimental==0.4.0",
     "langchain-fireworks==1.5.2",
     "langchain-google-genai==4.3.2",
     "langchain-google-vertexai==3.2.4",
@@ -327,6 +323,11 @@ dependencies = [
     # and an install over the published base image keeps the 4.57 already in it
     # (GHSA-29pf-2h5f-8g72, GHSA-fgcw-684q-jj6r).
     "transformers==5.18.0",
+    # Direct so [tool.uv.sources] sends every resolution at the CPU index.
+    # uv 0.8 applies that source to direct dependencies; transitive torch
+    # then uses the same locked build instead of the CUDA wheel on PyPI.
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
     "slack-sdk==3.27.0",
     "smbprotocol==1.17.0",
     "talon==1.4.4",
@@ -368,8 +369,33 @@ exclude = ["modules", "build*", "dist*", "*.egg-info*", "venv*", ".venv*"]
 # cchardet has no wheels for Python 3.12+ and fails to build from source.
 # talon declares it as a dependency; chardet (direct dep above) plus the
 # sys.modules shim in gmail cover runtime needs.
+#
+# rapidocr is docling's OCR engine; PipesHub runs docling with OCR off.
+# The stub packages and grpcio-tools are type/codegen extras nothing imports.
+# A `sys_platform == 'never'` override drops the package from the lock. uv
+# 0.8 has no exclude-dependencies field.
 [tool.uv]
-exclude-dependencies = ["cchardet"]
+override-dependencies = [
+    "cchardet ; sys_platform == 'never'",
+    "rapidocr ; sys_platform == 'never'",
+    "boto3-stubs ; sys_platform == 'never'",
+    "botocore-stubs ; sys_platform == 'never'",
+    "grpcio-tools ; sys_platform == 'never'",
+]
+
+# The default PyPI torch wheel pulls CUDA libraries. Every torch/torchvision
+# resolution, direct or transitive, uses the CPU index instead.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[tool.uv.pip]
+torch-backend = "cpu"
 
 [build-system]
 requires = ["setuptools>=61.0"]

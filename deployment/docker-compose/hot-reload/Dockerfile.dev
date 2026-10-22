@@ -1,162 +1,45 @@
-# Global ARG — must be declared before the first FROM so it can be used in
-# FROM instructions.  Override with a pre-built image to skip re-installing
-# packages that haven't changed:
-#   --build-arg PYTHON_DEPS_BASE=ghcr.io/pipeshub/python-deps:latest
-# Default falls back to the locally-built build-base stage (full install).
-ARG PYTHON_DEPS_BASE=build-base
+# syntax=docker/dockerfile:1
+# Dev image. Python dependencies come from the published python-deps base;
+# this file only adds watchdog. It does not download embedding or reranker
+# models (those are not in python-deps).
+ARG PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps
+ARG RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
+ARG NODE_IMAGE=node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.8.22@sha256:9874eb7afe5ca16c363fe80b294fe700e460df29a55532bbfea234a0f12eddb1
 
-# -----------------------------------------------------------------------------
-# Stage 1: Build Base - Contains all build tools (NOT in final image)
-# -----------------------------------------------------------------------------
-FROM python:3.12-slim AS build-base
-ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+FROM ${UV_IMAGE} AS uv
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    build-essential \
-    gnupg \
-    wget \
-    librocksdb-dev \
-    libgflags-dev \
-    libsnappy-dev \
-    zlib1g-dev \
-    libbz2-dev \
-    liblz4-dev \
-    libzstd-dev \
-    libssl-dev \
-    libspatialindex-dev \
-    libmariadb-dev \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+FROM ${PYTHON_DEPS_IMAGE} AS python-deps
+COPY --from=uv /uv /uvx /bin/
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    uv pip install --system watchdog
 
-# Install Rust with minimal profile (only needed for building certain pip packages)
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Install uv for faster pip operations
-RUN pip install --no-cache-dir uv
-
-# -----------------------------------------------------------------------------
-# Stage 2: Python Dependencies Build
-# When PYTHON_DEPS_BASE is a pre-built image, uv skips already-satisfied
-# packages and only installs the delta introduced by pyproject.toml changes.
-# ML model downloads below are no-ops when the models are already present.
-# -----------------------------------------------------------------------------
-FROM ${PYTHON_DEPS_BASE} AS python-deps
-WORKDIR /app/python
-
-COPY ./backend/python/pyproject.toml ./
-
-# Install Python dependencies + watchdog for hot reload (watchmedo command)
-RUN uv pip install --system -e . && \
-    uv pip install --system watchdog && \
-    # Download ML models (no-op when already present in the base image)
-    python -c "import nltk; nltk.download('punkt', quiet=True)" && \
-    python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')" && \
-    # Clean up caches to save space
-    rm -rf /root/.cache/pip /root/.cache/uv /tmp/*
-
-# -----------------------------------------------------------------------------
-# Stage 3: Node.js Backend (DEV - keep devDependencies for nodemon + ts-node)
-# -----------------------------------------------------------------------------
-FROM node:20-slim AS nodejs-backend
+FROM ${NODE_IMAGE} AS nodejs-backend
 WORKDIR /app/backend
-
-COPY backend/nodejs/apps/package*.json ./
-COPY backend/nodejs/apps/tsconfig.json ./
-
-# Install ALL dependencies including devDependencies (nodemon, ts-node, typescript)
-RUN set -e; \
-    ARCH=$(uname -m); \
-    echo "Building for architecture: $ARCH"; \
-    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
-        echo "Detected ARM architecture"; \
-        npm install && \
-        npm uninstall jpeg-recompress-bin mozjpeg imagemin-mozjpeg 2>/dev/null || true && \
-        npm install sharp --save || true; \
-    else \
-        echo "Detected x86 architecture"; \
-        npm install; \
-    fi
-
+COPY backend/nodejs/apps/package.json backend/nodejs/apps/package-lock.json backend/nodejs/apps/tsconfig.json ./
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci
 COPY backend/nodejs/apps/src ./src
-# DEV: no npm run build — runtime uses "npm run dev" (nodemon) for hot reload
 
-# -----------------------------------------------------------------------------
-# Stage 4: Frontend (DEV - source + deps; compose runs Next.js dev server)
-# Memory optimization: NODE_OPTIONS for heap limit set via docker-compose env
-# -----------------------------------------------------------------------------
-FROM node:20-slim AS frontend-dev
+FROM ${NODE_IMAGE} AS frontend-dev
 WORKDIR /app/frontend
-
-COPY frontend/package*.json ./
-
-RUN npm config set legacy-peer-deps true && \
-    npm install && \
-    npm cache clean --force
-
+COPY frontend/package.json frontend/package-lock.json ./
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm config set legacy-peer-deps true && \
+    npm ci
 COPY frontend/ ./
 
-# -----------------------------------------------------------------------------
-# Stage 5: Runtime Base - Minimal runtime dependencies only
-# -----------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime-base
-ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    ca-certificates \
-    iputils-ping \
-    dnsutils \
-    libsnappy1v5 \
-    zlib1g \
-    liblz4-1 \
-    libzstd1 \
-    libpq5 \
-    libmariadb3 \
-    libgl1 \
-    libglib2.0-0 \
-    libreoffice-writer-nogui \
-    libreoffice-calc-nogui \
-    libreoffice-impress-nogui \
-    fonts-noto-cjk \
-    procps \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# Install Node.js runtime
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# -----------------------------------------------------------------------------
-# Stage 6: Final Dev Runtime Image
-# -----------------------------------------------------------------------------
-FROM runtime-base AS runtime
+FROM ${RUNTIME_BASE_IMAGE} AS runtime
 WORKDIR /app
-
-# Copy Python site-packages from build stage (includes watchdog / watchmedo)
-COPY --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=python-deps /usr/local/bin /usr/local/bin
-
-# Copy ML model data
-COPY --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
-COPY --from=python-deps /root/nltk_data /root/nltk_data
-
-# Copy Node.js backend (WITH devDependencies: nodemon, ts-node, typescript)
-COPY --from=nodejs-backend /app/backend/ ./backend/
-
-# Copy full frontend source + node_modules for Next.js dev at runtime
-COPY --from=frontend-dev /app/frontend/ ./frontend/
-
-# Ensure backend public dir exists (used by Node when serving static in prod; ignored in dev)
+COPY --link --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --link --from=python-deps /usr/local/bin /usr/local/bin
+COPY --link --from=python-deps /root/.cache/fastembed /root/.cache/fastembed
+COPY --link --from=python-deps /root/nltk_data /root/nltk_data
+COPY --link --from=nodejs-backend /app/backend/ ./backend/
+COPY --link --from=frontend-dev /app/frontend/ ./frontend/
 RUN mkdir -p ./backend/dist/public
-
-# Copy Python application code (will be overridden by bind-mount in docker-compose)
-COPY backend/python/app/ /app/python/app/
+COPY --link backend/python/app/ /app/python/app/
 
 EXPOSE 3000 3001 8000 8002 8088 8091 8081
-
-# Entrypoint script is bind-mounted from docker-compose for easy editing without rebuild
 CMD ["/app/dev_process_monitor.sh"]
