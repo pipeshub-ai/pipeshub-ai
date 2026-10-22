@@ -119,7 +119,9 @@ class OpenAPIToolAdapter(SchemaShallowValidationMixin, Tool):
         except (RequestBuildError, ApiCallError) as e:
             return ToolOutput(success=False, error=str(e))
         except ApiToolsetAuthError as e:
-            return ToolOutput(success=False, error=f"{e} {connect_hint(self._instance).capitalize()}.")
+            hint = connect_hint(self._instance)
+            # Not `.capitalize()`: it lowercases the rest, and the menu names must match the UI.
+            return ToolOutput(success=False, error=f"{e} {hint[0].upper()}{hint[1:]}.")
         except Exception as e:
             logger.warning("API toolset call %s failed: %s", self.name, type(e).__name__, exc_info=True)
             return ToolOutput(success=False, error=f"The call to {self._instance.name} failed ({type(e).__name__}).")

@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
@@ -305,6 +305,18 @@ describe('API actions in the chat’s Actions tab', () => {
     apiActionsApi.listInstances.mockResolvedValue([apiAction({})]);
     await openActionsTab();
     fireEvent.change(screen.getByPlaceholderText('Search actions'), { target: { value: 'list orders' } });
+    expect(await screen.findByText('Orders API')).toBeTruthy();
+  });
+
+  it('loads API actions once the flag arrives after the panel opened', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false } });
+    apiActionsApi.listInstances.mockResolvedValue([apiAction({})]);
+    await openActionsTab();
+    expect(apiActionsApi.listInstances).not.toHaveBeenCalled();
+
+    act(() => {
+      useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false, ENABLE_API_TOOLSETS: true } });
+    });
     expect(await screen.findByText('Orders API')).toBeTruthy();
   });
 

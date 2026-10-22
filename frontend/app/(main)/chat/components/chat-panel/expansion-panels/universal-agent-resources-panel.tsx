@@ -268,7 +268,9 @@ let _actionsPageCache: {
   toConnect: BuilderSidebarToolset[];
   /** API actions, connected or not; not paginated, so reloaded with page 1. */
   apiActions: ApiToolset[];
-} = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0, toConnect: [], apiActions: [] };
+  /** The API actions flag when `apiActions` was loaded: flags can arrive after the panel first loads. */
+  apiActionsEnabled: boolean;
+} = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0, toConnect: [], apiActions: [], apiActionsEnabled: false };
 
 /** Without this list the tab still shows the connected actions, so a failure only hides Connect. */
 async function loadActionsToConnect(): Promise<BuilderSidebarToolset[]> {
@@ -394,6 +396,7 @@ export function UniversalAgentResourcesPanel({
             lastFetchedAt: 0,
             toConnect: [],
             apiActions: [],
+            apiActionsEnabled,
           };
           setToolsLoading(true);
         }
@@ -429,6 +432,7 @@ export function UniversalAgentResourcesPanel({
           lastFetchedAt: page === 1 ? Date.now() : _actionsPageCache.lastFetchedAt,
           toConnect,
           apiActions,
+          apiActionsEnabled: page === 1 ? apiActionsEnabled : _actionsPageCache.apiActionsEnabled,
         };
         setUnconnectedActions(toConnect);
         setApiActions(apiActions);
@@ -473,14 +477,17 @@ export function UniversalAgentResourcesPanel({
   useEffect(() => {
     if (!actionsEnabled || toolsLoading) return;
     const lastAt = _actionsPageCache.lastFetchedAt;
-    const cacheStale = lastAt <= 0 || Date.now() - lastAt > CACHE_TTL_MS;
+    const cacheStale =
+      lastAt <= 0 ||
+      Date.now() - lastAt > CACHE_TTL_MS ||
+      _actionsPageCache.apiActionsEnabled !== apiActionsEnabled;
     const hasFreshPage1 = lastAt > 0 && !cacheStale;
     if (hasFreshPage1) {
       setHasNextPage(_actionsPageCache.hasMore);
       return;
     }
     void loadPage(1);
-  }, [actionsEnabled, toolsLoading, loadPage]);
+  }, [actionsEnabled, apiActionsEnabled, toolsLoading, loadPage]);
 
   const handleLoadMore = useCallback(() => {
     if (!hasNextPage || isLoadingMore) return;

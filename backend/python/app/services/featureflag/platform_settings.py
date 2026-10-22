@@ -108,8 +108,8 @@ async def _platform_flag(
 
 async def is_api_toolsets_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
     """Org-level gate for API Toolsets: their routes, UI and agent tools. Source of truth is
-    the ``ENABLE_API_TOOLSETS`` platform feature flag. Defaults to DISABLED, like
-    ``ENABLE_MCP``: agents call org-internal APIs only once an admin opts in from Labs."""
+    the ``ENABLE_API_TOOLSETS`` platform feature flag. Defaults to DISABLED: agents call
+    org-internal APIs only once an admin opts in from Labs."""
     return await _platform_flag(config_service, CONFIG.ENABLE_API_TOOLSETS, default=False)
 
 

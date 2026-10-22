@@ -18,6 +18,7 @@ from app.agents.agent_loop.openapi_tool_loader import OpenAPIToolProvider
 from app.agents.agent_loop.tool_approvals import TOOLSET_TOOLS_BY_PATH
 from app.agents.openapi import executor as executor_module
 from app.agents.openapi import service
+from app.agents.openapi.auth import ApiToolsetAuthError
 from app.agents.openapi.models import ApiToolsetCredentials
 from app.agents.openapi.store import ApiToolsetStore
 from tests.support.in_memory_config import InMemoryConfigService
@@ -247,3 +248,24 @@ class TestCalls:
         tools = await self._tools(config, "http://127.0.0.1:9")
         output = await tools["list_tickets"].execute()
         assert not output.success and "Could not reach the API" in output.error
+
+
+class _SignInExpired:
+    async def call(self, _operation: object, _arguments: object) -> None:
+        raise ApiToolsetAuthError("The sign-in for this API action has expired.")
+
+
+@pytest.mark.parametrize(
+    ("shared", "hint"),
+    [
+        (False, "Connect it under Workspace → Your actions."),
+        (True, "Ask an administrator to connect it under Workspace → Actions."),
+    ],
+)
+async def test_a_refused_sign_in_names_who_can_reconnect_as_the_ui_does(
+    config: InMemoryConfigService, shared: bool, hint: str,
+) -> None:
+    instance = await _add_toolset(config, shared=shared)
+    adapter = OpenAPIToolAdapter(instance, instance.operations[0], _SignInExpired(), name="api_acme_list_tickets")
+    output = await adapter.execute()
+    assert not output.success and output.error.endswith(hint)
