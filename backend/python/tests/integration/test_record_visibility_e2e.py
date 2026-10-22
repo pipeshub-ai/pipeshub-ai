@@ -915,6 +915,34 @@ async def test_connector_stats(world: _World) -> None:
     assert stats["data"]["stats"]["total"] == 2, stats
 
 
+
+async def test_connector_stats_count_the_entities_stage_on_the_current_revision(world: _World) -> None:
+    """Named entities have no record field; the stats read their stage state on the record's revision."""
+    g = world.graph
+    states = {"kb_live": ("rev-1", ProgressStatus.FAILED), "kb_child_live": ("rev-old", ProgressStatus.COMPLETED)}
+    for name in states:
+        await g.update_node(world.ids[name], CollectionNames.RECORDS.value, {"contentRev": "rev-1"})
+    try:
+        for name, (rev, status) in states.items():
+            job = StageJob(
+                stage="entities", stage_version=1, org_id=world.org_id, virtual_record_id=world.vrids[name],
+                rev=rev, record_ids=(world.ids[name],), connector_id=world.kb_id, tier=ParseTier.LIGHT,
+                priority=Priority.BULK, trigger="embed", text_digest="t", blocks_digest="b", text_chars=1,
+                has_tables=False, has_images=False,
+            )
+            document = StageState.from_job(job, status, 1).model_dump(mode="json", by_alias=True)
+            document["id"] = document.pop("key")
+            assert await g.stage_state_create(document)
+
+        stats = await g.get_connector_stats(world.org_id, world.kb_id)
+        assert stats["success"] is True, stats
+        entities = stats["data"]["stats"]["entitiesStatus"]
+        assert entities[ProgressStatus.FAILED.value] == 1, entities
+        assert sum(entities.values()) == 1, entities
+        assert stats["data"]["stats"]["total"] == 2, stats
+    finally:
+        await g.stage_states_delete_for_virtual_records([world.vrids[name] for name in states])
+
 # ---------------------------------------------------------------------------
 # ALL methods: still find the trashed record
 # ---------------------------------------------------------------------------

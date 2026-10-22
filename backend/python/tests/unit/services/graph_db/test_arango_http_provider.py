@@ -19218,7 +19218,7 @@ class TestGetConnectorStatsKB:
         assert "doc.isDeleted != true" in query
         for dropped in ("orgId", "origin"):
             assert dropped not in query
-        assert set(bind_vars) == {"app_handle", "folder_mime_types", "@belongs_to"}
+        assert set(bind_vars) == {"app_handle", "folder_mime_types", "@belongs_to", "@stage_states"}
         assert bind_vars["app_handle"] == f"{CollectionNames.APPS.value}/kb1"
         for name in bind_vars:
             assert "@" + name in query

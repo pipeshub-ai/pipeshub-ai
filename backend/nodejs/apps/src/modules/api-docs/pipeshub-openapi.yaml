@@ -7356,6 +7356,14 @@ components:
                   description: Record counts by classification (`classify` stage) status.
                   additionalProperties:
                     type: integer
+                entitiesStatus:
+                  type: object
+                  description: |
+                    Record counts by named-entity extraction (`entities` stage)
+                    status, read from each record's `entities` stage state on its
+                    current revision. A record with no such state is not counted.
+                  additionalProperties:
+                    type: integer
             byRecordType:
               type: array
               description: The same counts per record type; empty before the first sync.
@@ -7376,6 +7384,11 @@ components:
                   extractionStatus:
                     type: object
                     description: Record counts by classification (`classify` stage) status.
+                    additionalProperties:
+                      type: integer
+                  entitiesStatus:
+                    type: object
+                    description: Record counts by named-entity extraction (`entities` stage) status.
                     additionalProperties:
                       type: integer
 

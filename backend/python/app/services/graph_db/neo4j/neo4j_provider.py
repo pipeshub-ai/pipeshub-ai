@@ -12623,8 +12623,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND coalesce(r.isPlaceholder, false) = false
               AND coalesce(r.isDeleted, false) = false
               AND NOT coalesce(r.mimeType, '') IN $folder_mime_types
+            WITH DISTINCT r
+            // Named entities have no record field: their stage state on the record's revision, by id.
+            OPTIONAL MATCH (s:{collection_to_label(CollectionNames.STAGE_STATES.value)}
+                {{id: r.virtualRecordId + ':' + r.contentRev + ':entities'}})
             RETURN r.recordType AS recordType, r.indexingStatus AS indexingStatus,
-                   r.extractionStatus AS extractionStatus, count(DISTINCT r) AS cnt
+                   r.extractionStatus AS extractionStatus, s.status AS entitiesStatus, count(r) AS cnt
             """
 
             results = await self.client.execute_query(

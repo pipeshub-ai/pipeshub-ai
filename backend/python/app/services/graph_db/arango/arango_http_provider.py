@@ -22616,11 +22616,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER doc.isDeleted != true
                 FILTER doc.mimeType NOT IN @folder_mime_types
                 COLLECT key = doc._key, recordType = doc.recordType, indexingStatus = doc.indexingStatus,
-                    extractionStatus = doc.extractionStatus
+                    extractionStatus = doc.extractionStatus, vrid = doc.virtualRecordId, rev = doc.contentRev
+                // Named entities have no record field: their stage state on the record's revision, by key.
+                LET entitiesStatus = vrid == null || rev == null ? null
+                    : DOCUMENT(@@stage_states, CONCAT(vrid, ":", rev, ":entities")).status
                 COLLECT recordType2 = recordType, indexingStatus2 = indexingStatus,
-                    extractionStatus2 = extractionStatus WITH COUNT INTO cnt
+                    extractionStatus2 = extractionStatus, entitiesStatus2 = entitiesStatus WITH COUNT INTO cnt
                 RETURN {{ recordType: recordType2, indexingStatus: indexingStatus2,
-                    extractionStatus: extractionStatus2, cnt }}
+                    extractionStatus: extractionStatus2, entitiesStatus: entitiesStatus2, cnt }}
             """
 
             rows = await self.http_client.execute_aql(
@@ -22629,6 +22632,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "app_handle": f"{CollectionNames.APPS.value}/{connector_id}",
                     "folder_mime_types": FOLDER_MIME_TYPES,
                     "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "@stage_states": CollectionNames.STAGE_STATES.value,
                 },
                 txn_id=transaction
             )
