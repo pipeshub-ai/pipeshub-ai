@@ -91,7 +91,10 @@ class RecordStageIO:
     async def current_record_ids(self, job: StageJob) -> list[str]:
         current: list[str] = []
         for record_id in job.record_ids:
-            document = await self._graph.get_document(record_id, CollectionNames.RECORDS.value)
+            # Raising: a failed read answering None would read as "the record is gone".
+            document = await self._graph.get_document(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
             if document is not None and document.get("contentRev") == job.rev:
                 self._documents[record_id] = document
                 current.append(record_id)

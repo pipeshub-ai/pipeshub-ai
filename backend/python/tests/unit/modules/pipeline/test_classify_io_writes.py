@@ -197,7 +197,7 @@ def _two_records(second_rev: str) -> MagicMock:
     graph = _graph("rev-a")
     base = graph.get_document.return_value
 
-    async def document(record_id: str, collection: str) -> dict[str, Any]:
+    async def document(record_id: str, collection: str, **_: object) -> dict[str, Any]:
         rev = "rev-a" if record_id == "rec-1" else second_rev
         return {**base, "_key": record_id, "contentRev": rev}
 

@@ -527,6 +527,11 @@ def _purge_walk_query(hint: str) -> str:
     """
 
 
+# Stage states removed per statement, as records are: a connector can hold millions.
+_STAGE_STATE_DELETE_BATCH = 5000
+# Virtual records whose stage states one statement removes.
+_STAGE_STATE_VRID_BATCH = 1000
+
 # The sweeper scans stage states by status and age; the coordinator reads one revision;
 # a connector's delete removes its stage states by connectorId.
 _STAGE_STATE_INDEXES = (
@@ -9643,6 +9648,35 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Failed to delete nodes from {collection} by connectorId: {str(e)}")
             return (0, False)
 
+    async def _delete_stage_states_by_connector_id(
+        self, transaction: str | None, connector_id: str
+    ) -> tuple[int, bool]:
+        """Delete a connector's stage states in bounded batches, inside *transaction*."""
+        if not self.client:
+            raise RuntimeError("Neo4j client not connected")
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        query = f"""
+        MATCH (n:{label} {{connectorId: $connector_id}})
+        WITH n LIMIT $batch
+        DETACH DELETE n
+        RETURN count(n) AS deleted
+        """
+        total = 0
+        try:
+            while True:
+                rows = await self.client.execute_query(
+                    query,
+                    parameters={"connector_id": connector_id, "batch": _STAGE_STATE_DELETE_BATCH},
+                    txn_id=transaction,
+                )
+                deleted = int(rows[0]["deleted"]) if rows else 0
+                total += deleted
+                if deleted < _STAGE_STATE_DELETE_BATCH:
+                    return (total, True)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete the stage states of connector {connector_id}: {str(e)}")
+            return (total, False)
+
     async def delete_sync_points_by_connector_id(
         self,
         connector_id: str,
@@ -9919,11 +9953,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     raise Exception("CRITICAL: Failed to delete sync points.")
 
                 # Stage states hang off no edge, so nothing above reaches them.
-                _, stages_success = await self._delete_nodes_by_connector_id(
-                    transaction,
-                    connector_id,
-                    CollectionNames.STAGE_STATES.value
-                )
+                _, stages_success = await self._delete_stage_states_by_connector_id(transaction, connector_id)
                 if not stages_success:
                     raise Exception("CRITICAL: Failed to delete pipeline stage states.")
 
@@ -14017,17 +14047,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not ids:
             return 0
         label = collection_to_label(CollectionNames.STAGE_STATES.value)
-        # The rev predicate lets the planner use the (virtualRecordId, rev) index.
-        rows = await self._stage_cypher(
-            f"""
-            MATCH (n:{label})
-            WHERE n.virtualRecordId IN $ids AND n.rev IS NOT NULL
-            DETACH DELETE n
-            RETURN count(n) AS deleted
-            """,
-            {"ids": ids},
-        )
-        return int(rows[0]["deleted"]) if rows else 0
+        deleted = 0
+        for start in range(0, len(ids), _STAGE_STATE_VRID_BATCH):
+            # The rev predicate lets the planner use the (virtualRecordId, rev) index.
+            rows = await self._stage_cypher(
+                f"""
+                MATCH (n:{label})
+                WHERE n.virtualRecordId IN $ids AND n.rev IS NOT NULL
+                DETACH DELETE n
+                RETURN count(n) AS deleted
+                """,
+                {"ids": ids[start:start + _STAGE_STATE_VRID_BATCH]},
+            )
+            deleted += int(rows[0]["deleted"]) if rows else 0
+        return deleted
 
     @override
     async def compare_and_set_record_fields(

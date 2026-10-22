@@ -87,6 +87,27 @@ class TestReleaseVirtualRecords:
         graph.delete_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_only_released_virtual_records_lose_their_stage_states(self) -> None:
+        cleanup, graph, _ = _cleanup(records_by_vrid={
+            "vr-shared": [{"_key": "copy-2"}],
+            "vr-trashed": [{"_key": "twin", "isDeleted": True}],
+        })
+
+        await cleanup.release_virtual_records(["vr-shared", "vr-trashed", "vr-gone"], org_id="org-1")
+
+        graph.stage_states_delete_for_virtual_records.assert_awaited_once_with(["vr-gone"])
+
+    @pytest.mark.asyncio
+    async def test_a_stage_state_failure_keeps_the_mapping_row_for_a_retry(self) -> None:
+        cleanup, graph, _ = _cleanup()
+        graph.stage_states_delete_for_virtual_records = AsyncMock(side_effect=RuntimeError("graph 503"))
+
+        failed = await cleanup.release_virtual_records(["vr-1"], org_id="org-1")
+
+        assert failed == ["vr-1"]
+        graph.delete_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_failed_purge_keeps_the_mapping_row_for_a_retry(self):
         purge = AsyncMock(side_effect=lambda org, vrid: (_ for _ in ()).throw(
             TransientStorageError("503")) if vrid == "vr-bad" else 1)
@@ -202,24 +223,31 @@ class TestPipelineUsesTheStorageStep:
         pipeline.graph_provider.delete_nodes.assert_awaited_once_with(keys=["vr-1"], collection=MAPPING)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("with_storage_step", [True, False])
-    async def test_a_forgotten_virtual_record_loses_its_stage_states(self, with_storage_step: bool) -> None:
-        stored = AsyncMock() if with_storage_step else None
-        if stored is not None:
-            stored.release_virtual_records = AsyncMock(return_value=[])
-        pipeline = self._pipeline(stored)
+    async def test_without_the_storage_step_the_stage_states_go_before_the_row(self) -> None:
+        pipeline = self._pipeline(None)
 
-        await pipeline._forget_virtual_record_mappings(["vr-1", "vr-2"], org_id="org-1")
+        assert await pipeline._forget_virtual_record_mappings(["vr-1", "vr-2"], org_id="org-1") == []
 
         pipeline.graph_provider.stage_states_delete_for_virtual_records.assert_awaited_once_with(["vr-1", "vr-2"])
+        pipeline.graph_provider.delete_nodes.assert_awaited_once_with(keys=["vr-1", "vr-2"], collection=MAPPING)
 
     @pytest.mark.asyncio
-    async def test_a_stage_state_failure_still_releases_the_content_and_row(self) -> None:
+    async def test_the_storage_step_decides_whose_stage_states_go(self) -> None:
+        stored = AsyncMock()
+        stored.release_virtual_records = AsyncMock(return_value=[])
+        pipeline = self._pipeline(stored)
+
+        await pipeline._forget_virtual_record_mappings(["vr-1"], org_id="org-1")
+
+        pipeline.graph_provider.stage_states_delete_for_virtual_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stage_state_failure_keeps_the_row_for_the_sweeper(self) -> None:
         pipeline = self._pipeline(None)
         pipeline.graph_provider.stage_states_delete_for_virtual_records.side_effect = RuntimeError("down")
 
-        assert await pipeline._forget_virtual_record_mappings(["vr-1"]) == []
-        pipeline.graph_provider.delete_nodes.assert_awaited_once_with(keys=["vr-1"], collection=MAPPING)
+        assert await pipeline._forget_virtual_record_mappings(["vr-1"]) == ["vr-1"]
+        pipeline.graph_provider.delete_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_uploads_cannot_be_purged_without_the_storage_step(self):

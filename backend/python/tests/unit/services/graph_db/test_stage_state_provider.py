@@ -191,10 +191,11 @@ class TestStageStateSchema:
 class TestDeletingTheStageStatesOfVirtualRecords:
     @pytest.mark.asyncio
     async def test_arango_removes_every_revision_in_one_statement(self) -> None:
-        provider = _arango([1, 1, 1])
+        provider = _arango([3])
         assert await provider.stage_states_delete_for_virtual_records(["vr-2", "vr-1", "vr-2", ""]) == 3
         query = _query(provider.http_client.execute_aql)
         assert "FILTER doc.virtualRecordId IN @ids" in query and "REMOVE doc IN @@collection" in query
+        assert "COLLECT WITH COUNT INTO removed RETURN removed" in query
         assert "rev" not in query
         bind = provider.http_client.execute_aql.await_args.args[1]
         assert bind["ids"] == ["vr-1", "vr-2"] and bind["@collection"] == "stageStates"
@@ -206,6 +207,17 @@ class TestDeletingTheStageStatesOfVirtualRecords:
         query = _query(provider.client.execute_query)
         assert "MATCH (n:StageState) WHERE n.virtualRecordId IN $ids AND n.rev IS NOT NULL DETACH DELETE n" in query
         assert provider.client.execute_query.await_args.kwargs["parameters"] == {"ids": ["vr-1", "vr-2"]}
+
+    @pytest.mark.asyncio
+    async def test_a_long_id_list_is_deleted_in_bounded_batches(self) -> None:
+        arango, neo4j = _arango([2]), _neo4j([{"deleted": 2}])
+        ids = [f"vr-{i:04d}" for i in range(2500)]
+        assert await arango.stage_states_delete_for_virtual_records(ids) == 6
+        assert await neo4j.stage_states_delete_for_virtual_records(ids) == 6
+        arango_batches = [c.args[1]["ids"] for c in arango.http_client.execute_aql.await_args_list]
+        neo4j_batches = [c.kwargs["parameters"]["ids"] for c in neo4j.client.execute_query.await_args_list]
+        assert [len(b) for b in arango_batches] == [len(b) for b in neo4j_batches] == [1000, 1000, 500]
+        assert sum(arango_batches, []) == sorted(ids)
 
     @pytest.mark.asyncio
     async def test_no_virtual_record_is_no_query(self) -> None:
@@ -236,11 +248,8 @@ def _connector_delete_ready(provider: ArangoHTTPProvider | Neo4jProvider, *, sta
     provider._delete_nodes_by_keys = AsyncMock(return_value=(1, 0))
     provider.remove_authenticated_as = AsyncMock()
     provider.kh_scope_forget = AsyncMock()
-
-    async def by_connector(transaction: str, connector_id: str, collection: str) -> tuple[int, bool]:
-        return (3, stages_ok or collection != "stageStates")
-
-    provider._delete_nodes_by_connector_id = AsyncMock(side_effect=by_connector)
+    provider._delete_nodes_by_connector_id = AsyncMock(return_value=(3, True))
+    provider._delete_stage_states_by_connector_id = AsyncMock(return_value=(3, stages_ok))
     provider.begin_transaction = AsyncMock(return_value="txn1")
     provider.commit_transaction = AsyncMock()
     provider.rollback_transaction = AsyncMock()
@@ -259,7 +268,7 @@ class TestAConnectorDeleteTakesItsStageStates:
         result = await provider.delete_connector_instance("c1", "org1")
 
         assert result["success"] is True
-        provider._delete_nodes_by_connector_id.assert_any_await("txn1", "c1", "stageStates")
+        provider._delete_stage_states_by_connector_id.assert_awaited_once_with("txn1", "c1")
         assert "stageStates" in provider.begin_transaction.await_args.kwargs["write"]
         provider.commit_transaction.assert_awaited_once_with("txn1")
 
@@ -273,3 +282,40 @@ class TestAConnectorDeleteTakesItsStageStates:
         assert result["success"] is False
         provider.rollback_transaction.assert_awaited_once_with("txn1")
         provider.commit_transaction.assert_not_awaited()
+
+
+class TestAConnectorsStageStatesGoInBoundedBatches:
+    @pytest.mark.asyncio
+    async def test_arango_repeats_a_counted_batch_until_one_comes_back_short(self) -> None:
+        provider = _arango()
+        provider.http_client.execute_aql = AsyncMock(side_effect=[[5000], [5000], [7]])
+
+        assert await provider._delete_stage_states_by_connector_id("txn1", "c1") == (10007, True)
+
+        calls = provider.http_client.execute_aql.await_args_list
+        assert len(calls) == 3
+        assert all(c.kwargs["txn_id"] == "txn1" for c in calls)
+        assert calls[0].kwargs["bind_vars"] == {"@collection": "stageStates", "connector_id": "c1", "batch": 5000}
+        query = " ".join(calls[0].kwargs["query"].split())
+        assert "LIMIT @batch REMOVE doc IN @@collection COLLECT WITH COUNT INTO removed RETURN removed" in query
+
+    @pytest.mark.asyncio
+    async def test_neo4j_repeats_a_counted_batch_until_one_comes_back_short(self) -> None:
+        provider = _neo4j()
+        provider.client.execute_query = AsyncMock(side_effect=[[{"deleted": 5000}], [{"deleted": 0}]])
+
+        assert await provider._delete_stage_states_by_connector_id("txn1", "c1") == (5000, True)
+
+        calls = provider.client.execute_query.await_args_list
+        assert len(calls) == 2 and all(c.kwargs["txn_id"] == "txn1" for c in calls)
+        assert calls[0].kwargs["parameters"] == {"connector_id": "c1", "batch": 5000}
+        assert "WITH n LIMIT $batch DETACH DELETE n" in " ".join(calls[0].args[0].split())
+
+    @pytest.mark.parametrize("provider", _providers(), ids=["arango", "neo4j"])
+    @pytest.mark.asyncio
+    async def test_a_failed_batch_reports_failure(self, provider) -> None:
+        client = getattr(provider, "http_client", None) if isinstance(provider, ArangoHTTPProvider) else provider.client
+        method = "execute_aql" if isinstance(provider, ArangoHTTPProvider) else "execute_query"
+        setattr(client, method, AsyncMock(side_effect=RuntimeError("down")))
+
+        assert await provider._delete_stage_states_by_connector_id("txn1", "c1") == (0, False)

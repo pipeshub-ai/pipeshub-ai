@@ -88,7 +88,7 @@ class TestGraphClassifyIO:
     async def test_only_records_still_on_the_revision_are_current(self) -> None:
         graph = AsyncMock()
         docs = {"rec-1": {"_key": "rec-1", "contentRev": "rev-a"}, "rec-2": {"_key": "rec-2", "contentRev": "rev-b"}}
-        graph.get_document = AsyncMock(side_effect=lambda rid, _c: docs.get(rid))
+        graph.get_document = AsyncMock(side_effect=lambda rid, _c, **_: docs.get(rid))
         assert await _io(graph=graph).current_record_ids(_job()) == ["rec-1"]
 
     @pytest.mark.asyncio

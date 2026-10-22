@@ -225,6 +225,23 @@ async def test_a_missing_state_is_recreated_only_while_a_record_is_left(
         assert h.handler.outcomes("classify")["stale"] == 1
 
 
+class _UnreadableIO(_IO):
+    async def current_record_ids(self, job: StageJob) -> list[str]:
+        raise ConnectionError("graph 503")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_record_read_retries_instead_of_dropping_the_job() -> None:
+    h, job = _Harness(), _job()
+    h.handler._io_for = _UnreadableIO  # type: ignore[assignment]
+
+    with pytest.raises(ConnectionError):
+        await h.deliver(job)
+
+    assert job.state_key not in h.states.states and h.stage.runs == 0
+    assert h.handler.outcomes("classify")["stale"] == 0
+
+
 @pytest.mark.asyncio
 async def test_a_superseded_revision_is_settled_without_status_or_successors() -> None:
     h, job = _Harness(), _job()
