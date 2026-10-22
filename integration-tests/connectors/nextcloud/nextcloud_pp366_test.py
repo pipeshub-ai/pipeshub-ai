@@ -39,6 +39,7 @@ from helper.graph_provider import GraphProviderProtocol
 from helper.graph_provider_utils import wait_for_sync_completion
 from helper.storage_incremental import (
     DEFAULT_SYNC_TIMEOUT_SEC,
+    restart_sync,
     settle_record_baseline,
     sync_until_names_absent,
     sync_until_names_visible,
@@ -74,7 +75,12 @@ class TestNextcloudPP366:
         stranger = f"nc-isolation-{uuid.uuid4().hex[:8]}@example.com"
         nextcloud_source.set_email(stranger)
         try:
-            # A full sync is what used to link the profile email to the app.
+            # Turning the connector off and on runs init(), which used to read the profile
+            # email; the full sync after it is what linked that email's user to the app.
+            restart_sync(pipeshub_client, connector_id)
+            await wait_for_sync_completion(
+                pipeshub_client, graph_provider, connector_id, timeout=DEFAULT_SYNC_TIMEOUT_SEC
+            )
             pipeshub_client.resync_connector(connector_id, full_sync=True)
             await wait_for_sync_completion(
                 pipeshub_client, graph_provider, connector_id, timeout=DEFAULT_SYNC_TIMEOUT_SEC
