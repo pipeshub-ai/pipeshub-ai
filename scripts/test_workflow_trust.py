@@ -46,24 +46,60 @@ PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml", "dco.yml"}
 # Privileged workflows that name the PR head only to fetch its commits and read
 # them with git log. They never check them out or run anything from them.
 PR_HEAD_READ_ONLY = {"dco.yml"}
-# Any checkout `ref:` but the base commit, or a git command that puts a fetched commit
-# into the worktree. Quoted text (a fix-it hint) and full-line comments run nothing.
+# Any checkout `ref:` but the base commit, `gh pr checkout`, or a git command that is not
+# read-only, wherever it sits: chained, in `sh -c "..."`, in backticks or by path. Git is
+# allowlisted, not blocklisted, so a verb this cannot read counts too. Only a full-line
+# comment and an echo/printf command (a fix-it hint) run nothing. A tripwire for review,
+# not a sandbox: the allowlist above still needs a security reviewer.
 _CHECKOUT_REF = re.compile(r"^\s*ref:\s*(.*)$")
 _BASE_REF = re.compile(r"^['\"]?\$\{\{\s*github\.(?:event\.pull_request\.base\.sha|sha)\s*\}\}['\"]?$")
-_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
-_COMMAND_BREAK = re.compile(r"&&|\|\||[;|&()]")
-_WORKTREE_VERBS = {
-    "checkout", "switch", "worktree", "reset", "restore", "merge", "cherry-pick", "rebase", "pull", "am",
+_GIT_WORD = re.compile(r"(?<![\w.-])git(?![\w.-])")
+# A whole quoted word (an unclosed quote runs to the end), or any other run of non-space.
+_WORD = re.compile(r"\"(?:\\.|[^\"\\])*\"?|'[^']*'?|\S+")
+_READ_ONLY_GIT_VERBS = {
+    "fetch", "log", "rev-list", "rev-parse", "show", "cat-file", "merge-base", "diff", "ls-remote",
+    "for-each-ref", "describe", "status",
 }
+_GH_PR_CHECKOUT = re.compile(r"(?<![\w.-])gh\s+pr\s+checkout\b")
 _GIT_OPTIONS_WITH_VALUE = {"-c", "-C", "--git-dir", "--work-tree", "--namespace"}
 
 
-def _git_verb(words: list[str]) -> str | None:
-    """The subcommand of a `git ...` command, skipping git's own options."""
-    i = 1
+def _commands(line: str) -> list[str]:
+    """The line split at `;`, `&`, `|`, `&&` and `||` outside quotes."""
+    parts, start, quote, i = [], 0, "", 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if ch == "\\" and quote == '"':
+                i += 1
+            elif ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+        elif ch in ";&|":
+            parts.append(line[start:i])
+            start = i + 2 if line[i:i + 2] in ("&&", "||") else i + 1
+            i = start
+            continue
+        i += 1
+    parts.append(line[start:])
+    return parts
+
+
+def _git_verb(rest: str) -> str | None:
+    """The subcommand after a `git`, skipping git's own options and their values."""
+    words = [w.strip("\"'`\\()") for w in _WORD.findall(rest)]
+    i = 0
     while i < len(words) and words[i].startswith("-"):
         i += 2 if words[i] in _GIT_OPTIONS_WITH_VALUE else 1
     return words[i] if i < len(words) else None
+
+
+def _is_hint(command: str) -> bool:
+    words = command.split()
+    while words and words[0] in ("-", "run:", "run:|"):
+        words = words[1:]
+    return bool(words) and words[0] in ("echo", "printf") and "$(" not in command and "`" not in command
 
 
 def _checks_out(text: str) -> bool:
@@ -73,13 +109,13 @@ def _checks_out(text: str) -> bool:
         ref = _CHECKOUT_REF.match(line)
         if ref and not _BASE_REF.match(ref.group(1).split(" #")[0].strip()):
             return True
-        for command in _COMMAND_BREAK.split(_QUOTED.sub(" ", line)):
-            words = command.split()
-            while words and words[0] in ("-", "run:", "|", ">"):
-                words = words[1:]
-            for i, word in enumerate(words):
-                if word == "git" and _git_verb(words[i:]) in _WORKTREE_VERBS:
-                    return True
+        for command in _commands(line):
+            if _is_hint(command):
+                continue
+            if _GH_PR_CHECKOUT.search(command) or any(
+                _git_verb(command[m.end():]) not in _READ_ONLY_GIT_VERBS for m in _GIT_WORD.finditer(command)
+            ):
+                return True
     return False
 
 
@@ -248,6 +284,9 @@ class TestHeadReadOnly(unittest.TestCase):
             "          ref: ${{ github.event.pull_request.base.sha }}\n"
             + self._FETCH
             + '          git log -1 --format=%ae "$HEAD"\n'
+            '          commits=$(git rev-list --no-merges "$HEAD" --not "$BASE")\n'
+            '          git -c core.quotepath=off show --stat "$HEAD"\n'
+            "          git fetch -q https://github.com/pipeshub-ai/pipeshub-ai.git +refs/heads/main:refs/x\n"
             '          echo "Sign off with: git rebase --signoff $BASE && git push --force-with-lease"\n'
             "          ref: ${{ github.sha }}\n"
         )
@@ -255,7 +294,7 @@ class TestHeadReadOnly(unittest.TestCase):
 
     def test_a_long_run_of_git_options_is_read_quickly(self) -> None:
         start = time.monotonic()
-        self.assertFalse(_checks_out("git " + "-C -! " * 5000 + "zz\n"))
+        self.assertTrue(_checks_out("git " + "-C -! " * 5000 + "zz\n"))
         self.assertLess(time.monotonic() - start, 1)
 
     def test_putting_the_head_in_the_worktree_is_a_checkout(self) -> None:
@@ -277,6 +316,15 @@ class TestHeadReadOnly(unittest.TestCase):
             '      - run: echo ok && git checkout "$HEAD"\n',
             "          printf '%s' ok; git cherry-pick \"$HEAD\"\n",
             '          git -C . --no-pager checkout "$HEAD"\n',
+            '          sh -c "git checkout \\"$HEAD\\""\n',
+            '          out=`git checkout "$HEAD"`\n',
+            '          /usr/bin/git checkout "$HEAD"\n',
+            '          git -C "$GITHUB_WORKSPACE" checkout "$HEAD"\n',
+            '          git -c "advice.detachedHead=false" checkout "$HEAD"\n',
+            '          echo "$(git checkout "$HEAD")"\n',
+            "          git apply head.patch\n",
+            '          "$(command -v git)" checkout "$HEAD"\n',
+            "          gh pr checkout 1\n",
         ):
             with self.subTest(line=line.strip()):
                 self.assertTrue(_checks_out(self._FETCH + line))

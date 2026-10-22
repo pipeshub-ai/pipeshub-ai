@@ -143,8 +143,9 @@ async def _jira_product_access_account_ids(datasource: JiraDataSource) -> Option
 
     Mirrors ``JiraCloudConnector._keep_licensed_users``: an account outside every product
     group has no Jira access, so the connector leaves it out. None only when there are no
-    role groups. A member list that can't be read raises: falling back to every user here
-    would let a sync that kept unlicensed accounts match the expectation.
+    role groups. A group that no longer exists (404) has no members, as in the connector's
+    ``_fetch_group_members``. Any other unread member list raises: falling back to every
+    user here would let a sync that kept unlicensed accounts match the expectation.
     """
     mapping = await jira_fetch_application_roles_to_groups_mapping(datasource)
     names = {g["name"] for groups in mapping.values() for g in groups if g.get("name")}
@@ -153,6 +154,7 @@ async def _jira_product_access_account_ids(datasource: JiraDataSource) -> Option
     licensed: set[str] = set()
     for name in names:
         start_at = 0
+        members: set[str] = set()
         while True:
             resp = await jira_api_call_with_retry(
                 datasource.get_users_from_group,
@@ -162,16 +164,23 @@ async def _jira_product_access_account_ids(datasource: JiraDataSource) -> Option
                 maxResults=_JIRA_GROUP_MEMBER_PAGE,
                 context=f"product group members {name!r}",
             )
+            if resp.status == 404:
+                # Gone, so it has no members: not even the pages already read.
+                members = set()
+                break
             if resp.status in (401, 403):
                 _raise_on_auth_error(resp.status, "_jira_product_access_account_ids")
             if resp.status != 200:
                 raise RuntimeError(f"product group {name!r} members: HTTP {resp.status} startAt={start_at}")
             data = resp.json() or {}
             batch = data.get("values") or []
-            licensed.update(m["accountId"] for m in batch if m.get("accountId"))
-            if not batch or data.get("isLast") or len(batch) < _JIRA_GROUP_MEMBER_PAGE:
+            members.update(m["accountId"] for m in batch if m.get("accountId"))
+            # The connector's stop rule: isLast decides; a short page ends it only without isLast.
+            is_last = data.get("isLast")
+            if not batch or is_last is True or (is_last is None and len(batch) < _JIRA_GROUP_MEMBER_PAGE):
                 break
             start_at += len(batch)
+        licensed |= members
     return licensed
 
 
