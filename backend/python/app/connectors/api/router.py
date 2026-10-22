@@ -3319,7 +3319,7 @@ async def _connector_schedule_state(
     connector_id: str,
     graph_provider: IGraphDBProvider,
     config_service: ConfigurationService,
-    organisation_id: str,
+    fallback_org_id: str,
     logger: logging.Logger,
 ) -> dict[str, Any]:
     """What decides one connector's schedule, for a caller that must not read a gap as "sync is off".
@@ -3338,7 +3338,7 @@ async def _connector_schedule_state(
     item: dict[str, Any] = {
         "connectorId": connector_id,
         "type": doc.get("type"),
-        "orgId": organisation_id,
+        "orgId": doc.get("orgId") or fallback_org_id,
         "ownerUserId": doc.get("createdBy"),
         "isActive": bool(doc.get("isActive")),
     }
@@ -3423,7 +3423,7 @@ async def get_all_scheduled_connector_instances_internal(
             return {
                 "success": True,
                 "items": [
-                    await _connector_schedule_state(cid, graph_provider, config_service, organisation_id, logger)
+                    await _connector_schedule_state(cid, graph_provider, config_service, fallback_org_id, logger)
                     for cid in ids
                 ],
                 "hasMore": False,

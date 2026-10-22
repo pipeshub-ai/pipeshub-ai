@@ -29,6 +29,8 @@ const makeScheduler = (overrides: Partial<any> = {}) => ({
   listReconcilesPending: sinon.stub().resolves([]),
   clearReconcilePending: sinon.stub().resolves(),
   removeJobsForConnector: sinon.stub().resolves(),
+  upsertRepeatingSchedule: sinon.stub().resolves('scheduled'),
+  removeConnectorSchedules: sinon.stub().resolves(true),
   ...overrides,
 });
 
@@ -216,8 +218,8 @@ describe('ScheduledJobsBackfillMigration', () => {
         await run(scheduler);
 
         expect(executeStub.secondCall.args[0]).to.contain('connectorIds=conn-1');
-        expect(scheduler.scheduleJob.calledOnce).to.equal(true);
-        expect(scheduler.scheduleJob.firstCall.args[2].scheduleConfig.intervalMinutes).to.equal(30);
+        expect(scheduler.upsertRepeatingSchedule.calledOnce).to.equal(true);
+        expect(scheduler.upsertRepeatingSchedule.firstCall.args[2].scheduleConfig.intervalMinutes).to.equal(30);
         expect(scheduler.clearReconcilePending.calledOnceWith('conn-1')).to.equal(true);
       });
 
@@ -228,7 +230,7 @@ describe('ScheduledJobsBackfillMigration', () => {
 
         await run(scheduler);
 
-        expect(scheduler.removeJob.calledOnceWith('Confluence', 'conn-1', 'org-1')).to.equal(true);
+        expect(scheduler.removeConnectorSchedules.calledOnceWith('Confluence', 'conn-1', 'org-1')).to.equal(true);
         expect(scheduler.clearReconcilePending.calledOnce).to.equal(true);
       });
 
@@ -239,8 +241,10 @@ describe('ScheduledJobsBackfillMigration', () => {
 
         await run(scheduler);
 
-        expect(scheduler.removeJob.called || scheduler.removeJobsForConnector.called).to.equal(false);
-        expect(scheduler.scheduleJob.called).to.equal(false);
+        expect(
+          scheduler.removeConnectorSchedules.called || scheduler.removeJobsForConnector.called,
+        ).to.equal(false);
+        expect(scheduler.upsertRepeatingSchedule.called).to.equal(false);
         expect(scheduler.clearReconcilePending.called).to.equal(false);
       });
 
@@ -256,7 +260,7 @@ describe('ScheduledJobsBackfillMigration', () => {
         const result = await run(scheduler);
 
         expect(executeStub.thirdCall.args[0]).to.contain('connectorIds=conn-50');
-        expect(scheduler.scheduleJob.calledOnce).to.equal(true);
+        expect(scheduler.upsertRepeatingSchedule.calledOnce).to.equal(true);
         expect(scheduler.clearReconcilePending.calledOnceWith('conn-50')).to.equal(true);
         expect(result.errored).to.equal(1);
       });
