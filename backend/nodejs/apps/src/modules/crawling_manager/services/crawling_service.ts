@@ -569,16 +569,20 @@ export class CrawlingSchedulerService {
   ): Promise<'scheduled' | 'unchanged'> {
     const repeatOptions = this.transformScheduleConfig(scheduleConfig);
     if (!scheduleConfig.isEnabled || !repeatOptions) {
-      throw new BadRequestError('Only an enabled repeating schedule can be upserted');
+      throw new BadRequestError(
+        'Only an enabled repeating schedule can be upserted',
+      );
     }
     this.assertSchedulable(repeatOptions);
 
     const jobId = this.buildJobId(connector, connectorId, orgId);
     const jobName = this.buildJobName(connector, connectorId);
-    const existing = (await this.queue.getRepeatableJobs()).filter(
+    const existing = (await this.listRepeatableSchedules()).filter(
       (r) => r.name === jobName,
     );
-    const matching = existing.filter((r) => this.repeatOptsMatch(r, repeatOptions));
+    const matching = existing.filter((r) =>
+      this.repeatOptsMatch(r, repeatOptions),
+    );
     const stale = existing.filter((r) => !matching.includes(r));
 
     if (matching.length === 0) {
@@ -599,7 +603,7 @@ export class CrawlingSchedulerService {
       });
     }
     for (const r of stale) {
-      await this.queue.removeRepeatableByKey(r.key);
+      await this.removeRepeatableByKey(r.key);
     }
     this.pausedJobs.delete(jobId);
 
@@ -617,11 +621,11 @@ export class CrawlingSchedulerService {
     orgId: string,
   ): Promise<boolean> {
     const jobName = this.buildJobName(connector, connectorId);
-    const repeatables = (await this.queue.getRepeatableJobs()).filter(
+    const repeatables = (await this.listRepeatableSchedules()).filter(
       (r) => r.name === jobName,
     );
     for (const r of repeatables) {
-      await this.queue.removeRepeatableByKey(r.key);
+      await this.removeRepeatableByKey(r.key);
     }
     await this.removeJobInternal(connector, connectorId, orgId);
     const wasPaused = this.pausedJobs.delete(
@@ -932,7 +936,7 @@ export class CrawlingSchedulerService {
   /**
    * Get repeatable jobs, optionally filtered by organization
    */
-  async getRepeatableJobs(orgId?: string): Promise<any[]> {
+  async getRepeatableJobs(orgId?: string): Promise<RepeatableJob[]> {
     this.logger.debug('Getting repeatable jobs', { orgId });
 
     try {
@@ -940,7 +944,7 @@ export class CrawlingSchedulerService {
 
       if (orgId) {
         // We need to check the actual job data to filter by orgId
-        const filteredJobs = [];
+        const filteredJobs: RepeatableJob[] = [];
 
         for (const repeatableJob of repeatableJobs) {
           // Get a sample job to check the data
@@ -1303,11 +1307,13 @@ export class CrawlingSchedulerService {
 
   /** Every repeatable schedule on the crawling queue, across all orgs. */
   async listRepeatableSchedules(): Promise<RepeatableJob[]> {
-    return this.queue.getRepeatableJobs();
+    return this.getRepeatableJobs();
   }
 
   /** Remove one repeatable schedule and its next queued run. */
   async removeRepeatableByKey(key: string): Promise<boolean> {
+    // Schedules are added with `repeat`, which job-scheduler methods cannot see or remove.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     return this.queue.removeRepeatableByKey(key);
   }
 

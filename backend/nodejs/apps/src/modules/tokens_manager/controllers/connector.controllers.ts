@@ -222,7 +222,7 @@ const fetchConnectorSnapshot = async (
     );
     if (!resp || resp.statusCode < 200 || resp.statusCode >= 300) {
       logSnapshotFailure(connectorId, 'non-2xx response', {
-        statusCode: resp?.statusCode ?? null,
+        statusCode: resp.statusCode,
       });
       return null;
     }

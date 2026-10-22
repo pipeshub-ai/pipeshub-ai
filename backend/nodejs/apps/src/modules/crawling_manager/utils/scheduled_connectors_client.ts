@@ -53,14 +53,7 @@ export const fetchScheduledConnectorsPage = async (
     throw new Error('scopedJwtSecret is not configured');
   }
 
-  let token: string;
-  try {
-    token = fetchConfigJwtGenerator('system', 'system', scopedJwtSecret);
-  } catch (error) {
-    throw new Error(
-      `Failed to mint scoped JWT: ${error instanceof Error ? error.message : 'Unknown'}`,
-    );
-  }
+  const token = fetchConfigJwtGenerator('system', 'system', scopedJwtSecret);
 
   const url =
     `${connectorBackend}/api/v1/connectors/internal/all-scheduled` +
@@ -75,7 +68,9 @@ export const fetchScheduledConnectorsPage = async (
   const status = resp.statusCode;
 
   if (status < 200 || status >= 300) {
-    throw new Error(`Connector service returned non-2xx status ${String(status)}`);
+    throw new Error(
+      `Connector service returned non-2xx status ${String(status)}`,
+    );
   }
 
   const data = resp.data as {

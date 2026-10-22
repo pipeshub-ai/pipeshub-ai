@@ -91,8 +91,14 @@ export class ConnectorScheduleSweepService {
           error: error instanceof Error ? error.message : 'Unknown error',
         });
       };
-      this.queue.on('error', logAsyncError('Connector schedule sweep queue error'));
-      this.worker.on('error', logAsyncError('Connector schedule sweep worker error'));
+      this.queue.on(
+        'error',
+        logAsyncError('Connector schedule sweep queue error'),
+      );
+      this.worker.on(
+        'error',
+        logAsyncError('Connector schedule sweep worker error'),
+      );
 
       // Idempotent across replicas and restarts; a changed interval replaces the old one.
       await this.queue.upsertJobScheduler(
@@ -104,7 +110,11 @@ export class ConnectorScheduleSweepService {
       await this.queue.add(
         SWEEP_JOB_NAME,
         {},
-        { jobId: SWEEP_STARTUP_JOB_ID, removeOnComplete: true, removeOnFail: true },
+        {
+          jobId: SWEEP_STARTUP_JOB_ID,
+          removeOnComplete: true,
+          removeOnFail: true,
+        },
       );
       this.logger.info('Connector schedule sweep started', { intervalMinutes });
     } catch (error) {
@@ -133,15 +143,18 @@ export class ConnectorScheduleSweepService {
     };
 
     let desired: scheduledConnectorsClient.ScheduledConnectorRecord[];
-    let listingPartial = false;
-    let snapshot: Awaited<ReturnType<CrawlingSchedulerService['listRepeatableSchedules']>>;
+    let listingPartial: boolean;
+    let snapshot: Awaited<
+      ReturnType<CrawlingSchedulerService['listRepeatableSchedules']>
+    >;
     try {
       // Snapshot before fetching: a schedule a user creates mid-sweep is not in
       // it, so it can never be mistaken for an orphan.
       snapshot = await this.scheduler.listRepeatableSchedules();
-      const listing = await scheduledConnectorsClient.fetchAllScheduledConnectors(
-        this.appConfig,
-      );
+      const listing =
+        await scheduledConnectorsClient.fetchAllScheduledConnectors(
+          this.appConfig,
+        );
       desired = listing.items;
       listingPartial = listing.partial;
     } catch (error) {
@@ -165,9 +178,14 @@ export class ConnectorScheduleSweepService {
         const name = this.scheduler.jobNameFor(item.type, item.connectorId);
         desiredNames.add(name);
 
-        const intervalMinutes = Number(item.sync.scheduledConfig?.intervalMinutes);
+        const intervalMinutes = Number(
+          item.sync.scheduledConfig?.intervalMinutes,
+        );
         if (!Number.isFinite(intervalMinutes) || intervalMinutes < 1) {
-          this.logger.warn('Sweep skipped connector with an invalid interval', ctx);
+          this.logger.warn(
+            'Sweep skipped connector with an invalid interval',
+            ctx,
+          );
           continue;
         }
         const every = Math.floor(intervalMinutes) * 60_000;
@@ -186,29 +204,40 @@ export class ConnectorScheduleSweepService {
           }
           if (stale.length > 0) {
             summary.driftFixed++;
-            this.logger.warn('Sweep removed stale duplicate connector schedule', {
-              ...ctx,
-              removed: stale.map((r) => ({ key: r.key, every: r.every })),
-            });
+            this.logger.warn(
+              'Sweep removed stale duplicate connector schedule',
+              {
+                ...ctx,
+                removed: stale.map((r) => ({ key: r.key, every: r.every })),
+              },
+            );
           }
           continue;
         }
 
-        const outcome = await reconcileConnectorSchedule(this.scheduler, this.logger, {
-          connector: item.type,
-          connectorId: item.connectorId,
-          orgId: item.orgId,
-          userId:
-            (typeof item.ownerUserId === 'string' && item.ownerUserId) || 'system',
-          isActive: true,
-          sync: item.sync,
-        });
+        const outcome = await reconcileConnectorSchedule(
+          this.scheduler,
+          this.logger,
+          {
+            connector: item.type,
+            connectorId: item.connectorId,
+            orgId: item.orgId,
+            userId:
+              (typeof item.ownerUserId === 'string' && item.ownerUserId) ||
+              'system',
+            isActive: true,
+            sync: item.sync,
+          },
+        );
         if (outcome !== 'scheduled') {
           continue;
         }
         if (stale.length > 0) {
           summary.driftFixed++;
-          this.logger.warn('Sweep rescheduled connector with a stale interval', ctx);
+          this.logger.warn(
+            'Sweep rescheduled connector with a stale interval',
+            ctx,
+          );
         } else {
           summary.repaired++;
           this.logger.warn('Sweep recreated missing connector schedule', ctx);

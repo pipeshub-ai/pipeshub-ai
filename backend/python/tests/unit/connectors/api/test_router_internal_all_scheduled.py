@@ -106,7 +106,7 @@ def _manual_sync() -> dict:
 
 class TestFetchConnectorSyncBlock:
     @pytest.mark.asyncio
-    async def test_missing_config_returns_none(self):
+    async def test_missing_config_returns_none(self) -> None:
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value=None)
         logger = MagicMock()
@@ -118,7 +118,7 @@ class TestFetchConnectorSyncBlock:
         logger.debug.assert_called()
 
     @pytest.mark.asyncio
-    async def test_non_dict_config_returns_none(self):
+    async def test_non_dict_config_returns_none(self) -> None:
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value="not a dict")
         logger = MagicMock()
@@ -129,7 +129,7 @@ class TestFetchConnectorSyncBlock:
         assert read_failed is False
 
     @pytest.mark.asyncio
-    async def test_config_with_no_sync_key_returns_empty_dict(self):
+    async def test_config_with_no_sync_key_returns_empty_dict(self) -> None:
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value={"auth": {}})
         logger = MagicMock()
@@ -141,7 +141,7 @@ class TestFetchConnectorSyncBlock:
         assert read_failed is False
 
     @pytest.mark.asyncio
-    async def test_non_dict_sync_returns_none(self):
+    async def test_non_dict_sync_returns_none(self) -> None:
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value={"sync": "not-a-dict"})
         logger = MagicMock()
@@ -153,7 +153,7 @@ class TestFetchConnectorSyncBlock:
         logger.debug.assert_called()
 
     @pytest.mark.asyncio
-    async def test_valid_sync_block_returned(self):
+    async def test_valid_sync_block_returned(self) -> None:
         sync_block = {"selectedStrategy": "SCHEDULED", "scheduledConfig": {"intervalMinutes": 5}}
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value={"sync": sync_block})
@@ -165,7 +165,7 @@ class TestFetchConnectorSyncBlock:
         assert read_failed is False
 
     @pytest.mark.asyncio
-    async def test_config_service_exception_is_a_failed_read(self):
+    async def test_config_service_exception_is_a_failed_read(self) -> None:
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
         logger = MagicMock()
@@ -177,7 +177,7 @@ class TestFetchConnectorSyncBlock:
         logger.warning.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_asks_the_store_to_raise_instead_of_answering_none(self):
+    async def test_asks_the_store_to_raise_instead_of_answering_none(self) -> None:
         # ConfigurationService swallows an unreadable value into None unless
         # asked, which would read as "not scheduled" rather than a failed read.
         config_service = AsyncMock()
@@ -195,7 +195,7 @@ class TestFetchConnectorSyncBlock:
 
 class TestAllScheduledNoOrg:
     @pytest.mark.asyncio
-    async def test_no_orgs_raises_404(self):
+    async def test_no_orgs_raises_404(self) -> None:
         request = _make_request(orgs=[])
 
         with pytest.raises(HTTPException) as exc_info:
@@ -211,7 +211,7 @@ class TestAllScheduledNoOrg:
 
 class TestAllScheduledEmptyPage:
     @pytest.mark.asyncio
-    async def test_no_active_connectors_returns_empty_items(self):
+    async def test_no_active_connectors_returns_empty_items(self) -> None:
         request = _make_request(page_docs=[])
 
         result = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
@@ -221,7 +221,7 @@ class TestAllScheduledEmptyPage:
         assert result["hasMore"] is False
 
     @pytest.mark.asyncio
-    async def test_connector_without_key_is_skipped(self):
+    async def test_connector_without_key_is_skipped(self) -> None:
         # Document missing _key and id
         bad_doc = {"type": "Confluence", "isActive": True}
         request = _make_request(page_docs=[bad_doc], sync_configs=[None])
@@ -231,7 +231,7 @@ class TestAllScheduledEmptyPage:
         assert result["items"] == []
 
     @pytest.mark.asyncio
-    async def test_connector_without_type_is_skipped(self):
+    async def test_connector_without_type_is_skipped(self) -> None:
         bad_doc = {"_key": "conn-1", "isActive": True}
         request = _make_request(page_docs=[bad_doc], sync_configs=[None])
 
@@ -247,7 +247,7 @@ class TestAllScheduledEmptyPage:
 
 class TestAllScheduledStrategyFiltering:
     @pytest.mark.asyncio
-    async def test_manual_strategy_is_excluded(self):
+    async def test_manual_strategy_is_excluded(self) -> None:
         doc = _active_doc("conn-1", "Confluence")
         request = _make_request(
             page_docs=[doc],
@@ -259,7 +259,7 @@ class TestAllScheduledStrategyFiltering:
         assert result["items"] == []
 
     @pytest.mark.asyncio
-    async def test_scheduled_strategy_is_included(self):
+    async def test_scheduled_strategy_is_included(self) -> None:
         doc = _active_doc("conn-1", "Confluence", created_by="user-42")
         request = _make_request(
             page_docs=[doc],
@@ -278,7 +278,7 @@ class TestAllScheduledStrategyFiltering:
         assert item["sync"]["selectedStrategy"] == "SCHEDULED"
 
     @pytest.mark.asyncio
-    async def test_missing_sync_config_excluded(self):
+    async def test_missing_sync_config_excluded(self) -> None:
         doc = _active_doc("conn-1", "Slack")
         request = _make_request(
             page_docs=[doc],
@@ -290,7 +290,7 @@ class TestAllScheduledStrategyFiltering:
         assert result["items"] == []
 
     @pytest.mark.asyncio
-    async def test_mixed_connectors_only_scheduled_returned(self):
+    async def test_mixed_connectors_only_scheduled_returned(self) -> None:
         docs = [
             _active_doc("conn-1", "Confluence"),
             _active_doc("conn-2", "Slack"),
@@ -311,7 +311,7 @@ class TestAllScheduledStrategyFiltering:
         assert result["partial"] is False
 
     @pytest.mark.asyncio
-    async def test_config_read_failure_marks_the_page_partial(self):
+    async def test_config_read_failure_marks_the_page_partial(self) -> None:
         docs = [
             _active_doc("conn-1", "Confluence"),
             _active_doc("conn-2", "Slack"),
@@ -334,7 +334,7 @@ class TestAllScheduledStrategyFiltering:
 
 class TestAllScheduledPagination:
     @pytest.mark.asyncio
-    async def test_has_more_true_when_probe_returns_limit_plus_one(self):
+    async def test_has_more_true_when_probe_returns_limit_plus_one(self) -> None:
         # limit=2, probe_limit=3; return 3 docs → has_more=True, items trimmed to 2
         docs = [
             _active_doc("conn-1", "Confluence"),
@@ -350,7 +350,7 @@ class TestAllScheduledPagination:
         assert len(result["items"]) <= 2
 
     @pytest.mark.asyncio
-    async def test_has_more_false_on_last_page(self):
+    async def test_has_more_false_on_last_page(self) -> None:
         docs = [_active_doc("conn-1", "Confluence")]
         request = _make_request(page_docs=docs, sync_configs=[_scheduled_sync()])
 
@@ -359,7 +359,7 @@ class TestAllScheduledPagination:
         assert result["hasMore"] is False
 
     @pytest.mark.asyncio
-    async def test_skip_calculated_correctly_for_page_2(self):
+    async def test_skip_calculated_correctly_for_page_2(self) -> None:
         request = _make_request(page_docs=[])
 
         await get_all_scheduled_connector_instances_internal(request, page=2, limit=10)
@@ -369,7 +369,7 @@ class TestAllScheduledPagination:
         assert call[1]["skip"] == 10
 
     @pytest.mark.asyncio
-    async def test_skip_zero_for_page_1(self):
+    async def test_skip_zero_for_page_1(self) -> None:
         request = _make_request(page_docs=[])
 
         await get_all_scheduled_connector_instances_internal(request, page=1, limit=10)
@@ -378,7 +378,7 @@ class TestAllScheduledPagination:
         assert call[1]["skip"] == 0
 
     @pytest.mark.asyncio
-    async def test_filters_isactive_true_passed_to_provider(self):
+    async def test_filters_isactive_true_passed_to_provider(self) -> None:
         request = _make_request(page_docs=[])
 
         await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
@@ -387,7 +387,7 @@ class TestAllScheduledPagination:
         assert call[1]["filters"] == {"isActive": True}
 
     @pytest.mark.asyncio
-    async def test_db_errors_raise_and_pages_are_stably_sorted(self):
+    async def test_db_errors_raise_and_pages_are_stably_sorted(self) -> None:
         request = _make_request(page_docs=[])
 
         await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
@@ -404,7 +404,7 @@ class TestAllScheduledPagination:
 
 class TestAllScheduledOrgOwnership:
     @pytest.mark.asyncio
-    async def test_each_connector_keeps_its_own_org(self):
+    async def test_each_connector_keeps_its_own_org(self) -> None:
         docs = [
             {**_active_doc("conn-a", "Confluence"), "orgId": "org-a"},
             {**_active_doc("conn-b", "Slack"), "orgId": "org-b"},
@@ -423,7 +423,7 @@ class TestAllScheduledOrgOwnership:
         }
 
     @pytest.mark.asyncio
-    async def test_legacy_doc_without_org_falls_back_to_first_org(self):
+    async def test_legacy_doc_without_org_falls_back_to_first_org(self) -> None:
         request = _make_request(
             orgs=[{"_key": "org-1"}],
             page_docs=[_active_doc("conn-1", "Confluence")],
@@ -442,7 +442,7 @@ class TestAllScheduledOrgOwnership:
 
 class TestAllScheduledErrorHandling:
     @pytest.mark.asyncio
-    async def test_graph_provider_exception_raises_500(self):
+    async def test_graph_provider_exception_raises_500(self) -> None:
         request = _make_request()
         request.app.state.graph_provider.get_documents_paginated = AsyncMock(
             side_effect=RuntimeError("DB unreachable")
@@ -454,7 +454,7 @@ class TestAllScheduledErrorHandling:
         assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_http_exception_propagated_unchanged(self):
+    async def test_http_exception_propagated_unchanged(self) -> None:
         request = _make_request()
         request.app.state.graph_provider.get_all_orgs = AsyncMock(
             side_effect=HTTPException(status_code=503, detail="graph DB down")
