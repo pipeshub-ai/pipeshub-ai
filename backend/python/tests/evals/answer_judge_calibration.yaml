@@ -739,14 +739,14 @@ cases:
     claims:
       - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
         expect: supported
-      - state: "The 2026 Enterprise pricing includes a $48,000 annual fee."
+      - state: "The 2026 strategy targets a $48,000 annual fee for Enterprise."
         expect: supported
 
   - id: pricing-ten-times-the-fee
     about: "$480,000 holds \"$48\" but is not the fee"
     answer: "Enterprise moves to a platform fee of $480,000 a year plus usage bands."
     claims:
-      - state: "The 2026 Enterprise pricing includes a $48,000 annual fee."
+      - state: "The 2026 strategy targets a $48,000 annual fee for Enterprise."
         expect: contradicted
 
   - id: pricing-seat-discounts
@@ -767,5 +767,17 @@ cases:
     claims:
       - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
         expect: supported
-      - state: "The 2026 Enterprise pricing includes a $48,000 annual fee."
+      - state: "The 2026 strategy targets a $48,000 annual fee for Enterprise."
+        expect: supported
+
+  - id: pricing-target-fee
+    about: a 2026-10-21 answer that gives the fee as a target, as the record does
+    answer: |
+      In the Acme Corp demo data, the 2026 enterprise pricing strategy is:
+      - Replace per-seat pricing with an annual platform fee plus usage bands.
+      - Set a target $48,000 annual platform fee covering up to 250 seats, with usage bands at 250, 1,000, and 5,000 seats.
+    claims:
+      - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
+        expect: supported
+      - state: "The 2026 strategy targets a $48,000 annual fee for Enterprise."
         expect: supported

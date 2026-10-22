@@ -1630,13 +1630,13 @@ questions:
     # bands: pricing tiers are structured around 250, 1,000, and 5,000 seats." and failed only
     # for not saying "platform fee". The amount is judged too: "$48" alone also matches "$480".
     # Worded as the record is: a strategy (a "direction"), so an answer that also says existing
-    # customers are grandfathered does not contradict it; and "an annual fee", so "platform fee"
-    # and "base price" both state it. On 2026-10-21 "moves from per-seat pricing" was judged
+    # customers are grandfathered does not contradict it; and the fee as the strategy's target, as
+    # the record says "Target", so "platform fee", "base price" and "a target fee" all state it. On 2026-10-21 "moves from per-seat pricing" was judged
     # contradicted by the grandfathering line, and "starts at $48,000" missing for "$48,000
     # annual platform fee".
     answer_must_state:
       - "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
-      - "The 2026 Enterprise pricing includes a $48,000 annual fee."
+      - "The 2026 strategy targets a $48,000 annual fee for Enterprise."
     # For Alice, "none" means: no restricted record cited and the answer says it found nothing.
     # Citing an unrestricted near-miss (the release notes) while saying so is correct behaviour.
     restricted: [drive-pricing-2026, slack-pricing-0402]
