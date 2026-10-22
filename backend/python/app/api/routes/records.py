@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from app.api.connection_limit import ids_outside_connection, refuse_outside_connection
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
@@ -60,6 +61,7 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
             )
+        await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
         doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
         try:
             hidden = await is_hidden_demo_record(
@@ -176,6 +178,11 @@ async def read_record_content(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail="Failed to read the thread",
             )
+        records = result.get("records") or []
+        outside = await ids_outside_connection(
+            request, graph_provider, org_id, user_id, [r.get("id") for r in records],
+        )
+        records = [r for r in records if r.get("id") not in outside]
         # A record in no single thread says what it holds: which of its
         # messages started threads, or that none has replies. Said once, at
         # the start, inside the caller's budget.
@@ -183,7 +190,7 @@ async def read_record_content(
         first_page = start_record == 0 and not start_block
         lead = f"[{note}]\n\n" if note and first_page else ""
         response = await read_thread(
-            result.get("records") or [],
+            records,
             max_chars=max_chars - len(lead),
             start_record=start_record,
             start_block=start_block or 0,

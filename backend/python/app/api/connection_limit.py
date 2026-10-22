@@ -38,8 +38,8 @@ async def refuse_outside_connection(
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail=CONNECTION_OUTSIDE_MESSAGE)
 
 
-#: Path parameters that name a knowledge base, folder or record.
-_NODE_PATH_PARAMS = ("kb_id", "folder_id", "parent_folder_id", "record_id")
+#: Path parameters that name a knowledge base, record group, folder or record.
+_NODE_PATH_PARAMS = ("kb_id", "record_group_id", "folder_id", "parent_folder_id", "record_id")
 
 
 async def keep_path_inside_connection(request: Request) -> None:

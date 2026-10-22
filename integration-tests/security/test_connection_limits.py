@@ -302,6 +302,18 @@ class TestMcp:
         assert corpus["outside_needle"] not in outside, outside[:1000]
         assert err_out or OUTSIDE_MESSAGE in outside, outside[:1000]
 
+    def test_a_budgeted_read_outside_the_limit_is_refused(self, base_url, collection_pat, corpus) -> None:
+        """A read with a character budget goes to the query service, not the connector route."""
+        def read(record_id: str) -> requests.Response:
+            return requests.get(
+                f"{base_url}/api/v1/connectors/record/{record_id}/content",
+                params={"maxChars": 4000}, headers=_bearer(collection_pat), timeout=60,
+            )
+        inside, outside = read(corpus["inside_record"]), read(corpus["outside_record"])
+        assert inside.status_code == 200 and corpus["inside_needle"] in inside.text, inside.text[:500]
+        assert outside.status_code == 403, f"{outside.status_code} {outside.text[:300]}"
+        assert corpus["outside_needle"] not in outside.text
+
     def test_a_folder_limit_refuses_a_sibling_file_by_id(self, base_url, folder_pat, corpus) -> None:
         (inside, err_in), (sibling, err_sib) = mcp(
             base_url, folder_pat,
@@ -346,7 +358,9 @@ class TestMcp:
             base_url, collection_pat,
             ("pipeshub_chat", {"query": f"Who keeps the {corpus['outside_needle']}? Quote the document."}),
         )
+        assert not err, answer[:2000]
         assert corpus["outside_record"] not in answer, answer[:2000]
+        assert "outside team closes its books" not in answer, answer[:2000]
 
 
 # ---------------------------------------------------------------------------

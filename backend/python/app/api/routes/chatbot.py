@@ -1558,6 +1558,7 @@ async def _generate_chat_stream_via_agent_loop(
         attachments=query_info.attachments,
         previous_conversations=query_info.previousConversations,
         logger=logger_,
+        connection_sources=connection_limit(user),
     )
     query_dict = {
         "query": query_info.query,

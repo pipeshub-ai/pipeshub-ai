@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.modules.retrieval.selection_scope import outside_connection
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
 from app.utils.chat_helpers import ImageBudget, is_base64_image
 from app.utils.image_admission import (
@@ -20,6 +21,8 @@ from app.utils.image_admission import (
 from app.utils.record_access import caller_can_read_virtual_record
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 # Base64 data-URI prefixes accepted by the multimodal LLM providers we support.
@@ -50,6 +53,7 @@ async def keep_accessible_attachments(
     attachments: list[dict[str, Any]],
     previous_conversations: list[dict[str, Any]],
     logger: logging.Logger,
+    connection_sources: Mapping[str, Iterable[str]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """This turn's attachments and the history's, without those whose record the
     user may not access.
@@ -59,7 +63,9 @@ async def keep_accessible_attachments(
     ``recordId`` is replaced by the record the check found for its
     ``virtualRecordId``: the client's copy is never trusted, since the tools
     read an attached ``recordId`` past the turn's scope. A service account has
-    no User node to check, so it keeps only this org's chat attachments.
+    no User node to check, so it keeps only this org's chat attachments. A
+    connected app limited to ``connection_sources`` keeps only the records
+    inside its limit, and chat uploads, which are part of the question.
     """
     history_attachments = [a for conv in previous_conversations or [] for a in conv.get("attachments") or []]
     vrids = {a.get("virtualRecordId") for a in [*(attachments or []), *history_attachments]} - {None, ""}
@@ -84,6 +90,18 @@ async def keep_accessible_attachments(
             record_by_vrid = dict((await graph_provider.check_access(
                 user_key, org_id, virtual_record_ids=vrids,
             )).records_by_vrid)
+
+    if connection_sources is not None and record_by_vrid:
+        outside = await outside_connection(
+            graph_provider, user_id or "", org_id, record_by_vrid.values(), connection_sources,
+        )
+        if outside:
+            rows = await graph_provider.get_nodes_by_field_in(
+                CollectionNames.RECORDS.value, "id", sorted(outside),
+                return_fields=["id", "orgId", "origin", "connectorId"], raise_on_error=True,
+            )
+            outside -= {row.get("id") or row.get("_key") for row in rows or [] if is_chat_attachment(row, org_id)}
+            record_by_vrid = {vrid: rid for vrid, rid in record_by_vrid.items() if rid not in outside}
 
     def keep(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
         return [

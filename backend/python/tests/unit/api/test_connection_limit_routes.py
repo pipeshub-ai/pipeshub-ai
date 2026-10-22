@@ -18,6 +18,7 @@ from app.agents.actions.knowledge_graph.models import (
     LookupMatch,
     LookupResult,
     NavigationView,
+    NodeRef,
     NodeRow,
 )
 from app.api.connection_limit import (
@@ -25,6 +26,8 @@ from app.api.connection_limit import (
     keep_path_inside_connection,
     refuse_outside_connection,
 )
+from app.api.routes.agent import _resolve_turn_filters
+from app.api.routes.records import read_record_content
 from app.api.routes.search import SearchQuery, search
 from app.connectors.api.router import (
     get_record_by_id,
@@ -40,6 +43,7 @@ from app.modules.retrieval.selection_scope import (
     SelectionScope,
 )
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from app.utils.attachment_utils import keep_accessible_attachments
 
 ROUTER = "app.connectors.api.router"
 
@@ -153,6 +157,38 @@ class TestRecordsById:
         assert exc.value.status_code == 403
         serve.assert_not_awaited()
 
+    @staticmethod
+    def _reader_request(graph: AsyncMock) -> MagicMock:
+        request = _request(graph=graph)
+        request.app.container.graph_provider = AsyncMock(return_value=graph)
+        request.app.container.blob_store = AsyncMock(return_value=MagicMock())
+        return request
+
+    @pytest.mark.asyncio
+    async def test_a_budgeted_read_outside_the_limit_is_refused_before_any_fetch(self) -> None:
+        graph = self._graph_with_access()
+        fetch = AsyncMock(return_value={"ok": True, "records": []})
+        with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=False)), \
+             patch("app.api.routes.records._fetch_multiple_records_impl", fetch):
+            with pytest.raises(HTTPException) as exc:
+                await read_record_content("rec-out", self._reader_request(graph), mode="record", query=None,
+                                          start_block=None, start_record=0, max_chars=40_000)
+        assert exc.value.status_code == 403 and exc.value.detail == CONNECTION_OUTSIDE_MESSAGE
+        fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_thread_read_leaves_out_replies_outside_the_limit(self) -> None:
+        graph = self._graph_with_access()
+        thread = {"ok": True, "records": [{"id": "rec-in"}, {"id": "rec-out"}]}
+        read = AsyncMock(return_value={"content": ""})
+        with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=False)), \
+             patch("app.api.routes.records._resolve_thread_record_group", AsyncMock(return_value={"id": "t"})), \
+             patch("app.api.routes.records._fetch_thread_records_impl", AsyncMock(return_value=thread)), \
+             patch("app.api.routes.records.read_thread", read):
+            await read_record_content("rec-in", self._reader_request(graph), mode="thread", query=None,
+                                      start_block=None, start_record=0, max_chars=40_000)
+        assert read.call_args.args[0] == [{"id": "rec-in"}]
+
 
 class TestBrowsing:
     @staticmethod
@@ -187,6 +223,16 @@ class TestBrowsing:
         with pytest.raises(HTTPException) as exc:
             await self._navigate(_request(), _graph(), node_id="app-out")
         assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_the_path_above_a_shared_node_names_only_what_is_shared(self) -> None:
+        crumbs = [NodeRef(id=i, name=f"name-{i}", node_type="app", sub_type=None, is_record=False)
+                  for i in ("app-out", "app-in")]
+        view = NavigationView(current=None, breadcrumbs=crumbs, rows=[], related=[], pagination=None,
+                              web_url=None, indexing_status=None, connector=None)
+        result = await self._navigate(_request(), _graph(), node_id="rec-in", view=view)
+        assert [crumb["id"] for crumb in result["breadcrumbs"]] == ["app-in"]
+        assert "name-app-out" not in result["text"]
 
     @pytest.mark.asyncio
     async def test_without_a_limit_the_listing_is_untouched(self) -> None:
@@ -284,7 +330,8 @@ class TestKnowledgeBaseRoutes:
 
     @pytest.mark.asyncio
     async def test_a_knowledge_base_folder_or_record_outside_the_limit_is_refused_by_id(self) -> None:
-        for params in ({"kb_id": "app-out"}, {"kb_id": "app-in", "folder_id": "rec-out"}, {"record_id": "rec-out"}):
+        for params in ({"kb_id": "app-out"}, {"kb_id": "app-in", "folder_id": "rec-out"}, {"record_id": "rec-out"},
+                       {"record_group_id": "rec-out"}):
             with pytest.raises(HTTPException) as exc:
                 await keep_path_inside_connection(self._path_request(**params))
             assert exc.value.status_code == 403, params
@@ -331,3 +378,41 @@ class TestKnowledgeBaseRoutes:
         }
         assert ("/api/v1/records/{record_id}", "DELETE") in guarded
         assert ("/api/v1/records/{record_id}/reindex", "POST") in guarded
+        assert ("/api/v1/record-groups/{record_group_id}/reindex", "POST") in guarded
+
+
+class TestChatTurns:
+    @pytest.mark.asyncio
+    async def test_an_attached_record_outside_the_limit_is_dropped_and_an_upload_kept(self) -> None:
+        graph = _graph()
+        access = graph.check_access.side_effect
+
+        async def check_access(user_key: str, org_id: str, **kwargs: object) -> AccessCheck:
+            if kwargs.get("virtual_record_ids"):
+                return AccessCheck(records_by_vrid={"v-in": "rec-in", "v-out": "rec-out", "v-up": "upload"})
+            return await access(user_key, org_id, **kwargs)
+
+        graph.check_access = AsyncMock(side_effect=check_access)
+        graph.get_nodes_by_field_in = AsyncMock(return_value=[
+            {"id": "upload", "orgId": "org-1", "origin": "UPLOAD", "connectorId": "attachments_org-1"},
+        ])
+        attachments = [{"virtualRecordId": v} for v in ("v-in", "v-out", "v-up")]
+        history = [{"attachments": [{"virtualRecordId": "v-out"}]}]
+        kept, kept_history = await keep_accessible_attachments(
+            graph, org_id="org-1", user_id="user-1", is_service_account=False, attachments=attachments,
+            previous_conversations=history, logger=MagicMock(), connection_sources=LIMIT,
+        )
+        assert [a["recordId"] for a in kept] == ["rec-in", "upload"]
+        assert kept_history == [{"attachments": []}]
+
+    @pytest.mark.asyncio
+    async def test_a_universal_agent_turn_with_no_pick_is_prepared_inside_the_limit(self) -> None:
+        prepare = AsyncMock(return_value={"prepared": True})
+        with patch("app.api.routes.agent.prepare_turn_scope", prepare):
+            filters = await _resolve_turn_filters(
+                agent_id="agentIdPlaceholder", agent_knowledge=[], requested_filters={},
+                graph_provider=_graph(), caller_user_id="user-1", org_id="org-1", logger=MagicMock(),
+                connection_sources={"apps": [], "recordGroups": [], "records": ["rec-in"]},
+            )
+        assert filters == {"prepared": True}
+        assert prepare.call_args.kwargs["connection_sources"]["records"] == ["rec-in"]

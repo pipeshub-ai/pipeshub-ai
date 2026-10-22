@@ -860,8 +860,10 @@ async def _resolve_turn_filters(
         )
     # A turn with internal search switched off never uses the selection, so
     # one that cannot be searched must not fail it. A saved agent is bound to
-    # its sources even without a selection.
-    if searches_knowledge and (has_selection(filters) or not is_universal_agent):
+    # its sources even without a selection, and a connected app to its limit.
+    if searches_knowledge and (
+        has_selection(filters) or connection_sources is not None or not is_universal_agent
+    ):
         agent_sources = None
         if not is_universal_agent:
             # The caller's project collection was admitted above.
@@ -4441,6 +4443,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     attachments=chat_query.attachments,
                     previous_conversations=chat_query.previousConversations,
                     logger=logger,
+                    connection_sources=connection_limit(getattr(request.state, "user", None)),
                 )
                 # Build query info
                 query_info = {

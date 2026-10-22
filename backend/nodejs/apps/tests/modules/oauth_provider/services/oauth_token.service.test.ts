@@ -754,6 +754,26 @@ describe('OAuthTokenService', () => {
 
       expect(result.total).to.equal(342)
     })
+
+    it('lists the knowledge limit of each token, and none for an unlimited one', async () => {
+      const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
+      const chainable = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([
+          { _id: new Types.ObjectId(), scopes: [], knowledgeLimit },
+          { _id: new Types.ObjectId(), scopes: [] },
+        ]),
+      }
+      sinon.stub(OAuthAccessToken, 'find').returns(chainable as any)
+      sinon.stub(OAuthAccessToken, 'countDocuments').resolves(2)
+
+      const result = await service.listAccessTokensForClientPaginated('client-1', 1, 50)
+
+      expect(result.tokens[0]!.knowledgeLimit).to.deep.equal(knowledgeLimit)
+      expect(result.tokens[1]!.knowledgeLimit).to.be.undefined
+    })
   })
 
   describe('revokeAccessTokenById', () => {

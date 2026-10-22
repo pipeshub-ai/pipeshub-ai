@@ -825,6 +825,7 @@ export class OAuthTokenService {
         isRevoked: t.isRevoked,
         name: t.name,
         lastUsedAt: t.lastUsedAt,
+        knowledgeLimit: toKnowledgeLimit(t.knowledgeLimit),
       })),
       total,
     };

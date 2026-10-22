@@ -2068,11 +2068,13 @@ async def knowledge_graph_navigate(
     # app opens those folders by id (search finds them); list them at the root
     # if apps limited to folders need to browse from the top.
     outside = await ids_outside_connection(
-        request, graph_provider, org_id, user_id, [row.id for row in [*view.rows, *view.related]],
+        request, graph_provider, org_id, user_id,
+        [row.id for row in [*view.rows, *view.related, *view.breadcrumbs]],
     )
     if outside:
         view.rows = [row for row in view.rows if row.id not in outside]
         view.related = [row for row in view.related if row.id not in outside]
+        view.breadcrumbs = [crumb for crumb in view.breadcrumbs if crumb.id not in outside]
 
     return {**view.model_dump(), "text": render_navigation_view(view, page)}
 
@@ -2630,7 +2632,13 @@ async def get_connector_stats_endpoint(
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("load connector activity")) from e
 
-@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE))])
+@router.post(
+    "/api/v1/record-groups/{record_group_id}/reindex",
+    dependencies=[
+        Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)),
+        Depends(keep_path_inside_connection),
+    ],
+)
 @inject
 async def reindex_record_group(
     record_group_id: str,
