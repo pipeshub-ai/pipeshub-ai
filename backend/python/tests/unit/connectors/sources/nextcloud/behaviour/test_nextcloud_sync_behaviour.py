@@ -1823,7 +1823,11 @@ class TestReviewFixesPP366:
             pytest.param("https://localhost", id="localhost"),
         ],
     )
-    async def test_an_unsafe_server_url_is_refused_before_any_request(self, server, db, store, base_url) -> None:
+    async def test_an_unsafe_server_url_is_refused_before_any_request(
+        self, server, db, store, base_url, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("PIPESHUB_NEXTCLOUD_ALLOW_INSECURE_HTTP", raising=False)
+        monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
         connector = build(server, db, store, config=auth_config(server, baseUrl=base_url))
 
         assert await connector.init() is False
@@ -1853,6 +1857,7 @@ class TestReviewFixesPP366:
     async def test_a_private_server_works_unless_the_deployment_blocks_private_addresses(
         self, server, db, store, monkeypatch
     ) -> None:
+        monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
         server.dns["cloud.example.com"] = "10.20.30.40"
         seed_drive(server)
         assert await sync(await make_connector(server, db, store))
