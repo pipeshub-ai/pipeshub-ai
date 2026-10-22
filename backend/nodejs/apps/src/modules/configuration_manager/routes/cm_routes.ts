@@ -947,7 +947,11 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(connectionIdentityForwardingSchema),
-    setConnectionIdentityForwarding(keyValueStoreService),
+    setConnectionIdentityForwarding(
+      keyValueStoreService,
+      aiConfigEventService,
+      appConfig,
+    ),
   );
 
   router.get(

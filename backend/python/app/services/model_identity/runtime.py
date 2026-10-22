@@ -165,11 +165,12 @@ def get_identity_runtime(config_service: Any = None, container: Any = None) -> I
     """The process runtime, built on first use from the config service and edition hook.
 
     Rebuilt if called with a different config service (tests, a restart in the
-    same process).
+    same process). A caller that passes none keeps whatever runtime exists, so
+    it cannot swap the configured policy store for an empty one.
     """
     global _runtime, _runtime_key
     key = id(config_service) if config_service is not None else None
-    if _runtime is not None and key == _runtime_key:
+    if _runtime is not None and (config_service is None or key == _runtime_key):
         return _runtime
     store = IdentityPolicyStore(config_service) if config_service is not None else None
     resolver = _edition_resolver(container)

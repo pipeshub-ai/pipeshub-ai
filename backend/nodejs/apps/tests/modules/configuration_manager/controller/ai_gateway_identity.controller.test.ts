@@ -75,6 +75,19 @@ function seed() {
   };
 }
 
+function eventService() {
+  return {
+    published: [] as any[],
+    async start() {},
+    async stop() {},
+    async publishEvent(event: any) {
+      this.published.push(event);
+    },
+  };
+}
+
+const appConfig = { cmBackend: 'http://cm' } as any;
+
 const forwarding = {
   enabled: true,
   mode: 'headers',
@@ -125,6 +138,19 @@ describe('ai gateway identity', () => {
       expect(got.body.policy.includeEmail).to.equal(true);
     });
 
+    it('answers 409 on the first conflict instead of retrying over the winner', async () => {
+      const store = keyedStore({ [POLICY_PATH]: { includeEmail: false } });
+      const racing = {
+        ...store,
+        compareAndSet: sinon.stub().resolves(false),
+      };
+      const body = identityPolicySchema.parse({ body: { includeEmail: true } }).body;
+      const res = response();
+      await putIdentityPolicy(racing as any)({ body } as any, res as any, () => undefined);
+      expect(res.statusCode).to.equal(409);
+      expect(racing.compareAndSet.calledOnce).to.equal(true);
+    });
+
     it('reports a damaged stored blob instead of passing the default off as the saved policy', async () => {
       const store = keyedStore({ [POLICY_PATH]: { subjectSource: 'nonsense' } });
       const res = response();
@@ -152,10 +178,15 @@ describe('ai gateway identity', () => {
   });
 
   describe('connection forwarding', () => {
-    async function put(store: any, connectionId: string, body: Record<string, unknown>) {
+    async function put(
+      store: any,
+      connectionId: string,
+      body: Record<string, unknown>,
+      events: any = eventService(),
+    ) {
       const parsed = connectionIdentityForwardingSchema.parse({ params: { connectionId }, body });
       const res = response();
-      await setConnectionIdentityForwarding(store)(
+      await setConnectionIdentityForwarding(store, events, appConfig)(
         { params: parsed.params, body: parsed.body } as any,
         res as any,
         () => undefined,
@@ -181,6 +212,29 @@ describe('ai gateway identity', () => {
       expect(store.read(MODELS_PATH).llm[0].configuration.identityForwardingServiceApiKey).to.equal(undefined);
       await put(store, 'conn-1', { ...forwarding, serviceApiKey: 'sk-new' });
       expect(store.read(MODELS_PATH).llm[1].configuration.identityForwardingServiceApiKey).to.equal('sk-new');
+    });
+
+    it('tells running processes to reload the models it changed', async () => {
+      const events = eventService();
+      await put(keyedStore({ [MODELS_PATH]: seed() }), 'conn-1', forwarding, events);
+      expect(events.published.map((e) => e.eventType)).to.deep.equal(['llmConfigured']);
+      expect(events.published[0].payload.credentialsRoute).to.equal(
+        'http://cm/api/v1/configurationManager/internal/aiModelsConfig',
+      );
+    });
+
+    it('publishes nothing for a connection that does not exist', async () => {
+      const events = eventService();
+      await put(keyedStore({ [MODELS_PATH]: seed() }), 'nope', forwarding, events);
+      expect(events.published).to.deep.equal([]);
+    });
+
+    it('still saves when the event cannot be published', async () => {
+      const events = { ...eventService(), start: async () => { throw new Error('broker down'); } };
+      const store = keyedStore({ [MODELS_PATH]: seed() });
+      const res = await put(store, 'conn-1', forwarding, events);
+      expect(res.statusCode).to.equal(200);
+      expect(store.read(MODELS_PATH).llm[0].configuration.identityForwardingEnabled).to.equal(true);
     });
 
     it('does not touch credentials or the model', async () => {

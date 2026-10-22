@@ -15,7 +15,6 @@ a message the admin can act on).
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import logging
@@ -213,9 +212,9 @@ def _template_problem(name: str, template: Any) -> str | None:  # noqa: ANN401 -
     return None
 
 
-# Keys the in-process memo digest of the service API key, which is only ever
-# compared within this process; it is change detection, not password storage.
-_KEY_DIGEST_SALT = secrets.token_bytes(16)
+# Keys the fingerprint, which is only ever compared within this process: it is
+# change detection for memo keys, not password storage.
+_FINGERPRINT_SALT = secrets.token_bytes(16)
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,13 +230,9 @@ class ConnectionForwardingSettings:
     fingerprint: str = field(default="", init=False, compare=False)
 
     def __post_init__(self) -> None:
-        # Part of every memo key, so it is computed once here. The key is
-        # hashed rather than included so it never sits in a cache key or a log.
-        key_digest = (
-            hmac.new(_KEY_DIGEST_SALT, self.service_api_key.encode(), "sha256").hexdigest()[:12]
-            if self.service_api_key
-            else ""
-        )
+        # Part of every memo key, so it is computed once here. The service API
+        # key is keyed into the digest rather than stored, so it never sits in a
+        # cache key or a log.
         material = json.dumps(
             [
                 self.enabled,
@@ -246,11 +241,12 @@ class ConnectionForwardingSettings:
                 self.header_templates,
                 self.jwt_audience,
                 self.service_auth,
-                key_digest,
+                self.service_api_key or "",
             ],
             separators=(",", ":"),
         )
-        object.__setattr__(self, "fingerprint", hashlib.sha256(material.encode()).hexdigest()[:16])
+        digest = hmac.new(_FINGERPRINT_SALT, material.encode(), "sha256").hexdigest()
+        object.__setattr__(self, "fingerprint", digest[:16])
 
     @classmethod
     def parse(cls, raw: Any, *, strict: bool = False) -> "ConnectionForwardingSettings":  # noqa: ANN401 - a value of unknown shape (JSON or user input)

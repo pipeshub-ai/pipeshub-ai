@@ -6,6 +6,7 @@ import pytest
 
 from app.agents.agent_loop.error_classification import classify_error
 from app.services.model_identity import metrics
+from app.services.model_identity.workload import Workload
 from app.services.model_identity.errors import (
     BUDGET_EXCEEDED_CODE,
     MODEL_ACCESS_DENIED_CODE,
@@ -332,6 +333,30 @@ class TestThrottledInvoke:
             with pytest.raises(RuntimeError):
                 await gateway.invoke(Llm(), [], provider="litellm")
         assert not gateway.breaker("litellm").is_open
+
+    @pytest.mark.parametrize(
+        ("workload", "reported"),
+        [(Workload.CHAT, False), (Workload.HEALTH_CHECK, False), (Workload.INDEXING, True), (None, True)],
+    )
+    async def test_only_background_refusals_feed_the_throttle(self, monkeypatch, alice, workload, reported) -> None:
+        from app.services.llm_gateway import gateway as gateway_module
+        from app.services.model_identity.call_context import ModelCallContext, bind_call_context
+
+        seen = []
+        monkeypatch.setattr(gateway_module, "report_background_refusal", seen.append)
+
+        class Llm:
+            async def ainvoke(self, messages, **kwargs) -> Never:
+                raise RuntimeError(f"Error code: 429 - {BUDGET_BODY!r}")
+
+        gateway = gateway_module.LLMGateway(2, failure_threshold=5)
+        with pytest.raises(RuntimeError):
+            if workload is None:
+                await gateway.invoke(Llm(), [], provider="litellm")
+            else:
+                async with bind_call_context(ModelCallContext(principal=alice, workload=workload)):
+                    await gateway.invoke(Llm(), [], provider="litellm")
+        assert bool(seen) is reported
 
     async def test_a_gateway_rate_limit_waits_for_retry_after(self, monkeypatch) -> None:
         from app.utils import streaming

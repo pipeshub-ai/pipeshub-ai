@@ -24,11 +24,13 @@ from app.services.base_client import (
     CircuitBreaker,
 )
 from app.services.llm_gateway.limiter import CrossLoopSemaphore
+from app.services.model_identity.call_context import peek_call_context
 from app.services.model_identity.errors import (
     GatewayPolicyError,
     policy_error_from_exception,
     report_background_refusal,
 )
+from app.services.model_identity.workload import WorkloadClass
 from app.telemetry.modules.llm_gateway_metrics import (
     LLM_BREAKER_OPEN,
     LLM_CALLS,
@@ -116,6 +118,12 @@ def llm_call_site(name: str) -> Generator[None, None, None]:
 
 def current_call_site() -> str:
     return _call_site.get()
+
+
+def _is_background_call() -> bool:
+    """An unbound call goes out as the service (``Workload.SYSTEM``), so it counts as background."""
+    ctx = peek_call_context()
+    return ctx is None or ctx.workload_class is WorkloadClass.BACKGROUND
 
 
 def _is_rate_limited(exc: BaseException, policy: GatewayPolicyError | None = None) -> bool:
@@ -268,7 +276,7 @@ class LLMGateway:
                     raise
                 except Exception as exc:
                     policy = policy_error_from_exception(exc)
-                    if policy is not None:
+                    if policy is not None and _is_background_call():
                         report_background_refusal(policy)
                     retry = _is_rate_limited(exc, policy) and attempt < RATE_LIMIT_ATTEMPTS - 1
                     if not retry:

@@ -70,9 +70,21 @@ _frame: contextvars.ContextVar[_Frame | None] = contextvars.ContextVar(
 )
 
 
+def _open_frame() -> _Frame | None:
+    """The innermost frame that is still open.
+
+    A task copies the variable when it starts, so one that outlives the request
+    that bound its identity still points at that closed frame.
+    """
+    frame = _frame.get()
+    while frame is not None and frame.closed:
+        frame = frame.parent
+    return frame
+
+
 def peek_call_context() -> ModelCallContext | None:
     """The bound context, or None. Does not count a missing binding."""
-    frame = _frame.get()
+    frame = _open_frame()
     return frame.ctx if frame is not None else None
 
 
@@ -82,7 +94,7 @@ def current_call_context() -> ModelCallContext:
     A model call with no binding is a boundary that was never wired. It still
     goes out, as PipesHub itself, and is counted so the gap is visible.
     """
-    frame = _frame.get()
+    frame = _open_frame()
     if frame is not None:
         return frame.ctx
     metrics.inc(metrics.IDENTITY_MISSING, Workload.SYSTEM.value)

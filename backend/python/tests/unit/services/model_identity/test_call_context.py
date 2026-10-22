@@ -180,3 +180,22 @@ def test_purpose_comes_from_the_usage_source_label(alice) -> None:
         assert current_llm_purpose() == "main"
         with llm_usage_source("compaction"):
             assert current_llm_purpose() == "compaction"
+
+
+async def test_a_task_that_outlives_its_binding_does_not_inherit_it(alice) -> None:
+    release = asyncio.Event()
+    seen = {}
+
+    async def child() -> None:
+        await release.wait()
+        seen["peek"] = peek_call_context()
+        seen["current"] = current_call_context()
+
+    async with bind_call_context(_ctx(alice)):
+        task = asyncio.create_task(child())
+        await asyncio.sleep(0)
+    release.set()
+    await task
+    assert seen["peek"] is None
+    assert seen["current"].principal.kind is PrincipalKind.SERVICE
+

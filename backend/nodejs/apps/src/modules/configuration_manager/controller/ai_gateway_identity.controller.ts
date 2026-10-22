@@ -7,10 +7,22 @@ import {
 } from '../../../libs/commands/ai_service/ai.service.command';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import { Logger } from '../../../libs/services/logger.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { loadConfigurationManagerConfig } from '../config/config';
-import { AI_MODEL_TYPES, AIServiceResponse } from '../constants/constants';
+import {
+  aiModelRoute,
+  AI_MODEL_TYPES,
+  AIServiceResponse,
+} from '../constants/constants';
 import { configPaths } from '../paths/paths';
+import {
+  AiConfigEventProducer,
+  EmbeddingModelConfiguredEvent,
+  Event,
+  EventType,
+  LLMConfiguredEvent,
+} from '../services/kafka_events.service';
 import { AiModelsConfigRepository } from '../services/aiModelsConfig.repository';
 import {
   IDENTITY_FORWARDING_KEYS,
@@ -18,7 +30,7 @@ import {
 } from '../utils/maskConfigSecrets';
 import { identityPolicyBodySchema } from '../validator/validators';
 
-const POLICY_CAS_MAX_RETRIES = 5;
+const logger = Logger.getInstance({ service: 'AiGatewayIdentityController' });
 
 const DEFAULT_POLICY = identityPolicyBodySchema.parse({});
 
@@ -80,24 +92,24 @@ export function putIdentityPolicy(keyValueStoreService: KeyValueStoreService) {
         typeof identityPolicyBodySchema.parse
       >;
       const encrypted = cipher().encrypt(JSON.stringify(policy));
-      for (let attempt = 0; attempt < POLICY_CAS_MAX_RETRIES; attempt++) {
-        const current = await keyValueStoreService.get<string>(
-          configPaths.aiGatewayIdentityPolicy,
-        );
-        const wrote = await keyValueStoreService.compareAndSet<string>(
-          configPaths.aiGatewayIdentityPolicy,
-          current ?? null,
-          encrypted,
-        );
-        if (wrote) {
-          res.status(200).json({ status: 'success', policy });
-          return;
-        }
+      // One compare-and-set against what this save started from. Retrying
+      // against the winner's value would overwrite a concurrent admin's edit.
+      const current = await keyValueStoreService.get<string>(
+        configPaths.aiGatewayIdentityPolicy,
+      );
+      const wrote = await keyValueStoreService.compareAndSet<string>(
+        configPaths.aiGatewayIdentityPolicy,
+        current ?? null,
+        encrypted,
+      );
+      if (!wrote) {
+        res.status(409).json({
+          status: 'error',
+          message: 'The policy changed while saving. Reload and try again.',
+        });
+        return;
       }
-      res.status(409).json({
-        status: 'error',
-        message: 'The policy changed while saving. Reload and try again.',
-      });
+      res.status(200).json({ status: 'success', policy });
     } catch (error) {
       next(error);
     }
@@ -121,6 +133,8 @@ type ConnectionForwardingBody = {
  */
 export function setConnectionIdentityForwarding(
   keyValueStoreService: KeyValueStoreService,
+  eventService: AiConfigEventProducer,
+  appConfig: AppConfig,
 ) {
   return async (
     req: Request,
@@ -132,9 +146,11 @@ export function setConnectionIdentityForwarding(
       const body = req.body as ConnectionForwardingBody;
       const keys = IDENTITY_FORWARDING_KEYS;
       let updated = 0;
+      const updatedTypes = new Set<string>();
       await new AiModelsConfigRepository(keyValueStoreService).mutate(
         (aiModels) => {
           updated = 0;
+          updatedTypes.clear();
           for (const modelType of AI_MODEL_TYPES) {
             for (const entry of aiModels[modelType] ?? []) {
               if (entry.connectionId !== connectionId) continue;
@@ -163,6 +179,7 @@ export function setConnectionIdentityForwarding(
               }
               entry.configuration = configuration;
               updated += 1;
+              updatedTypes.add(modelType);
             }
           }
         },
@@ -173,11 +190,51 @@ export function setConnectionIdentityForwarding(
           .json({ status: 'error', message: 'Connection not found' });
         return;
       }
+      await publishModelsReconfigured(eventService, appConfig, updatedTypes);
       res.status(200).json({ status: 'success', connectionId, updated });
     } catch (error) {
       next(error);
     }
   };
+}
+
+/**
+ * Running query processes keep their LLM and embedding clients until a
+ * configured event arrives, so a changed forwarding setting would otherwise
+ * apply only after a restart. The settings are already saved, so a failed
+ * publish is logged and does not fail the request.
+ */
+async function publishModelsReconfigured(
+  eventService: AiConfigEventProducer,
+  appConfig: AppConfig,
+  modelTypes: ReadonlySet<string>,
+): Promise<void> {
+  const credentialsRoute = `${appConfig.cmBackend}/${aiModelRoute}`;
+  const events: Event[] = [];
+  if ([...modelTypes].some((type) => type !== 'embedding')) {
+    events.push({
+      eventType: EventType.LLMConfiguredEvent,
+      timestamp: Date.now(),
+      payload: { credentialsRoute } as LLMConfiguredEvent,
+    });
+  }
+  if (modelTypes.has('embedding')) {
+    events.push({
+      eventType: EventType.EmbeddingModelConfiguredEvent,
+      timestamp: Date.now(),
+      payload: { credentialsRoute } as EmbeddingModelConfiguredEvent,
+    });
+  }
+  if (events.length === 0) return;
+  try {
+    await eventService.start();
+    for (const event of events) {
+      await eventService.publishEvent(event);
+    }
+    await eventService.stop();
+  } catch (error) {
+    logger.error('Failed to publish the identity forwarding change', { error });
+  }
 }
 
 export function previewIdentityForwarding(

@@ -90,3 +90,16 @@ async def test_pseudonym_key_prefers_the_dedicated_secret() -> None:
     assert await IdentityPolicyStore(_Config({})).pseudonym_key() is None
     cfg.fail = True
     assert await IdentityPolicyStore(cfg).pseudonym_key() is None
+
+
+def test_a_call_without_a_config_service_keeps_the_configured_runtime() -> None:
+    from app.services.model_identity import runtime as runtime_module
+
+    runtime_module.set_identity_runtime(None)
+    try:
+        configured = runtime_module.get_identity_runtime(object())
+        assert runtime_module.get_identity_runtime() is configured
+        assert runtime_module.get_identity_runtime(object()) is not configured
+    finally:
+        runtime_module.set_identity_runtime(None)
+
