@@ -441,7 +441,7 @@ class TestBuildConnectorStatsResponseExtraction:
 class TestBuildConnectorStatsResponseEntities:
     """Named entities have no record field; rows carry the record's entities stage status."""
 
-    def test_entities_status_is_counted_overall_and_per_type(self):
+    def test_entities_status_is_counted_overall_and_per_type(self) -> None:
         rows = [
             {"recordType": "FILE", "indexingStatus": "COMPLETED", "entitiesStatus": "FAILED", "cnt": 3},
             {"recordType": "FILE", "indexingStatus": "COMPLETED", "entitiesStatus": "COMPLETED", "cnt": 4},
@@ -454,7 +454,7 @@ class TestBuildConnectorStatsResponseEntities:
         assert by_type["FILE"]["entitiesStatus"]["FAILED"] == 3
         assert sum(by_type["MAIL"]["entitiesStatus"].values()) == 0
 
-    def test_rows_without_the_field_count_nothing(self):
+    def test_rows_without_the_field_count_nothing(self) -> None:
         rows = [{"recordType": "FILE", "indexingStatus": "COMPLETED", "cnt": 2}]
         result = build_connector_stats_response(rows=rows, statuses=STATUSES, org_id="o", connector_id="c")
         assert sum(result["stats"]["entitiesStatus"].values()) == 0
