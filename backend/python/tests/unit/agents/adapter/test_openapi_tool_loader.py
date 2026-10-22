@@ -101,6 +101,43 @@ class TestLoading:
             "Acme Helpdesk (API action; connect it under Workspace → Your actions)": "not_authenticated",
         }
 
+    async def test_a_missing_shared_credential_is_for_an_administrator(self, config: InMemoryConfigService) -> None:
+        instance = await _add_toolset(config, shared=True)
+        context = _context(config, [f"{instance.id}:list_tickets"])
+        await _load(context)
+        assert context.toolset_load_failures == {
+            "Acme Helpdesk (API action; ask an administrator to connect it under Workspace → Actions)": "not_authenticated",
+        }
+
+    async def test_one_broken_toolset_does_not_stop_the_others(
+        self, config: InMemoryConfigService, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        broken = await _add_toolset(config, name="Broken", scheme="none")
+        working = await _add_toolset(config, name="Working", scheme="none", instance_id="c" * 32)
+        real_build = service.build_executor
+
+        async def build(store: ApiToolsetStore, instance: ApiToolsetInstance, owner: str, **kw: Any) -> Any:  # noqa: ANN401
+            if instance.id == broken.id:
+                raise RuntimeError("config store is down")
+            return await real_build(store, instance, owner, **kw)
+
+        monkeypatch.setattr(service, "build_executor", build)
+        context = _context(config, [f"{broken.id}:list_tickets", f"{working.id}:list_tickets"])
+        registry = await _load(context)
+        assert [t.name for t in _tools(registry)] == ["api_working_list_tickets"]
+        assert context.toolset_load_failures == {"Broken (API action)": "error"}
+
+    async def test_an_unreadable_record_is_reported_not_raised(
+        self, config: InMemoryConfigService, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def unreadable(self: ApiToolsetStore, org_id: str, instance_id: str) -> None:
+            raise RuntimeError("config store is down")
+
+        monkeypatch.setattr(ApiToolsetStore, "get_instance", unreadable)
+        context = _context(config, [f"{'b' * 32}:list_tickets"])
+        assert _tools(await _load(context)) == []
+        assert context.toolset_load_failures == {f"API action {'b' * 32}": "error"}
+
     async def test_a_removed_toolset_is_skipped(self, config: InMemoryConfigService) -> None:
         registry = await _load(_context(config, [f"{'b' * 32}:list_tickets"]))
         assert _tools(registry) == []

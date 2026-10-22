@@ -23,7 +23,8 @@ if TYPE_CHECKING:
 
     from pipeshub_client import PipeshubClient
 
-pytestmark = [pytest.mark.integration, pytest.mark.ai_agents]
+# One worker: the tests share the API's call log and the platform flag their fixtures reset.
+pytestmark = [pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.xdist_group("api_toolsets")]
 
 # Seeded in the fixture's data: no model could know who is working on it.
 _TICKET = "ACME-7311"
@@ -70,7 +71,9 @@ class TestTheToolset:
 
     def test_an_unknown_operation_is_refused(self, agents_client: AgentsClient, api_toolset: dict[str, Any]) -> None:
         resp = agents_client.create_agent(name="it-api-toolset-refused", apiToolsetTools=[f"{api_toolset['id']}:create_ticket"])
-        assert resp.status_code == 400, resp.text[:500]
+        if resp.status_code < 300:
+            agents_client.delete_agent((json_body(resp).get("agent") or json_body(resp)).get("_key", ""))
+        assert resp.status_code == 400 and "create_ticket" in resp.text, resp.text[:500]
 
 
 class TestTicketQuestion:

@@ -158,9 +158,11 @@ export function formFromConfig(config: ApiToolsetConfig): ToolsetForm {
 export function rebaseFormOnSpec(form: ToolsetForm, spec: ApiCompiledSpec): ToolsetForm {
   const offered = new Set(spec.operations.map((op) => op.toolName));
   const scheme = spec.authSchemes.find((s) => s.name === form.authSchemeName);
+  // "No authentication" is offered whatever the spec says, so it survives a new spec.
+  const keepsNoAuth = form.authSchemeName === NO_AUTH_SCHEME.name;
   return {
     ...form,
-    authSchemeName: scheme ? scheme.name : formFromSpec(spec).authSchemeName,
+    authSchemeName: scheme || keepsNoAuth ? form.authSchemeName : formFromSpec(spec).authSchemeName,
     scopes: scheme ? form.scopes.filter((s) => s in scheme.scopes) : [],
     operations: form.operations.filter((name) => offered.has(name)),
   };

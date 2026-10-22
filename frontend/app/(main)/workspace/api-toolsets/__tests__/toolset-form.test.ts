@@ -245,3 +245,15 @@ describe('isLoopbackUrl', () => {
     expect(isLoopbackUrl(url)).toBe(expected);
   });
 });
+
+describe('rebaseFormOnSpec and no authentication', () => {
+  it('keeps "No authentication" when the spec is replaced', () => {
+    const form = { ...formFromSpec(compiledSpec()), authSchemeName: NO_AUTH_SCHEME.name };
+    expect(rebaseFormOnSpec(form, compiledSpec()).authSchemeName).toBe('none');
+  });
+
+  it('still falls back to the first scheme when the chosen one is gone', () => {
+    const form = { ...formFromSpec(compiledSpec()), authSchemeName: 'removedScheme' };
+    expect(rebaseFormOnSpec(form, compiledSpec()).authSchemeName).toBe('apiKey');
+  });
+});

@@ -230,8 +230,7 @@ async def _save(request: Request, body: InstanceRequest, instance_id: str, exist
                 # A blank secret on an edit keeps the one already stored.
                 oauth_app = oauth_app.model_copy(update={"client_secret": current.client_secret})
             await store.save_oauth_client(instance_id, oauth_app)
-    if existing is not None and existing.auth_scheme.name != instance.auth_scheme.name:
-        # Credentials for another scheme can't authenticate this one.
+    if existing is not None and not service.credentials_still_apply(existing, instance):
         await store.delete_instance_credentials(instance_id)
     await store.save_instance(instance)
     return await _admin_view(store, instance, user_id)

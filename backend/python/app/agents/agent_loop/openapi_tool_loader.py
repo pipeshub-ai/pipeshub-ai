@@ -14,7 +14,7 @@ from app.agent_loop_lib.tools.errors import (
     DuplicateToolNameError,
     DuplicateToolPathError,
 )
-from app.agents.agent_loop.openapi_tool_adapter import OpenAPIToolAdapter
+from app.agents.agent_loop.openapi_tool_adapter import OpenAPIToolAdapter, connect_hint
 from app.agents.agent_loop.tool_approvals import TOOLSET_TOOLS_BY_PATH, ApprovalTarget
 from app.agents.mcp.naming import build_namespaced_tool_name, namespace_key, unique_keys
 from app.agents.openapi import attachments, service
@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 __all__ = ["OpenAPIToolProvider"]
 
 _TOOL_PREFIX = "api_"
-WHERE_TO_CONNECT = "connect it under Workspace → Your actions"
 
 
 class OpenAPIToolProvider:
@@ -43,14 +42,28 @@ class OpenAPIToolProvider:
             return
         state_logger = context.logger or logger
         store = ApiToolsetStore(context.config_service)
-        instances = [i for i in [await store.get_instance(context.org_id, iid) for iid in selected] if i is not None]
-        if len(instances) < len(selected):
-            state_logger.warning("OpenAPIToolProvider: %d attached API toolset(s) no longer exist", len(selected) - len(instances))
+        instances: list[ApiToolsetInstance] = []
+        for instance_id in selected:
+            try:
+                instance = await store.get_instance(context.org_id, instance_id)
+            except Exception:
+                # The other attachments and the rest of the agent still load.
+                state_logger.exception("OpenAPIToolProvider: couldn't read API action %s", instance_id)
+                context.toolset_load_failures[f"API action {instance_id}"] = "error"
+                continue
+            if instance is None:
+                state_logger.warning("OpenAPIToolProvider: attached API action %s no longer exists", instance_id)
+                continue
+            instances.append(instance)
         keys = unique_keys(
             instances, key_of=lambda i: namespace_key(None, i.name), id_of=lambda i: i.id, created_of=lambda i: i.created_at,
         )
         for instance in instances:
-            await self._load_one(registry, context, store, instance, selected[instance.id], keys[instance.id])
+            try:
+                await self._load_one(registry, context, store, instance, selected[instance.id], keys[instance.id])
+            except Exception:
+                state_logger.exception("OpenAPIToolProvider: couldn't load API action %s", instance.name)
+                context.toolset_load_failures[f"{instance.name} (API action)"] = "error"
 
     async def _load_one(
         self,
@@ -61,7 +74,7 @@ class OpenAPIToolProvider:
         tool_names: list[str],
         key: str,
     ) -> None:
-        failure_key = f"{instance.name} (API action; {WHERE_TO_CONNECT})"
+        failure_key = f"{instance.name} (API action; {connect_hint(instance)})"
         needs_own_credential = not instance.use_shared_credential and instance.auth_scheme.type is not AuthType.NONE
         if context.is_service_account and needs_own_credential:
             # Caught when the agent is saved; an older attachment can still get here.

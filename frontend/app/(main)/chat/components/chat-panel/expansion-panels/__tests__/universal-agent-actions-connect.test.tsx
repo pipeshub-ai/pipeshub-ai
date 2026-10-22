@@ -277,11 +277,35 @@ describe('API actions in the chat’s Actions tab', () => {
   });
 
   it('lists the other actions when API actions cannot be loaded', async () => {
+    // A failure keeps the last list, and the panel's cache outlives a test: start from an empty one.
+    await openActionsTab();
+    cleanup();
+    clockOffset += 10 * 60 * 1000;
     apiActionsApi.listInstances.mockRejectedValue(new Error('labs flag off'));
 
     await openActionsTab();
     expect(screen.getByText('Slack')).toBeTruthy();
     expect(screen.queryByTestId('api-action-connect-row')).toBeNull();
+  });
+
+  it('keeps the API actions it had when a refresh fails', async () => {
+    apiActionsApi.listInstances.mockResolvedValue([apiAction({})]);
+    await openActionsTab();
+    expect(await screen.findByText('Orders API')).toBeTruthy();
+    cleanup();
+
+    clockOffset += 10 * 60 * 1000;
+    apiActionsApi.listInstances.mockRejectedValue(new Error('network blip'));
+    await openActionsTab();
+    await waitFor(() => expect(apiActionsApi.listInstances).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Orders API')).toBeTruthy();
+  });
+
+  it('finds an operation by the summary its row shows', async () => {
+    apiActionsApi.listInstances.mockResolvedValue([apiAction({})]);
+    await openActionsTab();
+    fireEvent.change(screen.getByPlaceholderText('Search actions'), { target: { value: 'list orders' } });
+    expect(await screen.findByText('Orders API')).toBeTruthy();
   });
 
   it('does not ask for API actions with the flag off', async () => {

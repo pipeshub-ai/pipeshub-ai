@@ -44036,7 +44036,11 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ApiToolsetPayload'
+              # The spec is required here; an edit may leave it out to keep the stored one.
+              allOf:
+                - $ref: '#/components/schemas/ApiToolsetPayload'
+                - type: object
+                  required: [spec]
       responses:
         '200':
           description: The new toolset

@@ -383,6 +383,7 @@ export function UniversalAgentResourcesPanel({
     async (page: number, { quiet = false }: { quiet?: boolean } = {}) => {
       if (isFetchingPageRef.current) return undefined;
       isFetchingPageRef.current = true;
+      const previousApiActions = _actionsPageCache.apiActions;
 
       if (page === 1) {
         if (!quiet) {
@@ -413,9 +414,10 @@ export function UniversalAgentResourcesPanel({
             )
           ),
           page === 1 ? loadActionsToConnect() : Promise.resolve(_actionsPageCache.toConnect),
-          // Any failure (the labs flag off on the server, too) means no API actions.
+          // A failed request keeps the last list rather than emptying it; the cache's expiry
+          // retries it. (Retrying at once would loop: this effect re-runs after every load.)
           page === 1 && apiActionsEnabled
-            ? ApiToolsetsApi.listInstances().catch(() => [])
+            ? ApiToolsetsApi.listInstances().catch(() => previousApiActions)
             : Promise.resolve(_actionsPageCache.apiActions),
         ]);
         const result = results[results.length - 1]!;
@@ -659,7 +661,8 @@ export function UniversalAgentResourcesPanel({
           fullNames: g.fullNames.filter((key) => {
             if (!search.trim()) return true;
             const q = search.toLowerCase();
-            const desc = (g.toolDescriptions?.[key] ?? '').toLowerCase();
+            // The row shows `toolLabels` (an API action's operation summary), so search it too.
+            const desc = `${g.toolDescriptions?.[key] ?? ''} ${g.toolLabels?.[key] ?? ''}`.toLowerCase();
             // Strip the instanceId prefix when comparing against the search term
             const bare = bareToolFullName(key);
             return bare.toLowerCase().includes(q) || g.label.toLowerCase().includes(q) || desc.includes(q);

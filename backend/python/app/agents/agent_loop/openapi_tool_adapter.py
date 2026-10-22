@@ -37,6 +37,13 @@ _MAX_ERROR_BODY_CHARS = 2000
 _MAX_SUMMARY_CHARS = 200
 
 
+def connect_hint(instance: ApiToolsetInstance) -> str:
+    """Who can connect `instance`: a shared credential is only an administrator's to store."""
+    if instance.use_shared_credential:
+        return "ask an administrator to connect it under Workspace → Actions"
+    return "connect it under Workspace → Your actions"
+
+
 class OpenAPIToolAdapter(SchemaShallowValidationMixin, Tool):
     def __init__(
         self,
@@ -112,7 +119,7 @@ class OpenAPIToolAdapter(SchemaShallowValidationMixin, Tool):
         except (RequestBuildError, ApiCallError) as e:
             return ToolOutput(success=False, error=str(e))
         except ApiToolsetAuthError as e:
-            return ToolOutput(success=False, error=f"{e} Connect it under Workspace → Your actions.")
+            return ToolOutput(success=False, error=f"{e} {connect_hint(self._instance).capitalize()}.")
         except Exception as e:
             logger.warning("API toolset call %s failed: %s", self.name, type(e).__name__, exc_info=True)
             return ToolOutput(success=False, error=f"The call to {self._instance.name} failed ({type(e).__name__}).")

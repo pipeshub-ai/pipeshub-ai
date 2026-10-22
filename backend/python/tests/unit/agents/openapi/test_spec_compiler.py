@@ -144,6 +144,15 @@ class TestOperations:
         assert [op.tool_name for op in compiled.operations] == ["a"]
         assert "GET /b: skipped" in compiled.warnings[0] and "never fetched" in compiled.warnings[0]
 
+    def test_a_path_ref_to_something_else_skips_only_that_path(self) -> None:
+        spec = _spec({
+            "/a": {"get": {"operationId": "a"}},
+            "/b": {"$ref": "#/info/title"},
+        })
+        compiled = compile_spec(spec)
+        assert [op.tool_name for op in compiled.operations] == ["a"]
+        assert compiled.warnings == ["/b: skipped, its $ref doesn't point at a path item."]
+
     def test_remote_ref_inside_a_schema_skips_the_operation(self) -> None:
         spec = _spec({
             "/a": {"get": {"operationId": "a"}},
@@ -276,6 +285,12 @@ class TestSecuritySchemes:
             ("o.authorizationCode", AuthType.OAUTH2_AUTHORIZATION_CODE),
         ]
         assert schemes[1].authorization_url == "https://auth/a"
+
+    def test_scopes_written_as_a_list_are_ignored(self) -> None:
+        spec = _spec({"/a": {"get": {"operationId": "a"}}}, components={"securitySchemes": {"o": {"type": "oauth2", "flows": {
+            "clientCredentials": {"tokenUrl": "https://auth/t", "scopes": ["read"]},
+        }}}})
+        assert compile_spec(spec).auth_schemes[0].scopes == {}
 
     def test_unsupported_schemes_are_reported(self) -> None:
         spec = _spec({"/a": {"get": {"operationId": "a"}}}, components={"securitySchemes": {

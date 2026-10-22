@@ -199,6 +199,17 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   const toolsetsSearchRef = useRef('');
   const staticResourcesLoadedRef = useRef(false);
 
+  // A row's connect shortcut opens Your actions in another tab: pick up what was connected
+  // there when the builder gets focus back. A failed request keeps the list it has.
+  useEffect(() => {
+    const refresh = () => {
+      if (!selectApiToolsetsEnabled(useFeatureFlagsStore.getState())) return;
+      ApiToolsetsApi.listInstances().then(setApiToolsets, () => {});
+    };
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, []);
+
   const refreshToolsets = useCallback(
     async (agentKey?: string | null, isServiceAccount?: boolean, search?: string) => {
       toolsetsSearchRef.current = search ?? '';

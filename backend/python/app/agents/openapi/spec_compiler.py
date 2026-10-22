@@ -202,6 +202,9 @@ def _compile_operations(document: dict[str, Any], resolver: _Resolver, warnings:
         except _SkipOperation as e:
             warnings.append(f"{path}: skipped, {e}.")
             continue
+        if not isinstance(path_item, dict):
+            warnings.append(f"{path}: skipped, its $ref doesn't point at a path item.")
+            continue
         for method in HTTP_METHODS:
             operation = path_item.get(method)
             if not isinstance(operation, dict):
@@ -443,7 +446,7 @@ def _auth_scheme(name: str, scheme: dict[str, Any]) -> list[AuthScheme]:
                 description=description,
                 token_url=flow["tokenUrl"],
                 authorization_url=flow.get("authorizationUrl") if isinstance(flow.get("authorizationUrl"), str) else None,
-                scopes={str(k): str(v) for k, v in (flow.get("scopes") or {}).items()},
+                scopes={str(k): str(v) for k, v in flow["scopes"].items()} if isinstance(flow.get("scopes"), dict) else {},
             ))
         return found
     return []

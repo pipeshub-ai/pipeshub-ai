@@ -218,6 +218,25 @@ class TestInstances:
             "authSchemeName": "bearerAuth", "operations": ["get_ticket"]})
         assert api.call("GET", "/instances").json()["instances"][0]["isConnected"] is False
 
+    @pytest.mark.parametrize(
+        ("base_url", "still_connected"),
+        [
+            ("https://helpdesk.acme.test/v2", True),
+            ("https://helpdesk.acme.test:443", True),
+            ("https://other.acme.test", False),
+            ("http://helpdesk.acme.test", False),
+            ("https://helpdesk.acme.test:8443", False),
+        ],
+    )
+    def test_moving_the_api_to_another_host_drops_old_credentials(
+        self, api: Harness, base_url: str, still_connected: bool,
+    ) -> None:
+        created = api.create()
+        api.call("PUT", f"/instances/{created['id']}/credentials", json={"apiKey": "k"})
+        api.call("PUT", f"/instances/{created['id']}", user=ADMIN, json={
+            "name": "Acme", "baseUrl": base_url, "operations": ["get_ticket"]})
+        assert api.call("GET", "/instances").json()["instances"][0]["isConnected"] is still_connected
+
     def test_a_toolset_an_agent_uses_is_not_deleted(self, api: Harness) -> None:
         created = api.create()
         api.used_by = ["Support bot", "Triage", "Escalations", "Night shift"]

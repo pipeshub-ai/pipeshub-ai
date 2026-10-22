@@ -13,7 +13,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlsplit
 
 from app.agents.constants.api_toolset_constants import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -207,6 +207,23 @@ def _selected_operations(available: list[CompiledOperation], names: list[str]) -
 # ---------------------------------------------------------------------------
 # Credentials
 # ---------------------------------------------------------------------------
+
+
+def credentials_still_apply(old: ApiToolsetInstance, new: ApiToolsetInstance) -> bool:
+    """False when an edit changes the scheme, or where the credentials would be sent: a
+    credential a member gave for one host must not go to another without them reconnecting."""
+    if old.auth_scheme.name != new.auth_scheme.name:
+        return False
+    if _origin(old.base_url) != _origin(new.base_url):
+        return False
+    return _origin(resolve_url(old.base_url, old.auth_scheme.token_url)) == _origin(
+        resolve_url(new.base_url, new.auth_scheme.token_url))
+
+
+def _origin(url: str) -> tuple[str, str, Optional[int]]:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, (parts.hostname or "").lower(), parts.port or {"http": 80, "https": 443}.get(scheme)
 
 
 def credential_owner(instance: ApiToolsetInstance, user_id: str) -> str:

@@ -108,3 +108,22 @@ class _Settings:
 @pytest.mark.parametrize(("flags", "enabled"), [(None, False), ({}, False), ({"ENABLE_API_TOOLSETS": True}, True)])
 async def test_the_labs_flag_is_off_by_default(flags: dict[str, bool] | None, enabled: bool) -> None:
     assert await is_api_toolsets_enabled(_Settings(flags)) is enabled  # type: ignore[arg-type]
+
+
+class TestCredentialsStillApply:
+    def _oauth(self, base_url: str, token_url: str) -> ApiToolsetInstance:
+        scheme = AuthScheme(name="cc", type=AuthType.OAUTH2_CLIENT_CREDENTIALS, token_url=token_url)
+        return _instance(scheme).model_copy(update={"base_url": base_url})
+
+    @pytest.mark.parametrize(
+        ("token_url", "applies"),
+        [("/oauth/token", True), ("https://wiki.acme.test/oauth/v2/token", True), ("https://login.evil.test/token", False)],
+    )
+    def test_a_token_url_on_another_host_drops_them(self, token_url: str, applies: bool) -> None:
+        old = self._oauth("https://wiki.acme.test", "/oauth/token")
+        assert service.credentials_still_apply(old, self._oauth("https://wiki.acme.test", token_url)) is applies
+
+    def test_another_scheme_drops_them(self) -> None:
+        old = _instance(AuthScheme(name="k", type=AuthType.API_KEY, location="header", param_name="K"))
+        new = _instance(AuthScheme(name="b", type=AuthType.HTTP_BEARER))
+        assert service.credentials_still_apply(old, new) is False

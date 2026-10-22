@@ -680,7 +680,8 @@ export function AgentScopedResourcesPanel({
           fullNames: g.fullNames.filter((fn) => {
             if (!search.trim()) return true;
             const q = search.toLowerCase();
-            const desc = (g.toolDescriptions?.[fn] ?? '').toLowerCase();
+            // The row shows `toolLabels` (an API action's operation summary), so search it too.
+            const desc = `${g.toolDescriptions?.[fn] ?? ''} ${g.toolLabels?.[fn] ?? ''}`.toLowerCase();
             return (
               fn.toLowerCase().includes(q) ||
               g.label.toLowerCase().includes(q) ||
