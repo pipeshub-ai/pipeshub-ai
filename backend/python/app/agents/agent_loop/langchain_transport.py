@@ -210,6 +210,25 @@ def _is_network_error(exc: Exception) -> bool:
     return any(hint in type_name for hint in _NETWORK_ERROR_NAME_HINTS)
 
 
+# Error types a provider reports for its own transient failure inside a stream that opened with HTTP 200:
+# OpenAI/Azure's `error` event ("server_error", raised as `openai.APIError` with no status code) and Anthropic's
+# (`api_error`, `overloaded_error`, raised as `APIStatusError` carrying the stream's 200).
+_TRANSIENT_PROVIDER_ERROR_TYPES = frozenset({
+    "server_error", "internal_server_error", "api_error", "overloaded_error",
+    "rate_limit_error", "rate_limit_exceeded", "service_unavailable",
+})
+
+
+def _is_transient_provider_error(exc: Exception) -> bool:
+    body = getattr(exc, "body", None)
+    nested = body.get("error") if isinstance(body, dict) else None
+    labels = [getattr(exc, "type", None), getattr(exc, "code", None)]
+    for source in (body, nested):
+        if isinstance(source, dict):
+            labels += [source.get("type"), source.get("code")]
+    return any(isinstance(v, str) and v.lower() in _TRANSIENT_PROVIDER_ERROR_TYPES for v in labels)
+
+
 # Class names in a chat model's MRO that identify the provider family, matched
 # by name so this module keeps no hard `isinstance`/import dependency on
 # `langchain_ollama`/`langchain_openai` being installed. Matching the whole MRO
@@ -542,9 +561,12 @@ class LangChainTransport(LLMTransport):
         # default (`transport/base.py`) and the native
         # `AnthropicTransport._RETRYABLE_STATUS_CODES` — retryable=True
         # here only gets a retry if that config list also allows the code.
+        # Below 400 (or no status) the HTTP exchange itself succeeded or never happened, so the error came from the
+        # network or from inside the stream, and its type says whether it is transient.
         retryable = (
             status_code in (429, 500, 502, 503, 504, 529)
-            if status_code else _is_network_error(exc)
+            if status_code and status_code >= 400
+            else _is_network_error(exc) or _is_transient_provider_error(exc)
         )
         # The class name keeps the cause classifiable when the provider
         # raised with an empty message (a bare `TimeoutError()` read as an
