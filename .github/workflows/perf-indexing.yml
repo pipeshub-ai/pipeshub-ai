@@ -92,6 +92,7 @@ jobs:
             fi
             echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
           done
+          echo "PIPESHUB_BUILD_TARGET=runtime-slim" >> "$GITHUB_ENV"
 
       - name: Build Neo4j stack images
         working-directory: deployment/docker-compose

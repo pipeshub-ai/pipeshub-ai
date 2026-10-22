@@ -1,0 +1,9 @@
+ignored:
+  # Apt packages in these images track Debian; pinning every one blocks
+  # security updates that the base rebuild is meant to pick up.
+  - DL3008
+  # Base images are selected with a build-arg (a digest for upstream images,
+  # a content-hash tag for our own).
+  - DL3006
+  # rustup and the Neo4j key are installed from their publishers' scripts.
+  - DL4001

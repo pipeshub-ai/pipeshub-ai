@@ -432,9 +432,16 @@ the table says.
 ## Container outbound connectivity
 
 PipesHub starts and indexes documents **without** outbound internet when models are
-already cached locally. The default **slim** image downloads the embedding model
-on first use, so leave `HF_HUB_OFFLINE` unset there. Set `HF_HUB_OFFLINE=1` only
-on air-gapped hosts that already have the models (or use the full `latest` image).
+already cached locally. The default **slim** image does not bake the embedding
+model, the reranker, or Chromium. It downloads the models on first use, and
+Chromium into `/data/pipeshub/ms-playwright` the first time a crawl or the
+browser sandbox needs it (set `PIPESHUB_PREFETCH_BROWSERS=true` to do that at
+startup). Leave `HF_HUB_OFFLINE` unset on slim. The full `latest` image already
+contains the models and Chromium, so it can run with `HF_HUB_OFFLINE=1` and
+without the Playwright CDN. Slim is about 1.5 GB compressed once the dependency
+layers settle; full is larger by the model and browser layers. Image targets
+are `runtime-slim` and `runtime`. Uncompressed budgets enforced in CI are 7 GiB
+(slim) and 10 GiB (full).
 **Cloud LLMs** (Gemini, OpenAI,
 Anthropic, …) and **external connectors** (Google, Slack, Microsoft, …) require
 the **`pipeshub-ai` container** to reach the public internet — not just your
@@ -498,8 +505,7 @@ docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai up --build -d
 docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
 ```
 
-The main `Dockerfile` pulls pre-built base layers from `pipeshubai/pipeshub-ai-base:python-deps` and `pipeshubai/pipeshub-ai-base:runtime` (see [`Dockerfile.base`](Dockerfile.base) for build/push instructions).  
-Override the base images with `PYTHON_DEPS_IMAGE` / `RUNTIME_BASE_IMAGE` environment variables to use locally built tags.
+The main `Dockerfile` pulls pre-built base layers from `pipeshubai/pipeshub-ai-base:python-deps` and `:runtime` (see [`Dockerfile.base`](../../Dockerfile.base)). The full target also copies `:models-bge`. Override with `PYTHON_DEPS_IMAGE`, `RUNTIME_BASE_IMAGE`, and `MODELS_IMAGE`. `PIPESHUB_BUILD_TARGET=runtime-slim` builds the slim target; the default is `runtime` (full). An empty `MODELS_IMAGE` is not passed through: Compose substitutes `models-download`, which builds that layer locally.
 
 ---
 
