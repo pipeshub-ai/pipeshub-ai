@@ -210,6 +210,25 @@ def _is_network_error(exc: Exception) -> bool:
     return any(hint in type_name for hint in _NETWORK_ERROR_NAME_HINTS)
 
 
+# Error types a provider reports for its own transient failure inside a stream that opened with HTTP 200:
+# OpenAI/Azure's `error` event ("server_error", raised as `openai.APIError` with no status code) and Anthropic's
+# (`api_error`, `overloaded_error`, raised as `APIStatusError` carrying the stream's 200).
+_TRANSIENT_PROVIDER_ERROR_TYPES = frozenset({
+    "server_error", "internal_server_error", "api_error", "overloaded_error",
+    "rate_limit_error", "rate_limit_exceeded", "service_unavailable",
+})
+
+
+def _is_transient_provider_error(exc: Exception) -> bool:
+    body = getattr(exc, "body", None)
+    nested = body.get("error") if isinstance(body, dict) else None
+    labels = [getattr(exc, "type", None), getattr(exc, "code", None)]
+    for source in (body, nested):
+        if isinstance(source, dict):
+            labels += [source.get("type"), source.get("code")]
+    return any(isinstance(v, str) and v.lower() in _TRANSIENT_PROVIDER_ERROR_TYPES for v in labels)
+
+
 # Class names in a chat model's MRO that identify the provider family, matched
 # by name so this module keeps no hard `isinstance`/import dependency on
 # `langchain_ollama`/`langchain_openai` being installed. Matching the whole MRO
@@ -521,15 +540,15 @@ class LangChainTransport(LLMTransport):
         return has_tool_result_images(messages)
 
     def _wrap_error(
-        self, exc: Exception, context: str, *, retryable: bool | None = None,
+        self, exc: Exception, context: str, *, partial_output: bool = False,
     ) -> TransportError:
         """Wrap a provider exception as a `TransportError`.
 
-        `retryable=False` forces a non-retryable result regardless of the
-        exception type. `stream()` passes it once any delta has reached the
-        client: `retry_model_call` (the PRE_MODEL_CALL wrapper) re-runs the
-        WHOLE model call, so a transient error arriving mid-stream would
-        otherwise replay text the user has already seen.
+        `stream()` passes `partial_output=True` once any delta has reached
+        the caller. The PRE_MODEL_CALL retry wrapper re-runs the WHOLE model
+        call, so a transient error arriving mid-stream stays non-retryable
+        until `Agent.step()` has retracted what the client was shown (see
+        `TransportError.discard_partial_output`).
         """
         status_code = getattr(exc, "status_code", None)
         # 529 is Anthropic's non-standard "overloaded_error" status —
@@ -542,18 +561,23 @@ class LangChainTransport(LLMTransport):
         # default (`transport/base.py`) and the native
         # `AnthropicTransport._RETRYABLE_STATUS_CODES` — retryable=True
         # here only gets a retry if that config list also allows the code.
-        if retryable is None:
-            retryable = (
-                status_code in (429, 500, 502, 503, 504, 529)
-                if status_code else _is_network_error(exc)
-            )
+        # Below 400 (or no status) the HTTP exchange itself succeeded or never happened, so the error came from the
+        # network or from inside the stream, and its type says whether it is transient.
+        http_failed = bool(status_code) and status_code >= 400
+        retryable = (
+            status_code in (429, 500, 502, 503, 504, 529)
+            if http_failed
+            else _is_network_error(exc) or _is_transient_provider_error(exc)
+        )
         # The class name keeps the cause classifiable when the provider
         # raised with an empty message (a bare `TimeoutError()` read as an
         # unknown failure).
         return TransportError(
             f"LangChain transport error ({context}): {type(exc).__name__}: {exc}",
-            status_code=status_code,
+            # A stream's opening 200 is not the failure's status; with None the retry wrapper uses `retryable`.
+            status_code=status_code if http_failed else None,
             retryable=retryable,
+            partial_output=partial_output,
         )
 
     def _api_shape_fallback(self, exc: Exception) -> tuple[BaseChatModel, str] | None:
@@ -1061,9 +1085,7 @@ class LangChainTransport(LLMTransport):
                     # already saw output — so that is gated on `emitted`,
                     # letting a disconnect after nothing but a role-only
                     # chunk still be retried.
-                    raise self._wrap_error(
-                        exc, "stream", retryable=False if emitted else None,
-                    ) from exc
+                    raise self._wrap_error(exc, "stream", partial_output=emitted) from exc
                 if self._relocates_tool_images(exc, messages):
                     original_exc = exc
                     relocate = True

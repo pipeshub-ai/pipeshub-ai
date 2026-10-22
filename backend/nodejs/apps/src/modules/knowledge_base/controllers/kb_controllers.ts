@@ -59,6 +59,57 @@ const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
 
+const KNOWLEDGE_HUB_MIN_QUERY_LENGTH = 2;
+const KNOWLEDGE_HUB_MAX_QUERY_LENGTH = 500;
+
+/**
+ * The search text for a knowledge-hub listing, after trim.
+ * Missing stays a browse. Empty, whitespace, or one character is the same
+ * minimum-length error the connector service returns. The cap matches that
+ * service; HTML is rejected earlier by the XSS middleware.
+ */
+function knowledgeHubQueryText(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  // Express turns `?q=a&q=b` into an array. The connector sees one string,
+  // the same join URLSearchParams used to forward. An object would stringify
+  // to "[object Object]" and pass the length check.
+  if (Array.isArray(raw)) {
+    const parts: string[] = [];
+    for (const part of raw) {
+      if (typeof part !== 'string') {
+        throw new BadRequestError('Search query must be text');
+      }
+      parts.push(part);
+    }
+    return parts.join(',');
+  }
+  if (typeof raw !== 'string') {
+    throw new BadRequestError('Search query must be text');
+  }
+  return raw;
+}
+
+export function knowledgeHubSearchQuery(raw: unknown): string | undefined {
+  const text = knowledgeHubQueryText(raw);
+  if (text === undefined) {
+    return undefined;
+  }
+  const q = text.trim();
+  if (q.length < KNOWLEDGE_HUB_MIN_QUERY_LENGTH) {
+    throw new BadRequestError(
+      `Search query must be at least ${KNOWLEDGE_HUB_MIN_QUERY_LENGTH} characters`,
+    );
+  }
+  if (q.length > KNOWLEDGE_HUB_MAX_QUERY_LENGTH) {
+    throw new BadRequestError(
+      `Search query too long (max: ${KNOWLEDGE_HUB_MAX_QUERY_LENGTH} characters)`,
+    );
+  }
+  return q;
+}
+
 /**
  * Get Knowledge Hub nodes (unified browse API)
  * Supports browsing KBs, apps, folders, record groups, and records
@@ -84,6 +135,7 @@ export const getKnowledgeHubNodes =
 
       // Build query string from request query params
       const queryParams = new URLSearchParams();
+      const searchQuery = knowledgeHubSearchQuery(req.query.q);
 
       // Map query params (camelCase to snake_case for Python backend)
       const paramMapping: { [key: string]: string } = {
@@ -108,10 +160,16 @@ export const getKnowledgeHubNodes =
       };
 
       for (const [key, snakeKey] of Object.entries(paramMapping)) {
+        if (key === 'q') {
+          continue;
+        }
         const value = req.query[key];
         if (value) {
           queryParams.append(snakeKey, value as string);
         }
+      }
+      if (searchQuery !== undefined) {
+        queryParams.append('q', searchQuery);
       }
 
       if (req.query.onlyContainers !== undefined) {

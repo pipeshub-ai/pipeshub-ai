@@ -26,7 +26,7 @@ from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.api.middlewares.token_policy import is_service_token
 from app.api.routes.chatbot import (
     get_llm_for_chat,
@@ -70,6 +70,7 @@ from app.modules.retrieval.selection_scope import (
     max_selection_nodes,
     prepare_turn_scope,
     selection_error,
+    within_connection,
 )
 from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
@@ -399,6 +400,25 @@ async def _resolve_service_account_caller_identity(
             enriched_user_info, caller_name, caller_email,
         )
     return enriched_user_info
+
+
+async def _service_account_artifact_owner(
+    user_context: dict[str, Any], graph_provider: IGraphDBProvider, org_id: str,
+) -> str | None:
+    """The caller who owns what a service-account agent makes in their chat.
+
+    The agent runs as its creator, but the conversation is the caller's, and so
+    are the files made in it. Only a signed-in user of the agent's org can own
+    them: a service JWT (the Slack bot's) has no user to grant them to, so
+    they stay the creator's, as do those of a caller who is not found.
+    """
+    if user_context.get("isServiceAccount"):
+        return None
+    caller_id = user_context.get("userId")
+    caller = await get_user_or_503(graph_provider, caller_id)
+    if not caller or str(caller.get("orgId") or "") != str(org_id or ""):
+        return None
+    return caller_id
 
 
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
@@ -791,6 +811,7 @@ async def _resolve_turn_filters(
     org_id: str,
     logger: Logger,
     project_sources: dict[str, list[str]] | None = None,
+    connection_sources: dict[str, list[str]] | None = None,
     retrieval_user_id: str | None = None,
     searches_knowledge: bool = True,
 ) -> dict[str, Any]:
@@ -839,8 +860,10 @@ async def _resolve_turn_filters(
         )
     # A turn with internal search switched off never uses the selection, so
     # one that cannot be searched must not fail it. A saved agent is bound to
-    # its sources even without a selection.
-    if searches_knowledge and (has_selection(filters) or not is_universal_agent):
+    # its sources even without a selection, and a connected app to its limit.
+    if searches_knowledge and (
+        has_selection(filters) or connection_sources is not None or not is_universal_agent
+    ):
         agent_sources = None
         if not is_universal_agent:
             # The caller's project collection was admitted above.
@@ -848,7 +871,10 @@ async def _resolve_turn_filters(
         filters = await prepare_turn_scope(
             graph_provider, retrieval_user_id or caller_user_id, org_id, filters,
             agent_sources=agent_sources, project_sources=project_sources,
+            connection_sources=connection_sources,
         )
+    elif connection_sources is not None:
+        filters = within_connection(filters, connection_sources)
     return filters
 
 
@@ -3900,6 +3926,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             _apply_user_context_gate(enriched_user_info, enabled=user_context_enabled)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
             is_service_account = False
+            artifact_owner_user_id = None
 
         else:
             actions_enabled = mcp_enabled = None
@@ -3912,6 +3939,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             if not agent:
                 raise AgentNotFoundError(agent_id)
             is_service_account = agent.get("isServiceAccount", False)
+            artifact_owner_user_id = None
 
             if is_service_account:
                 enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
@@ -3919,6 +3947,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 )
                 enriched_user_info = await _resolve_service_account_caller_identity(
                     enriched_user_info, chat_query, user_context, graph_provider, logger,
+                )
+                artifact_owner_user_id = await _service_account_artifact_owner(
+                    user_context, graph_provider, org_key,
                 )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
                 logger.debug(f"loaded service account agent. enriched_user_info: {enriched_user_info}")
@@ -4314,6 +4345,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         org_id=org_key,
                         logger=logger,
                         project_sources=_project_sources(chat_query.allowedFilters),
+                        connection_sources=connection_limit(getattr(request.state, "user", None)),
                         retrieval_user_id=enriched_user_info.get("userId"),
                         searches_knowledge=caps.internal_search,
                     )
@@ -4411,6 +4443,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     attachments=chat_query.attachments,
                     previous_conversations=chat_query.previousConversations,
                     logger=logger,
+                    connection_sources=connection_limit(getattr(request.state, "user", None)),
                 )
                 # Build query info
                 query_info = {
@@ -4437,6 +4470,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "toolsetConfigs": toolset_configs,
                     "conversationId": chat_query.conversationId,
                     "is_service_account": is_service_account,
+                    "artifact_owner_user_id": artifact_owner_user_id,
                     "isPlaceholderAgent": is_placeholder,
                     "modelName": model_name,
                     "modelKey": model_key,

@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 import types
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,6 +24,19 @@ def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) ->
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_component_registry() -> Iterator[None]:
+    """start_kafka_consumers and the retries share module-level state with /health."""
+    import app.connectors_main as cm
+
+    yield
+    for task in cm._retry_tasks:
+        task.cancel()
+    cm._retry_tasks.clear()
+    cm._started_consumers.clear()
+    cm._component_status.clear()
+
 
 def _client_with_open_driver(run=None):
     """A Neo4j client whose driver is already open. ``run`` is session.run."""
@@ -436,8 +450,7 @@ class TestStartMessagingProducer:
 class TestStartKafkaConsumers:
     """Tests for start_kafka_consumers()."""
 
-    async def test_success_both_consumers(self):
-        """Both entity and sync consumers are started successfully."""
+    async def test_success_all_consumers(self) -> None:
         from app.connectors_main import start_kafka_consumers
 
         mock_container = _make_container()
@@ -447,6 +460,8 @@ class TestStartKafkaConsumers:
         mock_entity_consumer.start = AsyncMock()
         mock_sync_consumer = MagicMock()
         mock_sync_consumer.start = AsyncMock()
+        mock_code_graph_consumer = MagicMock()
+        mock_code_graph_consumer.start = AsyncMock()
 
         with (
             patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
@@ -454,15 +469,84 @@ class TestStartKafkaConsumers:
             patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_code_graph_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.KafkaUtils.create_code_graph_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer, mock_code_graph_consumer]),
+        ):
+            consumers = await start_kafka_consumers(mock_container, gp)
+
+        assert len(consumers) == 3
+        assert consumers[0] == ("entity", mock_entity_consumer)
+        assert consumers[1] == ("sync", mock_sync_consumer)
+        assert consumers[2] == ("code_graph", mock_code_graph_consumer)
+
+    async def test_a_code_graph_consumer_failure_keeps_the_sync_consumers(self) -> None:
+        """The code graph is optional; it must not take entity and sync events down."""
+        from app.connectors_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        mock_entity_consumer = MagicMock(start=AsyncMock(), stop=AsyncMock())
+        mock_sync_consumer = MagicMock(start=AsyncMock(), stop=AsyncMock())
+
+        with (
+            patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_code_graph_consumer_config", new_callable=AsyncMock, side_effect=RuntimeError("redis down")),
             patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer]),
         ):
             consumers = await start_kafka_consumers(mock_container, gp)
 
-        assert len(consumers) == 2
-        assert consumers[0] == ("entity", mock_entity_consumer)
-        assert consumers[1] == ("sync", mock_sync_consumer)
+        assert consumers == [("entity", mock_entity_consumer), ("sync", mock_sync_consumer)]
+        mock_entity_consumer.stop.assert_not_awaited()
+        mock_sync_consumer.stop.assert_not_awaited()
+
+    async def test_a_failed_code_graph_consumer_is_retried_until_it_runs(self) -> None:
+        """A boot-time broker hiccup used to leave the code graph without a
+        consumer until the next restart."""
+        import asyncio
+
+        import app.connectors_main as cm
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        entity = MagicMock(start=AsyncMock(), stop=AsyncMock(), is_running=MagicMock(return_value=True))
+        sync = MagicMock(start=AsyncMock(), stop=AsyncMock(), is_running=MagicMock(return_value=True))
+        code_graph = MagicMock(start=AsyncMock(), stop=AsyncMock(), is_running=MagicMock(return_value=True))
+
+        with (
+            patch("app.connectors_main._RETRY_FIRST_DELAY_SECONDS", 0),
+            patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_code_graph_consumer_config", new_callable=AsyncMock,
+                  side_effect=[RuntimeError("redis down"), RuntimeError("still down"), {}]),
+            patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.KafkaUtils.create_code_graph_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[entity, sync, code_graph]),
+        ):
+            try:
+                consumers = await cm.start_kafka_consumers(mock_container, gp)
+                assert cm.component_health()["code_graph"]["state"] == "retrying"
+                await asyncio.wait_for(asyncio.gather(*cm._retry_tasks), timeout=5)
+                health = cm.component_health()
+                started = list(consumers)
+            finally:
+                for task in cm._retry_tasks:
+                    task.cancel()
+
+        assert ("code_graph", code_graph) in started
+        assert health["code_graph"] == {"state": "running", "required": False}
 
     async def test_error_on_second_consumer_cleans_up_first(self):
         """If second consumer fails, first consumer is stopped for cleanup."""
@@ -522,6 +606,8 @@ class TestStartKafkaConsumers:
         mock_entity_consumer.start = AsyncMock()
         mock_sync_consumer = MagicMock()
         mock_sync_consumer.start = AsyncMock()
+        mock_code_graph_consumer = MagicMock()
+        mock_code_graph_consumer.start = AsyncMock()
         mock_retry_manager = AsyncMock()
         mock_retry_manager.initialize = AsyncMock()
 
@@ -531,9 +617,11 @@ class TestStartKafkaConsumers:
             patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=mock_retry_manager) as mock_create_rm,
             patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_code_graph_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
-            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer]) as mock_create_consumer,
+            patch("app.connectors_main.KafkaUtils.create_code_graph_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer, mock_code_graph_consumer]) as mock_create_consumer,
         ):
             consumers = await start_kafka_consumers(mock_container, gp)
 
@@ -541,14 +629,14 @@ class TestStartKafkaConsumers:
         mock_create_rm.assert_called_once()
         mock_retry_manager.initialize.assert_awaited_once()
 
-        # Assert both consumers were created with retry_manager
-        assert mock_create_consumer.call_count == 2
+        assert mock_create_consumer.call_count == 3
         for call in mock_create_consumer.call_args_list:
             assert call.kwargs["retry_manager"] is mock_retry_manager
 
-        assert len(consumers) == 2
+        assert len(consumers) == 3
         assert consumers[0] == ("entity", mock_entity_consumer)
         assert consumers[1] == ("sync", mock_sync_consumer)
+        assert consumers[2] == ("code_graph", mock_code_graph_consumer)
 
 
 # ---------------------------------------------------------------------------
@@ -615,6 +703,61 @@ class TestStopKafkaConsumers:
 # ---------------------------------------------------------------------------
 # stop_messaging_producer
 # ---------------------------------------------------------------------------
+class TestOptionalComponentRetry:
+    """The reconciler and code-graph consumer retry with backoff instead of
+    staying down until a restart."""
+
+    async def test_the_delay_doubles_and_status_clears_on_success(self) -> None:
+        import app.connectors_main as cm
+
+        attempt = AsyncMock(side_effect=[RuntimeError("a"), RuntimeError("b"), None])
+        sleeps = []
+
+        async def fake_sleep(delay) -> None:
+            sleeps.append(delay)
+
+        with patch("app.connectors_main.asyncio.sleep", side_effect=fake_sleep):
+            await cm._keep_trying("code_edge_reconciler", attempt, logging.getLogger("t"), RuntimeError("first"))
+
+        assert sleeps == [5.0, 10.0, 20.0]
+        assert attempt.await_count == 3
+        assert "code_edge_reconciler" not in cm._component_status
+
+    async def test_the_delay_is_capped(self) -> None:
+        import app.connectors_main as cm
+
+        attempt = AsyncMock(side_effect=[RuntimeError("x")] * 8 + [None])
+        sleeps = []
+
+        async def fake_sleep(delay) -> None:
+            sleeps.append(delay)
+
+        with patch("app.connectors_main.asyncio.sleep", side_effect=fake_sleep):
+            await cm._keep_trying("code_graph", attempt, logging.getLogger("t"), RuntimeError("first"))
+
+        assert max(sleeps) == cm._RETRY_MAX_DELAY_SECONDS
+
+    async def test_shutdown_cancels_a_pending_retry(self) -> None:
+        import asyncio
+
+        import app.connectors_main as cm
+        from app.connectors_main import stop_kafka_consumers
+
+        cm._start_retrying("code_graph", AsyncMock(side_effect=RuntimeError("down")),
+                           logging.getLogger("t"), RuntimeError("down"))
+        task = cm._retry_tasks[0]
+        container = _make_container()
+        container.kafka_consumers = []
+        try:
+            await stop_kafka_consumers(container)
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            cm._component_status.clear()
+
+        assert cm._retry_tasks == []
+
+
 class TestStopMessagingProducer:
     """Tests for stop_messaging_producer()."""
 
@@ -1260,6 +1403,54 @@ class TestConnectorHealthCheck:
             result = await health_check()
 
         assert result.status_code == 500
+
+    @pytest.mark.parametrize(
+        "running, status_code, status",
+        [
+            ({"entity": True, "sync": True, "code_graph": True}, 200, "healthy"),
+            ({"entity": True, "sync": True, "code_graph": False}, 200, "degraded"),
+            ({"entity": True, "sync": False, "code_graph": True}, 503, "fail"),
+        ],
+    )
+    async def test_health_tells_required_from_optional_consumers(self, running, status_code, status) -> None:
+        import app.connectors_main as cm
+
+        cm._started_consumers[:] = [
+            (name, MagicMock(is_running=MagicMock(return_value=up))) for name, up in running.items()
+        ]
+        try:
+            result = await cm.health_check()
+        finally:
+            cm._started_consumers.clear()
+
+        body = json.loads(result.body)
+        assert result.status_code == status_code
+        assert body["status"] == status
+
+    async def test_a_retrying_reconciler_is_degraded_not_down(self) -> None:
+        import app.connectors_main as cm
+
+        cm._component_status["code_edge_reconciler"] = {"state": "retrying", "attempts": 2, "error": "boom"}
+        try:
+            result = await cm.health_check()
+        finally:
+            cm._component_status.clear()
+
+        body = json.loads(result.body)
+        assert result.status_code == 200
+        assert body["status"] == "degraded"
+        assert body["components"]["code_edge_reconciler"]["attempts"] == 2
+
+    async def test_consumers_that_failed_to_start_fail_health(self) -> None:
+        import app.connectors_main as cm
+
+        cm._component_status["message_consumers"] = {"state": "failed", "error": "kafka down"}
+        try:
+            result = await cm.health_check()
+        finally:
+            cm._component_status.clear()
+
+        assert result.status_code == 503
 
     async def test_a_failed_startup_is_unhealthy(self):
         """Coordinator init failing in the background startup task used to leave

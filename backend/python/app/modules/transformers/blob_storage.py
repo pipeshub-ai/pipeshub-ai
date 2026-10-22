@@ -1169,8 +1169,8 @@ class BlobStorage(Transformer):
         org_id = record.org_id
         record_id = record.id
         virtual_record_id = record.virtual_record_id
-        connector_id = getattr(record, "connector_id", None)
-        record_group_id = getattr(record, "record_group_id", None)
+        if not virtual_record_id:
+            raise ValueError(f"record {record_id} has no virtual record id to store under")
         # Use exclude_none=True to skip None values, then clean empty values
         record_dict = record.model_dump(mode='json', exclude_none=True)
         record_dict = self._clean_empty_values(record_dict)
@@ -1181,6 +1181,44 @@ class BlobStorage(Transformer):
             virtual_record_id, storage_path
         )
 
+        actual_storage_path = await self._store_record_dict(
+            org_id, record_id, virtual_record_id, record_dict,
+            storage_path=storage_path,
+            connector_id=getattr(record, "connector_id", None),
+            record_group_id=getattr(record, "record_group_id", None),
+        )
+
+        ctx.settings["storage_path"] = actual_storage_path
+        ctx.record = record
+        return ctx
+
+    async def _store_record_dict(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        record_dict: dict[str, Any],
+        *,
+        storage_path: str | None = None,
+        connector_id: str | None = None,
+        record_group_id: str | None = None,
+    ) -> str:
+        """Upload a record as the next version of its stored document, or as a new one.
+
+        Returns the path the content is stored at. Without *storage_path* (a rewrite of a
+        record already stored, which has no Record entity to build a path from), a new
+        upload goes where the current document is, else to ``records/<vrid>``; the
+        connector and record group default to the ones in *record_dict*.
+        """
+        if storage_path is None:
+            storage_path = (
+                await self.get_actual_content_path(org_id, virtual_record_id)
+                or f"records/{virtual_record_id}"
+            )
+        if connector_id is None:
+            connector_id = record_dict.get("connector_id")
+        if record_group_id is None:
+            record_group_id = record_dict.get("record_group_id")
         existing_lookup = None
         if self.graph_provider:
             try:
@@ -1262,9 +1300,17 @@ class BlobStorage(Transformer):
             if mapped and replaced_doc_id and replaced_doc_id != document_id:
                 await self._delete_replaced_document(org_id, replaced_doc_id, virtual_record_id)
 
-        ctx.settings["storage_path"] = actual_storage_path
-        ctx.record = record
-        return ctx
+        return actual_storage_path
+
+    async def save_semantic_metadata(
+        self, org_id: str, record_id: str, virtual_record_id: str, semantic_metadata: dict[str, Any]
+    ) -> None:
+        """Write classification into the stored record as its next version."""
+        stored = await self.get_record_from_storage(virtual_record_id, org_id)
+        if stored is None:
+            raise LookupError(f"no stored record for virtual record {virtual_record_id}")
+        stored["semantic_metadata"] = semantic_metadata
+        await self._store_record_dict(org_id, record_id, virtual_record_id, stored)
 
     async def _with_storage_retry(
         self,
@@ -2067,8 +2113,8 @@ class BlobStorage(Transformer):
         self,
         virtual_record_id: str,
         org_id: str,
-        lookup_result: dict | None = None,
-    ) -> dict | None:
+        lookup_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """
         Retrieve a record's content from blob storage using the virtual_record_id.
 

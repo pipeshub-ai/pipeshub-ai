@@ -25,11 +25,16 @@ from app.agents.actions.knowledge_graph.ops.timeline import (
     timeline_search_response,
     timeline_summaries_enabled,
 )
-from app.api.middlewares.auth import deny_service_tokens, require_scopes
+from app.api.middlewares.auth import (
+    connection_limit,
+    deny_service_tokens,
+    require_scopes,
+)
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.edition_config import resolve_llm_for_search
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.retrieval.selection_scope import within_connection
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
@@ -362,6 +367,7 @@ async def search(
         else:
             queries = _queries_for_search(body.query, None, None)
         timer.mark("query_transform")
+        filter_groups = within_connection(body.filters, connection_limit(request.state.user))
 
         async def run_search(bounds: dict[str, int] | None, limit: int | None) -> dict[str, Any]:
             return await retrieval_service.search_with_filters(
@@ -369,7 +375,7 @@ async def search(
                 org_id=request.state.user.get("orgId"),
                 user_id=request.state.user.get("userId"),
                 limit=limit,
-                filter_groups=body.filters,
+                filter_groups=filter_groups,
                 knowledge_search=True,
                 time_range=bounds,
             )

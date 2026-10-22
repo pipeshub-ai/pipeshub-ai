@@ -27,6 +27,7 @@ Tests cover:
 
 import asyncio
 import logging
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -112,19 +113,17 @@ class TestInit:
 
 class TestGetSession:
     @pytest.mark.asyncio
-    async def test_creates_new_session(self, client):
+    async def test_creates_new_session(self, client) -> None:
         with patch("app.services.graph_db.arango.arango_http_client.aiohttp.ClientSession") as mock_cls:
-            mock_session = MagicMock()
-            mock_cls.return_value = mock_session
+            mock_cls.return_value = MagicMock(closed=False)
             session = await client._get_session()
-            assert session is mock_session
-            assert client._sessions[asyncio.get_running_loop()] is mock_session
+            assert session is mock_cls.return_value
+            assert client._sessions[asyncio.get_running_loop()] is session
 
     @pytest.mark.asyncio
-    async def test_reuses_existing_session(self, client):
+    async def test_reuses_existing_session(self, client) -> None:
         with patch("app.services.graph_db.arango.arango_http_client.aiohttp.ClientSession") as mock_cls:
-            mock_session = MagicMock(closed=False)
-            mock_cls.return_value = mock_session
+            mock_cls.return_value = MagicMock(closed=False)
             s1 = await client._get_session()
             s2 = await client._get_session()
             assert s1 is s2
@@ -192,6 +191,29 @@ class TestGetSession:
             await client._get_session()
             assert dead_loop not in client._sessions
 
+    @pytest.mark.asyncio
+    async def test_a_closed_session_is_replaced(self, client) -> None:
+        first, second = MagicMock(closed=False), MagicMock(closed=False)
+        with patch("app.services.graph_db.arango.arango_http_client.aiohttp.ClientSession", side_effect=[first, second]):
+            assert await client._get_session() is first
+            first.closed = True
+            assert await client._get_session() is second
+
+    def test_each_event_loop_keeps_its_own_session_open(self, client) -> None:
+        """Two worker loops taking turns must never close each other's session."""
+        with patch("app.services.graph_db.arango.arango_http_client.aiohttp.ClientSession", side_effect=lambda **_: MagicMock(closed=False, close=AsyncMock())):
+            loop_a, loop_b = asyncio.new_event_loop(), asyncio.new_event_loop()
+            try:
+                a1 = loop_a.run_until_complete(client._get_session())
+                b1 = loop_b.run_until_complete(client._get_session())
+                a2 = loop_a.run_until_complete(client._get_session())
+            finally:
+                loop_a.close()
+                loop_b.close()
+        assert a1 is a2 and a1 is not b1
+        a1.close.assert_not_called()
+        b1.close.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # connect
@@ -246,7 +268,15 @@ class TestDisconnect:
         mock_session.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_disconnect_without_session(self, client):
+    async def test_disconnect_closes_a_session_it_created(self, client) -> None:
+        with patch("app.services.graph_db.arango.arango_http_client.aiohttp.ClientSession", return_value=MagicMock(closed=False, close=AsyncMock())):
+            session = await client._get_session()
+        await client.disconnect()
+        session.close.assert_awaited_once()
+        assert len(client._sessions) == 0
+
+    @pytest.mark.asyncio
+    async def test_disconnect_without_session(self, client) -> None:
         await client.disconnect()
         assert client._sessions == {}
 
@@ -258,6 +288,33 @@ class TestDisconnect:
 
         await client.disconnect()
         assert client._sessions == {}
+
+    @pytest.mark.asyncio
+    async def test_disconnect_close_error_is_logged_not_raised(self, client, mock_logger) -> None:
+        with patch("app.services.graph_db.arango.arango_http_client.aiohttp.ClientSession", return_value=MagicMock(closed=False, close=AsyncMock(side_effect=Exception("error")))):
+            await client._get_session()
+        await client.disconnect()
+        assert len(client._sessions) == 0
+        mock_logger.warning.assert_called()
+
+    def test_disconnect_closes_each_session_on_the_loop_that_owns_it(self, client) -> None:
+        closed_on = []
+
+        async def close() -> None:
+            closed_on.append(asyncio.get_running_loop())
+
+        owner = asyncio.new_event_loop()
+        thread = threading.Thread(target=owner.run_forever, daemon=True)
+        thread.start()
+        try:
+            with patch("app.services.graph_db.arango.arango_http_client.aiohttp.ClientSession", return_value=MagicMock(closed=False, close=close)):
+                asyncio.run_coroutine_threadsafe(client._get_session(), owner).result(timeout=5)
+            asyncio.run(client.disconnect())
+        finally:
+            owner.call_soon_threadsafe(owner.stop)
+            thread.join(timeout=5)
+            owner.close()
+        assert closed_on == [owner]
 
 
 # ---------------------------------------------------------------------------

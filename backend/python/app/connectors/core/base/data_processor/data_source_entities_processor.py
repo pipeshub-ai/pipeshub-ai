@@ -1489,6 +1489,12 @@ class DataSourceEntitiesProcessor:
         if group_changed:
             moved = True
             leaving_group_id = existing_record.record_group_id
+        elif existing_record and not existing_record.record_group_id and record_group_id:
+            # A stored record with no group that gains one changed membership too: its
+            # chunks were written without this group, so drive-scoped search missed it.
+            # A brand-new record is not stored yet, and the caller refreshes only one
+            # whose stored VRID says it was indexed.
+            moved = True
 
         joining_group_id = record_group_id if record.id else None
         if joining_group_id or leaving_group_id:
@@ -2371,6 +2377,7 @@ class DataSourceEntitiesProcessor:
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
         stored_under_its_id = False
+        same_id: dict | None = None
         if existing_record is None:
             # A rename can arrive under a new external id but reuse the id of the
             # record it renames; if that record is in the trash, upserting would
@@ -2470,7 +2477,22 @@ class DataSourceEntitiesProcessor:
             # COMPLETED for KB folders, ...) is kept.
             if record.indexing_status == ProgressStatus.QUEUED.value:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
-            if publishes_event:
+            if (
+                isinstance(same_id, dict)
+                and record.origin != OriginTypes.UPLOAD
+                and same_id.get("indexingStatus") == ProgressStatus.COMPLETED.value
+                and record.external_revision_id
+                and record.external_revision_id == same_id.get("externalRevisionId")
+                # A move to another group must reindex: the vectors carry the group ids.
+                and record.external_record_group_id == same_id.get("externalGroupId")
+                # A rename to another file type needs a new parse of the same bytes.
+                and not self._file_type_changed(record, renamed := Record.from_arango_base_record(same_id))
+            ):
+                # A move or rename that kept its record id and content is already indexed;
+                # its vectors stay keyed by the stored virtualRecordId.
+                self._preserve_indexing_state(record, renamed)
+                record.virtual_record_id = record.virtual_record_id or renamed.virtual_record_id
+            elif publishes_event:
                 self._stamp_queued_at(record)
             await self._handle_new_record(record, tx_store)
         else:
@@ -2948,6 +2970,15 @@ class DataSourceEntitiesProcessor:
             await self._mark_queued_after_publish([record.id])
 
     @staticmethod
+    def _code_path_changed(new_record: Record, old_record: Record) -> bool:
+        """A code file's path is in what was embedded -- its block headers and
+        summary name it -- so a rename re-indexes it even when the bytes are the same (P-8)."""
+        return (
+            getattr(new_record.record_type, "value", new_record.record_type) == RecordType.CODE_FILE.value
+            and getattr(new_record, "file_path", None) != getattr(old_record, "file_path", None)
+        )
+
+    @staticmethod
     def _file_type_changed(new_record: Record, old_record: Record) -> bool:
         """A rename to another file type (.txt to .md) needs a new parse of the same bytes."""
         if (
@@ -3183,8 +3214,10 @@ class DataSourceEntitiesProcessor:
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
                     )
-                    needs_reindex = content_changed or self._file_type_changed(
-                        new_record, old_record
+                    needs_reindex = (
+                        content_changed
+                        or self._file_type_changed(new_record, old_record)
+                        or self._code_path_changed(new_record, old_record)
                     )
 
                     is_kb_item = new_record.origin == OriginTypes.UPLOAD
@@ -4029,17 +4062,21 @@ class DataSourceEntitiesProcessor:
         return unpublished
 
     @staticmethod
-    def _reindex_event_payload(record: Record, *, vector_db_only: bool) -> dict:
+    def _reindex_event_payload(
+        record: Record, *, vector_db_only: bool, stages: list[str] | None = None
+    ) -> dict:
         payload = {**record.to_kafka_record(), "forceReindex": True}
         if record.virtual_record_id:
             payload.setdefault("virtualRecordId", record.virtual_record_id)
         if vector_db_only:
             payload["vectorDbOnly"] = True
+        if stages:
+            payload["stages"] = list(stages)
         return payload
 
     @retry_on_deadlock()
     async def reindex_existing_records(
-        self, records: list[Record], *, vector_db_only: bool = False
+        self, records: list[Record], *, vector_db_only: bool = False, stages: list[str] | None = None
     ) -> list[str]:
         """
         Publish reindex events for existing records without DB operations.
@@ -4050,6 +4087,8 @@ class DataSourceEntitiesProcessor:
             records: List of properly typed Record instances (FileRecord, MailRecord, etc.)
             vector_db_only: When True, indexing reloads blob content and re-embeds
                 without re-parsing the source.
+            stages: When given, indexing re-runs only these pipeline stages for each
+                record's current revision; the record stays searchable.
 
         Returns:
             The ids whose reindex event reached the broker.
@@ -4100,7 +4139,7 @@ class DataSourceEntitiesProcessor:
                             # already-indexed guard skips it and reindex silently
                             # does nothing for a healthy corpus.
                             "payload": self._reindex_event_payload(
-                                record, vector_db_only=vector_db_only
+                                record, vector_db_only=vector_db_only, stages=stages
                             ),
                         },
                     )
@@ -4112,7 +4151,9 @@ class DataSourceEntitiesProcessor:
             # QUEUED; marking a failed publish would strand the record, since nothing
             # consumes QUEUED.
             published_ids = [r.id for r, ok in zip(to_publish, acked) if ok]
-            await self._mark_queued_after_publish(published_ids)
+            if not stages:
+                # A stage re-run leaves the record searchable; only its stages are queued.
+                await self._mark_queued_after_publish(published_ids)
 
             self.logger.debug(
                 f"Published reindex events for {len(published_ids)} records; "
@@ -4691,9 +4732,7 @@ class DataSourceEntitiesProcessor:
         it matches. Instances written before ``authenticatedBy`` existed fall back to the creator."""
         link_changed = False
         async with self.data_store_provider.transaction() as tx_store:
-            app = await tx_store.get_app_by_id(connector_id)
-            authenticated_by = (app.authenticated_by if app else None) or created_by
-            authenticator = await tx_store.get_user_by_user_id(authenticated_by) or {}
+            authenticated_by, authenticator = await self._authenticator(tx_store, connector_id, created_by)
             authenticator_key = authenticator.get("_key") or authenticator.get("id")
             if not authenticator_key:
                 self.logger.warning(
@@ -4721,6 +4760,33 @@ class DataSourceEntitiesProcessor:
             # Same drop a finished sync does, for the same reason: this connector's cached
             # per-user record maps were built under the old link, so until they go a search
             # misses the source account's records — or keeps serving them once it is gone.
+            await notify_connector_sync_completed(connector_id, self.org_id)
+
+    @staticmethod
+    async def _authenticator(
+        tx_store: TransactionStore, connector_id: str, created_by: str | None
+    ) -> tuple[str | None, dict]:
+        """The id and user document of whoever authenticated this connector: the app's
+        ``authenticatedBy``, else (instances written before it existed) the creator."""
+        app = await tx_store.get_app_by_id(connector_id)
+        authenticated_by = (app.authenticated_by if app else None) or created_by
+        user = await tx_store.get_user_by_user_id(authenticated_by) if authenticated_by else None
+        return authenticated_by, user or {}
+
+    async def get_app_authenticator_user(self, connector_id: str, created_by: str | None) -> dict:
+        """The user document of whoever authenticated this connector; empty when there is none."""
+        async with self.data_store_provider.transaction() as tx_store:
+            _, user = await self._authenticator(tx_store, connector_id, created_by)
+        return user
+
+    @retry_on_deadlock()
+    async def unlink_authenticator(self, connector_id: str) -> None:
+        """Remove the link from the user who authenticated this connector to a source account,
+        for a connector whose credentials no longer name one (a bot token, say)."""
+        async with self.data_store_provider.transaction() as tx_store:
+            link_changed = await tx_store.remove_authenticated_as(connector_id)
+        if link_changed:
+            # As in link_authenticator_to_source_user: cached record maps were built under the link
             await notify_connector_sync_completed(connector_id, self.org_id)
 
     @retry_on_deadlock()
@@ -4997,9 +5063,9 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_users(self.org_id, active=True)
 
-    async def get_user_by_user_id(self, user_id: str) -> User | None:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> User | None:
         async with self.data_store_provider.transaction() as tx_store:
-            raw = await tx_store.get_user_by_user_id(user_id)
+            raw = await tx_store.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
         if not raw:
             return None
         return User.from_arango_user(raw) if isinstance(raw, dict) else raw

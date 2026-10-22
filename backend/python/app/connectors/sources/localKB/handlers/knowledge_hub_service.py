@@ -93,6 +93,24 @@ def _listing_mode(parent_id: str | None, flatten: bool) -> str:
     return "flatten" if flatten else "browse"
 
 
+_SORT_FROM_PROVIDER = {
+    "name": "name",
+    "createdAt": "createdAt",
+    "updatedAt": "updatedAt",
+    "sizeInBytes": "size",
+    "nodeType": "type",
+}
+
+
+def _flatten_for_cursor(mode: str | None, *, request_flatten: bool) -> bool:
+    """The cursor already chose this listing. A later request must not retarget it."""
+    if mode in ("search", "flatten"):
+        return True
+    if mode in ("root", "browse"):
+        return False
+    return request_flatten
+
+
 def _without_apps(access: dict[str, Any], app_ids: frozenset[str]) -> dict[str, Any]:
     """The access context with these Apps out of the gate and their grants dropped."""
     if not app_ids:
@@ -165,6 +183,57 @@ class KnowledgeHubService:
 
     def _sort_field(self, sort_by: str) -> str:
         return self._SORT_FIELDS.get(sort_by, "name")
+
+    async def _applied_filters(
+        self,
+        cursor: str | None,
+        user_id: str,
+        org_id: str,
+        *,
+        q: str | None,
+        node_types: list[str] | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connector_ids: list[str] | None,
+        indexing_status: list[str] | None,
+        created_at: dict | None,
+        updated_at: dict | None,
+        size: dict | None,
+        sort_by: str,
+        sort_order: str,
+    ) -> AppliedFilters:
+        """The filters this page actually used. A cursor's, when one was sent."""
+        if cursor:
+            secret = await self._get_cursor_secret()
+            if secret is not None:
+                issued = decode(cursor, secret, expected_user_id=user_id, expected_org_id=org_id)
+                stored = issued.filters or {}
+                return AppliedFilters(
+                    q=stored.get("search_query"),
+                    nodeTypes=stored.get("node_types"),
+                    recordTypes=stored.get("record_types"),
+                    origins=stored.get("origins"),
+                    connectorIds=stored.get("connector_ids"),
+                    indexingStatus=stored.get("indexing_status"),
+                    createdAt=stored.get("created_at"),
+                    updatedAt=stored.get("updated_at"),
+                    size=stored.get("size"),
+                    sortBy=_SORT_FROM_PROVIDER.get(issued.sort_by or "", sort_by),
+                    sortOrder=(issued.sort_order or sort_order).lower(),
+                )
+        return AppliedFilters(
+            q=q,
+            nodeTypes=node_types,
+            recordTypes=record_types,
+            origins=origins,
+            connectorIds=connector_ids,
+            indexingStatus=indexing_status,
+            createdAt=created_at,
+            updatedAt=updated_at,
+            size=size,
+            sortBy=sort_by,
+            sortOrder=sort_order,
+        )
 
     def _decode_cursor(
         self,
@@ -330,6 +399,14 @@ class KnowledgeHubService:
         # Nothing can verify it, so it cannot be trusted to say where to resume.
         if cursor and secret is None:
             raise BrowseRequestError("Invalid cursor: cursor paging is not configured", 400)
+        # Mode, parent, sort and filters travel in the cursor. The request's
+        # search text must not turn a search page into a browse, or the reverse.
+        if cursor:
+            try:
+                issued = decode(cursor, secret, expected_user_id=user_id, expected_org_id=org_id)
+            except CursorError as exc:
+                raise BrowseRequestError(f"Invalid cursor: {exc}", 400) from exc
+            flatten = _flatten_for_cursor(issued.mode, request_flatten=flatten)
         sort_field = self._sort_field(sort_by)
         sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
         mode = _listing_mode(parent_id, flatten)
@@ -636,6 +713,12 @@ class KnowledgeHubService:
                 ),
                 excluded,
             )
+            if parent_id is None:
+                # A project's own file collection is opened from its project, by id;
+                # the top-level listing, global search and filter options leave it out.
+                hidden = frozenset(await self.graph_provider.get_hidden_app_ids(access["gated_app_ids"]))
+                access = _without_apps(access, hidden)
+                excluded = excluded | hidden
             # The filter options and the context permissions read neither the
             # page nor each other, so they run beside it rather than after it.
             if include and 'availableFilters' in include:
@@ -701,19 +784,15 @@ class KnowledgeHubService:
             current_node = self._to_current_node((scope or {}).get('currentNode'))
             parent_node = self._to_current_node((scope or {}).get('parentNode'))
 
-            # Build applied filters
-            applied_filters = AppliedFilters(
-                q=q,
-                nodeTypes=node_types,
-                recordTypes=record_types,
-                origins=origins,
-                connectorIds=connector_ids,
-                indexingStatus=indexing_status,
-                createdAt=created_at,
-                updatedAt=updated_at,
-                size=size,
-                sortBy=sort_by,
-                sortOrder=sort_order,
+            # The cursor decided the filters and the sort. The response has to
+            # say so, or a bare next page looks like a different query.
+            applied_filters = await self._applied_filters(
+                cursor, user_id, org_id,
+                q=q, node_types=node_types, record_types=record_types,
+                origins=origins, connector_ids=connector_ids,
+                indexing_status=indexing_status, created_at=created_at,
+                updated_at=updated_at, size=size,
+                sort_by=sort_by, sort_order=sort_order,
             )
 
             # Build filters info (without available filters initially)

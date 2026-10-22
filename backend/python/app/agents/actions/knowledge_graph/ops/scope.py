@@ -18,6 +18,8 @@ Security invariant (unchanged from each original):
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Mapping, Sequence
@@ -129,6 +131,16 @@ def _clean_kb(raw: list[str]) -> tuple[str, ...]:
 
 def _has_selection(filters: Mapping[str, object]) -> bool:
     return any(filters.get(key) for key in SELECTION_FILTER_KEYS)
+
+
+def _navigation_is_limited(filters: Mapping[str, object]) -> bool:
+    """Whether a navigate answer has to stay inside a selection, a picked app,
+    or a saved agent's or a project's sources."""
+    return (
+        _has_selection(filters)
+        or _picked_apps(filters) is not None
+        or any(key in filters for key in ALLOWED_FILTER_KEYS)
+    )
 
 
 def _picked_apps(filters: Mapping[str, object]) -> frozenset[str] | None:
@@ -276,6 +288,52 @@ async def ids_within_scope(
     return set(access.node_ids_in_scope) | attached
 
 
+async def ids_the_user_can_read(
+    graph_provider: "IGraphDBProvider",
+    user_key: str,
+    org_id: str,
+    node_ids: Sequence[str],
+) -> set[str]:
+    """Of ``node_ids``, those ``check_access`` says this user can read.
+
+    A turn that is limited uses ``ids_within_scope`` instead: that check
+    applies the limit as well as this one.
+    """
+    ids = [node_id for node_id in dict.fromkeys(node_ids) if node_id]
+    if not ids:
+        return set()
+    access = await graph_provider.check_access(user_key, org_id, node_ids=ids)
+    return set(access.node_ids)
+
+
+async def navigation_nameable_ids(
+    state: "ChatState",
+    graph_provider: "IGraphDBProvider",
+    user_key: str,
+    org_id: str,
+    *,
+    ancestor_ids: Sequence[str],
+    row_ids: Sequence[str],
+    related_ids: Sequence[str],
+) -> tuple[set[str] | None, set[str], set[str]]:
+    """Ancestor ids, child ids, and related ids a navigate answer may name.
+
+    Ancestors are ``None`` when the turn has no limit: the listing's trail
+    already keeps only ancestors this user can open, and cutting it would
+    hide where the node sits. A limit cuts the trail at that limit, so a
+    parent outside it is not named and the sibling hint cannot point at it.
+    Children are always checked. The listing is not told the conversation's
+    limit, and a child the user cannot read must not be offered to fetch.
+    """
+    filters = state.get("filters") or {}
+    if _navigation_is_limited(filters):
+        asked = list(dict.fromkeys([*ancestor_ids, *row_ids, *related_ids]))
+        allowed = await ids_within_scope(state, graph_provider, user_key, org_id, asked) if asked else set()
+        return allowed, allowed, allowed
+    readable = await ids_the_user_can_read(graph_provider, user_key, org_id, row_ids)
+    return None, readable, {node_id for node_id in related_ids if node_id}
+
+
 async def ids_outside_scope(
     state: "Mapping[str, object]",
     graph_provider: "IGraphDBProvider",
@@ -410,8 +468,33 @@ async def selection_browse_refusal(
     return None
 
 
+# The chat UI and the request validator both stop at 200 selected ids
+# (`MAX_SELECTED_NODES`, `MAX_FILTER_IDS`). The page is that same cap, so a
+# selection the product accepts fits in the prompt and a next page is rare.
+# MCP list pagination leaves the page size to the server.
+SELECTED_NODE_PAGE_SIZE = 200
+
+
+def _selection_cursor(offset: int) -> str:
+    return base64.urlsafe_b64encode(str(offset).encode()).decode().rstrip("=")
+
+
+def _selection_offset(cursor: str) -> int:
+    padding = "=" * (-len(cursor) % 4)
+    try:
+        offset = int(base64.urlsafe_b64decode(cursor + padding))
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("unreadable selection cursor") from exc
+    if offset < 0:
+        raise ValueError("unreadable selection cursor")
+    return offset
+
+
 async def list_selected_nodes(
     state: "ChatState", graph_provider: object, user_id: str, org_id: str,
+    *,
+    cursor: str | None = None,
+    page_size: int = SELECTED_NODE_PAGE_SIZE,
 ) -> str | None:
     """The turn's selection as a listing, or None when it is not below app
     level. Each line names one selected node the user can read and that a
@@ -462,9 +545,36 @@ async def list_selected_nodes(
                 lines.append(f"- {row.get('recordName') or node_id} [{kind}] id={node_id}{alone}")
     if not lines:
         return "Nothing this conversation is limited to is available."
-    return "\n".join([
-        "This conversation is limited to these items:",
-        *lines,
+    page_size = max(1, page_size)
+    try:
+        start = _selection_offset(cursor) if cursor else 0
+    except ValueError:
+        return (
+            "That cursor is not a page of this selection. "
+            "Call knowledgegraph__list_files without a cursor to start again."
+        )
+    page = lines[start:start + page_size]
+    if cursor and not page:
+        return "There is no further page of this selection."
+    nxt = start + len(page)
+    more = _selection_cursor(nxt) if nxt < len(lines) else None
+    hint = (
         "Pass one of these ids to knowledgegraph__navigate to see what is inside it, "
-        "or use knowledgegraph__search to search inside all of them.",
-    ])
+        "or use knowledgegraph__search to search inside all of them."
+    )
+    if more or cursor:
+        header = (
+            f"This conversation is limited to these items "
+            f"(showing {start + 1}–{nxt} of {len(lines)}):"
+        )
+    else:
+        header = "This conversation is limited to these items:"
+    parts = [header, *page, hint]
+    if more:
+        parts.append(
+            f"More items follow. Call knowledgegraph__list_files with cursor=\"{more}\". "
+            "The query can be anything; the cursor chooses the page."
+        )
+    elif cursor:
+        parts.append("This is the last page.")
+    return "\n".join(parts)

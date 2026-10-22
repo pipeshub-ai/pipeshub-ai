@@ -14,6 +14,7 @@ class Neo4jLabel(Enum):
     """Neo4j node labels mapped from ArangoDB collections"""
     # Records and Record relations
     RECORDS = "Record"
+    STAGE_STATES = "StageState"
     RECORD_GROUPS = "RecordGroup"
     SYNC_POINTS = "SyncPoint"
 
@@ -132,6 +133,7 @@ class Neo4jRelationshipType(Enum):
 # Mapping from ArangoDB CollectionNames to Neo4j Labels
 COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.RECORDS.value: Neo4jLabel.RECORDS.value,
+    CollectionNames.STAGE_STATES.value: Neo4jLabel.STAGE_STATES.value,
     CollectionNames.RECORD_GROUPS.value: Neo4jLabel.RECORD_GROUPS.value,
     CollectionNames.SYNC_POINTS.value: Neo4jLabel.SYNC_POINTS.value,
     CollectionNames.FILES.value: Neo4jLabel.FILES.value,
@@ -229,8 +231,25 @@ def collection_to_label(collection: str) -> str:
     return COLLECTION_TO_LABEL.get(collection, collection.capitalize())
 
 
+# Inverse of COLLECTION_TO_LABEL. A traversal returns the *label* of whatever it
+# landed on, and callers work in collection names, so the mapping has to run both
+# ways. First writer wins: several collections may share a label, and the
+# forward map's first entry is the canonical one.
+LABEL_TO_COLLECTION: dict[str, str] = {}
+for _collection, _label in COLLECTION_TO_LABEL.items():
+    LABEL_TO_COLLECTION.setdefault(_label, _collection)
+
+
+def label_to_collection(label: str) -> str:
+    """Convert a Neo4j label back to its ArangoDB collection name."""
+    return LABEL_TO_COLLECTION.get(label, label.lower())
+
+
 def edge_collection_to_relationship(edge_collection: str) -> str:
     """Convert ArangoDB edge collection name to Neo4j relationship type"""
+    # Not in the mapping: node-wide sweeps over it already reach RECORD_LINK through nodeRelations.
+    if edge_collection == CollectionNames.RECORD_LINKS.value:
+        return Neo4jRelationshipType.RECORD_LINK.value
     return EDGE_COLLECTION_TO_RELATIONSHIP.get(edge_collection, edge_collection.upper())
 
 

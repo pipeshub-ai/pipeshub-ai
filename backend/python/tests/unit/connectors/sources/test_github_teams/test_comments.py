@@ -511,6 +511,31 @@ class TestReviewCommentThreading:
         other = next(bg for bg in block_groups if bg.name == "File change: untouched.py").data
         assert "Review comments" not in other
 
+    async def test_secrets_in_diffs_and_comments_are_redacted(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        key = "AKIAIOSFODNN7EXAMPLA"
+
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([_conv_comment(1, f"leaked {key}", _dt(1))]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([
+                _review_comment(rc_id=2, path="cfg.py", body=f"use {key}"),
+            ]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="cfg.py", status="modified", patch=f"+AWS_KEY = '{key}'"),
+            ]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+
+        dumped = "".join(bg.model_dump_json() for bg in block_groups)
+        assert key not in dumped
+        assert "«REDACTED:aws-access-key»" in dumped
+
     async def test_review_comments_carry_author_identity(self) -> None:
         c = make_mock_connector()
         helper = CommentsHelper(c)

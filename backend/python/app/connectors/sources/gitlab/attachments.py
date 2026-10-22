@@ -28,6 +28,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.models.blocks import ChildRecord, ChildType, CommentAttachment
+from app.modules.parsers.code_parser.secret_scan import redact_secrets
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 from .constants import IMAGE_EXTENSIONS, UPLOAD_PATTERN
@@ -88,6 +89,8 @@ class AttachmentsHelper:
     async def embed_images_as_base64(self, body_content: str, base_project_url: str) -> str:
         """Replace GitLab image attachments with inline base64 data URIs."""
         attachments, markdown_content_clean = await self.parse_gitlab_uploads(body_content)
+        # Every issue/MR body and note passes here; images are appended after the scan.
+        markdown_content_clean = redact_secrets(markdown_content_clean).text
         if not attachments:
             return markdown_content_clean
         _MAX_IMAGE_BYTES = 4 * 1024 * 1024

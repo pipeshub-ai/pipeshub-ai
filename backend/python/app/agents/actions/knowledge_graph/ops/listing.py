@@ -134,6 +134,7 @@ async def execute_list_files(
     limit: int = 20,
     sort_by: str = "updatedAt",
     sort_order: str = "desc",
+    cursor: str | None = None,
 ) -> tuple[bool, str]:
     """List or search items in the knowledge graph.
 
@@ -159,7 +160,9 @@ async def execute_list_files(
             resolve_scope,
         )
 
-        selected = await list_selected_nodes(state, graph_provider, user_id, org_id)
+        selected = await list_selected_nodes(
+            state, graph_provider, user_id, org_id, cursor=cursor,
+        )
         if selected is not None:
             return True, selected
 

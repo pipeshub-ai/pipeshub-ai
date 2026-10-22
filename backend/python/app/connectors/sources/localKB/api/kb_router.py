@@ -6,7 +6,13 @@ from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
 
-from app.api.middlewares.auth import require_scopes
+from app.api.connection_limit import (
+    ids_outside_connection,
+    ids_outside_connection_on_restore,
+    keep_path_inside_connection,
+    refuse_outside_connection,
+)
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -34,7 +40,10 @@ from app.connectors.sources.localKB.api.models import (
     UploadRecordsinFolderResponse,
     UploadRecordsinKBResponse,
 )
-from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.connectors.sources.localKB.handlers.kb_service import (
+    ConnectionCheck,
+    KnowledgeBaseService,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
@@ -106,7 +115,11 @@ HTTP_MIN_STATUS = 100
 HTTP_MAX_STATUS = 600
 HTTP_INTERNAL_SERVER_ERROR = 500
 
-kb_router = APIRouter(prefix="/api/v1/kb", tags=["Knowledge Base"])
+kb_router = APIRouter(
+    prefix="/api/v1/kb",
+    tags=["Knowledge Base"],
+    dependencies=[Depends(keep_path_inside_connection)],
+)
 
 
 def _listing_or_error(result: dict[str, Any]) -> dict[str, Any]:
@@ -238,6 +251,18 @@ async def list_user_knowledge_bases(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                 detail=error_reason
             )
+
+        if isinstance(result, dict) and result.get("knowledgeBases"):
+            # shortcut: hiding after paging can leave a page short and the totals
+            # high; filter in the listing query if that matters to a client.
+            outside = await ids_outside_connection(
+                request, request.app.state.graph_provider, org_id, user_id,
+                [kb.get("id") for kb in result["knowledgeBases"] if isinstance(kb, dict)],
+            )
+            if outside:
+                result["knowledgeBases"] = [
+                    kb for kb in result["knowledgeBases"] if not (isinstance(kb, dict) and kb.get("id") in outside)
+                ]
 
         return result
 
@@ -1514,6 +1539,17 @@ async def delete_record_in_folder(
         )
 
 
+def _outside_connection(request: Request) -> ConnectionCheck | None:
+    """For a connected app with a limit: which of a restore's ids it may not
+    reach. A restore brings back a whole delete batch, not only the ids it names."""
+    if connection_limit(request.state.user) is None:
+        return None
+    user = request.state.user
+    return lambda kb_id, live_ids, trashed: ids_outside_connection_on_restore(
+        request, request.app.state.graph_provider, user.get("orgId"), user.get("userId"), kb_id, live_ids, trashed,
+    )
+
+
 def _raise_refusal(result: dict[str, Any] | None) -> None:
     error_code = int((result or {}).get("code", HTTP_INTERNAL_SERVER_ERROR))
     raise HTTPException(
@@ -1544,6 +1580,7 @@ async def restore_record(
             record_id=record_id,
             user_id=request.state.user.get("userId"),
             org_id=request.state.user.get("orgId"),
+            outside=_outside_connection(request),
         )
         if not result or result.get("success") is False:
             _raise_refusal(result)
@@ -1581,6 +1618,7 @@ async def restore_records(
             record_ids=record_ids,
             user_id=request.state.user.get("userId"),
             org_id=request.state.user.get("orgId"),
+            outside=_outside_connection(request),
         )
         if result.get("code") == status.HTTP_400_BAD_REQUEST:
             _raise_refusal(result)
@@ -1672,6 +1710,9 @@ async def move_record(
 
         user_id = request.state.user.get("userId")
         new_parent_id = body.get("newParentId")  # None for KB root, folder_id for folder
+        await refuse_outside_connection(
+            request, request.app.state.graph_provider, request.state.user.get("orgId"), user_id, new_parent_id or kb_id,
+        )
 
         result = await kb_service.move_record(
             kb_id=kb_id,

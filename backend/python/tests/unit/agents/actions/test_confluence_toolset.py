@@ -2410,6 +2410,20 @@ class TestGetAttachmentMetadata:
 # download_attachment
 # ===========================================================================
 
+class TestArtifactOwner:
+    def test_staged_attachments_belong_to_the_artifact_owner(self) -> None:
+        conf = _build_confluence()
+        conf.chat_state = {"org_id": "org-1", "user_id": "u-alice", "artifact_owner_user_id": "u-bob"}
+
+        assert conf._actor().user_id == "u-bob"
+
+    def test_staged_attachments_are_the_run_users_otherwise(self) -> None:
+        conf = _build_confluence()
+        conf.chat_state = {"org_id": "org-1", "user_id": "u-alice"}
+
+        assert conf._actor().user_id == "u-alice"
+
+
 class TestDownloadAttachment:
     @staticmethod
     def _build_conf_with_registry():

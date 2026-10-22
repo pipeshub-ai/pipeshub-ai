@@ -249,6 +249,7 @@ jobs:
       MINIO_ROOT_USER: pipeshubtest
       MINIO_ROOT_PASSWORD: pipeshubtest123
       MINIO_TEST_BUCKET: pipeshub-connector-test
+      MINIO_SECOND_TEST_BUCKET: pipeshub-connector-test-2
       # The Web and RSS connectors sync from the web-fixtures service in the
       # integration stack: the connector by service name, the test process
       # (which changes pages through its control API) on the published port.
@@ -275,6 +276,10 @@ jobs:
       COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '') }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
+      # Optional: the S3 IAM role and second-bucket tests skip while these are unset.
+      S3_ROLE_ARN: ${{ secrets.S3_ROLE_ARN }}
+      S3_EXTERNAL_ID: ${{ secrets.S3_EXTERNAL_ID }}
+      S3_SECOND_TEST_BUCKET: ${{ secrets.S3_SECOND_TEST_BUCKET }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
       GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
       AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}

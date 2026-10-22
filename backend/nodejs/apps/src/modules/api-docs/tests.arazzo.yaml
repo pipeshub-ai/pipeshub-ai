@@ -5,6 +5,8 @@
 # A step whose output a later step uses needs a response-body condition, or Speakeasy skips the test.
 # Speakeasy cannot generate tests for streaming operations, and reading a list item by position breaks the
 # TypeScript build; tests that need either live in integration-tests/sdk_tests/handwritten.
+# A generated test fails on any error status, whatever the condition says, so a case that expects an
+# error is hand-written too. A step's x-speakeasy-test-security stays in force for the steps after it.
 # Do not put a condition on a field the spec types as a one-value enum (such as `enum: [true]`): the Go
 # SDK makes it a constant with no struct field, and the generated Go test does not compile.
 # Compare only strings and booleans in a response-body condition: the generated Go test compares
@@ -730,3 +732,833 @@ workflows:
         successCriteria:
           - condition: $statusCode == 200
     x-speakeasy-test-group: Semantic Search
+
+  - workflowId: conversationPinAndMessages
+    steps:
+      - stepId: createConversation
+        operationId: createConversation
+        requestBody:
+          contentType: application/json
+          payload:
+            query: Reply with the single word OK.
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/status == Complete
+        outputs:
+          conversationId: $response.body#/conversation/_id
+      - stepId: pinConversation
+        operationId: pinConversation
+        parameters:
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/isPinned == true
+      - stepId: unpinConversation
+        operationId: unpinConversation
+        parameters:
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/isPinned == false
+      - stepId: addMessage
+        operationId: addMessage
+        parameters:
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        requestBody:
+          contentType: application/json
+          payload:
+            query: Reply with the single word YES.
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/status == Complete
+      # The value of cancelled for a never-registered runId is not checked: the spec says false, the server answers true.
+      - stepId: cancelUnknownRun
+        operationId: cancelConversationStream
+        parameters:
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        requestBody:
+          contentType: application/json
+          payload:
+            runId: 00000000-0000-4000-8000-000000000000
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: deleteConversation
+        operationId: deleteConversationById
+        parameters:
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        successCriteria:
+          - condition: $statusCode == 200
+    x-speakeasy-test-group: Conversations
+
+  - workflowId: agentConversationMessages
+    steps:
+      - stepId: createAgent
+        operationId: createAgent
+        requestBody:
+          contentType: application/json
+          payload:
+            name: sdk-test-agent-conversation-messages
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/agent/name == sdk-test-agent-conversation-messages
+        outputs:
+          agentKey: $response.body#/agent/_key
+      - stepId: createConversation
+        operationId: createAgentConversation
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        requestBody:
+          contentType: application/json
+          payload:
+            query: Reply with the single word OK.
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/status == Complete
+        outputs:
+          conversationId: $response.body#/conversation/_id
+      - stepId: addMessage
+        operationId: addAgentConversationMessage
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        requestBody:
+          contentType: application/json
+          payload:
+            query: Reply with the single word YES.
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/conversation/status == Complete
+      # The value of cancelled for a never-registered runId is not checked: the spec says false, the server answers true.
+      - stepId: cancelUnknownRun
+        operationId: cancelAgentConversationStream
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+          - name: conversationId
+            in: path
+            value: $steps.createConversation.outputs.conversationId
+        requestBody:
+          contentType: application/json
+          payload:
+            runId: 00000000-0000-4000-8000-000000000000
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: deleteAgent
+        operationId: deleteAgent
+        parameters:
+          - name: agentKey
+            in: path
+            value: $steps.createAgent.outputs.agentKey
+        successCriteria:
+          - condition: $statusCode == 200
+    x-speakeasy-test-group: Agents
+
+  - workflowId: knowledgeBaseRecordGroups
+    steps:
+      - stepId: createKnowledgeBase
+        operationId: createKnowledgeBase
+        requestBody:
+          contentType: application/json
+          payload:
+            kbName: sdk-test-record-groups
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/name == sdk-test-record-groups
+        outputs:
+          kbId: $response.body#/id
+      - stepId: createFolder
+        operationId: createFolder
+        parameters:
+          - name: kbId
+            in: path
+            value: $steps.createKnowledgeBase.outputs.kbId
+        requestBody:
+          contentType: application/json
+          payload:
+            folderName: sdk-test-folder
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/name == sdk-test-folder
+        outputs:
+          folderId: $response.body#/id
+      - stepId: listFolderChildren
+        operationId: getKnowledgeHubChildNodes
+        parameters:
+          - name: parentType
+            in: path
+            value: folder
+          - name: parentId
+            in: path
+            value: $steps.createFolder.outputs.folderId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: deleteKnowledgeBase
+        operationId: deleteKnowledgeBase
+        parameters:
+          - name: kbId
+            in: path
+            value: $steps.createKnowledgeBase.outputs.kbId
+        successCriteria:
+          - condition: $statusCode == 200
+    x-speakeasy-test-group: Knowledge Base
+
+  # ENABLE_SOFT_DELETE is off on the CI app (the default), so nothing can be restored: each record fails.
+  - workflowId: recordRestoreRefused
+    steps:
+      - stepId: restoreRecords
+        operationId: restoreRecords
+        requestBody:
+          contentType: application/json
+          payload:
+            recordIds:
+              - 00000000-0000-4000-8000-000000000000
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == false
+    x-speakeasy-test-group: Knowledge Base
+
+  # An identifier no record has; the hand-written connector test looks up a record that exists.
+  - workflowId: recordLookupNotFound
+    steps:
+      - stepId: lookupRecord
+        operationId: lookupRecordByIdentifier
+        parameters:
+          - name: identifiers
+            in: query
+            value:
+              - sdk-test-no-such-record
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/ambiguous == false
+    x-speakeasy-test-group: Connector
+
+  # Connector names are unique in an org, so each suite names its connector with
+  # PIPESHUB_SDK_TEST_NAME, which run_sdk_tests.sh sets per suite.
+  - workflowId: connectorInstanceLifecycle
+    steps:
+      - stepId: getRegistry
+        operationId: getConnectorRegistry
+        parameters:
+          - name: search
+            in: query
+            value: RSS
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: getSchema
+        operationId: getConnectorSchema
+        parameters:
+          - name: connectorType
+            in: path
+            value: RSS
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: getEgressIps
+        operationId: getConnectorEgressIps
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      # Only PostgreSQL implements a connection check; an incomplete config fails it with 200.
+      - stepId: testPostgresConnection
+        operationId: testConnectorConnection
+        parameters:
+          - name: connectorType
+            in: path
+            value: PostgreSQL
+        requestBody:
+          contentType: application/json
+          payload:
+            auth:
+              host: 127.0.0.1
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == false
+      - stepId: createConnector
+        operationId: createConnectorInstance
+        requestBody:
+          contentType: application/json
+          payload:
+            connectorType: RSS
+            instanceName: "x-env: PIPESHUB_SDK_TEST_NAME; sdk-test-connector"
+            scope: team
+            authType: NONE
+            config:
+              sync:
+                feed_urls: https://feeds.bbci.co.uk/news/rss.xml
+                max_articles_per_feed: 1
+                fetch_full_content: false
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+        outputs:
+          connectorId: $response.body#/connector/connectorId
+      - stepId: getConnector
+        operationId: getConnectorInstance
+        parameters:
+          - name: connectorId
+            in: path
+            value: $steps.createConnector.outputs.connectorId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/connector/type == RSS
+      - stepId: listConnectors
+        operationId: listConnectorInstances
+        parameters:
+          - name: connectorType
+            in: query
+            value: RSS
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: getConfig
+        operationId: getConnectorConfig
+        parameters:
+          - name: connectorId
+            in: path
+            value: $steps.createConnector.outputs.connectorId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/config/type == RSS
+      - stepId: updateConfig
+        operationId: updateConnectorConfig
+        parameters:
+          - name: connectorId
+            in: path
+            value: $steps.createConnector.outputs.connectorId
+        requestBody:
+          contentType: application/json
+          payload:
+            sync:
+              selectedStrategy: MANUAL
+              feed_urls: https://feeds.bbci.co.uk/news/rss.xml
+              max_articles_per_feed: 1
+              fetch_full_content: false
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: updateAuthConfig
+        operationId: updateConnectorAuthConfig
+        parameters:
+          - name: connectorId
+            in: path
+            value: $steps.createConnector.outputs.connectorId
+        requestBody:
+          contentType: application/json
+          payload:
+            auth: {}
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: updateFiltersSyncConfig
+        operationId: updateConnectorFiltersSyncConfig
+        parameters:
+          - name: connectorId
+            in: path
+            value: $steps.createConnector.outputs.connectorId
+        requestBody:
+          contentType: application/json
+          payload:
+            sync:
+              selectedStrategy: MANUAL
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: saveFilters
+        operationId: saveConnectorFilters
+        parameters:
+          - name: connectorId
+            in: path
+            value: $steps.createConnector.outputs.connectorId
+        requestBody:
+          contentType: application/json
+          payload:
+            filters:
+              sdk_test_filter:
+                - sdk-test-value
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: getStats
+        operationId: getConnectorStats
+        parameters:
+          - name: connectorId
+            in: path
+            value: $steps.createConnector.outputs.connectorId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: stopIdleSync
+        operationId: stopConnectorSync
+        parameters:
+          - name: connectorId
+            in: path
+            value: $steps.createConnector.outputs.connectorId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/stopped == false
+      - stepId: deleteConnector
+        operationId: deleteConnectorInstance
+        parameters:
+          - name: connectorId
+            in: path
+            value: $steps.createConnector.outputs.connectorId
+        successCriteria:
+          - condition: $statusCode == 202
+    x-speakeasy-test-group: Connector Instances
+
+  # OAuth app names are unique per connector type in an org; see connectorInstanceLifecycle.
+  - workflowId: oauthConfigLifecycle
+    steps:
+      - stepId: getRegistry
+        operationId: getOAuthRegistry
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: getJiraType
+        operationId: getOAuthConnectorType
+        parameters:
+          - name: connectorType
+            in: path
+            value: Jira
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/connector/type == Jira
+      - stepId: createConfig
+        operationId: createOAuthConfig
+        parameters:
+          - name: connectorType
+            in: path
+            value: Jira
+        requestBody:
+          contentType: application/json
+          payload:
+            oauthInstanceName: "x-env: PIPESHUB_SDK_TEST_NAME; sdk-test-oauth-config"
+            config:
+              clientId: sdk-test-client-id
+              clientSecret: sdk-test-client-secret
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+        outputs:
+          configId: $response.body#/oauthConfig/_id
+      - stepId: getConfig
+        operationId: getOAuthConfig
+        parameters:
+          - name: connectorType
+            in: path
+            value: Jira
+          - name: configId
+            in: path
+            value: $steps.createConfig.outputs.configId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/oauthConfig/connectorType == Jira
+      - stepId: updateConfig
+        operationId: updateOAuthConfig
+        parameters:
+          - name: connectorType
+            in: path
+            value: Jira
+          - name: configId
+            in: path
+            value: $steps.createConfig.outputs.configId
+        requestBody:
+          contentType: application/json
+          payload:
+            config:
+              clientId: sdk-test-client-id-updated
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: listConfigs
+        operationId: listOAuthConfigs
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      - stepId: listJiraConfigs
+        operationId: listOAuthConfigsByType
+        parameters:
+          - name: connectorType
+            in: path
+            value: Jira
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+      # Completing the flow needs a browser consent; a made-up state is refused without an error status.
+      - stepId: callbackWithUnknownState
+        operationId: handleOAuthCallback
+        parameters:
+          - name: code
+            in: query
+            value: sdk-test-code
+          - name: state
+            in: query
+            value: sdk-test-state
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == false
+          - condition: $response.body#/error == invalid_state
+      - stepId: deleteConfig
+        operationId: deleteOAuthConfig
+        parameters:
+          - name: connectorType
+            in: path
+            value: Jira
+          - name: configId
+            in: path
+            value: $steps.createConfig.outputs.configId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/success == true
+    x-speakeasy-test-group: OAuth Configuration
+
+  # The OAuth app and personal access token routes accept only an interactive session, not an OAuth
+  # access token, so these workflows sign in with the session JWT that with_oauth_app.py provides.
+  - workflowId: oauthAppLifecycle
+    x-speakeasy-test-security:
+      value:
+        bearerAuth: "x-env: PIPESHUB_SESSION_TOKEN"
+    steps:
+      - stepId: createApp
+        operationId: createOAuthApp
+        requestBody:
+          contentType: application/json
+          payload:
+            name: sdk-test-oauth-app
+            allowedGrantTypes:
+              - client_credentials
+            allowedScopes:
+              - kb:read
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/app/name == sdk-test-oauth-app
+        outputs:
+          appId: $response.body#/app/id
+          clientId: $response.body#/app/clientId
+          clientSecret: $response.body#/app/clientSecret
+      - stepId: getApp
+        operationId: getOAuthApp
+        parameters:
+          - name: appId
+            in: path
+            value: $steps.createApp.outputs.appId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/name == sdk-test-oauth-app
+      - stepId: updateApp
+        operationId: updateOAuthApp
+        parameters:
+          - name: appId
+            in: path
+            value: $steps.createApp.outputs.appId
+        requestBody:
+          contentType: application/json
+          payload:
+            name: sdk-test-oauth-app-renamed
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/app/name == sdk-test-oauth-app-renamed
+      - stepId: listApps
+        operationId: listOAuthApps
+        parameters:
+          - name: search
+            in: query
+            value: sdk-test-oauth-app
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: listScopes
+        operationId: listOAuthScopes
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: issueToken
+        operationId: oauthToken
+        requestBody:
+          contentType: application/x-www-form-urlencoded
+          payload:
+            grant_type: client_credentials
+            client_id: $steps.createApp.outputs.clientId
+            client_secret: $steps.createApp.outputs.clientSecret
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/scope == kb:read
+        outputs:
+          accessToken: $response.body#/access_token
+      - stepId: introspectToken
+        operationId: oauthIntrospect
+        requestBody:
+          contentType: application/x-www-form-urlencoded
+          payload:
+            token: $steps.issueToken.outputs.accessToken
+            client_id: $steps.createApp.outputs.clientId
+            client_secret: $steps.createApp.outputs.clientSecret
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/active == true
+      - stepId: listAppTokens
+        operationId: listOAuthAppTokens
+        parameters:
+          - name: appId
+            in: path
+            value: $steps.createApp.outputs.appId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: revokeToken
+        operationId: oauthRevoke
+        requestBody:
+          contentType: application/x-www-form-urlencoded
+          payload:
+            token: $steps.issueToken.outputs.accessToken
+            client_id: $steps.createApp.outputs.clientId
+            client_secret: $steps.createApp.outputs.clientSecret
+        successCriteria:
+          - condition: $statusCode == 200
+      - stepId: introspectRevokedToken
+        operationId: oauthIntrospect
+        requestBody:
+          contentType: application/x-www-form-urlencoded
+          payload:
+            token: $steps.issueToken.outputs.accessToken
+            client_id: $steps.createApp.outputs.clientId
+            client_secret: $steps.createApp.outputs.clientSecret
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/active == false
+      - stepId: regenerateSecret
+        operationId: regenerateOAuthAppSecret
+        parameters:
+          - name: appId
+            in: path
+            value: $steps.createApp.outputs.appId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: suspendApp
+        operationId: suspendOAuthApp
+        parameters:
+          - name: appId
+            in: path
+            value: $steps.createApp.outputs.appId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/app/status == suspended
+      - stepId: activateApp
+        operationId: activateOAuthApp
+        parameters:
+          - name: appId
+            in: path
+            value: $steps.createApp.outputs.appId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/app/status == active
+      - stepId: revokeAllTokens
+        operationId: revokeAllOAuthAppTokens
+        parameters:
+          - name: appId
+            in: path
+            value: $steps.createApp.outputs.appId
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: deleteApp
+        operationId: deleteOAuthApp
+        parameters:
+          - name: appId
+            in: path
+            value: $steps.createApp.outputs.appId
+        successCriteria:
+          - condition: $statusCode == 200
+    x-speakeasy-test-group: OAuth Apps
+
+  - workflowId: personalAccessTokenLifecycle
+    x-speakeasy-test-security:
+      value:
+        bearerAuth: "x-env: PIPESHUB_SESSION_TOKEN"
+    steps:
+      - stepId: listScopes
+        operationId: listPersonalAccessTokenScopes
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: createToken
+        operationId: createPersonalAccessToken
+        requestBody:
+          contentType: application/json
+          payload:
+            name: sdk-test-pat
+            scopes:
+              - openid
+              - profile
+              - email
+              - kb:read
+            expiryDays: 30
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/token/name == sdk-test-pat
+        outputs:
+          tokenId: $response.body#/token/id
+          accessToken: $response.body#/token/accessToken
+      # userinfo needs a user token that carries `openid`; the PAT does, the session JWT does not.
+      - stepId: userInfo
+        operationId: oauthUserInfo
+        x-speakeasy-test-security:
+          value:
+            bearerAuth: $steps.createToken.outputs.accessToken
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: listKnowledgeBasesWithToken
+        operationId: listKnowledgeBases
+        x-speakeasy-test-security:
+          value:
+            bearerAuth: $steps.createToken.outputs.accessToken
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      # A step's security stays in force for the steps after it, so this one switches back.
+      - stepId: listTokens
+        operationId: listPersonalAccessTokens
+        x-speakeasy-test-security:
+          value:
+            bearerAuth: "x-env: PIPESHUB_SESSION_TOKEN"
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: adminListTokens
+        operationId: adminListPersonalAccessTokens
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: revokeToken
+        operationId: revokePersonalAccessToken
+        parameters:
+          - name: tokenId
+            in: path
+            value: $steps.createToken.outputs.tokenId
+        requestBody:
+          contentType: application/json
+          payload:
+            reason: sdk-test
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: createTokenForAdmin
+        operationId: createPersonalAccessToken
+        requestBody:
+          contentType: application/json
+          payload:
+            name: sdk-test-pat-admin-revoke
+            scopes:
+              - kb:read
+            expiryDays: never
+        successCriteria:
+          - condition: $statusCode == 201
+          - condition: $response.header.Content-Type == application/json
+          - condition: $response.body#/token/name == sdk-test-pat-admin-revoke
+        outputs:
+          tokenId: $response.body#/token/id
+      - stepId: adminRevokeToken
+        operationId: adminRevokePersonalAccessToken
+        parameters:
+          - name: tokenId
+            in: path
+            value: $steps.createTokenForAdmin.outputs.tokenId
+        requestBody:
+          contentType: application/json
+          payload:
+            reason: sdk-test
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+    x-speakeasy-test-group: Personal Access Tokens
+
+  # Changing how the org signs in would break the other suites. Setup answers "Org config already
+  # done" once the org exists and changes nothing; updateAuthMethod is tested only with bodies it refuses.
+  - workflowId: orgAuthConfigChecks
+    x-speakeasy-test-security:
+      value:
+        bearerAuth: "x-env: PIPESHUB_SESSION_TOKEN"
+    steps:
+      - stepId: getAuthMethods
+        operationId: getAuthMethods
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+      - stepId: setUpExistingConfig
+        operationId: setUpAuthConfig
+        requestBody:
+          contentType: application/json
+          payload:
+            contactEmail: sdk-test@example.com
+            registeredName: sdk-test-org
+            adminFullName: sdk-test-admin
+        successCriteria:
+          - condition: $statusCode == 200
+          - condition: $response.header.Content-Type == application/json
+    x-speakeasy-test-group: Organization Auth Config

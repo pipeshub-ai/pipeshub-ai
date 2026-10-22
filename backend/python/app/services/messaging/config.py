@@ -28,6 +28,7 @@ class Topic(str, Enum):
     """Well-known messaging topics."""
 
     RECORD_EVENTS = "record-events"
+    CODE_GRAPH_EVENTS = "code-graph-events"
     ENTITY_EVENTS = "entity-events"
     AI_CONFIG_EVENTS = "ai-config-events"
     SYNC_EVENTS = "sync-events"
@@ -558,6 +559,13 @@ class MessagingEnvConfig:
         reading it from Redis again. A lane only changes when a connector is
         moved, and a move waits out this long before it is fenced."""
         return _env_seconds("FAIR_SCHEDULING_LANE_CACHE_SECONDS", 60.0)
+
+    @property
+    def kafka_topic_partitions(self) -> int:
+        """Partitions for topics the Python services create on Kafka (pipeline stage
+        topics): the same ``KAFKA_TOPIC_PARTITIONS`` and default (32) the Node admin
+        applies to a ``record-events`` it creates, so both sides lane the same way."""
+        return max(1, _env_int("KAFKA_TOPIC_PARTITIONS", 32))
 
     @property
     def fair_scheduling_lane_key_field(self) -> str:

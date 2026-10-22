@@ -9,7 +9,9 @@
       "reindexFailedStart": "正在重新索引失敗的記錄…",
       "reindexFailedError": "重新索引失敗的記錄時發生錯誤",
       "manualIndexStart": "正在索引手動索引的記錄…",
-      "manualIndexError": "啟動手動索引失敗"
+      "manualIndexError": "啟動手動索引失敗",
+      "retryClassificationStart": "分類重試已加入佇列",
+      "retryClassificationError": "重試分類失敗"
     },
     "trash": {
       "menuLabel": "最近刪除",
@@ -658,6 +660,13 @@
     "message": "這會從頭重新索引文件，並可能產生額外費用。當搜尋結果過時，或索引完成後文件仍無法被搜尋時，請使用此功能。",
     "confirm": "確認"
   },
+  "reindexBlocked": {
+    "title": "此記錄無法單獨重新索引",
+    "message": "來自 GitHub 和 GitLab 的檔案會作為整個儲存庫的同一個程式碼圖譜一起索引。單獨重新索引某個檔案會使其版本比儲存庫其餘部分更新,並破壞檔案之間的關聯。如需重新整理，請在知識中心對整個儲存庫重新建立索引——這樣所有檔案會一起重新建立索引。連接器同步只會擷取有變更的檔案。",
+    "folderTitle": "此資料夾無法單獨重新索引",
+    "folderMessage": "來自 GitHub 和 GitLab 的檔案會作為整個儲存庫的同一個程式碼圖譜一起索引。單獨重新索引某個資料夾只會更新其中的檔案，使其版本比儲存庫其餘部分更新，並破壞檔案之間的關聯。如需重新整理，請在知識中心對整個儲存庫重新建立索引——這樣所有檔案會一起重新建立索引。連接器同步只會擷取有變更的檔案。",
+    "goToConnectors": "前往連接器"
+  },
   "kb": {
     "viewToggle": "檢視切換",
     "collectionsView": "集合檢視",
@@ -684,7 +693,21 @@
     "chatSelectionLimit": "聊天最多可帶入 {{max}} 個所選項目。請取消勾選部分項目後再試一次。",
     "chatTooManyCollections": "聊天一次最多可搜尋 {{max}} 個集合，而您的集合更多。請開啟一個集合，或勾選要提問的集合。",
     "chatCollectionsLoadFailed": "無法為聊天載入您的集合。請再試一次。",
-    "chatNoCollections": "您還沒有可提問的集合。"
+    "chatNoCollections": "您還沒有可提問的集合。",
+    "indexingStatus": {
+      "completed": "已完成",
+      "inProgress": "進行中",
+      "failed": "失敗",
+      "fileTypeNotSupported": "不支援的檔案類型",
+      "notStarted": "尚未開始",
+      "queued": "已排入佇列",
+      "manualIndexing": "手動索引",
+      "empty": "空白",
+      "paused": "已暫停",
+      "needsMultimodalModel": "需要多模態模型",
+      "skipped": "已略過",
+      "pending": "待處理"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -1806,6 +1829,7 @@
         "createDisabledScopesTooltip": "請至少選取一個權限範圍才能建立應用程式。",
         "tabGeneral": "一般",
         "tabPermissions": "權限與範圍",
+        "tabGranular": "細部權限",
         "appNameLabel": "應用程式名稱",
         "appNamePlaceholder": "我的應用程式",
         "descriptionLabel": "描述",
@@ -2743,6 +2767,25 @@
         "noRecordTypes": "沒有可用的記錄類型",
         "localWatcherLabel": "本機監看程式",
         "localWatcherStatus": "{{state}} · {{pending}} 個待處理 · {{failed}} 個失敗",
+        "classification": "分類",
+        "classificationSkipped": "已略過",
+        "retryFailedClassification": "重試失敗的分類",
+        "retryClassificationSuccess": "分類重試已加入佇列",
+        "retryClassificationError": "重試分類失敗",
+        "codeGraph": {
+          "title": "程式碼圖",
+          "status": {
+            "never_built": "尚未建立",
+            "building": "建立中",
+            "ready": "就緒",
+            "stale": "更新中",
+            "waiting_on_indexing": "等待索引",
+            "retrying": "重試中",
+            "failed": "失敗",
+            "too_large": "過大",
+            "unknown": "未知"
+          }
+        },
         "lastRun": {
           "title": "上次同步",
           "outcome": {
@@ -4613,6 +4656,12 @@
       "noRecordMetadata": "此項目沒有其他記錄中繼資料。"
     },
     "indexingReasonAria": "索引失敗詳細資訊",
+    "stageTrackLabel": "處理流程",
+    "stageParsed": "已解析",
+    "stageSearchable": "可搜尋",
+    "stageClassified": "已分類",
+    "stageAttempt": "第 {{n}} 次嘗試",
+    "stageDetailsAria": "階段詳細資訊",
     "tabRecordInformation": "記錄資訊",
     "tabDocumentDetails": "文件詳細資訊",
     "chat": "聊天",
@@ -4897,6 +4946,27 @@
     "doneLine": "您可以返回終端機。此視窗可以關閉。",
     "deniedTitle": "要求遭拒",
     "deniedLine": "未授予該裝置存取權。"
+  },
+  "knowledgeLimit": {
+    "title": "{{appName}} 可以看到什麼？",
+    "help": "它只能搜尋和讀取您在此處允許的內容，永遠不會超出您自己能看到的範圍。",
+    "everything": "我能看到的所有內容",
+    "everythingHint": "包括您之後新增的來源。",
+    "only": "僅限我選擇的內容",
+    "onlyHint": "選擇整個來源，或開啟一個來源以選擇空間、資料夾或檔案。",
+    "pickOne": "請至少選擇一個來源、空間、資料夾或檔案。",
+    "tooMany": "最多選擇 {{max}} 項，或改為選擇整個來源。",
+    "selectedCount_other": "已選擇 {{count}} 項",
+    "canSeeEverything": "可檢視：您能看到的所有內容",
+    "canSeeSome_other": "可檢視：所選的 {{count}} 項",
+    "thisToken": "此權杖",
+    "app": {
+      "thisApp": "此應用程式",
+      "help": "連接此應用程式的使用者只能搜尋和閱讀您在此選擇的內容，且絕不會超出他們自己可見的範圍。",
+      "everything": "每位使用者可見的全部內容",
+      "everythingHint": "包括之後新增的來源。"
+    },
+    "appLimited_other": "{{appName}} 只能查看其建立者選擇的 {{count}} 個項目，且僅限您可見的部分。"
   },
   "validation": {
     "password": {

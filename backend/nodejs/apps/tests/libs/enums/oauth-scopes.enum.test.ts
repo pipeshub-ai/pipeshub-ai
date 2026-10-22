@@ -182,6 +182,13 @@ describe('OAuthScopeNames', () => {
     });
   });
 
+  // Code graph
+  describe('Code graph scopes', () => {
+    it('should have CODE_READ as "code:read"', () => {
+      expect(OAuthScopeNames.CODE_READ).to.equal('code:read');
+    });
+  });
+
   // Configuration
   describe('Configuration scopes', () => {
     it('should have CONFIG_READ as "config:read"', () => {
@@ -229,8 +236,8 @@ describe('OAuthScopeNames', () => {
 
   // Structural tests
   describe('structural checks', () => {
-    it('should have exactly 45 scope entries', () => {
-      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(45);
+    it('should have exactly 46 scope entries', () => {
+      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(46);
     });
 
     it('should contain only the expected keys', () => {
@@ -283,6 +290,8 @@ describe('OAuthScopeNames', () => {
         'CONNECTOR_WRITE',
         'CONNECTOR_SYNC',
         'CONNECTOR_DELETE',
+        // Code graph
+        'CODE_READ',
         // Configuration
         'CONFIG_READ',
         'CONFIG_WRITE',

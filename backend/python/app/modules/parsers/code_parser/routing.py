@@ -15,11 +15,15 @@ from enum import Enum
 
 from app.config.constants.arangodb import ExtensionTypes
 from app.modules.parsers.code_parser import engine
-from app.modules.parsers.code_parser.file_role import is_generated_file_name
+from app.modules.parsers.code_parser.file_role import (
+    is_generated_content,
+    is_generated_file_name,
+)
 from app.modules.parsers.code_parser.lang_config import config_for_extension
 from app.utils.user_errors import (
     BINARY_FILE_SKIPPED,
     GENERATED_FILE_SKIPPED,
+    LFS_POINTER_SKIPPED,
     text_file_too_large,
     unsupported_file_type,
 )
@@ -40,6 +44,7 @@ class SkipCause(str, Enum):
     NO_PARSER = "no_parser"
     TOO_LARGE = "too_large"
     BINARY = "binary"
+    LFS_POINTER = "lfs_pointer"
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,10 @@ _STRUCTURED = {
 }
 # One record per line: the JSON parser rejects them and as prose they are noise.
 _DATA_WITHOUT_A_PARSER = frozenset({"ndjson", "jsonl"})
+
+# A Git LFS pointer: the repo stores this stub in place of the file (P-9).
+_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1\n"
+_LFS_POINTER_MAX_BYTES = 1024
 
 # What git reads to call a file binary.
 _BINARY_SNIFF_BYTES = 8000
@@ -108,7 +117,7 @@ def plan_code_file(
 
     *repository_file* is True for a file a connector synced out of a code
     repository (a ``CODE_FILE`` record). Only those are filtered: generated
-    files, data dumps with no parser and binary content are skipped, and the
+    files (by name, or by minified or generator-marked content), data dumps with no parser and binary content are skipped, and the
     text fallback is held to the code size limit. A source file someone
     uploaded keeps what it had before, the code parser's own size limit and an
     unlimited text fallback.
@@ -117,7 +126,13 @@ def plan_code_file(
     those parsers' own limits and nothing added here.
     """
     path = file_path or record_name
-    if repository_file and (is_generated_file_name(record_name) or is_generated_file_name(path)):
+    if repository_file and len(content) <= _LFS_POINTER_MAX_BYTES \
+            and content.startswith(_LFS_POINTER_PREFIX):
+        return _skip(SkipCause.LFS_POINTER, LFS_POINTER_SKIPPED)
+    if repository_file and (
+        is_generated_file_name(record_name) or is_generated_file_name(path)
+        or is_generated_content(content)
+    ):
         return _skip(SkipCause.GENERATED, GENERATED_FILE_SKIPPED)
 
     declared = _declared_extension(extension)

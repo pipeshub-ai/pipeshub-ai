@@ -19,6 +19,7 @@ default branch, so concurrent runs share it and only a path namespace keeps them
   order 1  TC-SYNC-001            — full sync baseline + graph self-consistency
   order 2  TC-GH-RG-001           — org/repo/child record-group hierarchy + App edge
   order 3  TC-GH-USER-001         — AppUsers, USER_APP_RELATION, no team→app gate edge (private repo)
+  order 3  TC-GH-AUTH-001         — the creator's link to the GitHub account the token belongs to
   order 4  TC-GH-ISSUE-001        — reference issue TICKET properties
   order 5  TC-GH-ISSUE-002        — hierarchy + BLOCKS relation + entity relations
   order 6  TC-GH-ATTACH-001       — issue AND PR body attachments exist after base sync
@@ -64,6 +65,7 @@ from app.config.constants.arangodb import (  # type: ignore[import-not-found]  #
     ProgressStatus,
 )
 from app.models.entities import RecordType  # type: ignore[import-not-found]  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     wait_for_record_by_external_id,
@@ -501,6 +503,27 @@ class TestGitHubTeamsConnector:
             "gate edge; ensure_team_app_edge must run only for a public repo"
         )
         logger.info("TC-GH-USER-001 passed: %d identities, no gate edge", len(emails))
+
+    @pytest.mark.order(3)
+    async def test_tc_gh_auth_001_authenticated_identity(
+        self,
+        github_connector: dict[str, Any],
+        github_rest: Any,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GH-AUTH-001: the creator is linked to the GitHub account the token belongs to.
+
+        That link is what lets a creator whose PipesHub email differs see the account's
+        permissions on this connector. Read from the same ``GET /user`` the connector reads.
+        """
+        me = await github_rest.get_json("/user")
+        email = me.get("email")
+        await assert_authenticated_identity_link(
+            graph_provider, github_connector["connector_id"],
+            email.strip() if isinstance(email, str) else None,
+            str(me["id"]) if me.get("id") is not None else None,
+        )
+        logger.info("TC-GH-AUTH-001 passed: GitHub account %s", me.get("id"))
 
 
 # =============================================================================

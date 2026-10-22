@@ -76,6 +76,10 @@ class _Store(IRetryTracker):
         self.deliveries.pop(message_id, None)
         self.handbacks.pop(message_id, None)
 
+    async def clear_deliveries(self, message_id: str) -> None:
+        self._answer()
+        self.deliveries.pop(message_id, None)
+
     async def clear_batch(self, message_ids: list[str]) -> int:
         self._answer()
         return sum(self.failures.pop(m, None) is not None for m in message_ids)
@@ -291,6 +295,54 @@ class TestHandbacks:
         await tracker.record_delivery("m")
 
         assert await tracker.get_handbacks("m") == 0
+
+
+class TestClearDeliveries:
+    """A paused stage job is re-queued without spending its delivery budget."""
+
+    async def test_it_starts_deliveries_over_and_keeps_the_other_counts(self, tracker, store) -> None:
+        await tracker.increment_and_check("m", MAX_ATTEMPTS)
+        await tracker.record_handback("m")
+        await tracker.record_delivery("m")
+        await tracker.record_delivery("m")
+
+        await tracker.clear_deliveries("m")
+
+        assert store.deliveries == {}
+        assert await tracker.record_delivery("m") == 1
+        assert await tracker.get_count("m") == 1
+        assert await tracker.get_handbacks("m") == 1
+
+    async def test_deliveries_counted_during_an_outage_go_too(self, tracker, store) -> None:
+        store.down = True
+        await tracker.record_delivery("m")
+        await tracker.record_delivery("m")
+        store.down = False
+
+        await tracker.clear_deliveries("m")
+
+        assert await tracker.record_delivery("m") == 1
+
+    async def test_it_still_raises_so_the_caller_knows(self, tracker, store) -> None:
+        store.down = True
+        await tracker.record_delivery("m")
+
+        with pytest.raises(TimeoutError):
+            await tracker.clear_deliveries("m")
+        store.down = False
+        assert await tracker.record_delivery("m") == 1
+
+    async def test_it_reaches_the_retry_manager(self) -> None:
+        manager = RetryManager(LOGGER, redis_client=FakeRedis())
+        tracker = FailSafeRetryTracker(manager, LOGGER, ttl_seconds=manager.ttl_seconds)
+        await tracker.initialize()
+        await tracker.increment_and_check("m", MAX_ATTEMPTS)
+        await tracker.record_delivery("m")
+
+        await tracker.clear_deliveries("m")
+
+        assert await tracker.record_delivery("m") == 1
+        assert await manager.get_count("m") == 1
 
 
 class TestStoreStaysAuthoritative:

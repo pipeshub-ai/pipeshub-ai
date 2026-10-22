@@ -114,6 +114,13 @@ class TestBaseConnectorDisplayName:
         c.instance_name = "Engineering Docs"
         assert c.display_name == "Engineering Docs"
 
+    def test_factory_instance_name_wins_over_the_type_name(self) -> None:
+        """Sync paths only have the name ConnectorFactory sets (PP-120)."""
+        c = self._make(metadata={"name": "S3"})
+        c.connector_instance_name = "Finance S3"
+        assert c.display_name == "Finance S3"
+        assert c._notification_title("Access denied") == "Finance S3: Access denied"
+
     def test_falls_back_to_type_name_when_instance_name_is_unset(self):
         c = self._make(metadata={"name": "Collections"})
         assert c.instance_name is None

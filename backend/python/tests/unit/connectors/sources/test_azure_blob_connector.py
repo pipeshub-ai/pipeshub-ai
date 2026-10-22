@@ -54,7 +54,7 @@ def mock_data_entities_processor():
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
     proc.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
-    proc.account_name = "teststorage"
+    proc.account_url = "https://teststorage.blob.core.windows.net"
     proc.get_app_by_id = AsyncMock(return_value=AppMetadata(
         connector_id="az-blob-1",
         name="Azure Blob",
@@ -137,9 +137,9 @@ class TestAzureBlobHelpers:
         assert path is None
 
     def test_parent_weburl(self):
-        url = get_parent_weburl_for_azure_blob("container/folder/", "testacc")
+        url = get_parent_weburl_for_azure_blob("container/folder/", "https://testacc.blob.core.windows.net")
         assert "testacc.blob.core.windows.net" in url
-        url = get_parent_weburl_for_azure_blob("container", "testacc")
+        url = get_parent_weburl_for_azure_blob("container", "https://testacc.blob.core.windows.net")
         assert "testacc.blob.core.windows.net/container" in url
 
     def test_parent_path(self):
@@ -217,13 +217,13 @@ class TestAzureBlobConnectorInit:
 # ===========================================================================
 class TestAzureBlobWebUrls:
     def test_generate_web_url(self, azure_blob_connector):
-        azure_blob_connector.account_name = "testacc"
+        azure_blob_connector.account_url = "https://testacc.blob.core.windows.net"
         url = azure_blob_connector._generate_web_url("container", "path/file.txt")
         assert "testacc.blob.core.windows.net" in url
         assert "container" in url
 
     def test_generate_parent_web_url(self, azure_blob_connector):
-        azure_blob_connector.account_name = "testacc"
+        azure_blob_connector.account_url = "https://testacc.blob.core.windows.net"
         url = azure_blob_connector._generate_parent_web_url("container/dir")
         assert "testacc.blob.core.windows.net" in url
 
@@ -276,9 +276,9 @@ class TestAzureBlobDataSourceEntitiesProcessor:
     def test_constructor(self, mock_logger, mock_data_store_provider, mock_config_service):
         proc = AzureBlobDataSourceEntitiesProcessor(
             logger=mock_logger, data_store_provider=mock_data_store_provider,
-            config_service=mock_config_service, account_name="myaccount",
+            config_service=mock_config_service, account_url="https://myaccount.blob.core.windows.net",
         )
-        assert proc.account_name == "myaccount"
+        assert proc.account_url == "https://myaccount.blob.core.windows.net"
 
 # =============================================================================
 # Merged from test_azure_blob_connector_coverage.py
@@ -338,7 +338,7 @@ def mock_data_entities_processor_cov():
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
     proc.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
-    proc.account_name = "teststorage"
+    proc.account_url = "https://teststorage.blob.core.windows.net"
     proc.get_user_by_user_id = AsyncMock(
         return_value=User(
             email="user@test.com",
@@ -425,7 +425,7 @@ class TestAzureBlobHelpersExtended:
         assert path == "a/b/c/"
 
     def test_get_parent_weburl_with_path(self):
-        url = get_parent_weburl_for_azure_blob("container/folder/sub", "myacc")
+        url = get_parent_weburl_for_azure_blob("container/folder/sub", "https://myacc.blob.core.windows.net")
         assert "myacc.blob.core.windows.net" in url
 
     def test_get_parent_path_for_azure_with_trailing_slash(self):
@@ -436,13 +436,13 @@ class TestAzureBlobHelpersExtended:
 # AzureBlobDataSourceEntitiesProcessor
 # ===========================================================================
 class TestAzureBlobProcessorExtended:
-    def test_default_account_name(self, mock_logger_cov, mock_data_store_provider_cov, mock_config_service):
+    def test_default_account_url(self, mock_logger_cov, mock_data_store_provider_cov, mock_config_service):
         proc = AzureBlobDataSourceEntitiesProcessor(
             logger=mock_logger_cov,
             data_store_provider=mock_data_store_provider_cov,
             config_service=mock_config_service,
         )
-        assert proc.account_name == ""
+        assert proc.account_url == ""
 
 
 # ===========================================================================
@@ -728,7 +728,7 @@ class TestProcessAzureBlob:
     @pytest.mark.asyncio
     async def test_new_file(self, azure_connector):
         azure_connector.scope = ConnectorScope.TEAM.value
-        azure_connector.account_name = "testacc"
+        azure_connector.account_url = "https://testacc.blob.core.windows.net"
         blob = {
             "name": "path/file.txt",
             "last_modified": datetime.now(timezone.utc),
@@ -744,22 +744,24 @@ class TestProcessAzureBlob:
     @pytest.mark.asyncio
     async def test_folder_blob(self, azure_connector):
         azure_connector.scope = ConnectorScope.TEAM.value
-        azure_connector.account_name = "testacc"
+        azure_connector.account_url = "https://testacc.blob.core.windows.net"
         blob = {
             "name": "folder/",
             "last_modified": datetime.now(timezone.utc),
             "creation_time": None,
         }
         record, perms = await azure_connector._process_azure_blob(blob, "container")
-        # RecordType.FOLDER does not exist in the enum, so the method
-        # catches the error and returns (None, [])
-        assert record is None
-        assert perms == []
+        # Sync sends folders through _ensure_parent_folders_exist; called directly it
+        # still yields a folder-shaped record of the one folder record type.
+        assert record is not None
+        assert record.record_type == RecordType.FILE
+        assert record.is_file is False
+        assert record.mime_type == MimeTypes.FOLDER.value
 
     @pytest.mark.asyncio
     async def test_string_timestamps(self, azure_connector):
         azure_connector.scope = ConnectorScope.TEAM.value
-        azure_connector.account_name = "testacc"
+        azure_connector.account_url = "https://testacc.blob.core.windows.net"
         blob = {
             "name": "file.txt",
             "last_modified": "2025-01-01T00:00:00Z",
@@ -780,7 +782,7 @@ class TestProcessAzureBlob:
         existing.source_created_at = 1700000000000
         azure_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         azure_connector.scope = ConnectorScope.TEAM.value
-        azure_connector.account_name = "testacc"
+        azure_connector.account_url = "https://testacc.blob.core.windows.net"
 
         blob = {
             "name": "file.txt",
@@ -814,7 +816,7 @@ class TestProcessAzureBlob:
         azure_connector.data_source = MagicMock(list_blobs=AsyncMock(return_value=MagicMock(success=True, data=no_blobs())))
         azure_connector.data_entities_processor.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
         azure_connector.scope = ConnectorScope.TEAM.value
-        azure_connector.account_name = "testacc"
+        azure_connector.account_url = "https://testacc.blob.core.windows.net"
 
         blob = {
             "name": "new/file.txt",
@@ -845,16 +847,19 @@ class TestRunSyncExtended:
     async def test_list_containers_fails(self, mock_filters, azure_connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         azure_connector.data_source = MagicMock()
+        azure_connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         azure_connector.data_source.list_containers = AsyncMock(
             return_value=_make_response(False, error="err")
         )
-        await azure_connector.run_sync()
+        with pytest.raises(ConnectionError, match="Failed to list"):
+            await azure_connector.run_sync()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.azure_blob.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_no_containers_found(self, mock_filters, azure_connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         azure_connector.data_source = MagicMock()
+        azure_connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         azure_connector.data_source.list_containers = AsyncMock(
             return_value=_make_response(True, None)
         )
@@ -865,6 +870,7 @@ class TestRunSyncExtended:
     async def test_configured_container(self, mock_filters, azure_connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         azure_connector.data_source = MagicMock()
+        azure_connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         azure_connector.container_name = "mycontainer"
         azure_connector._create_record_groups_for_containers = AsyncMock()
         azure_connector._sync_container = AsyncMock()
@@ -876,11 +882,13 @@ class TestRunSyncExtended:
     async def test_container_sync_error_continues(self, mock_filters, azure_connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         azure_connector.data_source = MagicMock()
+        azure_connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         azure_connector.container_name = "mycontainer"
         azure_connector._create_record_groups_for_containers = AsyncMock()
         azure_connector._sync_container = AsyncMock(side_effect=Exception("sync error"))
-        # Should not raise
-        await azure_connector.run_sync()
+        with pytest.raises(RuntimeError, match="mycontainer"):
+            await azure_connector.run_sync()
+        azure_connector._sync_container.assert_awaited_once_with("mycontainer")
 
 
 # ===========================================================================
@@ -951,7 +959,7 @@ class TestGetSignedUrl:
     async def test_success(self, azure_connector):
         azure_connector.data_source = MagicMock()
         azure_connector.data_source.generate_blob_sas_url = AsyncMock(
-            return_value=_make_response(True, {"sas_url": "https://blob.url/sas"})
+            return_value=_make_response(True, {"sas_url": "https://blob.url/sas", "expiry": "2026-01-01T00:15:00+00:00"})
         )
         record = MagicMock(
             id="r1", external_record_group_id="container",
@@ -992,7 +1000,7 @@ class TestGetSignedUrl:
     async def test_key_without_container_prefix(self, azure_connector):
         azure_connector.data_source = MagicMock()
         azure_connector.data_source.generate_blob_sas_url = AsyncMock(
-            return_value=_make_response(True, {"sas_url": "https://blob.url/sas"})
+            return_value=_make_response(True, {"sas_url": "https://blob.url/sas", "expiry": "2026-01-01T00:15:00+00:00"})
         )
         record = MagicMock(
             id="r1", external_record_group_id="container",
@@ -1020,7 +1028,7 @@ class TestStreamRecord:
         from fastapi import HTTPException
         record = MagicMock()
         record.is_file = True
-        azure_connector.get_signed_url = AsyncMock(return_value=None)
+        azure_connector._download_url = AsyncMock(return_value=(None, False))
         with pytest.raises(HTTPException):
             await azure_connector.stream_record(record)
 
@@ -1050,8 +1058,8 @@ class TestGetFilterOptions:
     @pytest.mark.asyncio
     async def test_containers(self, azure_connector):
         azure_connector.data_source = MagicMock()
-        azure_connector.data_source.list_containers = AsyncMock(
-            return_value=_make_response(True, [{"name": "c1"}, {"name": "c2"}])
+        azure_connector.data_source.list_containers_page = AsyncMock(
+            return_value=_make_response(True, {"names": ['c1', 'c2'], "continuation_token": None})
         )
         result = await azure_connector.get_filter_options("containers")
         assert result.success is True
@@ -1071,7 +1079,7 @@ class TestGetFilterOptions:
     @pytest.mark.asyncio
     async def test_list_fails(self, azure_connector):
         azure_connector.data_source = MagicMock()
-        azure_connector.data_source.list_containers = AsyncMock(
+        azure_connector.data_source.list_containers_page = AsyncMock(
             return_value=_make_response(False, error="err")
         )
         result = await azure_connector.get_filter_options("containers")
@@ -1080,8 +1088,8 @@ class TestGetFilterOptions:
     @pytest.mark.asyncio
     async def test_no_containers(self, azure_connector):
         azure_connector.data_source = MagicMock()
-        azure_connector.data_source.list_containers = AsyncMock(
-            return_value=_make_response(True, None)
+        azure_connector.data_source.list_containers_page = AsyncMock(
+            return_value=_make_response(True, {"names": [], "continuation_token": None})
         )
         result = await azure_connector.get_filter_options("containers")
         assert result.success is True
@@ -1090,26 +1098,34 @@ class TestGetFilterOptions:
     @pytest.mark.asyncio
     async def test_search(self, azure_connector):
         azure_connector.data_source = MagicMock()
-        azure_connector.data_source.list_containers = AsyncMock(
-            return_value=_make_response(True, [{"name": "prod-data"}, {"name": "dev-logs"}])
+        azure_connector.data_source.list_containers_page = AsyncMock(
+            return_value=_make_response(True, {"names": ['prod-data'], "continuation_token": None})
         )
         result = await azure_connector.get_filter_options("containers", search="prod")
         assert len(result.options) == 1
+        # Azure filters by name prefix; nothing is filtered in memory.
+        azure_connector.data_source.list_containers_page.assert_awaited_once_with(
+            prefix="prod", results_per_page=20, continuation_token=None
+        )
 
     @pytest.mark.asyncio
     async def test_pagination(self, azure_connector):
         azure_connector.data_source = MagicMock()
-        azure_connector.data_source.list_containers = AsyncMock(
-            return_value=_make_response(True, [{"name": f"c{i}"} for i in range(5)])
+        azure_connector.data_source.list_containers_page = AsyncMock(
+            return_value=_make_response(True, {"names": ['c0', 'c1'], "continuation_token": "tok"})
         )
         result = await azure_connector.get_filter_options("containers", page=1, limit=2)
         assert len(result.options) == 2
         assert result.has_more is True
+        assert result.cursor == "tok"
+        azure_connector.data_source.list_containers_page.assert_awaited_once_with(
+            prefix=None, results_per_page=2, continuation_token=None
+        )
 
     @pytest.mark.asyncio
     async def test_exception(self, azure_connector):
         azure_connector.data_source = MagicMock()
-        azure_connector.data_source.list_containers = AsyncMock(side_effect=Exception("err"))
+        azure_connector.data_source.list_containers_page = AsyncMock(side_effect=Exception("err"))
         result = await azure_connector.get_filter_options("containers")
         assert result.success is False
 
@@ -1169,8 +1185,9 @@ class TestCheckAndFetchUpdatedRecord:
         azure_connector.data_source.get_blob_properties = AsyncMock(
             return_value=_make_response(False, error="not found")
         )
-        result = await azure_connector._check_and_fetch_updated_record("org-1", record)
-        assert result is None
+        # Raised so reindex_records publishes nothing for a blob that is gone.
+        with pytest.raises(LookupError):
+            await azure_connector._check_and_fetch_updated_record("org-1", record)
 
     @pytest.mark.asyncio
     async def test_no_change(self, azure_connector):
@@ -1204,6 +1221,7 @@ class TestRunIncrementalSync:
     async def test_configured_container(self, mock_filters, azure_connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         azure_connector.data_source = MagicMock()
+        azure_connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         azure_connector.container_name = "mycontainer"
         azure_connector._sync_container = AsyncMock()
         await azure_connector.run_incremental_sync()
@@ -1214,6 +1232,7 @@ class TestRunIncrementalSync:
     async def test_no_containers(self, mock_filters, azure_connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         azure_connector.data_source = MagicMock()
+        azure_connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         azure_connector.data_source.list_containers = AsyncMock(
             return_value=_make_response(True, None)
         )
@@ -1247,13 +1266,13 @@ class TestEnsureParentFoldersExist:
 # ===========================================================================
 class TestGenerateUrls:
     def test_generate_web_url(self, azure_connector):
-        azure_connector.account_name = "teststorage"
+        azure_connector.account_url = "https://teststorage.blob.core.windows.net"
         url = azure_connector._generate_web_url("container", "path/file.txt")
         assert "teststorage" in url
         assert "container" in url
 
     def test_generate_parent_web_url(self, azure_connector):
-        azure_connector.account_name = "teststorage"
+        azure_connector.account_url = "https://teststorage.blob.core.windows.net"
         url = azure_connector._generate_parent_web_url("container/path")
         assert "teststorage" in url
 
@@ -1340,7 +1359,7 @@ def mock_dep():
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
     proc.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
-    proc.account_name = "teststorage"
+    proc.account_url = "https://teststorage.blob.core.windows.net"
     proc.get_user_by_user_id = AsyncMock(
         return_value=User(
             email="user@test.com",
@@ -1383,7 +1402,7 @@ def connector(mock_logger_fullcov, mock_dep, mock_provider, mock_config):
             scope="personal",
             created_by="test-user-id",
         )
-    c.account_name = "teststorage"
+    c.account_url = "https://teststorage.blob.core.windows.net"
     return c
 
 
@@ -1472,11 +1491,11 @@ class TestHelperParseParentExternalId:
 
 class TestHelperGetParentWeburlForAzureBlob:
     def test_container_only(self):
-        url = get_parent_weburl_for_azure_blob("container", "acc")
+        url = get_parent_weburl_for_azure_blob("container", "https://acc.blob.core.windows.net")
         assert url == "https://acc.blob.core.windows.net/container"
 
     def test_with_path(self):
-        url = get_parent_weburl_for_azure_blob("c/dir/sub", "acc")
+        url = get_parent_weburl_for_azure_blob("c/dir/sub", "https://acc.blob.core.windows.net")
         assert "dir/sub/" in url
 
 
@@ -1498,16 +1517,16 @@ class TestEntitiesProcessor:
             logger=mock_logger_fullcov,
             data_store_provider=mock_provider,
             config_service=mock_config,
-            account_name="myaccount",
+            account_url="https://myaccount.blob.core.windows.net",
         )
-        assert proc.account_name == "myaccount"
+        assert proc.account_url == "https://myaccount.blob.core.windows.net"
 
     def test_create_placeholder_parent_record(self, mock_logger_fullcov, mock_provider, mock_config):
         proc = AzureBlobDataSourceEntitiesProcessor(
             logger=mock_logger_fullcov,
             data_store_provider=mock_provider,
             config_service=mock_config,
-            account_name="myaccount",
+            account_url="https://myaccount.blob.core.windows.net",
         )
         parent = FileRecord(
             id="p1",
@@ -1535,7 +1554,7 @@ class TestEntitiesProcessor:
             logger=mock_logger_fullcov,
             data_store_provider=mock_provider,
             config_service=mock_config,
-            account_name="myaccount",
+            account_url="https://myaccount.blob.core.windows.net",
         )
         proc.org_id = "org-1"
         child = MagicMock()
@@ -2036,8 +2055,10 @@ class TestSyncContainer:
         connector.data_source.list_blobs = AsyncMock(return_value=_resp(False, error="denied"))
         connector.record_sync_point = AsyncMock()
         connector.record_sync_point.read_sync_point = AsyncMock(return_value=None)
-        await connector._sync_container("c")
+        with pytest.raises(ConnectionError, match="denied"):
+            await connector._sync_container("c")
 
+        connector.record_sync_point.update_sync_point.assert_not_called()
     @pytest.mark.asyncio
     async def test_no_blobs(self, connector):
         connector.data_source = MagicMock()
@@ -2186,6 +2207,7 @@ class TestRunSyncExtendedFullCoverage:
         sync_filters.__bool__ = MagicMock(return_value=True)
         mock_filters.return_value = (sync_filters, FilterCollection())
         connector.data_source = MagicMock()
+        connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         connector._create_record_groups_for_containers = AsyncMock()
         connector._sync_container = AsyncMock()
         await connector.run_sync()
@@ -2196,6 +2218,7 @@ class TestRunSyncExtendedFullCoverage:
     async def test_empty_container_names_skipped(self, mock_filters, connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
+        connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         connector.data_source.list_containers = AsyncMock(
             return_value=_resp(True, [{"name": "c1"}, {"name": ""}, {"name": None}])
         )
@@ -2209,6 +2232,7 @@ class TestRunSyncExtendedFullCoverage:
     async def test_no_valid_containers(self, mock_filters, connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
+        connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         connector.data_source.list_containers = AsyncMock(
             return_value=_resp(True, [{"name": None}])
         )
@@ -2220,6 +2244,7 @@ class TestRunSyncExtendedFullCoverage:
     async def test_exception_propagates(self, mock_filters, connector):
         mock_filters.side_effect = Exception("filter error")
         connector.data_source = MagicMock()
+        connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         with pytest.raises(Exception, match="filter error"):
             await connector.run_sync()
 
@@ -2235,6 +2260,7 @@ class TestRunIncrementalSyncExtended:
         sync_filters.__bool__ = MagicMock(return_value=True)
         mock_filters.return_value = (sync_filters, FilterCollection())
         connector.data_source = MagicMock()
+        connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         connector._sync_container = AsyncMock()
         await connector.run_incremental_sync()
         connector._sync_container.assert_awaited_once_with("c1")
@@ -2244,23 +2270,29 @@ class TestRunIncrementalSyncExtended:
     async def test_list_containers_no_data(self, mock_filters, connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
+        connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         connector.data_source.list_containers = AsyncMock(return_value=_resp(False))
-        await connector.run_incremental_sync()
+        with pytest.raises(ConnectionError, match="Failed to list"):
+            await connector.run_incremental_sync()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.azure_blob.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_container_sync_error_continues(self, mock_filters, connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
+        connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         connector.container_name = "c1"
         connector._sync_container = AsyncMock(side_effect=Exception("sync err"))
-        await connector.run_incremental_sync()
+        with pytest.raises(RuntimeError, match="c1"):
+            await connector.run_incremental_sync()
 
+        connector._sync_container.assert_awaited_once_with("c1")
     @pytest.mark.asyncio
     @patch("app.connectors.sources.azure_blob.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_empty_container_skipped(self, mock_filters, connector):
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector.data_source = MagicMock()
+        connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         connector.data_source.list_containers = AsyncMock(
             return_value=_resp(True, [{"name": "c1"}, {"name": ""}])
         )
@@ -2273,6 +2305,7 @@ class TestRunIncrementalSyncExtended:
     async def test_exception_propagates(self, mock_filters, connector):
         mock_filters.side_effect = Exception("filter err")
         connector.data_source = MagicMock()
+        connector.data_source.get_container_properties = AsyncMock(return_value=MagicMock(success=True, data=MagicMock(last_modified=None)))
         with pytest.raises(Exception, match="filter err"):
             await connector.run_incremental_sync()
 
@@ -2424,7 +2457,11 @@ class TestCheckAndFetchUpdatedRecordExtended:
         }))
         connector._create_azure_blob_permissions = AsyncMock(return_value=[])
         result = await connector._check_and_fetch_updated_record("org", record)
-        assert result is None
+        assert result is not None
+        updated_record, _ = result
+        assert updated_record.record_type == RecordType.FILE
+        assert updated_record.is_file is False
+        assert updated_record.mime_type == MimeTypes.FOLDER.value
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self, connector):
@@ -2472,7 +2509,7 @@ class TestGetSignedUrlExtended:
     async def test_url_encoded_blob_name(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.generate_blob_sas_url = AsyncMock(
-            return_value=_resp(True, {"sas_url": "https://sas.url"})
+            return_value=_resp(True, {"sas_url": "https://sas.url", "expiry": "2026-01-01T00:15:00+00:00"})
         )
         record = MagicMock(
             id="r1",
@@ -2490,7 +2527,7 @@ class TestStreamRecordExtended:
     @patch("app.connectors.sources.azure_blob.connector.stream_content")
     async def test_success(self, mock_stream, mock_create, connector):
         mock_create.return_value = MagicMock()
-        connector.get_signed_url = AsyncMock(return_value="https://sas.url")
+        connector._download_url = AsyncMock(return_value=("https://sas.url", True))
         record = MagicMock(spec=FileRecord)
         record.is_file = True
         record.id = "r1"
@@ -2501,7 +2538,7 @@ class TestStreamRecordExtended:
 
     @pytest.mark.asyncio
     async def test_no_mime_type(self, connector):
-        connector.get_signed_url = AsyncMock(return_value="https://sas.url")
+        connector._download_url = AsyncMock(return_value=("https://sas.url", True))
         record = MagicMock(spec=FileRecord)
         record.is_file = True
         record.id = "r1"
@@ -2519,23 +2556,29 @@ class TestGetContainerOptionsExtended:
     @pytest.mark.asyncio
     async def test_last_page(self, connector):
         connector.data_source = MagicMock()
-        connector.data_source.list_containers = AsyncMock(
-            return_value=_resp(True, [{"name": "c1"}, {"name": "c2"}])
+        connector.data_source.list_containers_page = AsyncMock(
+            return_value=_resp(True, {"names": [], "continuation_token": None})
         )
-        result = await connector._get_container_options(page=2, limit=5, search=None)
+        result = await connector._get_container_options(page=2, limit=5, search=None, cursor="tok")
         assert result.success is True
         assert len(result.options) == 0
         assert result.has_more is False
+        assert result.cursor is None
+        connector.data_source.list_containers_page.assert_awaited_once_with(
+            prefix=None, results_per_page=5, continuation_token="tok"
+        )
 
     @pytest.mark.asyncio
-    async def test_search_case_insensitive(self, connector):
+    async def test_search_is_a_server_side_prefix(self, connector):
         connector.data_source = MagicMock()
-        connector.data_source.list_containers = AsyncMock(
-            return_value=_resp(True, [{"name": "Prod-Data"}, {"name": "dev-logs"}])
+        connector.data_source.list_containers_page = AsyncMock(
+            return_value=_resp(True, {"names": ['prod-data'], "continuation_token": None})
         )
-        result = await connector._get_container_options(page=1, limit=20, search="PROD")
-        assert len(result.options) == 1
-        assert result.options[0].id == "Prod-Data"
+        result = await connector._get_container_options(page=1, limit=20, search="prod")
+        assert [o.id for o in result.options] == ["prod-data"]
+        connector.data_source.list_containers_page.assert_awaited_once_with(
+            prefix="prod", results_per_page=20, continuation_token=None
+        )
 
 
 class TestCreateConnector:
@@ -2618,9 +2661,9 @@ class TestGenerateWebUrl:
         assert "path%20with%20spaces" in url
 
     def test_parent_url_no_account(self, connector):
-        connector.account_name = None
+        connector.account_url = ""
         url = connector._generate_parent_web_url("c/dir")
-        assert ".blob.core.windows.net" in url
+        assert url == "/c/dir/"
 
 
 def _folder_filter(values, exclude=False):
@@ -2678,8 +2721,8 @@ class TestFolderFilter:
 
         assert prefixes == ["reports/"]
         assert [call.args[0]["name"] for call in c._process_azure_blob.await_args_list] == ["reports/a.pdf"]
-        # Read before listing, read to find deletions, and the scope cleanup.
-        assert c.data_entities_processor.get_records_in_record_group.await_count == 3
+        # One read before listing (kept for finding deletions too), and the scope cleanup.
+        assert c.data_entities_processor.get_records_in_record_group.await_count == 2
 
     @pytest.mark.asyncio
     async def test_an_already_cleaned_scope_is_not_scanned_again(self, azure_blob_connector):
@@ -2690,8 +2733,8 @@ class TestFolderFilter:
         await c._sync_container("c1")
         await c._sync_container("c1")
 
-        # Two reads per sync; the unchanged scope is cleaned up once.
-        assert c.data_entities_processor.get_records_in_record_group.await_count == 5
+        # One read per sync; the unchanged scope is cleaned up once.
+        assert c.data_entities_processor.get_records_in_record_group.await_count == 3
 
     @pytest.mark.asyncio
     async def test_a_failed_cleanup_is_retried_next_sync(self, azure_blob_connector):
@@ -2724,7 +2767,8 @@ class TestFolderFilter:
 
         c.data_source.list_blobs = listing
 
-        await c._sync_container("c1")
+        with pytest.raises(ConnectionError, match="connection reset"):
+            await c._sync_container("c1")
 
         assert [call.args[0]["name"] for call in c._process_azure_blob.await_args_list] == ["b.pdf"]
         assert not any("last_sync_time" in v for v in c.record_sync_point.saved.values())
@@ -2775,7 +2819,7 @@ class TestFailedBlobCheckpoint:
 
             return _make_response(True, listing())
 
-        async def process(blob, container_name):
+        async def process(blob, container_name, recorded=None):
             if blob["name"] in raising:
                 raise RuntimeError("boom")
             return (None, []) if blob["name"] in failing else (MagicMock(), [])
@@ -2835,14 +2879,16 @@ class TestFailedBlobCheckpoint:
 
     @pytest.mark.asyncio
     async def test_an_old_failed_folder_marker_does_not_rewind_the_checkpoint(self, azure_blob_connector):
-        # A folder marker passes the date cutoff every run, so it is retried anyway.
+        # A folder marker is written every run, so a failed one is retried anyway.
         c = azure_blob_connector
-        self._prepare(c, [("dir/", _JAN[0])], failing={"dir/"})
+        self._prepare(c, [("dir/", _JAN[0])])
+        c._ensure_parent_folders_exist = AsyncMock(side_effect=RuntimeError("graph down"))
         c.record_sync_point.saved["FILE/container/c1"] = {"last_sync_time": _ms(_JAN[2])}
 
         await self._sync(c)
 
-        assert [call.args[0]["name"] for call in c._process_azure_blob.await_args_list] == ["dir/"]
+        c._ensure_parent_folders_exist.assert_awaited_once_with("c1", ["dir"])
+        c._process_azure_blob.assert_not_called()
         assert self._saved_time(c) == _ms(_JAN[2])
 
     @pytest.mark.asyncio

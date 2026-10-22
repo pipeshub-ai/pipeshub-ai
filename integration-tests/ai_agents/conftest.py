@@ -146,7 +146,7 @@ def mcp_fixture() -> McpFixture:
 
 @pytest.fixture(scope="session")
 def mcp_feature_enabled(pipeshub_client: PipeshubClient) -> Iterator[None]:
-    """External MCP servers are behind the ENABLE_MCP platform flag, off by default."""
+    """External MCP tests need ENABLE_MCP on. The Labs default is on; turn it on when a saved setting left it off."""
     resp = pipeshub_client.request("GET", PLATFORM_SETTINGS)
     assert resp.status_code == 200, f"reading platform settings: {resp.status_code} {resp.text[:300]}"
     before = json_body(resp)

@@ -71,6 +71,9 @@ class AccessCheck:
     #: The accessible asked nodes that every given scope admits (all of
     #: ``node_ids`` when no scope was given).
     node_ids_in_scope: frozenset[str] = frozenset()
+    #: Asked nodes that are placeholder stubs. They are in ``node_ids`` so a
+    #: browse can open them, and never in ``records_by_vrid``.
+    placeholder_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -162,7 +165,8 @@ SELECTION_FILTER_KEYS = ("recordGroups", "records", "recordsExact")
 
 #: Set by the server, never taken from a client: the apps a selection touches,
 #: and the bounds a cited record must lie in, each in the shape of a selection:
-#: a saved agent's sources, and a project's.
+#: a saved agent's sources, a project's, and what the user let a connected app
+#: (an OAuth app or a personal access token) see.
 SELECTION_APPS_FILTER_KEY = "selectionApps"
 AGENT_BOUND_FILTER_KEYS = {
     "allowedApps": "apps",
@@ -174,7 +178,15 @@ PROJECT_BOUND_FILTER_KEYS = {
     "projectRecordGroups": "recordGroups",
     "projectRecords": "records",
 }
-ALLOWED_FILTER_KEYS = {**AGENT_BOUND_FILTER_KEYS, **PROJECT_BOUND_FILTER_KEYS}
+CONNECTION_APPS_FILTER_KEY = "connectionApps"
+CONNECTION_BOUND_FILTER_KEYS = {
+    CONNECTION_APPS_FILTER_KEY: "apps",
+    "connectionRecordGroups": "recordGroups",
+    "connectionRecords": "records",
+}
+ALLOWED_FILTER_KEYS = {
+    **AGENT_BOUND_FILTER_KEYS, **PROJECT_BOUND_FILTER_KEYS, **CONNECTION_BOUND_FILTER_KEYS,
+}
 
 
 class RowScope(Protocol):
@@ -196,23 +208,31 @@ DUPLICATE_RECONCILE_ATTEMPTS_FIELD = "duplicateReconcileAttempts"
 DUPLICATE_RECONCILE_GRACE_MS = 10 * 60 * 1000
 
 
+_EXTRACTION_PENDING = frozenset({
+    ProgressStatus.QUEUED.value,
+    ProgressStatus.IN_PROGRESS.value,
+    ProgressStatus.PAUSED.value,
+})
+
+
 def promoted_duplicate_extraction_status(
     new_indexing_status: str, primary: Mapping[str, Any]
 ) -> str | None:
     """``extractionStatus`` for a QUEUED duplicate promoted when ``primary`` finished,
-    or None while the primary's enrichment is still IN_PROGRESS, so the duplicates
-    stay QUEUED until the handler or stale recovery resumes and finishes it.
+    or None while the primary's classification is still pending, so the duplicates
+    stay QUEUED until the classify stage writes the primary's final status and
+    releases them.
 
     The duplicate shares the primary's enrichment, so an indexed primary lends
-    its own outcome: COMPLETED, FAILED, or NOT_STARTED when enrichment was
-    deliberately deferred (an inline enrichment is IN_PROGRESS from the same
-    write that marks the primary indexed). A primary with no status comes from
-    before that write existed; nothing would ever resume it, so it is promoted
-    as the old mapping did, COMPLETED.
+    its own outcome once it has one: COMPLETED, SKIPPED or FAILED. The indexed
+    write sets QUEUED, and older inline enrichment wrote IN_PROGRESS, so both
+    mean "not decided yet". A primary with no status comes from before that write
+    existed; nothing would ever resume it, so it is promoted as the old mapping
+    did, COMPLETED.
     """
     if new_indexing_status == ProgressStatus.COMPLETED.value:
         primary_status = primary.get("extractionStatus")
-        if primary_status == ProgressStatus.IN_PROGRESS.value:
+        if primary_status in _EXTRACTION_PENDING:
             return None
         return primary_status or ProgressStatus.COMPLETED.value
     if new_indexing_status == ProgressStatus.EMPTY.value:
@@ -401,6 +421,23 @@ def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
     return types
 
 
+@dataclass(frozen=True)
+class CodeFileInfo:
+    """Code file metadata returned by get_code_file_info_for_records.
+
+    file_path: repo-relative path (from codeFiles.filePath or records.recordName)
+    referenced_names: symbol names the file references (calls, imports, type refs)
+    changed_names: names whose definitions the file added, removed or changed
+        in recent projections, so a build re-resolves the files referencing them
+    has_code_file: False for a source file with no codeFiles node (a .py
+        uploaded to a KB), which records neither list
+    """
+    file_path: str
+    referenced_names: tuple[str, ...] = ()
+    changed_names: tuple[str, ...] = ()
+    has_code_file: bool = True
+
+
 class IGraphDBProvider(ABC):
     """
     Comprehensive interface for graph database operations.
@@ -491,6 +528,16 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def ensure_pipeline_schema(self) -> None:
+        """Ensure what the indexing pipeline writes against: the stage-state store with its
+        unique key and indexes, and the current record schema where the engine enforces one.
+
+        Idempotent, and safe beside the connector service's ``ensure_schema``: the indexing
+        service runs it before consuming because that bootstrap may not have run yet (a first
+        start, or an older connector image). Raises when the schema cannot be ensured.
+        """
+
     # ==================== Transaction Management ====================
 
     @abstractmethod
@@ -546,7 +593,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         """
         Get a document by its key from a collection.
 
@@ -648,7 +695,8 @@ class IGraphDBProvider(ABC):
         *,
         raise_on_error: bool = False,
         after_key: str | None = None,
-    ) -> list[dict]:
+        return_fields: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Fetch a single page of documents from a collection using database-level
         pagination, so memory usage stays proportional to `limit` regardless of
@@ -670,6 +718,15 @@ class IGraphDBProvider(ABC):
             transaction:  Optional transaction ID.
             raise_on_error: Propagate database errors instead of returning an
                             empty page.
+            after_key:    Keyset cursor: only documents whose `_key` sorts
+                          after this value are returned. Pass the last `_key`
+                          of the previous page together with
+                          `sort_field="_key"` and `skip=0` to sweep a large
+                          collection without the O(n^2) cost of a growing
+                          offset.
+            return_fields: Optional list of fields to project (None = whole
+                           document). `_key` is always spelled `_key` in the
+                           result, whichever backend serves it.
 
         Returns:
             List of document dicts for the requested page (may be shorter than
@@ -703,6 +760,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def ensure_nodes(
+        self,
+        nodes: list[dict[str, Any]],
+        collection: str,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Create each node whose ``id`` does not exist yet; never modify an existing one.
+
+        For shared nodes with derived keys (taxonomy terms, entities): concurrent
+        writers of one key neither conflict nor overwrite each other.
+
+        Args:
+            nodes (List[Dict]): Documents with an 'id' field, as for batch_upsert_nodes
+            collection (str): Collection/table name
+            transaction (Optional[Any]): Optional transaction context
+
+        Raises:
+            Exception: when a node could not be created for a reason other than
+                already existing.
+        """
+        pass
+
+    @abstractmethod
     async def delete_nodes(
         self,
         keys: list[str],
@@ -727,7 +808,7 @@ class IGraphDBProvider(ABC):
         self,
         key: str,
         collection: str,
-        node_updates: dict,
+        node_updates: dict[str, Any],
         transaction: str | None = None
     ) -> bool:
         """
@@ -842,6 +923,32 @@ class IGraphDBProvider(ABC):
         existing edge's properties. For a repair or a re-run that must not reset what
         a live edge already carries (a sync state, a role). Raises on failure.
         *edges* take the same generic format.
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_node_relations(
+        self,
+        edges: list[dict],
+        transaction: str | None = None,
+    ) -> bool:
+        """
+        Batch upsert record relation edges.
+
+        Upserts rather than inserts, matching on _from, _to, relationshipType
+        and constraintName, so the same edge written twice is one edge while
+        two relation types (or two constraints) between the same pair coexist.
+
+        Args:
+            edges: Edge documents with _from, _to, relationshipType and
+                optionally constraintName
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+
+        Raises:
+            Exception: propagated from the database on failure
         """
         pass
 
@@ -1348,6 +1455,74 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_neighbors_by_relationship_types(
+        self,
+        node_key: str,
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 25,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Walk one hop from a node along edges of the given relationship types.
+
+        Endpoints may live in a different collection than the anchor -- a code
+        symbol can call a whole file -- so each result names its own collection
+        rather than assuming the anchor's.
+
+        Args:
+            node_key (str): Anchor node key
+            node_collection (str): Anchor node collection name
+            relationship_types (List[str]): Relationship type values to follow
+            direction (str): "outbound" (anchor is _from) or "inbound" (anchor is _to)
+            limit (int): Maximum neighbours to return
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: One dict per neighbour with keys ``collection``, ``key``,
+                ``relationshipType``, ``sourceLineNumber``, ``sourceColumnNumber``
+                and ``provenance``.
+        """
+        pass
+
+    @abstractmethod
+    async def get_neighbors_for_nodes_by_relationship_types(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 5000,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        """
+        Walk one hop from many nodes at once along the given relationship types.
+
+        The batched sibling of ``get_neighbors_by_relationship_types``, for
+        breadth-first search: one query per frontier level instead of one per
+        node. Each row names the anchor it came from and the direction it was
+        traversed, which a caller reconstructing a path needs.
+
+        Args:
+            node_keys (List[str]): Anchor node keys (one frontier)
+            node_collection (str): Collection the anchors live in
+            relationship_types (List[str]): Relationship type values to follow
+            direction (str): "outbound", "inbound", or "any"
+            limit (int): Maximum rows to return across the whole frontier
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: One dict per edge with keys ``anchorKey``, ``collection``,
+                ``key``, ``direction`` ("outbound" / "inbound", relative to the
+                anchor), ``relationshipType``, ``sourceLineNumber``,
+                ``sourceColumnNumber`` and ``provenance``.
+        """
+        pass
+
+    @abstractmethod
     async def get_related_node_field(
         self,
         node_id: str,
@@ -1456,6 +1631,144 @@ class IGraphDBProvider(ABC):
         Returns:
             List[Dict]: List of matching node documents
         """
+        pass
+
+    @abstractmethod
+    async def get_nodes_by_field_prefix(
+        self,
+        collection: str,
+        field_name: str,
+        prefix: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        """Get nodes whose field starts with a prefix."""
+        pass
+
+    @abstractmethod
+    async def search_nodes_by_field_terms(
+        self,
+        collection: str,
+        field_name: str,
+        terms: list[str],
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        """Get nodes whose field contains any search term."""
+        pass
+
+    @abstractmethod
+    async def delete_edges_touching_nodes(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        edge_collection: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete edges whose source or target is one of the given nodes."""
+        pass
+
+    @abstractmethod
+    async def get_edge_rollup_by_file_prefix(
+        self,
+        org_id: str,
+        file_path_prefix: str,
+        relationship_types: list[str],
+        direction: str,
+        connector_id: str,
+        limit: int = 100000,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Aggregate code-graph edges between files under a path prefix.
+
+        ``connector_id`` is required: file paths are repo-relative, so an
+        unscoped rollup would merge ``backend/`` from two repos into one bucket.
+        """
+        pass
+
+    @abstractmethod
+    async def get_file_paths_for_records(
+        self,
+        org_id: str,
+        record_ids: list[str],
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> dict[str, CodeFileInfo]:
+        """Return code-file info (path + referencedNames) for each requested record."""
+        pass
+
+    @abstractmethod
+    async def get_edges_by_target_keys(
+        self,
+        target_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        return_field: str = "_from",
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[str]:
+        """Return distinct edge fields for edges targeting the given nodes."""
+        pass
+
+    @abstractmethod
+    async def delete_edges_by_source_keys(
+        self,
+        source_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        transaction: str | None = None,
+        exclude: dict[str, Any] | None = None,
+    ) -> int:
+        """Delete filtered edges originating from any requested node.
+
+        ``exclude`` keeps the edges whose field holds that value; an edge
+        without the field is not kept.
+        """
+        pass
+
+    @abstractmethod
+    async def count_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        """Count nodes matching equality and membership filters."""
+        pass
+
+    @abstractmethod
+    async def has_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """Return whether any node matches equality and membership filters."""
+        pass
+
+    @abstractmethod
+    async def get_nodes_updated_since(
+        self,
+        collection: str,
+        timestamp_field: str,
+        since: int,
+        filters: dict[str, Any] | None = None,
+        return_fields: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        """Get nodes whose timestamp field is greater than the given value."""
         pass
 
 
@@ -1737,6 +2050,7 @@ class IGraphDBProvider(ABC):
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        status_field: str = "indexingStatus",
     ) -> list['Record']:
         """
         Get records by their indexing status.
@@ -1759,6 +2073,10 @@ class IGraphDBProvider(ABC):
                         on top of status_filters.
             visibility: ``LIVE`` (default) leaves out records in the trash,
                 ``DELETED`` returns only those, ``ALL`` returns both.
+            status_field (str): The status field ``status_filters`` applies to:
+                ``indexingStatus`` (default) or ``extractionStatus`` (a stage
+                retry selects on the latter). ``exclude_statuses`` always
+                applies to ``indexingStatus``.
 
         Returns:
             list[Record]: Typed records matching the filters, sorted by key.
@@ -2034,6 +2352,62 @@ class IGraphDBProvider(ABC):
                        other status and were left alone - a normal outcome, not an error.
         """
         pass
+
+    # ==================== Pipeline stage states ====================
+
+    @abstractmethod
+    async def stage_state_get(self, key: str) -> dict[str, Any] | None:
+        """One stage-state document by key (``id`` holds the key), or None."""
+
+    @abstractmethod
+    async def stage_states_for_revision(self, virtual_record_id: str, rev: str) -> list[dict[str, Any]]:
+        """Every stage-state document of one content revision."""
+
+    @abstractmethod
+    async def stage_state_create(self, document: dict[str, Any]) -> bool:
+        """Insert a stage state on its unique key (``document["id"]``); False when the key exists.
+
+        Raises on infrastructure errors, so an outage is never mistaken for a lost race.
+        """
+
+    @abstractmethod
+    async def stage_state_compare_and_set(
+        self,
+        key: str,
+        expected: str,
+        new: str,
+        fields: dict[str, Any],
+        *,
+        expected_attempt: int | None = None,
+    ) -> bool:
+        """Set ``status`` to ``new`` and write ``fields`` in one statement, only while ``status == expected``
+        (and, with ``expected_attempt``, while ``attempt`` is still that run's).
+
+        False when the status was something else or a concurrent writer won; raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def stage_states_stale(
+        self, statuses: list[str], updated_before_ms: int, limit: int
+    ) -> list[dict[str, Any]]:
+        """Stage states in ``statuses`` with ``updatedAtMs < updated_before_ms``, oldest first."""
+
+    @abstractmethod
+    async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> int:
+        """Delete the stage states of every revision of these virtual records; returns how many went.
+
+        Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def compare_and_set_record_fields(
+        self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
+    ) -> list[str]:
+        """Write ``fields`` on each record whose ``contentRev`` equals ``content_rev``, in one statement.
+
+        Returns the ids updated; a record that moved to another revision is left alone.
+        Raises on infrastructure errors.
+        """
 
     @abstractmethod
     async def get_existing_record_keys(
@@ -4330,6 +4704,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def backfill_block_name_folded(self, limit: int = 5000) -> int:
+        """Set ``nameFolded`` (lower-cased ``name``) on up to ``limit`` code blocks lacking it.
+
+        Returns how many were updated; 0 means none is left.
+        """
+        pass
+
+    @abstractmethod
+    async def update_sync_point_if(
+        self,
+        sync_point_key: str,
+        expected: dict[str, Any],
+        sync_point_data: dict,
+        collection: str,
+    ) -> bool:
+        """Update an existing sync point only if every ``expected`` field still holds its value.
+
+        A compare-and-set: ``None`` matches a missing or null field. Returns
+        whether the update was applied; False when the sync point is missing
+        or any expected field has changed since the caller read it.
+        """
+        pass
+
+    @abstractmethod
     async def remove_sync_point(
         self,
         key: str,
@@ -5093,6 +5491,23 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def delete_blocks_for_records(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the blocks projected from the given records, and their edges.
+
+        Blocks hang off their record by ``recordId`` alone, so a record vertex
+        can be removed without any of them going with it. Cross-file code edges
+        point straight at a block, never at its record, and outlive the record
+        sweep too -- both halves have to be removed here.
+
+        Returns the number of block nodes removed.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_connector_instance(
         self,
         connector_id: str,
@@ -5609,6 +6024,14 @@ class IGraphDBProvider(ABC):
         implementations of it.
         """
         pass
+
+    async def get_hidden_app_ids(
+        self, app_ids: list[str], transaction: str | None = None,
+    ) -> list[str]:
+        """The Apps among ``app_ids`` marked ``isHidden`` (a project's own file
+        collection): left out of top-level listings and unscoped search, still
+        reachable by id."""
+        raise NotImplementedError
 
     @abstractmethod
     async def get_knowledge_hub_access_context_v2(
@@ -6399,10 +6822,13 @@ class IGraphDBProvider(ABC):
         A node is accessible exactly when the knowledge-hub global flatten would
         list it, except that ``hideChildren`` does not hide, only
         PARENT_CHILD/ATTACHMENT edges are hierarchy, the node's ``orgId``
-        must be ``org_id``, and deleted or placeholder nodes never are. A
-        virtual record id is accessible when any record carrying it is; the record
-        to cite is the smallest accessible record id, so the answer is
-        deterministic.
+        must be ``org_id``, and deleted nodes never are. A placeholder asked by
+        node id is, when the same walk would admit a real record: browsing and
+        navigate open a stub so the nodes under it stay reachable. A placeholder
+        reached only by virtual record id is not, so a search citation never
+        lands on a stub. A virtual record id is accessible when any record
+        carrying it is; the record to cite is the smallest accessible record id,
+        so the answer is deterministic.
 
         Args:
             user_key: The user's graph key (``User.id``), not ``userId``. Empty,
@@ -6454,7 +6880,7 @@ class IGraphDBProvider(ABC):
         records_by_vrid: dict[str, str] = {}
         for row in rows:
             vrid, record_id = row.get("vrid"), row.get("id")
-            if vrid not in asked_vrids or not record_id:
+            if vrid not in asked_vrids or not record_id or row.get("isPlaceholder"):
                 continue
             # An edited record queued again keeps serving its previous indexed copy.
             if indexed_only and not is_searchable_record(row):
@@ -6473,6 +6899,9 @@ class IGraphDBProvider(ABC):
                 row["id"] for row in accessible_nodes
                 if all(scope.admits(row) for scope in scopes)
             ),
+            placeholder_ids=frozenset(
+                row["id"] for row in accessible_nodes if row.get("isPlaceholder")
+            ),
         )
 
     async def _kh_v3_accessible_rows(
@@ -6487,8 +6916,9 @@ class IGraphDBProvider(ABC):
     ) -> list[dict[str, Any]]:
         """The rows ``check_access`` decides from: one per accessible node among
         the asked ids and the records carrying the asked virtual record ids, as
-        ``{id, vrid, connectorId, indexingStatus, isInternal, groupIds}``
-        (``groupIds``: the record groups a record belongs to)."""
+        ``{id, vrid, connectorId, indexingStatus, isInternal, isPlaceholder, groupIds}``
+        (``groupIds``: the record groups a record belongs to). ``isPlaceholder``
+        is true only for a stub the walk admitted because its id was asked."""
         raise NotImplementedError
 
     async def get_selection_nodes(
@@ -6517,6 +6947,13 @@ class IGraphDBProvider(ABC):
         walk stopped before it could tell (the caller treats that as over).
         """
         raise NotImplementedError
+
+    # A name search over a whole connector starts from the nodes whose name
+    # matches and walks up from each, instead of listing every visible node and
+    # filtering last. Past this many matches in the org (counted before access
+    # is decided) it is not selective, and the full listing is the cheaper way
+    # to the same rows.
+    _KH_NAME_FIRST_MAX = 20000
 
     # A filter on what a node is or holds: a placeholder stub has no content, so
     # it never matches one.
@@ -6999,7 +7436,10 @@ class IGraphDBProvider(ABC):
             raise
         except Exception as exc:
             raise PermissionVerificationUnavailableError(str(exc)) from exc
-        return {r["id"] for r in rows if r.get("id") in asked and not r.get("isInternal")}
+        return {
+            r["id"] for r in rows
+            if r.get("id") in asked and not r.get("isInternal") and not r.get("isPlaceholder")
+        }
 
     async def filter_accessible_virtual_record_ids(
         self,

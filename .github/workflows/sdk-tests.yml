@@ -185,8 +185,8 @@ jobs:
           uv run --no-project --with requests --with pydantic python sdk_tests/provision_sdk_test_env.py 2>&1 \
             | tee "$SDK_REPORTS_DIR/provision.log"
 
-      # with_oauth_app.py gives each run a new OAuth app in its environment only, so the
-      # client secret is in no file, and the suites do not get the admin login.
+      # with_oauth_app.py gives each run a new OAuth app and a session JWT in its environment only,
+      # so neither is in a file. The suites keep the login for the sign-in tests.
       - name: 'Current run: generated SDKs'
         id: current
         continue-on-error: true

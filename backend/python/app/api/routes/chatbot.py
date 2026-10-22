@@ -27,7 +27,11 @@ from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protoco
 from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
-from app.api.middlewares.auth import require_scopes, require_service_token
+from app.api.middlewares.auth import (
+    connection_limit,
+    require_scopes,
+    require_service_token,
+)
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
@@ -1554,6 +1558,7 @@ async def _generate_chat_stream_via_agent_loop(
         attachments=query_info.attachments,
         previous_conversations=query_info.previousConversations,
         logger=logger_,
+        connection_sources=connection_limit(user),
     )
     query_dict = {
         "query": query_info.query,
@@ -1561,6 +1566,7 @@ async def _generate_chat_stream_via_agent_loop(
         "previous_conversations": previous_conversations,
         "filters": effective_filters,
         "allowedFilters": query_info.allowedFilters,
+        "connectionLimit": connection_limit(user),
         "retrievalMode": query_info.retrievalMode,
         "quickMode": query_info.quickMode,
         "chatMode": query_info.chatMode,

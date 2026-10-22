@@ -39,6 +39,7 @@ export function FilePreviewSidebar({
   hideFileDetails,
   showDownload,
   onDownload,
+  onChat,
   latestVersion,
   onVersionChange,
   isSwitchingVersion,
@@ -108,6 +109,7 @@ export function FilePreviewSidebar({
         hideFileDetails={hideFileDetails}
         showDownload={showDownload}
         onDownload={onDownload}
+        onChat={onChat}
         latestVersion={latestVersion}
         onVersionChange={onVersionChange}
         isSwitchingVersion={isSwitchingVersion}
@@ -164,6 +166,7 @@ export function FilePreviewSidebar({
           hideFileDetails={hideFileDetails}
           showDownload={showDownload}
           onDownload={onDownload}
+          onChat={onChat}
           latestVersion={latestVersion}
           onVersionChange={onVersionChange}
           isSwitchingVersion={isSwitchingVersion}

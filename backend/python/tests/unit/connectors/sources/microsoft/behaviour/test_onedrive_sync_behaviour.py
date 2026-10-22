@@ -629,16 +629,15 @@ class TestSharing:
         assert perms(db, "f1") == {
             (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
             (EntityType.GROUP, "g-eng", "eng@acme.com", PermissionType.WRITE),
-            (EntityType.GROUP, "tenant-members", None, PermissionType.READ),
             (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
             (EntityType.GROUP, "g-ops", None, PermissionType.READ),
-        }, "the anonymous link names nobody, so it is not stored as a grant; the organization link reaches members"
+        }, "a link grants only the people it lists: the anonymous and organization links list nobody"
         assert db.records["f1"].is_shared is True
 
-    async def test_an_organization_link_reaches_the_tenants_members_not_its_guests(self, cloud, tenant, db, checkpoints) -> None:
-        """A guest of the tenant cannot open an organization-wide link, so the group it grants leaves guests out."""
+    async def test_an_organization_link_as_graph_returns_it_grants_no_one(self, cloud, tenant, db, checkpoints) -> None:
+        """Graph's organization link carries roles and scope only: organization links track no grantees."""
         feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
-        tenant.add_user("u-gus", "gus@partner.com", "Gus", user_type="Guest")
+        tenant.add_user("u-ben", "ben@acme.com", "Ben")
         feed.by_token[None] = page([drive_item("f1", "notes.loop", shared=True)], delta_link=delta_link("u-ana", "D1"))
         tenant.share("f1", [
             user_grant("u-ana", "ana@acme.com", "owner"),
@@ -648,10 +647,30 @@ class TestSharing:
 
         await connector.run_sync()
 
-        assert db.user_groups["tenant-members"] == ["ana@acme.com"]
-        assert (EntityType.GROUP, "tenant-members", None, PermissionType.WRITE) in perms(db, "f1"), \
-            "an edit link carries write access"
-        assert not any(kind == EntityType.ORG for kind, *_ in perms(db, "f1"))
+        assert perms(db, "f1") == {(EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER)}, \
+            "the link opens the file to no colleague and to no organization-wide group"
+        assert "tenant-members" not in db.user_groups
+
+    async def test_people_graph_lists_on_an_organization_link_are_granted(self, cloud, tenant, db, checkpoints) -> None:
+        """Should Graph list identities on an organization link, those people, and only they, get its role."""
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        tenant.add_user("u-ben", "ben@acme.com", "Ben")
+        tenant.add_user("u-gus", "gus@partner.com", "Gus", user_type="Guest")
+        feed.by_token[None] = page([drive_item("f1", "notes.loop", shared=True)], delta_link=delta_link("u-ana", "D1"))
+        tenant.share("f1", [
+            user_grant("u-ana", "ana@acme.com", "owner"),
+            {"id": "p-org", "roles": ["write"], "link": {"scope": "organization", "type": "edit"},
+             "grantedToIdentitiesV2": [{"user": {"id": "u-ben", "email": "ben@acme.com"}}]},
+        ])
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert perms(db, "f1") == {
+            (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
+            (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.WRITE),
+        }, "an edit link carries write access, for the person it lists only"
+        assert "tenant-members" not in db.user_groups
 
     async def test_new_sharing_on_a_stored_file_replaces_its_access(self, cloud, tenant, db, checkpoints) -> None:
         feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")

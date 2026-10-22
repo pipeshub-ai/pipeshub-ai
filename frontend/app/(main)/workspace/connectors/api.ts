@@ -12,6 +12,8 @@ import type {
   FilterOptionsResponse,
   ConnectorStatsResponse,
   ConnectionCheckResponse,
+  ReindexStage,
+  CodeGraphRepo,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
@@ -422,12 +424,19 @@ export const ConnectorsApi = {
    * Reindex all records for a connector instance, optionally filtered by
    * indexing status. Omitting statusFilters reindexes everything for a KB
    * connector; other connector types default server-side to FAILED-only.
+   * With `stages`, only those pipeline stages re-run and statusFilters match
+   * the stage's own status (classify -> extractionStatus).
    */
-  async reindexConnector(connectorId: string, statusFilters?: string[]) {
+  async reindexConnector(
+    connectorId: string,
+    statusFilters?: string[],
+    stages?: ReindexStage[]
+  ) {
     const { data } = await apiClient.post(
       `${BASE_URL}/${connectorId}/reindex`,
       {
         ...(statusFilters?.length ? { statusFilters } : {}),
+        ...(stages?.length ? { stages } : {}),
       }
     );
     return data;
@@ -496,5 +505,14 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}/stats`
     );
     return data;
+  },
+
+  /** Code repositories the caller can read, with each one's code-graph status. */
+  async getCodeGraphRepos(): Promise<CodeGraphRepo[]> {
+    const { data } = await apiClient.get<{ repos?: CodeGraphRepo[] }>(
+      '/api/v1/code-graph/repos',
+      { suppressErrorToast: true }
+    );
+    return data.repos ?? [];
   },
 };

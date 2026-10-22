@@ -1313,10 +1313,10 @@ class Outlook:
             try:
                 from app.config.constants.arangodb import Connectors
                 from app.models.entities import ArtifactType
-                from app.services.artifact_registry.models import Actor
+                from app.services.artifact_registry.models import artifact_owner
                 from app.services.artifact_registry.registry import ArtifactRegistryService
 
-                actor = Actor(org_id=org_id, user_id=user_id)
+                actor = artifact_owner(state)
                 registry = ArtifactRegistryService(graph_provider, blob_store)
                 artifact = await registry.register(
                     actor=actor,

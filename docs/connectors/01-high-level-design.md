@@ -12,25 +12,20 @@ It does not parse, chunk, embed or answer questions. Those belong to the indexin
 
 ## Where a connector runs
 
-```text
-Frontend (Next.js) ──► Node API (Express :3000)
-                         │  auth, connector CRUD proxy, OAuth callback, scheduler (BullMQ)
-                         ▼
-                 Connector service (Python, app.connectors_main, :8088)
-                   ├─ HTTP API: registry, config, OAuth authorize/callback, filter options, stream
-                   ├─ consumers: sync-events, entity-events
-                   ├─ token refresh loops
-                   └─ every connector's sync, as an asyncio task
-                         │
-          ┌──────────────┼──────────────────┬───────────────────────┐
-          ▼              ▼                  ▼                       ▼
-     source API     graph DB           message broker          config store
-     (vendor)       (IGraphDBProvider)  (MessagingFactory)      (ConfigurationService)
-                                        record-events ─► Indexing service (:8091)
-                                                          │ fetches content back through
-                                                          ▼ the connector's stream route
-                                                     vector DB (IVectorDBService)
+```mermaid
+flowchart LR
+  FE[Frontend] --> N["Node API :3000<br/>auth, CRUD proxy, OAuth callback, BullMQ"]
+  N --> C["Connector service :8088<br/>one asyncio loop"]
+  C --> S[(Source API)]
+  C --> G["Graph<br/>via the processor"]
+  C -->|"record event carries signed_url"| B[[record-events]]
+  C --> K[(ConfigurationService)]
+  B --> I["Indexing :8091"]
+  I -->|"stream_record when there is no signed URL"| C
+  I --> V[(Vector store)]
 ```
+
+The connector service's one loop also serves its HTTP API (registry, config, OAuth, filter options, stream), the sync-events and entity-events consumers, and token refresh. Indexing parses, chunks and embeds. The connector does not.
 
 Facts that shape every design choice:
 
@@ -45,12 +40,29 @@ Facts that shape every design choice:
 | Register type | service start | `ConnectorFactory` registry (a fixed dict) and the `@ConnectorBuilder` metadata on each class. The UI reads this to list connector types and render their settings form. |
 | Create | admin or user adds it in the UI | Node proxies to the connector service, which creates the App node and the config entry (`create_connector_instance` in `app/connectors/api/router.py`). Scope is team (org-wide, set up by an admin) or personal (one user's own account). |
 | Configure and authenticate | settings form, OAuth | Config lands at `/services/connectors/{connector_id}/config`. OAuth runs through the connector service's authorize and callback routes; tokens are stored in the same config and refreshed by `TokenRefreshService`. |
-| Initialise | `<connector>.init` event, or lazily on first use | `create_connector()` builds the instance, `init()` builds the API client from config, `test_connection_and_access()` proves it works. |
+| Initialise | `<connector>.init` event, or lazily on first use | `create_connector()` builds the instance and `init()` builds the API client from config. The init event stores that instance and does not call `test_connection_and_access()` (`event_service.py`). That call runs after `init()` only inside `_build_and_store_connector` (`router.py`), which toggle-enable, filter options, and a stream with no live instance use. The setup-form route `POST /api/v1/connectors/registry/{connector_type}/test-connection` calls `check_connection`. |
 | Sync | `<connector>.start` / `.resync` event: enable, the Sync button, or the scheduler | `SyncTaskManager` starts `run_sync()` as a task. One sync per connector at a time; a new request while one runs is declined or deferred. |
 | Index | `newRecord` / `updateRecord` on `record-events`, published by the processor | The indexing service fetches content (signed URL first, else the connector's internal stream route, which calls `stream_record()`), parses, chunks and embeds. |
 | Open a citation | user clicks a result | The stream route checks the user's access, then calls `stream_record(record)`. |
 | Reindex | `<connector>.reindex` | `reindex_records()` re-sends chosen records for indexing. |
 | Disable or delete | UI | Sync stops; delete cascades the connector's nodes, vectors and config. |
+
+```mermaid
+sequenceDiagram
+  participant Admin
+  participant Node as Node API
+  participant Conn as Connector service
+  participant Src as Source
+  participant Idx as Indexing
+  Admin->>Node: create, configure, OAuth
+  Node->>Conn: create instance and store config
+  Conn->>Conn: init event stores the instance
+  Node->>Conn: start or resync
+  Conn->>Src: list users, groups, containers, items
+  Conn->>Conn: processor writes nodes and publishes record-events
+  Idx->>Conn: stream route calls stream_record
+  Conn->>Src: fetch bytes or blocks
+```
 
 ### Full and incremental sync
 
@@ -68,23 +80,69 @@ During a full sync, the processor notes every node the connector writes. When th
 
 `run_incremental_sync()` and `handle_webhook_notification()` are abstract methods you must implement, but nothing in the platform calls them today. Do not rely on webhooks for freshness; scheduled sync is the supported path.
 
+A scheduled run is not a full sync. BullMQ publishes a resync with no `fullSync` field (`constructSyncConnectorEvent` in `backend/nodejs/apps/src/modules/crawling_manager/utils/utils.ts`), so `run_sync` starts with the checkpoints still in place and the cleanup below does not run. The connector service treats a missing flag as false (`event_service.py`) and deletes checkpoints only when the event sets `fullSync` or the connector still has `pendingFullSync` (a filter change, an enable that asked for one, or a full sync that was cut short). A deletion the source never reports stays until one of those happens. A source with no delete feed may instead id-diff after a complete listing (`03-decisions.md`). A 404 deletes the one item that was requested, not whatever a failed listing failed to return.
+
+```mermaid
+flowchart TD
+  E[Sync event] --> F{fullSync set, or pendingFullSync?}
+  F -->|yes| D[Delete this connector's sync points]
+  D --> R[run_sync]
+  F -->|no| R
+  R --> W[Processor writes what the run saw]
+  W --> Q{Was this a full sync?}
+  Q -->|no| N[Leave existing links in place]
+  Q -->|yes| C{Wrote at least one node, and complete?}
+  C -->|no| K[Unlink nothing]
+  C -->|yes, no window| U[Unlink every node the run did not write]
+  C -->|yes, window_start_ms| Win[Keep pre-window records and windowed groups, drop their direct grants, unlink the rest]
+```
+
+`complete=false` is an error skip. Never use it for a date window: deletions would then never be cleaned up.
+
 ## The data model, in one picture
 
-```text
-App (the connector instance)
- └─ RecordGroup (space / drive / project / channel)          ← may nest
-     └─ Record (page / folder / issue)                        ← may nest
-         ├─ Record (child page / file in folder / sub-task)
-         └─ Record (attachment)
+```mermaid
+flowchart TD
+  A[App: one connector instance]
+  A --> RG[RecordGroup: space, base, guild]
+  RG --> RG2[RecordGroup, nested]
+  RG --> R[Record: page, row, file, message segment]
+  RG2 --> R
+  R --> C[Child record]
+  R --> AT[Attachment]
+  U[AppUser] -.->|grant or USER_APP_RELATION| A
+  UG[AppUserGroup] -.->|grant| R
+  U -.->|member| UG
+  R -.->|related_external_records, not a parent| R2[Another record]
+```
 
-AppUser   (a source account, matched to a PipesHub user by email)
-AppUserGroup (a source group, with its members)
-Permission edges: user / group / role / org ──► App, RecordGroup or Record
+A `related_external_records` link is not hierarchy and does not grant access. `06-permissions.md` is the access check. In short: the user must pass the App gate and the node must be live. `OPEN` is an inherit edge from a readable parent, or a direct grant. `STRICT` is that, and every ancestor is readable. `RESTRICTED` is an inherit edge from a readable parent and a direct grant. A parent being readable does not open a child that does not inherit, and a `RESTRICTED` node with `inherit_permissions=False` is never readable. `APP_LEVEL` opens every record under the App to anyone who passes the gate. A `RECORD_GROUP_LEVEL` group opens the groups and records under it only for someone with a direct grant on that group, or access to it from the App.
+
+```mermaid
+flowchart TD
+  S[User and node] --> G{Passes the App gate?}
+  G -->|no| X[Deny]
+  G -->|yes| L{Live, not a placeholder, same org?}
+  L -->|no| X
+  L -->|yes| A{APP_LEVEL?}
+  A -->|yes| Y[Allow]
+  A -->|no| Rg{Grant on a RECORD_GROUP_LEVEL ancestor, or access to it from the App?}
+  Rg -->|yes| Y
+  Rg -->|no| Rr{access_rule}
+  Rr -->|OPEN| O{Inherit edge from a readable parent, or a direct grant}
+  Rr -->|STRICT| St{That, and every ancestor is readable}
+  Rr -->|RESTRICTED| Re{Inherit edge from a readable parent, and a direct grant}
+  O -->|yes| Y
+  St -->|yes| Y
+  Re -->|yes| Y
+  O -->|no| X
+  St -->|no| X
+  Re -->|no| X
 ```
 
 - Records are matched across syncs by `(connector_id, external_record_id)`. The external id must be stable for the life of the item in the source.
 - A record changes when its `external_revision_id` changes; only then is it re-sent for indexing.
 - Records and record groups link to their parent by external id (`parent_external_record_id`, `external_record_group_id`, `parent_external_group_id`). The processor turns those into graph edges, creating a restricted placeholder for a parent it has not seen yet.
-- Access is decided by one check over this hierarchy: a node is readable through a direct grant, or by inheriting from a readable parent, subject to the node's access rule. `06-permissions.md` is the full model.
+- Access is decided by one check over this hierarchy: a direct grant, or an inherit edge from a readable parent, subject to the node's access rule. A readable parent does not open a child that does not inherit. `06-permissions.md` is the full model.
 
 `02-low-level-design.md` has the class-level reference for every piece named here.
