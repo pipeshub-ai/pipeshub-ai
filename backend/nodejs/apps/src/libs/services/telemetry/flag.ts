@@ -1,4 +1,7 @@
-import { METRICS_CONSENT_DEFAULT, TELEMETRY_DEFAULT_ENABLED } from '../../../edition';
+import {
+  METRICS_CONSENT_DEFAULT,
+  TELEMETRY_DEFAULT_ENABLED,
+} from '../../../edition';
 
 /**
  * Master switch for telemetry. `TELEMETRY_COLLECTION_FLAG` decides whether any
