@@ -24750,6 +24750,14 @@ paths:
                             properties:
                               email:
                                 type: string
+                          workspace:
+                            type: object
+                            additionalProperties: false
+                            required: [name]
+                            description: The caller's organization, by its short name or else its registered name. Absent when it has neither.
+                            properties:
+                              name:
+                                type: string
                           redirectUri:
                             type: string
                             description: The `redirect_uri` of the request
