@@ -198,6 +198,33 @@ async def test_a_missing_state_is_recreated_from_the_job() -> None:
     assert h.state(job).status is ProgressStatus.COMPLETED
 
 
+class _RecordsIO(_IO):
+    """An IO that knows which of the job's records are still on its revision."""
+
+    current: ClassVar[list[str]] = []
+
+    async def current_record_ids(self, job: StageJob) -> list[str]:
+        return list(self.current)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current, recreated", [(["rec-1"], True), ([], False)], ids=["record live", "record deleted"])
+async def test_a_missing_state_is_recreated_only_while_a_record_is_left(
+    current: list[str], recreated: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h, job = _Harness(), _job()
+    monkeypatch.setattr(_RecordsIO, "current", current)
+    h.handler._io_for = _RecordsIO  # type: ignore[assignment]
+
+    assert await h.deliver(job) == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+
+    assert (job.state_key in h.states.states) is recreated
+    assert h.stage.runs == (1 if recreated else 0)
+    if not recreated:
+        assert h.headlines.writes == [] and h.producer.sent == []
+        assert h.handler.outcomes("classify")["stale"] == 1
+
+
 @pytest.mark.asyncio
 async def test_a_superseded_revision_is_settled_without_status_or_successors() -> None:
     h, job = _Harness(), _job()
