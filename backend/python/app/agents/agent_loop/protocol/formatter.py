@@ -27,9 +27,15 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
+from app.agents.agent_loop.protocol.retrieval_context import (
+    RETRIEVAL_CONTEXT_EVENT_NAME,
+)
+from app.agents.agent_loop.protocol.run_usage import RUN_USAGE_EVENT_NAME
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
+    from app.agents.agent_loop.protocol.retrieval_context import RetrievalContextPayload
+    from app.agents.agent_loop.protocol.run_usage import RunUsagePayload
 
 
 class ArtifactSSEPayload(BaseModel):
@@ -74,8 +80,10 @@ class ProtocolFormatter(ABC):
     def answer_delta(
         self, context: "AgentContext", *, chunk: str, accumulated: str,
         citations: list[Any], confidence: str | None = None,
-        raw_length: int = 0,
-    ) -> list[dict[str, Any]]: ...
+        raw_length: int = 0, discarded: bool = False,
+    ) -> list[dict[str, Any]]:
+        """`discarded`: the answer as it stands after a model call that
+        failed mid-stream was taken back; it supersedes every earlier delta."""
 
     @abstractmethod
     def answer_final(self, context: "AgentContext", *, completion_data: dict[str, Any]) -> list[dict[str, Any]]: ...
@@ -93,14 +101,32 @@ class ProtocolFormatter(ABC):
     ) -> list[dict[str, Any]]: ...
 
     @abstractmethod
+    def retrieval_context(
+        self, context: "AgentContext", *, payload: "RetrievalContextPayload",
+    ) -> list[dict[str, Any]]:
+        """Which records and blocks reached the model. Opt-in; identifiers
+        only, never block text."""
+
+    @abstractmethod
+    def run_usage(
+        self, context: "AgentContext", *, payload: "RunUsagePayload",
+    ) -> list[dict[str, Any]]:
+        """Token and loop-outcome totals for the whole run."""
+
+    @abstractmethod
     def error(self, context: "AgentContext", *, message: str, code: str) -> list[dict[str, Any]]: ...
+
+    @abstractmethod
+    def tool_progress(
+        self, context: "AgentContext", *, tool: str, progress: float, total: float | None, message: str | None,
+    ) -> list[dict[str, Any]]: ...
 
 
 class LegacyFormatter(ProtocolFormatter):
     """Byte-identical to today's hand-built dict literals — the default
     for every request that doesn't explicitly negotiate `agui`."""
 
-    def answer_delta(self, context, *, chunk, accumulated, citations, confidence=None, raw_length=0):
+    def answer_delta(self, context, *, chunk, accumulated, citations, confidence=None, raw_length=0, discarded: bool = False):
         data: dict[str, Any] = {"chunk": chunk, "accumulated": accumulated, "citations": citations}
         if confidence is not None:
             data["confidence"] = confidence
@@ -121,8 +147,26 @@ class LegacyFormatter(ProtocolFormatter):
             "data": {"tool": tool, "toolset": toolset, "reason": reason, "message": message},
         }]
 
+    def retrieval_context(
+        self, context: "AgentContext", *, payload: "RetrievalContextPayload",
+    ) -> list[dict[str, Any]]:
+        return [{"event": RETRIEVAL_CONTEXT_EVENT_NAME, "data": payload.to_wire_dict()}]
+
+    def run_usage(
+        self, context: "AgentContext", *, payload: "RunUsagePayload",
+    ) -> list[dict[str, Any]]:
+        return [{"event": RUN_USAGE_EVENT_NAME, "data": payload.to_wire_dict()}]
+
     def error(self, context, *, message, code):
         return [{"event": "error", "data": {"message": message, "type": code}}]
+
+    def tool_progress(
+        self, context: "AgentContext", *, tool: str, progress: float, total: float | None, message: str | None,
+    ) -> list[dict[str, Any]]:
+        return [{
+            "event": "status",
+            "data": {"status": "running_tool", "tool": tool, "progress": progress, "total": total, "message": message},
+        }]
 
 
 class AGUIFormatter(ProtocolFormatter):
@@ -139,10 +183,14 @@ class AGUIFormatter(ProtocolFormatter):
     exactly mirroring how `complete` supersedes `answer_chunk` today.
     """
 
-    def answer_delta(self, context, *, chunk, accumulated, citations, confidence=None, raw_length=0):
+    def answer_delta(self, context, *, chunk, accumulated, citations, confidence=None, raw_length=0, discarded: bool = False):
         value: dict[str, Any] = {"citations": citations, "normalizedAnswer": accumulated, "rawLength": raw_length}
         if confidence is not None:
             value["confidence"] = confidence
+        if discarded:
+            # Snapshots computed before the discard can reach the client after
+            # its `message_discarded` frame; this marks the one that ends them.
+            value["discarded"] = True
         return [frame(
             AGUIEventType.STATE_DELTA,
             runId=context.run_id,
@@ -184,8 +232,35 @@ class AGUIFormatter(ProtocolFormatter):
             runId=context.run_id,
         )]
 
+    def retrieval_context(
+        self, context: "AgentContext", *, payload: "RetrievalContextPayload",
+    ) -> list[dict[str, Any]]:
+        return [frame(
+            AGUIEventType.CUSTOM, name=RETRIEVAL_CONTEXT_EVENT_NAME,
+            value=payload.to_wire_dict(), runId=context.run_id,
+        )]
+
+    def run_usage(
+        self, context: "AgentContext", *, payload: "RunUsagePayload",
+    ) -> list[dict[str, Any]]:
+        return [frame(
+            AGUIEventType.CUSTOM, name=RUN_USAGE_EVENT_NAME,
+            value=payload.to_wire_dict(), runId=context.run_id,
+        )]
+
     def error(self, context, *, message, code):
         return [frame(AGUIEventType.RUN_ERROR, runId=context.run_id, message=message, code=code)]
+
+    def tool_progress(
+        self, context: "AgentContext", *, tool: str, progress: float, total: float | None, message: str | None,
+    ) -> list[dict[str, Any]]:
+        """A `running_tool` snapshot like `write_state`'s, with the server's progress on it."""
+        snapshot: dict[str, Any] = {"status": "running_tool", "current_tool": tool, "progress": progress}
+        if total is not None:
+            snapshot["total"] = total
+        if message:
+            snapshot["progress_message"] = message
+        return [frame(AGUIEventType.STATE_SNAPSHOT, runId=context.run_id, snapshot=snapshot)]
 
 
 # Both formatters are stateless (no per-instance state, no `__init__`

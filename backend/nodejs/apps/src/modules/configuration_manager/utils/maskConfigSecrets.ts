@@ -219,6 +219,30 @@ export const GITHUB_AUTH_SECRET_KEYS = ['clientId', 'clientSecret'] as const;
 
 export const WEB_SEARCH_SECRET_KEYS = ['apiKey'] as const;
 
+/**
+ * An edit form that never revealed a secret sends the placeholder back. Swap
+ * each placeholder for the stored value; returns the keys that had no stored
+ * value to restore, so the caller can refuse to save a literal placeholder.
+ */
+export function restoreSecretPlaceholders<T extends Record<string, unknown>>(
+  incoming: T,
+  existing: Record<string, unknown> | null | undefined,
+  keys: readonly string[],
+): { config: T; unrestored: string[] } {
+  const out = { ...incoming } as Record<string, unknown>;
+  const unrestored: string[] = [];
+  for (const key of keys) {
+    if (out[key] !== CONFIG_SECRET_PLACEHOLDER) continue;
+    const stored = existing?.[key];
+    if (typeof stored === 'string' && stored.length > 0) {
+      out[key] = stored;
+    } else {
+      unrestored.push(key);
+    }
+  }
+  return { config: out as T, unrestored };
+}
+
 function maskKeys<T extends Record<string, unknown>>(config: T, keys: readonly string[]): T {
   if (!config || typeof config !== 'object') {
     return config;
@@ -251,6 +275,17 @@ export function maskGithubAuthConfig<T extends Record<string, unknown>>(config: 
 
 export function maskWebSearchProvider<T extends Record<string, unknown>>(configuration: T): T {
   return maskKeys(configuration, WEB_SEARCH_SECRET_KEYS);
+}
+
+/**
+ * What a member who is not an admin sees of a provider: no API key, and no server address either,
+ * since a self-hosted server's URL names an internal host. Members only list providers (the agent
+ * builder does); every write is admin-only, so a masked address is never sent back to be saved.
+ */
+export function maskWebSearchProviderForMember<
+  T extends Record<string, unknown>,
+>(configuration: T): T {
+  return maskKeys(configuration, [...WEB_SEARCH_SECRET_KEYS, 'baseUrl']);
 }
 
 export function mergeWebSearchProviderPlaceholders<T extends Record<string, unknown>>(

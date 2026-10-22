@@ -51,7 +51,7 @@ _EDGE_COLLECTION_TO_YAML: Final[dict[str, str]] = {
     "permission": "permission.yaml",
     "belongsTo": "belongs_to.yaml",
     "inheritPermissions": "inherit_permissions.yaml",
-    "recordRelations": "record_relations.yaml",
+    "nodeRelations": "node_relations.yaml",
     "isOfType": "is_of_type.yaml",
     "userAppRelation": "user_app_relation.yaml",
     "entityRelations": "entity_relations.yaml",
@@ -275,16 +275,44 @@ async def assert_graph_edges(
 # ---------------------------------------------------------------------------
 
 
+async def resolve_parent_record(
+    graph: GraphProviderProtocol,
+    record: Any,
+    connector_id: str,
+) -> Any | None:
+    """The stored record above *record*, or None when it has none."""
+    if not record.parent_external_record_id:
+        return None
+    return await graph.get_record_by_external_id(connector_id, record.parent_external_record_id)
+
+
+def _inherits_from_group(record: Any, parent: Any | None) -> bool:
+    """A record inherits from its record group only when no record of that group
+    is above it: a nested one inherits from its parent record. A synced parent of
+    another record group lists the record but lends it no audience."""
+    if not record.parent_external_record_id:
+        return True
+    return (
+        parent is not None
+        and not getattr(parent, "is_placeholder", False)
+        and bool(record.record_group_id)
+        and bool(parent.record_group_id)
+        and parent.record_group_id != record.record_group_id
+    )
+
+
 def build_record_edge_expectations(
     record: Any,
     connector_id: str,
     *,
     parent_relation_type: str | None = None,
+    parent: Any | None = None,
 ) -> list[EdgeExpectation]:
     """Build structural edge expectations from a validated Record entity.
 
     ``record`` should be a ``Record`` (or subclass) with fields populated from
-    the graph (the *actual* entity from step 2).
+    the graph (the *actual* entity from step 2). ``parent`` is what
+    ``resolve_parent_record`` returned for it.
     """
     from app.config.constants.arangodb import RECORD_TYPE_COLLECTION_MAPPING
 
@@ -304,7 +332,8 @@ def build_record_edge_expectations(
             label="record belongsTo recordGroup",
         ))
 
-        if record.inherit_permissions:
+        from_group = _inherits_from_group(record, parent)
+        if record.inherit_permissions and from_group:
             exps.append(EdgeExpectation(
                 collection="inheritPermissions",
                 from_ref=rec_ref,
@@ -312,12 +341,13 @@ def build_record_edge_expectations(
                 label="record inheritPermissions recordGroup",
             ))
         else:
+            reason = "inherit=False" if not record.inherit_permissions else "nested under a record"
             exps.append(EdgeExpectation(
                 collection="inheritPermissions",
                 from_ref=rec_ref,
                 to_ref=rg_ref,
                 cardinality="none",
-                label="record NOT inheritPermissions (inherit=False)",
+                label=f"record NOT inheritPermissions recordGroup ({reason})",
             ))
 
     rt_value = record.record_type.value if hasattr(record.record_type, "value") else str(record.record_type)
@@ -348,12 +378,24 @@ def build_record_edge_expectations(
             rel_type = "PARENT_CHILD"
 
         exps.append(EdgeExpectation(
-            collection="recordRelations",
+            collection="nodeRelations",
             from_ref=parent_ref,
             to_ref=rec_ref,
             cardinality="at_least_one",
             expected_payload={"relationshipType": rel_type},
-            label=f"parent recordRelations ({rel_type}) -> record",
+            label=f"parent nodeRelations ({rel_type}) -> record",
+        ))
+
+        from_parent = record.inherit_permissions and not _inherits_from_group(record, parent)
+        exps.append(EdgeExpectation(
+            collection="inheritPermissions",
+            from_ref=rec_ref,
+            to_ref=parent_ref,
+            cardinality="exactly_one" if from_parent else "none",
+            label=(
+                "record inheritPermissions parentRecord" if from_parent
+                else "record NOT inheritPermissions parentRecord"
+            ),
         ))
 
     return exps

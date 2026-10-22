@@ -4,12 +4,13 @@ import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
     SUPPORTED_CODE_FILE_EXTENSIONS,
     CollectionNames,
     EventTypes,
@@ -79,6 +80,7 @@ from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.indexing_timing import stage
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
@@ -97,6 +99,9 @@ from app.utils.user_errors import (
     to_user_reason,
     unsupported_file_type,
 )
+
+if TYPE_CHECKING:
+    from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 RECONCILE_ATTEMPTS = 2
 RECONCILE_RETRY_DELAY_SECONDS = 1.0
@@ -304,6 +309,39 @@ class RecordEventHandler(BaseEventService):
                 exc_info=True,
             )
 
+    async def on_recovery_exhausted(self, record_id: str, *, resume_enrichment: bool) -> None:
+        """End a record stale recovery has given up on, and move its queued copies on.
+
+        Implements ``ExhaustedRecordSink``. The copies are parked behind this
+        record with their messages acknowledged, and the stranded sweep skips
+        them, so this is what releases them. Raises when the record could not
+        be marked, so the next recovery pass tries again.
+        """
+        if resume_enrichment:
+            # Searchable already: only the enrichment fails, and the copies
+            # take the record's indexing with it.
+            await self._fail_resumed_enrichment(record_id)
+            return
+        record = await self.event_processor.graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value, raise_on_error=True
+        )
+        if record is None:
+            return
+        updated = await self.__update_document_status(
+            record_id=record_id,
+            indexing_status=ProgressStatus.FAILED.value,
+            extraction_status=ProgressStatus.FAILED.value,
+            reason=RETRIES_EXHAUSTED,
+        )
+        if updated is None:
+            raise IndexingError(
+                f"Could not mark record {record_id} failed after recovery gave up",
+                details={"record_id": record_id},
+            )
+        self.logger.error("Record %s marked FAILED: stale recovery gave up on it", record_id)
+        # Retried transient failures, not the file: the next copy gets its turn.
+        await self._trigger_next_queued_duplicate(record_id, record.get("virtualRecordId"))
+
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
         record_id: str,
@@ -379,6 +417,28 @@ class RecordEventHandler(BaseEventService):
         if not await clear_pending_entity_cleanup(self.config_service, connector_id):
             # The rebuild loop runs the intent again; cleanup is idempotent.
             self.logger.warning("Entity cleanup intent for connector %s not cleared", connector_id)
+
+    async def _delete_unreached_taxonomy_points(
+        self, store: "EntityVectorStore", org_id: str, record_id: str, refs: object,
+    ) -> None:
+        """Delete the points of the taxonomy entities a deleted record linked to
+        (its ``taxonomyRefs``) that no other live record reaches. Raises so the
+        consumer retries, then dead-letters; every step of the delete is
+        idempotent, so a retry repeats them harmlessly."""
+        if not refs or not isinstance(refs, list):
+            return
+        graph_provider = self.event_processor.graph_provider
+        try:
+            await store.delete_unreached_entities(
+                org_id,
+                refs,
+                lambda wanted: graph_provider.get_unreached_taxonomy_entities(wanted, org_id),
+            )
+        except Exception as exc:
+            raise IndexingError(
+                f"Entity cleanup for deleted record {record_id} did not complete",
+                details={"org_id": org_id, "record_id": record_id},
+            ) from exc
 
     async def _reconcile_pending_duplicates(
         self,
@@ -481,12 +541,14 @@ class RecordEventHandler(BaseEventService):
                 details={"record_id": record_id},
             )
 
-    async def _enrichment_still_cut_short(self, record_id: str) -> bool:
-        """False only on proof that this attempt re-indexed the record.
+    async def _enrichment_still_cut_short(self, record_id: str, *, unreadable: bool = True) -> bool:
+        """Whether the record is indexed with its enrichment still running.
 
-        An unreadable record proves nothing, and the FAILED/FAILED write it
-        would otherwise get makes a searchable record unsearchable; the
-        resumed-enrichment exit writes only extraction, so it is the safe one.
+        For a resumed enrichment, False only on proof that this attempt
+        re-indexed the record: an unreadable record proves nothing, and the
+        FAILED/FAILED write it would otherwise get makes a searchable record
+        unsearchable; the resumed-enrichment exit writes only extraction, so it
+        is the safe one. ``unreadable`` is the answer when the re-read fails.
         """
         try:
             current = await self.event_processor.graph_provider.get_document(
@@ -494,10 +556,9 @@ class RecordEventHandler(BaseEventService):
             )
         except Exception as e:
             self.logger.warning(
-                "Could not re-read record %s after its last attempt; keeping it searchable: %s",
-                record_id, e,
+                "Could not re-read record %s after its last attempt: %s", record_id, e,
             )
-            return True
+            return unreadable
         return bool(current) and (
             current.get("indexingStatus") == ProgressStatus.COMPLETED.value
             and current.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
@@ -963,6 +1024,9 @@ class RecordEventHandler(BaseEventService):
 
         try:
             await sink.index(ctx)
+            # The stored extraction rebuilds the record's named entities and their
+            # vector points too, so a re-embed never drops them or calls a model.
+            await sink.reproject_named_entities(ctx)
         except Exception:
             self.logger.exception(
                 "Vector-only reindex failed for record %s", record_id
@@ -1003,6 +1067,9 @@ class RecordEventHandler(BaseEventService):
         record = None
         resuming_enrichment = False
         source_name: str | None = None
+        # A retry of named stages never writes the record's own statuses, even when it
+        # fails: the record is already searchable and its stage state records the outcome.
+        stage_redrive = False
         try:
             if not event_type:
                 # A message with no event type is a producer bug: acking it
@@ -1220,6 +1287,9 @@ class RecordEventHandler(BaseEventService):
                         await entity_store.delete_entity(
                             org_id, EntityType.RECORD.value, record_id
                         )
+                        await self._delete_unreached_taxonomy_points(
+                            entity_store, org_id, record_id, payload.get("taxonomyRefs"),
+                        )
                     else:
                         self.logger.warning(
                             "deleteRecord %s carries no orgId and the record is gone; "
@@ -1250,7 +1320,7 @@ class RecordEventHandler(BaseEventService):
                 # event being published and consumed. There is nothing to index
                 # and nothing to fail, so drain the message like the delete path
                 # does instead of retrying it three times.
-                self.logger.error(f"❌ Record {record_id} not found in database")
+                self.logger.warning(f"Record {record_id} not found in database; dropping its event")
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
                     data=PipelineEventData(record_id=record_id),
@@ -1282,6 +1352,21 @@ class RecordEventHandler(BaseEventService):
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
+            stages = payload.get("stages")
+            stage_ingress = self.event_processor.stage_ingress
+            if event_type == EventTypes.REINDEX_RECORD.value and isinstance(stages, list) and stages and stage_ingress is not None:
+                stage_redrive = True
+                dispatched = await stage_ingress.redrive(
+                    virtual_record_id, record.get("contentRev"), [str(s) for s in stages]
+                )
+                if dispatched is not None:
+                    self.logger.info(f"🔁 Re-running stages {stages} for record {record_id}: {dispatched}")
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
+                # The runtime never saw this revision: a full reindex dispatches every stage.
+                stage_redrive = False
+
             #Reconciliation
             vector_db_only = bool(payload.get("vectorDbOnly"))
             if clears_embeddings_first(event_type, payload):
@@ -1309,7 +1394,9 @@ class RecordEventHandler(BaseEventService):
             # finishes the enrichment, which is what lets its queued duplicates
             # be promoted; acknowledging it here would leave them parked.
             resuming_enrichment = record_resuming_enrichment(doc)
-            if already_indexed(event_type, payload, doc):
+            if already_indexed(event_type, payload, doc) and not (
+                stage_ingress is not None and await stage_ingress.handoff_lost(doc)
+            ):
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1414,10 +1501,7 @@ class RecordEventHandler(BaseEventService):
             # downstream streaming would either 404 or no-op. Mark them
             # COMPLETED (same pattern as the "already indexed" short-
             # circuit above) so subsequent reindex events are no-ops.
-            is_folder_mime = mime_type in (
-                MimeTypes.FOLDER.value,
-                MimeTypes.GOOGLE_DRIVE_FOLDER.value,
-            )
+            is_folder_mime = mime_type in FOLDER_MIME_TYPES
             is_folder_record = record.get("isFile") is False
             if is_folder_mime or is_folder_record:
                 self.logger.debug(
@@ -1606,9 +1690,10 @@ class RecordEventHandler(BaseEventService):
             if payload and payload.get("signedUrl"):
                 self.logger.info(f"🔍 Signed URL received for record {record_id}")
                 try:
-                    response = await self._download_from_signed_url(
-                        signed_url=payload["signedUrl"], record_id=record_id, doc=doc,
-                    )
+                    with stage("download"):
+                        response = await self._download_from_signed_url(
+                            signed_url=payload["signedUrl"], record_id=record_id, doc=doc,
+                        )
                     if not response:
                         raise Exception("Failed to download file from signed URL")
                 except Exception as e:
@@ -1653,9 +1738,10 @@ class RecordEventHandler(BaseEventService):
                     connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
                     try:
-                        response = await make_api_call(
-                            route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
-                        )
+                        with stage("download"):
+                            response = await make_api_call(
+                                route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
+                            )
                     except Exception as fetch_exc:
                         if resuming_enrichment or not await self._defer_rate_limited_record(
                             fetch_exc, record_id=record_id, record=record, source=source_name
@@ -1747,7 +1833,11 @@ class RecordEventHandler(BaseEventService):
                 f"Success: {not error_occurred}"
             )
 
-            if error_occurred and record_id:
+            if stage_redrive:
+                # A stage re-run owns none of the record's bookkeeping (statuses, queued
+                # duplicates, index notifications); its stage state records the outcome.
+                pass
+            elif error_occurred and record_id:
                 # Only update DB status to FAILED if this is the final failure
                 # (terminal error or dead-letter after max retries)
                 is_final = payload.get("is_final_failure")
@@ -1782,17 +1872,17 @@ class RecordEventHandler(BaseEventService):
                         f"🔄 Record {record_id} cancelled mid-flight; leaving it "
                         f"IN_PROGRESS for redelivery or stale recovery"
                     )
-                elif (
-                    is_final
-                    and resuming_enrichment
-                    and await self._enrichment_still_cut_short(record_id)
+                elif is_final and await self._enrichment_still_cut_short(
+                    record_id, unreadable=resuming_enrichment,
                 ):
-                    # Nothing re-indexed it in this attempt, so its vectors are
-                    # intact: only the enrichment failed, and the record stays
-                    # searchable. A first-time indexing failure takes the
-                    # branch below unchanged.
+                    # Indexed, by this attempt or an earlier one, so its vectors
+                    # are intact: only the enrichment failed, and the record
+                    # stays searchable. An attempt that did not start as a
+                    # resume takes this branch only on proof it indexed the
+                    # record; a first-time indexing failure takes the branch
+                    # below unchanged.
                     self.logger.error(
-                        f"Final failure resuming the enrichment of record {record_id}: {error_msg}",
+                        f"Final failure in the enrichment of record {record_id}: {error_msg}",
                         exc_info=last_exception,
                     )
                     await self._fail_resumed_enrichment(record_id)

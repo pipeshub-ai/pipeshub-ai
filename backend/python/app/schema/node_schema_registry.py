@@ -25,6 +25,9 @@ from app.schema.arango.documents import (
     artifact_record_schema,
     comment_record_schema,
     department_schema,
+    named_entity_schema,
+    named_entity_persist_retry_schema,
+    value_mention_schema,
     file_record_schema,
     link_record_schema,
     mail_record_schema,
@@ -35,6 +38,7 @@ from app.schema.arango.documents import (
     project_record_schema,
     record_group_schema,
     record_schema,
+    stage_state_schema,
     team_schema,
     ticket_record_schema,
     user_schema,
@@ -77,6 +81,7 @@ def adapt_schema(arango_schema: dict | None) -> dict | None:
 # This mirrors the NODE_COLLECTIONS list defined by CollectionNames in app/config/constants/arangodb.py
 NODE_SCHEMA_REGISTRY: dict[str, dict | None] = {
     CollectionNames.RECORDS.value: adapt_schema(record_schema),
+    CollectionNames.STAGE_STATES.value: adapt_schema(stage_state_schema),
     CollectionNames.DRIVES.value: None,  # No schema
     CollectionNames.FILES.value: adapt_schema(file_record_schema),
     CollectionNames.LINKS.value: adapt_schema(link_record_schema),
@@ -94,6 +99,9 @@ NODE_SCHEMA_REGISTRY: dict[str, dict | None] = {
     CollectionNames.PAGE_TOKENS.value: None,  # No schema
     CollectionNames.APPS.value: adapt_schema(app_schema),
     CollectionNames.DEPARTMENTS.value: adapt_schema(department_schema),
+    CollectionNames.NAMED_ENTITIES.value: adapt_schema(named_entity_schema),
+    CollectionNames.VALUE_MENTIONS.value: adapt_schema(value_mention_schema),
+    CollectionNames.NAMED_ENTITY_PERSIST_RETRIES.value: adapt_schema(named_entity_persist_retry_schema),
     CollectionNames.CATEGORIES.value: None,  # No schema
     CollectionNames.LANGUAGES.value: None,  # No schema
     CollectionNames.TOPICS.value: None,  # No schema

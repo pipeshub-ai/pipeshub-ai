@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node dist/index.js",
-    "build": "tsc",
+    "build": "tsc && node dist/scripts/write-build-info.js",
     "dev": "nodemon src/index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
@@ -56,9 +56,9 @@
   },
   "dependencies": {
     "@azure/storage-blob": "^12.25.0",
-    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "@node-saml/passport-saml": "^5.1.0",
-    "@pipeshub-ai/mcp": "3.0.1",
+    "@pipeshub-ai/mcp": "4.3.0",
     "@qdrant/js-client-rest": "^1.14.1",
     "@slack/bolt": "^4.6.0",
     "@types/bcrypt": "^5.0.2",
@@ -71,7 +71,7 @@
     "axios": "^1.20.0",
     "axios-retry": "^4.5.0",
     "bcryptjs": "^3.0.2",
-    "bullmq": "^5.56.1",
+    "bullmq": "^5.81.5",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
     "dotenv": "^16.4.7",
@@ -79,13 +79,13 @@
     "express": "^4.22.1",
     "express-rate-limit": "^8.6.2",
     "form-data": "^4.0.6",
-    "google-auth-library": "^9.15.1",
-    "handlebars": "^4.7.9",
+    "google-auth-library": "^10.9.1",
+    "handlebars": "^4.7.10",
     "helmet": "^8.0.0",
     "image-resize-compress": "^2.1.1",
     "inversify": "^6.2.1",
     "ioredis": "^5.9.2",
-    "js-yaml": "^4.3.2",
+    "js-yaml": "^5.4.3",
     "jsonwebtoken": "^9.0.3",
     "jwk-to-pem": "^2.0.7",
     "jwks-rsa": "^3.1.0",
@@ -101,7 +101,7 @@
     "prom-client": "^15.1.3",
     "reflect-metadata": "^0.2.2",
     "sharp": "^0.35.5",
-    "slug": "^4.1.0",
+    "slug": "^12.0.1",
     "socket.io": "^4.8.3",
     "swagger-ui-express": "^5.0.1",
     "winston": "^3.17.0",
@@ -112,6 +112,12 @@
   "overrides": {
     "bn.js": "4.12.3",
     "qs": "6.16.0",
-    "fast-xml-parser": "5.7.0"
+    "fast-xml-parser": "5.7.0",
+    "@pipeshub-ai/mcp": {
+      "@modelcontextprotocol/sdk": "1.32.0"
+    },
+    "aws-sdk": {
+      "uuid": "^11.1.1"
+    }
   }
 }

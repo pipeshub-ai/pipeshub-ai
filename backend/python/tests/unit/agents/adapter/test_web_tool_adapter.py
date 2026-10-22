@@ -246,3 +246,34 @@ class TestWebToolAdapterExecute:
         assert "url/Citation ID:" not in output.data
         assert output.sources == []
         assert context.tool_state.get("web_records") == []
+
+
+class TestWebToolAdapterResultView:
+    """The step card lists what the call found, keyed by the text the call returned."""
+
+    async def test_search_view_lists_every_result(self) -> None:
+        from app.agent_loop_lib.core.types import ToolResult
+
+        adapter = WebToolAdapter(_web_search_tool(_web_search_payload()), "dynamic", "web_search", make_context())
+        output = await adapter.execute(query="python 3.12 release")
+        view = adapter.result_view({}, ToolResult(tool_call_id="c1", name="dynamic__web_search", content=output.data))
+        assert view["kind"] == "records"
+        assert view["rows"][0]["url"] == "https://docs.python.org/3.12/whatsnew/3.12.html"
+        assert "ref" not in str(view)
+
+    async def test_page_view_names_the_page(self) -> None:
+        from app.agent_loop_lib.core.types import ToolResult
+
+        payload = _url_content_payload(title="The report")
+        adapter = WebToolAdapter(_fetch_url_tool(payload), "dynamic", "fetch_url", make_context())
+        output = await adapter.execute(query="x")
+        view = adapter.result_view({}, ToolResult(tool_call_id="c1", name="dynamic__fetch_url", content=output.data))
+        assert view["fields"][0] == {"label": "Page", "value": "The report"}
+
+    async def test_failed_call_has_no_view(self) -> None:
+        from app.agent_loop_lib.core.types import ToolResult
+
+        failed = {"ok": False, "error_type": "blocked", "error": "blocked"}
+        adapter = WebToolAdapter(_web_search_tool(failed), "dynamic", "web_search", make_context())
+        output = await adapter.execute(query="x")
+        assert adapter.result_view({}, ToolResult(tool_call_id="c1", name="dynamic__web_search", content=output.data)) is None

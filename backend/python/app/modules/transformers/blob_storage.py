@@ -21,6 +21,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.cache.interface import ISignedUrlCache, NoopSignedUrlCache
 from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
@@ -237,12 +238,38 @@ class StorageDocumentNotFoundError(aiohttp.ClientError):
     """
 
 
-def _storage_status_error(status: int, message: str) -> aiohttp.ClientError:
+# Statuses meaning the storage service refused the request's content (too large,
+# unsupported, malformed): every retry gets the same answer.
+_REJECTED_STORAGE_STATUSES = frozenset({400, 413, 415, 422})
+
+
+def _storage_status_error(
+    status: int, message: str, detail: str | None = None
+) -> aiohttp.ClientError:
     if status in _TRANSIENT_STORAGE_STATUSES:
         return TransientStorageError(message)
     if status == HttpStatusCode.NOT_FOUND.value:
         return StorageDocumentNotFoundError(message)
+    if status in _REJECTED_STORAGE_STATUSES:
+        reason = f"{message}: the storage service refused it (HTTP {status})"
+        too_large = status == HttpStatusCode.PAYLOAD_TOO_LARGE.value or "larger than" in (detail or "").lower()
+        return StorageRequestRejectedError(
+            f"{reason}: {detail}" if detail else reason, status, too_large=too_large
+        )
     return aiohttp.ClientError(message)
+
+
+def _storage_error_detail(body: object) -> str | None:
+    """The human-readable reason in a storage error response, when it has one."""
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            return error["message"]
+        if isinstance(body.get("message"), str):
+            return body["message"]
+    if isinstance(body, str) and body.strip():
+        return body.strip()[:300]
+    return None
 
 
 # Failures that can be retried only when the request is idempotent: the
@@ -1142,8 +1169,8 @@ class BlobStorage(Transformer):
         org_id = record.org_id
         record_id = record.id
         virtual_record_id = record.virtual_record_id
-        connector_id = getattr(record, "connector_id", None)
-        record_group_id = getattr(record, "record_group_id", None)
+        if not virtual_record_id:
+            raise ValueError(f"record {record_id} has no virtual record id to store under")
         # Use exclude_none=True to skip None values, then clean empty values
         record_dict = record.model_dump(mode='json', exclude_none=True)
         record_dict = self._clean_empty_values(record_dict)
@@ -1154,6 +1181,44 @@ class BlobStorage(Transformer):
             virtual_record_id, storage_path
         )
 
+        actual_storage_path = await self._store_record_dict(
+            org_id, record_id, virtual_record_id, record_dict,
+            storage_path=storage_path,
+            connector_id=getattr(record, "connector_id", None),
+            record_group_id=getattr(record, "record_group_id", None),
+        )
+
+        ctx.settings["storage_path"] = actual_storage_path
+        ctx.record = record
+        return ctx
+
+    async def _store_record_dict(
+        self,
+        org_id: str,
+        record_id: str,
+        virtual_record_id: str,
+        record_dict: dict[str, Any],
+        *,
+        storage_path: str | None = None,
+        connector_id: str | None = None,
+        record_group_id: str | None = None,
+    ) -> str:
+        """Upload a record as the next version of its stored document, or as a new one.
+
+        Returns the path the content is stored at. Without *storage_path* (a rewrite of a
+        record already stored, which has no Record entity to build a path from), a new
+        upload goes where the current document is, else to ``records/<vrid>``; the
+        connector and record group default to the ones in *record_dict*.
+        """
+        if storage_path is None:
+            storage_path = (
+                await self.get_actual_content_path(org_id, virtual_record_id)
+                or f"records/{virtual_record_id}"
+            )
+        if connector_id is None:
+            connector_id = record_dict.get("connector_id")
+        if record_group_id is None:
+            record_group_id = record_dict.get("record_group_id")
         existing_lookup = None
         if self.graph_provider:
             try:
@@ -1235,9 +1300,17 @@ class BlobStorage(Transformer):
             if mapped and replaced_doc_id and replaced_doc_id != document_id:
                 await self._delete_replaced_document(org_id, replaced_doc_id, virtual_record_id)
 
-        ctx.settings["storage_path"] = actual_storage_path
-        ctx.record = record
-        return ctx
+        return actual_storage_path
+
+    async def save_semantic_metadata(
+        self, org_id: str, record_id: str, virtual_record_id: str, semantic_metadata: dict[str, Any]
+    ) -> None:
+        """Write classification into the stored record as its next version."""
+        stored = await self.get_record_from_storage(virtual_record_id, org_id)
+        if stored is None:
+            raise LookupError(f"no stored record for virtual record {virtual_record_id}")
+        stored["semantic_metadata"] = semantic_metadata
+        await self._store_record_dict(org_id, record_id, virtual_record_id, stored)
 
     async def _with_storage_retry(
         self,
@@ -1534,14 +1607,16 @@ class BlobStorage(Transformer):
                             raise TransientStorageError("Record upload still in progress")
                         if response.status != HttpStatusCode.SUCCESS.value:
                             try:
-                                error_response = await response.json()
+                                error_body: object = await response.json()
                                 self.logger.error("❌ Failed to upload record. Status: %d, Error: %s",
-                                                response.status, error_response)
+                                                response.status, error_body)
                             except aiohttp.ContentTypeError:
-                                error_text = await response.text()
+                                error_body = await response.text()
                                 self.logger.error("❌ Failed to upload record. Status: %d, Response: %s",
-                                                response.status, error_text[:200])
-                            raise _storage_status_error(response.status, "Failed to upload record")
+                                                response.status, error_body[:200])
+                            raise _storage_status_error(
+                                response.status, "Failed to upload record", _storage_error_detail(error_body)
+                            )
 
                         response_data = await response.json()
                         document_id = response_data.get('_id')
@@ -1732,23 +1807,29 @@ class BlobStorage(Transformer):
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 
+            # The mapping is keyed by the vrid. Older releases keyed it
+            # f"{vrid}_{documentId}", one node per upload, reachable only by the
+            # field; a metadata write since may have left a keyed node with no
+            # document id beside them.
+            doc = await self.graph_provider.get_document(
+                virtual_record_id,
+                collection_name
+            )
+            if doc and self._mapped_document_id(doc):
+                return self._shape_document_lookup(doc)
             nodes = await self.graph_provider.get_nodes_by_filters(
                 collection_name,
                 {"virtualRecordId": virtual_record_id}
-            )
-            if not nodes:
-                doc = await self.graph_provider.get_document(
-                    virtual_record_id,
-                    collection_name
-                )
-                if doc:
-                    nodes = [doc]
-
-            if nodes:
-                return self._shape_document_lookup(nodes[0])
-            else:
-                self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
-                return None
+            ) or []
+            mapped = [node for node in nodes if self._mapped_document_id(node)]
+            if mapped:
+                newest = max(mapped, key=lambda node: node.get("updatedAt") or node.get("createdAt") or 0)
+                return self._shape_document_lookup(newest)
+            fallback = doc or (nodes[0] if nodes else None)
+            if fallback:
+                return self._shape_document_lookup(fallback)
+            self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
+            return None
         except Exception as e:
             self.logger.exception(
                 "❌ Error getting document ID by virtual record ID: %s",
@@ -1757,10 +1838,14 @@ class BlobStorage(Transformer):
             raise e
 
     @staticmethod
+    def _mapped_document_id(doc: dict) -> str | None:
+        return doc.get("record_doc_id") or doc.get("documentId")
+
+    @staticmethod
     def _shape_document_lookup(doc: dict) -> dict:
         """Project a virtual-record mapping node onto the lookup result shape."""
         result = {
-            "record_doc_id": doc.get("record_doc_id") or doc.get("documentId"),
+            "record_doc_id": BlobStorage._mapped_document_id(doc),
             "fileSizeBytes": doc.get("fileSizeBytes"),
         }
         record_metadata_doc_id = doc.get("record_metadata_doc_id")
@@ -1979,12 +2064,11 @@ class BlobStorage(Transformer):
                 if vrid and vrid not in resolved:
                     resolved[vrid] = self._shape_document_lookup(node)
 
-        # Opt-in only. Nothing in this repo writes a `virtualRecordId` field --
-        # the mapping node's key IS the virtual record id -- and that field is
-        # not indexed, so this query never matches on our data and costs a full
-        # label scan for every id the keyed batch missed (a deleted or missing
-        # mapping is normal). Left available for deployments that dual-write the
-        # field; otherwise ids fall straight through to the per-id path below.
+        # Opt-in only. The mapping node's key IS the virtual record id, so the
+        # keyed batch above finds every mapping this release writes; the field
+        # only adds nodes older releases keyed f"{vrid}_{documentId}". Each id
+        # the batch missed (a deleted or missing mapping is normal) costs one
+        # more query here, so it stays off unless a deployment still holds them.
         missing = [vrid for vrid in unique_ids if vrid not in resolved]
         if missing and os.getenv("PIPESHUB_VRID_FIELD_LOOKUP", "").lower() in ("1", "true", "yes"):
             for start in range(0, len(missing), chunk_size):
@@ -2029,8 +2113,8 @@ class BlobStorage(Transformer):
         self,
         virtual_record_id: str,
         org_id: str,
-        lookup_result: dict | None = None,
-    ) -> dict | None:
+        lookup_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """
         Retrieve a record's content from blob storage using the virtual_record_id.
 

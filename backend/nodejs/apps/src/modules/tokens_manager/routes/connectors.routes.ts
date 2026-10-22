@@ -23,9 +23,11 @@ import {
 } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
+  ForbiddenError,
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import { VECTOR_STORE_REBUILD_AVAILABLE } from '../../../edition';
 import { AppConfig, loadAppConfig } from '../config/config';
 import { Logger } from '../../../libs/services/logger.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -198,6 +200,7 @@ const getOAuthAuthorizationUrlSchema = z.object({
   }),
   query: z.object({
     baseUrl: z.string().optional(),
+    desktop: z.string().optional(),
   }),
 });
 
@@ -349,10 +352,13 @@ const resyncConnectorSchema = z.object({
 /**
  * Schema for reindexing connector records
  */
+export const REINDEX_STAGES = ['classify'] as const;
+
 export const reindexConnectorSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
   body: z.object({
       statusFilters: z.array(z.string()).optional(),
+      stages: z.array(z.enum(REINDEX_STAGES)).min(1).optional(),
     })
     .optional(),
 });
@@ -365,10 +371,35 @@ const getConnectorStatsSchema = z.object({
 });
 
 /**
- * Schema for getting a record's full parsed content
+ * Schema for getting a record's parsed content. With no query parameters the
+ * whole record is returned, as it always was; any of them asks for a budgeted
+ * read (part of the record, or its Slack thread). Bounds match the query
+ * service's `/records/{record_id}/read`.
  */
 const getRecordContentSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
+  query: z.object({
+    mode: z.enum(['record', 'thread']).optional(),
+    query: z.string().trim().min(1).max(2000).optional(),
+    startBlock: z
+      .preprocess(
+        (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
+        z.number().int().min(0),
+      )
+      .optional(),
+    startRecord: z
+      .preprocess(
+        (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
+        z.number().int().min(0),
+      )
+      .optional(),
+    maxChars: z
+      .preprocess(
+        (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
+        z.number().int().min(2000).max(140000),
+      )
+      .optional(),
+  }),
 });
 
 /**
@@ -447,6 +478,30 @@ const testConnectorConnectionSchema = z.object({
  * @param crawlingContainer - Crawling-manager DI container for the scheduler.
  * @returns Configured Express router
  */
+/**
+ * Answers 403 on the vector-store rebuild routes when this deployment does not
+ * offer them (`VECTOR_STORE_REBUILD_AVAILABLE` in `edition.ts`). The routes stay
+ * registered either way, so they are matched before `/:connectorId/...`.
+ */
+export const requireVectorStoreRebuild = (
+  available: boolean = VECTOR_STORE_REBUILD_AVAILABLE,
+) =>
+  function vectorStoreRebuildGuard(
+    _req: unknown,
+    _res: Response,
+    next: NextFunction,
+  ): void {
+    if (available) {
+      next();
+      return;
+    }
+    next(
+      new ForbiddenError(
+        'Rebuilding the vector store is not available on this deployment.',
+      ),
+    );
+  };
+
 export function createConnectorRouter(
   container: Container,
   crawlingContainer: Container,
@@ -687,6 +742,7 @@ export function createConnectorRouter(
   router.post(
     '/vector-store/cleanup',
     authMiddleware.authenticate,
+    requireVectorStoreRebuild(),
     userAdminCheck,
     requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
     cleanupVectorStore(config),
@@ -699,6 +755,7 @@ export function createConnectorRouter(
   router.post(
     '/vector-store/reindex',
     authMiddleware.authenticate,
+    requireVectorStoreRebuild(),
     userAdminCheck,
     requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
     reindexVectorStore(config),
@@ -858,6 +915,7 @@ export function createConnectorRouter(
   /**
    * POST /instances/:connectorId/filters
    * Save filter selections for a connector instance
+   * @deprecated Use PUT /:connectorId/config/filters-sync; nothing in the app calls this.
    */
   router.post(
     '/:connectorId/filters',

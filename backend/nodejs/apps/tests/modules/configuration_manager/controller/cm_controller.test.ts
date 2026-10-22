@@ -747,6 +747,20 @@ describe('ConfigurationManager Controller', () => {
       expect(skillsFlag.defaultEnabled).to.equal(true)
     })
 
+    it('should include ENABLE_NAMED_ENTITY_EXTRACTION, defaulting to disabled', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const flag = flags.find((f: any) => f.key === 'ENABLE_NAMED_ENTITY_EXTRACTION')
+      expect(flag).to.exist
+      expect(flag.defaultEnabled).to.equal(false)
+    })
+
     it('should include ENABLE_USER_CONTEXT, defaulting to enabled', async () => {
       const handler = getAvailablePlatformFeatureFlags()
       const req = createMockRequest()
@@ -761,6 +775,21 @@ describe('ConfigurationManager Controller', () => {
       expect(userContextFlag.defaultEnabled).to.equal(true)
     })
 
+    it('should include ENABLE_KH_SCOPE_LISTING in Labs, defaulting to disabled', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const scopeFlag = flags.find((f: any) => f.key === 'ENABLE_KH_SCOPE_LISTING')
+      expect(scopeFlag).to.exist
+      expect(scopeFlag.defaultEnabled).to.equal(false)
+      expect(scopeFlag.hidden).to.not.equal(true)
+    })
+
     it('should not include hidden flags (e.g. ENABLE_BETA_CONNECTORS)', async () => {
       const handler = getAvailablePlatformFeatureFlags()
       const req = createMockRequest()
@@ -771,6 +800,26 @@ describe('ConfigurationManager Controller', () => {
 
       const flags = res.json.firstCall.args[0].flags
       expect(flags.find((f: any) => f.key === 'ENABLE_BETA_CONNECTORS')).to.be.undefined
+    })
+
+    it('should mark internal flags as advanced and keep them in the list', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const advancedKeys = flags.filter((f: any) => f.advanced).map((f: any) => f.key)
+      expect(advancedKeys).to.include.members([
+        'ENABLE_VECTOR_STORE_REBUILD',
+        'ENABLE_SOFT_DELETE',
+        'ENABLE_NAMED_ENTITY_EXTRACTION',
+        'ENABLE_USER_CONTEXT',
+      ])
+      expect(flags.find((f: any) => f.key === 'ENABLE_MCP')?.advanced).to.not.equal(true)
+      expect(flags.find((f: any) => f.key === 'ENABLE_NAMED_ENTITY_EXTRACTION')?.defaultEnabled).to.equal(false)
     })
   })
 
@@ -799,6 +848,19 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0].featureFlags.ENABLE_USER_CONTEXT).to.equal(true)
+    })
+
+    it('should default ENABLE_KH_SCOPE_LISTING to false when the store has no entry', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getEffectivePlatformFeatureFlags(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].featureFlags.ENABLE_KH_SCOPE_LISTING).to.equal(false)
     })
 
     it('should let a stored false win over the default', async () => {
@@ -1412,6 +1474,20 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('fills buckets a config saved before a model type existed does not have', async () => {
+      mockEncService.decrypt.returns(JSON.stringify({ llm: [{ provider: 'openai' }] }))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:ai-config'),
+      })
+      const res = createMockResponse()
+
+      await getAIModelsConfig(kvs)(createMockRequest(), res, createMockNext())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.decision).to.deep.equal([])
+      expect(body.llm).to.have.length(1)
     })
   })
 
@@ -4943,6 +5019,76 @@ describe('ConfigurationManager Controller', () => {
     })
   })
 
+  describe('Slack bot duplicate credentials', () => {
+    const storeWith = (configs: object[]) =>
+      createMockKeyValueStore({
+        get: sinon.stub().resolves(mockEncService.encrypt(JSON.stringify({ configs }))),
+        compareAndSet: sinon.stub().resolves(true),
+      })
+    const bot = (id: string, botToken: string, signingSecret: string) => ({
+      id,
+      name: id,
+      botToken,
+      signingSecret,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    })
+
+    it('rejects creating a bot with an existing signing secret', async () => {
+      const kvs = storeWith([bot('a', 'xoxb-a', 'secret-a')])
+      const next = createMockNext()
+      await createSlackBotConfig(kvs)(
+        createMockRequest({ body: { name: 'B', botToken: 'xoxb-b', signingSecret: 'secret-a' } }),
+        createMockResponse(),
+        next,
+      )
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.match(/already connected/)
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    it('rejects creating a bot with an existing bot token', async () => {
+      const kvs = storeWith([bot('a', 'xoxb-a', 'secret-a')])
+      const next = createMockNext()
+      await createSlackBotConfig(kvs)(
+        createMockRequest({ body: { name: 'B', botToken: 'xoxb-a', signingSecret: 'secret-b' } }),
+        createMockResponse(),
+        next,
+      )
+      expect(next.firstCall.args[0].message).to.match(/already connected/)
+    })
+
+    it('rejects updating a bot to another bot\'s credentials', async () => {
+      const kvs = storeWith([bot('a', 'xoxb-a', 'secret-a'), bot('b', 'xoxb-b', 'secret-b')])
+      const next = createMockNext()
+      await updateSlackBotConfig(kvs)(
+        createMockRequest({
+          params: { configId: 'b' },
+          body: { name: 'B', botToken: 'xoxb-b', signingSecret: 'secret-a' },
+        }),
+        createMockResponse(),
+        next,
+      )
+      expect(next.firstCall.args[0].message).to.match(/already connected/)
+    })
+
+    it('allows updating a bot with its own unchanged credentials', async () => {
+      const kvs = storeWith([bot('a', 'xoxb-a', 'secret-a'), bot('b', 'xoxb-b', 'secret-b')])
+      const next = createMockNext()
+      const res = createMockResponse()
+      await updateSlackBotConfig(kvs)(
+        createMockRequest({
+          params: { configId: 'b' },
+          body: { name: 'Renamed', botToken: 'xoxb-b', signingSecret: 'secret-b' },
+        }),
+        res,
+        next,
+      )
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+    })
+  })
+
   // -----------------------------------------------------------------------
   // updateSlackBotConfig - happy path
   // -----------------------------------------------------------------------
@@ -7448,7 +7594,7 @@ describe('ConfigurationManager Controller', () => {
 
       await handler(req, res, next)
 
-      expect(res.writeHead.calledWith(200, sinon.match({ 'Content-Type': 'text/event-stream' }))).to.be.true
+      expect(res.writeHead.calledWith(200, sinon.match({ 'Content-Type': 'text/event-stream; charset=utf-8' }))).to.be.true
       expect(res.write.calledOnce).to.be.true
       const written = res.write.firstCall.args[0] as string
       expect(written).to.include('event: progress')

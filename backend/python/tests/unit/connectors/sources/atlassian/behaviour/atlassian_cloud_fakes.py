@@ -69,12 +69,16 @@ class CloudRecordsDb(FakeRecordsDb):
         self.detached: list[str] = []
 
     def add_user(self, source_id: str, email: str) -> None:
-        self.users_by_source_id[source_id] = type("AppUserRow", (), {"email": email, "source_user_id": source_id})()
+        self.users_by_source_id[source_id] = type(
+            "AppUserRow", (), {"email": email, "source_user_id": source_id, "full_name": None}
+        )()
 
     def add_group(self, external_id: str) -> None:
         self.groups_by_external_id[external_id] = type("GroupRow", (), {"source_user_group_id": external_id})()
 
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> object:
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> object:
         return self.users_by_source_id.get(source_user_id)
 
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> object:
@@ -86,7 +90,7 @@ class CloudRecordsDb(FakeRecordsDb):
     async def get_all_active_users(self) -> list[Any]:
         return list(self.active_users)
 
-    async def get_all_app_users(self, connector_id: str) -> list[Any]:
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
         return list(self.app_users)
 
     async def on_records_deleted_cascade(

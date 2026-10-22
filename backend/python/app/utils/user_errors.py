@@ -26,6 +26,7 @@ from app.exceptions.indexing_exceptions import (
     RecordStatusUpdateError,
     VectorStoreError,
 )
+from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
 
@@ -429,6 +430,9 @@ def to_user_reason(exc: BaseException | None) -> str:
             return e.args[0]
         if isinstance(e, EmbeddingNotConfiguredError):
             return EMBEDDING_NOT_CONFIGURED
+        if isinstance(e, StorageRequestRejectedError):
+            # Refused for what it is, not for when it was sent: not a temporary problem.
+            return FILE_TOO_LARGE if e.too_large else GENERIC_FAILURE
 
     embedding = any(isinstance(e, _EMBEDDING_ERRORS) for e in chain)
     storage = any(isinstance(e, _STORAGE_ERRORS) for e in chain)

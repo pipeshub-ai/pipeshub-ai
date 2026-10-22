@@ -88,6 +88,12 @@ spec:
               value: {{ .Values.config.nodeEnv | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
+            - name: HIDE_SECRET_CONFIG
+              value: {{ .Values.config.hideSecretConfig | quote }}
+{{- if ne (toString .Values.telemetry.collection.enabled) "" }}
+            - name: TELEMETRY_COLLECTION_FLAG
+              value: {{ .Values.telemetry.collection.enabled | quote }}
+{{- end }}
             - name: MAX_CONCURRENT_PARSING
               value: {{ .Values.config.maxConcurrentParsing | quote }}
             - name: MAX_CONCURRENT_INDEXING
@@ -106,6 +112,8 @@ spec:
               value: {{ .Values.config.signedUrlCacheSeconds | quote }}
             - name: PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS
               value: {{ .Values.config.agentMaxTurnOutputChars | quote }}
+            - name: HIGH_ACCURACY_MODE
+              value: {{ .Values.config.highAccuracyMode | quote }}
             - name: DISTRIBUTED_INDEXING_CONCURRENCY
               value: {{ .Values.config.distributedIndexingConcurrency | quote }}
             - name: MCP_ALLOW_CUSTOM_STDIO
@@ -131,7 +139,7 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- with .Values.extraEnv }}
-            {{- toYaml . | nindent 12 }}
+            {{- tpl (toYaml .) $ | nindent 12 }}
             {{- end }}
             {{- if .Values.s3SignatureV4Preload }}
             - name: NODE_OPTIONS
@@ -268,31 +276,47 @@ spec:
             # Redis config
             {{- /*
               Connection target:
-                - standalone or replication (no sentinel), redis.external.enabled=false (default):
-                  use the Bitnami "<release>-redis-master" Service. This is a stable Service that the
-                  chart updates to follow the current master pod, so the app does not need Sentinel
-                  awareness.
-                - sentinel enabled: the app MUST use a Sentinel-aware client. The chart still exposes the
-                  master Service for compatibility, but failover updates may lag and stale connections are
-                  possible. Enable Sentinel only if the app is migrated to a Sentinel client.
-                - redis.external.enabled=true: point at redis.external.clusterEndpoints (a self-hosted
-                  Redis Cluster or AWS MemoryDB, R21/R22) instead of the bundled subchart -- pair with
-                  redis.mode=cluster and --set redis.enabled=false to skip deploying the subchart
-                  entirely (wired via the `condition: redis.enabled` dependency in Chart.yaml).
+                - in-cluster Redis (Bitnami or chart-owned): <release>-redis-master. That Service
+                  follows the current master, so the app does not need Sentinel.
+                - redis.external.host: a standalone primary (ElastiCache cluster mode disabled).
+                  Its DNS name follows a failover. redis.mode stays standalone, so Celery uses
+                  the same endpoint.
+                - redis.external.clusterEndpoints: Redis Cluster or MemoryDB. redis.mode=cluster,
+                  and Celery needs celery.brokerUrl because it cannot speak cluster protocol.
             */}}
             {{- include "pipeshub-ai.validateRedis" . }}
-            {{- if .Values.redis.external.enabled }}
+            {{- $ext := .Values.redis.external }}
+            {{- $redis := dict "host" (printf "%s-redis-master" .Release.Name) "port" "6379" "scheme" "redis" "target" "" }}
+            {{- if and $ext.enabled $ext.host }}
+            {{- $_ := set $redis "host" ($ext.host | toString) }}
+            {{- $_ := set $redis "port" ($ext.port | default 6379 | toString) }}
+            {{- else if $ext.enabled }}
+            {{- $_ := set $redis "host" "" }}
+            {{- end }}
+            {{- if and $ext.enabled .Values.redis.clientTls.enabled }}
+            {{- $_ := set $redis "scheme" "rediss" }}
+            {{- end }}
+            {{- $_ := set $redis "target" (printf "%s:%s" (get $redis "host") (get $redis "port")) }}
+            {{- if and $ext.enabled (not $ext.host) }}
+            {{- $_ := set $redis "target" (trim (index (splitList "," (printf "%s," ($ext.clusterEndpoints | toString))) 0)) }}
+            {{- end }}
+            {{- if and $ext.enabled $ext.host }}
+            - name: REDIS_HOST
+              value: {{ get $redis "host" | quote }}
+            - name: REDIS_PORT
+              value: {{ get $redis "port" | quote }}
+            {{- else if $ext.enabled }}
             - name: REDIS_HOST
               value: ""
             - name: REDIS_PORT
               value: "6379"
             - name: REDIS_CLUSTER_ENDPOINTS
-              value: {{ .Values.redis.external.clusterEndpoints | quote }}
+              value: {{ $ext.clusterEndpoints | quote }}
             - name: REDIS_CLUSTER_NAT_MAP
-              value: {{ .Values.redis.external.natMap | default "" | quote }}
+              value: {{ $ext.natMap | default "" | quote }}
             {{- else }}
             - name: REDIS_HOST
-              value: "{{ .Release.Name }}-redis-master"
+              value: {{ get $redis "host" | quote }}
             - name: REDIS_PORT
               value: "6379"
             {{- end }}
@@ -303,12 +327,12 @@ spec:
                   name: {{ include "pipeshub-ai.redisSecretName" . }}
                   key: redis-password
             - name: REDIS_URL
-              value: "redis://:$(REDIS_PASSWORD)@{{ .Release.Name }}-redis-master:6379"
+              value: "{{ get $redis "scheme" }}://:$(REDIS_PASSWORD)@{{ get $redis "target" }}"
             {{- else }}
             - name: REDIS_PASSWORD
               value: ""
             - name: REDIS_URL
-              value: "redis://{{ .Release.Name }}-redis-master:6379"
+              value: "{{ get $redis "scheme" }}://{{ get $redis "target" }}"
             {{- end }}
             - name: REDIS_MODE
               value: {{ .Values.redis.mode | default "standalone" | quote }}
@@ -373,6 +397,12 @@ spec:
               value: "6334"
             - name: QDRANT_PORT
               value: "6333"
+            {{- with (((.Values.qdrant).resources).limits).memory }}
+            # Qdrant cannot see its own memory limit; the app compares the search
+            # index's size with it (docs/deployment/vector-db-sizing.md).
+            - name: QDRANT_MEMORY_LIMIT
+              value: {{ . | quote }}
+            {{- end }}
 
             # Vector DB collection layout. Only read on the first startup that
             # finds nothing persisted; from then on the stored value wins, and a
@@ -576,12 +606,26 @@ spec:
             failureThreshold: 3
         {{- end }}
           {{- with .Values.nodeSelector }}
+          {{- $selector := include "pipeshub-ai.compactMap" . }}
+          {{- if $selector }}
       nodeSelector:
-        {{- toYaml . | nindent 8 }}
+        {{- $selector | nindent 8 }}
+          {{- end }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- if .Values.affinity }}
       affinity:
-        {{- toYaml . | nindent 8 }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- else if .Values.spreadAcrossNodes }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "pipeshub-ai.selectorLabels" . | nindent 20 }}
+                    app.kubernetes.io/component: main
+                topologyKey: kubernetes.io/hostname
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:

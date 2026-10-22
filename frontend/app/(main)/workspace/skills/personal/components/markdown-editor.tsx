@@ -3,11 +3,17 @@
 import { useEffect, useRef } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
-import Link from '@tiptap/extension-link';
 import Placeholder from '@tiptap/extension-placeholder';
-import { Markdown } from 'tiptap-markdown';
+import { Markdown, type MarkdownStorage } from 'tiptap-markdown';
 import { Flex, IconButton, Separator, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+
+// tiptap-markdown does not register its storage on tiptap 3's typed `Storage`.
+declare module '@tiptap/core' {
+  interface Storage {
+    markdown: MarkdownStorage;
+  }
+}
 
 // ========================================
 // Props
@@ -46,14 +52,21 @@ export function MarkdownEditor({
 
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
-      Link.configure({ openOnClick: false, autolink: true }),
+      StarterKit.configure({
+        heading: { levels: [1, 2, 3] },
+        link: { openOnClick: false, autolink: true },
+        // Markdown has no underline syntax, so an underline would be lost on save.
+        underline: false,
+      }),
       Placeholder.configure({ placeholder: placeholder ?? 'Describe how to perform this skill…' }),
       Markdown.configure({ html: false, transformCopiedText: true }),
     ],
     content: value,
     editable,
     immediatelyRender: false,
+    // The toolbar reads editor.isActive() during render, so it must re-render
+    // as the selection moves.
+    shouldRerenderOnTransaction: true,
     onUpdate: ({ editor: e }) => {
       const markdown = e.storage.markdown.getMarkdown();
       lastEmitted.current = markdown;
@@ -65,7 +78,7 @@ export function MarkdownEditor({
     if (!editor) return;
     if (value === lastEmitted.current) return;
     lastEmitted.current = value;
-    editor.commands.setContent(value, false);
+    editor.commands.setContent(value, { emitUpdate: false });
   }, [value, editor]);
 
   useEffect(() => {

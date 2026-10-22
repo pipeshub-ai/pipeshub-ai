@@ -127,6 +127,20 @@ class TestFindRecordsByEntity:
         assert kwargs["limit"] == 50
 
     @pytest.mark.asyncio
+    async def test_listed_records_are_noted_as_found_by_entity(self, patched) -> None:
+        patched[1].return_value = EntityRecordPage(
+            records=[_row("r1", virtualRecordId="vr-1")], next_cursor=None,
+        )
+        state = _state(include_retrieval_context=True)
+
+        await execute_find_records_by_entity(state, "t1", entity_type="topic")
+
+        provenance = state["retrieved_by"]["vr-1"]
+        assert (provenance.layers, provenance.record_id, provenance.record_name) == (
+            ["entity"], "r1", "doc r1",
+        )
+
+    @pytest.mark.asyncio
     async def test_hidden_urls_are_not_shown(self, patched) -> None:
         patched[1].return_value = EntityRecordPage(
             records=[_row("r1", webUrl="https://x/secret", hideWeburl=True)], next_cursor=None,

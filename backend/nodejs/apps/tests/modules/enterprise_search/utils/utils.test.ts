@@ -651,6 +651,29 @@ describe('Enterprise Search Utils', () => {
       const result = buildSortOptions(req)
       expect(result.createdAt).to.equal(-1)
     })
+
+    it('does not sort on isPinned unless asked to', () => {
+      const req = createMockRequest({ query: {} })
+      expect(buildSortOptions(req)).to.not.have.property('isPinned')
+      expect(buildSortOptions(req, { pinnedFirst: false })).to.not.have.property('isPinned')
+    })
+
+    it('puts isPinned ahead of the requested field when pinnedFirst is set, newest first', () => {
+      const req = createMockRequest({ query: {} })
+      const result = buildSortOptions(req, { pinnedFirst: true })
+
+      // Mongo sorts by keys in insertion order, so isPinned must come first.
+      expect(Object.keys(result)).to.deep.equal(['isPinned', 'lastActivityAt', '_id'])
+      expect(result).to.include({ isPinned: -1, lastActivityAt: -1, _id: -1 })
+    })
+
+    it('keeps the caller’s sort field and direction behind isPinned', () => {
+      const req = createMockRequest({ query: { sortBy: 'title', sortOrder: 'asc' } })
+      const result = buildSortOptions(req, { pinnedFirst: true })
+
+      expect(Object.keys(result)).to.deep.equal(['isPinned', 'title', '_id'])
+      expect(result).to.include({ isPinned: -1, title: 1, _id: -1 })
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -1201,7 +1224,7 @@ describe('Enterprise Search Utils', () => {
       expect(res.writeHead.calledOnce).to.be.true
       const headArgs = res.writeHead.firstCall.args
       expect(headArgs[0]).to.equal(200)
-      expect(headArgs[1]).to.have.property('Content-Type', 'text/event-stream')
+      expect(headArgs[1]).to.have.property('Content-Type', 'text/event-stream; charset=utf-8')
       expect(headArgs[1]).to.have.property('Cache-Control', 'no-cache')
       expect(headArgs[1]).to.have.property('Connection', 'keep-alive')
       expect(headArgs[1]).to.have.property('X-Accel-Buffering', 'no')
@@ -2299,6 +2322,17 @@ describe('Enterprise Search Utils - coverage', () => {
       ]
       const result = formatPreviousConversations(messages as any)
       expect(result[0]).to.not.have.property('referenceData')
+    })
+
+    it('replays a call that never ran as not run', () => {
+      const part = (status: string) => ({ type: 'tool_call', toolName: `t_${status}`, toolCallId: status, status })
+      const messages = [{
+        messageType: 'bot_response',
+        content: 'Waiting for your approval to run create_issue on Jira.',
+        parts: [part('completed'), part('failed'), part('blocked'), part('awaiting_approval')],
+      }]
+      const [turn] = formatPreviousConversations(messages as any) as any[]
+      expect(turn.tool_results.map((r: any) => r.status)).to.deep.equal(['success', 'error', 'error', 'error'])
     })
   })
 

@@ -91,7 +91,8 @@ class JiraExpected:
             parent_record_type = RecordType.TICKET
 
         status_obj = fields.get("status", {}) or {}
-        status = vm.map_status(status_obj.get("name") if status_obj else None)
+        source_status = status_obj.get("name") if status_obj else None
+        status = vm.map_status(source_status)
 
         priority_obj = fields.get("priority", {}) or {}
         priority = vm.map_priority(priority_obj.get("name") if priority_obj else None)
@@ -147,6 +148,7 @@ class JiraExpected:
             is_dependent_node=False,
             parent_node_id=None,
             status=status,
+            source_status=source_status,
             priority=priority,
             type=issue_type,
             assignee=assignee_name,

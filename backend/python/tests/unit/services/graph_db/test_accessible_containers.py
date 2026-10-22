@@ -1,28 +1,29 @@
 """`get_accessible_containers` — what a search may be scoped by.
 
 The container sets *widen*: the vector filter they build admits records the user
-cannot read, and `filter_accessible_virtual_record_ids` narrows it back. That
+cannot read, and the batch access check (`check_access`) narrows it back. That
 asymmetry decides every bound here. A container wrongly included costs
 precision, which the verifier fixes. A container wrongly *omitted* is a record
 that never comes back, with no error and nothing to notice — so every limit in
 this module falls back to the record-id path rather than truncating.
 
-The pure helpers are where those bounds live, so they are tested directly. The
-two query builders need a live graph, so they are held to the same predicates by
-reading their source — the pattern `test_records_by_virtual_record_id` uses.
+The pure helpers are where those bounds live, so they are tested directly.
+
+Neither backend builds containers from grants: each returns the Apps
+the permission model's gate reaches and trusts none of them, and the verifier
+decides every hit with the batch access check.
+`TestContainersAreTheGate` covers that on both.
 """
 
 import ast
 import re
 import textwrap
 
-import logging
 
 import pytest
 
 from app.services.graph_db.common.utils import (
     CONTAINER_FILTER_MAX_TERMS,
-    CONTAINER_INHERIT_MAX_DEPTH,
     MAX_DIRECT_GRANT_RECORDS,
 )
 from app.services.graph_db.interface.graph_db_provider import (
@@ -35,10 +36,11 @@ from app.services.graph_db.interface.graph_db_provider import (
 
 METHOD = "get_accessible_containers"
 
-QUERY_SOURCES = {
+SOURCES = {
     "arango": ("app/services/graph_db/arango/arango_http_provider.py", METHOD),
     "neo4j": ("app/services/graph_db/neo4j/neo4j_provider.py", METHOD),
 }
+BACKENDS = sorted(SOURCES)
 
 
 def _method_source(path: str, name: str) -> str:
@@ -68,13 +70,6 @@ def _method_body(path: str, name: str) -> str:
     fn = ast.parse(src).body[0]
     body = fn.body[1:] if ast.get_docstring(fn) is not None else fn.body
     return chr(10).join(ast.unparse(node) for node in body)
-
-
-@pytest.fixture(params=sorted(QUERY_SOURCES), ids=sorted(QUERY_SOURCES))
-def source(request) -> str:
-    """The method's code, docstring and comments removed."""
-    path, name = QUERY_SOURCES[request.param]
-    return _method_body(path, name)
 
 
 class _Logger:
@@ -368,212 +363,46 @@ class TestInterfaceDefault:
 
 
 # ---------------------------------------------------------------------------
-# Cross-backend predicate parity
+# Both backends: the gate's Apps, nothing trusted
 # ---------------------------------------------------------------------------
 
 
-class TestSeedsAreGated:
-    def test_seeds_are_gated_on_reachable_apps(self, source):
-        """Without the gate a stale grant on a connector the user has lost still
-        contributes a container."""
-        assert "reachable_app" in source or "reachable_apps" in source
-
-    def test_kb_containers_are_recognised(self, source):
-        assert "kb_type" in source
-
-
-class TestDoesNotInheritTheTreeUiAffordance:
-    @pytest.mark.parametrize("backend", sorted(QUERY_SOURCES))
+class TestTheTreeUiAffordanceIsNotAPermission:
+    @pytest.mark.parametrize("backend", BACKENDS)
     def test_hide_children_is_not_copied(self, backend):
         """`hideChildren` hides children in the knowledge-base tree UI. It is
         not a permission, and honouring it here deletes search results the user
-        is entitled to. The KH expansion this borrows from does filter on it."""
-        assert "hideChildren" not in _method_body(*QUERY_SOURCES[backend])
-
-
-class TestClosureDepth:
-    def test_uses_the_shared_depth_constant(self, source):
-        assert "CONTAINER_INHERIT_MAX_DEPTH" in source
-
-    @pytest.mark.parametrize(
-        "path,fragment",
-        [
-            ("app/services/graph_db/arango/arango_http_provider.py",
-             "_get_record_permission_role_aql"),
-            ("app/services/graph_db/neo4j/neo4j_provider.py",
-             "_get_record_permission_role_cypher"),
-        ],
-        ids=["arango", "neo4j"],
-    )
-    def test_the_depth_is_at_least_the_verifier_depth(self, path, fragment):
-        """`depth(closure) >= depth(verifier)` — a shallower closure omits
-        containers whose records the verifier would then have admitted, which
-        is silent recall loss.
-
-        The verifier's depth is read out of the verifier rather than restated,
-        so deepening its traversal fails here instead of quietly breaking the
-        invariant.
-        """
-        src = _method_source(path, fragment)
-        depths = [int(d) for d in re.findall(r"1\.\.(\d+)", src)]
-        assert depths, f"no traversal depth found in {fragment}"
-        assert CONTAINER_INHERIT_MAX_DEPTH >= max(depths)
-
-
-class TestCollectionsAreServedByAppIds:
-    @pytest.mark.parametrize("backend", sorted(QUERY_SOURCES))
-    def test_kb_apps_land_in_the_app_id_set(self, backend):
-        """A KB record carries connectorIds=[kbId] and an empty recordGroupIds
-        by design, so routing KBs into the group sets makes every uploaded
-        document invisible.
-
-        Asserted as the single projection expression rather than as two
-        independent substrings: `kb_app_ids` and `appIds` both survive dropping
-        the KB half of the union, which is exactly the regression that hides
-        every Collection.
-        """
-        body = _method_body(*QUERY_SOURCES[backend])
-        expected = {
-            "arango": "appIds: covered_app_ids",
-            "neo4j": "app_level_ids + kb_app_ids AS appIds",
-        }[backend]
-        assert expected in body
-        if backend == "arango":
-            assert (
-                "UNION_DISTINCT(app_level_ids, kb_app_ids)" in body
-            ), "covered_app_ids must include the KB apps"
-
-
-class TestOnlyAppLevelAppsAreTrusted:
-    """`app_ids` is what the vector filter matches on; `app_ids_trusted` is what
-    may skip per-record adjudication. They are deliberately different sets."""
-
-    @pytest.mark.parametrize("backend", sorted(QUERY_SOURCES))
-    def test_trusted_apps_is_the_declared_app_level_set(self, backend):
-        """`kb_app_ids` is the wider set: admitted on type alone so records
-        carrying no recordGroupIds still have a term to match on. Trust follows
-        the declaration, not the type — a KB app whose permissionModel has not
-        been written yet is reachable but not trusted."""
-        body = _method_body(*QUERY_SOURCES[backend])
-        expected = {
-            "arango": "trustedApps: app_level_ids",
-            "neo4j": "app_level_ids AS trustedApps",
-        }[backend]
-        assert expected in body
-        assert "trustedApps: covered_app_ids" not in body
-        assert "kb_app_ids AS trustedApps" not in body
-
-    @pytest.mark.parametrize("backend", sorted(QUERY_SOURCES))
-    def test_app_level_ids_is_gated_on_the_declared_permission_model(self, backend):
-        """The projection above pins which *list* is trusted; this pins what
-        that list means. Without the permissionModel filter, `app_level_ids`
-        becomes every reachable app and the shortcut stops checking records for
-        connectors that never declared APP_LEVEL — the over-share the flag's own
-        comment warns about, and it passed the whole suite."""
-        body = _method_body(*QUERY_SOURCES[backend])
-        at = body.index("app_level_ids")
-        clause = body[max(0, at - 400):at + 200]
-        marker = {"arango": "@app_level", "neo4j": "$app_level"}[backend]
-        assert marker in clause, (
-            "app_level_ids must be filtered on the declared permission model"
-        )
-
-    def test_an_undeclared_app_is_reachable_but_not_trusted(self):
-        """The projections above are only half the guarantee — this pins the
-        resulting object, which is what the retrieval path actually consumes.
-        An app that has not had its permissionModel backfilled yet reaches the
-        filter without reaching the shortcut."""
-        from app.services.graph_db.interface.graph_db_provider import (
-            _containers_from_row,
-        )
-
-        containers = _containers_from_row(
-            {
-                "appIds": ["app-level-1", "not-declared-1"],
-                "trustedApps": ["app-level-1"],
-                "trusted": [],
-                "verify": [],
-                "rootGroups": [],
-                "direct": [],
-                "unsafeApps": [],
-            },
-            logger=logging.getLogger("test"),
-            scope_connector_ids=None,
-        )
-        assert containers.app_ids == frozenset({"app-level-1", "not-declared-1"})
-        assert containers.app_ids_trusted == frozenset({"app-level-1"})
-
-    def test_trusted_is_bounded_by_reachable(self):
-        """A backend that forgets the key, or returns a stale one, must not be
-        able to widen trust beyond what the user actually reaches."""
-        from app.services.graph_db.interface.graph_db_provider import (
-            _containers_from_row,
-        )
-
-        containers = _containers_from_row(
-            {
-                "appIds": ["app-1"],
-                "trustedApps": ["app-1", "app-not-reachable"],
-                "trusted": [],
-                "verify": [],
-                "rootGroups": [],
-                "direct": [],
-                "unsafeApps": [],
-            },
-            logger=logging.getLogger("test"),
-            scope_connector_ids=None,
-        )
-        assert containers.app_ids_trusted == frozenset({"app-1"})
-
-    def test_a_backend_without_the_key_trusts_nothing(self):
-        from app.services.graph_db.interface.graph_db_provider import (
-            _containers_from_row,
-        )
-
-        containers = _containers_from_row(
-            {
-                "appIds": ["app-1"],
-                "trusted": [],
-                "verify": [],
-                "rootGroups": [],
-                "direct": [],
-                "unsafeApps": [],
-            },
-            logger=logging.getLogger("test"),
-            scope_connector_ids=None,
-        )
-        assert containers.app_ids == frozenset({"app-1"})
-        assert containers.app_ids_trusted == frozenset()
+        is entitled to."""
+        assert "hideChildren" not in _method_body(*SOURCES[backend])
 
 
 class TestBackfillGate:
-    def test_checks_both_backfill_flags(self, source):
+    @pytest.mark.parametrize("backend", BACKENDS)
+    def test_checks_both_backfill_flags(self, backend):
         """`vectorMembershipBackfilled` is set to true on give-up as well as on
         success, so the exhausted flag is the half that matters."""
-        assert "vectorMembershipBackfilled" in source
-        assert "vectorMembershipBackfillExhausted" in source
+        body = _method_body(*SOURCES[backend])
+        assert "vectorMembershipBackfilled" in body
+        assert "vectorMembershipBackfillExhausted" in body
 
     def test_neo4j_treats_a_missing_flag_as_unsafe(self):
-        """`a.flag <> true` is null in Cypher when the property is absent, and
-        WHERE drops nulls — so an app that never ran the backfill would look
-        safe. coalesce is what makes absence mean unsafe."""
-        src = _method_source(*QUERY_SOURCES["neo4j"])
-        assert "coalesce(a.vectorMembershipBackfilled, false) = false" in src
+        """A property absent in Cypher is null, and `null AND ...` is not true,
+        so coalesce is what makes an app that never ran the backfill unready."""
+        src = _method_body(*SOURCES["neo4j"])
+        assert "coalesce(a.vectorMembershipBackfilled, false)" in src
+        assert "NOT coalesce(a.vectorMembershipBackfillExhausted, false)" in src
 
     def test_arango_treats_a_missing_flag_as_unsafe(self):
-        """AQL `null != true` is already true, so absence means unsafe."""
-        src = _method_source(*QUERY_SOURCES["arango"])
-        assert "vectorMembershipBackfilled != true" in src
+        """AQL `null == true` is false, so absence means unready."""
+        src = _method_source(*SOURCES["arango"])
+        assert "a.vectorMembershipBackfilled == true" in src
+        assert "a.vectorMembershipBackfillExhausted != true" in src
 
 
 class TestUnsupportedFiltersAreRoutedByBothBackends:
-    def test_both_check_before_querying(self, source):
-        assert "_unsupported_container_filters" in source
-
-    def test_both_share_the_row_parser(self, source):
-        """The bounds are correctness, not tuning — a backend that truncated
-        where the other fell back would answer differently."""
-        assert "_containers_from_row" in source
+    @pytest.mark.parametrize("backend", BACKENDS)
+    def test_both_check_before_querying(self, backend):
+        assert "_unsupported_container_filters" in _method_body(*SOURCES[backend])
 
 
 # ---------------------------------------------------------------------------
@@ -581,47 +410,47 @@ class TestUnsupportedFiltersAreRoutedByBothBackends:
 # ---------------------------------------------------------------------------
 
 
-async def _render_containers(backend: str, filters=None) -> tuple:
-    """(query, params, result, called) for one get_accessible_containers call."""
-    from unittest.mock import MagicMock
+async def _render_containers(backend: str, filters=None, rows=(), user=True) -> tuple:
+    """(query, params, result, called) for one get_accessible_containers call.
+    ``rows`` is what the App query returns; the gate admits a, b, k and hidden-kb."""
+    from unittest.mock import AsyncMock, MagicMock
 
     captured: dict = {}
+    access = {"gated_app_ids": ["a", "b", "k", "hidden-kb"], "grantee_ids": [], "by_connector": {}}
 
     if backend == "neo4j":
         from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
         provider = Neo4jProvider.__new__(Neo4jProvider)
 
-        async def _execute(query, params, txn_id=None):
-            captured["query"], captured["params"] = query, params
-            return [{"appIds": [], "unsafeApps": []}]
+        async def _execute(query, parameters=None, txn_id=None):
+            captured["query"], captured["params"] = query, parameters
+            return list(rows)
 
         provider.client = MagicMock()
         provider.client.execute_query = _execute
+        provider.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"} if user else None)
     else:
         from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
         provider = ArangoHTTPProvider.__new__(ArangoHTTPProvider)
 
-        async def _execute(query, bind_vars=None, txn_id=None, batch_size=1000):
+        async def _execute(query, bind_vars=None, txn_id=None, **_kwargs):
             captured["query"], captured["params"] = query, bind_vars
-            return [{"appIds": [], "unsafeApps": []}]
+            return list(rows)
 
         provider.http_client = MagicMock()
         provider.http_client.execute_aql = _execute
+        provider.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key"} if user else None)
+    # The gate alone: containers need no grants.
+    provider.get_knowledge_hub_access_context_v2 = AsyncMock(return_value=access)
     provider.logger = MagicMock()
     result = await provider.get_accessible_containers("user-1", "org-1", filters)
     return captured.get("query"), captured.get("params"), result, bool(captured)
 
 
-SCOPE_CLAUSE = {
-    "neo4j": "$scope_ids IS NULL OR",
-    "arango": "@scope_ids == null OR",
-}
-
-
 class TestScopeInTheContainerQuery:
-    @pytest.mark.parametrize("backend", ["neo4j", "arango"])
+    @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.parametrize(
         "filters",
         [{"apps": [""]}, {"apps": "x", "kb": []}],
@@ -635,7 +464,7 @@ class TestScopeInTheContainerQuery:
         assert result.is_empty
         assert result.scope_connector_ids == frozenset()
 
-    @pytest.mark.parametrize("backend", ["neo4j", "arango"])
+    @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.asyncio
     async def test_scope_is_always_bound_as_a_sorted_list(self, backend):
         """Arango rejects an undeclared or unsent bind variable, and Neo4j an
@@ -668,90 +497,21 @@ class TestScopeInTheContainerQuery:
         referenced = set(re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", query))
         assert referenced <= set(params)
 
-    @pytest.mark.parametrize("backend", ["neo4j", "arango"])
     @pytest.mark.asyncio
-    async def test_every_result_set_is_scoped(self, backend):
-        """3 app lists, the seed groups, their descendants, the root groups and
-        3 direct-grant paths. Deleting any one widens that set back to the
-        whole reach."""
-        query, _, _, _ = await _render_containers(backend, {"kb": ["k"]})
-        assert query.count(SCOPE_CLAUSE[backend]) == 9
-
-    @pytest.mark.parametrize("backend", ["neo4j", "arango"])
-    @pytest.mark.asyncio
-    async def test_the_walk_starts_from_every_grant(self, backend):
-        """Inheritance can cross apps: a group of an in-scope app may inherit
-        from a grant on another app. Scoping the seeds would drop it, which is
-        a record the user can read and asked for, lost without an error."""
-        query, _, _, _ = await _render_containers(backend, {"kb": ["k"]})
-        if backend == "neo4j":
-            seeds = query[query.index("OPTIONAL MATCH (pu)-[:PERMISSION]->(rg:RecordGroup"):query.index("AS seed_rgs")]
-        else:
-            seeds = query[query.index("LET path1_seed_rgs"):query.index("LET seed_rgs")]
-        assert "scope_ids" not in seeds
-
-    @pytest.mark.parametrize("backend", ["neo4j", "arango"])
-    @pytest.mark.asyncio
-    async def test_the_reachability_gates_are_not_scoped(self, backend):
-        """Scope may only remove results. Scoping the reachable-app set would
-        instead change which grants count, including for in-scope groups."""
-        query, _, _, _ = await _render_containers(backend, {"kb": ["k"]})
-        if backend == "neo4j":
-            block = query[query.index("MATCH (u:User"):query.index("AS reachable_apps")]
-        else:
-            block = query[
-                query.index("LET reachable_app_docs"):query.index("LET kb_app_ids")
-            ]
-        assert "scope_ids" not in block
-
-    @pytest.mark.asyncio
-    async def test_arango_seed_scope_is_its_own_filter(self):
-        """The seed gates are bare `A OR B`; an appended AND would bind to B
-        only and let every KB-typed group through regardless of scope."""
+    async def test_arango_scope_is_its_own_filter(self):
+        """An appended AND would bind to the last disjunct only."""
         query, _, _, _ = await _render_containers("arango", {"kb": ["k"]})
-        for line in query.splitlines():
-            if SCOPE_CLAUSE["arango"] in line:
-                assert line.strip().startswith("FILTER @scope_ids == null OR"), line
+        lines = [line for line in query.splitlines() if "@scope_ids == null OR" in line]
+        assert lines
+        for line in lines:
+            assert line.strip().startswith("FILTER @scope_ids == null OR"), line
 
     @pytest.mark.asyncio
     async def test_neo4j_scope_is_parenthesised_where_it_joins_a_predicate(self):
         query, _, _, _ = await _render_containers("neo4j", {"kb": ["k"]})
         for line in query.splitlines():
-            if SCOPE_CLAUSE["neo4j"] in line and "AND" in line:
+            if "$scope_ids IS NULL OR" in line and "AND" in line:
                 assert "AND ($scope_ids IS NULL OR" in line, line
-
-    @pytest.mark.parametrize("backend", ["neo4j", "arango"])
-    @pytest.mark.asyncio
-    async def test_direct_grants_are_scoped_before_the_overflow_probe(self, backend):
-        """Scoped after the probe, 2001 out-of-scope grants would use up the
-        budget and silently drop the in-scope ones without tripping overflow."""
-        query, _, _, _ = await _render_containers(backend, {"kb": ["k"]})
-        probe = {
-            "neo4j": "[0..$direct_probe_limit]",
-            "arango": "LIMIT @direct_probe_limit",
-        }[backend]
-        record_var = {"neo4j": "r1.connectorId", "arango": "rec.connectorId IN @scope_ids"}[backend]
-        assert query.index(record_var) < query.index(probe)
-
-    @pytest.mark.parametrize("backend", ["neo4j", "arango"])
-    @pytest.mark.asyncio
-    async def test_direct_grants_are_gated_on_reachable_apps(self, backend):
-        """A grant that outlived the user's access to its connector would enter
-        the filter only to be denied — and a scope holding nothing else would
-        search, deny everything and return nothing instead of a clean 404."""
-        query, params, _, _ = await _render_containers(backend, {"kb": ["k"]})
-        probe = {
-            "neo4j": "[0..$direct_probe_limit]",
-            "arango": "LIMIT @direct_probe_limit",
-        }[backend]
-        gate = {
-            "neo4j": ("rec.origin <> $connector_origin", "rec.connectorId IN reachable_apps"),
-            "arango": ("rec.origin != @connector_origin", "rec.connectorId IN user_accessible_apps"),
-        }[backend]
-        for fragment in gate:
-            assert fragment in query
-            assert query.index(fragment) < query.index(probe)
-        assert params["connector_origin"] == "CONNECTOR"
 
 
 class TestStrictScopeOnTheContainerPath:
@@ -773,7 +533,7 @@ class TestStrictScopeOnTheContainerPath:
         assert requested_scope_ids({"strictScope": True}) is None
         assert requested_scope_ids({"apps": ["a"], "strictScope": True}) == ("a",)
 
-    @pytest.mark.parametrize("backend", ["neo4j", "arango"])
+    @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.asyncio
     async def test_nothing_selected_reaches_nothing_without_querying(self, backend):
         _, _, result, called = await _render_containers(backend, {"strictScope": True})
@@ -782,7 +542,7 @@ class TestStrictScopeOnTheContainerPath:
         assert result.is_empty
         assert result.scope_connector_ids is None
 
-    @pytest.mark.parametrize("backend", ["neo4j", "arango"])
+    @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.asyncio
     async def test_a_selection_is_still_searched(self, backend):
         """It only short-circuits an empty selection — a project's own
@@ -802,19 +562,17 @@ class TestHiddenCollections:
     path). The container path builds the vector filter, so it has to apply the
     same rule or the flag would surface hidden content."""
 
-    @pytest.mark.parametrize("backend", ["neo4j", "arango"])
+    @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.asyncio
-    async def test_both_app_id_lists_exclude_hidden_collections(self, backend):
+    async def test_hidden_collections_need_an_explicit_scope(self, backend):
         query, _, _, _ = await _render_containers(backend)
         guard = {
-            "neo4j": "coalesce(a.isHidden, false) = false OR $scope_ids IS NOT NULL",
+            "neo4j": "NOT coalesce(a.isHidden, false) OR $scope_ids IS NOT NULL",
             "arango": "FILTER a.isHidden != true OR @scope_ids != null",
         }[backend]
-        # Once for kb_app_ids (what puts a Collection in the filter) and once
-        # for app_level_ids (what may skip per-record adjudication).
-        assert query.count(guard) == 2
+        assert query.count(guard) == 1
 
-    @pytest.mark.parametrize("backend", ["neo4j", "arango"])
+    @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.asyncio
     async def test_the_guard_yields_to_an_explicit_scope(self, backend):
         """Naming the Collection is what admits it; the scope clause beside
@@ -825,3 +583,35 @@ class TestHiddenCollections:
             "arango": "FILTER @scope_ids == null OR a._key IN @scope_ids",
         }[backend]
         assert scope_clause in query
+
+
+class TestContainersAreTheGate:
+    """Both backends search the Apps the gate reaches and verify every hit.
+    Enumerating what the user may read cost 0.5-1.2 s at 50k-150k records;
+    checking the top hits costs 10-130 ms."""
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    @pytest.mark.asyncio
+    async def test_the_gated_apps_are_the_containers_and_none_is_trusted(self, backend) -> None:
+        _, params, result, _ = await _render_containers(
+            backend, rows=[{"id": "a", "ready": True}, {"id": "k", "ready": True}],
+        )
+        assert params["app_ids"] == ["a", "b", "k", "hidden-kb"]
+        assert params["org_id"] == "org-1"
+        assert result.app_ids == frozenset({"a", "k"}) and result.usable
+        assert result.app_ids_trusted == frozenset()
+        assert not result.record_group_ids and not result.direct_records
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    @pytest.mark.asyncio
+    async def test_an_unready_app_falls_back(self, backend) -> None:
+        _, _, result, _ = await _render_containers(
+            backend, rows=[{"id": "a", "ready": True}, {"id": "b", "ready": False}],
+        )
+        assert result.fallback_reason == "membership_not_backfilled:b"
+
+    @pytest.mark.parametrize("backend", BACKENDS)
+    @pytest.mark.asyncio
+    async def test_an_unknown_user_takes_the_record_id_path(self, backend) -> None:
+        _, _, result, called = await _render_containers(backend, user=False)
+        assert result.fallback_reason == "user_not_found" and not called

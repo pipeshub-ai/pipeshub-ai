@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 
+from app.services.llm_gateway.gateway import LLMGateway
 from app.utils import streaming
 from app.utils.streaming import (
     _ainvoke_throttled,
@@ -44,6 +45,14 @@ async def _slow_slot(delay: float) -> AsyncIterator[None]:
     yield
 
 
+def _fresh_gateway(monkeypatch: pytest.MonkeyPatch) -> LLMGateway:
+
+    fresh = LLMGateway(4)
+    monkeypatch.setattr(streaming, "get_llm_gateway", lambda: fresh)
+    monkeypatch.setattr("app.services.llm_gateway.gateway.get_llm_gateway", lambda: fresh)
+    return fresh
+
+
 @pytest.fixture
 def no_structured_output() -> Iterator[None]:
     with patch.object(streaming, "_apply_structured_output", side_effect=lambda llm, schema: llm):
@@ -56,10 +65,11 @@ class TestAinvokeThrottled:
         with pytest.raises(asyncio.TimeoutError):
             await _ainvoke_throttled(llm, [HumanMessage(content="q")], call_timeout=0.05)
 
-    async def test_waiting_for_the_slot_is_not_timed(self) -> None:
+    async def test_waiting_for_the_slot_is_not_timed(self, monkeypatch) -> None:
+        gateway = _fresh_gateway(monkeypatch)
+        monkeypatch.setattr(gateway.limiter, "slot", lambda: _slow_slot(0.2))
         llm = _Llm(["ok"], [0.0])
-        with patch.object(streaming, "indexing_llm_slot", side_effect=lambda: _slow_slot(0.2)):
-            result = await _ainvoke_throttled(llm, [HumanMessage(content="q")], call_timeout=0.1)
+        result = await _ainvoke_throttled(llm, [HumanMessage(content="q")], call_timeout=0.1)
         assert result.content == "ok"
 
     async def test_no_timeout_by_default(self) -> None:
@@ -72,6 +82,36 @@ class TestAinvokeThrottled:
         with pytest.raises(asyncio.TimeoutError):
             await _ainvoke_throttled(llm, [HumanMessage(content="q")], call_timeout=0.05)
         assert llm.calls == 1
+
+    async def test_the_callers_timeout_does_not_count_against_the_provider(self, monkeypatch) -> None:
+        gateway = _fresh_gateway(monkeypatch)
+        for _ in range(gateway.breaker("p").failure_threshold):
+            with pytest.raises(asyncio.TimeoutError):
+                await _ainvoke_throttled(_Llm(["x"], [1.0]), [], provider="p", call_timeout=0.01)
+        assert gateway.breaker("p").state == "closed"
+
+    async def test_a_rate_limit_retry_is_counted_in_the_slot_stats(self, monkeypatch) -> None:
+        from app.services.llm_gateway import gateway as gateway_module
+        from app.utils import concurrency
+
+        _fresh_gateway(monkeypatch)
+
+        class _RateLimitedOnce:
+            calls = 0
+
+            async def ainvoke(self, messages: list) -> AIMessage:
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("429 Too Many Requests: rate limit exceeded")
+                return AIMessage(content="ok")
+
+        with patch.object(gateway_module.asyncio, "sleep", AsyncMock()):
+            result = await _ainvoke_throttled(_RateLimitedOnce(), [HumanMessage(content="q")])
+
+        assert result.content == "ok"
+        stats = concurrency.indexing_llm_stats()
+        assert stats["rate_limit_retries"] == 1
+        assert stats["acquired"] == 2
 
 
 class TestStructuredOutputTimeout:

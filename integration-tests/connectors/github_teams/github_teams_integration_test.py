@@ -19,6 +19,7 @@ default branch, so concurrent runs share it and only a path namespace keeps them
   order 1  TC-SYNC-001            — full sync baseline + graph self-consistency
   order 2  TC-GH-RG-001           — org/repo/child record-group hierarchy + App edge
   order 3  TC-GH-USER-001         — AppUsers, USER_APP_RELATION, no team→app gate edge (private repo)
+  order 3  TC-GH-AUTH-001         — the creator's link to the GitHub account the token belongs to
   order 4  TC-GH-ISSUE-001        — reference issue TICKET properties
   order 5  TC-GH-ISSUE-002        — hierarchy + BLOCKS relation + entity relations
   order 6  TC-GH-ATTACH-001       — issue AND PR body attachments exist after base sync
@@ -64,6 +65,7 @@ from app.config.constants.arangodb import (  # type: ignore[import-not-found]  #
     ProgressStatus,
 )
 from app.models.entities import RecordType  # type: ignore[import-not-found]  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     wait_for_record_by_external_id,
@@ -94,6 +96,7 @@ from connectors.github_teams.github_block_utils import (  # noqa: E402
     ISSUE_BLOCKS_PATH,
     PR_BLOCKS_PATH,
     bootstrap_expected,
+    keep_actual_if_different,
     load_expected,
     normalize_blocks_container,
     parse_connector_blocks_via_processor,
@@ -501,6 +504,27 @@ class TestGitHubTeamsConnector:
         )
         logger.info("TC-GH-USER-001 passed: %d identities, no gate edge", len(emails))
 
+    @pytest.mark.order(3)
+    async def test_tc_gh_auth_001_authenticated_identity(
+        self,
+        github_connector: dict[str, Any],
+        github_rest: Any,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-GH-AUTH-001: the creator is linked to the GitHub account the token belongs to.
+
+        That link is what lets a creator whose PipesHub email differs see the account's
+        permissions on this connector. Read from the same ``GET /user`` the connector reads.
+        """
+        me = await github_rest.get_json("/user")
+        email = me.get("email")
+        await assert_authenticated_identity_link(
+            graph_provider, github_connector["connector_id"],
+            email.strip() if isinstance(email, str) else None,
+            str(me["id"]) if me.get("id") is not None else None,
+        )
+        logger.info("TC-GH-AUTH-001 passed: GitHub account %s", me.get("id"))
+
 
 # =============================================================================
 # TestGitHubTeamsIssues
@@ -702,6 +726,7 @@ class TestGitHubTeamsIssues:
         if os.getenv(ENV_BLOCKS_BOOTSTRAP) == "1":
             bootstrap_expected(ISSUE_BLOCKS_PATH, actual)
         expected = load_expected(ISSUE_BLOCKS_PATH)
+        keep_actual_if_different(ISSUE_BLOCKS_PATH, actual, expected)
         assert actual == expected, (
             "Parsed issue blocks do not match the expected snapshot. If the fixture "
             f"issue was edited, regenerate with {ENV_BLOCKS_BOOTSTRAP}=1 and review."
@@ -981,6 +1006,7 @@ class TestGitHubTeamsPullRequests:
         if os.getenv(ENV_BLOCKS_BOOTSTRAP) == "1":
             bootstrap_expected(PR_BLOCKS_PATH, actual)
         expected = load_expected(PR_BLOCKS_PATH)
+        keep_actual_if_different(PR_BLOCKS_PATH, actual, expected)
         assert actual == expected, (
             "Parsed PR blocks do not match the expected snapshot. If the fixture PR was "
             f"edited, regenerate with {ENV_BLOCKS_BOOTSTRAP}=1 and review."
@@ -1917,8 +1943,10 @@ class TestGitHubTeamsIncremental:
         All five in one commit and one resync: a resync costs minutes, and the deltas
         are independent, so splitting them would quadruple the wall clock for no extra
         coverage. Every path is inside ``it/<run_id>/`` — concurrent runs share this
-        branch and their files land in the same compare, which is harmless precisely
-        because every assertion here is by external id.
+        branch and their files land in the same compare, which is harmless because
+        every assertion here is by external id and every added or deleted body carries
+        the run id: GitHub pairs a delete with any add of the same blob sha as a rename,
+        another run's add included.
         """
         state = github_connector
         org = state["org"]
@@ -1948,15 +1976,18 @@ class TestGitHubTeamsIncremental:
             # Artifacts are reaped by the module teardown (reap_own_artifacts), which
             # clears this run's whole namespace whether or not the test succeeded.
 
+            rename_content = f"rename me {GH_IT_RUN_ID}\n"  # same bytes at both paths → pure rename
+            move_content = f"move me {GH_IT_RUN_ID}\n"
+
             # --- baseline commit + sync ---
             await commit_changes(
                 github_rest, org, repo_name, branch,
                 [
                     FileChange.upsert(steady, "leave me alone\n"),
                     FileChange.upsert(keep, "v1\n"),
-                    FileChange.upsert(renamed_from, "rename me\n"),
-                    FileChange.upsert(moved_from, "move me\n"),
-                    FileChange.upsert(doomed, "delete me\n"),
+                    FileChange.upsert(renamed_from, rename_content),
+                    FileChange.upsert(moved_from, move_content),
+                    FileChange.upsert(doomed, f"delete me {GH_IT_RUN_ID}\n"),
                 ],
                 message=f"TC-INCR-CODE-001 baseline ({GH_IT_RUN_ID})",
             )
@@ -1973,8 +2004,6 @@ class TestGitHubTeamsIncremental:
                 )
 
             # --- one commit carrying all five deltas ---
-            rename_content = "rename me\n"   # identical → same blob sha → pure rename
-            move_content = "move me\n"
             await commit_changes(
                 github_rest, org, repo_name, branch,
                 [
@@ -1984,7 +2013,7 @@ class TestGitHubTeamsIncremental:
                     FileChange.delete(moved_from),
                     FileChange.upsert(moved_to, move_content),
                     FileChange.delete(doomed),
-                    FileChange.upsert(fresh, "brand new\n"),
+                    FileChange.upsert(fresh, f"brand new {GH_IT_RUN_ID}\n"),
                 ],
                 message=f"TC-INCR-CODE-001 deltas ({GH_IT_RUN_ID})",
             )

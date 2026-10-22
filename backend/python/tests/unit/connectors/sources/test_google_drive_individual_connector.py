@@ -33,6 +33,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 )
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +256,8 @@ class TestInit:
         connector.config_service.get_config = AsyncMock(
             return_value={"auth": {}}
         )
-        result = await connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
@@ -772,8 +773,8 @@ class TestProcessDriveItem:
         assert result.record.record_name == "test.txt"
         assert result.record.is_file is True
         assert result.record.version == 0
-        assert len(result.new_permissions) == 1
-        assert result.new_permissions[0].email == "u@t.com"
+        assert result.new_permissions == []
+        assert result.record.inherit_permissions is True
 
     @pytest.mark.asyncio
     async def test_new_record_folder(self, connector):
@@ -1804,6 +1805,10 @@ class TestTestConnectionAndAccess:
     @pytest.mark.asyncio
     async def test_success(self, connector):
         connector.google_client.get_client.return_value = MagicMock()
+        connector._get_fresh_datasource = AsyncMock()
+        connector.drive_data_source.about_get = AsyncMock(
+            return_value={"user": {"emailAddress": "user@example.com"}}
+        )
         result = await connector.test_connection_and_access()
         assert result is True
 

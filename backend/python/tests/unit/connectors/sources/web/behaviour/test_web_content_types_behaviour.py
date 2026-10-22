@@ -2,11 +2,12 @@
 oversized downloads, and pages the user's filters exclude.
 """
 
-import base64
+import json
 
 import pytest
 from web_behaviour_fakes import (
     START_URL,
+    FakeCheckpointStore,
     FakeRecordsDb,
     FakeWeb,
     MakeConnector,
@@ -19,7 +20,7 @@ from app.config.constants.arangodb import MimeTypes, ProgressStatus
 MB = 1024 * 1024
 TOO_LARGE = (
     "This file is larger than this connector's 1 MB size limit, so it wasn't downloaded. "
-    "Raise the Maximum Size in MB setting to include it, then sync again."
+    "Raise Largest file to download (Advanced settings) to include it, then sync again."
 )
 OFFICE_TYPES = "application/vnd.openxmlformats-officedocument"
 
@@ -74,19 +75,71 @@ async def test_a_stored_html_page_keeps_its_text_and_drops_scripts_and_navigatio
     assert b"track()" not in stored and b"Menu links" not in stored
 
 
+def _png(width: int, height: int) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    out = BytesIO()
+    Image.new("RGB", (width, height), "white").save(out, format="PNG")
+    return out.getvalue()
+
+
 async def test_page_images_are_embedded_so_the_stored_copy_is_self_contained(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
-    png = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-    )
     site.add(START_URL, Page(body=html_page("Home", body='<img src="/pic.png">')))
-    site.add("http://site.test/pic.png", Page(body=png, content_type="image/png"))
+    site.add("http://site.test/pic.png", Page(body=_png(200, 120), content_type="image/png"))
 
     await (await make_connector(crawl_type="single")).run_sync()
 
     stored = site.storage_docs[db.pages()[START_URL].storage_document_id]
     assert b'src="data:image/png;base64,' in stored
+
+
+async def test_icons_and_spacers_are_dropped_and_not_described(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    """Each embedded image is described by the vision model; one under 64 px a side tells it nothing."""
+    body = '<img src="/photo.png"><img src="/pixel.png"><img src="/icon.svg" width="16" height="16">'
+    site.add(START_URL, Page(body=html_page("Home", body=body)))
+    site.add("http://site.test/photo.png", Page(body=_png(320, 200), content_type="image/png"))
+    site.add("http://site.test/pixel.png", Page(body=_png(1, 1), content_type="image/png"))
+
+    await (await make_connector(crawl_type="single")).run_sync()
+
+    stored = site.storage_docs[db.pages()[START_URL].storage_document_id]
+    assert stored.count(b"<img") == 1, "only the photo is kept"
+    assert site.gets("http://site.test/icon.svg") == 0, "an icon sized in the page is never downloaded"
+
+
+async def test_a_page_keeps_its_first_ten_images_and_downloads_no_more(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    images = [f"/shot-{i}.png" for i in range(15)]
+    site.add(START_URL, Page(body=html_page("Home", body="".join(f'<img src="{p}">' for p in images))))
+    for path in images:
+        site.add(f"http://site.test{path}", Page(body=_png(300, 200), content_type="image/png"))
+
+    await (await make_connector(crawl_type="single")).run_sync()
+
+    stored = site.storage_docs[db.pages()[START_URL].storage_document_id]
+    assert stored.count(b'src="data:image/png;base64,') == 10
+    assert [site.gets(f"http://site.test{p}") for p in images] == [1] * 10 + [0] * 5
+
+
+async def test_the_cap_counts_only_kept_images_so_tiny_ones_do_not_use_it_up(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    images = [f"/img-{i}.png" for i in range(14)]
+    site.add(START_URL, Page(body=html_page("Home", body="".join(f'<img src="{p}">' for p in images))))
+    for i, path in enumerate(images):  # the first four are tracking pixels
+        site.add(f"http://site.test{path}", Page(body=_png(1, 1) if i < 4 else _png(300, 200), content_type="image/png"))
+
+    await (await make_connector(crawl_type="single")).run_sync()
+
+    stored = site.storage_docs[db.pages()[START_URL].storage_document_id]
+    assert stored.count(b'src="data:image/png;base64,') == 10
 
 
 async def test_with_image_indexing_off_images_are_dropped_not_downloaded(
@@ -137,12 +190,11 @@ async def test_an_oversized_download_does_not_start_the_headless_browser(
     site.html(START_URL, "Home", "/huge.pdf")
     site.add(big, Page(body=b"x" * (2 * MB), content_type="application/pdf"))
     connector = await make_connector(max_size_mb=1)
-    starts_after_init = site.browser_starts
 
     await connector.run_sync()
 
     assert big not in site.browser_visits
-    assert site.browser_starts == starts_after_init
+    assert site.browser_starts <= 1, "only the start page's rendering check may use the browser"
 
 
 async def test_an_oversized_page_without_a_declared_size_is_shown_as_too_large(
@@ -322,3 +374,18 @@ async def test_robust_mode_fetches_a_document_served_from_a_url_without_an_exten
     record = db.pages()[url]
     assert record.mime_type == MimeTypes.PDF.value
     assert site_bytes(browser, db, url) == b"%PDF-1.4 report"
+
+
+async def test_robust_mode_reports_an_oversized_page_as_413_like_plain_mode(
+    browser: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    """The browser answers 200 for the page; the run report counts it as too large either way."""
+    big = "http://site.test/big"
+    browser.html(START_URL, "Home", "/big")
+    browser.html(big, "Big", text="x" * (2 * MB))
+
+    await (await make_connector(use_headless_browser=True, max_size_mb=1)).run_sync()
+
+    assert db.pages()[big].reason == TOO_LARGE
+    (saved,) = checkpoints.sync_points.values()
+    assert json.loads(saved["lastRun"])["failed_by_status"] == {"413": 1}

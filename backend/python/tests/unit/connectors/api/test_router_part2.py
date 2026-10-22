@@ -380,6 +380,7 @@ class TestUpdateOAuthInfrastructureFields:
         mock_registry.get_config.return_value = mock_registry_config
 
         config_service = AsyncMock()
+        config_service.get_config.return_value = {"frontend": {"publicEndpoint": "https://example.com"}}
         oauth_config: dict[str, Any] = {}
 
         with patch(
@@ -2093,6 +2094,30 @@ class TestGetConnectorInstanceFilters:
         assert result["success"] is True
         assert "filterOptions" in result
 
+    async def test_basic_auth_passes_the_saved_settings(self) -> None:
+        from app.connectors.api.router import get_connector_instance_filters
+
+        req = _make_request(is_admin=True)
+        instance = _make_instance(scope="team", created_by="u1", auth_type="BASIC_AUTH")
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(return_value=instance)
+        req.app.state.connector_registry.get_connector_metadata = AsyncMock(
+            return_value={"config": {"filters": {"endpoints": {}}}}
+        )
+        config_service = req.app.container.config_service()
+        config_service.get_config = AsyncMock(return_value={"auth": {"server": "fs01", "username": "u"}})
+
+        with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+             patch("app.connectors.api.router.resolve_config_service", return_value=config_service), \
+             patch(
+                 "app.connectors.api.router._get_connector_filter_options_from_config",
+                 new_callable=AsyncMock,
+                 return_value={},
+             ) as options:
+            result = await get_connector_instance_filters("c1", req, graph_provider=AsyncMock())
+
+        assert result["success"] is True
+        assert options.await_args.args[2] == {"server": "fs01", "username": "u"}
+
 
 # ===========================================================================
 # Route handler tests: save_connector_instance_filters
@@ -2100,6 +2125,30 @@ class TestGetConnectorInstanceFilters:
 
 class TestSaveConnectorInstanceFilters:
     """Tests for save_connector_instance_filters route handler."""
+
+    def test_the_route_is_marked_deprecated(self) -> None:
+        from app.connectors.api.router import router
+
+        (route,) = [
+            r for r in router.routes
+            if getattr(r, "path", None) == "/api/v1/connectors/{connector_id}/filters" and "POST" in r.methods
+        ]
+        assert route.deprecated is True
+
+    async def test_a_call_logs_that_it_is_deprecated(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.connectors.api.router import save_connector_instance_filters
+
+        req = _make_request(is_admin=True, body={"filters": {}})
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(return_value=_make_instance())
+
+        with caplog.at_level(logging.WARNING, logger="test"), pytest.raises(HTTPException):
+            await save_connector_instance_filters("c1", req, graph_provider=AsyncMock())
+
+        assert any(
+            "Deprecated POST /api/v1/connectors/c1/filters" in r.getMessage()
+            and "/api/v1/connectors/c1/config/filters-sync" in r.getMessage()
+            for r in caplog.records
+        )
 
     async def test_no_filters_raises_400(self):
         from app.connectors.api.router import save_connector_instance_filters
@@ -3035,6 +3084,48 @@ class TestGetActiveAgentInstances:
         )
         assert result["success"] is True
         assert "connectors" in result
+
+
+class TestConnectorListRoutesSurfaceRegistryErrors:
+    """A graph failure inside the real registry must reach the client as a 500, not an empty list."""
+
+    def _request_with_failing_registry(self) -> MagicMock:
+        from app.connectors.core.registry.connector_registry import ConnectorRegistry
+
+        gp = AsyncMock()
+        gp.get_filtered_connector_instances.side_effect = RuntimeError("graph down")
+        gp.get_user_connector_instances.side_effect = RuntimeError("graph down")
+        registry_container = MagicMock()
+        registry_container.data_store = AsyncMock(return_value=MagicMock(graph_provider=gp))
+        req = _make_request()
+        req.app.state.connector_registry = ConnectorRegistry(registry_container)
+        return req
+
+    async def test_list_returns_500(self) -> None:
+        from app.connectors.api.router import get_connector_instances
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_connector_instances(
+                self._request_with_failing_registry(), scope=None, page=1, limit=20, search=None,
+                is_authenticated=None, is_active=None, connector_type=None,
+            )
+        assert exc_info.value.status_code == 500
+
+    async def test_agents_active_returns_500(self) -> None:
+        from app.connectors.api.router import get_active_agent_instances
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_active_agent_instances(
+                self._request_with_failing_registry(), scope=None, page=1, limit=20, search=None
+            )
+        assert exc_info.value.status_code == 500
+
+    async def test_active_returns_500(self) -> None:
+        from app.connectors.api.router import get_active_connector_instances
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_active_connector_instances(self._request_with_failing_registry())
+        assert exc_info.value.status_code == 500
 
 
 # ===========================================================================

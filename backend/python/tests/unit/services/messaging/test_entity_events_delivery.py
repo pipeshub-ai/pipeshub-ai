@@ -158,6 +158,12 @@ def _fast_polls(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MESSAGE_TIMEOUT_MS", "10")
 
 
+@pytest.fixture(autouse=True)
+def _open_source_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These cases describe the open-source handler; an edition may install its own.
+    monkeypatch.setattr(KafkaUtils.__module__ + ".EntityEventService", entity_module.EntityEventService)
+
+
 @pytest.fixture
 def graph() -> InMemoryGraph:
     return InMemoryGraph()

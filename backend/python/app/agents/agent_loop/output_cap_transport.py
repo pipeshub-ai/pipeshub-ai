@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.messages import Message
     from app.agent_loop_lib.core.responses import StructuredResponse
     from app.agent_loop_lib.core.streaming import StreamEvent
-    from app.agent_loop_lib.core.tool_schema import ToolSchema
+    from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +83,11 @@ def max_turn_output_chars() -> int | None:
     return value or None
 
 
-def _fits_in_next_prompt(text: str, model: str | None) -> bool:
+def _fits_in_next_prompt(text: str, model: str | None, context_window: int | None = None) -> bool:
     """Whether cut-off `text` is small enough to go back to `model` with the
     conversation that produced it: a quarter of the prompt budget, at about
     four characters a token."""
-    return len(text) <= ContextBudget.for_model(model).effective_max_tokens
+    return len(text) <= ContextBudget.for_model(model, context_window=context_window).effective_max_tokens
 
 
 class OutputCappedTransport(LLMTransport):
@@ -98,9 +98,11 @@ class OutputCappedTransport(LLMTransport):
     to count until the whole reply has arrived, so both are delegated unchanged.
     """
 
-    def __init__(self, inner: LLMTransport, max_chars: int) -> None:
+    def __init__(self, inner: LLMTransport, max_chars: int, *, context_window: int | None = None) -> None:
         self._inner = inner
         self._max_chars = max_chars
+        # The configured window of the inner transport's own model.
+        self._context_window = context_window
 
     @property
     def provider(self) -> str:
@@ -119,9 +121,12 @@ class OutputCappedTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: "list[str] | None" = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> "ModelResponse":
         return await self._inner.complete(
             messages, tools, system, model, thinking_budget, effort, system_blocks,
+            **({"tool_choice": tool_choice} if tool_choice else {}),
         )
 
     async def complete_structured(
@@ -144,9 +149,12 @@ class OutputCappedTransport(LLMTransport):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: "list[str] | None" = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> "AsyncIterator[StreamEvent]":
         stream_iter = self._inner.stream(
             messages, tools, system, model, thinking_budget, effort, system_blocks,
+            **({"tool_choice": tool_choice} if tool_choice else {}),
         ).__aiter__()
         streamed = 0
         text_parts: list[str] = []
@@ -199,7 +207,8 @@ class OutputCappedTransport(LLMTransport):
             for index, call in calls.items()
             if call["name"]
         ]
-        kept_text = text if _fits_in_next_prompt(text, model_name) else ""
+        window = self._context_window if model_name == self._inner.model_name else None
+        kept_text = text if _fits_in_next_prompt(text, model_name, window) else ""
         if tool_calls or kept_text.strip():
             message = AssistantMessage(
                 content=[TextPart(text=kept_text)] if kept_text else [],
@@ -215,12 +224,14 @@ class OutputCappedTransport(LLMTransport):
         )
 
 
-def with_output_cap(transport: LLMTransport, max_chars: int | None) -> LLMTransport:
+def with_output_cap(
+    transport: LLMTransport, max_chars: int | None, *, context_window: int | None = None,
+) -> LLMTransport:
     """`transport` with the per-turn output cap applied, or unchanged when the
     cap is switched off."""
     if max_chars is None:
         return transport
-    return OutputCappedTransport(transport, max_chars)
+    return OutputCappedTransport(transport, max_chars, context_window=context_window)
 
 
 __all__ = [

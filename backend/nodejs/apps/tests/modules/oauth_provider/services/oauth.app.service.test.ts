@@ -3,7 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import crypto from 'crypto'
 import { Types } from 'mongoose'
-import { OAuthAppService } from '../../../../src/modules/oauth_provider/services/oauth.app.service'
+import { OAuthAppService, isAppUsableInOrg } from '../../../../src/modules/oauth_provider/services/oauth.app.service'
 import {
   OAuthApp,
   OAuthAppStatus,
@@ -1389,3 +1389,19 @@ describe('OAuthAppService - branch coverage', () => {
   })
 })
 }
+
+describe('isAppUsableInOrg', () => {
+  const appOrgId = new Types.ObjectId()
+  const otherOrgId = new Types.ObjectId().toString()
+
+  it('allows the workspace that owns the app and refuses another one', () => {
+    const app = { orgId: appOrgId, clientId: 'c1' } as any
+    expect(isAppUsableInOrg(app, appOrgId.toString())).to.be.true
+    expect(isAppUsableInOrg(app, otherOrgId)).to.be.false
+  })
+
+  it('allows every workspace for dynamic apps and the first-party device app', () => {
+    expect(isAppUsableInOrg({ orgId: appOrgId, clientId: 'c1', isDynamic: true } as any, otherOrgId)).to.be.true
+    expect(isAppUsableInOrg({ orgId: appOrgId, clientId: FIRST_PARTY_DEVICE_CLIENT_ID } as any, otherOrgId)).to.be.true
+  })
+})

@@ -71,6 +71,10 @@ class FetchError(Exception):
         self.status_code = status_code
 
 
+class UnresolvableHostError(FetchError):
+    """The hostname has no addresses here — as opposed to addresses that are not allowed."""
+
+
 # Hostnames that must never be fetched (SSRF / metadata endpoints).
 _BLOCKED_HOSTNAMES = frozenset(
     {
@@ -92,6 +96,18 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
+# How much of the address space a fetch may reach.
+#   "public_only": the public internet only; the default for user/admin-supplied URLs.
+#   "no_local":    private networks too (``allow_private``: RFC1918, ULA, CGNAT), but never
+#                  loopback, link-local or cloud metadata.
+HostPolicy = Literal["public_only", "no_local"]
+PUBLIC_ONLY: HostPolicy = "public_only"
+NO_LOCAL: HostPolicy = "no_local"
+
+
+def _allows_private(policy: HostPolicy) -> bool:
+    return policy == NO_LOCAL
+
 
 @dataclass(frozen=True)
 class PublicTarget:
@@ -111,32 +127,52 @@ class PublicTarget:
 # Cloud metadata / platform endpoints that no range rule catches: Alibaba Cloud's metadata
 # service sits in CGNAT space (allowed when block_non_global is False) and Azure's WireServer
 # uses a public address. Link-local metadata (169.254.169.254, ...) and AWS's IPv6 IMDS
-# (fd00:ec2::254) are already covered by is_link_local / is_private.
+# (fd00:ec2::254) are already covered by is_link_local / is_private. IPv6 forms that carry one
+# of these (::ffff:168.63.129.16, ...) are caught by unwrapping them first — see
+# `_ip_is_blocked`.
 _CLOUD_METADATA_ADDRESSES = frozenset(
     {
         ipaddress.ip_address("100.100.100.200"),
         ipaddress.ip_address("168.63.129.16"),
+        # AWS's IPv6 IMDS is private (ULA), so only `allow_private` callers need it listed.
+        ipaddress.ip_address("fd00:ec2::254"),
     }
 )
 
 
-def _ip_is_blocked(ip: IPAddress, *, block_non_global: bool = True) -> bool:
+def _ip_is_blocked(ip: IPAddress, *, block_non_global: bool = True, allow_private: bool = False) -> bool:
     """True if the address must not be contacted by the generic HTTP fetcher.
 
-    NAT64 well-known-prefix addresses are unwrapped to their embedded IPv4 address and
-    re-checked against the same rules, instead of trusting `is_reserved` — so a NAT64-routed
-    private/loopback/metadata IPv4 address is still blocked, but a NAT64-routed public one
-    (e.g. a legitimate SaaS host resolved from an IPv6-only network) is not.
+    IPv6 addresses that carry an IPv4 address are judged by it, since the metadata list and
+    the IPv4 rules would otherwise never see it:
+
+    - IPv4-mapped (``::ffff:a.b.c.d``) and NAT64 well-known-prefix addresses reach that IPv4
+      host itself (a dual-stack socket, a NAT64 gateway), so its verdict is the verdict — a
+      mapped or NAT64-routed public host stays reachable, a metadata one does not.
+    - 6to4 and Teredo addresses go through relays but carry caller-chosen IPv4 bits, so they
+      are blocked when either the address itself or an embedded IPv4 address is.
 
     ``block_non_global`` also rejects addresses that are not globally routable but are not
     flagged private either, e.g. CGNAT ``100.64.0.0/10``. Known cloud metadata addresses are
     rejected regardless of it.
+
+    ``allow_private`` is for admin-configured targets that may legitimately sit on the
+    deployment's own network (RFC1918, ULA, CGNAT). Loopback, link-local, metadata,
+    multicast, reserved and unspecified addresses stay blocked.
     """
-    if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_WELL_KNOWN_PREFIX:
-        embedded_ipv4 = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-        return _ip_is_blocked(embedded_ipv4, block_non_global=block_non_global)
+    policy = {"block_non_global": block_non_global, "allow_private": allow_private}
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return _ip_is_blocked(ip.ipv4_mapped, **policy)
+        if ip in _NAT64_WELL_KNOWN_PREFIX:
+            return _ip_is_blocked(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF), **policy)
+        relayed = [ip.sixtofour] if ip.sixtofour is not None else list(ip.teredo or ())
+        if any(_ip_is_blocked(embedded, **policy) for embedded in relayed):
+            return True
     if ip in _CLOUD_METADATA_ADDRESSES:
         return True
+    if allow_private:
+        return bool(ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
     return bool(
         ip.is_private
         or ip.is_loopback
@@ -148,8 +184,10 @@ def _ip_is_blocked(ip: IPAddress, *, block_non_global: bool = True) -> bool:
     )
 
 
-# AWS's IPv6 metadata endpoint is a unique-local address, so no range rule singles it out.
-_AWS_IPV6_METADATA_ADDRESS = ipaddress.ip_address("fd00:ec2::254")
+def ip_is_blocked(ip: IPAddress, policy: HostPolicy) -> bool:
+    """``_ip_is_blocked`` under a host-policy tier, for resolvers that vet at connect time."""
+    return _ip_is_blocked(ip, allow_private=_allows_private(policy))
+
 
 PRIVATE_ADDRESS_SWITCH_ENV = "PIPESHUB_BLOCK_PRIVATE_ADDRESSES"
 SWITCH_ON_VALUES = frozenset({"true", "1", "yes", "on"})
@@ -189,34 +227,24 @@ def is_never_allowed_address(ip: IPAddress) -> bool:
         elif ip in _NAT64_WELL_KNOWN_PREFIX:
             ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
     # 0.0.0.0 and :: name no host; the kernel dials them as "this machine", whatever listens there.
-    return (
-        ip.is_link_local
-        or ip.is_unspecified
-        or ip in _CLOUD_METADATA_ADDRESSES
-        or ip == _AWS_IPV6_METADATA_ADDRESS
-    )
+    return ip.is_link_local or ip.is_unspecified or ip in _CLOUD_METADATA_ADDRESSES
 
 
-def _hostname_is_blocked(hostname: str) -> bool:
+def _hostname_is_blocked(hostname: str, *, allow_private: bool = False) -> bool:
     hn = hostname.lower().removesuffix(".")
     if hn in _BLOCKED_HOSTNAMES:
         return True
-    if hn.endswith(".localhost") or hn.endswith(".local"):
+    if hn.endswith(".localhost"):
         return True
-    return False
+    # mDNS names are LAN hosts: private, not loopback.
+    return hn.endswith(".local") and not allow_private
 
 
-def resolve_public_http_target(url: str, *, block_non_global: bool = True) -> PublicTarget:
-    """Resolve ``url`` and reject it if it could reach loopback, RFC1918, link-local,
-    cloud metadata or other non-public addresses. Every resolved address must pass,
-    so one private A record among public ones is enough to reject the URL.
-
-    This is the single blocked-host policy: ``validate_public_http_url``, ``fetch_url``
-    (per redirect hop) and ``app.utils.public_http`` all go through it.
-
-    Raises:
-        FetchError: if the URL's scheme/hostname/port/resolved address is disallowed.
-    """
+def _check_static(
+    url: str, *, block_non_global: bool, allow_private: bool,
+) -> tuple[str, str, int, IPAddress | None]:
+    """Everything the policy can decide without DNS: scheme, hostname blocklist, port
+    and a literal IP. Returns ``(scheme, hostname, port, literal_ip_or_None)``."""
     parsed = urlparse(url)
     if parsed.scheme not in _DEFAULT_PORTS:
         raise FetchError(f"Only HTTP/HTTPS URLs are allowed, got scheme {parsed.scheme!r}")
@@ -230,22 +258,68 @@ def resolve_public_http_target(url: str, *, block_non_global: bool = True) -> Pu
     except ValueError as e:
         raise FetchError("URL has an invalid port") from e
 
-    if _hostname_is_blocked(hostname):
+    if _hostname_is_blocked(hostname, allow_private=allow_private):
         raise FetchError(f"Blocked unsafe URL hostname: {hostname}")
 
     try:
         literal_ip = ipaddress.ip_address(hostname)
     except ValueError:
         literal_ip = None
+    if literal_ip is not None and _ip_is_blocked(
+        literal_ip, block_non_global=block_non_global, allow_private=allow_private,
+    ):
+        raise FetchError(f"Blocked unsafe URL address: {literal_ip}")
+    return parsed.scheme, hostname, port, literal_ip
+
+
+def check_http_url_without_resolving(
+    url: str, *, block_non_global: bool = True, allow_private: bool = False,
+) -> None:
+    """The DNS-free part of the policy, for validating a URL at save time. A connection
+    must still go through ``resolve_public_http_target``.
+
+    Raises:
+        FetchError: if the URL's scheme/hostname/port/literal address is disallowed.
+    """
+    _check_static(url, block_non_global=block_non_global, allow_private=allow_private)
+
+
+def check_url_host_without_dns(url: str, policy: HostPolicy) -> None:
+    """``check_http_url_without_resolving`` under a host-policy tier.
+
+    For callers whose HTTP client vets resolved addresses at connect time: that covers
+    hostnames, and this covers what never reaches a resolver (literal addresses and
+    blocked names) on the first request and on every redirect.
+
+    Raises:
+        FetchError: if the URL is disallowed under *policy*.
+    """
+    check_http_url_without_resolving(url, allow_private=_allows_private(policy))
+
+
+def resolve_public_http_target(
+    url: str, *, block_non_global: bool = True, allow_private: bool = False,
+) -> PublicTarget:
+    """Resolve ``url`` and reject it if it could reach loopback, RFC1918, link-local,
+    cloud metadata or other non-public addresses. Every resolved address must pass,
+    so one private A record among public ones is enough to reject the URL.
+
+    This is the single blocked-host policy: ``validate_public_http_url``, ``fetch_url``
+    (per redirect hop) and ``app.utils.public_http`` all go through it.
+
+    Raises:
+        FetchError: if the URL's scheme/hostname/port/resolved address is disallowed.
+    """
+    scheme, hostname, port, literal_ip = _check_static(
+        url, block_non_global=block_non_global, allow_private=allow_private,
+    )
     if literal_ip is not None:
-        if _ip_is_blocked(literal_ip, block_non_global=block_non_global):
-            raise FetchError(f"Blocked unsafe URL address: {literal_ip}")
-        return PublicTarget(parsed.scheme, hostname, port, (literal_ip,))
+        return PublicTarget(scheme, hostname, port, (literal_ip,))
 
     try:
         infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
     except socket.gaierror as e:
-        raise FetchError(f"Could not resolve hostname {hostname!r}: {e}") from e
+        raise UnresolvableHostError(f"Could not resolve hostname {hostname!r}: {e}") from e
 
     addresses: list[IPAddress] = []
     for info in infos:
@@ -253,14 +327,14 @@ def resolve_public_http_target(url: str, *, block_non_global: bool = True) -> Pu
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
-        if _ip_is_blocked(ip, block_non_global=block_non_global):
+        if _ip_is_blocked(ip, block_non_global=block_non_global, allow_private=allow_private):
             raise FetchError(f"Blocked unsafe URL: hostname {hostname!r} resolves to {ip}")
         if ip not in addresses:
             addresses.append(ip)
 
     if not addresses:
-        raise FetchError(f"No addresses resolved for hostname {hostname!r}")
-    return PublicTarget(parsed.scheme, hostname, port, tuple(addresses))
+        raise UnresolvableHostError(f"No addresses resolved for hostname {hostname!r}")
+    return PublicTarget(scheme, hostname, port, tuple(addresses))
 
 
 class HostCheckError(ValueError):
@@ -282,7 +356,7 @@ async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[
             deployment's network.
     """
     # model_egress imports this module.
-    from app.utils.model_egress import address_refusal, parse_answers
+    from app.utils.model_egress import parse_answers
 
     allow_private = not private_addresses_blocked()
     private_reason = (
@@ -294,10 +368,7 @@ async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[
         if not allow_private:
             raise HostCheckError(private_reason)
         return []
-    if host.lower().removesuffix(".") == "metadata.google.internal":
-        raise HostCheckError(f'"{host}" is a cloud metadata address, which is never allowed.')
-    if not allow_private and _hostname_is_blocked(host):
-        raise HostCheckError(private_reason)
+    _check_hostname(host, allow_private=allow_private)
 
     ip = literal_ip(host)
     if ip is not None:
@@ -315,9 +386,50 @@ async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[
         addresses = parse_answers(infos)
         if not addresses:
             raise HostCheckError(f'Could not find a server named "{host}". Check the host name.')
+    check_addresses(host, addresses)
+    return addresses
+
+
+def check_addresses(host: str, addresses: list[IPAddress]) -> None:
+    """Apply ``vetted_addresses``' rule to addresses already looked up for ``host``.
+
+    Raises:
+        HostCheckError: when any of them may not be connected to.
+    """
+    # model_egress imports this module.
+    from app.utils.model_egress import address_refusal
+
+    allow_private = not private_addresses_blocked()
+    _check_hostname(host, allow_private=allow_private)
     reason = address_refusal(addresses, allow_private=allow_private)
     if reason is not None:
         raise HostCheckError(f'"{host}" is {reason}.')
+
+
+def _check_hostname(host: str, *, allow_private: bool) -> None:
+    if host.lower().removesuffix(".") == "metadata.google.internal":
+        raise HostCheckError(f'"{host}" is a cloud metadata address, which is never allowed.')
+    if not allow_private and _hostname_is_blocked(host):
+        raise HostCheckError(
+            f'"{host}" is a private or internal address, which this deployment does not allow '
+            f"({PRIVATE_ADDRESS_SWITCH_ENV})."
+        )
+
+
+def resolved_addresses(host: str) -> list[IPAddress]:
+    """Every address ``host`` resolves to; empty when it doesn't resolve."""
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError):
+        return []
+    addresses: list[IPAddress] = []
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if ip not in addresses:
+            addresses.append(ip)
     return addresses
 
 
@@ -684,6 +796,7 @@ def fetch_url(
     profile: str | None = None,
     verbose: bool = False,
     block_private_hosts: bool = True,
+    host_policy: HostPolicy | None = None,
 ) -> FetchResult:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -712,6 +825,10 @@ def fetch_url(
             without environment proxies or the cloudscraper strategy. Set False only
             for URLs an operator configured, never for URLs a user, a model or a
             third-party document supplied.
+        host_policy: The address tier every hop is judged under. ``None`` means
+            ``"public_only"`` when ``block_private_hosts`` is True and no checks otherwise;
+            ``"no_local"`` also reaches private networks (never loopback, link-local or
+            metadata), with the same per-hop resolution and pinning.
 
     Returns:
         FetchResult with .text, .content, .status_code, .strategy, etc.
@@ -731,15 +848,18 @@ def fetch_url(
         profile=profile,
         verbose=verbose,
     )
-    if not block_private_hosts:
+    if host_policy is None and block_private_hosts:
+        host_policy = PUBLIC_ONLY
+    if host_policy is None:
         return run(url, follow_redirects=True, pin=None)
+    allow_private = _allows_private(host_policy)
 
     # Each hop is resolved once and pinned to that answer, so a second DNS answer
     # (rebinding) cannot move the connection somewhere the check never saw.
     current_url = url
     for _ in range(_MAX_REDIRECTS + 1):
         _reject_http_userinfo(current_url)
-        target = resolve_public_http_target(current_url)
+        target = resolve_public_http_target(current_url, allow_private=allow_private)
         result = _run_pinned_with_failover(run, current_url, target)
         location = _redirect_location(result)
         if location is None:

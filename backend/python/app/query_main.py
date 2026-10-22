@@ -14,6 +14,8 @@ from fastapi.responses import JSONResponse
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.routes.chatbot import warm_up_entity_vector_store
+from app.api.routes.records import router as records_router
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
@@ -22,6 +24,8 @@ from app.edition_config import (
     ensure_org_context,
     search_router,
 )
+from app.utils.log_redaction import log_safe_validation_errors
+from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
@@ -32,6 +36,7 @@ from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.edition_containers import QueryAppContainer
+from app.edition_services import configure_app, register_extra_toolsets  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.health.health import Health
 from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
@@ -41,6 +46,7 @@ from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.url_redaction import redact_sensitive_query_params
 from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
 
@@ -157,6 +163,7 @@ async def stop_kafka_consumers(container: QueryAppContainer) -> bool|None:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
     mark_process_non_dumpable()
+    install_log_redaction()
 
     # Before anything builds a pool or semaphore off a per-process budget.
     set_process_worker_count(configured_worker_count())
@@ -258,6 +265,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
 
+        app.state.entity_store_warmup_task = asyncio.create_task(
+            warm_up_entity_vector_store(app_container, logger)
+        )
+
         # Collections created before keyword scoring was fixed (Qdrant IDF,
         # OpenSearch stemming) are updated in place. A deployment that only
         # serves search never reaches the indexing write path that would
@@ -332,6 +343,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     toolset_registry = get_toolset_registry()
     await asyncio.to_thread(toolset_registry.auto_discover_toolsets)
+    register_extra_toolsets(toolset_registry)
     app.state.toolset_registry = toolset_registry
     logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
 
@@ -357,7 +369,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
-        "lexical_reconcile_task",
+        "lexical_reconcile_task", "entity_store_warmup_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
@@ -420,6 +432,7 @@ app = FastAPI(
     redirect_slashes=False,
     dependencies=_app_dependencies,
 )
+configure_app(app, "query")
 
 EXCLUDE_PATHS = ["/health"]  # Exclude health endpoint from authentication for monitoring purposes
 
@@ -486,7 +499,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     """Answer a malformed request in plain words, keeping FastAPI's ``detail`` list shape."""
     errors = jsonable_encoder(exc.errors())
     logging.getLogger(__name__).warning(
-        "Request validation failed for %s %s: %s", request.method, request.url, errors
+        "Request validation failed for %s %s: %s",
+        request.method,
+        redact_sensitive_query_params(str(request.url)),
+        log_safe_validation_errors(errors),
     )
     message, detail = friendly_validation_errors(errors)
     return JSONResponse(status_code=422, content={"message": message, "detail": detail})
@@ -494,6 +510,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
+app.include_router(records_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")

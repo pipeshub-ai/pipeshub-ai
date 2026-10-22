@@ -129,11 +129,11 @@ class TestMapConfluencePermission:
 
     def test_create_comment(self):
         c = _c()
-        assert c._map_confluence_permission("create", "comment") == PermissionType.COMMENT
+        assert c._map_confluence_permission("create", "comment") == PermissionType.READ
 
     def test_delete_comment(self):
         c = _c()
-        assert c._map_confluence_permission("delete", "comment") == PermissionType.COMMENT
+        assert c._map_confluence_permission("delete", "comment") == PermissionType.READ
 
     def test_create_page(self):
         c = _c()
@@ -569,10 +569,11 @@ class TestGetAppUsersByEmails:
         assert await c._get_app_users_by_emails([]) == []
 
     @pytest.mark.asyncio
-    async def test_error(self):
+    async def test_error_propagates(self):
         c = _c()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
-        assert await c._get_app_users_by_emails(["a@t.com"]) == []
+        with pytest.raises(Exception, match="fail"):
+            await c._get_app_users_by_emails(["a@t.com"])
 
 
 class TestGetSignedUrl:

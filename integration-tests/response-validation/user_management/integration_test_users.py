@@ -1583,7 +1583,7 @@ class TestGraphList(UsersTestBase):
                 f"[{label}] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
             )
 
-        # XSS content in search — validateNoXSS throws BadRequestError with field context.
+        # XSS content in search — the XSS middleware rejects it and names the parameter.
         resp = self.users.graph_list(**{"search": "<script>alert(1)</script>"})
         assert resp.status_code == 400, (
             f"[xss search] Expected 400, got {resp.status_code}: {resp.text}"
@@ -1593,8 +1593,13 @@ class TestGraphList(UsersTestBase):
         assert body["error"]["code"] == "HTTP_BAD_REQUEST", (
             f"[xss search] Expected 'HTTP_BAD_REQUEST', got {body['error']['code']!r}"
         )
-        assert body["error"]["message"] == "HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again.", (
-            f"[xss search] Expected message to mention 'HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again.', got {body['error']['message']!r}"
+        expected_xss_message = (
+            'HTML tags, scripts, and XSS content are not allowed in the query parameter "search". '
+            "Text in angle brackets, such as <id>, counts as an HTML tag. "
+            "Please remove any HTML tags and try again."
+        )
+        assert body["error"]["message"] == expected_xss_message, (
+            f"[xss search] Expected {expected_xss_message!r}, got {body['error']['message']!r}"
         )
 
         # Search exceeds 1000-char limit — explicit length guard in the controller.

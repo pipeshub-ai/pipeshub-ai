@@ -105,7 +105,7 @@ async def notify_record_indexed(
     external_record_group_id: str | None = None,
     org_id: str | None = None,
 ) -> None:
-    """A record became searchable. KB-only — see `on_record_indexed`."""
+    """A record became searchable. Connector deletes are coalesced — see `on_record_indexed`."""
     invalidator = _state["invalidator"]
     if invalidator is None:
         return

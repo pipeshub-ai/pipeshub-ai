@@ -10,6 +10,7 @@ import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { desktopOAuthErrorMessage, isElectron, runDesktopOAuth } from '@/lib/electron';
 import { createPkcePair, makeDesktopState } from '@/lib/auth/desktop-oauth';
 import { getSamlErrorDescription } from '@/lib/auth/saml-errors';
+import { SAML_WEB_VERIFIER_KEY } from '@/lib/auth/saml-web-signin';
 import {
   getUserAccountApiErrorMessage,
   getUserAccountApiResponseMessage,
@@ -270,10 +271,31 @@ export function useAuthActions({
         : null;
     const params = new URLSearchParams({ email });
     if (sessionToken) params.set('sessionToken', sessionToken);
-    const signInUrl = `${getApiBaseUrl()}/api/v1/saml/signIn`;
+    const samlSignInHref = () => {
+      const dest = new URL(
+        '/api/v1/saml/signIn',
+        getApiBaseUrl() || window.location.origin,
+      );
+      params.forEach((value, key) => {
+        dest.searchParams.set(key, value);
+      });
+      return dest.href;
+    };
 
     if (!isElectron()) {
-      window.location.href = `${signInUrl}?${params}`;
+      void (async () => {
+        try {
+          const { verifier, challenge } = await createPkcePair();
+          sessionStorage.setItem(SAML_WEB_VERIFIER_KEY, verifier);
+          params.set('client', 'web');
+          params.set('code_challenge', challenge);
+          window.location.assign(samlSignInHref());
+        } catch {
+          toast.error('SSO sign-in failed', {
+            description: 'Your browser could not start a secure sign-in. Please try again.',
+          });
+        }
+      })();
       return;
     }
 
@@ -293,7 +315,7 @@ export function useAuthActions({
 
         const result = await runDesktopOAuth({
           provider: 'saml',
-          authUrl: `${signInUrl}?${params}`,
+          authUrl: samlSignInHref(),
           expectedState: state,
         }).promise;
 

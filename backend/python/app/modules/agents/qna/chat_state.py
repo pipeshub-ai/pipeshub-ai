@@ -10,7 +10,10 @@ from app.config.configuration_service import ConfigurationService
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.interface.graph_db_provider import (
+    SELECTION_FILTER_KEYS,
+    IGraphDBProvider,
+)
 from app.utils.chat_helpers import CitationRefMapper
 from app.utils.execute_query import agent_knowledge_has_sql_connector
 from app.utils.fetch_slack_thread import agent_knowledge_has_slack_connector
@@ -84,6 +87,9 @@ class ChatState(TypedDict):
     error: dict[str, Any] | None
     org_id: str
     user_id: str
+    # Who owns the artifacts this run makes. The caller, when a service-account
+    # agent (running as user_id, its creator) is chatted with by a signed-in user.
+    artifact_owner_user_id: str
     user_email: str
     send_user_info: bool
     conversation_id: str | None
@@ -104,6 +110,7 @@ class ChatState(TypedDict):
     # connector_instances: Deprecated - use toolsets instead
     tools: list[str] | None  # List of tool names to enable for this agent
     web_search_config: dict[str, Any] | None  # Runtime web_search tool config (provider + configuration payload)
+    deep_research: bool  # Deep research on: research method in the prompt, more turns, a larger web budget
     output_file_path: str | None  # Optional file path for saving responses
     tool_to_connector_map: dict[str, str] | None  # Mapping from app_name (tool) to connector instance ID
 
@@ -180,6 +187,8 @@ class ChatState(TypedDict):
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None  # Mapping for citations
     known_record_ids: set[str] | None  # Record IDs the model has been shown — see remember_record_ids()
     known_record_names: dict[str, str] | None  # The same ids with their names, in the order shown (latest last)
+    retrieved_by: dict[str, Any] | None  # Which layer found each record — see modules/retrieval/provenance.py
+    usage_ledger: Any | None  # Opt-in per-request LLM usage — see agents/agent_loop/protocol/run_usage.py
     record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results
@@ -189,6 +198,13 @@ class ChatState(TypedDict):
     # TEMPORARY token-savings experiment — see `RecordIdShortener` in
     # `utils/chat_helpers.py`. Opt-in, disabled by default.
     enable_record_id_shortening: bool | None
+    # Opt-in measurement surface: when True the stream carries CUSTOM
+    # `retrieval_context` and `run_usage` frames. Never on by default.
+    include_retrieval_context: bool | None
+    # `ChatQuery.keywordSearchBudget`: "short" caps how long a search waits for
+    # the keyword (grep) pattern match after its semantic results; None or
+    # "full" waits for all of it. See `pattern_match_wait_budget`.
+    keyword_search_budget: str | None
     record_id_shortener: Any | None  # Lazily created by the first knowledge tool call, only when enabled above
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
     resolved_attachment_blocks: list | None  # Pre-resolved image_url blocks for multimodal LLM injection; populated on first LLM call
@@ -210,6 +226,12 @@ class ChatState(TypedDict):
     has_slack_connector: bool  # True when org has at least one configured Slack connector
     has_slack_knowledge: bool  # True when agent_knowledge contains a Slack connector
     has_ui_client: bool  # True when client-name header was present; gates UI-only tools like ask_user_question
+    # Per-tool approvals (`app/agents/agent_loop/tool_approvals.py`).
+    client_name: str | None
+    agent_key: str | None
+    is_assistant_chat: bool
+    chat_streaming: bool
+    tool_approval: dict[str, Any] | None
 
 def _build_tool_to_toolset_map(toolsets: list[dict[str, Any]]) -> dict[str, str]:
     """
@@ -365,9 +387,12 @@ def _build_web_search_tool_config(chat_query: dict[str, Any]) -> dict[str, Any] 
         provider = str(resolved_config.get("provider", "")).strip().lower()
         configuration = resolved_config.get("configuration", {})
         if provider:
+            others = resolved_config.get("providers")
             return {
                 "provider": provider,
                 "configuration": configuration if isinstance(configuration, dict) else {},
+                # The other stored providers: search fallbacks and page readers (`app.web.config`).
+                "providers": [p for p in others if isinstance(p, dict)] if isinstance(others, list) else [],
             }
 
 
@@ -542,7 +567,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
 
     # Compute has_knowledge once — filters out the NO_KB_SELECTED sentinel
     real_kb = [k for k in (kb or []) if k and k != "NO_KB_SELECTED"]
-    has_knowledge = bool(real_kb or apps or agent_knowledge)
+    # A selection below app level is knowledge too, with or without a whole app.
+    has_selection = any(filters.get(key) for key in SELECTION_FILTER_KEYS)
+    has_knowledge = bool(real_kb or apps or agent_knowledge or has_selection)
     
     has_sql_knowledge = agent_knowledge_has_sql_connector(agent_knowledge)
     has_slack_knowledge = agent_knowledge_has_slack_connector(agent_knowledge)
@@ -585,6 +612,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "error": None,
         "org_id": user_info.get("orgId", ""),
         "user_id": user_info.get("userId", ""),
+        "artifact_owner_user_id": chat_query.get("artifact_owner_user_id") or user_info.get("userId", ""),
         "user_email": user_info.get("userEmail", ""),
         "send_user_info": user_info.get("sendUserInfo", True),
         "conversation_id": chat_query.get("conversationId"),
@@ -614,6 +642,8 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         # connector_instances: Deprecated - use toolsets instead
         "tools": tools,  # Extracted from toolsets
         "web_search_config": _build_web_search_tool_config(chat_query),
+        # Applies only with web search on; AgentContext.from_chat_state checks that.
+        "deep_research": bool(chat_query.get("deepResearch")),
         "output_file_path": output_file_path,
         "tool_to_connector_map": None,  # Deprecated - use tool_to_toolset_map
 
@@ -684,6 +714,14 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
             chat_query.get("enable_record_id_shortening")
             or chat_query.get("enableRecordIdShortening")
         ),
+        "include_retrieval_context": bool(
+            chat_query.get("include_retrieval_context")
+            or chat_query.get("includeRetrievalContext")
+        ),
+        "keyword_search_budget": (
+            chat_query.get("keyword_search_budget")
+            or chat_query.get("keywordSearchBudget")
+        ),
 
         # Attachments (uploaded images/PDFs from client)
         "attachments": chat_query.get("attachments", []),
@@ -707,4 +745,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "has_slack_connector": has_slack_connector,
         "has_slack_knowledge": has_slack_knowledge,
         "has_ui_client": bool(client_name),
+        "client_name": client_name,
+        "agent_key": chat_query.get("agentKey"),
+        "is_assistant_chat": bool(chat_query.get("isAssistantChat", False)),
+        "chat_streaming": chat_query.get("chatStreaming", True) is not False,
+        "tool_approval": chat_query.get("toolApproval"),
     }

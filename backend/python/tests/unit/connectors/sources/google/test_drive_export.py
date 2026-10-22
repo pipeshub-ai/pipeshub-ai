@@ -277,3 +277,43 @@ async def test_stream_media_request_yields_download_chunks() -> None:
     ]
 
     assert chunks == [b"exported-bytes"]
+
+
+
+def _drive_403(reason: str) -> HttpError:
+    body = json.dumps({
+        "error": {"code": 403, "message": reason, "errors": [{"reason": reason, "domain": "usageLimits", "message": reason}]}
+    }).encode()
+    return HttpError(Response({"status": "403"}), body)
+
+
+async def _stream_failing_with(error: HttpError) -> None:
+    logger, _messages = _logger()
+
+    class _FailingDownloader(_Downloader):
+        def next_chunk(self) -> tuple[None, bool]:
+            raise error
+
+    async def execute(operation: object) -> object:
+        return operation()
+
+    async for _chunk in stream_media_request(
+        execute, _Request(), downloader_cls=_FailingDownloader, chunk_size=1024,
+        logger=logger, connector_name="Drive", error_context="download",
+    ):
+        pass
+
+
+@pytest.mark.parametrize("reason", ["userRateLimitExceeded", "rateLimitExceeded", "dailyLimitExceeded"])
+async def test_a_rate_limit_403_is_reported_as_rate_limited_not_access_denied(reason: str) -> None:
+    with pytest.raises(HTTPException) as raised:
+        await _stream_failing_with(_drive_403(reason))
+
+    assert raised.value.status_code == 429
+
+
+async def test_a_permission_403_is_still_access_denied() -> None:
+    with pytest.raises(HTTPException) as raised:
+        await _stream_failing_with(_drive_403("insufficientFilePermissions"))
+
+    assert raised.value.status_code == 403

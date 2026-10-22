@@ -5,16 +5,17 @@ import { Box, Flex, IconButton, Popover, Separator, Switch, Text, Tooltip } from
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { MobileBottomSheet } from '@/app/components/ui/mobile-bottom-sheet';
-import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { DEFAULT_AGENT_CAPABILITIES } from '@/chat/types';
 
 export function hasNonDefaultSearchCapabilities(
   internalSearch: boolean,
   webSearch: boolean,
+  deepResearch = false,
 ): boolean {
   return (
     internalSearch !== DEFAULT_AGENT_CAPABILITIES.internalSearch ||
-    webSearch !== DEFAULT_AGENT_CAPABILITIES.webSearch
+    webSearch !== DEFAULT_AGENT_CAPABILITIES.webSearch ||
+    (deepResearch && webSearch)
   );
 }
 
@@ -27,7 +28,7 @@ export function PlusMenuTriggerIcon({
 }) {
   return (
     <Box style={{ position: 'relative', display: 'inline-flex' }}>
-      <MaterialIcon name="add" size={ICON_SIZES.PRIMARY} color={color} />
+      <MaterialIcon name="add" size={16} color={color} />
       {showFilterBadge && (
         <Box
           data-testid="plus-menu-filter-badge"
@@ -54,6 +55,9 @@ export interface PlusMenuCapabilities {
   webSearch: boolean;
   onToggleInternalSearch: (enabled: boolean) => void;
   onToggleWebSearch: (enabled: boolean) => void;
+  /** Research thoroughly on the web before answering; needs web search. Off when the toggle is absent. */
+  deepResearch?: boolean;
+  onToggleDeepResearch?: (enabled: boolean) => void;
   /**
    * `false` = the agent wasn't configured with this capability, so the toggle
    * is disabled. `undefined` = universal mode, capability always available.
@@ -75,11 +79,14 @@ function PlusMenuRow({
   onClick?: () => void;
   disabled?: boolean;
 }) {
+  const [hovered, setHovered] = React.useState(false);
   return (
     <Flex
       align="center"
       justify="between"
       gap="3"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       role={onClick ? 'menuitem' : undefined}
       tabIndex={onClick && !disabled ? 0 : undefined}
       aria-disabled={disabled || undefined}
@@ -95,8 +102,11 @@ function PlusMenuRow({
             }
       }
       style={{
-        padding: 'var(--space-2) var(--space-2)',
-        borderRadius: 'var(--radius-2)',
+        height: 32,
+        padding: '0 var(--space-2)',
+        borderRadius: 'var(--radius-1)',
+        backgroundColor: hovered && !disabled ? 'var(--olive-3)' : undefined,
+        outline: 'none',
         cursor: disabled ? 'not-allowed' : onClick ? 'pointer' : 'default',
         opacity: disabled ? 0.5 : 1,
       }}
@@ -149,6 +159,8 @@ export function PlusMenuContent({
   onToggleWebSearch,
   agentHasInternalSearch,
   agentHasWebSearch,
+  deepResearch = false,
+  onToggleDeepResearch,
 }: PlusMenuContentProps) {
   const { t } = useTranslation();
   const notConfiguredLabel = t('chat.agentCapabilities.notConfiguredOnAgent', {
@@ -156,10 +168,10 @@ export function PlusMenuContent({
   });
 
   return (
-    <Flex direction="column" gap="1" style={{ minWidth: '200px' }}>
+    <Flex direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
       <PlusMenuRow onClick={onAttachFiles}>
         <Flex align="center" gap="2">
-          <MaterialIcon name="attach_file" size={ICON_SIZES.PRIMARY} color="var(--slate-11)" />
+          <MaterialIcon name="attach_file" size={16} color="var(--neutral-11)" />
           <Text size="2" style={{ color: 'var(--slate-12)' }}>
             {t('chat.attachmentTooltip', { defaultValue: 'Attach files' })}
           </Text>
@@ -182,6 +194,17 @@ export function PlusMenuContent({
         disabledTooltip={notConfiguredLabel}
         onCheckedChange={onToggleWebSearch}
       />
+      {onToggleDeepResearch && (
+        <PlusMenuToggleRow
+          label={t('chat.agentCapabilities.deepResearch', { defaultValue: 'Deep research' })}
+          checked={deepResearch}
+          disabled={!webSearch || agentHasWebSearch === false}
+          disabledTooltip={t('chat.agentCapabilities.deepResearchNeedsWebSearch', {
+            defaultValue: 'Turn on web search to use deep research',
+          })}
+          onCheckedChange={onToggleDeepResearch}
+        />
+      )}
     </Flex>
   );
 }
@@ -211,12 +234,13 @@ export function PlusMenuButton({
   const showFilterBadge = hasNonDefaultSearchCapabilities(
     capabilities.internalSearch,
     capabilities.webSearch,
+    capabilities.onToggleDeepResearch ? capabilities.deepResearch : false,
   );
   return (
     <Popover.Root open={open} onOpenChange={onOpenChange}>
       <Popover.Trigger>
         <IconButton
-          variant={open ? 'soft' : 'ghost'}
+          variant="ghost"
           color="gray"
           size="2"
           disabled={disabled}
@@ -227,7 +251,17 @@ export function PlusMenuButton({
                 })
               : t('chat.plusMenu.ariaLabel', { defaultValue: 'Attach files and capabilities' })
           }
-          style={{ margin: 0, cursor: disabled ? 'default' : 'pointer' }}
+          style={{
+            margin: 0,
+            width: 32,
+            height: 32,
+            minWidth: 32,
+            padding: 0,
+            boxSizing: 'border-box',
+            backgroundColor: open ? 'var(--olive-3)' : undefined,
+            borderRadius: 'var(--radius-2)',
+            cursor: disabled ? 'default' : 'pointer',
+          }}
         >
           <PlusMenuTriggerIcon
             color={disabled ? 'var(--slate-5)' : activeIconColor}
@@ -236,11 +270,14 @@ export function PlusMenuButton({
         </IconButton>
       </Popover.Trigger>
       <Popover.Content
+        data-composer-popover=""
         side="top"
         align="start"
+        // Opening from the mouse should not paint a focus ring on the first row.
+        onOpenAutoFocus={(e) => e.preventDefault()}
         style={{
-          padding: 'var(--space-2)',
-          minWidth: '220px',
+          width: 216,
+          padding: 6,
           backgroundColor: 'var(--color-panel-solid)',
           borderRadius: 'var(--radius-3)',
           boxShadow: 'var(--shadow-4)',

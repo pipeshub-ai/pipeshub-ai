@@ -695,6 +695,29 @@ class TestStageAttachmentToBlob:
         assert parsed["filename"] == "doc.pdf"
 
     @pytest.mark.asyncio
+    async def test_staged_attachment_belongs_to_the_artifact_owner(self) -> None:
+        """A service-account agent reads mail with its own sign-in; what it stages is the chatting user's."""
+        attachment = MagicMock()
+        attachment.odata_type = "#microsoft.graph.fileAttachment"
+        attachment.name = "doc.pdf"
+        attachment.content_type = "application/pdf"
+        attachment.content_bytes = base64.b64encode(b"%PDF-1.4")
+        state = {
+            "org_id": "org-1", "user_id": "u-alice", "artifact_owner_user_id": "u-bob",
+            "config_service": MagicMock(), "conversation_id": "conv-1",
+            "blob_store": MagicMock(), "graph_provider": AsyncMock(),
+        }
+        ol = _build_outlook({
+            "me_messages_get_attachments": AsyncMock(return_value=_mock_graph_response(success=True, data=attachment)),
+        }, state=state)
+        register = AsyncMock(return_value=MagicMock(artifact_id="artifact-xyz"))
+
+        with patch("app.services.artifact_registry.registry.ArtifactRegistryService.register", new=register):
+            _ok_tuple(await ol.stage_attachment_to_blob("MSG", "ATT"))
+
+        assert register.await_args.kwargs["actor"].user_id == "u-bob"
+
+    @pytest.mark.asyncio
     async def test_zero_byte_attachment_rejected(self):
         attachment = MagicMock()
         attachment.odata_type = "#microsoft.graph.fileAttachment"

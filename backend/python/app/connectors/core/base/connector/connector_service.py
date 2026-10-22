@@ -15,6 +15,7 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.constants import INTERNAL_CONNECTOR_GROUP_NAME
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.core.registry.filters import FilterOptionsResponse
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.thread_pool import (
     SharedConnectorThreadPool,
     ThreadPoolLease,
@@ -42,6 +43,19 @@ class ConnectorInitError(Exception):
     just return ``False`` and get the generic message, as before. Background
     callers (factory, event service) already treat any exception from ``init()``
     as a failure, so raising it there is safe."""
+
+
+def oauth_app_not_linked_error() -> ConnectorInitError:
+    """The error for a sign-in connector whose saved settings name no OAuth app.
+
+    Some connectors read their client ID and secret only from a linked OAuth app,
+    never from client credentials saved on the connector itself. Without the link
+    they cannot start, even when sign-in already succeeded."""
+    return ConnectorInitError(
+        "This connector is not linked to an OAuth app, so it cannot start. "
+        "An admin can fix this on the connector's Authenticate Instance tab: choose "
+        "or create an OAuth app and save, then sign in again on the Authorize tab."
+    )
 
 
 class ConnectionCheckResult(BaseModel):
@@ -107,6 +121,9 @@ class BaseConnector(ABC):
         # Injected post-construction by ConnectorFactory, same as _notification_service.
         self.connector_instance_name: Optional[str] = None
         self.last_synced_by: Optional[str] = None
+        # What the last run did, in the connector's own terms (counts, why it stopped); stored on
+        # the app doc with the run's outcome so the UI can show it. Flat JSON values only.
+        self.last_sync_summary: dict[str, object] | None = None
         self.creator_email = None
         # Cached GROUP permission for the pseudo "ConnectorGroup" (see
         # ensure_connector_group_permission). Populated lazily by personal-scope
@@ -188,7 +205,8 @@ class BaseConnector(ABC):
         Every lookup is defensive: this feeds error messages, so it must never
         raise and mask the failure it is describing.
         """
-        instance_name = getattr(self, "instance_name", None)
+        # instance_name is set by the stream route, connector_instance_name by ConnectorFactory.
+        instance_name = getattr(self, "instance_name", None) or getattr(self, "connector_instance_name", None)
         if instance_name:
             return str(instance_name)
         metadata = getattr(type(self), "_connector_metadata", None)
@@ -200,6 +218,10 @@ class BaseConnector(ABC):
         if connector_name is None:
             return "the source"
         return getattr(connector_name, "value", None) or str(connector_name)
+
+    def _notification_title(self, event: str) -> str:
+        """A notification title that says which connector instance it is about."""
+        return f"{self.display_name}: {event}"
 
     @abstractmethod
     async def init(self) -> bool:
@@ -217,6 +239,13 @@ class BaseConnector(ABC):
 
         Connectors that override this get a connection check in the setup form."""
         raise NotImplementedError(f"{cls.__name__} has no connection check")
+
+    @classmethod
+    def auth_config_problems(cls, auth_config: dict[str, Any]) -> list[str]:
+        """What is wrong with auth settings about to be saved, each fit to show the user.
+
+        Called with the merged settings a save would store. None by default."""
+        return []
 
     @classmethod
     def supports_connection_check(cls) -> bool:
@@ -237,6 +266,17 @@ class BaseConnector(ABC):
     @abstractmethod
     def run_incremental_sync(self) -> None:
         NotImplementedError("This method is not supported")
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """How much of the source the full sync that just returned read.
+
+        Asked once ``run_sync`` has returned from a full sync. The links of the
+        records and groups that sync did not write are then removed, except what
+        this says it did not read. The default says it read everything, so a node
+        it did not write is gone from the source. A connector whose sync reads
+        only a date window, or that carries on past errors, should say so here.
+        """
+        return FullSyncCoverage()
 
     @abstractmethod
     def handle_webhook_notification(self, notification: Dict) -> None:
@@ -339,6 +379,43 @@ class BaseConnector(ABC):
         helper without a one-off migration.
         """
         return f"internal-{self.connector_id}"
+
+    async def ensure_creator_user_app_relation(self) -> None:
+        """Upsert only the creator's user-to-app edge.
+
+        Personal connectors reach every record by inheriting up to the app, so
+        the creator is linked to the app and nowhere else.
+        """
+        if not self.creator_email:
+            self.logger.warning(
+                "Cannot link creator to app for connector %s: no creator email resolved",
+                self.connector_id,
+            )
+            return
+
+        app_name_enum = (
+            self.connector_name
+            if isinstance(self.connector_name, Connectors)
+            else Connectors(self.connector_name)
+        )
+        creator_member = AppUser(
+            app_name=app_name_enum,
+            connector_id=self.connector_id,
+            source_user_id=f"creator_{self.created_by or self.creator_email}",
+            email=self.creator_email,
+            full_name=self.creator_email,
+            org_id=self.data_entities_processor.org_id,
+            is_active=True,
+        )
+        try:
+            await self.data_entities_processor.on_new_app_users([creator_member])
+        except Exception as e:
+            self.logger.warning(
+                "USER_APP_RELATION upsert failed for connector %s creator %s: %s.",
+                self.connector_id,
+                self.creator_email,
+                e,
+            )
 
     async def ensure_connector_group_permission(self) -> Optional[Permission]:
         """Upsert the creator's ``USER_APP_RELATION`` edge and a pseudo
@@ -514,6 +591,22 @@ class BaseConnector(ABC):
                 "Could not link the user who authenticated connector %s to source account %s: %s",
                 self.connector_id, email, e,
             )
+
+    async def authenticator_email(self) -> str | None:
+        """Email of the PipesHub user whose credentials this connector runs with: the app's
+        ``authenticatedBy``, else its creator, as ``link_authenticator_to_source_user`` resolves
+        them. None when neither names a user with an email."""
+        try:
+            user = await self.data_entities_processor.get_app_authenticator_user(
+                self.connector_id, self.created_by,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Connector %s: could not read the user who authenticated it: %s", self.connector_id, e,
+            )
+            return None
+        email = (user or {}).get("email")
+        return email.strip() if isinstance(email, str) and email.strip() else None
 
     async def notify(
         self,

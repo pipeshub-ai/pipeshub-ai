@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.core.context import CancellationToken, RunContext
 from app.agent_loop_lib.core.exceptions import AgentError
 from app.agent_loop_lib.core.types import AgentResult, Goal
+from app.agent_loop_lib.core.usage_source import llm_usage_source
 from app.agent_loop_lib.events.base import EventEmitter
 from app.agent_loop_lib.modules.providers.budget.base import BudgetManager
 from app.agent_loop_lib.modules.providers.knowledge.base import KnowledgeProvider
@@ -242,6 +243,7 @@ class AgentRuntime:
             goal=goal,
             project_name=self.opik_project_name,
         ) as span:
-            result = await child.run(goal)
+            with llm_usage_source(f"sub_agent:{spec.name}"):
+                result = await child.run(goal)
             record_agent_span_result(span, result=result)
             return result

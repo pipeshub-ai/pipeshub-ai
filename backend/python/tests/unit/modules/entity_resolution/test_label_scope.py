@@ -26,6 +26,7 @@ from app.models.entities import EntityType
 from app.modules.agents.record_escalation.policy import build_candidates
 from app.modules.agents.record_escalation.renderer import render_candidate_table
 from app.services.graph_db.common.utils import PermittedEntityRows
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from tests.support.fake_entity_graph import RECORDS, FakeGraph
 from tests.unit.modules.entity_resolution.conftest import FakeEntityVectorStore, _tokens
 
@@ -59,7 +60,10 @@ _ENTITY_COLLECTIONS = {
 
 class ScopedGraph(FakeGraph):
     """The fake graph plus the read paths the knowledge-graph tools use, with
-    one user who can open only ``readable`` records of one connector."""
+    one user who can open only ``readable`` records of one connector.
+
+    As in the real providers, the entity query only pages candidates (the tools
+    pass every candidate's connector) and ``check_access`` decides each row."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -104,11 +108,23 @@ class ScopedGraph(FakeGraph):
         out: dict[tuple[str, str], PermittedEntityRows] = {}
         for ref in refs:
             candidates = self._linked_records(ref["type"], ref["id"])[offset:offset + window]
-            permitted = [self._row(k) for k in candidates if k in self.readable][:limit_per_entity]
+            rows = [self._row(k) for k in candidates]
+            permitted = [
+                row for row in rows
+                if row["connectorId"] in app_level_connector_ids or row["_key"] in self.readable
+            ][:limit_per_entity]
             out[(ref["type"], ref["id"])] = PermittedEntityRows(
                 permitted, window_size=len(candidates), examined=len(candidates),
             )
         return out
+
+    async def get_knowledge_hub_access_v3(self, user_key, org_id) -> dict:
+        return {"grantee_ids": [user_key], "gated_app_ids": [CONNECTOR], "by_connector": {CONNECTOR: []}}
+
+    async def check_access(self, user_key, org_id, *, node_ids=(), access=None, **_kwargs) -> AccessCheck:
+        assert user_key == USER_KEY and org_id == ORG
+        admitted = frozenset(n for n in node_ids if n in self.readable)
+        return AccessCheck(node_ids=admitted, node_ids_in_scope=admitted)
 
 
 class SearchableStore(FakeEntityVectorStore):

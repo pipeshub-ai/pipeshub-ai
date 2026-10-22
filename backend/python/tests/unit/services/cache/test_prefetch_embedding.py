@@ -15,7 +15,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agents.chat_modes.prefetch import PrefetchResult, prefetch_retrieval
+from app.modules.retrieval.context.builder import KnowledgeContext
 from app.modules.retrieval.retrieval_service import RetrievalService
+
+
+def _mock_prefetch_render(vr_to_result: dict[str, object], text: str = "policy text"):
+    mock_builder = MagicMock()
+    mock_builder.build = AsyncMock(
+        return_value=KnowledgeContext(
+            ranked=[{"virtual_record_id": vrid} for vrid in vr_to_result],
+            virtual_record_id_to_result=vr_to_result,
+        )
+    )
+    mock_rendered = MagicMock(
+        parts=[[{"type": "text", "text": text}]],
+        units=[{"virtual_record_id": vrid} for vrid in vr_to_result],
+        images=[],
+        ranked=[{"virtual_record_id": vrid} for vrid in vr_to_result],
+    )
+    return mock_builder, mock_rendered
 
 
 def _make_dummy_prefetch_kwargs(
@@ -79,6 +97,9 @@ class TestSearchWithFiltersByteIdenticalResponse:
             "md5Checksum": "abc123def456",
         }
         retrieval_service.graph_provider.get_records_by_record_ids = AsyncMock(return_value=[raw_record])
+        retrieval_service.graph_provider.check_access = AsyncMock(
+            return_value=MagicMock(node_ids={"r1"}, records_by_vrid={"vr1": "r1"})
+        )
 
         # Standard call without out_query_embedding
         result = await retrieval_service.search_with_filters(
@@ -176,18 +197,10 @@ class TestPrefetchFingerprintsAndEmbeddingHandoff:
         retrieval_service = MagicMock()
         retrieval_service.search_with_filters = AsyncMock(side_effect=_fake_search_with_filters)
 
-        flattened = [{"virtual_record_id": "vr1", "recordId": "r1"}]
+        builder, rendered = _mock_prefetch_render({"vr1": {"virtual_record_id": "vr1", "id": "r1"}})
 
-        async def _fake_get_flattened_results(*args, **kwargs) -> list[dict[str, object]]:
-            vr_to_result = args[4] if len(args) > 4 else kwargs.get("virtual_record_id_to_result", {})
-            if isinstance(vr_to_result, dict):
-                vr_to_result["vr1"] = {"virtual_record_id": "vr1", "id": "r1"}
-            return flattened
-
-        with patch("app.agents.chat_modes.prefetch.get_flattened_results", side_effect=_fake_get_flattened_results), \
-             patch("app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children", new=AsyncMock()), \
-             patch("app.agents.chat_modes.prefetch.enrich_records_with_graph_context", new=AsyncMock()), \
-             patch("app.agents.chat_modes.prefetch.build_message_content_array", return_value=([[{"type": "text", "text": "policy text"}]], MagicMock())):
+        with patch("app.agents.chat_modes.prefetch.KnowledgeContextBuilder", return_value=builder), \
+             patch("app.agents.chat_modes.prefetch.render_knowledge", return_value=rendered):
 
             result = await prefetch_retrieval(**_make_dummy_prefetch_kwargs(retrieval_service=retrieval_service))
 
@@ -217,18 +230,10 @@ class TestPrefetchFingerprintsAndEmbeddingHandoff:
         retrieval_service = MagicMock()
         retrieval_service.search_with_filters = AsyncMock(side_effect=_fake_search_with_filters)
 
-        flattened = [{"virtual_record_id": "vr1", "recordId": "r1"}]
+        builder, rendered = _mock_prefetch_render({"vr1": {"virtual_record_id": "vr1", "id": "r1"}})
 
-        async def _fake_get_flattened_results(*args, **kwargs) -> list[dict[str, object]]:
-            vr_to_result = args[4] if len(args) > 4 else kwargs.get("virtual_record_id_to_result", {})
-            if isinstance(vr_to_result, dict):
-                vr_to_result["vr1"] = {"virtual_record_id": "vr1", "id": "r1"}
-            return flattened
-
-        with patch("app.agents.chat_modes.prefetch.get_flattened_results", side_effect=_fake_get_flattened_results), \
-             patch("app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children", new=AsyncMock()), \
-             patch("app.agents.chat_modes.prefetch.enrich_records_with_graph_context", new=AsyncMock()), \
-             patch("app.agents.chat_modes.prefetch.build_message_content_array", return_value=([[{"type": "text", "text": "policy text"}]], MagicMock())):
+        with patch("app.agents.chat_modes.prefetch.KnowledgeContextBuilder", return_value=builder), \
+             patch("app.agents.chat_modes.prefetch.render_knowledge", return_value=rendered):
 
             result = await prefetch_retrieval(**_make_dummy_prefetch_kwargs(retrieval_service=retrieval_service))
 
@@ -255,17 +260,13 @@ class TestPrefetchFingerprintsAndEmbeddingHandoff:
             },
         })
 
-        async def _fake_get_flattened_results(*args, **kwargs) -> list[dict[str, object]]:
-            vr_to_result = args[4] if len(args) > 4 else kwargs.get("virtual_record_id_to_result", {})
-            if isinstance(vr_to_result, dict):
-                vr_to_result["vr1"] = {"virtual_record_id": "vr1"}
-                vr_to_result["vr2_fk_child"] = {"virtual_record_id": "vr2_fk_child"}
-            return [{"virtual_record_id": "vr1"}, {"virtual_record_id": "vr2_fk_child"}]
+        builder, rendered = _mock_prefetch_render(
+            {"vr1": {"virtual_record_id": "vr1"}, "vr2_fk_child": {"virtual_record_id": "vr2_fk_child"}},
+            text="policy text with child",
+        )
 
-        with patch("app.agents.chat_modes.prefetch.get_flattened_results", side_effect=_fake_get_flattened_results), \
-             patch("app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children", new=AsyncMock()), \
-             patch("app.agents.chat_modes.prefetch.enrich_records_with_graph_context", new=AsyncMock()), \
-             patch("app.agents.chat_modes.prefetch.build_message_content_array", return_value=([[{"type": "text", "text": "policy text with child"}]], MagicMock())):
+        with patch("app.agents.chat_modes.prefetch.KnowledgeContextBuilder", return_value=builder), \
+             patch("app.agents.chat_modes.prefetch.render_knowledge", return_value=rendered):
 
             result = await prefetch_retrieval(**_make_dummy_prefetch_kwargs(retrieval_service=retrieval_service))
 
@@ -288,17 +289,13 @@ class TestPrefetchFingerprintsAndEmbeddingHandoff:
             },
         })
 
-        async def _fake_get_flattened_results(*args, **kwargs) -> list[dict[str, object]]:
-            vr_to_result = args[4] if len(args) > 4 else kwargs.get("virtual_record_id_to_result", {})
-            if isinstance(vr_to_result, dict):
-                vr_to_result["vB"] = {"virtual_record_id": "vB"}
-                vr_to_result["vA"] = {"virtual_record_id": "vA"}
-            return [{"virtual_record_id": "vB"}, {"virtual_record_id": "vA"}]
+        builder, rendered = _mock_prefetch_render(
+            {"vB": {"virtual_record_id": "vB"}, "vA": {"virtual_record_id": "vA"}},
+            text="content",
+        )
 
-        with patch("app.agents.chat_modes.prefetch.get_flattened_results", side_effect=_fake_get_flattened_results), \
-             patch("app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children", new=AsyncMock()), \
-             patch("app.agents.chat_modes.prefetch.enrich_records_with_graph_context", new=AsyncMock()), \
-             patch("app.agents.chat_modes.prefetch.build_message_content_array", return_value=([[{"type": "text", "text": "content"}]], MagicMock())):
+        with patch("app.agents.chat_modes.prefetch.KnowledgeContextBuilder", return_value=builder), \
+             patch("app.agents.chat_modes.prefetch.render_knowledge", return_value=rendered):
 
             result = await prefetch_retrieval(**_make_dummy_prefetch_kwargs(retrieval_service=retrieval_service))
 
@@ -375,16 +372,10 @@ class TestSparseOnlySearchHandoff:
 
         retrieval_service.search_with_filters = AsyncMock(side_effect=_mock_search_with_filters)
 
-        async def _fake_get_flattened_results(*args, **kwargs) -> list[dict[str, object]]:
-            vr_to_result = args[4] if len(args) > 4 else kwargs.get("virtual_record_id_to_result", {})
-            if isinstance(vr_to_result, dict):
-                vr_to_result["vr1"] = {"virtual_record_id": "vr1"}
-            return [{"virtual_record_id": "vr1"}]
+        builder, rendered = _mock_prefetch_render({"vr1": {"virtual_record_id": "vr1"}}, text="content")
 
-        with patch("app.agents.chat_modes.prefetch.get_flattened_results", side_effect=_fake_get_flattened_results), \
-             patch("app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children", new=AsyncMock()), \
-             patch("app.agents.chat_modes.prefetch.enrich_records_with_graph_context", new=AsyncMock()), \
-             patch("app.agents.chat_modes.prefetch.build_message_content_array", return_value=([[{"type": "text", "text": "content"}]], MagicMock())):
+        with patch("app.agents.chat_modes.prefetch.KnowledgeContextBuilder", return_value=builder), \
+             patch("app.agents.chat_modes.prefetch.render_knowledge", return_value=rendered):
 
             result = await prefetch_retrieval(**_make_dummy_prefetch_kwargs(retrieval_service=retrieval_service))
 

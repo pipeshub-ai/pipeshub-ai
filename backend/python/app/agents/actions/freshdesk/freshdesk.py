@@ -12,9 +12,9 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolDefinition,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.freshdesk.freshdesk import FreshDeskClient, FreshDeskResponse
 from app.sources.external.freshdesk.freshdesk import FreshdeskDataSource
@@ -97,7 +97,7 @@ tools: List[ToolDefinition] = [
 @ToolsetBuilder("Freshdesk")\
     .in_group("Customer Support")\
     .with_description("Freshdesk integration for customer support ticket management")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.API_TOKEN).fields([
             CommonFields.api_token("Freshdesk API Key", "your-api-key"),

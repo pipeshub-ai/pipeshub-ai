@@ -10,7 +10,6 @@ from web_behaviour_fakes import START_URL, FakeRecordsDb, FakeWeb, MakeConnector
 
 from app.config.constants.arangodb import MimeTypes
 from app.models.entities import FileRecord, RecordType
-from app.models.permission import EntityType
 
 GUIDE = "http://site.test/guide"
 
@@ -123,15 +122,19 @@ async def test_changed_crawl_settings_apply_on_the_next_sync(
     assert set(db.pages()) == {START_URL, "http://site.test/a"}
 
 
-async def test_a_team_connector_shares_pages_with_the_whole_organisation(
+async def test_a_team_connector_shares_pages_through_its_app(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     site.html(START_URL, "Home")
-    await (await make_connector(crawl_type="single", scope="team")).run_sync()
+    connector = await make_connector(crawl_type="single", scope="team")
+    await connector.run_sync()
 
     group, permissions = db.record_groups[-1]
     assert group.web_url == START_URL
-    assert [(p.entity_type, p.external_id) for p in permissions] == [(EntityType.ORG, "org-1")]
+    assert group.inherit_permissions is True
+    assert permissions == []
+    assert db.team_app_edges == [connector.connector_id]
+    assert db.app_users == []
 
 
 async def test_a_personal_connector_shares_pages_only_with_its_creator(
@@ -140,8 +143,11 @@ async def test_a_personal_connector_shares_pages_only_with_its_creator(
     site.html(START_URL, "Home")
     await (await make_connector(crawl_type="single", scope="personal")).run_sync()
 
-    _, permissions = db.record_groups[-1]
-    assert [(p.entity_type, p.email) for p in permissions] == [(EntityType.USER, "owner@example.com")]
+    group, permissions = db.record_groups[-1]
+    assert group.inherit_permissions is True
+    assert permissions == []
+    assert [u.email for u in db.app_users] == ["owner@example.com"]
+    assert db.team_app_edges == []
 
 
 async def test_a_connector_without_a_website_url_does_not_start(

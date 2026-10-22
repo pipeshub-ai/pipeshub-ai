@@ -3,7 +3,7 @@
 import base64
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -13,8 +13,6 @@ from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
-    IndexingFilterKey,
-    MultiselectOperator,
     SyncFilterKey,
 )
 from app.connectors.sources.azure_files.connector import (
@@ -22,10 +20,8 @@ from app.connectors.sources.azure_files.connector import (
     AzureFilesDataSourceEntitiesProcessor,
     get_file_extension,
     get_mimetype_for_azure_files,
-    get_parent_path,
 )
 from app.models.entities import FileRecord, RecordGroupType, RecordType, User
-from app.models.permission import EntityType, Permission, PermissionType
 
 
 def _make_response(success=True, data=None, error=None):
@@ -912,8 +908,7 @@ class TestCreatePermissions:
     async def test_team_scope(self, conn):
         conn.scope = ConnectorScope.TEAM.value
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, conn):
@@ -921,8 +916,7 @@ class TestCreatePermissions:
         conn.creator_email = "creator@test.com"
         conn.created_by = "u-1"
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.OWNER
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator_falls_back_to_org(self, conn):
@@ -930,8 +924,7 @@ class TestCreatePermissions:
         conn.creator_email = None
         conn.created_by = None
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_exception_returns_org_permission(self, conn):

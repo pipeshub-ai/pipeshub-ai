@@ -1227,6 +1227,22 @@ describe('OAuthTokenService - branch coverage', () => {
   // refreshTokens - scope narrowing
   // =========================================================================
   describe('refreshTokens', () => {
+    it('should throw InvalidGrantError when the token is for another workspace than the app', async () => {
+      const refreshToken = jwt.sign(
+        { isRefreshToken: true, userId: 'u1', orgId: 'o2' },
+        'test-secret-key-for-signing-tokens-at-least-32-bytes',
+      )
+      const findOne = sinon.stub(OAuthRefreshToken, 'findOne').resolves({} as any)
+
+      try {
+        await service.refreshTokens({ clientId: 'c1', orgId: 'o1' } as any, refreshToken)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(InvalidGrantError)
+      }
+      expect(findOne.calledOnce).to.be.true
+    })
+
     it('should throw InvalidTokenError when stored refresh token not found', async () => {
       const refreshToken = jwt.sign(
         { isRefreshToken: true, userId: 'u1', orgId: 'o1' },
@@ -1238,7 +1254,7 @@ describe('OAuthTokenService - branch coverage', () => {
         .onSecondCall().resolves(null) // refreshTokens check
 
       try {
-        await service.refreshTokens({ clientId: 'c1' } as any, refreshToken)
+        await service.refreshTokens({ clientId: 'c1', orgId: 'o1' } as any, refreshToken)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(InvalidTokenError)
@@ -1286,6 +1302,7 @@ describe('OAuthTokenService - branch coverage', () => {
       ) => ({
         clientId,
         allowedScopes,
+        orgId,
         accessTokenLifetime: 3600,
         refreshTokenLifetime: 86400,
         createdBy: new Types.ObjectId(),

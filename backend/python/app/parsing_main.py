@@ -14,6 +14,7 @@ import types
 from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -23,7 +24,9 @@ from app.api.routes.parsing import router as parsing_router
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import OCRProvider
 from app.containers.parsing import ParsingAppContainer, initialize_container
+from app.edition_services import configure_app
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
+from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
 from app.modules.parsers.epub.epub_parser import EPUBParser
@@ -55,8 +58,8 @@ from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.sql.sql_table_parser import SQLTableParser
 from app.modules.parsers.sql.sql_view_parser import SQLViewParser
 from app.modules.parsers.yaml.yaml_parser import YAMLParser
-from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.services.docling.client import DoclingClient
+from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParserProvider
 from app.services.parsing.providers.docling_service_parser import DoclingServiceParser
@@ -68,6 +71,7 @@ from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 
 logger = logging.getLogger("parsing_main")
@@ -152,7 +156,11 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     # PDF
     # ----------------------------------------------------------------
     smart_pdf_docling = SmartPDFParser(docling_svc_parser, docling_ocr_parser)
-    smart_pdf_default = SmartPDFParser(docling_svc_parser, default_ocr_parser)
+    # Same flag as the in-process indexing path (app/events/events.py).
+    use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
+    smart_pdf_default = SmartPDFParser(
+        pdfplumber_parser if use_pdfplumber else docling_svc_parser, default_ocr_parser
+    )
     registry.register("pdf", ParserProvider.DOCLING, smart_pdf_docling)
     registry.register("pdf", ParserProvider.DEFAULT, smart_pdf_default)
 
@@ -232,6 +240,7 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mark_process_non_dumpable()
+    install_log_redaction()
     app_container = await _get_initialized_container()
     app.container = app_container  # type: ignore[attr-defined]
 
@@ -323,6 +332,7 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+configure_app(app, "parsing")
 
 # Trace context — outermost, so log lines correlate with the caller's request.
 app.add_middleware(RequestContextMiddleware)
@@ -347,6 +357,13 @@ async def health_check() -> JSONResponse:
             # service itself is still healthy.
             container.logger().warning("Resource governor stats failed: %s", stats_error)
             content["resource_governor"] = {"error": "unavailable"}
+    try:
+        # Table summaries, image descriptions and VLM OCR call models through this process's gateway.
+        content["llm_gateway"] = get_llm_gateway().stats()
+    except Exception as stats_error:
+        # Logged, not returned: exception text does not belong in /health.
+        container.logger().warning("LLM gateway stats failed: %s", stats_error)
+        content["llm_gateway"] = {"error": "unavailable"}
     return JSONResponse(content=content)
 
 

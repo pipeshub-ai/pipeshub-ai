@@ -304,25 +304,36 @@ class TestProcessBoxEntry:
     async def test_shared_link_company_adds_org_permission(self, box_connector):
         entry = _make_box_entry(shared_link={"access": "company", "url": "https://box.com/s/123"})
         box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
-            return_value=MagicMock(success=False, error="None")
+            return_value=MagicMock(success=True, data={"entries": []})
         )
         result = await box_connector._process_box_entry(
             entry, user_id="u1", user_email="user@test.com", record_group_id="rg1"
         )
-        org_perms = [p for p in result.new_permissions if "ORG_" in (p.external_id or "")]
-        assert len(org_perms) == 1
-        assert org_perms[0].entity_type == EntityType.GROUP
+        org_id = box_connector.data_entities_processor.org_id
+        assert [(p.external_id, p.entity_type, p.type) for p in result.new_permissions] == [
+            (org_id, EntityType.ORG, PermissionType.READ)
+        ]
 
-    async def test_shared_link_open_adds_public_permission(self, box_connector):
-        entry = _make_box_entry(shared_link={"access": "open", "url": "https://box.com/s/public"})
+    async def test_shared_link_company_is_not_applied_when_collaborators_are_unreadable(self, box_connector) -> None:
+        entry = _make_box_entry(shared_link={"access": "company", "url": "https://box.com/s/123"})
         box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
             return_value=MagicMock(success=False, error="None")
         )
         result = await box_connector._process_box_entry(
             entry, user_id="u1", user_email="user@test.com", record_group_id="rg1"
         )
-        public_perms = [p for p in result.new_permissions if p.external_id == "PUBLIC"]
-        assert len(public_perms) == 1
+        assert result.new_permissions == []
+        assert result.permissions_changed is False
+
+    async def test_shared_link_open_writes_no_grant(self, box_connector):
+        entry = _make_box_entry(shared_link={"access": "open", "url": "https://box.com/s/public"})
+        box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
+            return_value=MagicMock(success=True, data={"entries": []})
+        )
+        result = await box_connector._process_box_entry(
+            entry, user_id="u1", user_email="user@test.com", record_group_id="rg1"
+        )
+        assert result.new_permissions == []
 
     async def test_shared_with_me_detected(self, box_connector):
         entry = _make_box_entry(owned_by={"id": "other-user"})
@@ -426,12 +437,13 @@ class TestBoxGetPermissions:
         perms = await box_connector._get_permissions("f1", "file")
         assert perms is None
 
-    async def test_404_returns_empty(self, box_connector):
+    async def test_404_keeps_stored_access_without_a_retry(self, box_connector):
         box_connector.data_source.collaborations_get_file_collaborations = AsyncMock(
             return_value=MagicMock(success=False, error="404 not found")
         )
         perms = await box_connector._get_permissions("f1", "file")
-        assert perms == []
+        assert perms is None
+        assert box_connector._read_complete is True
 
     async def test_skips_entries_without_id(self, box_connector):
         collab_data = {

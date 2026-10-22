@@ -12,7 +12,7 @@ def _get_enum_values(enum_class: Type[Enum]) -> List[str]:
     return [item.value for item in enum_class]
 
 
-record_relations_schema = {
+node_relations_schema = {
     "rule": {
         "type": "object",
         "properties": {
@@ -33,6 +33,31 @@ record_relations_schema = {
     },
     "level": "strict",
     "message": "Document does not match the file relations schema.",
+}
+
+# Links only: a hierarchy type can never land here.
+record_links_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "relationshipType": {
+                "type": "string",
+                "enum": [
+                    t for t in _get_enum_values(RecordRelations)
+                    if t not in (RecordRelations.PARENT_CHILD.value, RecordRelations.ATTACHMENT.value)
+                ],
+            },
+            "constraintName": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["relationshipType"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the record links schema.",
 }
 
 entity_relations_schema = {
@@ -389,6 +414,33 @@ basic_edge_schema = {
     },
     "level": "strict",
     "message": "Document does not match the basic edge schema.",
+}
+
+mentions_entity_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "orgId": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "mentionCount": {"type": "integer"},
+            "maxEvidence": {"type": "number"},
+            "extractors": {"type": "array", "items": {"type": "string"}},
+            "extractedNames": {"type": "array", "items": {"type": "string"}},
+            "blockIndexes": {"type": "array", "items": {"type": "integer"}},
+            "blockIds": {"type": "array", "items": {"type": "string"}},
+            "extractorVersion": {"type": "string"},
+            "mergedFrom": {"type": ["string", "null"]},
+            "migratedFrom": {"type": ["string", "null"]},
+        },
+        "required": ["orgId", "createdAtTimestamp", "mentionCount"],
+        # Open, as nodeRelations and entityRelations are: see named_entity_schema.
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the mentionsEntity schema.",
 }
 
 # Record -> category / subcategory / language / topic. Carries the raw name the

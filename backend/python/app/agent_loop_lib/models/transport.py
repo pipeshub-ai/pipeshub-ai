@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.messages import Message
     from app.agent_loop_lib.core.responses import ModelResponse, StructuredResponse
     from app.agent_loop_lib.core.streaming import StreamEvent
-    from app.agent_loop_lib.core.tool_schema import ToolSchema
+    from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
     from app.agent_loop_lib.transport.base import LLMTransport
 
 __all__ = ["TransportModel"]
@@ -45,11 +45,14 @@ class TransportModel(Model):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> "ModelResponse":
         return await self._transport.complete(
             messages=messages, tools=tools, system=system, model=model,
             thinking_budget=thinking_budget, effort=effort,
             system_blocks=system_blocks,
+            **({"tool_choice": tool_choice} if tool_choice else {}),
         )
 
     async def complete_structured(
@@ -72,9 +75,12 @@ class TransportModel(Model):
         thinking_budget: int | None = None,
         effort: str | None = None,
         system_blocks: list[str] | None = None,
+        *,
+        tool_choice: "ToolChoice | None" = None,
     ) -> AsyncIterator["StreamEvent"]:
         return self._transport.stream(
             messages=messages, tools=tools, system=system, model=model,
             thinking_budget=thinking_budget, effort=effort,
             system_blocks=system_blocks,
+            **({"tool_choice": tool_choice} if tool_choice else {}),
         )

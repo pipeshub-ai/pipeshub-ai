@@ -43,7 +43,9 @@ CURATED_TOOLS = {
 
 # The mcp-server repo caps every description so hosts keep room for their own
 # tools (its __tests__/toolDescriptions.test.ts). Mirror the ceiling here.
-DESCRIPTION_MAX_CHARS = 4000
+# 3.1.0 raised it from 4000 to 4600 (mcp-server#100), for caveats that replace
+# promises the tools did not keep.
+DESCRIPTION_MAX_CHARS = 4600
 
 def _diff(expected: str, actual: str, name: str) -> str:
     return "\n".join(

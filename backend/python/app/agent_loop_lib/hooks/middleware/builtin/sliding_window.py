@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from app.agent_loop_lib.core.tokens import count_message_tokens
 from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
+
+logger = logging.getLogger(__name__)
 
 
 def shape_sliding_window(pin_first_n: int = 1):
@@ -40,12 +44,20 @@ def shape_sliding_window(pin_first_n: int = 1):
         def total_tokens() -> int:
             return sum(count_message_tokens(m) for m in working)
 
-        while total_tokens() > ctx.budget.effective_max_tokens and len(working) > 1:
+        budget = ctx.budget.effective_max_tokens
+        before = total = total_tokens()
+        while total > budget and len(working) > 1:
             evict_at = _find_evictable(working, index_map, pinned)
             if evict_at is None:
                 break
             _evict_group(working, index_map, evict_at)
+            total = total_tokens()
 
+        if len(working) < len(messages):
+            logger.info(
+                "sliding_window: evicted %d oldest message(s), %d→%d tokens (turn=%d, budget=%d)",
+                len(messages) - len(working), before, total, ctx.turn_index, budget,
+            )
         ctx.messages = working
         await next_fn()
 

@@ -9,6 +9,16 @@ import type {
   InstanceSyncStatus,
 } from '../../types';
 
+/**
+ * When the connector last finished a sync. Instances whose last run predates that field
+ * fall back to the doc's last write, which any settings change also moves.
+ */
+export function lastSyncedAt(
+  instance: Pick<ConnectorInstance, 'lastSyncFinishedAtTimestamp' | 'updatedAtTimestamp'>,
+): number | undefined {
+  return instance.lastSyncFinishedAtTimestamp ?? instance.updatedAtTimestamp;
+}
+
 // ========================================
 // Config-derived helpers
 // ========================================

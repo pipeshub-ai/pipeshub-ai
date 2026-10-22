@@ -137,6 +137,25 @@ class TestVectorStoreApply:
     """Tests for VectorStore.apply."""
 
     @pytest.mark.asyncio
+    async def test_a_reindex_of_unchanged_content_writes_nothing(self) -> None:
+        """The reconciliation diff decides: no block changed, so no point is written or deleted."""
+        from app.modules.transformers.transformer import ReconciliationContext
+
+        vs = _make_vectorstore()
+        vs.index_documents = AsyncMock(return_value=True)
+        vs.delete_blocks_by_ids = AsyncMock()
+        record = MagicMock(id="rec-1", virtual_record_id="vr-1", org_id="org-1")
+        ctx = MagicMock(record=record)
+        ctx.reconciliation_context = ReconciliationContext(
+            new_metadata={}, blocks_to_index_ids=set(), block_ids_to_delete=set()
+        )
+
+        assert await vs.apply(ctx) is True
+
+        vs.index_documents.assert_not_awaited()
+        vs.delete_blocks_by_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_apply_delegates_to_index_documents(self):
         """apply should extract record info and call index_documents."""
         vs = _make_vectorstore()
@@ -1069,6 +1088,25 @@ class TestIndexDocuments:
             await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
     @pytest.mark.asyncio
+    async def test_create_embeddings_keeps_non_retryable_error(self) -> None:
+        """A NonRetryableError from the text path is not wrapped in VectorStoreError."""
+        from langchain_core.documents import Document
+
+        from app.exceptions.non_retryable import NonRetryableError
+
+        class _Blocked(NonRetryableError):
+            pass
+
+        vs = _make_vectorstore()
+        vs.delete_embeddings = AsyncMock()
+        vs._process_document_chunks = AsyncMock(side_effect=_Blocked("blocked"))
+
+        with pytest.raises(_Blocked):
+            await vs._create_embeddings(
+                [Document(page_content="hi", metadata={})], "rec-1", "vr-1", "coll"
+            )
+
+    @pytest.mark.asyncio
     async def test_paragraph_blocks_processed_as_text(self):
         """Paragraph blocks are processed as text."""
         from app.models.blocks import Block, BlocksContainer
@@ -1371,6 +1409,25 @@ class TestGetEmbeddingModelInstance:
             result = await vs.get_embedding_model_instance()
 
         assert result is False  # Default is not multimodal
+
+    @pytest.mark.asyncio
+    async def test_default_embedding_when_ai_settings_never_saved(self) -> None:
+        """A fresh org has no AI-models node at all; indexing must still use the default model."""
+        vs = _make_vectorstore()
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1024)
+        mock_embeddings.model_name = "default-model"
+        vs.config_service.get_config = AsyncMock(return_value=None)
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            return_value=mock_embeddings,
+        ) as default_model:
+            result = await vs.get_embedding_model_instance()
+
+        assert result is False
+        default_model.assert_called_once()
+        assert vs.dense_embeddings is mock_embeddings
 
     @pytest.mark.asyncio
     async def test_configured_embedding_model(self):
@@ -2640,3 +2697,150 @@ class TestRecordPresenceAcrossBatches:
             assert await presence.check() is False  # 3 s later: read again, gone
 
         assert graph.get_document.await_count == 2
+
+
+# ===================================================================
+# Token-budget batches for OpenAI and Azure OpenAI
+# ===================================================================
+
+
+class TestTokenBudgetBatches:
+    """Many small documents no longer force one request per 50 of them on
+    the providers whose requests take far more."""
+
+    @staticmethod
+    def _sentence_docs(count: int) -> list:
+        from langchain_core.documents import Document
+
+        # About the size of one sentence of a diff: ~20 tokens.
+        return [
+            Document(
+                page_content=f"+    result = compute_value(item_{i}, threshold=0.5)  # step {i}",
+                metadata={"i": i},
+            )
+            for i in range(count)
+        ]
+
+    @staticmethod
+    async def _batches(provider: str | None, docs: list, endpoint: str | None = None) -> list:
+        vs = _make_vectorstore()
+        vs.embedding_provider = provider
+        vs.embedding_endpoint = endpoint
+        batches: list = []
+        vs._embed_and_upsert_documents = AsyncMock(
+            side_effect=lambda batch, *_: batches.append(batch)
+        )
+        await vs._process_document_chunks(docs, "rec-1", "test_collection")
+        return batches
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("provider", ["openAI", "azureOpenAI"])
+    async def test_small_documents_share_one_request(
+        self, provider: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A typical pull request's diffs: ~550 documents, ~11k tokens."""
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+        docs = self._sentence_docs(550)
+        batches = await self._batches(provider, docs)
+        assert len(batches) == 1
+        assert [d.metadata["i"] for d in batches[0]] == list(range(550))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("provider", "endpoint"),
+        [
+            ("cohere", None),
+            ("gemini", None),
+            ("openAICompatible", "https://embeddings.example.com/v1"),
+            # OpenAI's client pointed at another server: that server's limit
+            # on inputs per request is unknown.
+            ("openAI", "https://llm-gateway.example.com/v1"),
+        ],
+    )
+    async def test_other_providers_keep_fifty_documents_a_request(
+        self, provider: str, endpoint: str | None
+    ) -> None:
+        from app.modules.transformers.vectorstore import _DEFAULT_DOCUMENT_BATCH_SIZE
+
+        batches = await self._batches(provider, self._sentence_docs(550), endpoint)
+        assert len(batches) == 11
+        assert max(len(b) for b in batches) == _DEFAULT_DOCUMENT_BATCH_SIZE
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("variable", ["OPENAI_BASE_URL", "OPENAI_API_BASE"])
+    async def test_openai_pointed_elsewhere_by_the_environment_keeps_fifty(
+        self, variable: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No endpoint configured, but the client takes one from the
+        environment: that server's input limit is unknown too."""
+        monkeypatch.setenv(variable, "https://llm-gateway.example.com/v1")
+        batches = await self._batches("openAI", self._sentence_docs(550))
+        assert len(batches) == 11
+
+    @pytest.mark.asyncio
+    async def test_openai_pointed_elsewhere_by_its_client_keeps_fifty(self) -> None:
+        vs = _make_vectorstore()
+        vs.embedding_provider = "openAI"
+        vs.embedding_endpoint = None
+        vs.dense_embeddings = MagicMock(openai_api_base="https://llm-gateway.example.com/v1")
+        assert not vs._batches_by_tokens()
+
+    @pytest.mark.asyncio
+    async def test_openai_named_explicitly_still_packs_by_tokens(self) -> None:
+        batches = await self._batches(
+            "openAI", self._sentence_docs(550), "https://api.openai.com/v1"
+        )
+        assert len(batches) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_token_budget_bounds_each_request(self) -> None:
+        from langchain_core.documents import Document
+
+        from app.modules.transformers.vectorstore import (
+            _TOKEN_BATCH_MAX_TOKENS,
+            _token_len,
+        )
+
+        # Whole blocks of ~4k tokens each: the budget, not the count, binds.
+        block = " ".join(f"word{i}" for i in range(2000))
+        docs = [Document(page_content=block, metadata={"i": i}) for i in range(20)]
+        batches = await self._batches("azureOpenAI", docs)
+
+        assert sum(len(b) for b in batches) == 20
+        assert len(batches) > 1
+        for batch in batches:
+            assert sum(_token_len(d.page_content) for d in batch) <= _TOKEN_BATCH_MAX_TOKENS
+
+    def test_an_oversized_document_gets_a_request_of_its_own(self) -> None:
+        from langchain_core.documents import Document
+
+        from app.modules.transformers.vectorstore import _batch_documents_by_tokens
+
+        small = Document(page_content="short", metadata={})
+        big = Document(page_content="token " * 400, metadata={})
+        batches = _batch_documents_by_tokens([small, big, small], 1000, 100)
+        assert [(start, len(batch)) for start, batch in batches] == [(0, 1), (1, 1), (2, 1)]
+
+    def test_the_document_cap_still_applies(self) -> None:
+        from app.modules.transformers.vectorstore import _batch_documents_by_tokens
+
+        batches = _batch_documents_by_tokens(self._sentence_docs(25), 10, 10_000)
+        assert [len(batch) for _start, batch in batches] == [10, 10, 5]
+
+    def test_text_that_spells_a_special_token_is_counted(self) -> None:
+        """Source code about language models contains "<|endoftext|>"; by
+        default tiktoken refuses to encode it, which would fail the record."""
+        from app.modules.transformers.vectorstore import _token_len
+
+        assert _token_len('stop = "<|endoftext|>"') > 0
+
+    def test_text_that_spells_a_special_token_is_split_too(self) -> None:
+        """One unsplittable span over the ceiling reaches the token slicer;
+        a special-token spelling in it must not fail the record."""
+        from app.modules.transformers.vectorstore import _split_to_token_ceiling
+
+        text = "x" * 200 + "<|endoftext|>" + "y" * 200
+        pieces = _split_to_token_ceiling(text, 50)
+        assert len(pieces) > 1
+        assert "".join(pieces) == text

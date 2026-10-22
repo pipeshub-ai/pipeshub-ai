@@ -1,6 +1,11 @@
 import { apiClient } from '@/lib/api';
 import type {
   CreateServiceAccountPayload,
+  Delegation,
+  DelegationCapability,
+  DelegationEventListApiResponse,
+  DelegationListApiResponse,
+  GrantDelegationPayload,
   CreateServiceTokenApiResponse,
   CreateServiceTokenPayload,
   ServiceAccount,
@@ -12,6 +17,7 @@ import type {
 
 const ACCOUNTS_URL = '/api/v1/service-accounts';
 const TOKENS_URL = '/api/v1/service-tokens';
+const DELEGATIONS_URL = '/api/v1/service-account-delegations';
 
 export const ServiceAccountsApi = {
   /** GET /api/v1/service-accounts */
@@ -80,5 +86,62 @@ export const ServiceTokensApi = {
     await apiClient.delete(`${TOKENS_URL}/${tokenId}`, {
       params: { serviceAccountId },
     });
+  },
+};
+
+export const DelegationsApi = {
+  /**
+   * GET /api/v1/service-account-delegations/capability
+   *
+   * Answers in both editions, so a failure here means the request did not
+   * arrive rather than that the capability is missing. Treated as unavailable
+   * either way: offering a control that cannot work is worse than hiding one
+   * that could.
+   */
+  async capability(): Promise<DelegationCapability> {
+    const { data } = await apiClient.get<DelegationCapability>(
+      `${DELEGATIONS_URL}/capability`
+    );
+    return data;
+  },
+
+  /** GET /api/v1/service-account-delegations?serviceAccountId= */
+  async list(serviceAccountId: string): Promise<DelegationListApiResponse> {
+    const { data } = await apiClient.get<DelegationListApiResponse>(
+      DELEGATIONS_URL,
+      { params: { serviceAccountId } }
+    );
+    return data;
+  },
+
+  /** POST /api/v1/service-account-delegations */
+  async grant(body: GrantDelegationPayload): Promise<Delegation> {
+    const { data } = await apiClient.post<{ delegation: Delegation }>(
+      DELEGATIONS_URL,
+      body
+    );
+    return data.delegation;
+  },
+
+  /** DELETE /api/v1/service-account-delegations/:subjectUserId */
+  async revoke(subjectUserId: string, serviceAccountId: string): Promise<void> {
+    await apiClient.delete(`${DELEGATIONS_URL}/${subjectUserId}`, {
+      params: { serviceAccountId },
+    });
+  },
+
+  /**
+   * GET /api/v1/service-account-delegations/events
+   * Omit the account id to read the log across the whole organisation.
+   */
+  async events(
+    serviceAccountId?: string,
+    limit?: number
+  ): Promise<DelegationEventListApiResponse> {
+    const { data } = await apiClient.get<DelegationEventListApiResponse>(
+      `${DELEGATIONS_URL}/events`,
+      { params: { serviceAccountId, limit } }
+    );
+    return data;
   },
 };

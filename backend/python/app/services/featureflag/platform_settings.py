@@ -8,9 +8,10 @@ The query service does not wire ``FeatureFlagService`` with an ``EtcdProvider``
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Optional
 
 from app.services.featureflag.config.config import CONFIG
+from app.utils.env_utils import high_accuracy_mode
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
@@ -25,30 +26,28 @@ async def read_platform_feature_flag(
     config_service: ConfigurationService,
     *,
     default: bool,
+    use_cache: bool = False,
 ) -> bool:
     """Return a platform feature flag's boolean value from encrypted settings.
 
-    Reads with ``use_cache=False`` so flipping a flag in Labs takes effect on
-    the next request instead of after a service restart. On missing settings,
-    an absent flag key, or a read failure, returns ``default``.
+    Reads with ``use_cache=False`` by default so flipping a flag in Labs takes
+    effect on the next request instead of after a service restart. A hot path
+    may pass ``use_cache=True``: a save in Labs invalidates the cached key in
+    every process. On missing settings, an absent flag key, or a read failure,
+    returns ``default``.
     """
     try:
-        raw_settings: object = await config_service.get_config(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            PLATFORM_SETTINGS_KEY, default={}, use_cache=False,
+        settings = await config_service.get_config(
+            PLATFORM_SETTINGS_KEY, default={}, use_cache=use_cache,
         )
-        if not isinstance(raw_settings, dict):
-            return default
-        settings: dict[str, object] = cast("dict[str, object]", raw_settings)
-        flags = settings.get("featureFlags")
+        flags = settings.get("featureFlags") if isinstance(settings, dict) else None
         if not isinstance(flags, dict):
             return default
-        flags_dict: dict[object, object] = cast("dict[object, object]", flags)
         # Keys are normalized to upper-case, matching `EtcdProvider`.
-        normalized: dict[str, object] = {str(k).upper(): v for k, v in flags_dict.items()}
-        target_key = str(flag_name).upper()
-        if target_key not in normalized:
+        normalized = {str(k).upper(): v for k, v in flags.items()}
+        if str(flag_name).upper() not in normalized:
             return default
-        return bool(normalized[target_key])
+        return bool(normalized[str(flag_name).upper()])
     except Exception as e:
         logger.error(
             "Failed to read %s for feature flag %s; using default=%s: %s",
@@ -118,6 +117,15 @@ async def is_skills_enabled(config_service: ConfigurationService | None = None) 
     return await _platform_flag(config_service, CONFIG.ENABLE_SKILLS, default=True)
 
 
+async def is_named_entity_extraction_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Gate for typed named-entity extraction and the tools that read it: on when
+    the deployment sets ``HIGH_ACCURACY_MODE`` or the Labs flag is on. The flag is
+    read live and defaults to off; under ``HIGH_ACCURACY_MODE`` it is not read."""
+    if high_accuracy_mode():
+        return True
+    return await _platform_flag(config_service, CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION, default=False)
+
+
 async def is_soft_delete_enabled(config_service: ConfigurationService | None = None) -> bool:
     """Whether a record delete moves the record to the trash instead of removing it.
 
@@ -145,4 +153,17 @@ async def is_semantic_cache_enabled(config_service: ConfigurationService | None 
     Defaults to DISABLED (opt-in per organization).
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_SEMANTIC_CACHE, default=False)
+
+
+async def is_kh_scope_listing_enabled(config_service: Optional["ConfigurationService"]) -> bool:
+    """Gate for the knowledge hub's precomputed-scope listing. Source of truth
+    is the ``ENABLE_KH_SCOPE_LISTING`` platform feature flag. Defaults to
+    DISABLED, matching the Labs default. Read on every listing request, so it
+    reads through the config cache; a save in Labs invalidates it everywhere.
+    """
+    if config_service is None:
+        return False
+    return await read_platform_feature_flag(
+        CONFIG.ENABLE_KH_SCOPE_LISTING, config_service, default=False, use_cache=True,
+    )
 

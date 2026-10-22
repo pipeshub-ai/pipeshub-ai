@@ -7,6 +7,7 @@ import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { useTranslation } from 'react-i18next';
 import { MenuItem } from './menu-item';
 import { useGitHubStars } from './hooks/use-github-stars';
+import { useBrand } from '@/lib/branding';
 
 /**
  * External links section of the workspace menu:
@@ -15,9 +16,13 @@ import { useGitHubStars } from './hooks/use-github-stars';
 export function ExternalLinksSection() {
   const stars = useGitHubStars();
   const { t } = useTranslation();
+  const brand = useBrand();
+  const docsUrl = brand.docsHref() ?? EXTERNAL_LINKS.documentation;
+  const githubUrl = brand.githubUrl;
 
   return (
     <Flex direction="column" gap="1">
+      {docsUrl ? (
       <MenuItem
         icon={
           <img
@@ -36,9 +41,11 @@ export function ExternalLinksSection() {
             color="var(--slate-11)"
           />
         }
-        href={EXTERNAL_LINKS.documentation}
+        href={docsUrl}
       />
+      ) : null}
 
+      {githubUrl ? (
       <MenuItem
         icon={
           <img
@@ -93,8 +100,9 @@ export function ExternalLinksSection() {
             color="var(--slate-11)"
           />
         }
-        href={EXTERNAL_LINKS.github}
+        href={githubUrl}
       />
+      ) : null}
     </Flex>
   );
 }

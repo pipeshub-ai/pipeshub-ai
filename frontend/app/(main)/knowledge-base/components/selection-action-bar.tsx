@@ -1,6 +1,7 @@
 'use client';
 
 import { Flex, Text, Button, Checkbox, Separator } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { PermissionLockIcon } from '@/config';
 import type { PageViewMode } from '../types';
@@ -9,7 +10,7 @@ interface SelectionActionBarProps {
   selectedCount: number;
   onDeselectAll: () => void;
   onChat: () => void;
-  onReindex: () => void;
+  onReindex?: () => void;
   onDelete?: () => void;
   deletePermissionDenied?: boolean;
   pageViewMode?: PageViewMode;
@@ -24,6 +25,7 @@ export function SelectionActionBar({
   deletePermissionDenied,
   pageViewMode = 'collections',
 }: SelectionActionBarProps) {
+  const { t } = useTranslation();
   if (selectedCount === 0) return null;
 
   return (
@@ -68,7 +70,6 @@ export function SelectionActionBar({
       {/* Divider */}
       <Separator orientation="vertical" size="1" style={{ height: '16px', background: 'var(--olive-3)' }} />
 
-      {/* Chat button - temporarily hidden
       <Button
         size="1"
         variant="surface"
@@ -83,27 +84,28 @@ export function SelectionActionBar({
         }}
       >
         <MaterialIcon name="assistant" size={16} />
-        Chat
+        {t('kb.chatWithSelection')}
       </Button>
-      */}
 
       {/* Re-index button - Neutral style */}
-      <Button
-        size="1"
-        variant="outline"
-        color="gray"
-        onClick={onReindex}
-        style={{
-          borderColor: 'var(--slate-a7)',
-          color: 'var(--slate-11)',
-          cursor: 'pointer',
-          borderRadius: 'var(--radius-2)',
-          padding: 'var(--space-3)'
-        }}
-      >
-        <MaterialIcon name="refresh" size={16} />
-        Re-index
-      </Button>
+      {onReindex && (
+        <Button
+          size="1"
+          variant="outline"
+          color="gray"
+          onClick={onReindex}
+          style={{
+            borderColor: 'var(--slate-a7)',
+            color: 'var(--slate-11)',
+            cursor: 'pointer',
+            borderRadius: 'var(--radius-2)',
+            padding: 'var(--space-3)'
+          }}
+        >
+          <MaterialIcon name="refresh" size={16} />
+          Re-index
+        </Button>
+      )}
 
       {/* Delete button - hidden only in all-records mode */}
       {pageViewMode !== 'all-records' && onDelete && (

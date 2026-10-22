@@ -12,6 +12,7 @@ import pytest
 
 import app.config.ai_models.providers  # noqa: F401  -- populate the registry
 from app.config.ai_models.registry import ai_model_registry
+from app.services.ai_models.decision import get_decision_model
 from app.utils.aimodels import (
     _reasoning_effort_kwargs,
     get_embedding_model,
@@ -29,6 +30,7 @@ _FACTORIES = {
     "image_generation": get_image_generation_model,
     "tts": get_tts_model,
     "stt": get_stt_model,
+    "decision": get_decision_model,
 }
 
 

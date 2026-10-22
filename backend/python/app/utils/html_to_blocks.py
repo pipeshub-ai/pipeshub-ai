@@ -6,7 +6,15 @@ from typing import Literal
 from urllib.parse import urljoin
 
 import trafilatura
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import (
+    BeautifulSoup,
+    Comment,
+    Declaration,
+    Doctype,
+    NavigableString,
+    ProcessingInstruction,
+    Tag,
+)
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -140,6 +148,9 @@ def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str]) -> N
     for child in node.children:
         # ── Plain text node ──────────────────────────────────────────────
         if isinstance(child, NavigableString):
+            # Markup notes, not page text, such as React's `<!--$-->` Suspense markers.
+            if isinstance(child, (Comment, Declaration, Doctype, ProcessingInstruction)):
+                continue
             text = str(child)
             if text.strip():      # skip pure-whitespace text nodes
                 buffer.append(text)

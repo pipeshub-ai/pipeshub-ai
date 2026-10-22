@@ -8,14 +8,15 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import jwt
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient, Response
-from jose import jwt
 
 from app.api.middlewares.auth import authMiddleware
 from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus
+from app.api.middlewares.request_context import RequestContextMiddleware
 from app.api.routes.parsing import router as parsing_router
 from app.models.blocks import BlocksContainer
 from app.services.parsing.interface import (
@@ -246,22 +247,34 @@ def test_parse_endpoint_invalid_provider() -> None:
     assert body["success"] is False
 
 
-def test_parse_endpoint_unexpected_exception() -> None:
+def test_parse_endpoint_unexpected_exception(caplog: pytest.LogCaptureFixture) -> None:
+    """The 500 body names the failure without echoing the exception text,
+    which stays in the service's own log with its traceback."""
     registry = MagicMock(spec=ParserRegistry)
     mock_parser = MagicMock()
-    mock_parser.parse = AsyncMock(side_effect=RuntimeError("Boom"))
+    mock_parser.parse = AsyncMock(side_effect=RuntimeError("Boom /srv/secret token=abc"))
     registry.resolve = MagicMock(return_value=mock_parser)
 
     app = _build_app(registry)
     client = TestClient(app)
 
-    response = client.post(
-        "/api/v1/parse",
-        files={"file": ("test.pdf", b"data", "application/pdf")},
-        data={"mime_type": "application/pdf", "provider": "default"},
-    )
+    with caplog.at_level(logging.ERROR, logger="app.api.routes.parsing"):
+        response = client.post(
+            "/api/v1/parse",
+            files={"file": ("test.pdf", b"data", "application/pdf")},
+            data={"mime_type": "application/pdf", "provider": "default"},
+        )
 
     assert response.status_code == 500
+    body = response.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "PARSE_FAILED"
+    assert body["error"]["message"] == "Unexpected error while parsing the document"
+    assert body["error"]["details"] == {"requestId": "-"}
+    assert "RuntimeError" not in response.text
+    assert "Boom" not in response.text
+    assert "/srv/secret" not in response.text
+    assert any(r.exc_info and "Boom" in str(r.exc_info[1]) for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -622,3 +635,45 @@ def test_providers_with_orgless_parse_token_is_200() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"csv": ["default"]}
+
+
+@pytest.mark.asyncio
+async def test_a_parse_already_braked_in_this_memory_is_not_braked_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The all-in-one image: indexing braked the parse, so parsing admits it up to its
+    ceiling instead of queueing it behind its own braked limit."""
+    import app.api.routes.parsing as parsing_routes
+    import app.services.resource_governor.memory_domain as memory_domain_module
+
+    monkeypatch.setattr(parsing_routes, "PARSE_QUEUE_WAIT_WARN_SECONDS", 0.02)
+    monkeypatch.setattr(parsing_routes, "PARSE_GATE_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(memory_domain_module, "memory_domain_id", lambda: "dom-1")
+
+    release_event = asyncio.Event()
+    registry = MagicMock(spec=ParserRegistry)
+    registry.resolve = MagicMock(return_value=_slow_parser(release_event, hold_seconds=1.0))
+    app = _build_app(registry, heavy_limit=4)
+    # As parsing_main installs it: it reads the stamp an upstream service sent.
+    app.add_middleware(RequestContextMiddleware)
+    # Braked below its ceiling by memory pressure.
+    app.state.governor._registry.set(Pool.HEAVY_PARSE, 1)
+    pdf = {"file": ("a.pdf", b"%PDF-1.4", "application/pdf")}
+    form = {"mime_type": "application/pdf", "extension": "pdf", "provider": "default"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = asyncio.create_task(client.post("/api/v1/parse", files=pdf, data=form))
+        await asyncio.sleep(0.05)  # the first request holds the one braked slot
+        braked_elsewhere = await client.post(
+            "/api/v1/parse", files=pdf, data=form, headers={"x-pipeshub-admitted-in": "dom-2"}
+        )
+        braked_here = asyncio.create_task(
+            client.post("/api/v1/parse", files=pdf, data=form, headers={"x-pipeshub-admitted-in": "dom-1"})
+        )
+        await asyncio.sleep(0.2)
+        release_event.set()
+        first_response, same_memory_response = await asyncio.gather(first, braked_here)
+
+    assert first_response.status_code == 200
+    assert braked_elsewhere.status_code == 429
+    assert same_memory_response.status_code == 200

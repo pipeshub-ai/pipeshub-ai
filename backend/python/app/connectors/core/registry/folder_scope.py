@@ -49,6 +49,20 @@ def path_in_container(container_name: str | None, external_record_id: str | None
     return external_record_id[len(prefix):] or None
 
 
+def folder_path_problems(sync_values: dict[str, object]) -> list[str]:
+    """A folder filter value that would climb out of the bucket, container or share."""
+    entry = sync_values.get(SyncFilterKey.FOLDER_PATHS.value)
+    if not isinstance(entry, dict):
+        return []
+    raw = entry.get("value")
+    for value in raw if isinstance(raw, list) else [raw]:
+        if value is None:
+            continue
+        if any(part.strip() == ".." for part in str(value).replace("\\", "/").split("/")):
+            return [f'Folder "{value}" must be a path from the top of the store, without "..".']
+    return []
+
+
 @dataclass(frozen=True)
 class FolderScope:
     """Folder prefixes (each ending in ``/``) and whether they are excluded."""
@@ -203,10 +217,10 @@ async def remove_records_outside_scope(
     if scope.is_everything:
         return CleanupResult(0, 0)
 
-    from app.config.constants.arangodb import MimeTypes
+    from app.config.constants.arangodb import FOLDER_MIME_TYPES
 
     def outside(record: Record, path: str) -> bool:
-        is_folder = record.mime_type == MimeTypes.FOLDER.value
+        is_folder = record.mime_type in FOLDER_MIME_TYPES
         return not (scope.includes_folder(path) if is_folder else scope.includes_file(path))
 
     return await _remove_records(
@@ -333,20 +347,33 @@ async def remove_deselected_containers(
     stored = {g.get("externalGroupId") for g in groups if isinstance(g, dict)} - {None, ""}
     stale = sorted(name for name in stored if not name_passes_filter(saved, filter_name, name))
     for container_name in stale:
-        try:
-            result = await _remove_records(
-                data_entities_processor, connector_id, container_name, lambda record, path: True,
-                f"now that the {filter_name} filter leaves {container_name} out", logger,
-            )
-        except Exception as e:  # retried on the next sync
-            logger.warning(f"Could not read the records of de-selected {container_name}: {e}")
-            continue
-        if result.failed:
-            logger.warning(f"{result.failed} records of de-selected {container_name} could not be removed; retrying next sync")
-            continue
-        # The group goes last: while it stays, the next sync finds the container again.
-        if not await data_entities_processor.on_record_group_deleted(container_name, connector_id):
-            logger.warning(f"Could not remove the record group of de-selected {container_name}; retrying next sync")
+        await remove_container(
+            data_entities_processor, connector_id, container_name,
+            f"now that the {filter_name} filter leaves {container_name} out", logger,
+        )
+
+
+async def remove_container(
+    data_entities_processor: DataSourceEntitiesProcessor,
+    connector_id: str,
+    container_name: str,
+    reason: str,
+    logger: logging.Logger,
+) -> None:
+    """Delete every record of ``container_name``, then its record group; what fails is retried next sync."""
+    try:
+        result = await _remove_records(
+            data_entities_processor, connector_id, container_name, lambda record, path: True, reason, logger,
+        )
+    except Exception as e:  # retried on the next sync
+        logger.warning(f"Could not read the records of {container_name} to remove: {e}")
+        return
+    if result.failed:
+        logger.warning(f"{result.failed} records of {container_name} could not be removed; retrying next sync")
+        return
+    # The group goes last: while it stays, the next sync finds the container again.
+    if not await data_entities_processor.on_record_group_deleted(container_name, connector_id):
+        logger.warning(f"Could not remove the record group of {container_name}; retrying next sync")
 
 
 async def clean_up_scope(

@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { Flex, Text, Box } from '@radix-ui/themes';
+import { ConnectorOverviewExtras } from '@/config';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
@@ -24,6 +25,7 @@ import type {
   LocalSyncStatus,
 } from '../../types';
 import { IndexingStatsPanel } from '@/app/components/indexing-stats/indexing-stats-panel';
+import { LastRunSummary } from './last-run-summary';
 
 // ========================================
 // Props
@@ -66,6 +68,7 @@ export function OverviewTab({
   const [isHeaderSyncBusy, setIsHeaderSyncBusy] = useState(false);
   const [isReindexFailedBusy, setIsReindexFailedBusy] = useState(false);
   const [isManualIndexBusy, setIsManualIndexBusy] = useState(false);
+  const [isRetryClassificationBusy, setIsRetryClassificationBusy] = useState(false);
   const [isStopBusy, setIsStopBusy] = useState(false);
 
   // The panel outlives the run, so a stop the backend could not complete
@@ -76,6 +79,7 @@ export function OverviewTab({
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const isFullSyncRunning =
     (instance.status ?? '').toUpperCase() === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING;
+  const [panelRefreshKey, bumpPanelRefresh] = useReducer((n: number) => n + 1, 0);
   const configForDerive =
     connectorConfig ?? (instance._key ? instanceConfigs[instance._key] : undefined);
   const syncStatus = deriveSyncStatus(instance, stats ?? undefined, configForDerive);
@@ -108,6 +112,7 @@ export function OverviewTab({
     try {
       setIsRefreshStatsBusy(true);
       await fetchInstanceStats(connectorId, { force: true });
+      bumpPanelRefresh();
       addToast({
         variant: 'success',
         title: t('workspace.connectors.overview.refreshStatsSuccess'),
@@ -222,6 +227,22 @@ export function OverviewTab({
     }
   }, [instance._key, instance.isActive, isManualIndexBusy, addToast, fetchInstanceStats]);
 
+  const handleRetryFailedClassification = useCallback(async () => {
+    const connectorId = instance._key;
+    if (!connectorId || !instance.isActive || isRetryClassificationBusy) return;
+    try {
+      setIsRetryClassificationBusy(true);
+      await ConnectorsApi.reindexConnector(connectorId, ['FAILED'], ['classify']);
+      addToast({ variant: 'success', title: t('workspace.connectors.overview.retryClassificationSuccess') });
+      await fetchInstanceStats(connectorId, { force: true });
+    } catch (error) {
+      console.error('Failed to retry classification', { connectorId, error });
+      addToast({ variant: 'error', title: t('workspace.connectors.overview.retryClassificationError') });
+    } finally {
+      setIsRetryClassificationBusy(false);
+    }
+  }, [instance._key, instance.isActive, isRetryClassificationBusy, addToast, fetchInstanceStats, t]);
+
   // Show sync progress bar for syncing
   const showProgressBar = isSyncing && instance.syncProgress;
 
@@ -273,6 +294,8 @@ export function OverviewTab({
         </Flex>
       )}
 
+      <LastRunSummary instance={instance} />
+
       {/* Shared stats panel */}
       <IndexingStatsPanel
         stats={stats}
@@ -280,6 +303,7 @@ export function OverviewTab({
         onRefresh={handleOverviewRefreshStats}
         onReindexFailed={handleReindexFailed}
         onManualIndex={handleManualIndex}
+        onRetryFailedClassification={handleRetryFailedClassification}
         onNavigateToRecords={navigateToRecords}
         onSync={
           instance.isActive && !isSyncRunning(instance.status)
@@ -304,6 +328,7 @@ export function OverviewTab({
         }
         isReindexFailedBusy={isReindexFailedBusy}
         isManualIndexBusy={isManualIndexBusy}
+        isRetryClassificationBusy={isRetryClassificationBusy}
       />
 
       <ConfirmationDialog
@@ -337,6 +362,7 @@ export function OverviewTab({
         isLoading={isStopBusy}
         onConfirm={() => void handleConfirmStopSync()}
       />
+      <ConnectorOverviewExtras connectorId={instance._key ?? null} refreshKey={panelRefreshKey} />
     </Flex>
   );
 }

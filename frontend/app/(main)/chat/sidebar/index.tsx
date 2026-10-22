@@ -11,8 +11,8 @@ import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
 import { isCommandKey } from '@/lib/utils/platform';
+import { ChatSidebarFooter } from '@/config';
 import { ChatSidebarHeader } from './header';
-import { ChatSidebarFooter } from './footer';
 import { StaticNavSection } from './static-nav-section';
 import { MyAgentsSection } from './my-agents-section';
 import { ChatSections } from './chat-sections';

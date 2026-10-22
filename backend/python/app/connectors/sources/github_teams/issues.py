@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
@@ -42,6 +42,7 @@ from app.models.blocks import (
     GroupType,
     wire_block_group_parent_children,
 )
+from app.utils.time_conversion import datetime_to_epoch_ms
 from app.models.entities import (
     ItemType,
     Priority,
@@ -54,7 +55,7 @@ from app.models.entities import (
 )
 from app.connectors.utils.value_mapper import map_priority, map_type
 
-from .common.utils import epoch_ms_or_now, listing_payload
+from .common.utils import epoch_ms_or_now, listing_payload, listing_since, sync_window_start
 from .constants import ISSUE_PAGE_SIZE
 from .models import GitHubLiterals, RecordUpdate
 
@@ -132,6 +133,16 @@ def _status_from_issue(issue: Any) -> str:
     return Status.DONE.value
 
 
+def _updated_before(item: object, bound: datetime | None) -> bool:
+    """Whether ``item`` was last updated before ``bound`` (never, without one)."""
+    updated_at = getattr(item, "updated_at", None)
+    if bound is None or not isinstance(updated_at, datetime):
+        return False
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    return updated_at < bound
+
+
 class IssuesSync:
     """Handles issue (ticket) synchronisation for ``GitHubTeamsConnector``."""
 
@@ -174,9 +185,15 @@ class IssuesSync:
         after the last, and memory never holds more than a page. The page IS
         the batch — one build, one persist call, one transaction.
 
-        On a page failure the checkpoint is left untouched and the sweep stops:
-        the listing is sorted ``updated asc``, so advancing past a failure
-        would skip those issues forever.
+        The listing is sorted ``updated desc``, so the most recently changed
+        issues are stored, and so indexed, first. It starts at the later of the
+        checkpoint and the "updated since" window (GitHub's ``since``), so an
+        issue outside the window is never listed and nothing is fetched for it.
+
+        On a page failure the checkpoint is left untouched and the sweep stops.
+        The checkpoint is committed only once the sweep completes, so a failure
+        part-way is re-read from the old checkpoint next sync whatever the
+        order.
         """
         c = self.c
         owner, repo_name = repo.owner.login, repo.name
@@ -186,10 +203,21 @@ class IssuesSync:
         # own checkpoint, so taking the min of both would re-fetch issues from
         # further back than necessary whenever the PR side lagged.
         last_sync_time = await self._get_sync_checkpoint(f"{repo.id}-work-items")
-        since_dt = (
+        checkpoint_dt = (
             datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
             if last_sync_time is not None else None
         )
+        window_dt = sync_window_start(c.sync_filters)
+        since_dt = listing_since(checkpoint_dt, window_dt)
+        # GitHub's ``since`` means updated *after*, to the second. That suits
+        # the checkpoint, the last issue already stored. A window start is a
+        # date the admin chose and includes issues updated at it, so ask from
+        # a second earlier and drop anything older here.
+        window_floor = (
+            window_dt if since_dt is not None and since_dt == window_dt and since_dt != checkpoint_dt
+            else None
+        )
+        request_since = window_floor - timedelta(seconds=1) if window_floor else since_dt
 
         page = 1
         processed = 0
@@ -197,7 +225,7 @@ class IssuesSync:
         while True:
             issues_res = await c.runtime.ds_call(
                 c.data_source.list_issues, owner, repo_name,
-                state="all", since=since_dt, sort="updated", direction="asc",
+                state="all", since=request_since, sort="updated", direction="desc",
                 per_page=ISSUE_PAGE_SIZE, page=page,
             )
             if not issues_res.success:
@@ -206,9 +234,12 @@ class IssuesSync:
                     "so this page is retried next sync.", repo.full_name, page, issues_res.error,
                 )
                 return
-            items = issues_res.data or []
-            if not items:
+            listed = issues_res.data or []
+            if not listed:
                 break
+            # Newest first, so the first issue older than the window means
+            # every later one is older too.
+            items = [i for i in listed if not _updated_before(i, window_floor)]
 
             # The page IS the batch: one build, one persist call, one
             # transaction. Re-chunking by a constant only split it into a
@@ -223,7 +254,7 @@ class IssuesSync:
                 return
             processed += len(items)
 
-            if len(items) < ISSUE_PAGE_SIZE:
+            if len(items) < len(listed) or len(listed) < ISSUE_PAGE_SIZE:
                 break
             page += 1
 
@@ -367,6 +398,7 @@ class IssuesSync:
                 reporter_email=creator_email,
                 reporter_source_id=creator_id,
                 creator_source_timestamp=epoch_ms_or_now(issue.created_at),
+                resolved_at=datetime_to_epoch_ms(getattr(issue, "closed_at", None)),
                 is_email_hidden=True,
                 inherit_permissions=True,
             )
@@ -483,9 +515,8 @@ class IssuesSync:
         When ``watermarks`` is supplied the caller owns checkpoint
         advancement: the highest ``source_updated_at`` per record group is
         accumulated there and committed once the sweep completes. Advancing
-        per page is unsafe because the listing is sorted ``updated asc``, so a
-        later page's timestamp would commit *past* an earlier failure and
-        those items would never be re-fetched.
+        per page is unsafe: the first page carries the newest timestamps, so
+        committing it would skip every older page left unread after a failure.
         """
         c = self.c
         if not batch_records:
@@ -525,7 +556,7 @@ class IssuesSync:
         repo_id = int(external_group_id.split("-")[0])
         issue_number = int(str(record.external_record_id).rsplit("/", 1)[-1])
 
-        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        repo_res = await c.runtime.get_repo_by_id(repo_id)
         if not repo_res.success or not repo_res.data:
             raise_for_stream_fetch(
                 success=repo_res.success,
@@ -602,7 +633,7 @@ class IssuesSync:
             self.logger.warning("Cannot reindex-check GitHub ticket %s: missing/malformed external ids", record.id)
             return None
         repo_id, number = parsed
-        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        repo_res = await c.runtime.get_repo_by_id(repo_id)
         if not repo_res.success or not repo_res.data:
             self.logger.error("Failed to resolve repo id=%s for reindex %s: %s", repo_id, record.id, repo_res.error)
             return None

@@ -3,6 +3,7 @@
 import base64
 import logging
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -41,6 +42,11 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
+
+if TYPE_CHECKING:
+    from app.connectors.sources.google.gmail.team.connector import (
+        GoogleGmailTeamConnector,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +361,7 @@ class TestTeamProcessGmailMessage:
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     async def test_non_sender_gets_read(self, connector):
         message = _make_gmail_message(from_email="other@example.com")
@@ -363,7 +369,7 @@ class TestTeamProcessGmailMessage:
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result.new_permissions[0].type == PermissionType.READ
+        assert result.new_permissions == []
 
     async def test_case_insensitive_sender_comparison(self, connector):
         message = _make_gmail_message(from_email="User@Example.COM")
@@ -371,7 +377,7 @@ class TestTeamProcessGmailMessage:
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     async def test_no_message_id_returns_none(self, connector):
         message = {"threadId": "t1", "payload": {"headers": []}}
@@ -532,17 +538,36 @@ class TestTeamExtractAttachments:
 
     def test_drive_attachment(self, connector):
         message = _make_gmail_message(has_drive_attachment=True)
-        infos = connector._extract_attachment_infos(message)
+        infos = connector._extract_attachment_infos(
+            message, "user@example.com", google_user_id="g-user-1"
+        )
         drive_infos = [i for i in infos if i["isDriveFile"]]
         assert len(drive_infos) == 1
         assert drive_infos[0]["driveFileId"] == "drive-file-1"
+        assert drive_infos[0]["stableAttachmentId"] == "gdrive:g-user-1:drive-file-1"
+
+    def test_drive_attachment_id_from_synced_mailbox_owner(self, connector: "GoogleGmailTeamConnector") -> None:
+        connector._google_user_id_by_email = {"user@example.com": "g-user-1"}
+        message = _make_gmail_message(has_drive_attachment=True)
+        infos = connector._extract_attachment_infos(message, "User@Example.com")
+        assert [i["stableAttachmentId"] for i in infos if i["isDriveFile"]] == [
+            "gdrive:g-user-1:drive-file-1"
+        ]
+
+    def test_drive_attachment_skipped_without_google_user_id(self, connector: "GoogleGmailTeamConnector") -> None:
+        message = _make_gmail_message(has_attachments=True, has_drive_attachment=True)
+        infos = connector._extract_attachment_infos(message, "user@example.com")
+        assert [i["isDriveFile"] for i in infos] == [False]
 
     def test_drive_file_ids_from_body_content(self, connector):
         html = '<a href="https://drive.google.com/file/d/DRIVE_ID_1/view?usp=drive_web">Link</a>'
         message = _make_gmail_message(body_html=html)
-        infos = connector._extract_attachment_infos(message)
+        infos = connector._extract_attachment_infos(
+            message, "user@example.com", google_user_id="g-user-1"
+        )
         assert len(infos) == 1
         assert infos[0]["driveFileId"] == "DRIVE_ID_1"
+        assert infos[0]["stableAttachmentId"] == "gdrive:g-user-1:DRIVE_ID_1"
 
     def test_nested_parts(self, connector):
         message = {
@@ -634,7 +659,7 @@ class TestTeamProcessAttachment:
             attachment_info=attachment_info, parent_mail_permissions=parent_perms,
             external_record_group_id="u@e.com:OTHERS",
         )
-        assert result.new_permissions == parent_perms
+        assert result.new_permissions == []
 
     async def test_drive_file_fetches_metadata(self, connector):
         attachment_info = {
@@ -1640,7 +1665,7 @@ class TestSyncRecordGroups:
         user = AppUser(app_name=Connectors.GOOGLE_MAIL, connector_id="c", source_user_id="u1",
                        email="u@t.com", full_name="User One")
         await connector_fullcov._sync_record_groups([user])
-        assert connector_fullcov.data_entities_processor.on_new_record_groups.await_count == 3
+        assert connector_fullcov.data_entities_processor.on_new_record_groups.await_count == 1
 
     @pytest.mark.asyncio
     async def test_skips_user_without_email(self, connector_fullcov):
@@ -1715,13 +1740,13 @@ class TestProcessGmailMessage:
         msg = _make_gmail_message_fullcov(from_email="u@t.com", label_ids=["SENT"])
         result = await connector_fullcov._process_gmail_message("u@t.com", msg, "thread-1", None)
         assert result.record.external_record_group_id == "u@t.com:SENT"
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_received_message_read_perm(self, connector_fullcov):
         msg = _make_gmail_message_fullcov(from_email="other@t.com", label_ids=["INBOX"])
         result = await connector_fullcov._process_gmail_message("u@t.com", msg, "thread-1", None)
-        assert result.new_permissions[0].type == PermissionType.READ
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_received_date_does_not_skip_message(self, connector_fullcov):
@@ -1777,14 +1802,15 @@ class TestExtractAttachmentInfos:
 
     def test_drive_attachment(self, connector_fullcov):
         msg = _make_gmail_message_fullcov(has_drive_attachment=True)
-        infos = connector_fullcov._extract_attachment_infos(msg)
+        infos = connector_fullcov._extract_attachment_infos(msg, "u@t.com", google_user_id="g-1")
         assert len(infos) == 1
         assert infos[0]["isDriveFile"] is True
         assert infos[0]["driveFileId"] == "drive-file-1"
+        assert infos[0]["stableAttachmentId"] == "gdrive:g-1:drive-file-1"
 
     def test_both_attachment_types(self, connector_fullcov):
         msg = _make_gmail_message_fullcov(has_attachments=True, has_drive_attachment=True)
-        infos = connector_fullcov._extract_attachment_infos(msg)
+        infos = connector_fullcov._extract_attachment_infos(msg, "u@t.com", google_user_id="g-1")
         assert len(infos) == 2
 
     def test_no_attachments(self, connector_fullcov):
@@ -1803,9 +1829,10 @@ class TestExtractAttachmentInfos:
                 "parts": [],
             }
         }
-        infos = connector_fullcov._extract_attachment_infos(msg)
+        infos = connector_fullcov._extract_attachment_infos(msg, "u@t.com", google_user_id="g-1")
         assert len(infos) == 1
         assert infos[0]["driveFileId"] == "abc123"
+        assert infos[0]["stableAttachmentId"] == "gdrive:g-1:abc123"
 
     def test_nested_parts(self, connector_fullcov):
         msg = {

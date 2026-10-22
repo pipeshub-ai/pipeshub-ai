@@ -9,6 +9,11 @@ import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import type { PendingChatContext } from '@/lib/store/pending-chat-store';
 import { ChatApi } from '@/chat/api';
 import type { AttachmentRef } from '@/chat/types';
+import type { MentionNode } from '@/chat/utils/node-mentions';
+import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
+import { toast } from '@/lib/store/toast-store';
+import { filterBarChatScope } from '../utils/filter-bar-chat-scope';
+import { allCollectionsChatScope } from '../utils/root-app-list';
 
 interface ChatWidgetWrapperProps {
   /** Currently displayed title (collection name, folder name, etc.) */
@@ -17,6 +22,11 @@ interface ChatWidgetWrapperProps {
   selectedKbId: string | null;
   /** Whether we're in all-records mode */
   isAllRecordsMode: boolean;
+  /**
+   * The folder (or collection, or connector) currently open. A question
+   * with no `@` mention is filtered to this node. `@` searches under it.
+   */
+  scopeNode?: MentionNode | null;
 }
 
 /**
@@ -28,6 +38,7 @@ export function ChatWidgetWrapper({
   currentTitle,
   selectedKbId,
   isAllRecordsMode,
+  scopeNode,
 }: ChatWidgetWrapperProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -38,6 +49,10 @@ export function ChatWidgetWrapper({
   const selectedRecords = useKnowledgeBaseStore((s) => s.selectedRecords);
 
   const selectedSet = isAllRecordsMode ? selectedRecords : selectedItems;
+  const barFilter = useKnowledgeBaseStore((s) => (isAllRecordsMode ? s.allRecordsFilter : s.filter));
+  const barSources = useKnowledgeBaseStore(
+    (s) => (isAllRecordsMode ? s.allRecordsTableData : s.tableData)?.filters?.available?.connectors
+  );
 
   // Dynamic placeholder — comes from the parent page
   const widgetPlaceholder = useMemo(() => {
@@ -75,13 +90,47 @@ export function ChatWidgetWrapper({
   }, []);
 
   const handleSend = useCallback(
-    (message: string, attachments?: AttachmentRef[]) => {
-      if (!message.trim() && (!attachments || attachments.length === 0)) return;
+    async (message: string, attachments?: AttachmentRef[], mentions?: MentionNode[]) => {
+      if (!message.trim() && (!attachments || attachments.length === 0)) return false;
 
-      // Build page context from KB state
+      // @ mentions, then the open node, then the open collection, then the filter bar,
+      // then (at the Collections root) every collection.
+      const mentioned = mentions ?? [];
+      let selectedNodes: MentionNode[] | undefined =
+        mentioned.length > 0 ? mentioned : scopeNode ? [scopeNode] : undefined;
+
       const collections: Array<{ id: string; name: string }> = [];
-      if (selectedKbId && currentTitle) {
+      if (!selectedNodes && selectedKbId && currentTitle) {
         collections.push({ id: selectedKbId, name: currentTitle });
+      }
+      if (!selectedNodes && collections.length === 0) {
+        const fromBar = filterBarChatScope(barFilter, barSources ?? []);
+        if (fromBar.length > MAX_SELECTED_NODES) {
+          toast.error(t('kb.chatSelectionLimit', { max: MAX_SELECTED_NODES }));
+          return false;
+        }
+        if (fromBar.length > 0) selectedNodes = fromBar;
+      }
+      // The API takes at most MAX_SELECTED_NODES (200) selected nodes, so a user with
+      // more collections than that cannot ask the Collections root about all of them.
+      if (!selectedNodes && collections.length === 0 && !isAllRecordsMode) {
+        let all: MentionNode[] | null;
+        try {
+          all = await allCollectionsChatScope(MAX_SELECTED_NODES);
+        } catch {
+          toast.error(t('kb.chatCollectionsLoadFailed'));
+          return false;
+        }
+        if (all === null) {
+          toast.error(t('kb.chatTooManyCollections', { max: MAX_SELECTED_NODES }));
+          return false;
+        }
+        // With no collection there is nothing to scope to, and an unscoped question would search everything.
+        if (all.length === 0) {
+          toast.error(t('kb.chatNoCollections'));
+          return false;
+        }
+        selectedNodes = all;
       }
 
       const selectedRecordIds =
@@ -92,6 +141,7 @@ export function ChatWidgetWrapper({
         attachments,
         pageContext: {
           collections: collections.length > 0 ? collections : undefined,
+          selectedNodes,
           selectedRecordIds,
           sourceLabel: currentTitle || undefined,
         },
@@ -100,8 +150,9 @@ export function ChatWidgetWrapper({
 
       usePendingChatStore.getState().setPending(context);
       router.push('/chat');
+      return true;
     },
-    [selectedKbId, currentTitle, selectedSet, pathname, router],
+    [selectedKbId, currentTitle, selectedSet, scopeNode, barFilter, barSources, isAllRecordsMode, pathname, router, t],
   );
 
   return (
@@ -113,6 +164,9 @@ export function ChatWidgetWrapper({
       onSend={handleSend}
       onUploadFile={handleUploadFile}
       onDeleteFile={handleDeleteFile}
+      mentionParent={
+        scopeNode ? { nodeType: scopeNode.nodeType, id: scopeNode.id } : null
+      }
     />
   );
 }

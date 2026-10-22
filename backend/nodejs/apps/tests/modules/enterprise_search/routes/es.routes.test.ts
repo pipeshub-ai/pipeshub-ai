@@ -278,6 +278,25 @@ describe('Enterprise Search Routes', () => {
     expect(paths).to.include('/:conversationId/unarchive')
   })
 
+  for (const action of ['pin', 'unpin']) {
+    it(`should register PATCH /:conversationId/${action} behind the same checks as archive`, () => {
+      const router = createConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => layer.route)
+
+      const route = routes.find((r: any) => r.path === `/:conversationId/${action}` && r.methods.patch)
+      const archive = routes.find((r: any) => r.path === '/:conversationId/archive' && r.methods.patch)
+
+      expect(route, 'route is registered').to.exist
+      expect(route.methods.get, 'not readable').to.equal(undefined)
+      expect(route.methods.post, 'not a POST').to.equal(undefined)
+      // authenticate + scope check + param validation + handler: dropping one must fail here.
+      expect(route.stack.length).to.equal(archive.stack.length)
+      expect(route.stack.length).to.equal(4)
+    })
+  }
+
   it('should register search routes', () => {
     const router = createSemanticSearchRouter(container)
     const routes = router.stack
@@ -426,6 +445,33 @@ describe('Enterprise Search Routes', () => {
 
     expect(paths).to.include('/:searchId/share')
     expect(paths).to.include('/:searchId/unshare')
+  })
+
+  describe('POST / semantic search scope', () => {
+    const runScopeCheck = (oauthScopes: string[]) => {
+      const router = createSemanticSearchRouter(container)
+      const searchRoute = router.stack.find(
+        (layer: any) => layer.route?.path === '/' && layer.route.methods.post,
+      ) as any
+      // authenticate, requireScopes, validate, handler
+      const requireScopes = searchRoute.route.stack[1].handle
+      const next = sinon.spy()
+      requireScopes({ user: { isOAuth: true, oauthScopes } }, {}, next)
+      return next.firstCall.args[0]
+    }
+
+    it('should admit an OAuth token that has semantic:read', () => {
+      expect(runScopeCheck(['semantic:read'])).to.be.undefined
+    })
+
+    it('should admit an OAuth token that has only semantic:write', () => {
+      expect(runScopeCheck(['semantic:write'])).to.be.undefined
+    })
+
+    it('should reject an OAuth token with no semantic scopes', () => {
+      const error = runScopeCheck(['kb:read'])
+      expect(error).to.be.an('error')
+    })
   })
 
   it('should register search archive/unarchive routes', () => {
@@ -899,6 +945,7 @@ describe('Enterprise Search Routes - handler coverage', () => {
         .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
 
       expect(routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/message/:messageId/regenerate' && r.methods.post)).to.exist
+      expect(routes.find((r: any) => r.path === '/:agentKey/conversations/:conversationId/message/:messageId/fork' && r.methods.post)).to.exist
     })
 
     it('should register agent archive, rename, and archives listing routes', () => {
@@ -950,6 +997,15 @@ describe('Enterprise Search Routes - handler coverage', () => {
         .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
 
       expect(routes.find((r: any) => r.path === '/internal/:conversationId/messages/stream' && r.methods.post)).to.exist
+    })
+
+    it('should register fork route', () => {
+      const router = createConversationalRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
+
+      expect(routes.find((r: any) => r.path === '/:conversationId/message/:messageId/fork' && r.methods.post)).to.exist
     })
 
     it('should register share route', () => {

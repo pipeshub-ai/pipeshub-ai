@@ -33,7 +33,6 @@ from app.connectors.sources.web.connector import (
 )
 from app.connectors.sources.web.fetch_strategy import MAX_RATE_LIMIT_BACKOFF, FetchResponse
 from app.models.entities import RecordType
-from app.models.permission import EntityType, Permission, PermissionType
 from PIL import Image as PILImage
 
 _TINY_PNG = base64.b64decode(
@@ -57,6 +56,7 @@ def _make_connector(scope: str = "personal", created_by: str = "test-user-id"):
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
     dep.get_file_record_by_id = AsyncMock(return_value=None)
     dep.get_user_by_user_id = AsyncMock(return_value=None)
     dep.on_record_deleted = AsyncMock()
@@ -819,34 +819,14 @@ class TestCleanDataUris:
 # ===========================================================================
 class TestCreateWebPermissions:
     @pytest.mark.asyncio
-    async def test_team_scope_org_read(self):
-        c = _make_connector(scope=ConnectorScope.TEAM.value)
+    @pytest.mark.parametrize("scope", [ConnectorScope.TEAM.value, ConnectorScope.PERSONAL.value])
+    async def test_group_inherits_the_app_and_has_no_grants(self, scope):
+        c = _make_connector(scope=scope)
         c.url = "https://example.com"
-        await c.create_record_group([])
-        _, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.READ
-        assert perms[0].entity_type == EntityType.ORG
-
-    @pytest.mark.asyncio
-    async def test_personal_with_app_users_grants_user_read(self):
-        c = _make_connector()
-        c.url = "https://example.com"
-        app_user = MagicMock()
-        app_user.email = "owner@example.com"
-        await c.create_record_group([app_user])
-        _, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.READ
-        assert perms[0].entity_type == EntityType.USER
-        assert perms[0].email == "owner@example.com"
-
-    @pytest.mark.asyncio
-    async def test_personal_without_creator_yields_no_permissions(self):
-        c = _make_connector()
-        c.url = "https://example.com"
-        await c.create_record_group([])
-        _, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
+        await c.create_record_group()
+        group, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
+        assert group.inherit_permissions is True
+        # [] rather than None, so a re-sync clears grants an older version stored.
         assert perms == []
 
     @pytest.mark.asyncio
@@ -857,18 +837,7 @@ class TestCreateWebPermissions:
             side_effect=RuntimeError("perm fail")
         )
         with pytest.raises(RuntimeError, match="perm fail"):
-            await c.create_record_group([])
-
-
-class TestCreateRecordGroupTeam:
-    @pytest.mark.asyncio
-    async def test_team_without_app_users_uses_org_permission(self):
-        c = _make_connector(scope=ConnectorScope.TEAM.value)
-        c.url = "https://example.com"
-        c.connector_name = Connectors.WEB
-        await c.create_record_group([])
-        _, permissions = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
-        assert permissions[0].entity_type == EntityType.ORG
+            await c.create_record_group()
 
 
 class TestReloadConfigOrchestration:
@@ -1632,6 +1601,7 @@ class TestFetchAndProcessUrlOrchestration:
         # Re-crawled unchanged: same name, parent and content hash as what was stored.
         unchanged = MagicMock()
         unchanged.id = "rec-1"
+        unchanged.is_internal = False
         unchanged.version = 7
         unchanged.etag = unchanged.ctag = None
         unchanged.record_name = first.record.record_name
@@ -1646,6 +1616,7 @@ class TestFetchAndProcessUrlOrchestration:
         # Content changed: the stored hash no longer matches what was fetched.
         changed = MagicMock()
         changed.id = "rec-1"
+        changed.is_internal = False
         changed.version = 7
         changed.etag = changed.ctag = None
         changed.record_name = first.record.record_name
@@ -1659,6 +1630,7 @@ class TestFetchAndProcessUrlOrchestration:
         # That is a rewrite, not a change to the page, so the version is carried over.
         legacy = MagicMock()
         legacy.id = "rec-1"
+        legacy.is_internal = False
         legacy.version = 7
         legacy.etag = legacy.ctag = None
         legacy.record_name = first.record.record_name
@@ -1690,6 +1662,7 @@ class TestFetchAndProcessUrlOrchestration:
         html = b"<html><head><title>New</title></head><body>body</body></html>"
         existing = MagicMock()
         existing.id = "rec-1"
+        existing.is_internal = False
         existing.record_name = "Old"
         existing.external_revision_id = "stale"
         existing.etag = existing.ctag = None
@@ -2615,7 +2588,10 @@ class TestWebConnectorRemainingCoverageGaps:
             "app.connectors.sources.web.connector.fetch_url_with_fallback",
             new_callable=AsyncMock,
             side_effect=RuntimeError("fetch boom"),
-        ), patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock):
+        ), patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock), patch(
+            # No backoff: with sleep mocked, a pending backoff would never elapse and the retry loop would spin.
+            "app.connectors.sources.web.connector._BACKOFF_BASE", 0,
+        ):
             results = []
             async for ru in c._crawl_recursive_generator("https://example.com", 0):
                 results.append(ru)
@@ -2733,6 +2709,7 @@ class TestWebConnectorRemainingCoverageGaps:
         c._store_crawled_content = AsyncMock(return_value=None)
         existing = MagicMock()
         existing.id = "rec-1"
+        existing.is_internal = False
         existing.record_name = "Same"
         existing.external_revision_id = content_hash
         existing.etag = existing.ctag = None

@@ -41,6 +41,8 @@ export function AgentBuilderHeader(props: {
   canPersist: boolean;
   /** True while deprecated tools remain on the flow canvas (blocks save). */
   saveBlockedByDeprecatedTools?: boolean;
+  /** Any other reason save is blocked, shown as the save button's tooltip. */
+  saveBlockedReason?: string;
   isServiceAccount: boolean;
   editing: boolean;
   /** Open service-account confirmation (create or convert). */
@@ -72,6 +74,7 @@ export function AgentBuilderHeader(props: {
     isFlowStructureLocked,
     canPersist,
     saveBlockedByDeprecatedTools = false,
+    saveBlockedReason,
     isServiceAccount,
     editing,
     onEnableServiceAccount,
@@ -350,7 +353,7 @@ export function AgentBuilderHeader(props: {
         ))}
         {(() => {
           const isSaveDisabled =
-            saving || !canPersist || saveBlockedByDeprecatedTools || (editing && !isDirty);
+            saving || !canPersist || saveBlockedByDeprecatedTools || Boolean(saveBlockedReason) || (editing && !isDirty);
           const saveButton = (
             <Button
               size="2"
@@ -372,9 +375,9 @@ export function AgentBuilderHeader(props: {
               </Flex>
             </Button>
           );
-          if (!saveBlockedByDeprecatedTools) return saveButton;
+          if (!saveBlockedByDeprecatedTools && !saveBlockedReason) return saveButton;
           return (
-            <Tooltip content={t('agentBuilder.removeDeprecatedTools')}>
+            <Tooltip content={saveBlockedByDeprecatedTools ? t('agentBuilder.removeDeprecatedTools') : saveBlockedReason}>
               <span
                 style={{
                   display: 'inline-flex',

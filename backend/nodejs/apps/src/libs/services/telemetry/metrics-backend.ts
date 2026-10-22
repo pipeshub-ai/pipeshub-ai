@@ -1,4 +1,5 @@
 import * as promClient from 'prom-client';
+import { isTelemetryEnabled } from './flag';
 
 export type MetricLabels = Record<string, string | number>;
 
@@ -100,4 +101,31 @@ export class PrometheusBackend implements MetricsBackend {
   }
 }
 
-export const metricsBackend: MetricsBackend = new PrometheusBackend();
+/**
+ * Backend used when telemetry is switched off: instruments accept every call
+ * and record nothing, so call sites need no flag checks of their own.
+ */
+export class NoopBackend implements MetricsBackend {
+  createCounter(_def: MetricDefinition): CounterHandle {
+    return { inc: () => {} };
+  }
+
+  createGauge(_def: MetricDefinition): GaugeHandle {
+    return { set: () => {}, reset: () => {} };
+  }
+
+  createHistogram(_def: HistogramDefinition): HistogramHandle {
+    return { observe: () => {} };
+  }
+
+  serialize(): Promise<string> {
+    return Promise.resolve('');
+  }
+
+  reset(): void {}
+}
+
+// Chosen at import because every metric module creates its instruments at import.
+export const metricsBackend: MetricsBackend = isTelemetryEnabled()
+  ? new PrometheusBackend()
+  : new NoopBackend();
