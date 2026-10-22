@@ -208,24 +208,40 @@ describe('OAuthDeviceService', () => {
     )
   })
 
-  it('records the limit shown at approval, and refuses a poll once the app limit differs', async () => {
+  it('stores the limit at creation and refuses approval and poll once the app limit differs', async () => {
     const shown = { apps: [], recordGroups: [], records: ['f1'] };
+    const create = sinon.stub(OAuthDeviceCode, 'create').resolves({} as any);
     mockOAuthAppService.getAppByClientId.resolves({ ...app, knowledgeLimit: shown });
+    await service.createAuthorization('cid', 'user:read', 'http://localhost:3000');
+    expect((create.firstCall.args[0] as any).knowledgeLimit).to.deep.equal(shown);
+
     const pending: any = {
       status: OAuthDeviceCodeStatus.PENDING,
       expiresAt: new Date(Date.now() + 60_000),
       clientId: 'cid',
+      knowledgeLimit: shown,
+      scopes: ['user:read'],
       save: sinon.stub().resolves(),
     };
-    sinon.stub(OAuthDeviceCode, 'findOne').onFirstCall().resolves(pending);
-    await service.approve('ABCD-EFGH', new Types.ObjectId().toString(), new Types.ObjectId().toString(), 'granted');
-    expect(pending.knowledgeLimit).to.deep.equal(shown);
+    const findOne = sinon.stub(OAuthDeviceCode, 'findOne').resolves(pending);
+    const ids = [new Types.ObjectId().toString(), new Types.ObjectId().toString()];
+    await service.approve('ABCD-EFGH', ids[0], ids[1], 'granted');
+    expect(pending.status).to.equal(OAuthDeviceCodeStatus.APPROVED);
 
-    const approved = { ...pending, _id: new Types.ObjectId(), userId: new Types.ObjectId(), orgId: new Types.ObjectId(), scopes: ['user:read'] };
-    (OAuthDeviceCode.findOne as sinon.SinonStub).resolves(approved);
-    sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(approved as any);
     mockOAuthAppService.getAppByClientId.resolves({ ...app, knowledgeLimit: undefined });
+    const again = { ...pending, status: OAuthDeviceCodeStatus.PENDING, save: sinon.stub().resolves() };
+    findOne.resolves(again);
+    try {
+      await service.approve('ABCD-EFGH', ids[0], ids[1], 'granted');
+      expect.fail('should have thrown');
+    } catch (err) {
+      expect(err).to.be.instanceOf(InvalidGrantError);
+    }
+    expect(again.status).to.equal(OAuthDeviceCodeStatus.PENDING);
 
+    const approved = { ...pending, _id: new Types.ObjectId(), userId: new Types.ObjectId(), orgId: new Types.ObjectId() };
+    findOne.resolves(approved);
+    sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(approved as any);
     try {
       await service.poll('cid', undefined, 'device-code');
       expect.fail('should have thrown');

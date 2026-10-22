@@ -94,6 +94,7 @@ export class OAuthDeviceService {
       userCode,
       clientId,
       scopes: granted,
+      knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
       status: OAuthDeviceCodeStatus.PENDING,
       interval: POLL_INTERVAL_SECONDS,
       expiresAt,
@@ -128,7 +129,7 @@ export class OAuthDeviceService {
         homepageUrl: app.homepageUrl,
         privacyPolicyUrl: app.privacyPolicyUrl,
         isDynamic: app.isDynamic === true,
-        knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
+        knowledgeLimit: toKnowledgeLimit(record.knowledgeLimit),
       },
       scopes: scopeDefinitions,
       user: { email: '', name: undefined },
@@ -153,12 +154,16 @@ export class OAuthDeviceService {
       })
       return
     }
+    // The consent screen showed the limit stored on the code; an edit since then voids it.
+    const app = await this.oauthAppService.getAppByClientId(record.clientId);
+    if (!sameKnowledgeLimit(record.knowledgeLimit, app.knowledgeLimit)) {
+      throw new InvalidGrantError(
+        "The application's permissions changed after this login started. Start it again.",
+      );
+    }
     record.status = OAuthDeviceCodeStatus.APPROVED
     record.userId = new Types.ObjectId(userId)
     record.orgId = new Types.ObjectId(orgId)
-    // The limit the consent screen showed, so a poll after an edit is refused.
-    const app = await this.oauthAppService.getAppByClientId(record.clientId);
-    record.knowledgeLimit = toKnowledgeLimit(app.knowledgeLimit);
     await record.save()
     this.logger.info('Device authorization approved', {
       clientId: record.clientId,
