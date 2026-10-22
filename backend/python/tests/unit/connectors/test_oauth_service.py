@@ -559,13 +559,13 @@ class TestGetAuthorizationUrl:
         params = parse_qs(urlparse(url).query)
         assert params["token_access_type"] == ["offline"]
 
-    def test_token_access_type_left_out_when_unset(self, oauth_provider):
+    def test_token_access_type_left_out_when_unset(self, oauth_provider) -> None:
         """Only Dropbox-style providers take token_access_type; the rest must not get "None"."""
         url = oauth_provider._get_authorization_url(state="s")
         params = parse_qs(urlparse(url).query)
         assert "token_access_type" not in params, params
 
-    def test_unset_extra_params_are_left_out(self, mock_config_service):
+    def test_unset_extra_params_are_left_out(self, mock_config_service) -> None:
         config = _make_oauth_config(additional_params={"prompt": None, "access_type": "offline"})
         provider = OAuthProvider(config, mock_config_service, "/path")
         url = provider._get_authorization_url(state="s", login_hint=None)
@@ -575,7 +575,7 @@ class TestGetAuthorizationUrl:
         assert params["access_type"] == ["offline"]
 
     @pytest.mark.asyncio
-    async def test_jira_authorize_url_carries_no_none_values(self, mock_config_service):
+    async def test_jira_authorize_url_carries_no_none_values(self, mock_config_service) -> None:
         """The connector authorize route builds Jira's URL this way; the nightly saw token_access_type=None."""
         config = get_oauth_config({
             "clientId": "jira-client",
