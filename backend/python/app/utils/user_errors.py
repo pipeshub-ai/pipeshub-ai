@@ -442,6 +442,19 @@ def _provider_code(chain: list[BaseException]) -> str:
 _BEDROCK_BLOCKED_CAUSES = frozenset({"account", "marketplace", "scp", "other"})
 
 
+# bedrock-runtime operations PipesHub's chat and embedding models call. botocore
+# stays out of _PROVIDER_MODULES: a connector's S3 ClientError is a store failure,
+# and the operation name is what tells the two apart.
+_BEDROCK_MODEL_OPERATIONS = frozenset(
+    {"Converse", "ConverseStream", "InvokeModel", "InvokeModelWithResponseStream"}
+)
+
+
+def _bedrock_model_error(exc: BaseException) -> bool:
+    """A botocore error raised by a Bedrock model call, which langchain_aws lets out unwrapped."""
+    return _from(exc, ("botocore",)) and getattr(exc, "operation_name", None) in _BEDROCK_MODEL_OPERATIONS
+
+
 def _ai_failure_code(chain: list[BaseException]) -> str:
     """`_provider_code`, except a Bedrock denial that is not a bad key.
 
@@ -449,7 +462,7 @@ def _ai_failure_code(chain: list[BaseException]) -> str:
     "rejected PipesHub's API key" and sends the admin to rotate a key that works.
     """
     code = _provider_code(chain)
-    if code != "auth_error" or not any(_from(e, ("botocore",)) for e in chain):
+    if code != "auth_error" or not any(_bedrock_model_error(e) for e in chain):
         return code
     cause = bedrock_access_denied_cause(chain[0])
     if cause == "iam":
@@ -518,7 +531,7 @@ def to_user_reason(exc: BaseException | None) -> str:
     embedding = any(isinstance(e, _EMBEDDING_ERRORS) for e in chain)
     storage = any(isinstance(e, _STORAGE_ERRORS) for e in chain)
     content = any(isinstance(e, _CONTENT_ERRORS) for e in chain)
-    provider = [i for i, e in enumerate(chain) if _from(e, _PROVIDER_MODULES)]
+    provider = [i for i, e in enumerate(chain) if _from(e, _PROVIDER_MODULES) or _bedrock_model_error(e)]
     http = [i for i, e in enumerate(chain) if _from(e, _HTTP_CLIENT_MODULES)]
 
     if embedding:

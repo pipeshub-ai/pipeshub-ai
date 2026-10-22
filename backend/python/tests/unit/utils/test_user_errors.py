@@ -383,20 +383,27 @@ class TestProviderErrorCode:
         assert ue.provider_error_code(ClientError(response, "Converse")) == expected
 
 
-def _bedrock_error(code: str, message: str) -> BaseException:
+def _bedrock_error(
+    code: str, message: str, operation: str = "Converse", status: int = 403,
+) -> BaseException:
     from botocore.exceptions import ClientError
 
     return ClientError(
-        {"Error": {"Code": code, "Message": message}, "ResponseMetadata": {"HTTPStatusCode": 403}},
-        "Converse",
+        {"Error": {"Code": code, "Message": message}, "ResponseMetadata": {"HTTPStatusCode": status}},
+        operation,
     )
 
 
-class _LangchainAwsError(Exception):
-    pass
+def _stored(cause: BaseException) -> BaseException:
+    """The chain a non-retriable embedding failure reaches `to_user_reason` as.
 
-
-_LangchainAwsError.__module__ = "langchain_aws.chat_models.bedrock_converse"
+    BedrockEmbeddings re-raises botocore's ClientError, `_embed_documents_with_retry`
+    lets a non-retriable one out unwrapped, and the vector store wraps it twice.
+    """
+    return _wrapped(
+        VectorStoreError("Failed to store documents in vector store"),
+        _wrapped(VectorStoreError("Failed to store batch 0"), cause),
+    )
 
 
 class TestBedrockAccessDeniedCause:
@@ -430,7 +437,7 @@ class TestBedrockAccessDeniedCause:
         assert ue.bedrock_access_denied_cause(None) is None
 
 
-class TestBedrockDenialOnEmbeddingReason:
+class TestBedrockDenialReason:
     @pytest.mark.parametrize(
         "message",
         (
@@ -441,36 +448,45 @@ class TestBedrockDenialOnEmbeddingReason:
             "subscription for this model cannot be completed.",
         ),
     )
-    def test_a_denial_that_is_not_a_bad_key_does_not_blame_the_key(self, message: str) -> None:
-        exc = _wrapped(EmbeddingError("Dense embedding failed"), _bedrock_error("AccessDeniedException", message))
-        reason = ue.to_user_reason(exc)
+    def test_an_embedding_denial_that_is_not_a_bad_key_does_not_blame_the_key(self, message: str) -> None:
+        reason = ue.to_user_reason(_stored(_bedrock_error("AccessDeniedException", message, "InvokeModel")))
         assert "API key" not in reason
-        assert "refused access to the model" in reason
+        assert "embedding model's provider refused access to the model" in reason
 
-    def test_a_bad_key_still_points_to_the_key(self) -> None:
-        exc = _wrapped(
-            EmbeddingError("Dense embedding failed"),
-            _bedrock_error("UnrecognizedClientException", "The security token included in the request is invalid."),
+    def test_an_embedding_bad_key_points_to_the_key(self) -> None:
+        error = _bedrock_error(
+            "UnrecognizedClientException", "The security token included in the request is invalid.", "InvokeModel",
         )
-        assert "rejected PipesHub's API key" in ue.to_user_reason(exc)
+        assert ue.to_user_reason(_stored(error)) == ue._ai_messages("embedding model")["auth_error"]
 
-    def test_a_missing_iam_permission_asks_for_access_not_a_new_key(self) -> None:
-        exc = _wrapped(
-            EmbeddingError("Dense embedding failed"),
-            _bedrock_error(
-                "AccessDeniedException",
-                "User: arn:aws:iam::1:user/x is not authorized to perform: bedrock:InvokeModel",
-            ),
+    def test_an_embedding_iam_denial_asks_for_access_not_a_new_key(self) -> None:
+        error = _bedrock_error(
+            "AccessDeniedException",
+            "User: arn:aws:iam::1:user/x is not authorized to perform: bedrock:InvokeModel",
+            "InvokeModel",
         )
-        reason = ue.to_user_reason(exc)
+        reason = ue.to_user_reason(_stored(error))
         assert "API key" not in reason
         assert "aren't allowed to use the model" in reason
         assert "bedrock:InvokeModel" in reason
 
-    def test_a_missing_iam_permission_on_a_chat_model_asks_for_access(self) -> None:
+    def test_an_embedding_denial_under_an_embedding_error_reads_the_same(self) -> None:
+        error = _bedrock_error("AccessDeniedException", "is not authorized to perform: bedrock:InvokeModel", "InvokeModel")
+        exc = _wrapped(EmbeddingError("Dense embedding failed"), error)
+        assert ue.to_user_reason(exc) == ue.to_user_reason(_stored(error))
+
+    def test_bedrock_throttling_while_storing_is_the_model_being_busy(self) -> None:
+        error = _bedrock_error("ThrottlingException", "Too many requests", "InvokeModel", status=429)
+        assert ue.to_user_reason(_stored(error)) == ue._ai_messages("embedding model")["rate_limit"]
+
+    def test_a_chat_model_iam_denial_while_processing_asks_for_access(self) -> None:
         error = _bedrock_error("AccessDeniedException", "is not authorized to perform: bedrock:InvokeModel")
-        exc = _wrapped(DocumentProcessingError("summary failed"), _wrapped(_LangchainAwsError("Converse failed"), error))
+        exc = _wrapped(DocumentProcessingError("Failed to process document"), error)
         assert "The AI model's credentials work but aren't allowed" in ue.to_user_reason(exc)
+
+    def test_a_connector_s3_denial_while_storing_stays_a_store_failure(self) -> None:
+        error = _bedrock_error("AccessDenied", "Access Denied", "GetObject")
+        assert ue.to_user_reason(_stored(error)) == ue.TEMPORARY_PROBLEM
 
     def test_a_forbidden_response_from_another_provider_still_points_to_the_key(self) -> None:
         exc = _wrapped(EmbeddingError("Dense embedding failed"), _status_error(openai.PermissionDeniedError, 403))
