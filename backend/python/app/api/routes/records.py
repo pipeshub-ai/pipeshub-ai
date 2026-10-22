@@ -62,7 +62,6 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
             )
-        await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
         doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
         try:
             hidden = await is_hidden_demo_record(
@@ -74,6 +73,7 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
             hidden = False
         if hidden:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+        await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
     except HTTPException:
         raise
     except Exception as exc:

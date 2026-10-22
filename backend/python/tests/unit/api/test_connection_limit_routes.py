@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-import app.edition_config  # noqa: F401 - the search route module needs it imported first
 from app.agents.actions.knowledge_graph.models import (
     LookupMatch,
     LookupResult,
@@ -226,6 +225,15 @@ class TestRecordsById:
                                           start_block=None, start_record=0, max_chars=40_000)
         assert exc.value.status_code == 403 and exc.value.detail == CONNECTION_OUTSIDE_MESSAGE
         fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_switched_off_demo_record_outside_the_limit_is_still_a_404(self) -> None:
+        graph = self._graph_with_access()
+        with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=True)):
+            with pytest.raises(HTTPException) as exc:
+                await read_record_content("rec-out", self._reader_request(graph), mode="record", query=None,
+                                          start_block=None, start_record=0, max_chars=40_000)
+        assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_a_thread_read_is_bounded_to_the_limit(self) -> None:
