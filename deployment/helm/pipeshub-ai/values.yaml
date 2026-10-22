@@ -201,8 +201,9 @@ extraSecretData: {}
 extraEnv: []
 extraEnvFrom: []
 
-# aws-sdk v2 presigns us-east-1 with Signature V2. SSE-KMS buckets reject those
-# URLs. Images that set signatureVersion on the S3 client do not need this.
+# Obsolete. AWS SDK v3 always signs with Signature V4, so SSE-KMS buckets
+# no longer need a preload. Left in place so a values file that still sets
+# it does not fail the render; the mounted script is a no-op.
 s3SignatureV4Preload: false
 
 volumes: {}
@@ -494,6 +495,9 @@ config:
   samlSpEntityId: "pipeshub"
 
 # --- Coding sandbox execution ------------------------------------------------
+# Slim images download Chromium on first browser use into the /data/pipeshub
+# volume (PLAYWRIGHT_BROWSERS_PATH). Set PIPESHUB_PREFETCH_BROWSERS=true on the
+# app container to do that at startup. The full image already contains Chromium.
 sandbox:
   # Pod-level RuntimeClass (empty = cluster default). It applies to the whole
   # pod, including the privileged DinD sidecar, so an escape lands in the
