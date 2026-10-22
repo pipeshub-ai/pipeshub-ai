@@ -299,6 +299,7 @@ class TestHeadReadOnly(unittest.TestCase):
             '        with: { fetch-depth: 0, ref: "${{ github.sha }}" }  # the base\n'
             "          prefer-ref: no  # not a ref key\n"
             "          repository: ${{ github.repository }}\n"
+            "        with: { ref: ${{ github.sha }} }\n"
         )
         self.assertFalse(_checks_out(text))
 
@@ -336,6 +337,7 @@ class TestHeadReadOnly(unittest.TestCase):
             '          "$(command -v git)" checkout "$HEAD"\n',
             "          gh pr checkout 1\n",
             '        with: { ref: "${{ env.HEAD }}" }\n',
+            "        with: { ref: ${{ github.event.pull_request.head.sha }} }\n",
             '        with: {fetch-depth: 0, ref: "${{ github.event.pull_request.head.sha }}"}\n',
             "          ref : ${{ github.event.pull_request.head.sha }}\n",
             '          echo >(git checkout "$HEAD")\n',
