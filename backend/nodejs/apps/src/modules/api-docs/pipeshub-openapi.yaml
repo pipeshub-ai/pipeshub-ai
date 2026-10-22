@@ -5496,9 +5496,9 @@ components:
               description: |
                 Revision of the record's content, 16 lowercase hex characters:
                 the start of the SHA-256 of the content the indexer received
-                for the record. A record that reaches the end of indexing
-                without one (its content arrived on a path that did not carry
-                those bytes) gets a digest of its parsed blocks instead.
+                for the record. If a record still has no revision stored when
+                its vectors are written, a digest of its parsed blocks is
+                stored instead.
                 Identical content gives the same value, and a copy whose content
                 matches another record carries that record's value.
                 `stageStates` describes this revision. Set when indexing
