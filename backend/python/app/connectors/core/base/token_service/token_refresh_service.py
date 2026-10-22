@@ -423,8 +423,12 @@ class TokenRefreshService:
         # redirect SaaS-default OAuth URLs to the user's instance even for
         # legacy connector instances that don't carry instanceUrl in their
         # auth_config.
-        if config_data.get(AuthFieldKeys.INSTANCE_URL):
-            oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = config_data[AuthFieldKeys.INSTANCE_URL]
+        instance_url = (
+            config_data.get(AuthFieldKeys.INSTANCE_URL)
+            or config_data.get("instance_url")
+        )
+        if instance_url:
+            oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = instance_url
 
         # Add optional infrastructure fields if present
         if OAuthConfigKeys.TOKEN_ACCESS_TYPE in shared_oauth_config:
@@ -458,7 +462,10 @@ class TokenRefreshService:
         # Derive authorize/token URLs from instanceUrl when explicit URLs are absent.
         # This supports self-managed connectors (e.g. GitLab EE) where OAuth endpoints
         # live on the instance host rather than a fixed SaaS domain.
-        instance_url = auth_config.get("instanceUrl", "").rstrip("/")
+        instance_url = (
+            auth_config.get(AuthFieldKeys.INSTANCE_URL)
+            or auth_config.get("instance_url", "")
+        ).rstrip("/")
 
         # Fill in missing fields from auth config
         if not base_config.get(AuthFieldKeys.AUTHORIZE_URL):
@@ -475,6 +482,9 @@ class TokenRefreshService:
             base_config[AuthFieldKeys.REDIRECT_URI] = auth_config.get(AuthFieldKeys.REDIRECT_URI, "")
         if not base_config.get(OAuthConfigKeys.SCOPES):
             base_config[OAuthConfigKeys.SCOPES] = auth_config.get(OAuthConfigKeys.SCOPES, [])
+
+        if instance_url:
+            base_config[AuthFieldKeys.INSTANCE_URL] = instance_url
 
         return base_config
 
@@ -524,8 +534,12 @@ class TokenRefreshService:
                     # instance host in auth_config.instanceUrl. Propagate so
                     # get_oauth_config() can redirect SaaS-default OAuth URLs
                     # to the user's instance during token refresh.
-                    if auth_config.get(AuthFieldKeys.INSTANCE_URL):
-                        oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = auth_config[AuthFieldKeys.INSTANCE_URL]
+                    instance_url = (
+                        auth_config.get(AuthFieldKeys.INSTANCE_URL)
+                        or auth_config.get("instance_url")
+                    )
+                    if instance_url:
+                        oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = instance_url
                     self.logger.info(f"Using shared OAuth config for connector {connector_id}")
                     return oauth_flow_config
 

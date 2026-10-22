@@ -25,7 +25,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.constants import IconPaths
+from app.connectors.core.constants import AuthFieldKeys, IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -749,7 +749,7 @@ def _ts_in_bounds(
             ),
             fields=[
                 AuthField(
-                    name="instance_url",
+                    name=AuthFieldKeys.INSTANCE_URL,
                     display_name="Salesforce Instance URL",
                     placeholder="https://login.salesforce.com",
                     description="The base URL of your Salesforce instance",
@@ -1002,7 +1002,13 @@ class SalesforceConnector(BaseConnector):
             auth_config_data = oauth_config.get("config")
             access_token = credentials_config.get("access_token")
             refresh_token = credentials_config.get("refresh_token")
-            instance_url = auth_config_data.get("instance_url")
+            # The OAuth field is stored as instanceUrl now. Accept the legacy
+            # snake_case key for connector configurations created before the
+            # field-name standardization.
+            instance_url = (
+                auth_config_data.get(AuthFieldKeys.INSTANCE_URL)
+                or auth_config_data.get("instance_url")
+            )
 
             if not access_token:
                 self.logger.error("Salesforce access token not found in configuration.")

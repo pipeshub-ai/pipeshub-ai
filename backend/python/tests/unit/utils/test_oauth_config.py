@@ -271,6 +271,13 @@ class TestOverrideOAuthHostWithInstance:
         )
         assert result == "https://my.gitlab.com/oauth/token"
 
+    def test_salesforce_path_swaps_host(self):
+        result = _override_oauth_host_with_instance(
+            "https://login.salesforce.com/services/oauth2/authorize",
+            "https://mydomain.my.salesforce.com",
+        )
+        assert result == "https://mydomain.my.salesforce.com/services/oauth2/authorize"
+
     @patch("app.utils.oauth_config.urlparse", side_effect=ValueError("bad url"))
     def test_urlparse_exception_returns_url_unchanged(self, _mock):
         """Lines 159-160 — exception during URL parsing."""
@@ -381,6 +388,36 @@ class TestGetOAuthConfig:
         result = get_oauth_config(auth)
         assert result.authorize_url == "https://gitlab.mycompany.com/oauth/authorize"
         assert result.token_url == "https://gitlab.mycompany.com/oauth/token"
+
+    def test_salesforce_instance_url_overrides_login_host(self):
+        auth = {
+            "clientId": "c",
+            "clientSecret": "s",
+            "instanceUrl": "https://mydomain.my.salesforce.com/",
+            "authorizeUrl": "https://login.salesforce.com/services/oauth2/authorize",
+            "tokenUrl": "https://login.salesforce.com/services/oauth2/token",
+        }
+        result = get_oauth_config(auth)
+        assert result.authorize_url == (
+            "https://mydomain.my.salesforce.com/services/oauth2/authorize"
+        )
+        assert result.token_url == (
+            "https://mydomain.my.salesforce.com/services/oauth2/token"
+        )
+
+    def test_legacy_snake_case_instance_url_is_supported(self):
+        auth = {
+            "clientId": "c",
+            "clientSecret": "s",
+            "instance_url": "https://test.salesforce.com",
+            "authorizeUrl": "https://login.salesforce.com/services/oauth2/authorize",
+            "tokenUrl": "https://login.salesforce.com/services/oauth2/token",
+        }
+        result = get_oauth_config(auth)
+        assert result.authorize_url == (
+            "https://test.salesforce.com/services/oauth2/authorize"
+        )
+        assert result.token_url == "https://test.salesforce.com/services/oauth2/token"
 
     def test_instance_url_does_not_override_non_standard_oauth_path(self):
         """ServiceNow-style: user supplies instanceUrl AND explicit authorize/token URLs

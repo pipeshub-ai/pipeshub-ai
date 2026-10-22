@@ -144,7 +144,12 @@ def extract_oauth_error_message(exc: Exception) -> str:
     return "An unexpected error occurred during authentication. Please try again or contact your administrator."
 
 
-_STANDARD_OAUTH_PATHS = ("/oauth/authorize", "/oauth/token")
+_STANDARD_OAUTH_PATHS = (
+    "/oauth/authorize",
+    "/oauth/token",
+    "/services/oauth2/authorize",
+    "/services/oauth2/token",
+)
 
 
 def _override_oauth_host_with_instance(url: str, instance_url: str) -> str:
@@ -177,7 +182,13 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
     # Derive authorize/token URLs from instanceUrl when not explicitly set.
     # This allows self-managed connectors (e.g. GitLab EE) to work without
     # requiring the caller to pre-compute OAuth endpoint URLs.
-    instance_url = auth_config.get("instanceUrl", "").rstrip("/")
+    # ``instance_url`` was used by the Salesforce connector before OAuth field
+    # names were standardized on camelCase. Keep accepting it for existing
+    # connector configurations while preferring the canonical key.
+    instance_url = (
+        auth_config.get("instanceUrl")
+        or auth_config.get("instance_url", "")
+    ).rstrip("/")
     authorize_url = auth_config.get("authorizeUrl") or (
         f"{instance_url}/oauth/authorize" if instance_url else ""
     )
