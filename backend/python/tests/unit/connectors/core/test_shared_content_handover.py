@@ -208,6 +208,9 @@ class FakeGraph:
         for key in keys:
             self.mappings.pop(key, None)
 
+    async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> None:
+        self.released_stage_states = list(virtual_record_ids)
+
 
 class FakeConfig:
     """Secrets and endpoints for the storage calls, and a KV for intents."""
@@ -528,6 +531,7 @@ class TestOwnerChoice:
         assert failed == []
         assert doc not in node.docs
         assert "v1" not in graph.mappings
+        assert graph.released_stage_states == ["v1"]
 
 
 class TestKnowledgeBaseDelete:
