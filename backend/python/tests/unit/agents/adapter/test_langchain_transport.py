@@ -1563,13 +1563,105 @@ class TestTransientStreamDisconnectIsRetryable:
         assert exc_info.value.retryable is True
 
 
+class TestInStreamProviderErrorIsRetryable:
+    """A provider can fail a request inside a stream that opened with HTTP 200: OpenAI/Azure send an `error` event
+    ("The server had an error processing your request ... You can retry your request"), raised as `openai.APIError`
+    with no status code; Anthropic sends `overloaded_error`, raised as `APIStatusError` with the stream's 200. Both
+    read as permanent, so on Azure gpt-6.1-sol 3 of 411 benchmark answers failed outright. The error body's type
+    says whether it is transient."""
+
+    def _openai_server_error(self) -> Exception:
+        import httpx
+        import openai
+
+        return openai.APIError(
+            "The server had an error processing your request. Sorry about that! You can retry your request.",
+            httpx.Request("POST", "https://example.openai.azure.com/openai/v1/responses"),
+            body={"message": "The server had an error processing your request.", "type": "server_error",
+                  "param": None, "code": None},
+        )
+
+    def _anthropic_overloaded(self) -> Exception:
+        import anthropic
+        import httpx
+
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        return anthropic.APIStatusError(
+            "{'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'Overloaded'}}",
+            response=httpx.Response(200, request=request),
+            body={"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+        )
+
+    async def test_an_openai_server_error_event_is_retryable(self) -> None:
+        transport = LangChainTransport(_FakeModel(raise_on_stream=self._openai_server_error()))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.retryable is True
+
+    async def test_an_anthropic_overloaded_event_is_retryable(self) -> None:
+        transport = LangChainTransport(_FakeModel(raise_on_stream=self._anthropic_overloaded()))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.retryable is True
+        assert exc_info.value.status_code is None, "the stream's opening 200 is not the failure's status"
+
+    async def test_an_anthropic_overloaded_event_gets_a_second_attempt(self) -> None:
+        """The retry wrapper trusts `retryable` only without a status code; the stream's 200 must not reach it."""
+        from app.agent_loop_lib.transport.base import RetryConfig
+        from app.agents.agent_loop.hooks.retry_with_status import retry_with_status
+
+        class _Sink:
+            async def write(self, event: dict) -> bool:
+                return True
+
+        transport = LangChainTransport(_FakeModel(raise_on_stream=self._anthropic_overloaded()))
+        calls = {"n": 0}
+
+        async def _next() -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                async for _ in transport.stream([UserMessage(content="hi")]):
+                    pass
+            return "ok"
+
+        middleware = retry_with_status(_Sink(), RetryConfig(initial_delay=0.001, backoff_factor=1.0, max_delay=0.001))
+        assert await middleware(_next) == "ok"
+        assert calls["n"] == 2
+
+    async def test_an_invalid_request_error_event_is_not_retryable(self) -> None:
+        import httpx
+        import openai
+
+        exc = openai.APIError(
+            "Invalid prompt", httpx.Request("POST", "https://example.openai.azure.com/openai/v1/responses"),
+            body={"message": "Invalid prompt", "type": "invalid_request_error", "param": None, "code": None},
+        )
+        transport = LangChainTransport(_FakeModel(raise_on_stream=exc))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.retryable is False
+
+    async def test_a_server_error_after_output_is_retried_only_once_discarded(self) -> None:
+        transport = LangChainTransport(_FailsMidStreamModel(self._openai_server_error(), emit_before_failing=2))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.partial_output is True and exc_info.value.retryable is False
+        exc_info.value.discard_partial_output()
+        assert exc_info.value.retryable is True
+
+
 class TestPartialStreamIsNeverReplayed:
     """`stream()` already refuses to retry internally once chunks have been
     emitted, but the retry decision the OUTER `retry_model_call` middleware
     reads is `TransportError.retryable`, which was computed from the
     exception type alone. A retryable-looking error arriving mid-stream
     therefore let the middleware re-run the whole call and stream the same
-    text to the user twice.
+    text to the user twice. It is now flagged `partial_output` and held back
+    until the caller retracts that output.
     """
 
     async def test_mid_stream_failure_is_marked_non_retryable(self) -> None:
@@ -1590,6 +1682,34 @@ class TestPartialStreamIsNeverReplayed:
         assert exc_info.value.retryable is False, (
             "retrying after partial output would replay it to the user"
         )
+        assert exc_info.value.partial_output is True
+
+    async def test_a_drop_mid_stream_becomes_retryable_once_the_output_is_discarded(self) -> None:
+        """`Agent.step()` retracts what the client was shown, then retries."""
+        import httpx
+
+        model = _FailsMidStreamModel(
+            httpx.RemoteProtocolError("incomplete chunked read"), emit_before_failing=2,
+        )
+        transport = LangChainTransport(model)
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+
+        exc_info.value.discard_partial_output()
+        assert exc_info.value.retryable is True
+
+    async def test_a_non_transient_failure_mid_stream_stays_non_retryable_after_discard(self) -> None:
+        exc = RuntimeError("Bad request")
+        exc.status_code = 400
+        transport = LangChainTransport(_FailsMidStreamModel(exc, emit_before_failing=1))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+
+        assert exc_info.value.partial_output is True
+        exc_info.value.discard_partial_output()
+        assert exc_info.value.retryable is False
 
     async def test_a_timeout_mid_stream_is_also_not_replayed(self) -> None:
         """`readtimeout` IS in the network hints, so this is the case that
@@ -1656,7 +1776,9 @@ class TestRetryabilityFollowsWhatTheClientSaw:
         model = _EmitsThenFailsModel(
             self._protocol_error(), [AIMessageChunk(content="")],
         )
-        assert (await self._stream_error(model)).retryable is True
+        error = await self._stream_error(model)
+        assert error.retryable is True
+        assert error.partial_output is False
 
     async def test_several_empty_chunks_then_disconnect_is_retryable(self) -> None:
         model = _EmitsThenFailsModel(

@@ -349,6 +349,9 @@ class ReadHints:
     # Appended to the in-order continuation hint.
     continuing: str = ""
     in_order: str = "start_block=0"
+    # How to read the Slack thread a record's messages started (`slack_replies`).
+    # No tool is named: the assistant has its thread tool only with Slack knowledge.
+    thread: str = "fetch the whole Slack thread for this record"
 
     def again_from(self, start: int) -> str:
         return self.again.format(start=start)
@@ -366,12 +369,13 @@ FETCH_RECORD_HINTS = ReadHints(
 )
 
 # The record-content API. Kept shorter than the fetch tool's phrasing, so a
-# room reserved for those hints (`GAP_MARKER_CHARS`, `record_trailer_reserve`)
-# always holds these.
+# room reserved for those hints (`GAP_MARKER_CHARS`, `record_trailer_reserve`,
+# the header `estimate_frame_chars` measures) always holds these.
 API_READ_HINTS = ReadHints(
     again="request this record again with startBlock={start}",
     named="request record {label} again with startBlock={start}",
     in_order="startBlock=0",
+    thread="request this record again with mode=thread",
 )
 
 

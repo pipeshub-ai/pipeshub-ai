@@ -9,14 +9,19 @@ against.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from app.models.entities import ArtifactType, ArtifactVisibility, LifecycleStatus
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 __all__ = [
     "Actor",
+    "artifact_owner",
+    "artifact_owner_id",
     "ArtifactMetadata",
     "ArtifactVersion",
     "ArtifactLineage",
@@ -36,6 +41,22 @@ class Actor(BaseModel):
 
     org_id: str
     user_id: str
+
+
+def artifact_owner_id(state: Mapping[str, Any]) -> str | None:
+    """The user an agent run creates and reads its artifacts as.
+
+    A service-account agent runs as its creator, but what it makes in a chat
+    belongs to the person chatting, as the conversation does: the agent route
+    sets ``artifact_owner_user_id`` for that case. Otherwise it is the run's
+    ``user_id``, read exactly as before (None when the state has none).
+    """
+    return state.get("artifact_owner_user_id") or state.get("user_id")
+
+
+def artifact_owner(state: Mapping[str, Any]) -> Actor:
+    """`artifact_owner_id` as the `Actor` the artifact registry authorizes."""
+    return Actor(org_id=state.get("org_id", ""), user_id=artifact_owner_id(state) or "")
 
 
 class ArtifactVersion(BaseModel):

@@ -7821,6 +7821,51 @@ class TestRecordGroupMoveRefreshesVectorMembership:
         assert [e["payload"]["virtualRecordId"] for e in events] == ["vr-1"]
 
     @pytest.mark.asyncio
+    async def test_an_indexed_standalone_record_joining_a_group_refreshes(self) -> None:
+        """A Drive item a grantee stored with no group, later filed under its shared
+        drive: its chunks were written without the drive, so they need it now."""
+        stored = _stored(None)
+        proc, _ = self._proc_for_move(stored, new_group_id="rg-drive")
+
+        incoming = _make_record(external_record_group_id="sd-1")
+        incoming.external_revision_id = "rev-1"
+
+        await proc.on_record_metadata_update(incoming)
+
+        assert [e["payload"]["virtualRecordId"] for e in _membership_events(proc)] == ["vr-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_standalone_record_not_indexed_yet_publishes_nothing(self) -> None:
+        stored = _stored(None, virtual_record_id=None)
+        proc, _ = self._proc_for_move(stored, new_group_id="rg-drive")
+
+        incoming = _make_record(external_record_group_id="sd-1")
+        incoming.external_revision_id = "rev-1"
+
+        await proc.on_record_metadata_update(incoming)
+
+        assert _membership_events(proc) == []
+
+    @pytest.mark.asyncio
+    async def test_joining_from_no_group_leaves_no_old_group(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        record = _make_record()
+        record.id = "rec-1"
+
+        moved = await proc._link_record_to_group(record, "rg-drive", tx_store, _stored(None))
+
+        assert moved is True
+        assert tx_store.link_record_to_group.await_args.kwargs["leaving_group_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_first_link_with_no_stored_record_is_not_a_move(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        record = _make_record()
+        record.id = "rec-1"
+
+        assert await proc._link_record_to_group(record, "rg-new", tx_store, None) is False
+
+    @pytest.mark.asyncio
     async def test_nothing_is_published_when_the_transaction_fails(self):
         """An event published for a rolled-back move would recompute the *old*
         membership and write it back, which looks like a successful refresh."""

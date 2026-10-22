@@ -257,7 +257,7 @@ S3_METHOD_SIGNATURES = {
     },
     'list_buckets': {
         'required': [],
-        'optional': []
+        'optional': ['MaxBuckets', 'ContinuationToken', 'Prefix', 'BucketRegion']
     },
     'list_multipart_uploads': {
         'required': ['Bucket'],
@@ -409,7 +409,7 @@ S3_METHOD_SIGNATURES = {
 PARAMETER_TYPES = {
     'Bucket': 'str',
     'Key': 'str',
-    'Body': 'Any',
+    'Body': 'object',
     'ACL': 'str',
     'CacheControl': 'str',
     'ContentDisposition': 'str',
@@ -468,10 +468,10 @@ PARAMETER_TYPES = {
     'Id': 'str',
     'Delete': 'Dict[str, Any]',
     'Filename': 'str',
-    'Fileobj': 'Any',
+    'Fileobj': 'object',
     'ExtraArgs': 'Optional[Dict[str, Any]]',
-    'Callback': 'Optional[Any]',
-    'Config': 'Optional[Any]',
+    'Callback': 'object',
+    'Config': 'object',
     'Fields': 'Optional[Dict[str, Any]]',
     'Conditions': 'Optional[List[Any]]',
     'ExpiresIn': 'int',
@@ -504,6 +504,8 @@ PARAMETER_TYPES = {
     'OptionalObjectAttributes': 'List[str]',
     'Marker': 'str',
     'ContinuationToken': 'str',
+    'MaxBuckets': 'int',
+    'BucketRegion': 'str',
     'FetchOwner': 'bool',
     'StartAfter': 'str',
     'PartNumberMarker': 'int',
@@ -624,32 +626,35 @@ def generate_method_body(method_name: str, method_def: Dict[str, List[str]]) -> 
         kwargs_setup = "\n".join(kwargs_lines)
     
     return f'''{kwargs_setup}
-        
+
         try:
-            session = await self._get_session()
-            async with session.create_client('s3') as s3_client:
+            async with self._client() as s3_client:
                 response = await getattr(s3_client, '{method_name}')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
             error_code = e.response.get('Error', {{}}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {{}}).get('Message', str(e))
-            return S3Response(success=False, error=f"{{error_code}}: {{error_message}}")
+            return S3Response(
+                success=False,
+                error=f"{{error_code}}: {{error_message}}",
+                status_code=e.response.get('ResponseMetadata', {{}}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {{str(e)}}")'''
 
 
-def generate_complete_s3_data_source() -> str:
-    """Generate complete S3DataSource with proper explicit signatures."""
-    
-    class_code = f'''from typing import Dict, List, Optional, Union, Any, BinaryIO
-import asyncio
-import json
-from dataclasses import asdict
+# The class around the generated methods, as checked in.
+CLASS_HEADER = '''import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Union
 
 import aiobotocore
 from aiobotocore.session import AioSession
-from botocore.exceptions import ClientError, BotoCoreError
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from app.sources.client.s3.s3 import S3Client, S3Response
 
@@ -657,19 +662,20 @@ from app.sources.client.s3.s3 import S3Client, S3Response
 class S3DataSource:
     """
     Complete Amazon S3 API client wrapper with EXPLICIT METHOD SIGNATURES using aiobotocore.
-    
-    All {len(S3_METHOD_SIGNATURES)} S3 methods with proper parameter signatures:
+    All __METHOD_COUNT__ S3 methods with proper parameter signatures:
     - Required parameters are explicitly typed (e.g., Bucket: str, Key: str)
     - Optional parameters use Optional[Type] = None
     - No **kwargs - every parameter is explicitly defined
     - Matches the botocore S3 client signatures exactly
     - Each parameter on separate line for better readability
     """
-    
+
     def __init__(self, s3_client: S3Client) -> None:
         """Initialize with S3Client."""
         self._s3_client = s3_client
         self._session = None
+        # Per task tree: a call from a request outside shared_client() must not get a client that scope may close.
+        self._shared_client: ContextVar[Any] = ContextVar(f"s3_shared_client_{id(self)}", default=None)
 
     async def _get_session(self) -> AioSession:
         """Get or create the aiobotocore session."""
@@ -677,61 +683,147 @@ class S3DataSource:
             self._session = self._s3_client.get_session()
         return self._session
 
-    def _handle_s3_response(self, response: Any) -> S3Response:
+    @asynccontextmanager
+    async def shared_client(self) -> AsyncIterator[None]:
+        """Make every call in this scope, and in tasks started inside it, reuse one client."""
+        if self._shared_client.get() is not None:
+            yield
+            return
+        session = await self._get_session()
+        async with session.create_client('s3') as s3_client:
+            token = self._shared_client.set(s3_client)
+            try:
+                yield
+            finally:
+                self._shared_client.reset(token)
+
+    @asynccontextmanager
+    async def _client(self) -> AsyncIterator[Any]:
+        """The shared client inside shared_client(), else a new client for this call."""
+        shared = self._shared_client.get()
+        if shared is not None:
+            yield shared
+            return
+        session = await self._get_session()
+        async with session.create_client('s3') as s3_client:
+            yield s3_client
+
+    def _handle_s3_response(self, response: object) -> S3Response:
         """Handle S3 API response with comprehensive error handling."""
         try:
             if response is None:
                 return S3Response(success=False, error="Empty response from S3 API")
-            
+
             if isinstance(response, dict):
                 if 'Error' in response:
                     error_info = response['Error']
                     error_code = error_info.get('Code', 'Unknown')
                     error_message = error_info.get('Message', 'No message')
-                    return S3Response(success=False, error=f"{{error_code}}: {{error_message}}")
+                    return S3Response(success=False, error=f"{error_code}: {error_message}")
                 return S3Response(success=True, data=response)
-            
+
             return S3Response(success=True, data=response)
-            
+
         except Exception as e:
-            return S3Response(success=False, error=f"Response handling error: {{str(e)}}")
+            return S3Response(success=False, error=f"Response handling error: {str(e)}")
 
 '''
 
-    # Generate all methods with proper signatures
-    for method_name, method_def in sorted(S3_METHOD_SIGNATURES.items()):
-        try:
-            signature = generate_method_signature(method_name, method_def)
-            docstring = generate_method_docstring(method_name, method_def)
-            method_body = generate_method_body(method_name, method_def)
-            
-            complete_method = f"    {signature}\n{docstring}\n{method_body}\n\n"
-            class_code += complete_method
-            
-        except Exception as e:
-            print(f"Warning: Failed to generate method {method_name}: {e}")
-    
-    # Add utility methods
-    class_code += '''    # Utility Methods
+CLASS_FOOTER = '''    # Utility Methods
     async def get_session(self) -> AioSession:
         """Get the underlying aiobotocore session."""
         return await self._get_session()
-    
+
     def get_s3_client(self) -> S3Client:
         """Get the S3Client wrapper."""
         return self._s3_client
-    
+
     async def get_sdk_info(self) -> S3Response:
         """Get information about the wrapped SDK methods."""
         info = {
-            'total_methods': ''' + str(len(S3_METHOD_SIGNATURES)) + ''',
+            'total_methods': __METHOD_COUNT__,
             'sdk_version': aiobotocore.__version__,
             'service': 's3'
         }
         return S3Response(success=True, data=info)
 '''
-    
-    return class_code
+
+# Methods that are not a plain call on the shared client.
+HAND_WRITTEN_METHODS = {
+    # Presigned URLs are signed for the bucket's region with SigV4, on a client of their own.
+    'generate_presigned_url': '''    async def generate_presigned_url(self,
+        ClientMethod: str,
+        Params: Optional[Dict[str, Any]] = None,
+        ExpiresIn: Optional[int] = None,
+        HttpMethod: Optional[str] = None,
+        region_name: Optional[str] = None) -> S3Response:
+        """S3 Generate Presigned Url operation.
+
+        Args:
+            ClientMethod (str): Required parameter
+            Params (Optional[Optional[Dict[str, Any]]]): Optional parameter
+            ExpiresIn (Optional[int]): Optional parameter
+            HttpMethod (Optional[str]): Optional parameter
+            region_name (Optional[str]): Optional bucket-specific region. If not provided, uses configured region.
+
+        Returns:
+            S3Response: Standardized response with success/data/error format
+        """
+        kwargs = {'ClientMethod': ClientMethod}
+        if Params is not None:
+            kwargs['Params'] = Params
+        if ExpiresIn is not None:
+            kwargs['ExpiresIn'] = ExpiresIn
+        if HttpMethod is not None:
+            kwargs['HttpMethod'] = HttpMethod
+
+        try:
+            session = await self._get_session()
+            # Use provided region_name if available, otherwise fall back to configured region
+            if region_name is None:
+                region_name = self._s3_client.get_region_name()
+            # Use Signature Version 4 (AWS4-HMAC-SHA256) as required by AWS S3
+            # This ensures compatibility with all S3 buckets, including those that require SigV4
+            # Explicitly pass region_name to ensure presigned URLs use the correct region
+            s3_config = Config(signature_version='s3v4')
+            async with session.create_client('s3', config=s3_config, region_name=region_name) as s3_client:
+                # generate_presigned_url is a synchronous method in boto3 that just generates a URL string
+                # It doesn't perform I/O, so we can call it directly
+                # aiobotocore makes it a coroutine; await it when it is one
+                url_result = s3_client.generate_presigned_url(**kwargs)
+                if asyncio.iscoroutine(url_result):
+                    response = await url_result
+                else:
+                    response = url_result
+                return self._handle_s3_response(response)
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            error_message = e.response.get('Error', {}).get('Message', str(e))
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
+        except Exception as e:
+            return S3Response(success=False, error=f"Unexpected error: {str(e)}")
+
+''',
+}
+
+
+def generate_complete_s3_data_source() -> str:
+    """Generate complete S3DataSource with proper explicit signatures."""
+    count = str(len(S3_METHOD_SIGNATURES))
+    class_code = CLASS_HEADER.replace('__METHOD_COUNT__', count)
+    for method_name, method_def in sorted(S3_METHOD_SIGNATURES.items()):
+        if method_name in HAND_WRITTEN_METHODS:
+            class_code += HAND_WRITTEN_METHODS[method_name]
+            continue
+        signature = generate_method_signature(method_name, method_def)
+        docstring = generate_method_docstring(method_name, method_def)
+        method_body = generate_method_body(method_name, method_def)
+        class_code += f"    {signature}\n{docstring}\n{method_body}\n\n"
+    return class_code + CLASS_FOOTER.replace('__METHOD_COUNT__', count)
 
 
 def main():

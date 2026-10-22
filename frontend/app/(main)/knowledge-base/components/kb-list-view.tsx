@@ -40,6 +40,15 @@ import {
   mapReindexOptionsToMenuActions,
 } from '../utils/reindex-label';
 
+/** "SOME_STATUS" → "Some Status", for statuses without a dedicated label. */
+function humanizeStatus(status: string): string {
+  return status
+    .toLowerCase()
+    .split('_')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
 // Union type for items that can be displayed
 export type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
 
@@ -332,26 +341,31 @@ function TableRow({
       let baseLabel: string;
       let showReason = true;
       switch (item.indexingStatus) {
-        case 'COMPLETED': baseLabel = 'Completed'; showReason = false; break;
-        case 'IN_PROGRESS': baseLabel = 'In Progress'; showReason = false; break;
-        case 'FAILED': baseLabel = 'Failed'; break;
-        case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = 'File Type Not Supported'; break;
-        case 'NOT_STARTED': baseLabel = 'Not Started'; break;
-        case 'QUEUED': baseLabel = 'Queued'; showReason = isRateLimitPause(item.indexingStatus, item.reason); break;
-        case 'AUTO_INDEX_OFF': baseLabel = 'Manual Indexing'; break;
-        case 'EMPTY': baseLabel = 'Empty'; break;
-        default: baseLabel = 'Queued'; showReason = false;
+        case 'COMPLETED': baseLabel = t('kb.indexingStatus.completed'); showReason = false; break;
+        case 'IN_PROGRESS': baseLabel = t('kb.indexingStatus.inProgress'); showReason = false; break;
+        case 'FAILED': baseLabel = t('kb.indexingStatus.failed'); break;
+        case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = t('kb.indexingStatus.fileTypeNotSupported'); break;
+        case 'NOT_STARTED': baseLabel = t('kb.indexingStatus.notStarted'); break;
+        case 'QUEUED': baseLabel = t('kb.indexingStatus.queued'); showReason = isRateLimitPause(item.indexingStatus, item.reason); break;
+        case 'AUTO_INDEX_OFF': baseLabel = t('kb.indexingStatus.manualIndexing'); break;
+        case 'EMPTY': baseLabel = t('kb.indexingStatus.empty'); break;
+        case 'PAUSED': baseLabel = t('kb.indexingStatus.paused'); break;
+        case 'ENABLE_MULTIMODAL_MODELS': baseLabel = t('kb.indexingStatus.needsMultimodalModel'); break;
+        case 'SKIPPED': baseLabel = t('kb.indexingStatus.skipped'); break;
+        // Show an unrecognised status as itself: labelling it "Queued" hid real states.
+        // It has no translation, since the UI does not know it.
+        default: baseLabel = humanizeStatus(item.indexingStatus);
       }
       return appendReason(baseLabel, item.reason, showReason);
     }
     let baseLabel: string;
     let showReason = true;
     switch (item.status) {
-      case 'indexed': baseLabel = 'Completed'; showReason = false; break;
-      case 'processing': baseLabel = 'In Progress'; showReason = false; break;
-      case 'pending': baseLabel = 'Pending'; showReason = false; break;
-      case 'failed': baseLabel = 'Failed'; break;
-      default: baseLabel = 'Queued'; showReason = false;
+      case 'indexed': baseLabel = t('kb.indexingStatus.completed'); showReason = false; break;
+      case 'processing': baseLabel = t('kb.indexingStatus.inProgress'); showReason = false; break;
+      case 'pending': baseLabel = t('kb.indexingStatus.pending'); showReason = false; break;
+      case 'failed': baseLabel = t('kb.indexingStatus.failed'); break;
+      default: baseLabel = t('kb.indexingStatus.queued'); showReason = false;
     }
     return appendReason(baseLabel, item.reason, showReason);
   };
@@ -394,8 +408,15 @@ function TableRow({
           return (
             <MaterialIcon name={getIndexStatusIcon('EMPTY')} size={16} color="var(--slate-11)" />
           );
+        case 'PAUSED':
+          return <MaterialIcon name="pause_circle" size={16} color="var(--slate-11)" />;
+        case 'ENABLE_MULTIMODAL_MODELS':
+          return <MaterialIcon name="image_not_supported" size={16} color="var(--amber-11)" />;
+        case 'SKIPPED':
+          return <MaterialIcon name="skip_next" size={16} color="var(--slate-11)" />;
         default:
-          return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
+          // Neutral, not the "Queued" clock: an unknown status is not a queued one.
+          return <MaterialIcon name="help_outline" size={16} color="var(--slate-11)" />;
       }
     }
 

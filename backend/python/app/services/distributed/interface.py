@@ -77,6 +77,9 @@ class IRetryTracker(ABC):
         """
         return 0
 
+    async def clear_deliveries(self, message_id: str) -> None:
+        """Start the delivery count of *message_id* over, keeping its failure count."""
+
     async def record_handback(self, message_id: str) -> int:
         """Count one hand-back of *message_id* by stale-record recovery and return the total.
 

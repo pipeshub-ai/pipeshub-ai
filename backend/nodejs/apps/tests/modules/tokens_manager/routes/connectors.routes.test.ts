@@ -5,6 +5,7 @@ import { Container } from 'inversify'
 import {
   createConnectorRouter,
   requireVectorStoreRebuild,
+  reindexConnectorSchema,
 } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
 import { ForbiddenError } from '../../../../src/libs/errors/http.errors'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
@@ -1040,6 +1041,34 @@ describe('Connector Routes', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(Error)
+    })
+  })
+
+  describe('reindexConnectorSchema stages', () => {
+    const params = { connectorId: 'conn-1' }
+
+    it('accepts stages: ["classify"] and keeps it in the parsed body', () => {
+      const result = reindexConnectorSchema.safeParse({
+        params,
+        body: { statusFilters: ['FAILED'], stages: ['classify'] },
+      })
+      expect(result.success).to.be.true
+      expect(result.success && result.data.body?.stages).to.deep.equal(['classify'])
+    })
+
+    it('accepts a body without stages', () => {
+      const result = reindexConnectorSchema.safeParse({ params, body: { statusFilters: ['FAILED'] } })
+      expect(result.success).to.be.true
+    })
+
+    it('rejects an unknown stage name', () => {
+      const result = reindexConnectorSchema.safeParse({ params, body: { stages: ['embed'] } })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects an empty stages array', () => {
+      const result = reindexConnectorSchema.safeParse({ params, body: { stages: [] } })
+      expect(result.success).to.be.false
     })
   })
 })

@@ -9,7 +9,9 @@
       "reindexFailedStart": "正在重新索引失敗的記錄…",
       "reindexFailedError": "重新索引失敗的記錄時發生錯誤",
       "manualIndexStart": "正在索引手動索引的記錄…",
-      "manualIndexError": "啟動手動索引失敗"
+      "manualIndexError": "啟動手動索引失敗",
+      "retryClassificationStart": "分類重試已加入佇列",
+      "retryClassificationError": "重試分類失敗"
     },
     "trash": {
       "menuLabel": "最近刪除",
@@ -684,7 +686,21 @@
     "chatSelectionLimit": "聊天最多可帶入 {{max}} 個所選項目。請取消勾選部分項目後再試一次。",
     "chatTooManyCollections": "聊天一次最多可搜尋 {{max}} 個集合，而您的集合更多。請開啟一個集合，或勾選要提問的集合。",
     "chatCollectionsLoadFailed": "無法為聊天載入您的集合。請再試一次。",
-    "chatNoCollections": "您還沒有可提問的集合。"
+    "chatNoCollections": "您還沒有可提問的集合。",
+    "indexingStatus": {
+      "completed": "已完成",
+      "inProgress": "進行中",
+      "failed": "失敗",
+      "fileTypeNotSupported": "不支援的檔案類型",
+      "notStarted": "尚未開始",
+      "queued": "已排入佇列",
+      "manualIndexing": "手動索引",
+      "empty": "空白",
+      "paused": "已暫停",
+      "needsMultimodalModel": "需要多模態模型",
+      "skipped": "已略過",
+      "pending": "待處理"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -2743,6 +2759,11 @@
         "noRecordTypes": "沒有可用的記錄類型",
         "localWatcherLabel": "本機監看程式",
         "localWatcherStatus": "{{state}} · {{pending}} 個待處理 · {{failed}} 個失敗",
+        "classification": "分類",
+        "classificationSkipped": "已略過",
+        "retryFailedClassification": "重試失敗的分類",
+        "retryClassificationSuccess": "分類重試已加入佇列",
+        "retryClassificationError": "重試分類失敗",
         "lastRun": {
           "title": "上次同步",
           "outcome": {
@@ -4613,6 +4634,12 @@
       "noRecordMetadata": "此項目沒有其他記錄中繼資料。"
     },
     "indexingReasonAria": "索引失敗詳細資訊",
+    "stageTrackLabel": "處理流程",
+    "stageParsed": "已解析",
+    "stageSearchable": "可搜尋",
+    "stageClassified": "已分類",
+    "stageAttempt": "第 {{n}} 次嘗試",
+    "stageDetailsAria": "階段詳細資訊",
     "tabRecordInformation": "記錄資訊",
     "tabDocumentDetails": "文件詳細資訊",
     "chat": "聊天",

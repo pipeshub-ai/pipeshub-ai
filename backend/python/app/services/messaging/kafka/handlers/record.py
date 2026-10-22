@@ -1067,6 +1067,9 @@ class RecordEventHandler(BaseEventService):
         record = None
         resuming_enrichment = False
         source_name: str | None = None
+        # A retry of named stages never writes the record's own statuses, even when it
+        # fails: the record is already searchable and its stage state records the outcome.
+        stage_redrive = False
         try:
             if not event_type:
                 # A message with no event type is a producer bug: acking it
@@ -1349,6 +1352,21 @@ class RecordEventHandler(BaseEventService):
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
+            stages = payload.get("stages")
+            stage_ingress = self.event_processor.stage_ingress
+            if event_type == EventTypes.REINDEX_RECORD.value and isinstance(stages, list) and stages and stage_ingress is not None:
+                stage_redrive = True
+                dispatched = await stage_ingress.redrive(
+                    virtual_record_id, record.get("contentRev"), [str(s) for s in stages]
+                )
+                if dispatched is not None:
+                    self.logger.info(f"🔁 Re-running stages {stages} for record {record_id}: {dispatched}")
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                    return
+                # The runtime never saw this revision: a full reindex dispatches every stage.
+                stage_redrive = False
+
             #Reconciliation
             vector_db_only = bool(payload.get("vectorDbOnly"))
             if clears_embeddings_first(event_type, payload):
@@ -1376,7 +1394,9 @@ class RecordEventHandler(BaseEventService):
             # finishes the enrichment, which is what lets its queued duplicates
             # be promoted; acknowledging it here would leave them parked.
             resuming_enrichment = record_resuming_enrichment(doc)
-            if already_indexed(event_type, payload, doc):
+            if already_indexed(event_type, payload, doc) and not (
+                stage_ingress is not None and await stage_ingress.handoff_lost(doc)
+            ):
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1813,7 +1833,11 @@ class RecordEventHandler(BaseEventService):
                 f"Success: {not error_occurred}"
             )
 
-            if error_occurred and record_id:
+            if stage_redrive:
+                # A stage re-run owns none of the record's bookkeeping (statuses, queued
+                # duplicates, index notifications); its stage state records the outcome.
+                pass
+            elif error_occurred and record_id:
                 # Only update DB status to FAILED if this is the final failure
                 # (terminal error or dead-letter after max retries)
                 is_final = payload.get("is_final_failure")

@@ -38,6 +38,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
+    listing_checkpoint,
 )
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.folder_scope import (
@@ -964,6 +965,7 @@ class AzureBlobConnector(BaseConnector):
         )
         sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
         last_sync_time = sync_point.get("last_sync_time") if sync_point else None
+        listing_started_at = get_epoch_timestamp_in_ms()
 
         if last_sync_time:
             user_modified_after_ms = modified_after_ms
@@ -1106,7 +1108,7 @@ class AzureBlobConnector(BaseConnector):
             )
         if listing_failed:
             return listed, False
-        checkpoint = failed.checkpoint(max_timestamp)
+        checkpoint = listing_checkpoint(failed.checkpoint(max_timestamp), listing_started_at)
         if checkpoint and checkpoint > 0:
             await self.record_sync_point.update_sync_point(
                 sync_point_key, {

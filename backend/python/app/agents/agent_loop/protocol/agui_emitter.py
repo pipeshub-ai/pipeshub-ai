@@ -48,6 +48,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# CUSTOM event: drop the named text message and everything its run streamed
+# after it. Sent when a model call fails mid-stream (see `Agent.step()`).
+MESSAGE_DISCARDED_EVENT_NAME = "message_discarded"
+
 # How a call that waited for approval was settled (`tool_approvals.Outcome.answer`).
 _APPROVAL_ANSWERS = ("allowed", "declined", "expired")
 
@@ -208,6 +212,17 @@ class AGUIEventEmitter(EventEmitter):
             if message_id is None:
                 return []
             raw = self._text_buffers.pop(run_id, "")
+            if payload.get("discarded"):
+                # The model call failed mid-stream and may be retried: the
+                # client drops this message and the reasoning streamed after it.
+                self._emitted_len.pop(run_id, None)
+                return [
+                    frame(AGUIEventType.TEXT_MESSAGE_END, messageId=message_id, runId=run_id),
+                    frame(
+                        AGUIEventType.CUSTOM, name=MESSAGE_DISCARDED_EVENT_NAME,
+                        value={"messageId": message_id}, runId=run_id,
+                    ),
+                ]
             clean, _ = parse_confidence_from_answer(raw)
             prev = self._emitted_len.pop(run_id, 0)
             frames: list[dict] = []
@@ -265,4 +280,4 @@ class AGUIEventEmitter(EventEmitter):
         return []
 
 
-__all__ = ["AGUIEventEmitter"]
+__all__ = ["MESSAGE_DISCARDED_EVENT_NAME", "AGUIEventEmitter"]

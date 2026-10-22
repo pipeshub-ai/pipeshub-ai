@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { createClient } from "./client.js";
-import { readAll } from "./streams.js";
+import { eventData, readAll } from "./streams.js";
 
 const FILE_NAME = "sdk-test-record.txt";
 const FILE_CONTENT = "PipesHub SDK test file.\n";
@@ -25,9 +25,15 @@ test("Handwritten Record Lifecycle", async () => {
     );
     const succeeded = events.filter((e) => e.event === "file:succeeded");
     expect(succeeded, "upload did not succeed").toHaveLength(1);
-    const recordId = String(succeeded[0]?.data?.["recordId"]);
+    const recordId = String(eventData(succeeded[0]!)?.["recordId"]);
     const done = events.find((e) => e.event === "done");
-    expect(done?.data?.["summary"]).toEqual({ total: 1, succeeded: 1, failed: 0 });
+    expect(eventData(done!)?.["summary"]).toEqual({ total: 1, succeeded: 1, failed: 0 });
+
+    const record = await pipeshub.knowledgeBase.getRecordById({ recordId });
+    expect(record.record.id).toEqual(recordId);
+
+    const content = await pipeshub.connector.getRecordContent({ recordId });
+    expect(content.content).toContain(recordId);
 
     const buffer = await pipeshub.knowledgeBase.streamRecordBuffer({ recordId });
     expect(await new Response(buffer).text()).toEqual(FILE_CONTENT);

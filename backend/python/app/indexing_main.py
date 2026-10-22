@@ -3,9 +3,9 @@ import inspect
 import logging
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from functools import partial
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 from uuid import uuid4
 
 import uvicorn
@@ -56,12 +56,14 @@ from app.modules.parsers.pdf.docling_processor import (
 from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
+from app.services.distributed.interface import IDistributedLeaseManager
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     is_live_record,
 )
 from app.services.graph_db.common.utils import RESTORED_AT_FIELD
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.messaging.backpressure import (
     get_default_backpressure_coordinator,
 )
@@ -71,14 +73,17 @@ from app.services.messaging.config import (
     get_message_broker_type,
     messaging_env,
 )
+from app.services.messaging.consumer_concurrency import StageAdmission
 from app.services.messaging.distributed_concurrency import (
     DistributedConcurrencyManager,
 )
+from app.services.messaging.interface.admin import IMessageAdmin
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.services.messaging.worker_loop import WorkerLoop
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.telemetry.setup import setup_telemetry
@@ -100,6 +105,7 @@ from app.utils.user_errors import (
 
 if TYPE_CHECKING:
     from app.modules.indexing.run import IndexingPipeline
+    from app.modules.pipeline.runtime import PipelineRuntime
     from app.services.messaging.interface.producer import IMessagingProducer
 
 _T = TypeVar("_T")
@@ -706,6 +712,7 @@ async def recover_in_progress_records(
             )
         except Exception as exc:
             logger.warning(f"Named-entity persist retry skipped this pass: {exc}")
+        total_records += await _sweep_pipeline_stages(app_container, concurrency_manager, logger)
 
         if total_records == 0:
             logger.debug("No stale in-progress records to recover")
@@ -800,6 +807,63 @@ ORPHAN_SCAN_MAX_PAGES_PER_TICK = 4
 ORPHAN_SCAN_MAX_PAUSE_SECONDS = 5.0
 _orphan_sweep_cursor = 0
 
+
+
+# Stage sweep thresholds: a claim unpublished this long is re-sent; a running job untouched
+# this long (past the longest stage budget plus a lease term) is reclaimed once its lease is
+# found free, or on age alone without distributed concurrency.
+_STAGE_QUEUED_SWEEP_MS = 120_000
+_STAGE_IN_PROGRESS_SWEEP_MS = 1_800_000
+_STAGE_SWEEP_LIMIT = 200
+_STAGE_SWEEP_OWNER = "pipeline-stage-sweeper"
+
+
+async def _resolve_pipeline_runtime(app_container: IndexingAppContainer) -> "PipelineRuntime":
+    runtime = app_container.pipeline_runtime()
+    if inspect.isawaitable(runtime):
+        runtime = await runtime
+    return runtime
+
+
+async def _sweep_pipeline_stages(
+    app_container: IndexingAppContainer,
+    concurrency_manager: IDistributedLeaseManager | None,
+    logger: logging.Logger,
+) -> int:
+    """Re-publish stage jobs whose claim never reached the broker; reclaim ones whose worker is gone."""
+    try:
+        runtime = await _resolve_pipeline_runtime(app_container)
+    except Exception as exc:
+        logger.warning("Pipeline runtime unavailable for the stage sweep: %s", exc)
+        return 0
+
+    is_job_active: Callable[[str], Awaitable[bool]] | None = None
+    if concurrency_manager is not None:
+        manager = concurrency_manager
+
+        async def job_lease_held(job_id: str) -> bool:
+            # The stage consumer holds this lease while a job runs; if the sweeper can
+            # take it, nobody is running the job.
+            pool = f"record:job:{job_id}"
+            if await manager.try_acquire(pool, _STAGE_SWEEP_OWNER, 1, 5.0):
+                await manager.release(pool, _STAGE_SWEEP_OWNER)
+                return False
+            return True
+
+        is_job_active = job_lease_held
+
+    report = await runtime.coordinator.sweep(
+        queued_older_than_ms=_STAGE_QUEUED_SWEEP_MS,
+        limit=_STAGE_SWEEP_LIMIT,
+        in_progress_older_than_ms=_STAGE_IN_PROGRESS_SWEEP_MS,
+        is_job_active=is_job_active,
+    )
+    if report.republished or report.reclaimed:
+        logger.info(
+            "Pipeline stage sweep: %d re-published, %d reclaimed of %d scanned",
+            report.republished, report.reclaimed, report.scanned,
+        )
+    return report.republished + report.reclaimed
 
 async def _sweep_orphaned_virtual_record_mappings(
     *,
@@ -1517,7 +1581,7 @@ async def _republish_stranded_records(
                     republished += 1
                     logger.warning(
                         "Re-published stranded record %s (%s, status %s, "
-                        "untouched for %.0fs)",
+                        "no consumer picked it up for %.0fs)",
                         record_key,
                         record.get("recordName"),
                         status_value,
@@ -1570,17 +1634,125 @@ async def run_stale_recovery_loop(
         )
 
 
+class _Closable(Protocol):
+    async def cleanup(self) -> None: ...
+
+
+async def _stop_consumers_then_shared_resources(
+    consumers: list[tuple[Any, ...]],
+    logger: logging.Logger,
+    *,
+    also_close: tuple[_Closable | None, ...] = (),
+    during: str = "",
+) -> None:
+    """Stop every consumer, then close each resource they use, once.
+
+    The record consumer and every stage consumer share one lease manager, retry
+    tracker and retry producer. A consumer that is still stopping renews leases,
+    counts deliveries and re-queues through them, so none may close before the
+    last consumer has stopped.
+    """
+    for item in consumers:
+        name, consumer = item[0], item[1]
+        try:
+            await consumer.stop()
+            logger.info("✅ %s message consumer stopped%s", str(name).title(), during)
+        except Exception as exc:
+            logger.error("❌ Error stopping %s consumer%s: %s", name, during, exc)
+
+    # Injected into the consumers but owned by start_kafka_consumers: consumer.stop()
+    # does not close them (that broke restart).
+    resources: list[tuple[str, _Closable | None]] = []
+    for item in consumers:
+        name, consumer = item[0], item[1]
+        resources.extend(
+            (f"{name} {attr}", cast("_Closable | None", getattr(consumer, attr, None)))
+            for attr in ("concurrency_manager", "retry_manager")
+        )
+        if len(item) > 2:
+            resources.append((f"{name} retry producer", cast("_Closable | None", item[2])))
+    resources.extend(("shared consumer resource", resource) for resource in also_close)
+    closed: set[int] = set()
+    for label, resource in resources:
+        if resource is None or id(resource) in closed:
+            continue
+        closed.add(id(resource))
+        try:
+            await resource.cleanup()
+        except Exception as exc:
+            logger.error("Error closing %s%s: %s", label, during, exc)
+
+
+# The connector service creates the collections on a first start; indexing waits for it.
+_SCHEMA_RETRY_FIRST_S = 2.0
+_SCHEMA_RETRY_MAX_S = 60.0
+# Missing stage topics usually wait on an operator (topic ACLs, or creating them by hand).
+_TOPIC_RETRY_FIRST_S = 30.0
+_TOPIC_RETRY_MAX_S = 300.0
+
+
+async def _ensure_pipeline_schema(graph_provider: IGraphDBProvider, logger: logging.Logger) -> None:
+    """Wait until the graph holds the schema indexing writes against.
+
+    Retries instead of failing the startup: where nothing restarts the process, exiting would
+    stop indexing for good, and where something does it would only repeat the wait.
+    """
+    delay = _SCHEMA_RETRY_FIRST_S
+    while True:
+        try:
+            await graph_provider.ensure_pipeline_schema()
+            logger.info("✅ Graph schema for the indexing pipeline is in place")
+            return
+        except Exception as e:
+            logger.error("❌ Graph schema for the indexing pipeline is not ready (%s); retrying in %.0fs", e, delay)
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, _SCHEMA_RETRY_MAX_S)
+
+
+def _indexing_worker_count() -> int:
+    """Uvicorn worker processes running this service side by side (each with its own consumers)."""
+    return max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1")))
+
+
+async def _start_stages_when_topics_exist(
+    admin: IMessageAdmin,
+    topics: list[str],
+    start_stages: Callable[[], Awaitable[None]],
+    logger: logging.Logger,
+) -> None:
+    # ``start_stages`` stops what it started when it fails, so each attempt starts every stage.
+    delay = _TOPIC_RETRY_FIRST_S
+    while True:
+        await asyncio.sleep(delay)
+        try:
+            await admin.ensure_topics_exist(topics)
+        except Exception as e:
+            delay = min(delay * 2, _TOPIC_RETRY_MAX_S)
+            logger.error("❌ Pipeline stage topics %s are still not available (%s); retrying in %.0fs", topics, e, delay)
+            continue
+        try:
+            await start_stages()
+            logger.info("✅ Pipeline stage topics %s are available; stage consumers started", topics)
+            return
+        except Exception as e:
+            delay = min(delay * 2, _TOPIC_RETRY_MAX_S)
+            logger.error("❌ Starting the pipeline stage consumers failed (%s); retrying in %.0fs", e, delay)
+
+
 async def start_kafka_consumers(
     app_container: IndexingAppContainer,
     governor: ResourceGovernor | None = None,
 ) -> list[Any]:
     """Start all message consumers at application level"""
     logger = app_container.logger()
-    consumers = []
+    consumers: list[tuple[str, Any, Any]] = []
     broker_type = get_message_broker_type()
     retry_manager = None
     retry_producer = None
     concurrency_manager = None
+    # Every consumer below runs its handlers on this one loop (see WorkerLoop).
+    worker = WorkerLoop(logger)
+    setattr(app_container, "worker_loop", worker)
 
     try:
         logger.info(f"🚀 Starting Record Consumer (broker: {broker_type})...")
@@ -1655,6 +1827,7 @@ async def start_kafka_consumers(
             backpressure_coordinator=get_default_backpressure_coordinator(),
             disposition_sink=record_event_handler,
             connector_off_filter=connector_off_filter,
+            worker=worker,
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
 
@@ -1666,93 +1839,128 @@ async def start_kafka_consumers(
         await record_kafka_consumer.start(record_message_handler)  # type: ignore[arg-type]
         logger.info("✅ Record message consumer started")
 
+        # Pipeline stages: one consumer per stage topic, each on its own permits and
+        # cluster lease pool, so stage work (classification, entities, ...) never holds an indexing permit.
+        pipeline_runtime = await _resolve_pipeline_runtime(app_container)
+        # A stage writes the stored record under the record's exclusivity lease, as its re-index does.
+        pipeline_runtime.record_leases.bind(concurrency_manager)
+        registry = pipeline_runtime.registry
+        stage_topics = [registry.topic_for(name) for name in registry.names()]
+        stage_producer = retry_producer
+        main_loop = asyncio.get_running_loop()
+
+        async def start_stage_consumers() -> None:
+            # Bound only once the topics exist: Kafka holds a send to a missing topic for its
+            # metadata timeout, and the record handler's hand-off would wait with it.
+            pipeline_runtime.publisher.bind(stage_producer, main_loop)
+            started: list[tuple[str, Any, Any]] = []
+            try:
+                for stage_name in registry.names():
+                    topic = registry.topic_for(stage_name)
+                    stage_config = await MessagingUtils.create_consumer_config(
+                        app_container,
+                        f"pipeline_{stage_name}_client",
+                        f"pipeline_{stage_name}_group",
+                        [topic],
+                        is_indexing=True,
+                    )
+                    stage_consumer = MessagingFactory.create_consumer(
+                        broker_type=broker_type,
+                        logger=logger,
+                        config=stage_config,
+                        consumer_type=ConsumerType.INDEXING,
+                        retry_manager=retry_manager,
+                        producer=stage_producer,
+                        concurrency_manager=concurrency_manager,
+                        backpressure_coordinator=get_default_backpressure_coordinator(),
+                        disposition_sink=pipeline_runtime.handler,
+                        # Its cluster lease pool is sized for every worker process, as the record
+                        # leases are.
+                        stage_admission=StageAdmission(
+                            stage=stage_name,
+                            limit=pipeline_runtime.stage_limits[stage_name],
+                            workers=_indexing_worker_count(),
+                        ),
+                        worker=worker,
+                    )
+                    # The retry producer is owned by the record consumer's entry, so it is closed once.
+                    entry = (topic, stage_consumer, None)
+                    consumers.append(entry)
+                    started.append(entry)
+                    await stage_consumer.start(pipeline_runtime.handler)  # type: ignore[arg-type]
+                    logger.info("✅ Pipeline stage consumer started: %s", topic)
+            except Exception:
+                # Stopped and dropped, so a retry starts each stage once.
+                for entry in started:
+                    consumers.remove(entry)
+                    try:
+                        await entry[1].stop()
+                    except Exception as exc:
+                        logger.error("Error stopping %s consumer after a failed start: %s", entry[0], exc)
+                raise
+
+        admin = MessagingFactory.create_admin(logger, producer_config, broker_type)
+        try:
+            await admin.ensure_topics_exist(stage_topics)
+        except Exception as e:
+            # Records stay indexable without the stage topics; only the stages wait.
+            logger.error(
+                "❌ Pipeline stage topics %s are not available (%s). Records are still indexed and "
+                "searchable; the pipeline stages wait until the topics exist. Create them, or allow this "
+                "client to create topics. Retrying in the background.",
+                stage_topics,
+                e,
+            )
+            setattr(
+                app_container,
+                "stage_startup_task",
+                asyncio.create_task(
+                    _start_stages_when_topics_exist(admin, stage_topics, start_stage_consumers, logger)
+                ),
+            )
+            return consumers
+        await start_stage_consumers()
+
         return consumers
     except Exception as e:
         logger.error(f"❌ Error starting message consumers: {str(e)}")
-        # Cleanup any started consumers and producers
-        consumer_cleanup_failed = False
-        for item in consumers:
-            name = item[0]
-            consumer = item[1]
-            producer = item[2] if len(item) > 2 else None
-            try:
-                await consumer.stop()
-                logger.info(f"Stopped {name} consumer during cleanup")
-            except Exception as cleanup_error:
-                consumer_cleanup_failed = True
-                logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
-            if producer:
-                try:
-                    await producer.cleanup()
-                    logger.info(f"Stopped {name} retry producer during cleanup")
-                except Exception as cleanup_error:
-                    logger.error(f"Error stopping {name} retry producer during cleanup: {cleanup_error}")
-        if not consumers or consumer_cleanup_failed:
-            if concurrency_manager:
-                try:
-                    await concurrency_manager.cleanup()
-                except Exception as cleanup_error:
-                    logger.error(
-                        "Error closing distributed concurrency during cleanup: %s",
-                        cleanup_error,
-                    )
-            if retry_manager:
-                try:
-                    await retry_manager.cleanup()
-                except Exception as cleanup_error:
-                    logger.error(
-                        "Error closing retry manager during cleanup: %s",
-                        cleanup_error,
-                    )
-            if retry_producer:
-                try:
-                    await retry_producer.cleanup()
-                except Exception as cleanup_error:
-                    logger.error(
-                        "Error closing retry producer during cleanup: %s",
-                        cleanup_error,
-                    )
+        # The started consumers first, then what they share (owned here, whether or
+        # not any consumer had started).
+        await _stop_consumers_then_shared_resources(
+            consumers,
+            logger,
+            also_close=(concurrency_manager, retry_manager, retry_producer),
+            during=" during cleanup",
+        )
+        # After every consumer that ran on it.
+        await worker.aclose()
         raise
 
-async def stop_kafka_consumers(container: IndexingAppContainer) -> None:
+async def _close_worker_loop(container: IndexingAppContainer) -> None:
+    """Close the shared worker loop, once every consumer and loop-bound client on it is done."""
+    worker = getattr(container, "worker_loop", None)
+    if isinstance(worker, WorkerLoop):
+        await worker.aclose()
+        setattr(container, "worker_loop", None)
+
+
+async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_loop: bool = True) -> None:
     """Stop all Kafka consumers and their associated producers"""
 
     logger = container.logger()
+    # A stage start still waiting for its topics must not start consumers once these stop.
+    stage_startup = getattr(container, "stage_startup_task", None)
+    if isinstance(stage_startup, asyncio.Task) and not stage_startup.done():
+        _ = stage_startup.cancel()
+        with suppress(asyncio.CancelledError):
+            await stage_startup
     consumers = getattr(container, 'kafka_consumers', [])
-    for item in consumers:
-        name = item[0]
-        consumer = item[1]
-        producer = item[2] if len(item) > 2 else None
+    await _stop_consumers_then_shared_resources(consumers, logger)
 
-        try:
-            await consumer.stop()
-            logger.info(f"✅ {name.title()} message consumer stopped")
-        except Exception as e:
-            logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
-
-        # concurrency_manager/retry_manager are injected into the consumer but
-        # owned here (created in start_kafka_consumers) — consumer.stop() no
-        # longer closes them (that broke restart), so close them unconditionally,
-        # regardless of whether consumer.stop() above succeeded.
-        for resource_name in ("concurrency_manager", "retry_manager"):
-            resource = getattr(consumer, resource_name, None)
-            if resource is not None:
-                try:
-                    await resource.cleanup()
-                except Exception as cleanup_error:
-                    logger.error(
-                        "Error closing %s for %s consumer: %s",
-                        resource_name,
-                        name,
-                        cleanup_error,
-                    )
-
-        if producer:
-            try:
-                await producer.cleanup()
-                logger.info(f"✅ {name.title()} retry producer stopped")
-            except Exception as e:
-                logger.error(f"❌ Error stopping {name} retry producer: {str(e)}")
+    # Closed only once every consumer running on it has stopped; the lifespan closes it later,
+    # after the clients bound to it.
+    if close_worker_loop:
+        await _close_worker_loop(container)
 
     # Clear the consumers list
     if hasattr(container, 'kafka_consumers'):
@@ -1780,6 +1988,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
+    # Indexing writes stage states and record fields declared by the connector service's schema
+    # bootstrap, which may not have run yet (a first start, or an older connector image).
+    await _ensure_pipeline_schema(cast(IGraphDBProvider, graph_provider), logger)
+
     # One governor per process: derives parse/index ceilings from cgroup/CPU
     # limits (falling back to the operator's MAX_CONCURRENT_* when set) and
     # adapts the effective limits within them as load changes. Shared by
@@ -1789,7 +2001,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger=logger,
         env_parse=messaging_env.env_max_concurrent_parsing,
         env_index=messaging_env.env_max_concurrent_indexing,
-        worker_count=max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1"))),
+        worker_count=_indexing_worker_count(),
         heavy_parse_slots_dir=shared_slots_directory(
             "pipeshub-indexing-heavy-parse-slots"
         ),
@@ -1828,6 +2040,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         consumers = await start_kafka_consumers(app_container, governor)
         app_container.kafka_consumers = consumers
+        app.state.pipeline_runtime = await _resolve_pipeline_runtime(app_container)
         logger.info("✅ All message consumers started successfully")
     except Exception as e:
         logger.error(f"❌ Failed to start message consumers: {str(e)}")
@@ -1882,8 +2095,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_named_entity_sweep_loop(app_container, graph_provider)
         )
 
-    # On every store, not only Neo4j: the indexing LLM slots are per event loop,
-    # and only on the loop records are indexed on does the pass see and share them.
+    # On every store, not only Neo4j: on the loop records are indexed on, beside the
+    # consumers whose slot use (process-wide, see LLMGateway) it yields to.
     completion_loop = record_consumer_loop(consumers)
     if completion_loop is not None:
         app.state.named_entity_completion_future = asyncio.run_coroutine_threadsafe(
@@ -2043,9 +2256,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"❌ Error during named entity completion future shutdown: {str(e)}")
 
-    # Stop message consumers
+    # Stop message consumers; the worker loop stays up for the clients bound to it, closed below.
     try:
-        await stop_kafka_consumers(app_container)
+        await stop_kafka_consumers(app_container, close_worker_loop=False)
     except Exception as e:
         logger.error(f"❌ Error during application shutdown: {str(e)}")
 
@@ -2075,6 +2288,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await config_service.close()
     except Exception as e:
         logger.error(f"❌ Error closing configuration service: {e}")
+
+    # After the clients bound to it (the accessible-records cache's, above): LoopLocal can
+    # close a resource only on a loop that is still running.
+    try:
+        await _close_worker_loop(app_container)
+    except Exception as e:
+        logger.error(f"❌ Error closing the shared worker loop: {e}")
 
     try:
         from app.modules.parsers.pdf.pdf_rasterizer import shutdown_pdf_raster_pool
@@ -2150,12 +2370,25 @@ async def health_check(request: Request) -> JSONResponse:
             content["dispatch"] = dispatch
         if loop_lag:
             content["worker_loop_lag"] = loop_lag
+        # The gateway's cap: its use, wait and hold time, rate-limit retries.
         content["indexing_llm"] = indexing_llm_stats()
         # Which connector is on which Redis Streams lane, from the last lane
         # upkeep this replica ran (the one holding the recovery lock).
         lane_report = last_lane_report(Topic.RECORD_EVENTS.value)
         if lane_report is not None:
             content["lanes"] = lane_report.as_dict()
+        runtime: PipelineRuntime | None = getattr(request.app.state, "pipeline_runtime", None)
+        if runtime is not None:
+            try:
+                content["stages"] = runtime.stats()
+            except Exception as stats_error:
+                container.logger().warning("Pipeline stage stats failed: %s", stats_error)
+                content["stages"] = {"error": "unavailable"}
+        try:
+            content["llm_gateway"] = get_llm_gateway().stats()
+        except Exception as stats_error:
+            container.logger().warning("LLM gateway stats failed: %s", stats_error)
+            content["llm_gateway"] = {"error": "unavailable"}
         return JSONResponse(
             status_code=200,
             content=content,

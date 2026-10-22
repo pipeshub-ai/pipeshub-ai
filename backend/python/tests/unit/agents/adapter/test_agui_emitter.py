@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext, ToolCallStatus
-from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
+from app.agents.agent_loop.protocol.agui_emitter import MESSAGE_DISCARDED_EVENT_NAME, AGUIEventEmitter
 
 _ROOT_CTX = RunContext(role_name="pipeshub-agent", model="gpt-4")
 _CHILD_CTX = _ROOT_CTX.child(role_name="internal_exploration_agent", model="gpt-4")
@@ -300,6 +300,27 @@ class TestTextMessageTranslation:
         second_id = sink.write.await_args.args[0]["data"]["messageId"]
 
         assert first_id != second_id
+
+    async def test_discarded_message_is_closed_and_taken_back_without_its_withheld_text(self) -> None:
+        """A model call that failed mid-stream: the client must drop the
+        message rather than keep it as narration, and the partial confidence
+        trailer withheld from it must not be flushed on the way out."""
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        message_id = sink.write.await_args.args[0]["data"]["messageId"]
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Partial answer\n---\nConf"}))
+        sink.write.reset_mock()
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_END, {"turn_index": 0, "discarded": True}))
+
+        frames = [call.args[0]["data"] for call in sink.write.await_args_list]
+        assert [f["type"] for f in frames] == ["TEXT_MESSAGE_END", "CUSTOM"]
+        assert frames[1]["name"] == MESSAGE_DISCARDED_EVENT_NAME
+        assert frames[1]["value"] == {"messageId": message_id}
+
+        sink.write.reset_mock()
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "late"}))
+        sink.write.assert_not_awaited()
 
 
 class TestReasoningTranslation:

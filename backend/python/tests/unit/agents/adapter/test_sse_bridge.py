@@ -230,6 +230,33 @@ class TestQueueEventSinkCoalescing:
         assert flushed_snapshot == answer_delta
         assert await queue.get() == artifact_add
 
+    async def test_the_snapshot_marking_a_discard_never_merges_into_the_next(self) -> None:
+        """The client drops answer snapshots after `message_discarded` until it
+        sees the one marked `/discarded`; merged away, the marker is lost and
+        the error answer or retry that follows would be dropped too."""
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        sink = QueueEventSink(queue)
+        await self._fill_queue(queue)
+
+        cleared = {"event": "STATE_DELTA", "data": {"delta": [
+            {"op": "replace", "path": "/normalizedAnswer", "value": ""},
+            {"op": "replace", "path": "/discarded", "value": True},
+        ]}}
+        error = {"event": "STATE_DELTA", "data": {"delta": [
+            {"op": "replace", "path": "/normalizedAnswer", "value": "The call failed."},
+        ]}}
+        cleared_write = asyncio.ensure_future(sink.write(cleared))
+        await asyncio.sleep(0)
+        assert not cleared_write.done(), "a marked snapshot waits for a slot instead of pending"
+
+        await queue.get()
+        await asyncio.wait_for(cleared_write, timeout=1)
+        await sink.write(error)
+
+        assert await queue.get() == cleared
+        await sink.flush()
+        assert await queue.get() == error
+
     async def test_state_delta_two_adjacent_add_ops_never_merge(self) -> None:
         """Two artifacts registered back-to-back must both survive even
         though they share the same `(STATE_DELTA, "")` coalesce key an

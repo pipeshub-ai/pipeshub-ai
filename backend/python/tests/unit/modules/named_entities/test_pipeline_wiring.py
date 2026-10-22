@@ -1,4 +1,5 @@
-"""Named-entity stage wiring: never raises, gated by the flag, safe on failure."""
+"""Named-entity wiring: its own pipeline stage beside classification, never raises, gated
+by the flag, safe on failure."""
 
 import asyncio
 import logging
@@ -16,7 +17,6 @@ from app.modules.named_entities.domain.models import (
     NamedEntity,
     NamedEntityExtraction,
 )
-from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 
 _SECRET_NAME = "Zebulon Quartermaine"
@@ -60,79 +60,130 @@ def _sink(graph=None) -> SinkOrchestrator:
     return sink
 
 
-async def test_pipeline_runs_extraction_concurrently_with_classify():
-    order: list[str] = []
-    released = asyncio.Event()
+def _view_job(stage_name: str = "entities"):
+    from app.modules.pipeline.models import Priority, StageJob
+    from app.services.resource_governor.models import ParseTier
 
-    async def extract(ctx):
-        order.append("ner-start")
-        released.set()
-        return _extraction()
-
-    async def classify(ctx):
-        await asyncio.wait_for(released.wait(), timeout=1)
-        order.append("classify-done")
-        ctx.record.semantic_metadata = MagicMock(summary="")
-
-    doc_extraction = MagicMock(apply=AsyncMock(side_effect=classify))
-    sink = MagicMock()
-    sink.extract_named_entities = AsyncMock(side_effect=extract)
-    sink.resolve_entities = AsyncMock()
-    sink.attach_named_entities = MagicMock(side_effect=lambda *a: order.append("attach"))
-    sink.blob_storage.apply = AsyncMock(side_effect=lambda ctx: order.append("blob"))
-    sink.enrich = AsyncMock(side_effect=lambda ctx: order.append("enrich"))
-    sink.persist_named_entities = AsyncMock(side_effect=lambda *a: order.append("persist"))
-    ctx = MagicMock()
-    await IndexingPipeline(doc_extraction, sink)._enrich(ctx)
-    assert order == ["ner-start", "classify-done", "attach", "blob", "enrich", "persist"]
+    return StageJob.model_validate({
+        "stage": stage_name, "stage_version": 1, "org_id": "org-1", "virtual_record_id": "vr-1",
+        "rev": "rev-a", "record_ids": ("rec-1",), "connector_id": "conn-1", "tier": ParseTier.LIGHT,
+        "priority": Priority.BULK, "trigger": "embed", "text_digest": "t", "blocks_digest": "b",
+        "text_chars": 10, "has_tables": False, "has_images": False,
+    })
 
 
-async def test_pipeline_cancels_extraction_when_classify_fails():
-    started = asyncio.Event()
-    cancelled = asyncio.Event()
+async def test_extraction_is_dispatched_beside_classification_not_after_it():
+    """Named entities run in parallel with classification: both stages are dispatched the
+    moment the record is searchable, and only classification owns extractionStatus."""
+    from app.modules.pipeline.coordinator import Coordinator
+    from app.modules.pipeline.models import HeadlineField, Priority
+    from app.modules.pipeline.policy import DEFAULT_POLICY
+    from app.modules.pipeline.registry import StageRegistry
+    from app.modules.pipeline.stages.classify import ClassifyStage
+    from app.modules.pipeline.stages.entities import EntitiesStage
+    from tests.unit.modules.pipeline.fakes import (
+        Clock,
+        InMemoryStageStateStore,
+        RecordingHeadlines,
+        RecordingProducer,
+    )
 
-    async def extract(ctx):
-        started.set()
-        try:
-            await asyncio.sleep(10)
-        except asyncio.CancelledError:
-            cancelled.set()
-            raise
+    registry = StageRegistry()
+    registry.register_external("embed")
+    registry.register(ClassifyStage())
+    registry.register(EntitiesStage())
+    clock = Clock()
+    headlines, producer = RecordingHeadlines(), RecordingProducer()
+    coordinator = Coordinator(
+        registry, InMemoryStageStateStore(clock), headlines, producer,  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("t"), clock_ms=clock,
+    )
 
-    async def classify(ctx):
-        await started.wait()
-        raise RuntimeError("classify down")
+    published = await coordinator.on_external_done(
+        "embed", _view_job("embed").view, priority=Priority.BULK, trigger="index"
+    )
 
-    sink = MagicMock()
-    sink.extract_named_entities = AsyncMock(side_effect=extract)
-    pipeline = IndexingPipeline(MagicMock(apply=AsyncMock(side_effect=classify)), sink)
-    with pytest.raises(RuntimeError):
-        await pipeline._enrich(MagicMock())
-    await asyncio.wait_for(cancelled.wait(), timeout=1)
+    assert sorted(job_id.rsplit(":", 1)[1] for job_id in published) == ["classify@1", "entities@1"]
+    assert len(producer.jobs("pipeline.classify")) == 1
+    assert len(producer.jobs("pipeline.entities")) == 1
+    assert [write[1] for write in headlines.writes] == [HeadlineField.EXTRACTION]
 
 
-async def test_the_cancelled_extraction_has_finished_when_enrich_raises() -> None:
-    """Awaited, not just cancelled: a task left pending is destroyed with a warning."""
-    started = asyncio.Event()
-    unwound = []
+class _SlowEntitiesIO:
+    def __init__(self, unwound: list[bool]) -> None:
+        self.unwound = unwound
 
-    async def extract(ctx: object) -> None:
-        started.set()
+    @property
+    def policy(self):
+        from app.modules.pipeline.policy import DEFAULT_POLICY
+
+        return DEFAULT_POLICY
+
+    @property
+    def deadline(self):
+        from app.modules.pipeline.stage import Deadline
+
+        return Deadline(60)
+
+    async def entities_config(self, job) -> dict:
+        return {}
+
+    async def current_record_ids(self, job) -> list[str]:
+        return ["rec-1"]
+
+    async def load_blocks(self, job):
+        from app.models.blocks import BlocksContainer
+
+        return BlocksContainer(blocks=[], block_groups=[])
+
+    async def extract(self, job, blocks):
         try:
             await asyncio.sleep(10)
         finally:
-            unwound.append(True)
+            self.unwound.append(True)
 
-    async def classify(ctx: object) -> None:
-        await started.wait()
-        raise RuntimeError("classify down")
 
-    sink = MagicMock()
-    sink.extract_named_entities = AsyncMock(side_effect=extract)
-    pipeline = IndexingPipeline(MagicMock(apply=AsyncMock(side_effect=classify)), sink)
-    with pytest.raises(RuntimeError, match="classify down"):
-        await pipeline._enrich(MagicMock())
+async def test_an_extraction_past_its_budget_is_cancelled_and_finished_before_the_retry():
+    """Awaited, not just cancelled: a task left pending is destroyed with a warning. The
+    stage's budget is what cuts it short now; classification is not involved."""
+    from app.modules.pipeline.coordinator import Coordinator
+    from app.modules.pipeline.policy import DEFAULT_POLICY
+    from app.modules.pipeline.registry import StageRegistry
+    from app.modules.pipeline.stages.entities import EntitiesStage
+    from app.modules.pipeline.worker import StageJobHandler, StageRetry
+    from app.services.messaging.config import StreamMessage
+    from tests.unit.modules.pipeline.fakes import (
+        Clock,
+        InMemoryStageStateStore,
+        RecordingHeadlines,
+        RecordingProducer,
+    )
+
+    class _Quick(EntitiesStage):
+        budget_s = 0.05
+
+    unwound: list[bool] = []
+    registry = StageRegistry()
+    registry.register_external("embed")
+    registry.register(_Quick())
+    clock = Clock()
+    states, headlines = InMemoryStageStateStore(clock), RecordingHeadlines()
+    coordinator = Coordinator(
+        registry, states, headlines, RecordingProducer(),  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("t"), clock_ms=clock,
+    )
+    handler = StageJobHandler(
+        registry, states, headlines, coordinator, lambda job, deadline: _SlowEntitiesIO(unwound),
+        logger=logging.getLogger("t"), clock_ms=clock,
+    )
+    message = StreamMessage(eventType="stageJob", payload=_view_job().model_dump(mode="json", by_alias=True))
+
+    with pytest.raises(StageRetry):
+        async for _event in handler(message):
+            pass
+
     assert unwound == [True]
+    assert headlines.writes == []
 
 
 async def test_extraction_failure_returns_failed_and_does_not_raise(caplog):
@@ -375,32 +426,45 @@ def test_no_module_writes_entity_extraction_status():
 
 async def test_an_extraction_without_classification_still_reaches_the_blob():
     """The blob is what the graph and vectors are rebuilt from, so it must hold the
-    extraction even when classification gave no metadata; the graph writer must
-    still see no metadata, which it records as a failed classification."""
-    seen: dict = {}
+    extraction even when no classification is stored (yet, or at all); the stored record
+    must still read as unclassified to the classify stage."""
+    from app.events.processor import convert_record_dict_to_record
+    from app.modules.pipeline.leases import RecordLeases
+    from app.modules.pipeline.policy import DEFAULT_POLICY
+    from app.modules.pipeline.stage import Deadline
+    from app.modules.pipeline.stages.classify_io import GraphClassifyIO
+    from app.modules.pipeline.stages.entities_io import GraphEntitiesIO
 
-    async def classify(ctx):
-        ctx.record.semantic_metadata = None
+    stored = {"block_containers": {"blocks": [], "block_groups": []}, "semantic_metadata": None}
 
-    async def blob(ctx):
-        seen["stored"] = ctx.record.semantic_metadata.named_entities
+    async def get(_vrid, _org):
+        return dict(stored)
 
-    async def enrich(ctx):
-        seen["graph_saw"] = ctx.record.semantic_metadata
+    async def save(_org, _record, _vrid, metadata):
+        stored["semantic_metadata"] = metadata
 
-    sink = MagicMock()
-    sink.extract_named_entities = AsyncMock(return_value=_extraction())
-    sink.blob_storage.apply = AsyncMock(side_effect=blob)
-    sink.enrich = AsyncMock(side_effect=enrich)
-    sink.persist_named_entities = AsyncMock()
-    ctx = SimpleNamespace(record=SimpleNamespace(semantic_metadata=None))
+    graph = MagicMock()
+    graph.get_document = AsyncMock(return_value={
+        "_key": "rec-1", "orgId": "org-1", "contentRev": "rev-a", "recordName": "a.txt",
+        "externalRecordId": "x", "connectorId": "conn-1", "mimeType": "text/plain",
+    })
+    graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+    blob = MagicMock(get_record_from_storage=AsyncMock(side_effect=get), save_semantic_metadata=AsyncMock(side_effect=save))
+    sink = MagicMock(persist_named_entities=AsyncMock(return_value="written"))
+    common = {
+        "policy": DEFAULT_POLICY, "graph": graph, "blob_storage": blob, "sink": sink, "config_service": MagicMock(),
+        "record_from_document": convert_record_dict_to_record, "record_leases": RecordLeases(),
+    }
 
-    await IndexingPipeline(MagicMock(apply=AsyncMock(side_effect=classify)), sink)._enrich(ctx)
+    io = GraphEntitiesIO(_view_job(), Deadline(30), **common)
+    await io.current_record_ids(_view_job())
+    assert await io.save(_view_job(), ["rec-1"], _extraction()) == "written"
 
-    assert seen["graph_saw"] is None
-    assert [entity["display_name"] for entity in seen["stored"]["entities"]] == [_SECRET_NAME]
-    assert ctx.record.semantic_metadata is None
-    sink.blob_storage.apply.assert_awaited_once()
+    assert [entity["display_name"] for entity in stored["semantic_metadata"]["named_entities"]["entities"]] == [
+        _SECRET_NAME
+    ]
+    classify_io = GraphClassifyIO(_view_job("classify"), Deadline(30), classifier=AsyncMock(), **common)
+    assert not await classify_io.stored_metadata_present(_view_job("classify"))
 
 
 @pytest.mark.parametrize(

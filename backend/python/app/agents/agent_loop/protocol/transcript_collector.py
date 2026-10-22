@@ -178,6 +178,8 @@ class TranscriptCollector(EventEmitter):
         # `_prenormalize_source_citations`, so a reply continued after the
         # output-token limit is rejoined from the model's own text.
         self._last_text: dict[str, tuple[MessagePart, str]] = {}
+        # run_id -> where the current model call's parts start in its container.
+        self._model_call_start: dict[str, int] = {}
         self._view_budget = ResultViewBudget()
 
     async def emit(self, event: "AgentEvent") -> None:
@@ -340,7 +342,9 @@ class TranscriptCollector(EventEmitter):
 
         if event.event_type == EventType.TEXT_MESSAGE_START:
             text_part: MessagePart = {"type": "text", "content": "", "runId": run_id}
-            self._container_for(run_id).append(text_part)
+            container = self._container_for(run_id)
+            self._model_call_start[run_id] = len(container)
+            container.append(text_part)
             self._open_turn_parts[(run_id, "text")] = text_part
             return
 
@@ -352,6 +356,13 @@ class TranscriptCollector(EventEmitter):
 
         if event.event_type == EventType.TEXT_MESSAGE_END:
             part = self._open_turn_parts.pop((run_id, "text"), None)
+            start = self._model_call_start.pop(run_id, None)
+            if payload.get("discarded"):
+                # The model call failed mid-stream; none of it is in the history.
+                self._open_turn_parts.pop((run_id, "reasoning"), None)
+                if part is not None and start is not None:
+                    del self._container_for(run_id)[start:]
+                return
             if part is not None:
                 raw = part.get("content", "")
                 if payload.get("joins_truncated"):
