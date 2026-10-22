@@ -86,6 +86,7 @@ jobs:
             fi
             echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
           done
+          echo "PIPESHUB_BUILD_TARGET=runtime-slim" >> "$GITHUB_ENV"
 
       - name: Build the stack
         working-directory: deployment/docker-compose

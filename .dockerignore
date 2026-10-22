@@ -106,6 +106,22 @@ backend/nodejs/apps/dist/
 **/.dockerignore
 **/docker-compose*.yml
 
+# Next.js and Electron outputs. frontend/.next is rebuilt in the image and is
+# large enough to blow the build-context budget if it is sent.
+**/.next/
+**/.c8_output/
+**/coverage/
+frontend/out/
+frontend/release/
+frontend/electron/dist/
+frontend/electron/out/
+
+# Not inputs to the image. Local agent worktrees are full checkouts.
+**/.github/
+**/.cursor/
+**/.claude/
+**/integration-tests/
+
 # Misc
 **/.env*
 **/secrets/
