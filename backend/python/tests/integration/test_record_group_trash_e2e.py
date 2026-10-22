@@ -206,13 +206,13 @@ def _table(w: _World, schema: str, name: str) -> SQLTableRecord:
     )
 
 
-def _postgres(w: _World) -> SimpleNamespace:
-    connector = SimpleNamespace(
-        data_entities_processor=w.processor, data_store_provider=w.processor.data_store_provider,
-        connector_id=w.connector_id, logger=logger, sync_stats=SimpleNamespace(errors=0), database_name="shop",
-        _fetch_schemas=AsyncMock(return_value=[]), _passes_filter=PostgreSQLConnector._passes_filter,
+def _postgres(w: _World) -> PostgreSQLConnector:
+    # A real connector, so its delete path runs as it does in production.
+    connector = PostgreSQLConnector(
+        logger, w.processor, w.processor.data_store_provider, MagicMock(), w.connector_id,
     )
-    connector._schema_group_id = lambda name: PostgreSQLConnector._schema_group_id(connector, name)
+    connector.database_name = "shop"
+    connector._fetch_schemas = AsyncMock(return_value=[])
     return connector
 
 

@@ -33,6 +33,8 @@ services:
       # admin/admin credentials are then ignored.
       - DISABLE_INSTALL_DEMO_CONFIG=true
       - plugins.security.disabled=true
+      # A full runner disk (CI images leave little free) would block index creation.
+      - cluster.routing.allocation.disk.threshold_enabled=false
     ulimits:
       memlock:
         soft: -1
