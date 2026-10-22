@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shlex
 import subprocess
 from typing import Sequence
 
@@ -141,9 +142,11 @@ class BlobStoreProbe:
         # apart from a permission or mount failure. Collapsing the two would let
         # a probe that never ran report "no files", which is the pass condition
         # for assert_blobs_gone.
+        # Quoted for the shell: a drive group is named "<user>'s Files".
+        quoted = shlex.quote(target)
         script = (
-            f"if [ ! -d '{target}' ]; then exit {_MISSING_DIRECTORY_EXIT}; fi; "
-            f"find '{target}' -type f"
+            f"if [ ! -d {quoted} ]; then exit {_MISSING_DIRECTORY_EXIT}; fi; "
+            f"find {quoted} -type f"
         )
         result = self._run_docker(["exec", "-i", self.container(), "sh", "-c", script])
 

@@ -215,3 +215,22 @@ def test_a_remote_host_gets_no_default_key(monkeypatch) -> None:
 
 def test_a_remote_host_without_a_key_is_fine() -> None:
     VectorStoreProbe(host="qdrant.example.com", api_key="")
+
+
+def test_a_path_with_an_apostrophe_is_listed(tmp_path, monkeypatch) -> None:
+    """A Nextcloud drive group is named "<user>'s Files", which is part of the stored path."""
+    import helper.blob_store as blob_store
+
+    stored = tmp_path / "PipesHub" / "org" / "pipeshub-it's Files" / "a.txt"
+    stored.parent.mkdir(parents=True)
+    stored.write_text("x")
+    monkeypatch.setattr(blob_store, "_LOCAL_MOUNT_ROOT", str(tmp_path))
+    monkeypatch.setattr(blob_store, "_LOCAL_MOUNT_NAME", "PipesHub")
+    probe = BlobStoreProbe(container="app")
+
+    def run_locally(args: list[str]) -> subprocess.CompletedProcess:
+        # The script the probe would exec in the container, run by this machine's shell.
+        return subprocess.run(["sh", "-c", args[-1]], capture_output=True, text=True, check=False)
+
+    with patch.object(probe, "_run_docker", side_effect=run_locally):
+        assert probe._local_files_under("org/pipeshub-it's Files") == [str(stored)]

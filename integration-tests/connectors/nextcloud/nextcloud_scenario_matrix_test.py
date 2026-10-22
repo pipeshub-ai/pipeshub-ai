@@ -21,7 +21,6 @@ import pytest_asyncio
 
 from connectors.nextcloud.nextcloud_source_helper import NextcloudSourceHelper
 from connectors.scenario_matrix import (
-    FILTER_KEEPS_EXCLUDED_ITEM,
     Action,
     ConnectorScenarioMatrix,
     Role,
@@ -147,7 +146,6 @@ async def scenario_adapter(
 @pytest.mark.nextcloud
 class TestNextcloudScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "Nextcloud"
-    KNOWN_BUGS = {"filter_change": FILTER_KEEPS_EXCLUDED_ITEM}
     SCHEDULED_SYNC = True
     UNSUPPORTED = {
         Action.CHANGE_PERMISSION.value: (
