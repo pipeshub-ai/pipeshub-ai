@@ -238,6 +238,12 @@ def _ai_messages(model: str) -> dict[str, str]:
             "or account policy), so this file wasn't indexed. An admin can check the "
             "model's access in the provider's console, then Reindex the file."
         ),
+        "permission_denied": (
+            f"The {model}'s credentials work but aren't allowed to use the model, so this "
+            "file wasn't indexed. An admin can grant them access to the model (on Bedrock, "
+            "bedrock:InvokeModel and bedrock:InvokeModelWithResponseStream on the model or "
+            "inference profile), then Reindex the file."
+        ),
         "server_error": unreachable,
         "timeout": unreachable,
         "content_filter": (
@@ -443,11 +449,12 @@ def _ai_failure_code(chain: list[BaseException]) -> str:
     "rejected PipesHub's API key" and sends the admin to rotate a key that works.
     """
     code = _provider_code(chain)
-    if (
-        code == "auth_error"
-        and any(_from(e, ("botocore",)) for e in chain)
-        and bedrock_access_denied_cause(chain[0]) in _BEDROCK_BLOCKED_CAUSES
-    ):
+    if code != "auth_error" or not any(_from(e, ("botocore",)) for e in chain):
+        return code
+    cause = bedrock_access_denied_cause(chain[0])
+    if cause == "iam":
+        return "permission_denied"
+    if cause in _BEDROCK_BLOCKED_CAUSES:
         return "access_blocked"
     return code
 

@@ -392,6 +392,13 @@ def _bedrock_error(code: str, message: str) -> BaseException:
     )
 
 
+class _LangchainAwsError(Exception):
+    pass
+
+
+_LangchainAwsError.__module__ = "langchain_aws.chat_models.bedrock_converse"
+
+
 class TestBedrockAccessDeniedCause:
     @pytest.mark.parametrize(
         ("code", "message"),
@@ -440,19 +447,30 @@ class TestBedrockDenialOnEmbeddingReason:
         assert "API key" not in reason
         assert "refused access to the model" in reason
 
-    @pytest.mark.parametrize(
-        ("code", "message"),
-        (
-            ("UnrecognizedClientException", "The security token included in the request is invalid."),
-            (
+    def test_a_bad_key_still_points_to_the_key(self) -> None:
+        exc = _wrapped(
+            EmbeddingError("Dense embedding failed"),
+            _bedrock_error("UnrecognizedClientException", "The security token included in the request is invalid."),
+        )
+        assert "rejected PipesHub's API key" in ue.to_user_reason(exc)
+
+    def test_a_missing_iam_permission_asks_for_access_not_a_new_key(self) -> None:
+        exc = _wrapped(
+            EmbeddingError("Dense embedding failed"),
+            _bedrock_error(
                 "AccessDeniedException",
                 "User: arn:aws:iam::1:user/x is not authorized to perform: bedrock:InvokeModel",
             ),
-        ),
-    )
-    def test_a_bad_key_or_missing_permission_still_points_to_the_key(self, code: str, message: str) -> None:
-        exc = _wrapped(EmbeddingError("Dense embedding failed"), _bedrock_error(code, message))
-        assert "rejected PipesHub's API key" in ue.to_user_reason(exc)
+        )
+        reason = ue.to_user_reason(exc)
+        assert "API key" not in reason
+        assert "aren't allowed to use the model" in reason
+        assert "bedrock:InvokeModel" in reason
+
+    def test_a_missing_iam_permission_on_a_chat_model_asks_for_access(self) -> None:
+        error = _bedrock_error("AccessDeniedException", "is not authorized to perform: bedrock:InvokeModel")
+        exc = _wrapped(DocumentProcessingError("summary failed"), _wrapped(_LangchainAwsError("Converse failed"), error))
+        assert "The AI model's credentials work but aren't allowed" in ue.to_user_reason(exc)
 
     def test_a_forbidden_response_from_another_provider_still_points_to_the_key(self) -> None:
         exc = _wrapped(EmbeddingError("Dense embedding failed"), _status_error(openai.PermissionDeniedError, 403))
