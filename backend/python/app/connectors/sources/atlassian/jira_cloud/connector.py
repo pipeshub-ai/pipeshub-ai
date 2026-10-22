@@ -442,6 +442,13 @@ class JiraConnector(BaseConnector):
         # groups are unknown. They are noted as seen before run_sync returns, so a full
         # sync's unlink leaves them alone without the refusal making every full sync incomplete.
         self._kept_after_refusal: list[tuple[str, str]] = []
+        # This sync's users-and-roles reads, which the later steps of run_sync rely on:
+        # the stored app users and deactivated accounts (_fetch_users) decide the withdraw,
+        # and the application-role mapping is read once and reused for project access.
+        # Cleared when run_sync ends, so a _fetch_projects call outside it reads the mapping itself.
+        self._stored_app_users: list[AppUser] = []
+        self._deactivated_account_ids: set[str] = set()
+        self._app_roles_mapping: Optional[dict[str, list[dict[str, str]]]] = None
         # True when the bulk user list was refused on its first page: the account cannot
         # list users at all. That is lasting, so the sync fails closed, and a failed email
         # lookup afterwards does not turn it into an unfinished read.
@@ -796,7 +803,7 @@ class JiraConnector(BaseConnector):
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
             if not self._user_read_unfinished:
                 await self._withdraw_ineligible_app_users(
-                    jira_users, unlicensed_ids | getattr(self, "_deactivated_account_ids", set())
+                    jira_users, unlicensed_ids | self._deactivated_account_ids
                 )
             # Saving a group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
@@ -893,6 +900,8 @@ class JiraConnector(BaseConnector):
                     ),
                 )
             raise
+        finally:
+            self._app_roles_mapping = None
 
     # ============================================================================
     # Placeholder Sweep
@@ -2227,7 +2236,7 @@ class JiraConnector(BaseConnector):
         without product access, unless another account with their email was kept this run."""
         kept_emails = {u.email.lower() for u in jira_users if u.email}
         gone = [
-            u for u in getattr(self, "_stored_app_users", None) or []
+            u for u in self._stored_app_users
             if u.source_user_id in ineligible_ids and (u.email or "").lower() not in kept_emails
         ]
         if gone:
@@ -3383,7 +3392,7 @@ class JiraConnector(BaseConnector):
         )
 
         # run_sync reads the mapping once per sync, before the users are filtered by it.
-        app_roles_mapping = getattr(self, "_app_roles_mapping", None)
+        app_roles_mapping = self._app_roles_mapping
         if app_roles_mapping is None:
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
