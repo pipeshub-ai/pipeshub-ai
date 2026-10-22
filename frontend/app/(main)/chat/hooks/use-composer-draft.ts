@@ -21,6 +21,11 @@ interface UseComposerDraftOptions {
 /**
  * Keeps what the reader has typed in the composer per conversation: restored
  * on return, saved shortly after typing stops, and flushed when they leave.
+ *
+ * `discardDraft` forgets that text. Call it before a send: the centered
+ * composer unmounts as the thread opens, and the unmount flush would otherwise
+ * save the question for the composer that replaces it. The function it returns
+ * puts the text back when the send did not happen.
  */
 export function useComposerDraft({
   draftKey,
@@ -29,13 +34,25 @@ export function useComposerDraft({
   message,
   setMessage,
   paused = false,
-}: UseComposerDraftOptions): void {
+}: UseComposerDraftOptions): { discardDraft: () => () => void } {
   const messageRef = useRef(message);
   const pausedRef = useRef(paused);
+  // The text `discardDraft` is ignoring. A render that still shows it must not
+  // copy it back into the ref: send unmounts the composer before the empty
+  // value is committed, and that unmount would otherwise save the question.
+  const pendingDiscardRef = useRef<string | null>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Declared first so every effect below sees this commit's values.
   useEffect(() => {
-    messageRef.current = message;
     pausedRef.current = paused;
+    if (pendingDiscardRef.current !== null) {
+      if (message === pendingDiscardRef.current) {
+        messageRef.current = '';
+        return;
+      }
+      pendingDiscardRef.current = null;
+    }
+    messageRef.current = message;
   });
   // The key the text currently in the box belongs to. It only moves in the
   // effect below, so a text change that lands in the same commit as a thread
@@ -46,6 +63,23 @@ export function useComposerDraft({
   // still a change of person.
   const knownUserRef = useRef<string | null>(null);
 
+  const discardDraft = (): (() => void) => {
+    const snapshot = messageRef.current;
+    const key = ownerKeyRef.current;
+    pendingDiscardRef.current = snapshot;
+    messageRef.current = '';
+    if (saveTimerRef.current !== null) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    if (key) clearDraft(key);
+    return () => {
+      pendingDiscardRef.current = null;
+      messageRef.current = snapshot;
+      if (key && !pausedRef.current) saveDraft(key, snapshot);
+    };
+  };
+
   useEffect(() => {
     const last = lastRef.current;
     lastRef.current = { key: draftKey, slotId };
@@ -55,6 +89,13 @@ export function useComposerDraft({
     const sameThread = last !== null && last.slotId === slotId;
     const userChanged = Boolean(userId && knownUserRef.current && knownUserRef.current !== userId);
     if (userId) knownUserRef.current = userId;
+
+    if (pendingDiscardRef.current !== null) {
+      if (leavingKey) clearDraft(leavingKey);
+      ownerKeyRef.current = draftKey;
+      if (draftKey) clearDraft(draftKey);
+      return;
+    }
 
     if (leavingKey && draftKey && sameThread && !userChanged) {
       // A new chat just got its real id: the text in the box moves with it.
@@ -82,9 +123,13 @@ export function useComposerDraft({
 
   useEffect(() => {
     const key = ownerKeyRef.current;
-    if (!key || paused) return;
+    if (!key || paused || pendingDiscardRef.current !== null) return;
     const timer = setTimeout(() => saveDraft(key, message), DRAFT_SAVE_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
+    saveTimerRef.current = timer;
+    return () => {
+      clearTimeout(timer);
+      if (saveTimerRef.current === timer) saveTimerRef.current = null;
+    };
     // `draftKey` re-arms the timer when the owner changes, so a save queued
     // before a chat got its id cannot land under the new key.
   }, [message, paused, draftKey]);
@@ -92,7 +137,12 @@ export function useComposerDraft({
   useEffect(() => {
     const flush = () => {
       const key = ownerKeyRef.current;
-      if (key && !pausedRef.current) saveDraft(key, messageRef.current);
+      if (!key || pausedRef.current) return;
+      if (pendingDiscardRef.current !== null) {
+        clearDraft(key);
+        return;
+      }
+      saveDraft(key, messageRef.current);
     };
     window.addEventListener('pagehide', flush);
     return () => {
@@ -100,4 +150,6 @@ export function useComposerDraft({
       flush();
     };
   }, []);
+
+  return { discardDraft };
 }

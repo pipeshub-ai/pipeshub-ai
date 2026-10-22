@@ -18,13 +18,16 @@ interface HarnessProps {
 
 function Harness({ draftKey, slotId, paused, initial = '', userId = 'u1' }: HarnessProps) {
   const [message, setMessage] = useState(initial);
-  useComposerDraft({ draftKey, userId, slotId, message, setMessage, paused });
+  const { discardDraft } = useComposerDraft({ draftKey, userId, slotId, message, setMessage, paused });
   return (
-    <textarea
-      aria-label="Message"
-      value={message}
-      onChange={(e) => setMessage(e.target.value)}
-    />
+    <>
+      <textarea
+        aria-label="Message"
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+      />
+      <button type="button" onClick={() => { discardDraft(); }}>Discard draft</button>
+    </>
   );
 }
 
@@ -279,6 +282,43 @@ describe('useComposerDraft — moving between conversations', () => {
 });
 
 describe('useComposerDraft — sending the first message of a new chat', () => {
+  it('does not save the sent text when the composer unmounts still showing it', () => {
+    const { unmount } = render(<Harness draftKey={KEY_NEW} slotId={null} />);
+    type('who won ipl 2026');
+    wait(DRAFT_SAVE_DEBOUNCE_MS + 10);
+    expect(loadDraft(KEY_NEW)).toBe('who won ipl 2026');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard draft' }));
+    // The box has not re-rendered empty yet — the same moment send swaps composers.
+    unmount();
+
+    expect(stored(KEY_NEW)).toBeNull();
+  });
+
+  it('does not file the sent text under the thread the chat just received', () => {
+    const { rerender, unmount } = render(<Harness draftKey={KEY_NEW} slotId="s1" />);
+    type('who won ipl 2026');
+    wait(DRAFT_SAVE_DEBOUNCE_MS + 10);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard draft' }));
+    rerender(<Harness draftKey={KEY_A} slotId="s1" />);
+    unmount();
+
+    expect(stored(KEY_NEW)).toBeNull();
+    expect(stored(KEY_A)).toBeNull();
+  });
+
+  it('saves a follow-up typed after the sent text was discarded', () => {
+    render(<Harness draftKey={KEY_NEW} slotId="s1" />);
+    type('who won ipl 2026');
+    fireEvent.click(screen.getByRole('button', { name: 'Discard draft' }));
+    type('');
+    type('a follow-up');
+    wait(DRAFT_SAVE_DEBOUNCE_MS + 10);
+
+    expect(loadDraft(KEY_NEW)).toBe('a follow-up');
+  });
+
   it('does not bring the sent text back when the chat gets its thread', () => {
     const { rerender } = render(<Harness draftKey={KEY_NEW} slotId={null} />);
     type('my first question');

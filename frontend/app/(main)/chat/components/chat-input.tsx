@@ -289,7 +289,7 @@ export function ChatInput({
   const draftConvId = useChatStore((s) =>
     s.activeSlotId ? (s.slots[s.activeSlotId]?.convId ?? null) : null,
   );
-  useComposerDraft({
+  const { discardDraft } = useComposerDraft({
     draftKey: persistDraft
       ? buildDraftKey({ userId: draftUserId, convId: draftConvId, agentId })
       : null,
@@ -1076,25 +1076,38 @@ export function ChatInput({
           store.setFilters(mergeMentionFilters(store.settings.filters, kept));
         }
       }
-      const clearDraft = () => {
-        setMessage('');
-        setMentions([]);
-        setUploadedFiles([]);
-        setShowUploadArea(false);
-        if (textareaRef.current) {
-          textareaRef.current.style.height = 'auto';
-        }
+      const sentText = message;
+      const sentMentions = mentions;
+      const sentFiles = uploadedFiles;
+      const uploadsOpen = showUploadArea;
+      // Drop the draft before `onSend` returns. The first message unmounts this
+      // composer (centered hero → bottom dock) inside that call, and the unmount
+      // flush would save the question for the composer that replaces it.
+      const restoreDraft = discardDraft();
+      setMessage('');
+      setMentions([]);
+      setUploadedFiles([]);
+      setShowUploadArea(false);
+      const restoreComposer = () => {
+        restoreDraft();
+        setMessage(sentText);
+        setMentions(sentMentions);
+        setUploadedFiles(sentFiles);
+        setShowUploadArea(uploadsOpen);
       };
       const sending = onSend(
-        stripMentionPads(message, kept),
+        stripMentionPads(sentText, kept),
         refs.length > 0 ? refs : undefined,
         sent.length > 0 ? sent : undefined,
       );
       if (sending instanceof Promise) {
-        // The host said why it refused (or failed); the draft stays for another try.
-        void sending.then((ok) => { if (ok !== false) clearDraft(); }, () => {});
-      } else if (sending !== false) {
-        clearDraft();
+        if (textareaRef.current) textareaRef.current.style.height = 'auto';
+        // The host said why it refused (or failed); the question stays for another try.
+        void sending.then((ok) => { if (ok === false) restoreComposer(); }, () => restoreComposer());
+      } else if (sending === false) {
+        restoreComposer();
+      } else if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
       }
     }
   };

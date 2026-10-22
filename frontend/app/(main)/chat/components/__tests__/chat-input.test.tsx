@@ -1169,6 +1169,50 @@ describe('ChatInput — keeping an unsent message', () => {
     expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
   });
 
+  it('does not put the sent question back when the composer is replaced during send', () => {
+    const view = renderInput({ persistDraft: true });
+    type('who won ipl 2026');
+    pause();
+    view.onSend.mockImplementation(() => {
+      view.unmount();
+    });
+
+    fireEvent.click(sendButton());
+    renderInput({ persistDraft: true });
+
+    expect(composer().value).toBe('');
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('keeps the question when sending is refused', () => {
+    const { onSend } = renderInput({ persistDraft: true });
+    type('who won ipl 2026');
+    pause();
+    onSend.mockReturnValue(false);
+
+    fireEvent.click(sendButton());
+    pause();
+
+    expect(composer().value).toBe('who won ipl 2026');
+    expect(loadDraft(KEY_NEW)).toBe('who won ipl 2026');
+  });
+
+  it('keeps the question when sending fails', async () => {
+    const { onSend } = renderInput({ persistDraft: true });
+    type('who won ipl 2026');
+    pause();
+    onSend.mockRejectedValue(new Error('offline'));
+
+    fireEvent.click(sendButton());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    pause();
+
+    expect(composer().value).toBe('who won ipl 2026');
+    expect(loadDraft(KEY_NEW)).toBe('who won ipl 2026');
+  });
+
   it('forgets the draft when the page is left right after sending', () => {
     const { unmount } = renderInput({ persistDraft: true });
     type('Which vendors renew in Q4?');
