@@ -37,6 +37,12 @@ vi.mock('@/lib/api/api-error', () => ({
   processError: () => ({ message: 'error' }),
 }));
 
+// The picker loads the chat source tree; it has its own tests.
+vi.mock('@/app/components/knowledge-limit/knowledge-limit-choice', () => ({
+  KnowledgeLimitChoice: () => null,
+  KnowledgeLimitSummary: () => null,
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => {
