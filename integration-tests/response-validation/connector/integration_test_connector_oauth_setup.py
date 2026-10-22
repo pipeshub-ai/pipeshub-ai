@@ -559,9 +559,27 @@ class TestCreateAndDeleteOAuthApp:
             assert_response_strictly_matches_openapi_operation(resp.json(), _DELETE_OAUTH_CONFIG)
             # The only documented 400 is the app-wide markup filter, not "still in use".
             documented = _operation_responses(_DELETE_OAUTH_CONFIG).get("400")
-            assert documented in (None, {"$ref": "#/components/responses/XssRejected"}), documented
+            assert documented == {"$ref": "#/components/responses/XssRejected"}, documented
         finally:
             connectors_api.delete_instance(connector_id)
+
+    def test_delete_oauth_config_with_markup_in_a_query_value_is_400(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient
+    ) -> None:
+        """The app-wide XSS filter answers before authentication, as the XssRejected ref says."""
+        assert _operation_responses(_DELETE_OAUTH_CONFIG).get("400") == {
+            "$ref": "#/components/responses/XssRejected"
+        }
+        resp = oauth_configs_api.delete_config(
+            "Jira", str(uuid4()), auth=False, params={"q": "<script>alert(1)</script>"}
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert_error_response_matches_openapi_operation(body, _DELETE_OAUTH_CONFIG, 400)
+        assert body["error"]["code"] == "HTTP_BAD_REQUEST", body
+        assert body["error"]["message"].startswith(
+            'HTML tags, scripts, and XSS content are not allowed in the query parameter "q".'
+        ), body
 
     def test_delete_oauth_config_unauthenticated_is_401(
         self, oauth_configs_api: ConnectorOAuthConfigsClient, throwaway_jira_app: dict[str, Any]

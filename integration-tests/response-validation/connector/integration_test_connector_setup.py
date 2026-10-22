@@ -120,6 +120,21 @@ class TestGetConnector:
         assert resp.status_code == 404, resp.text
         assert_error_response_matches_openapi_operation(resp.json(), _GET, 404)
 
+    def test_get_instance_with_markup_in_a_query_value_is_400(
+        self, connectors_api: ConnectorsClient
+    ) -> None:
+        """The app-wide XSS filter answers before authentication, as the documented 400 says."""
+        resp = connectors_api.get_instance(
+            str(uuid4()), auth=False, params={"q": "<script>alert(1)</script>"}
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert_error_response_matches_openapi_operation(body, _GET, 400)
+        assert body["error"]["code"] == "HTTP_BAD_REQUEST", body
+        assert body["error"]["message"].startswith(
+            'HTML tags, scripts, and XSS content are not allowed in the query parameter "q".'
+        ), body
+
     def test_get_instance_unauthenticated_is_401(
         self, connectors_api: ConnectorsClient, rss_connector: Any
     ) -> None:
