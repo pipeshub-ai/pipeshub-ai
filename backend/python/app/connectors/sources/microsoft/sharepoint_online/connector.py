@@ -1553,7 +1553,7 @@ class SharePointConnector(BaseConnector):
 
             # An item's Graph permissions are its whole effective ACL. A uniquely
             # permissioned item does not inherit, and its role assignments come from
-            # SharePoint; Graph still supplies an organization link.
+            # SharePoint; Graph still supplies the people a link lists.
             graph_permissions = await self._get_item_permissions(site_id, drive_id, item_id)
             if has_unique_permissions is None:
                 file_record.inherit_permissions = await self._inheritance_when_unreadable(
@@ -3011,17 +3011,10 @@ class SharePointConnector(BaseConnector):
                                 link_grant=True,
                             ))
 
-                # An org-scoped link is an org grant; an anonymous one names no
-                # grantee and is not stored.
-                if hasattr(perm, 'link') and perm.link:
-                    link = perm.link
-                    if link.scope == "organization":
-                        permissions.append(Permission(
-                            external_id="anyone_in_org",
-                            email=None,
-                            type=map_msgraph_role_to_permission_type(link.type),
-                            entity_type=EntityType.ORG
-                        ))
+                # A link grants only the identities Graph lists on it. An organization or
+                # anonymous link opens the item only to the people who redeem it. Graph does
+                # not list them; on a uniquely permissioned item they arrive through the
+                # link's SharePoint group in its role assignments.
 
             except Exception as e:
                 self.logger.error(f"❌ Error converting permission: {e}", exc_info=True)

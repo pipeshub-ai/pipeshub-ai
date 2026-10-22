@@ -191,8 +191,15 @@ class StageJobHandler:
         return job, self._registry.get(job.stage)
 
     async def _handle(self, job: StageJob, stage: Stage[Any]) -> None:
-        state = await self._state_for(job)
         io = self._io_for(job, Deadline(stage.budget_s))
+        state = await self._state_for(job, io)
+        if state is None:
+            self._logger.info(
+                "Stage job %s has no state and none of its records is left on its revision; dropping it",
+                job.job_id,
+            )
+            self._count(job.stage, "stale")
+            return
         fingerprint = (await stage.fingerprint(job, io)).digest()
 
         # A fingerprint is stored only by a run that completed, and cleared when a run
@@ -237,9 +244,17 @@ class StageJobHandler:
             raise
         await self._apply(job, stage, result, fingerprint, attempt=run_attempt)
 
-    async def _state_for(self, job: StageJob) -> StageState:
+    async def _state_for(self, job: StageJob, io: StageIO) -> StageState | None:
+        """The job's state, recreated when its claim is missing; None when its records are gone.
+
+        A delete removes the stage states with the records, so a job delivered after it would
+        otherwise put back a state that nothing refers to and no later delete removes.
+        """
         state = await self._states.get(job.state_key)
         if state is None:
+            current_record_ids = getattr(io, "current_record_ids", None)
+            if current_record_ids is not None and not await current_record_ids(job):
+                return None
             # The claim is missing (a hand-published job, or a state that was cleaned up).
             _ = await self._states.create_if_absent(StageState.from_job(job, ProgressStatus.QUEUED, self._clock_ms()))
             state = await self._states.get(job.state_key)

@@ -501,6 +501,22 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"❌ Error initializing Google Drive enterprise connector: {ex}", exc_info=True)
             raise
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector.
+        The service account acts as the configured admin, so that admin is the account."""
+        admin_email = (((self.config or {}).get("credentials") or {}).get("auth") or {}).get("adminEmail")
+        if not self.admin_data_source or not admin_email:
+            return
+        email, source_user_id = None, None
+        try:
+            admin = await self.admin_data_source.users_get(userKey=admin_email)
+            email, source_user_id = admin.get("primaryEmail"), admin.get("id")
+        except Exception as e:
+            self.logger.debug("Could not read the Google Workspace admin %s: %s", admin_email, e)
+            return
+        await self.register_authenticated_source_user(email, source_user_id)
+
     async def run_sync(self) -> None:
         """
         Main entry point for the Google Drive enterprise connector.
@@ -534,6 +550,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.info(
                     f"📁 Folder filter active with {len(self._folder_seed_ids)} seed folder(s)"
                 )
+
+            await self._register_authenticated_identity()
 
             # Step 1: Sync users
             self.logger.info("Syncing users...")

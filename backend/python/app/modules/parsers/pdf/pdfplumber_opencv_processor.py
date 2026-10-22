@@ -4,10 +4,10 @@ import base64
 import logging
 import re
 import uuid
+from collections import Counter
 from io import BytesIO
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from app.config.configuration_service import ConfigurationService
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -33,12 +33,98 @@ from app.services.messaging.config import messaging_env
 from app.utils.indexing_helpers import generate_simple_row_text
 from app.utils.indexing_metrics import track_indexing_enrichment
 from app.utils.llm import get_llm_for_role
-from app.utils.table_enrichment import TableEnrichmentResult, enrich_table_grid, enrich_tables
+from app.utils.table_enrichment import (
+    TableEnrichmentResult,
+    enrich_table_grid,
+    enrich_tables,
+)
+
+if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
 
 
 _NUMBERED_LIST_ITEM_RE = re.compile(
     r"^\s*(?:\(\s*\d+\s*\)|\d+[.)])\s+\S",
 )
+
+# A heading: one short line set apart from body text by weight or size.
+_HEADING_MAX_CHARS = 160
+_HEADING_SIZE_RATIO = 1.15
+
+# Page numbers and running headers/footers. Docling keeps them out of the document
+# body, so they never become blocks; left in, a page number sits between every pair
+# of pages and a short repeated line ("3M Company") is indexed once per page.
+_MARGIN_BAND = 0.08
+_RUNNING_MAX_CHARS = 80
+_RUNNING_REPEATS = 3
+# A repeated line must also span this share of pages: a title continued over two or
+# three pages ("Consolidated Balance Sheets (continued)") is content, not furniture.
+_RUNNING_PAGE_SHARE = 0.2
+_PAGE_NUMBER_RE = re.compile(r"^(?:page\s+)?[-–—]?\s*\d{1,4}\s*[-–—]?(?:\s+of\s+\d{1,4})?$", re.IGNORECASE)
+# A lone number off the margins is a page number only when at least this many pages
+# share its offset from the page index; otherwise it is a diagram label, a list item
+# number or a contents entry.
+_PAGE_SEQUENCE_PAGES = 3
+
+
+def body_font_size(regions: list[LayoutRegion]) -> float:
+    """The median size of text regions: what an unremarkable line looks like."""
+    sizes = sorted(
+        r.font_size for r in regions if r.type == LayoutRegionType.TEXT and r.font_size > 0
+    )
+    return sizes[len(sizes) // 2] if sizes else 0.0
+
+
+def is_heading(region: LayoutRegion, body_size: float) -> bool:
+    text = region.text.strip()
+    if not text or len(text) > _HEADING_MAX_CHARS or "\n" in text:
+        return False
+    larger = body_size > 0 and region.font_size >= body_size * _HEADING_SIZE_RATIO
+    return region.is_bold or larger
+
+
+def running_noise(pages: list[ParsedPageData]) -> set[int]:
+    """``id(region)`` of page numbers and of short lines repeated in the top or
+    bottom margin of many pages."""
+    candidates = []
+    for pd in pages:
+        texts = [r for r in pd.regions if r.type == LayoutRegionType.TEXT and (r.text or "").strip()]
+        for region in texts:
+            text = region.text.strip()
+            if len(text) > _RUNNING_MAX_CHARS:
+                continue
+            # A page number follows the page's last line, wherever that falls
+            # (3M_2022_10K p.49 prints "49" a third of the way down a short page).
+            in_margin = region.bbox[1] <= pd.height * _MARGIN_BAND or region.bbox[3] >= pd.height * (1 - _MARGIN_BAND)
+            at_edge = (region is texts[0] or region is texts[-1]) and _PAGE_NUMBER_RE.match(text)
+            if in_margin or at_edge:
+                norm = re.sub(r"\d+", "#", " ".join(text.lower().split()))
+                candidates.append((region, text, norm, in_margin, pd.page_number))
+    repeats = Counter(norm for _, _, norm, in_margin, _ in candidates if in_margin)
+    needed = max(_RUNNING_REPEATS, len(pages) * _RUNNING_PAGE_SHARE)
+    offsets = Counter(
+        _page_offset(text, page) for _, text, _, _, page in candidates if _PAGE_NUMBER_RE.match(text)
+    )
+    # The first copy of a running line stays: a footer's "Data Last Update" or a
+    # filing's "Date Filed" is often stated nowhere else in the document.
+    first_copy = {}
+    for region, _, norm, in_margin, _ in candidates:
+        if in_margin:
+            first_copy.setdefault(norm, region)
+    return {
+        id(region)
+        for region, text, norm, in_margin, page in candidates
+        if (in_margin and repeats[norm] >= needed and first_copy[norm] is not region)
+        or (
+            _PAGE_NUMBER_RE.match(text)
+            and (in_margin or offsets[_page_offset(text, page)] >= _PAGE_SEQUENCE_PAGES)
+        )
+    }
+
+
+def _page_offset(text: str, page_number: int) -> int:
+    match = re.search(r"\d+", text)
+    return int(match.group()) - page_number if match else 0
 
 
 def _normalize_bbox_to_points(
@@ -99,15 +185,17 @@ class PDFPlumberOpenCVProcessor:
         blocks: List[Block] = []
         block_groups: List[BlockGroup] = []
 
+        pages = [
+            pd for pd in parsed_data if page_number is None or pd.page_number == page_number
+        ]
+
         # Pre-pass: collect every table region in walk order (grid extraction is pure
         # CPU/pdfplumber work), enrich them all concurrently, then build blocks below in
         # the same order as before - append order, and every index=len(blocks)
         # assignment, is unaffected by when the enrichment itself finished.
         table_regions: List[LayoutRegion] = []
         if not skip_llm_enrichment:
-            for pd in parsed_data:
-                if page_number is not None and pd.page_number != page_number:
-                    continue
+            for pd in pages:
                 for region in pd.regions:
                     if region.type == LayoutRegionType.TABLE and region.table_grid:
                         table_regions.append(region)
@@ -115,20 +203,30 @@ class PDFPlumberOpenCVProcessor:
         table_enrichments: dict[int, TableEnrichmentResult] = {}
         if table_regions:
             with track_indexing_enrichment(self.logger, label="pdfplumber"):
-                llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
-                results = await enrich_tables(
-                    llm,
-                    [region.table_grid for region in table_regions],
-                    logger=self.logger,
-                )
-                table_enrichments = dict(zip((id(r) for r in table_regions), results))
+                try:
+                    llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
+                except Exception as e:
+                    # Without an LLM the tables still index as plain rows; failing the
+                    # parse would send the whole document to OCR, which needs one too.
+                    self.logger.warning("No indexing LLM for table enrichment, keeping plain rows: %s", e)
+                    skip_llm_enrichment = True
+                else:
+                    results = await enrich_tables(
+                        llm,
+                        [region.table_grid for region in table_regions],
+                        logger=self.logger,
+                    )
+                    table_enrichments = dict(zip((id(r) for r in table_regions), results))
 
-        for pd in parsed_data:
-            if page_number is not None and pd.page_number != page_number:
-                continue
+        body_size = body_font_size([r for pd in pages for r in pd.regions])
+        noise = running_noise(pages)
+        for pd in pages:
 
             for region in pd.regions:
-                if region.type == LayoutRegionType.TABLE:
+                if id(region) in noise:
+                    continue
+                # A table with no cell grid builds no group; its text goes out as a text block instead.
+                if region.type == LayoutRegionType.TABLE and region.table_grid:
                     await self._build_table_group(
                         region,
                         pd,
@@ -139,10 +237,15 @@ class PDFPlumberOpenCVProcessor:
                     )
                 elif region.type == LayoutRegionType.IMAGE:
                     self._build_image_block(region, pd, blocks)
+                    # Text-layer words inside the picture (chart labels and values)
+                    # would otherwise exist only as pixels.
+                    if region.text and region.text.strip():
+                        self._build_text_block(region, pd, blocks)
                 elif region.type == LayoutRegionType.LIST:
                     self._build_list_group(region, pd, blocks, block_groups)
                 else:
-                    self._build_text_block(region, pd, blocks)
+                    heading = region.heading or is_heading(region, body_size)
+                    self._build_text_block(region, pd, blocks, BlockSubType.HEADING if heading else None)
 
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
@@ -197,6 +300,7 @@ class PDFPlumberOpenCVProcessor:
             comments=[],
             citation_metadata=self._make_citation(region.bbox, page_data),
             image_metadata=ImageMetadata(
+                captions=[region.caption] if region.caption else [],
                 image_format=region.image_ext,
                 image_size={
                     "width": int(region.bbox[2] - region.bbox[0]),

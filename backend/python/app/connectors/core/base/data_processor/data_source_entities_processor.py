@@ -4705,9 +4705,7 @@ class DataSourceEntitiesProcessor:
         it matches. Instances written before ``authenticatedBy`` existed fall back to the creator."""
         link_changed = False
         async with self.data_store_provider.transaction() as tx_store:
-            app = await tx_store.get_app_by_id(connector_id)
-            authenticated_by = (app.authenticated_by if app else None) or created_by
-            authenticator = await tx_store.get_user_by_user_id(authenticated_by) or {}
+            authenticated_by, authenticator = await self._authenticator(tx_store, connector_id, created_by)
             authenticator_key = authenticator.get("_key") or authenticator.get("id")
             if not authenticator_key:
                 self.logger.warning(
@@ -4735,6 +4733,33 @@ class DataSourceEntitiesProcessor:
             # Same drop a finished sync does, for the same reason: this connector's cached
             # per-user record maps were built under the old link, so until they go a search
             # misses the source account's records — or keeps serving them once it is gone.
+            await notify_connector_sync_completed(connector_id, self.org_id)
+
+    @staticmethod
+    async def _authenticator(
+        tx_store: TransactionStore, connector_id: str, created_by: str | None
+    ) -> tuple[str | None, dict]:
+        """The id and user document of whoever authenticated this connector: the app's
+        ``authenticatedBy``, else (instances written before it existed) the creator."""
+        app = await tx_store.get_app_by_id(connector_id)
+        authenticated_by = (app.authenticated_by if app else None) or created_by
+        user = await tx_store.get_user_by_user_id(authenticated_by) if authenticated_by else None
+        return authenticated_by, user or {}
+
+    async def get_app_authenticator_user(self, connector_id: str, created_by: str | None) -> dict:
+        """The user document of whoever authenticated this connector; empty when there is none."""
+        async with self.data_store_provider.transaction() as tx_store:
+            _, user = await self._authenticator(tx_store, connector_id, created_by)
+        return user
+
+    @retry_on_deadlock()
+    async def unlink_authenticator(self, connector_id: str) -> None:
+        """Remove the link from the user who authenticated this connector to a source account,
+        for a connector whose credentials no longer name one (a bot token, say)."""
+        async with self.data_store_provider.transaction() as tx_store:
+            link_changed = await tx_store.remove_authenticated_as(connector_id)
+        if link_changed:
+            # As in link_authenticator_to_source_user: cached record maps were built under the link
             await notify_connector_sync_completed(connector_id, self.org_id)
 
     @retry_on_deadlock()

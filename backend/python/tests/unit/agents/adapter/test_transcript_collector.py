@@ -65,6 +65,31 @@ class TestTextAndReasoningParts:
         assert collector.parts == []
 
 
+class TestDiscardedModelCall:
+    """A model call that failed mid-stream is retried; what it streamed is
+    not in the conversation history and must not be saved either."""
+
+    async def test_discarded_call_drops_its_text_and_reasoning_but_keeps_earlier_turns(self) -> None:
+        collector = TranscriptCollector()
+
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Searching."}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_END, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        await collector.emit(_event(EventType.REASONING_MESSAGE_START, {}))
+        await collector.emit(_event(EventType.REASONING_MESSAGE_CONTENT, {"delta": "Think"}))
+        await collector.emit(_event(EventType.REASONING_MESSAGE_END, {"discarded": True}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_END, {"discarded": True}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Answer"}))
+        await collector.emit(_event(EventType.TEXT_MESSAGE_END, {}))
+
+        assert [(p["type"], p["content"]) for p in collector.parts] == [
+            ("text", "Searching."), ("text", "Answer"),
+        ]
+
+
 class TestToolCallParts:
     async def test_tool_call_lifecycle_produces_completed_part(self) -> None:
         collector = TranscriptCollector()

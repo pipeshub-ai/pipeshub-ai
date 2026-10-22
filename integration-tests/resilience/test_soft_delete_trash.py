@@ -34,6 +34,7 @@ from helper.cleanup_sources import (
     wait_for_virtual_id,
 )
 from helper.clients.kb_client import KBClient
+from helper.delete_footprint import POLL
 from helper.indexing_progress import wait_until_enriched
 from helper.mongo_store import records_folder
 from helper.vector_rebuild import read_platform_settings, write_platform_settings
@@ -75,7 +76,8 @@ async def uploaded(
     """A collection upload that has finished indexing, with what each store holds of it."""
     kb_id = kb_client.create_kb(f"trash-{uuid.uuid4().hex[:8]}")["id"]
     try:
-        body = BODY + f"\nReference {uuid.uuid4().hex}\n".encode()
+        marker = f"Reference {uuid.uuid4().hex}"
+        body = BODY + f"\n{marker}\n".encode()
         upload = kb_client.upload_file(kb_id, f"weathering-{uuid.uuid4().hex[:6]}.md", body, mimetype="text/markdown")
         assert upload["summary"]["failed"] == 0, f"Upload failed: {upload}"
         record_id = upload["records"][0]["recordId"]
@@ -87,6 +89,7 @@ async def uploaded(
             "kb_id": kb_id,
             "record_id": record_id,
             "virtual_record_id": virtual_id,
+            "body_marker": marker,
             "storage_prefix": prefix,
             "storage_vendor": await mongo_store.storage_vendor_under_path(prefix) or "local",
             "storage_documents": await mongo_store.count_documents_under_path(prefix),
@@ -96,6 +99,23 @@ async def uploaded(
             kb_client.delete_kb(kb_id)
         except Exception as exc:  # noqa: BLE001 - teardown must not mask a failure
             logger.warning("Could not delete knowledge base %s: %s", kb_id, exc)
+
+
+async def _wait_for_body_text(vector_store, virtual_id: str, marker: str) -> None:
+    """Block until a content chunk of the record holds *marker*, a line only its body has.
+
+    Any point would not do: the record summary is a point too, and it comes back
+    from the stored classification even when the file's own blocks are not embedded.
+    """
+    deadline = asyncio.get_event_loop().time() + INDEXING_TIMEOUT
+    while asyncio.get_event_loop().time() < deadline:
+        if any(marker in text for text in await vector_store.content_texts(virtual_id)):
+            return
+        await asyncio.sleep(POLL)
+    raise AssertionError(
+        f"No content chunk of virtual record {virtual_id} holds {marker!r} within {INDEXING_TIMEOUT}s, "
+        "so the restored file's own text is not searchable; only its summary may have come back."
+    )
 
 
 def _listed(kb_client: KBClient, kb_id: str) -> set[str]:
@@ -139,7 +159,7 @@ async def test_a_restored_record_comes_back_under_its_id_and_is_searchable_again
     node = await graph_provider.get_document(record_id, RECORDS)
     assert node.get("isDeleted") is False and node.get("deletedAtTimestamp") is None, node
     # Its vectors went with the delete; indexing puts them back from the kept file.
-    await wait_for_embeddings(vector_store, uploaded["virtual_record_id"], record_id)
+    await _wait_for_body_text(vector_store, uploaded["virtual_record_id"], uploaded["body_marker"])
 
 
 @pytest.mark.skipif(PURGE_TIMEOUT <= 0, reason=(

@@ -5,6 +5,13 @@ import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import type { McpMyServerEntry, McpServerTemplate } from '../types';
 
+// These tests cover the default notices, whatever the build's config provides.
+vi.mock('@/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config')>()),
+  EnterpriseFeatureNotice: (await import('@/app/components/ui/enterprise-badge')).EnterpriseFeatureNotice,
+  McpAgentApprovalsNotice: (await import('@/app/(main)/agents/agent-builder/components/mcp-agent-approvals-notice'))
+    .McpAgentApprovalsNotice,
+}));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => null }));
 

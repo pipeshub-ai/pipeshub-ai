@@ -156,7 +156,11 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     # PDF
     # ----------------------------------------------------------------
     smart_pdf_docling = SmartPDFParser(docling_svc_parser, docling_ocr_parser)
-    smart_pdf_default = SmartPDFParser(docling_svc_parser, default_ocr_parser)
+    # Same flag as the in-process indexing path (app/events/events.py).
+    use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
+    smart_pdf_default = SmartPDFParser(
+        pdfplumber_parser if use_pdfplumber else docling_svc_parser, default_ocr_parser
+    )
     registry.register("pdf", ParserProvider.DOCLING, smart_pdf_docling)
     registry.register("pdf", ParserProvider.DEFAULT, smart_pdf_default)
 

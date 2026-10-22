@@ -5,14 +5,22 @@ Covers uncovered lines/branches in:
 - PDFPlumberOpenCVProcessor (pdfplumber_opencv_processor.py)
 """
 
+from __future__ import annotations
+
 import os
 import tempfile
 from io import BytesIO
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 
 import numpy as np
 import pytest
+
+if TYPE_CHECKING:
+    from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+        LayoutRegion,
+        ParsedPageData,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -490,7 +498,10 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
 
     def test_collect_unclaimed_text_blocks_in_image(self):
         """_collect_unclaimed_text_blocks skips blocks overlapping images."""
-        from app.modules.parsers.pdf.opencv_layout_analyzer import LayoutRegion, LayoutRegionType
+        from app.modules.parsers.pdf.opencv_layout_analyzer import (
+            LayoutRegion,
+            LayoutRegionType,
+        )
         analyzer = self._make_analyzer()
         text_dict = {
             "blocks": [{
@@ -508,7 +519,10 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
 
     def test_collect_unclaimed_text_blocks_in_table(self):
         """_collect_unclaimed_text_blocks skips blocks overlapping tables."""
-        from app.modules.parsers.pdf.opencv_layout_analyzer import LayoutRegion, LayoutRegionType
+        from app.modules.parsers.pdf.opencv_layout_analyzer import (
+            LayoutRegion,
+            LayoutRegionType,
+        )
         analyzer = self._make_analyzer()
         text_dict = {
             "blocks": [{
@@ -733,14 +747,19 @@ class TestOpenCVLayoutAnalyzerTextClassification:
 class TestPyMuPDFOpenCVProcessorExtended:
 
     def _make_processor(self):
-        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            PDFPlumberOpenCVProcessor,
+        )
         return PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
     @pytest.mark.asyncio
     async def test_create_blocks_all_region_types(self):
         """create_blocks handles TABLE, IMAGE, LIST (bullet + numbered), and TEXT."""
         from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PDFPlumberOpenCVProcessor,
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
         )
         proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
@@ -770,15 +789,46 @@ class TestPyMuPDFOpenCVProcessorExtended:
         assert len(result.block_groups) >= 3  # table, bullet list, ordered list
 
     @pytest.mark.asyncio
+    async def test_image_text_follows_the_image_as_a_text_block(self) -> None:
+        from app.models.blocks import BlockType
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
+        )
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        chart = LayoutRegion(
+            type=LayoutRegionType.IMAGE, bbox=(0, 0, 300, 200),
+            image_data=b"img", image_ext="png", text="CIF 0.19 million",
+        )
+        photo = LayoutRegion(
+            type=LayoutRegionType.IMAGE, bbox=(0, 300, 300, 500),
+            image_data=b"img", image_ext="png", caption="Figure 2: The plant",
+        )
+        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[chart, photo])
+
+        result = await proc.create_blocks([pd])
+
+        assert [b.type for b in result.blocks] == [BlockType.IMAGE, BlockType.TEXT, BlockType.IMAGE]
+        assert result.blocks[1].data == "CIF 0.19 million"
+        assert result.blocks[0].image_metadata.captions == []
+        assert result.blocks[2].image_metadata.captions == ["Figure 2: The plant"]
+
+    @pytest.mark.asyncio
     async def test_create_blocks_no_page_number_filter(self):
         """create_blocks without page_number processes all pages."""
         from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
-            LayoutRegion, LayoutRegionType, ParsedPageData, PDFPlumberOpenCVProcessor,
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
         )
         proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
-        r1 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 100, 50), text="Page 1")
-        r2 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 100, 50), text="Page 2")
+        # Not "Page 1": a lone page number at the top of a page is dropped as furniture.
+        r1 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 100, 50), text="First page text")
+        r2 = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 100, 50), text="Second page text")
         page1 = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[r1])
         page2 = ParsedPageData(page_number=2, width=612.0, height=792.0, regions=[r2])
 
@@ -788,7 +838,9 @@ class TestPyMuPDFOpenCVProcessorExtended:
     @pytest.mark.asyncio
     async def test_load_document_delegates(self):
         """load_document calls parse_document then create_blocks."""
-        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            PDFPlumberOpenCVProcessor,
+        )
         proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
         mock_parsed = [MagicMock()]
@@ -804,7 +856,9 @@ class TestPyMuPDFOpenCVProcessorExtended:
     @pytest.mark.asyncio
     async def test_parse_document_with_bytesio(self):
         """parse_document accepts BytesIO input."""
-        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            PDFPlumberOpenCVProcessor,
+        )
 
         proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
@@ -831,7 +885,9 @@ class TestPyMuPDFOpenCVProcessorExtended:
     @pytest.mark.asyncio
     async def test_parse_document_unlink_oserror_is_swallowed(self):
         """parse_document swallows OSError when cleaning up the temp PDF file."""
-        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            PDFPlumberOpenCVProcessor,
+        )
 
         proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
@@ -861,7 +917,9 @@ class TestPyMuPDFOpenCVProcessorExtended:
     @pytest.mark.asyncio
     async def test_parse_document_tempfile_failure_skips_unlink(self):
         """parse_document skips unlink when temp file creation never assigns tmp_path."""
-        from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            PDFPlumberOpenCVProcessor,
+        )
 
         proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
 
@@ -965,6 +1023,81 @@ class TestPyMuPDFOpenCVProcessorExtended:
         assert mock_build.await_args.kwargs["skip_llm_enrichment"] is True
 
     @pytest.mark.asyncio
+    async def test_create_blocks_keeps_plain_rows_when_no_llm(self) -> None:
+        """No indexing LLM must not fail the parse: that would send the PDF to OCR."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
+        )
+
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE,
+            bbox=(0, 0, 100, 100),
+            table_grid=[["ColA", "ColB"], ["1", "2"]],
+        )
+        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[region])
+
+        with patch(
+            "app.modules.parsers.pdf.pdfplumber_opencv_processor.get_llm_for_role",
+            new_callable=AsyncMock,
+            side_effect=ValueError("no indexing model configured"),
+        ), patch.object(
+            proc, "_build_table_group", new_callable=AsyncMock, return_value=MagicMock()
+        ) as mock_build:
+            await proc.create_blocks([pd])
+
+        assert mock_build.await_args.kwargs["skip_llm_enrichment"] is True
+
+    @pytest.mark.asyncio
+    async def test_table_without_grid_keeps_its_text(self) -> None:
+        """A TABLE region with no cell grid is emitted as text rather than dropped."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
+        )
+
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE, bbox=(0, 0, 100, 100), text="Q1 revenue 10", table_grid=None,
+        )
+        pd = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[region])
+        container = await proc.create_blocks([pd], skip_llm_enrichment=True)
+        assert [b.data for b in container.blocks] == ["Q1 revenue 10"]
+
+    def test_release_freed_memory_is_a_no_op_without_glibc(self) -> None:
+        from app.modules.parsers.pdf import layout_pages as mod
+
+        with patch.object(mod.ctypes, "CDLL", side_effect=OSError("no libc.so.6")):
+            mod._release_freed_memory()
+        with patch.object(mod.ctypes, "CDLL") as cdll:
+            mod._release_freed_memory()
+        cdll.return_value.malloc_trim.assert_called_once_with(0)
+
+    def test_unmapped_glyph_codes_are_never_emitted(self) -> None:
+        """(cid:N) is a glyph with no Unicode mapping, not text."""
+        from app.modules.parsers.pdf.layout_pages import _drop_unmapped_glyphs
+        from app.modules.parsers.pdf.opencv_layout_analyzer import (
+            LayoutRegion,
+            LayoutRegionType,
+        )
+
+        text = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 1, 1), text="Revenue (cid:3)(cid:7) grew")
+        garbage = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(0, 0, 1, 1), text="(cid:1)(cid:2) (cid:9)")
+        listed = LayoutRegion(type=LayoutRegionType.LIST, bbox=(0, 0, 1, 1), list_items=["(cid:127) first", "(cid:4)"])
+        table = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 0, 1, 1), table_grid=[["(cid:5)Q1", "10"]])
+
+        out = _drop_unmapped_glyphs([text, garbage, listed, table])
+        assert out == [text, listed, table]
+        assert text.text == "Revenue  grew"
+        assert listed.list_items == ["first"]
+        assert table.table_grid == [["Q1", "10"]]
+
+    @pytest.mark.asyncio
     async def test_build_table_group_missing_row_text_fallback(self):
         """Row blocks are built one-to-one from the enrichment's descriptions.
 
@@ -1002,3 +1135,161 @@ class TestPyMuPDFOpenCVProcessorExtended:
         assert len(blocks) == 2
         assert blocks[0].data["row_natural_language_text"] == "Row one text"
         assert blocks[1].data["row_natural_language_text"] == "Row two text"
+
+
+class TestPdfPlumberHeadings:
+    """Heading lines become text blocks with sub_type HEADING, as the HTML parser marks them."""
+
+    @staticmethod
+    def _text(text: str, *, size: float = 10.0, bold: bool = False) -> LayoutRegion:
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+        )
+
+        return LayoutRegion(
+            type=LayoutRegionType.TEXT, bbox=(0, 300, 100, 310), text=text, font_size=size, is_bold=bold
+        )
+
+    def test_a_heading_is_one_short_line_set_apart_by_weight_or_size(self) -> None:
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            body_font_size,
+            is_heading,
+        )
+
+        regions = [self._text("body", size=10), self._text("body", size=10), self._text("big", size=14)]
+        body = body_font_size(regions)
+        assert body == 10
+        assert is_heading(self._text("Item 7. Management's Discussion", bold=True), body)
+        assert is_heading(self._text("Liquidity and Capital Resources", size=12), body)
+        assert not is_heading(self._text("Liquidity and Capital Resources", size=11), body)
+        assert not is_heading(self._text("Bold first line\nsecond line", bold=True), body)
+        assert not is_heading(self._text("x" * 161, bold=True), body)
+        assert not is_heading(self._text("   ", bold=True), body)
+
+    def test_no_sized_text_means_only_bold_counts(self) -> None:
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            body_font_size,
+            is_heading,
+        )
+
+        assert body_font_size([]) == 0.0
+        assert not is_heading(self._text("Large", size=30), 0.0)
+        assert is_heading(self._text("Bold", bold=True), 0.0)
+
+    @pytest.mark.asyncio
+    async def test_create_blocks_marks_headings(self) -> None:
+        from app.models.blocks import BlockSubType
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+            ParsedPageData,
+            PDFPlumberOpenCVProcessor,
+        )
+
+        proc = PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config())
+        split_off = self._text("Item 8. Financial Statements")
+        split_off.heading = True
+        regions = [
+            self._text("Item 7. MD&A", bold=True),
+            self._text("Revenue grew in 2023 because of higher volumes across segments."),
+            LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 320, 100, 360), table_grid=[["Year", "Revenue"], ["2023", "10"]]),
+            self._text("Results of Operations", size=13),
+            split_off,
+        ]
+        page = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=regions)
+
+        container = await proc.create_blocks([page], skip_llm_enrichment=True)
+
+        headings = {b.data for b in container.blocks if b.sub_type == BlockSubType.HEADING}
+        assert headings == {"Item 7. MD&A", "Results of Operations", "Item 8. Financial Statements"}
+        assert len(container.block_groups) == 1
+
+
+class TestRunningHeadersAndPageNumbers:
+    """Page numbers and lines repeated in the margins are dropped, as Docling keeps them out of the body."""
+
+    @staticmethod
+    def _page(n: int, *regions: LayoutRegion) -> ParsedPageData:
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import ParsedPageData
+
+        return ParsedPageData(page_number=n, width=612.0, height=792.0, regions=list(regions))
+
+    @staticmethod
+    def _text(text: str, top: float, bottom: float) -> LayoutRegion:
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            LayoutRegion,
+            LayoutRegionType,
+        )
+
+        return LayoutRegion(type=LayoutRegionType.TEXT, bbox=(50, top, 300, bottom), text=text)
+
+    def test_page_numbers_and_repeated_headers_are_noise(self) -> None:
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import running_noise
+
+        pages = []
+        for n in range(1, 5):
+            header = self._text("Table of Contents", 20, 32)
+            body = self._text(f"Revenue rose on page {n}.", 300, 320)
+            footer = self._text(str(40 + n), 760, 772)
+            pages.append(self._page(n, header, body, footer))
+        noise = running_noise(pages)
+        # The header's first copy stays; page numbers all go.
+        assert noise == {id(r) for p in pages[1:] for r in (p.regions[0],)} | {id(p.regions[2]) for p in pages}
+
+    def test_a_line_seen_once_at_the_top_is_not_a_running_header(self) -> None:
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import running_noise
+
+        pages = [self._page(1, self._text("Consolidated Balance Sheets", 20, 32)),
+                 self._page(2, self._text("Consolidated Statements of Income", 20, 32))]
+        assert running_noise(pages) == set()
+
+    def test_a_title_continued_over_a_few_pages_of_a_long_document_is_kept(self) -> None:
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import running_noise
+
+        title = "Consolidated Balance Sheets (continued)"
+        body = lambda: self._text("Assets were up.", 300, 320)  # noqa: E731
+        pages = [self._page(n, self._text(title, 20, 32), body()) for n in range(3)]
+        pages += [self._page(n, body()) for n in range(3, 20)]
+        assert running_noise(pages) == set()
+
+    def test_a_page_number_below_a_short_page_is_noise(self) -> None:
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import running_noise
+
+        number = self._text("49", 250, 261)
+        short = self._page(49, self._text("Total comprehensive income", 200, 212), number)
+        full = [self._page(n, self._text("Revenue was up.", 300, 320), self._text(str(n), 760, 772)) for n in (46, 47, 48)]
+        assert id(number) in running_noise([*full, short])
+
+    def test_a_lone_number_off_the_page_sequence_is_kept(self) -> None:
+        """Diagram labels and list numbers mid-page are content, unlike page numbers."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import running_noise
+
+        numbered = [self._page(n, self._text("Quorums intersect.", 300, 320), self._text(str(n), 760, 772)) for n in range(1, 12)]
+        # The label is the last line on its page, where a short page's number would sit.
+        labels = [self._text("3", 500, 511) for _ in range(12, 19)]
+        drawn = [self._page(n, self._text("Quorums intersect.", 300, 320), label) for n, label in zip(range(12, 19), labels)]
+        noise = running_noise(numbered + drawn)
+        assert not noise & {id(label) for label in labels}
+        assert {id(p.regions[1]) for p in numbered} <= noise
+
+    def test_the_first_copy_of_a_running_header_stays(self) -> None:
+        """A filing's date may be printed only in its running header."""
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import running_noise
+
+        headers = [self._text(f"Case: 21-13199 Date Filed: 01/05/2022 Page: {n} of 5", 20, 32) for n in range(1, 6)]
+        pages = [self._page(n, h, self._text("The court held.", 300, 320)) for n, h in zip(range(1, 6), headers)]
+        noise = running_noise(pages)
+        assert id(headers[0]) not in noise
+        assert {id(h) for h in headers[1:]} <= noise
+
+    @pytest.mark.asyncio
+    async def test_create_blocks_drops_them(self) -> None:
+        from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+            PDFPlumberOpenCVProcessor,
+        )
+
+        pages = [self._page(n, self._text("Revenue was up.", 300, 320), self._text(f"Page {n}", 760, 772)) for n in (1, 2)]
+        container = await PDFPlumberOpenCVProcessor(logger=_mock_logger(), config=_mock_config()).create_blocks(pages, skip_llm_enrichment=True)
+        assert [b.data for b in container.blocks] == ["Revenue was up.", "Revenue was up."]
+        assert [b.index for b in container.blocks] == [0, 1]

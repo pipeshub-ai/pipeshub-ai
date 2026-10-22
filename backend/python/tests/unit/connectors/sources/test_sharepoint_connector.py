@@ -2739,8 +2739,7 @@ class TestConvertToPermissions:
 
         with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.WRITE):
             result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ORG
+        assert result == []  # an organization link alone is not a grant
 
     @pytest.mark.asyncio
     async def test_identities_v2_group(self):
