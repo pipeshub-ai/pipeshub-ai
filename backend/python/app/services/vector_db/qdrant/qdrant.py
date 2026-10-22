@@ -368,6 +368,7 @@ class QdrantService(IVectorDBService):
             client_kwargs: dict = dict(
                 host=cfg.host,
                 port=cfg.port,
+                grpc_port=cfg.grpc_port,
                 # api_key may be empty string — only pass it when truthy
                 api_key=cfg.api_key or None,
                 prefer_grpc=cfg.prefer_grpc,
