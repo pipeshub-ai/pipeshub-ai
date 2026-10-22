@@ -22,12 +22,23 @@ from app.modules.extraction.prompt_template import (
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.llm_gateway.gateway import (
+    get_llm_gateway,
+    llm_call_site,
+    provider_key,
+)
 from app.utils.aimodels import coerce_message_content_to_text
-from app.utils.llm import get_llm_for_role
+from app.utils.llm import (
+    LLMNotConfiguredError,
+    LLMUnavailableError,
+    get_llm_for_role,
+)
 from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 if TYPE_CHECKING:
+    from langchain_core.language_models.chat_models import BaseChatModel
+
     from app.config.configuration_service import ConfigurationService
 
 DEFAULT_CONTEXT_LENGTH = 128000
@@ -207,16 +218,31 @@ class DocumentClassification(BaseModel):
 
 
 def semantic_metadata_from_classification(classification: DocumentClassification) -> SemanticMetadata:
+    """Map the LLM's schema onto the stored model. A blank name means "not known"."""
+
+    def names(values: list[str]) -> list[str]:
+        return [value.strip() for value in values if value and value.strip()]
+
+    def optional_name(value: str) -> str | None:
+        return value.strip() or None
+
+    category = optional_name(classification.category)
     return SemanticMetadata(
-        departments=classification.departments,
-        languages=classification.languages,
-        topics=classification.topics,
+        departments=names(classification.departments),
+        languages=names(classification.languages),
+        topics=names(classification.topics),
         summary=classification.summary,
-        categories=[classification.category],
-        sub_category_level_1=classification.subcategories.level1,
-        sub_category_level_2=classification.subcategories.level2,
-        sub_category_level_3=classification.subcategories.level3,
+        categories=[category] if category else [],
+        sub_category_level_1=optional_name(classification.subcategories.level1),
+        sub_category_level_2=optional_name(classification.subcategories.level2),
+        sub_category_level_3=optional_name(classification.subcategories.level3),
     )
+
+
+class ExtractionLLMError(Exception):
+    """The model call failed, or produced neither a classification nor a fallback summary."""
+
+    code = "LLM_FAILED"
 
 
 class DocumentExtraction(Transformer):
@@ -230,18 +256,24 @@ class DocumentExtraction(Transformer):
 
     async def apply(self, ctx: TransformContext) -> None:
         record = ctx.record
-        blocks = record.block_containers.blocks
-
-        document_classification = await self.process_document(
-            blocks,
-            record.org_id,
-            record_name=record.record_name,
-            record_type=record.record_type.value,
-        )
-        if document_classification is None:
+        try:
+            record.semantic_metadata = await self.process_document(
+                record.block_containers.blocks,
+                record.org_id,
+                record_name=record.record_name,
+                record_type=record.record_type.value,
+            )
+        except LLMNotConfiguredError as e:
+            self.logger.info("⏭️ Extraction skipped for record %s: %s", record.id, e)
+            record.semantic_metadata = None
+            ctx.extraction_skip_reason = str(e)
+            return
+        except (ExtractionLLMError, LLMUnavailableError) as e:
+            # The record is already searchable: an LLM failure fails extraction only
+            # (no metadata → extractionStatus FAILED), not the record.
+            self.logger.error("❌ Document extraction failed for record %s: %s", record.id, e)
             record.semantic_metadata = None
             return
-        record.semantic_metadata = semantic_metadata_from_classification(document_classification)
         self.logger.debug("🎯 Document extraction completed successfully")
 
 
@@ -374,6 +406,19 @@ class DocumentExtraction(Transformer):
         return prompt_for_document_extraction.replace("{department_list}", department_list)
 
     @staticmethod
+    def render_prompt(departments: list[str]) -> str:
+        """The classification instructions for *departments*, rendered once.
+
+        ``.replace()``, not ``.format()``: a department name with braces would
+        raise inside ``.format()``.
+        """
+        return DocumentExtraction._fill_prompt("\n".join(f'     - "{dept}"' for dept in departments))
+
+    @staticmethod
+    def to_semantic_metadata(classification: DocumentClassification) -> SemanticMetadata:
+        return semantic_metadata_from_classification(classification)
+
+    @staticmethod
     def _record_header(record_name: str, record_type: str) -> str:
         """Substitute template placeholders via `.replace()`, not `.format()`.
 
@@ -393,24 +438,21 @@ class DocumentExtraction(Transformer):
         departments: list[str] | None = None,
         record_name: str = "",
         record_type: str = "",
-    ) -> DocumentClassification | None:
-        """Extract metadata using pre-fetched *departments*.
+    ) -> SemanticMetadata | None:
+        """Classify with pre-fetched *departments*; makes no graph call.
 
-        This variant is intended for use by the standalone Extraction Service
-        where injecting a graph provider is undesirable.  When *departments* is
-        ``None`` or empty the method falls back to the DepartmentNames defaults
-        rather than making a graph call.
+        For the standalone Extraction Service and the classify stage, which pass
+        the org's departments themselves. Empty *departments* falls back to the
+        DepartmentNames defaults.
         """
         self.logger.debug("🎯 Extracting domain metadata (pre-fetched departments)")
-        self.llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
-        try:
-            resolved_departments: list[str] = departments or [dept.value for dept in DepartmentNames]
-            return await self._classify_blocks(
-                blocks, org_id, resolved_departments, config, record_name, record_type,
-            )
-        except Exception as e:
-            self.logger.error(f"❌ Error during classify: {str(e)}")
-            raise
+        return await self._classify_blocks(
+            blocks,
+            org_id,
+            departments or [dept.value for dept in DepartmentNames],
+            record_name,
+            record_type,
+        )
 
     async def extract_metadata(
         self,
@@ -418,31 +460,36 @@ class DocumentExtraction(Transformer):
         org_id: str,
         record_name: str = "",
         record_type: str = "",
-    ) -> DocumentClassification | None:
-        """
-        Extract metadata from document content.
-        """
-        self.logger.debug("🎯 Extracting domain metadata")
-        self.llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
-        try:
-            self.logger.debug(f"🎯 Extracting departments for org_id: {org_id}")
-            departments = await self.graph_provider.get_departments(org_id)
-            if not departments:
-                departments = [dept.value for dept in DepartmentNames]
-            return await self._classify_blocks(blocks, org_id, departments, config, record_name, record_type)
-        except Exception as e:
-            self.logger.error(f"❌ Error during metadata extraction: {str(e)}")
-            raise
+    ) -> SemanticMetadata | None:
+        """Extract metadata from document content, reading the org's departments."""
+        self.logger.debug("🎯 Extracting departments for org_id: %s", org_id)
+        departments = await self.graph_provider.get_departments(org_id)
+        return await self._classify_blocks(
+            blocks,
+            org_id,
+            departments or [dept.value for dept in DepartmentNames],
+            record_name,
+            record_type,
+        )
 
     async def _classify_blocks(
         self,
         blocks: list[Block],
         org_id: str,
         departments: list[str],
-        config: dict,
         record_name: str,
         record_type: str,
-    ) -> DocumentClassification | None:
+    ) -> SemanticMetadata | None:
+        """Classify *blocks*; ``None`` means there was nothing to classify.
+
+        Raises:
+            LLMNotConfiguredError: no model is set up for the indexing role.
+            LLMUnavailableError: the provider is down; the caller waits instead of failing.
+            ExtractionLLMError: neither the structured call nor the fallback
+                summary produced anything.
+        """
+        # A local, not an attribute: one instance classifies documents of different orgs at once.
+        llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
         self.logger.debug(f"Context length: {context_length}")
         # Off the loop: PIL resizing and tiktoken on a large deck stall it for seconds.
@@ -453,7 +500,7 @@ class DocumentExtraction(Transformer):
         if len(content) == 0:
             self.logger.info("No content to process in document extraction")
             return None
-        department_list = "\n".join(f'     - "{dept}"' for dept in departments)
+        instructions = self.render_prompt(departments)
         document = [
             {"type": "text", "text": self._record_header(record_name, record_type)},
             {"type": "text", "text": "Document Content: "},
@@ -461,40 +508,45 @@ class DocumentExtraction(Transformer):
         ]
         # The instructions go first and alone, so every record of the org sends
         # the same prefix and the provider can serve it from cache.
-        llm = self.llm
         model_name = str((config.get("configuration") or {}).get("model") or "")
         cache = family_cache_strategy(
             llm, family=PROMPT_FAMILY, org_id=org_id, shard_key=record_name, model_name=model_name,
         )
-        system = cache.system(self._fill_prompt(department_list), "")
+        system = cache.system(instructions, "")
         try:
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                llm, [system, HumanMessage(content=document)], DocumentClassification, prompt_cache=cache,
-                # Recorded under the name the strategy was chosen with, so the next record skips it.
-                on_cache_rejected=lambda: forget_cache_params(llm, model_name),
-                raise_call_errors=True,
-            )
-        except NonRetryableError:
+            with llm_call_site("classify"):
+                parsed_response = await invoke_with_structured_output_and_reflection(
+                    llm, [system, HumanMessage(content=document)], DocumentClassification, prompt_cache=cache,
+                    # Recorded under the name the strategy was chosen with, so the next record skips it.
+                    on_cache_rejected=lambda: forget_cache_params(llm, model_name),
+                    raise_call_errors=True,
+                    raise_unavailable=True,
+                )
+        except (NonRetryableError, LLMUnavailableError):
             raise
         except Exception as e:
             # The model did not answer. The fallback would resend the whole
             # document to the same model, doubling every record's cost while
             # it is down; only a reply that did not fit the schema earns one.
-            self.logger.warning("⚠️ Document classification call failed, skipping it: %s", e)
-            return None
+            # Not None: that reads as nothing to classify, which is final.
+            raise ExtractionLLMError(f"Document classification call failed: {e}") from e
         if parsed_response is not None:
             self.logger.debug("✅ Document classification parsed successfully")
-            return parsed_response
+            return self.to_semantic_metadata(parsed_response)
         self.logger.warning(
             "⚠️ Structured extraction failed after all attempts. Falling back to plain LLM summary."
         )
         # The instructions carry the summary rules, which the fallback summary follows too.
-        instructions = {"type": "text", "text": self._fill_prompt(department_list)}
-        return await self._fallback_summary([instructions, *document])
+        fallback = await self._fallback_summary(llm, [{"type": "text", "text": instructions}, *document])
+        if fallback is None:
+            raise ExtractionLLMError(
+                "Document classification and the fallback summary both failed"
+            )
+        return fallback
 
     async def _fallback_summary(
-        self, message_content: list[dict]
-    ) -> DocumentClassification | None:
+        self, llm: "BaseChatModel", message_content: list[str | dict[str, Any]]
+    ) -> SemanticMetadata | None:
         """Plain LLM call to get a summary when structured extraction fails."""
         try:
             fallback_prompt = [
@@ -507,14 +559,18 @@ class DocumentExtraction(Transformer):
                 },
                 {"type": "text", "text": "Document Content: "},
             ]
-            fallback_prompt.extend(
-                item for item in message_content
-                if item.get("type") in ("text", "image_url")
-            )
+            for item in message_content:
+                if isinstance(item, str):
+                    fallback_prompt.append({"type": "text", "text": item})
+                elif item.get("type") in ("text", "image_url"):
+                    fallback_prompt.append(item)
 
-            response = await self.llm.ainvoke(
+            response = await get_llm_gateway().invoke(
+                llm,
                 [HumanMessage(content=fallback_prompt)],
-                config=get_llm_invoke_config(self.llm),
+                provider=provider_key(llm),
+                call_site="classify",
+                config=get_llm_invoke_config(llm),
             )
 
             if hasattr(response, "content"):
@@ -530,15 +586,11 @@ class DocumentExtraction(Transformer):
                 return None
 
             self.logger.info("✅ Fallback summary obtained successfully")
-            return DocumentClassification(
-                departments=[],
-                category="",
-                subcategories=SubCategories(level1="", level2="", level3=""),
-                languages=[],
-                topics=[],
-                summary=summary_text,
-            )
-        except NonRetryableError:
+            # Only the summary is known. None lists and no category tell the graph
+            # writer to keep the record's existing edges instead of clearing them.
+            return SemanticMetadata(summary=summary_text, categories=[])
+        except (NonRetryableError, LLMUnavailableError):
+            # An outage is the provider's, not the document's: the caller waits instead of failing it.
             raise
         except Exception as e:
             self.logger.error(f"❌ Fallback summary call failed: {e}")
@@ -550,9 +602,6 @@ class DocumentExtraction(Transformer):
         org_id: str,
         record_name: str = "",
         record_type: str = "",
-    ) -> DocumentClassification:
+    ) -> SemanticMetadata | None:
         self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
         return await self.extract_metadata(blocks, org_id, record_name=record_name, record_type=record_type)
-
-
-

@@ -733,6 +733,21 @@ describe('ConfigurationManager Controller', () => {
       expect(res.json.firstCall.args[0]).to.have.property('flags')
     })
 
+    it('should include ENABLE_MCP, defaulting to enabled', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const mcpFlag = flags.find((f: any) => f.key === 'ENABLE_MCP')
+      expect(mcpFlag).to.exist
+      expect(mcpFlag.defaultEnabled).to.equal(true)
+      expect(mcpFlag.advanced).to.not.equal(true)
+    })
+
     it('should include ENABLE_SKILLS, defaulting to enabled', async () => {
       const handler = getAvailablePlatformFeatureFlags()
       const req = createMockRequest()
@@ -824,6 +839,19 @@ describe('ConfigurationManager Controller', () => {
   })
 
   describe('getEffectivePlatformFeatureFlags', () => {
+    it('should default ENABLE_MCP to true when the store has no entry', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getEffectivePlatformFeatureFlags(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].featureFlags.ENABLE_MCP).to.equal(true)
+    })
+
     it('should default ENABLE_SKILLS to true when the store has no entry', async () => {
       const kvs = createMockKeyValueStore()
       const handler = getEffectivePlatformFeatureFlags(kvs)

@@ -9,8 +9,10 @@ class ReconciliationContext(BaseModel):
     blocks_to_index_ids: Optional[Set[str]] = None  # None means index all
     block_ids_to_delete: Optional[Set[str]] = None  # None means delete none
 
-#: ``TransformContext.settings`` key: enrichment runs right after indexing in
-#: the same handler, so the indexed write also marks extraction IN_PROGRESS.
+#: ``TransformContext.settings`` key: the record is handed to the pipeline
+#: stages once indexed, so the indexed write also marks extraction QUEUED (the
+#: classify stage owns it from there). Without it a reader could see the record
+#: indexed with an extractionStatus that looks final, and a duplicate would copy it.
 ENRICHMENT_FOLLOWS = "enrichment_follows"
 
 #: ``TransformContext.settings`` key: seconds the image-description pass may
@@ -27,6 +29,8 @@ class TransformContext(BaseModel):
     # ``EntityResolution`` set by the resolver in apply mode and read by
     # GraphDBTransformer; ``Any`` keeps this module free of that import.
     entity_resolution: Optional[Any] = None
+    # Set when extraction was skipped by configuration (not failed), e.g. no LLM configured.
+    extraction_skip_reason: str | None = None
 
 class Transformer(ABC):
     @abstractmethod

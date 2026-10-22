@@ -599,7 +599,21 @@
     "chatSelectionLimit": "चैट में अधिकतम {{max}} चुने गए आइटम लिए जा सकते हैं। कुछ का चयन हटाएँ और फिर से प्रयास करें।",
     "chatTooManyCollections": "चैट एक बार में अधिकतम {{max}} संग्रह खोज सकता है, और आपके पास इससे अधिक हैं। कोई संग्रह खोलें या जिनके बारे में पूछना है उन्हें चुनें।",
     "chatCollectionsLoadFailed": "चैट के लिए आपके संग्रह लोड नहीं हो सके। फिर से प्रयास करें।",
-    "chatNoCollections": "अभी आपके पास पूछने के लिए कोई संग्रह नहीं है।"
+    "chatNoCollections": "अभी आपके पास पूछने के लिए कोई संग्रह नहीं है।",
+    "indexingStatus": {
+      "completed": "पूर्ण",
+      "inProgress": "प्रगति में",
+      "failed": "विफल",
+      "fileTypeNotSupported": "फ़ाइल प्रकार समर्थित नहीं",
+      "notStarted": "शुरू नहीं हुआ",
+      "queued": "कतार में",
+      "manualIndexing": "मैन्युअल इंडेक्सिंग",
+      "empty": "खाली",
+      "paused": "रोका गया",
+      "needsMultimodalModel": "मल्टीमॉडल मॉडल आवश्यक",
+      "skipped": "छोड़ा गया",
+      "pending": "लंबित"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -2602,6 +2616,11 @@
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "लोकल वॉचर",
         "localWatcherStatus": "{{state}} · {{pending}} लंबित · {{failed}} विफल",
+        "classification": "वर्गीकरण",
+        "classificationSkipped": "छोड़े गए",
+        "retryFailedClassification": "विफल वर्गीकरण पुनः प्रयास करें",
+        "retryClassificationSuccess": "वर्गीकरण पुनः प्रयास कतार में है",
+        "retryClassificationError": "वर्गीकरण पुनः प्रयास विफल रहा",
         "lastRun": {
           "title": "पिछला सिंक",
           "outcome": {
@@ -4542,6 +4561,12 @@
       "noRecordMetadata": "इस आइटम के लिए कोई अतिरिक्त मेटाडेटा नहीं है।"
     },
     "indexingReasonAria": "अनुक्रमण विफलता विवरण",
+    "stageTrackLabel": "पाइपलाइन",
+    "stageParsed": "पार्स किया गया",
+    "stageSearchable": "खोजने योग्य",
+    "stageClassified": "वर्गीकृत",
+    "stageAttempt": "प्रयास {{n}}",
+    "stageDetailsAria": "चरण विवरण",
     "tabRecordInformation": "रिकॉर्ड जानकारी",
     "tabDocumentDetails": "दस्तावेज़ विवरण",
     "chat": "चैट",
@@ -4817,6 +4842,8 @@
   },
   "collections": {
     "stats": {
+      "retryClassificationStart": "वर्गीकरण पुनः प्रयास कतार में है",
+      "retryClassificationError": "वर्गीकरण पुनः प्रयास विफल रहा",
       "title": "विश्लेषण",
       "menuLabel": "विश्लेषण",
       "fetchError": "इंडेक्सिंग आँकड़े लोड नहीं हो सके",

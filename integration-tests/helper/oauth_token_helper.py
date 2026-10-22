@@ -269,23 +269,25 @@ def exchange_refresh_token(
     refresh_token: str,
     *,
     timeout: int = 30,
+    basic_auth: bool = False,
 ) -> tuple[str, str]:
     """Exchange a refresh token for a fresh access token.
 
     Returns ``(access_token, new_refresh_token)``.  When the provider does not
     rotate refresh tokens the original *refresh_token* is returned unchanged.
+    ``basic_auth`` sends the client credentials in a Basic header rather than the
+    body, for providers such as Notion that refuse them in the body.
 
     Raises :class:`RuntimeError` if the exchange fails or the response does not
     contain an ``access_token``.
     """
+    data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+    if not basic_auth:
+        data.update(client_id=client_id, client_secret=client_secret)
     resp = requests.post(
         token_url,
-        data={
-            "grant_type": "refresh_token",
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "refresh_token": refresh_token,
-        },
+        data=data,
+        auth=(client_id, client_secret) if basic_auth else None,
         timeout=timeout,
     )
     if not resp.ok:
@@ -333,9 +335,10 @@ async def authenticate_connector_with_refresh_token(
     client_secret_env_var: str,
     *,
     env_file: Optional[Path] = None,
-) -> None:
+    basic_auth: bool = False,
+) -> str:
     """Exchange a stored refresh token for fresh OAuth credentials and inject
-    them directly into the backend KV store.
+    them directly into the backend KV store; return the access token.
 
     The function is intentionally generic — all provider-specific values
     (token_url, env var names) are supplied by the caller.  Only the
@@ -354,6 +357,7 @@ async def authenticate_connector_with_refresh_token(
             e.g. ``"JIRA_CLIENT_SECRET"``.
         env_file: Path to the refresh-tokens file.
             Defaults to ``integration-tests/.env.refresh_tokens``.
+        basic_auth: Send the client credentials in a Basic header (Notion).
 
     After this function returns the connector has valid credentials in the KV
     store.  The next ``toggle_sync`` call will call ``init()`` +
@@ -392,7 +396,7 @@ async def authenticate_connector_with_refresh_token(
         "Exchanging refresh token for connector %s via %s", connector_id, token_url
     )
     access_token, new_refresh_token = exchange_refresh_token(
-        token_url, client_id, client_secret, refresh_token
+        token_url, client_id, client_secret, refresh_token, basic_auth=basic_auth
     )
 
     key_bytes = _derive_key(secret_key)
@@ -412,6 +416,7 @@ async def authenticate_connector_with_refresh_token(
         "toggle_sync will complete authentication.",
         connector_id,
     )
+    return access_token
 
 
 def _run_blocking(coro: Coroutine[Any, Any, None]) -> None:

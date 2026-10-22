@@ -148,6 +148,31 @@ describe('OverviewTab: actions', () => {
     await waitFor(() => expect(reindexConnector).toHaveBeenCalledWith('conn-1', ['AUTO_INDEX_OFF']));
   });
 
+  it('keeps the reindex actions disabled while a classification retry runs', async () => {
+    let finish: (value: unknown) => void = () => {};
+    reindexConnector.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const withFailedClassification = stats({ COMPLETED: 5, FAILED: 3 });
+    withFailedClassification.stats.extractionStatus = {
+      FAILED: 2,
+    } as ConnectorStatsResponse['data']['stats']['extractionStatus'];
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedClassification} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Retry failed classification \(2\)/ }));
+
+    await waitFor(() => expect(reindexConnector).toHaveBeenCalledWith('conn-1', ['FAILED'], ['classify']));
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: /Reindex failed \(3\)/ }) as HTMLButtonElement).disabled).toBe(true)
+    );
+    expect(
+      (screen.getByRole('button', { name: /Retry failed classification \(2\)/ }) as HTMLButtonElement).disabled
+    ).toBe(true);
+
+    finish({});
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: /Reindex failed \(3\)/ }) as HTMLButtonElement).disabled).toBe(false)
+    );
+  });
+
   it('starts a sync and confirms it', async () => {
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={stats({ COMPLETED: 1 })} />);
 

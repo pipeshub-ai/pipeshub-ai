@@ -13,14 +13,17 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
+from urllib.parse import quote, unquote, urlsplit
 
+from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     matches_visibility,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
     from app.connectors.core.base.connector.connector_service import BaseConnector
     from app.models.entities import FileRecord, Record
@@ -36,6 +39,7 @@ class Response:
     success: bool
     data: Any = None
     error: str | None = None
+    status_code: int | None = None
 
 
 @dataclass
@@ -53,24 +57,30 @@ class FakeObjectStore:
     ``fail_page`` makes the listing fail on that page (0-based): ``"error"``
     returns an unsuccessful response, ``"raise"`` raises mid-listing.
     ``fail_prefix`` makes every listing of that prefix fail the same way.
+    ``before_page`` maps a page (0-based) to a change made, once, just before it is served.
     """
 
     objects: dict[str, StoredObject] = field(default_factory=dict)
     fail_page: int | None = None
     fail_prefix: str | None = None
     fail_mode: str = "error"
+    before_page: dict[int, Callable[[], None]] = field(default_factory=dict)
     clock: datetime = field(default_factory=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
 
     def tick(self) -> datetime:
         self.clock += timedelta(minutes=1)
         return self.clock
 
-    def put(self, key: str, text: str | None = None) -> None:
+    def now_ms(self) -> int:
+        return int(self.clock.timestamp() * 1000)
+
+    def put(self, key: str, text: str | None = None, modified: datetime | None = None) -> None:
+        """``modified`` dates the object as given, as a multipart upload is dated by its start."""
         # Distinct bodies by default: the connectors take equal content at a new key for a move.
         text = key if text is None else text
         now = self.tick()
         existing = self.objects.get(key)
-        self.objects[key] = StoredObject(key, text.encode(), now, existing.created if existing else now)
+        self.objects[key] = StoredObject(key, text.encode(), modified or now, existing.created if existing else now)
 
     def delete(self, key: str) -> None:
         del self.objects[key]
@@ -82,6 +92,9 @@ class FakeObjectStore:
         self.objects[new_key] = StoredObject(new_key, old.body, now, now)
 
     def page(self, prefix: str | None, start: int, size: int) -> tuple[list[StoredObject], int | None]:
+        change = self.before_page.pop(start // size, None)
+        if change:
+            change()
         if self.fail_page == start // size or (self.fail_prefix is not None and prefix == self.fail_prefix):
             if self.fail_mode == "raise":
                 raise ConnectionError("connection reset while listing")
@@ -117,11 +130,28 @@ class _FakeDataSource:
 
 
 class FakeS3DataSource(_FakeDataSource):
-    """``list_objects_v2`` over fake buckets, continuation tokens included."""
+    """``list_objects_v2`` over fake buckets, continuation tokens included.
+
+    ``head_fails`` makes ``head_object`` fail: ``"error"`` answers 503, ``"raise"`` raises.
+    """
+
+    head_fails: str | None = None
+
+    async def head_object(self, Bucket: str, Key: str, **_: object) -> Response:
+        if self.head_fails == "raise":
+            raise ConnectionError("connection reset during HeadObject")
+        if self.head_fails == "error":
+            return Response(False, error="503: Service Unavailable", status_code=503)
+        o = self.stores[Bucket].objects.get(Key)
+        if o is None:
+            return Response(False, error="404: Not Found", status_code=404)
+        return Response(True, {"ETag": f'"{_md5(o.body)}"', "ContentLength": len(o.body), "LastModified": o.modified})
 
     async def list_objects_v2(
         self, Bucket: str, MaxKeys: int = 1000, ContinuationToken: str | None = None, Prefix: str | None = None, **_: object,
     ) -> Response:
+        if Bucket not in self.stores:
+            return Response(False, error="NoSuchBucket: The specified bucket does not exist")
         start = int(ContinuationToken) if ContinuationToken else 0
         try:
             objects, following = self.stores[Bucket].page(Prefix, start, MaxKeys)
@@ -138,11 +168,20 @@ class FakeS3DataSource(_FakeDataSource):
             data["NextContinuationToken"] = str(following)
         return Response(True, data)
 
-    async def list_buckets(self) -> Response:
+    async def list_buckets(self, **_: object) -> Response:
         return Response(True, {"Buckets": [{"Name": n, "CreationDate": self.store.clock} for n in self.bucket_names()]})
 
     async def get_bucket_location(self, Bucket: str, **_: object) -> Response:
         return Response(True, {"LocationConstraint": None})
+
+    async def generate_presigned_url(self, ClientMethod: str, Params: dict[str, str], **_: object) -> Response:
+        """Signs as boto does: the URL path is the given key, percent-encoded."""
+        return Response(True, f"https://{Params['Bucket']}.s3.amazonaws.com/{quote(Params['Key'])}?X-Amz-Signature=x")
+
+    def object_at(self, url: str) -> StoredObject | None:
+        """What a GET of a signed URL returns: the object at the key it names, if any."""
+        parts = urlsplit(url)
+        return self.stores[parts.netloc.split(".")[0]].objects.get(unquote(parts.path[1:]))
 
 
 class FakeGCSDataSource(_FakeDataSource):
@@ -231,9 +270,28 @@ class FakeRecordsDb:
         self.record_groups: dict[str, Any] = {}
         self.deleted: list[str] = []
         self.written: list[str] = []
+        self.moved: list[tuple[str, str]] = []
         self.failing: set[str] = set()
         # Groups whose delete answers False, as the processor does when the delete fails.
         self.refused_group_deletes: set[str] = set()
+        # Users by userId, and every permission written: records only ever gain edges, groups get replaced.
+        self.users: dict[str, Any] = {}
+        self.record_permissions: dict[str, list[Any]] = {}
+        self.group_permissions: dict[str, list[Any]] = {}
+        self.app_users: list[Any] = []
+        # What the running full sync wrote, as the processor notes it for run_sync_task's unlink.
+        self.seen: FullSyncSeen | None = None
+
+    def begin_full_sync_run(self, connector_id: str) -> FullSyncSeen:
+        self.seen = FullSyncSeen()
+        return self.seen
+
+    def end_full_sync_run(self, connector_id: str, run: FullSyncSeen) -> None:
+        self.seen = None
+
+    def _note_seen(self, collection: str, node_id: str) -> None:
+        if self.seen is not None:
+            self.seen.add(collection, node_id)
 
     def _check(self, method: str) -> None:
         if method in self.failing:
@@ -286,17 +344,33 @@ class FakeRecordsDb:
 
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
         self._check("on_new_records")
-        for record, _ in records_with_permissions:
+        for record, permissions in records_with_permissions:
             self.written.append(record.external_record_id)
+            self.record_permissions.setdefault(record.external_record_id, []).extend(permissions)
             # The processor upserts by external id, keeping the stored record's id.
             same_path = self.by_path().get(record.external_record_id)
             if same_path and same_path.id != record.id:
                 record.id = same_path.id
             self.records[record.id] = record
+            self._note_seen("records", record.id)
+
+    async def on_records_moved(self, moves: list[tuple[str, Any, list[Any]]]) -> None:
+        """In place: the stored record at the old external id takes the new path and keeps its id."""
+        self._check("on_records_moved")
+        for old_external_id, record, permissions in moves:
+            self.moved.append((old_external_id, record.external_record_id))
+            stored = self.by_path().get(old_external_id)
+            if stored:
+                record.id = stored.id
+            self.records[record.id] = record
+            self.record_permissions.setdefault(record.external_record_id, []).extend(permissions)
+            self._note_seen("records", record.id)
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
-        for group, _ in groups:
+        for group, permissions in groups:
+            self._note_seen("recordGroups", group.id)
             self.record_groups[group.external_group_id] = group
+            self.group_permissions[group.external_group_id] = list(permissions)
 
     async def get_nodes_by_filters(
         self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
@@ -324,8 +398,16 @@ class FakeRecordsDb:
     async def ensure_team_app_edge(self, connector_id: str) -> None:
         return None
 
-    async def get_user_by_user_id(self, user_id: str) -> None:
-        return None
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> object:
+        """As the graph providers answer: a failed query is None unless the caller asks it to raise."""
+        if "get_user_by_user_id" in self.failing:
+            if raise_on_error:
+                self._check("get_user_by_user_id")
+            return None
+        return self.users.get(user_id)
+
+    async def on_new_app_users(self, users: list[Any]) -> None:
+        self.app_users.extend(users)
 
 
 class FakeCheckpointStore:
@@ -367,6 +449,13 @@ class FakeConfigService:
     def set_extensions(self, operator: str, extensions: list[str]) -> None:
         self.sync_filters["file_extensions"] = {"operator": operator, "value": extensions, "type": "multiselect"}
 
+    def set_dates(self, filter_name: str, after: datetime | None = None, before: datetime | None = None) -> None:
+        """A date filter as the UI saves it: epoch-ms bounds, relative ranges already made absolute."""
+        operator = "is_between" if after and before else "is_after" if after else "is_before"
+        bounds = {"start": after, "end": before}
+        value = {k: int(v.timestamp() * 1000) if v else None for k, v in bounds.items()}
+        self.sync_filters[filter_name] = {"operator": operator, "value": value, "type": "datetime"}
+
     async def get_config(self, path: str, default: object = None, **_: object) -> object:
         if path == f"/services/connectors/{CONNECTOR_ID}/config":
             self.reads += 1
@@ -380,10 +469,11 @@ class FakeConfigService:
 
 def make_connector(
     kind: str, store: FakeObjectStore, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, config: FakeConfigService,
+    scope: str = "team",
 ) -> BaseConnector:
-    """A team-scoped connector of ``kind`` wired to the fakes, as ``init()`` would leave it for one bucket."""
+    """A connector of ``kind`` (team-scoped unless told) wired to the fakes, as ``init()`` would leave it for one bucket."""
     logger = logging.getLogger(f"test.objstore.{kind}")
-    args = (logger, db, checkpoints, config, CONNECTOR_ID, "team", "creator-1")
+    args = (logger, db, checkpoints, config, CONNECTOR_ID, scope, "creator-1")
     if kind == "s3":
         from app.connectors.sources.s3.connector import S3Connector
 
@@ -411,4 +501,39 @@ def make_connector(
         raise ValueError(kind)
     connector.bucket_name = BUCKET
     connector.batch_size = 2
+    connector.list_page_size = 2
     return connector
+
+
+def runner_graph() -> AsyncMock:
+    """The graph provider ``run_sync_task`` writes the app's status to.
+
+    Its ``unlink_nodes_missed_by_full_sync`` is the step after a full sync that strips the
+    edges of every record that sync did not write.
+    """
+    from app.config.constants.arangodb import AppStatus
+
+    graph = AsyncMock()
+    graph.get_document = AsyncMock(return_value={"id": CONNECTOR_ID, "status": AppStatus.FULL_SYNCING.value})
+    graph.unlink_nodes_missed_by_full_sync = AsyncMock(return_value=(0, True))
+    return graph
+
+
+async def run_full_sync_task(connector: BaseConnector, graph: AsyncMock) -> None:
+    """Run a full sync the way the scheduler does, through ``run_sync_task``; what ``run_sync`` raises is raised too."""
+    from app.config.constants.arangodb import AppStatus
+    from app.connectors.core.sync.sync_runner import run_sync_task
+
+    await run_sync_task(
+        connector, CONNECTOR_ID, graph, logging.getLogger("test.objstore.runner"),
+        start_status=AppStatus.FULL_SYNCING.value,
+    )
+
+
+def idle_write(graph: AsyncMock) -> dict[str, Any]:
+    """The finalizer's IDLE write, which also carries pendingFullSync when a full sync is owed."""
+    from app.config.constants.arangodb import AppStatus
+
+    writes = [c.args[2] for c in graph.update_node.await_args_list if c.args[2].get("status") == AppStatus.IDLE.value]
+    assert len(writes) == 1, writes
+    return writes[0]

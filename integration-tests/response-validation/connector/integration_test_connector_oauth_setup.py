@@ -33,6 +33,7 @@ for _p in (_ROOT, _RV_HELPER):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+from helper.clients.config_client import ConfigClient  # noqa: E402
 from helper.clients.connectors_client import (  # noqa: E402
     ConnectorOAuthConfigsClient,
     ConnectorsClient,
@@ -702,7 +703,10 @@ class TestOAuthRegistry:
 @pytest.mark.integration
 class TestOAuthSignIn:
     def test_authorize_matches_spec(
-        self, connectors_api: ConnectorsClient, jira_oauth_connector: Any
+        self,
+        connectors_api: ConnectorsClient,
+        config_client: ConfigClient,
+        jira_oauth_connector: Any,
     ) -> None:
         resp = connectors_api.get_oauth_authorization_url(jira_oauth_connector.connector_id)
         assert resp.status_code == 200, resp.text
@@ -711,10 +715,16 @@ class TestOAuthSignIn:
         sent = jira_oauth_connector.request_body
         query = parse_qs(urlparse(body["authorizationUrl"]).query)
         assert query.get("client_id") == [sent["config"]["auth"]["clientId"]], query
-        # The redirect URI comes from the baseUrl given when the connector was created.
+        # The configured public frontend URL wins over the baseUrl the connector was
+        # created with; the baseUrl is used only on a server with none configured.
+        frontend = config_client.get_frontend_public_url()
+        assert frontend.status_code == 200, frontend.text
+        redirect_base = (frontend.json().get("url") or sent["baseUrl"]).rstrip("/")
         assert query.get("redirect_uri") == [
-            f"{sent['baseUrl']}/connectors/oauth/callback/Jira"
+            f"{redirect_base}/connectors/oauth/callback/Jira"
         ], query
+        # Jira takes no token_access_type; an unset one must be left out, not sent as "None".
+        assert "token_access_type" not in query, query
         assert body["state"], body
 
         assert_response_strictly_matches_openapi_operation(body, _AUTHORIZE)

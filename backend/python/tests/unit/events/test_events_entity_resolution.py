@@ -1,14 +1,22 @@
-"""Service-path enrichment: entity resolution runs right after classification."""
+"""Entity resolution runs in the classify stage, right after classification and before the
+stored record, summary and graph writes all consume the names (it used to run inline on
+the service path, which now only indexes and hands the record off)."""
 
-import asyncio
 import os
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.events.processor import convert_record_dict_to_record
+from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.models.blocks import SemanticMetadata
-from app.utils import indexing_timing as timing
+from app.modules.pipeline.leases import RecordLeases
+from app.modules.pipeline.models import Priority, StageJob, StageOutcome
+from app.modules.pipeline.policy import DEFAULT_POLICY
+from app.modules.pipeline.stage import Deadline
+from app.modules.pipeline.stages.classify import ClassifyStage
+from app.modules.pipeline.stages.classify_io import GraphClassifyIO
+from app.services.resource_governor.models import ParseTier
 from unit.events.test_orchestrator_flow import (
     _make_event_data,
     _make_event_processor,
@@ -22,149 +30,86 @@ def _metadata() -> SemanticMetadata:
     )
 
 
+def _job() -> StageJob:
+    return StageJob.model_validate({
+        "stage": "classify", "stage_version": 1, "org_id": "org-1", "virtual_record_id": "vr-1",
+        "rev": "rev-a", "record_ids": ("rec-1",), "connector_id": "conn-1", "tier": ParseTier.LIGHT,
+        "priority": Priority.BULK, "trigger": "embed", "text_digest": "t", "blocks_digest": "b",
+        "text_chars": 10, "has_tables": False, "has_images": False,
+    })
+
+
+def _io(sink: MagicMock, order: list[str], classification: SemanticMetadata | None) -> GraphClassifyIO:
+    graph = AsyncMock()
+    graph.get_document = AsyncMock(return_value={
+        "_key": "rec-1", "orgId": "org-1", "contentRev": "rev-a", "recordName": "a.txt",
+        "externalRecordId": "x", "connectorId": "conn-1", "mimeType": "text/plain",
+    })
+    graph.get_departments = AsyncMock(return_value=[])
+    blob = AsyncMock()
+    blob.get_record_from_storage = AsyncMock(return_value={"block_containers": {"blocks": [], "block_groups": []}})
+    blob.save_semantic_metadata = AsyncMock(side_effect=lambda *a: order.append("blob"))
+    return GraphClassifyIO(
+        _job(), Deadline(30), policy=DEFAULT_POLICY, graph=graph, blob_storage=blob, sink=sink,
+        classifier=AsyncMock(return_value=classification), config_service=MagicMock(),
+        record_from_document=convert_record_dict_to_record, record_leases=RecordLeases(),
+    )
+
+
 @pytest.mark.asyncio
-@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
-async def test_resolution_runs_before_summary_enrich_and_blob() -> None:
+async def test_resolution_runs_before_the_stored_record_summary_and_graph() -> None:
     order: list[str] = []
-    parsing_client = MagicMock()
-    parsing_client.circuit_open = False
-    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
-
-    extraction_client = MagicMock()
-    extraction_client.classify = AsyncMock(return_value=_metadata())
-
     sink = MagicMock()
-    sink.index = AsyncMock()
-    sink.resolve_entities = AsyncMock(side_effect=lambda ctx: order.append("resolve"))
-    sink.vector_store.index_record_summary = AsyncMock(side_effect=lambda *a, **k: order.append("summary"))
-    sink.blob_storage.apply = AsyncMock(side_effect=lambda ctx: order.append("blob"))
-    sink.enrich = AsyncMock(side_effect=lambda ctx: order.append("enrich"))
-    sink.extract_named_entities = AsyncMock(return_value=None)
-    sink.persist_named_entities = AsyncMock(side_effect=lambda ctx, extraction: order.append("entities"))
+    sink.prepare_enrichment = AsyncMock(side_effect=lambda ctx: order.append("resolve"))
+    sink.write_enrichment = AsyncMock(side_effect=lambda ctx, **_: order.append("summary+graph"))
+    sink.entity_resolution_mode = MagicMock(return_value="apply")
+    classification = _metadata()
 
-    transform_pipeline = MagicMock()
-    transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
+    with patch("app.modules.pipeline.stages.classify_io.load_ai_models", AsyncMock(return_value={})):
+        result = await ClassifyStage().run(_job(), _io(sink, order, classification))
 
-    ep = _make_event_processor(
-        parsing_client=parsing_client,
-        extraction_client=extraction_client,
-        sink_orchestrator=sink,
-        transform_pipeline=transform_pipeline,
-    )
-    async for _event in ep.on_event(_make_event_data()):
-        pass
-
-    # The blob rewrite follows enrichment so the stored record carries its output.
-    assert order == ["resolve", "summary", "enrich", "entities", "blob"]
-    ctx = sink.resolve_entities.await_args.args[0]
-    assert ctx.record.semantic_metadata is extraction_client.classify.return_value
+    assert result.outcome is StageOutcome.COMPLETED
+    assert order == ["resolve", "blob", "summary+graph"]
+    assert sink.prepare_enrichment.await_args.args[0].record.semantic_metadata is classification
 
 
 @pytest.mark.asyncio
-@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
 async def test_no_metadata_means_no_resolution_call() -> None:
+    sink = MagicMock()
+    sink.prepare_enrichment = AsyncMock()
+    result = await ClassifyStage().run(_job(), _io(sink, [], None))
+    assert result.outcome is StageOutcome.SKIPPED
+    sink.prepare_enrichment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_resolution_is_retried_not_failed() -> None:
+    order: list[str] = []
+    sink = MagicMock()
+    sink.prepare_enrichment = AsyncMock(side_effect=EntityLookupUnavailableError("entity index unreachable"))
+    sink.write_enrichment = AsyncMock()
+    result = await ClassifyStage().run(_job(), _io(sink, order, _metadata()))
+    assert result.outcome is StageOutcome.RETRY
+    # Nothing of the enrichment is written before resolution succeeds.
+    assert order == []
+    sink.write_enrichment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_the_service_path_resolves_nothing_inline() -> None:
     parsing_client = MagicMock()
     parsing_client.circuit_open = False
     parsing_client.parse = AsyncMock(return_value=_make_parse_result())
-    extraction_client = MagicMock()
-    extraction_client.classify = AsyncMock(return_value=None)
     sink = MagicMock()
     sink.index = AsyncMock()
     sink.resolve_entities = AsyncMock()
-    sink.enrich = AsyncMock()
-    sink.extract_named_entities = AsyncMock(return_value=None)
-    sink.persist_named_entities = AsyncMock()
-    transform_pipeline = MagicMock()
-    transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
+    sink.prepare_enrichment = AsyncMock()
+    ep = _make_event_processor(parsing_client=parsing_client, extraction_client=MagicMock(), sink_orchestrator=sink)
 
-    ep = _make_event_processor(
-        parsing_client=parsing_client, extraction_client=extraction_client,
-        sink_orchestrator=sink, transform_pipeline=transform_pipeline,
-    )
     async for _event in ep.on_event(_make_event_data()):
         pass
+
     sink.resolve_entities.assert_not_awaited()
-    sink.enrich.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
-async def test_summary_embedding_time_is_counted_once() -> None:
-    """index_record_summary times its own embed and upsert steps, so a stage
-    wrapped around the whole call would count that time twice."""
-    parsing_client = MagicMock()
-    parsing_client.circuit_open = False
-    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
-    extraction_client = MagicMock()
-    extraction_client.classify = AsyncMock(return_value=_metadata())
-
-    async def embed_summary(*_args, **_kwargs) -> None:
-        with timing.stage("embed.dense"):
-            await asyncio.sleep(0.05)
-
-    sink = MagicMock()
-    sink.index = AsyncMock()
-    sink.resolve_entities = AsyncMock()
-    sink.vector_store.index_record_summary = AsyncMock(side_effect=embed_summary)
-    sink.blob_storage.apply = AsyncMock()
-    sink.enrich = AsyncMock()
-    sink.extract_named_entities = AsyncMock(return_value=None)
-    sink.persist_named_entities = AsyncMock()
-    transform_pipeline = MagicMock()
-    transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
-
-    ep = _make_event_processor(
-        parsing_client=parsing_client, extraction_client=extraction_client,
-        sink_orchestrator=sink, transform_pipeline=transform_pipeline,
-    )
-    timeline, token = timing.begin_record("rec-1")
-    started = time.perf_counter()
-    try:
-        async for _event in ep.on_event(_make_event_data()):
-            pass
-    finally:
-        wall = time.perf_counter() - started
-        timing.end_record(timeline, token, outcome="ok")
-
-    sink.vector_store.index_record_summary.assert_awaited_once()
-    # Every step here runs one after another, so busy time cannot exceed
-    # the wall time of the call.
-    busy = sum(total for _count, total, _max in timeline.stage_totals().values())
-    assert busy <= wall
-
-
-@pytest.mark.asyncio
-@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
-async def test_a_deferred_resolution_is_redelivered_not_failed() -> None:
-    """A lookup that could not run must reach the consumer, which redelivers
-    the record; marking the enrichment FAILED here would never retry it."""
-    from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
-
-    parsing_client = MagicMock()
-    parsing_client.circuit_open = False
-    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
-    extraction_client = MagicMock()
-    extraction_client.classify = AsyncMock(return_value=_metadata())
-    sink = MagicMock()
-    sink.index = AsyncMock()
-    sink.resolve_entities = AsyncMock(side_effect=EntityLookupUnavailableError("lookup could not run"))
-    sink.vector_store.index_record_summary = AsyncMock()
-    sink.blob_storage.apply = AsyncMock()
-    sink.enrich = AsyncMock()
-    sink.extract_named_entities = AsyncMock(return_value=None)
-    sink.persist_named_entities = AsyncMock()
-    transform_pipeline = MagicMock()
-    transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
-
-    ep = _make_event_processor(
-        parsing_client=parsing_client, extraction_client=extraction_client,
-        sink_orchestrator=sink, transform_pipeline=transform_pipeline,
-    )
-    with pytest.raises(EntityLookupUnavailableError):
-        async for _event in ep.on_event(_make_event_data()):
-            pass
-
-    sink.enrich.assert_not_awaited()
-    sink.persist_named_entities.assert_not_awaited()
-    updates = [call.args[2] for call in ep.graph_provider.update_node.await_args_list]
-    assert not any(update.get("extractionStatus") == "FAILED" for update in updates)
+    sink.prepare_enrichment.assert_not_awaited()
+    ep.stage_ingress.on_indexed.assert_awaited_once()

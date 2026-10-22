@@ -1,7 +1,9 @@
 """Unit tests for app.services.messaging.kafka.handlers.record.RecordEventHandler."""
 
 import asyncio
+import contextlib
 from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -29,6 +31,7 @@ from app.services.messaging.error_classifier import MessageErrorType
 from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import (
     DUPLICATE_RECONCILE_PENDING_FIELD,
+    RecordEventHandler,
 )
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
 from app.utils import user_errors
@@ -60,6 +63,10 @@ def _make_handler(logger=None, config_service=None, event_processor=None, produc
     # on. Tests that need entity-vector-store behaviour set this explicitly
     # afterwards via `handler.event_processor.sink_orchestrator = ...`.
     event_processor.sink_orchestrator = None
+    # Same reason: no stage runtime unless a test binds one (an auto-vivified
+    # MagicMock would be awaited). Tests that need it set it afterwards.
+    if "stage_ingress" not in vars(event_processor) and isinstance(event_processor, MagicMock):
+        event_processor.stage_ingress = None
 
     return RecordEventHandler(
         logger=logger,
@@ -1398,6 +1405,44 @@ class TestRecordInTrash:
 
 class TestAlreadyIndexed:
     """Tests for records that already have COMPLETED indexing status."""
+
+    @staticmethod
+    def _queued_for_classification(handoff_lost: bool) -> tuple[RecordEventHandler, MagicMock]:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={
+            "_key": "r1", "virtualRecordId": "vr1", "contentRev": "rev-1", "mimeType": "application/pdf",
+            "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.QUEUED.value,
+        })
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+        ingress = MagicMock()
+        ingress.handoff_lost = AsyncMock(return_value=handoff_lost)
+        handler.event_processor.stage_ingress = ingress
+        return handler, ingress
+
+    @staticmethod
+    def _logged_already_done(handler: RecordEventHandler) -> bool:
+        return any("Indexing already done" in str(c.args[0]) for c in handler.logger.info.call_args_list if c.args)
+
+    @pytest.mark.asyncio
+    async def test_a_record_the_stage_runtime_holds_is_acknowledged(self) -> None:
+        handler, ingress = self._queued_for_classification(handoff_lost=False)
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf"}
+        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        assert self._logged_already_done(handler)
+        ingress.handoff_lost.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_lost_hand_off_runs_the_record_path_again(self) -> None:
+        handler, ingress = self._queued_for_classification(handoff_lost=True)
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "mimeType": "application/pdf", "extension": "pdf"}
+        # The full path runs into the bare test doubles further on; what matters is
+        # that the delivery is not acknowledged as already indexed.
+        with contextlib.suppress(Exception):
+            await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        ingress.handoff_lost.assert_awaited_once()
+        assert not self._logged_already_done(handler)
 
     @pytest.mark.asyncio
     async def test_new_record_already_completed(self):
@@ -5186,6 +5231,57 @@ class TestOnMessageAbandoned:
         )
 
         assert handler.logger.error.called
+
+
+class TestStageRedrive:
+    """A reindexRecord that names stages re-runs them for the record's revision, and nothing else."""
+
+    @staticmethod
+    def _handler(dispatched: list[str] | None) -> tuple[Any, AsyncMock, MagicMock]:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={
+            "_key": "r1", "virtualRecordId": "vr1", "contentRev": "rev-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value, "mimeType": MimeTypes.PPTX.value,
+        })
+        ingress = MagicMock()
+        ingress.redrive = AsyncMock(return_value=dispatched)
+        ingress.handoff_lost = AsyncMock(return_value=False)
+        handler.event_processor.stage_ingress = ingress
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
+        return handler, gp, ingress
+
+    @staticmethod
+    def _payload(**extra: object) -> dict[str, object]:
+        return {"recordId": "r1", "virtualRecordId": "vr1", "mimeType": MimeTypes.PPTX.value,
+                "extension": "pptx", "stages": ["classify"], **extra}
+
+    @pytest.mark.asyncio
+    async def test_named_stages_re_run_without_touching_the_index(self) -> None:
+        handler, gp, ingress = self._handler(["vr1:rev-1:classify@1"])
+        events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(forceReindex=True))
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        ingress.redrive.assert_awaited_once_with("vr1", "rev-1", ["classify"])
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
+        assert {c[0] for c in gp.mock_calls} == {"get_document"}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_retry_never_writes_the_records_statuses(self) -> None:
+        handler, gp, ingress = self._handler(None)
+        ingress.redrive = AsyncMock(side_effect=ConnectionError("graph unavailable"))
+        with pytest.raises(ConnectionError):
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(is_final_failure=True))
+        assert {c[0] for c in gp.mock_calls} == {"get_document"}
+
+    @pytest.mark.asyncio
+    async def test_a_revision_the_runtime_never_saw_is_reindexed_in_full(self) -> None:
+        handler, gp, ingress = self._handler(None)
+        # The full path ends by promoting the record's queued copies; it has none.
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+        await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload())
+        ingress.redrive.assert_awaited_once()
+        # Past the stage branch: the regular reindex path clears the old vectors.
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"])
 
 
 # ---------------------------------------------------------------------------

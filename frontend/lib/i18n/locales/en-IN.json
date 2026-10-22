@@ -599,7 +599,21 @@
     "chatSelectionLimit": "Chat can take up to {{max}} selected items. Untick some and try again.",
     "chatTooManyCollections": "Chat can search up to {{max}} collections at once, and you have more. Open a collection, or tick the ones to ask about.",
     "chatCollectionsLoadFailed": "Couldn't load your collections for chat. Try again.",
-    "chatNoCollections": "You have no collections to ask about yet."
+    "chatNoCollections": "You have no collections to ask about yet.",
+    "indexingStatus": {
+      "completed": "Completed",
+      "inProgress": "In Progress",
+      "failed": "Failed",
+      "fileTypeNotSupported": "File Type Not Supported",
+      "notStarted": "Not Started",
+      "queued": "Queued",
+      "manualIndexing": "Manual Indexing",
+      "empty": "Empty",
+      "paused": "Paused",
+      "needsMultimodalModel": "Needs Multimodal Model",
+      "skipped": "Skipped",
+      "pending": "Pending"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -2598,6 +2612,11 @@
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "LOCAL WATCHER",
         "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed",
+        "classification": "Classification",
+        "classificationSkipped": "Skipped",
+        "retryFailedClassification": "Retry failed classification",
+        "retryClassificationSuccess": "Classification retry queued",
+        "retryClassificationError": "Failed to retry classification",
         "lastRun": {
           "title": "Last sync",
           "outcome": {
@@ -4542,6 +4561,12 @@
       "noRecordMetadata": "No additional record metadata for this item."
     },
     "indexingReasonAria": "Indexing failure details",
+    "stageTrackLabel": "Pipeline",
+    "stageParsed": "Parsed",
+    "stageSearchable": "Searchable",
+    "stageClassified": "Classified",
+    "stageAttempt": "Attempt {{n}}",
+    "stageDetailsAria": "Stage details",
     "tabRecordInformation": "Record Information",
     "tabDocumentDetails": "Document details",
     "chat": "Chat",
@@ -4857,6 +4882,8 @@
   },
   "collections": {
     "stats": {
+      "retryClassificationStart": "Classification retry queued",
+      "retryClassificationError": "Failed to retry classification",
       "title": "Analytics",
       "menuLabel": "Analytics",
       "fetchError": "Failed to load indexing stats",

@@ -1,6 +1,6 @@
 # Indexing Service — Architecture, Data Flow, and Admission Control
 
-This is the working reference for `backend/python/app/indexing_main.py` and everything a record passes through between a `record-events` message and `indexingStatus=COMPLETED`. Read it before changing anything under `app/services/messaging/`, `app/services/resource_governor/`, `app/events/`, or `app/modules/transformers/`.
+This is the working reference for `backend/python/app/indexing_main.py` and everything a record passes through between a `record-events` message and `indexingStatus=COMPLETED`, plus the pipeline stages that run after it (§2.3). Read it before changing anything under `app/services/messaging/`, `app/services/resource_governor/`, `app/events/`, `app/modules/transformers/`, or `app/modules/pipeline/`.
 
 Section 5 is the root-cause analysis of the "indexing starts fast, then drops to 2–3 records" throughput collapse. If that is why you are here, skip to it, but the mechanism only makes sense with sections 3 and 4.2 in mind.
 
@@ -8,9 +8,9 @@ Section 5 is the root-cause analysis of the "indexing starts fast, then drops to
 
 ## 1. High-level design
 
-Indexing is one Python process (`app.indexing_main`, port 8091) that consumes record events from the broker, downloads each record's bytes, parses them into a `BlocksContainer`, embeds the blocks into the vector store, stores the blocks in blob storage, and enriches the graph with LLM-extracted metadata. It does not talk to a source system directly: the Connectors service owns source access and streams bytes on request.
+Indexing is one Python process (`app.indexing_main`, port 8091) that consumes record events from the broker, downloads each record's bytes, parses them into a `BlocksContainer`, embeds the blocks into the vector store and stores the blocks in blob storage. The record is then searchable, and the handler hands it to the pipeline stage runtime (§2.3): classification (summary, categories, topics, departments, all LLM-extracted) runs afterwards as the `classify` stage, on its own topic with its own permits, status, retries and dead-lettering. It does not talk to a source system directly: the Connectors service owns source access and streams bytes on request.
 
-Indexing needs a language model configured before records can finish, not only for the enrichment step at the end. The model assigned to the `indexing` role (or the default LLM) is read while records are processed: images check whether it is multimodal, spreadsheets, CSVs and tables in documents are summarised with it while they are parsed, and the inline enrichment step runs inside the same processing call, so its failure fails the record. With no LLM configured, records fail with "No AI model is set up for this workspace yet…" (`app/utils/llm.py::LLM_MISSING_FOR_FILE`), stored as the failure reason as-is.
+Indexing needs a language model configured before records can finish, not only for the enrichment step at the end. The model assigned to the `indexing` role (or the default LLM) is read while records are processed: images check whether it is multimodal, and spreadsheets, CSVs and tables in documents are summarised with it while they are parsed. With no LLM configured, such a record fails with "No AI model is set up for this workspace yet…" (`app/utils/llm.py::LLM_MISSING_FOR_FILE`), stored as the failure reason as-is. Classification runs later, as the `classify` stage, and cannot fail the record: with no LLM configured it ends `SKIPPED` with the reason, and the record stays searchable (§2.1).
 
 ```mermaid
 flowchart LR
@@ -27,9 +27,13 @@ flowchart LR
         RG[ResourceGovernor<br/>index_heavy / index_light<br/>heavy_parse / light_parse gates]
         H[RecordEventHandler → EventProcessor → Processor]
         S[SinkOrchestrator<br/>VectorStore + BlobStorage + GraphDB]
-        CL --> RG --> H --> S
+        SI[StageIngress<br/>claim classify state, publish job]
+        SC[Stage consumer: classify<br/>own permits, no governor]
+        CL --> RG --> H --> S --> SI
     end
     B --> CL
+    BS[(Broker<br/>topic pipeline.classify)]
+    SI --> BS --> SC
 
     C -. "GET /internal/stream/record/{id}" .-> H
     P[Parsing :8092<br/>bytes → BlocksContainer]
@@ -38,7 +42,7 @@ flowchart LR
     X[Extraction :8093<br/>blocks → SemanticMetadata]
     H -- USE_PARSING_SERVICE=true --> P --> D
     S --> E
-    H --> X
+    SC -- USE_PARSING_SERVICE=true --> X
 
     G[(Graph DB<br/>Neo4j / Arango<br/>records + status)]
     V[(Vector DB<br/>Qdrant / OpenSearch / Redis)]
@@ -47,12 +51,13 @@ flowchart LR
     S --> V
     S --> BL
     H --> G
+    SC --> G
     CL --> R
 ```
 
 **Two parsing modes exist.** With `USE_PARSING_SERVICE=false` (the shipped default) the handler parses in-process via `app/events/processor.py` (`Processor.process_*`), which itself calls the Docling service for PDF layout. With `USE_PARSING_SERVICE=true` it POSTs the bytes to the Parsing service. Both paths yield the same three pipeline events to the consumer (`START_PARSING`, `PARSING_COMPLETE`, `INDEXING_COMPLETE`), which is what the admission control below keys on.
 
-**One worker thread.** The consumer runs a second event loop on a dedicated thread. Broker I/O (XREADGROUP/XACK, Kafka poll/commit, producer sends) stays on the main loop; every record's handler, the governor gates, the Neo4j driver, the lease renewer and the recovery loops run on the worker loop. Anything that must cross loops goes through `consumer_concurrency.bridge_to_main_loop`. The producers do that for themselves: `RedisStreamsProducer` and `KafkaMessagingProducer` remember the loop they were started on and hand a send from any other loop back to it (`app/utils/loop_bridge.run_on_loop`), so a handler on the worker loop can call them directly. Redis clients that both loops use directly are held one per loop (`app/services/redis/loop_clients.LoopBoundClients`): `RedisClientRegistry` for leases and retry counts, and the accessible-records cache, which the worker loop invalidates when a knowledge-base record finishes indexing.
+**One worker loop.** Handlers run on a second event loop on a dedicated thread (`services/messaging/worker_loop.WorkerLoop`), shared by every indexing consumer in the process: the record consumer and each pipeline-stage consumer. `WorkerLoop` owns that loop and its lag monitor (section 4.10), so one monitor covers every consumer's handlers. Broker I/O (XREADGROUP/XACK, Kafka poll/commit, producer sends) stays on the main loop; every handler, the governor gates, the graph and vector clients, the lease renewers and the recovery loops run on the worker loop. Anything that must cross loops goes through `consumer_concurrency.bridge_to_main_loop` or `run_on_loop`. The producers do that for themselves: `RedisStreamsProducer` and `KafkaMessagingProducer` remember the loop they were started on and hand a send from any other loop back to it (`app/utils/loop_bridge.run_on_loop`), so a handler on the worker loop can call them directly. Service clients bind to the loop that first uses them (an aiohttp session, an LLM or embedding HTTP pool, a Redis connection, an `asyncio.Lock` once contended), so a second worker loop would put the same clients on two loops; a client that must also serve the main loop keeps one resource per loop. Redis clients do it through `app/services/redis/loop_clients.LoopBoundClients`: `RedisClientRegistry` for leases and retry counts, and the accessible-records cache, which the worker loop invalidates when a knowledge-base record finishes indexing. Other clients use `utils/loop_local.LoopLocal`, as the ArangoDB, Neo4j and Qdrant clients and the accessible-records cache's single-flight locks do.
 
 **Parse workers.** Parsing a large text, code or CSV file is seconds of CPU, and on the worker loop that is seconds in which no other record's graph, vector or embedding call can make progress. Those parses run in separate worker processes owned by `app/modules/parsers/parse_pool.py`; section 4.7 says which step runs where and why a thread is not enough. The parsing service uses the same pool for the same parsers.
 
@@ -64,7 +69,7 @@ Related services and ports are listed in `AGENTS.md`.
 
 ### 2.1 Status state machine
 
-Status lives on the record node in the graph (`records` collection) as three fields: `indexingStatus`, `parsingStatus`, `extractionStatus`, plus `processingStartedAt` and `reason`. A primary whose queued md5-duplicates were just promoted also carries `duplicateReconcilePending` until their taxonomy edges and entity membership have been copied (see `docs/entity-resolution.md`).
+Status lives on the record node in the graph (`records` collection) as three fields: `indexingStatus`, `parsingStatus`, `extractionStatus`, plus `processingStartedAt` and `reason`. A primary whose queued md5-duplicates were just promoted also carries `duplicateReconcilePending` until their taxonomy edges and entity membership have been copied (see `docs/entity-resolution.md`). `contentRev`, the revision of the record's content (the first 16 hex digits of its bytes' sha256), is written with `IN_PROGRESS`; pipeline stage writes are conditional on it.
 
 ```mermaid
 stateDiagram-v2
@@ -81,7 +86,7 @@ stateDiagram-v2
     IN_PROGRESS --> ENABLE_MULTIMODAL_MODELS: image with no multimodal LLM/embedding
 ```
 
-`extractionStatus` moves independently (`NOT_STARTED → IN_PROGRESS → COMPLETED | FAILED`) and never blocks searchability: a record is searchable as soon as `indexingStatus=COMPLETED`.
+`extractionStatus` belongs to the `classify` stage (§2.3) and never blocks searchability: a record is searchable as soon as `indexingStatus=COMPLETED`. It moves to `QUEUED` when the stage job is claimed and published, then to `COMPLETED`, `SKIPPED` (classification off, nothing to classify, or no LLM configured; `reason` says which) or `FAILED`. A retrying or paused job leaves it `QUEUED`.
 
 A record also stays searchable while `hasIndexedCopy` is true. Indexing sets it with every `COMPLETED` write and clears it when a record turns out `EMPTY`; nothing else touches it, and connector upserts merge rather than replace, so it survives a re-queue. An edited record queued again (`NOT_STARTED`, `QUEUED`, `IN_PROGRESS`), or one whose re-index failed, therefore keeps serving its previous copy until the new one is indexed. The search gate is `aql_searchable_record` / `cypher_searchable_record` in `app/services/graph_db/common/record_visibility.py`. Records indexed before the field existed are marked by `backfill_indexed_copy_flags`, which the indexing service runs at startup once the schema is ensured. A type that is not reconciled block by block still loses its vectors while it is processed, because the handler deletes them first.
 
@@ -121,8 +126,9 @@ sequenceDiagram
     Hnd-->>W: yield PARSING_COMPLETE → release parse permit + lease
     Hnd->>Sink: index(ctx): describe images, blob write, embed + upsert
     Sink->>V: upsert points / store blocks
-    Sink->>G: indexingStatus = COMPLETED
-    Hnd->>Hnd: enrich: extraction LLM → graph metadata (extractionStatus)
+    Sink->>G: indexingStatus = COMPLETED, extractionStatus = QUEUED
+    Hnd->>G: StageIngress: record embed, claim classify and entities (unique inserts, QUEUED)
+    Hnd->>Br: publish stageJobs on pipeline.classify and pipeline.entities (retry producer)
     Hnd-->>W: yield INDEXING_COMPLETE → release index permit + lease
     W->>Main: XACK (bridged), clear retry counters
 ```
@@ -134,14 +140,124 @@ Failure paths from the same wrapper (`redis_streams/indexing_consumer.py::_proce
 | Terminal exception (`MessageErrorClassifier` → TERMINAL) | Record marked FAILED via the disposition sink, message ACKed. |
 | Transient exception, attempts < `MAX_DELIVERY_ATTEMPTS` (3) | Record reverted `IN_PROGRESS → QUEUED`, message re-published to the same lane with `_retry_not_before` (15s, 60s, 240s backoff) and `_retry_tracking_id`, original ACKed. |
 | Transient, attempts exhausted | Dead-lettered: record FAILED, message ACKed, next MD5 duplicate triggered. |
-| Final attempt fails after the record is indexed (a re-read shows `indexingStatus=COMPLETED`, `extractionStatus=IN_PROGRESS`, from this attempt or an earlier one) | Only the enrichment ends: `extractionStatus=FAILED` with "Try Reindex", the record stays searchable and its queued copies are released. |
-| `ParseAdmissionTimeout` (no parse slot within `RECORD_PROCESSING_TIMEOUT`) | Re-queued **without** counting an attempt; delivery counter bounds it (`REDIS_MAX_DELIVERIES`). |
+| Final attempt fails after the record is indexed, on a record the old inline enrichment left `extractionStatus=IN_PROGRESS` | Only the enrichment ends: `extractionStatus=FAILED` with "Try Reindex", the record stays searchable and its queued copies are released. New records never reach this row: the indexed write sets `QUEUED` and the stages own what follows. |
+| Redelivery of a record that is indexed and still `extractionStatus=QUEUED` | If the runtime recorded `embed` for the record's revision, the stages are its (or the stage sweep's) to finish and the message is ACKed. If it did not, the attempt stopped between the indexed write and the hand-off, and the record path runs again so the hand-off happens; reconciliation keeps that cheap. |
+| `ParseAdmissionTimeout` (no parse slot within `RECORD_PROCESSING_TIMEOUT`) | Re-queued **without** counting an attempt; delivery counter bounds it (`REDIS_MAX_DELIVERIES`). Every `RequeueWithoutAttempt` takes this path, including a paused stage job (§2.3). |
 | Content fetch answered 429 with a `Retry-After` (the source, or the connector's quota reserve, will not serve it yet) | Not a failure. The handler writes the record `QUEUED` with `retryNotBefore` and a reason naming the source and the time, and ends normally, so the message is ACKed, no attempt is counted and no worker slot is held while it waits. The stranded-record sweep sends it again once that time has passed (section 4.6). A wait that would end more than `INDEXING_RATE_LIMIT_MAX_DEFER_SECONDS` (24h) after the first one began ends the record FAILED with a reason saying so. A 429 without `Retry-After` takes the transient row above. |
 | `RECORD_PROCESSING_TIMEOUT` (1800s; `PDF_RECORD_PROCESSING_TIMEOUT`, 5400s, for PDFs) elapsed inside the handler | Task cancelled, handler leaves the record IN_PROGRESS, counted as a transient failure. |
 | Lease lost (renewer could not prove ownership) | Handler cancelled, message left un-ACKed for redelivery. |
 | Process crash | Entry stays in the PEL; `XAUTOCLAIM` after `claim_min_idle_ms`, and the stale-record scan republishes IN_PROGRESS records whose `processingStartedAt` is older than the cutoff `is_stale` applies: with a concurrency manager that is one lease interval (`INDEXING_CONCURRENCY_LEASE_SECONDS`, 120s), since a live holder keeps proving ownership; without one it is `max(RECORD_PROCESSING_TIMEOUT, PDF_RECORD_PROCESSING_TIMEOUT) + parse admission wait + lease` (~122 min), the longest a record can legitimately sit IN_PROGRESS — the admission wait pauses the processing budget but not the clock `processingStartedAt` starts. Every republish of one record version carries the tracking id `stale-recovery:<record>:<version>`, so its failures add up in one budget, and the scan counts each hand-back once its event is published. Whether to give up is read without counting, so a pass that cannot publish spends nothing. Past `MAX_DELIVERY_ATTEMPTS` failures or `REDIS_MAX_DELIVERIES` hand-backs the record handler ends the record instead: FAILED, or only its enrichment when it is already searchable, and the copies queued behind it are released or the next one triggered. A success clears the counters. |
+| Stage hand-off fails after the vectors are written | A graph error while claiming the stage state fails the attempt like any transient error; the retry overwrites the same deterministic vector points and hands off again. A broker that refuses the stage job does not fail it: the claim stays `QUEUED` and the stage sweep publishes it (§2.3). |
+
+### 2.3 Pipeline stages (after indexing)
+
+Work that needs a record to be searchable first, but must not hold its index permit, runs as a **pipeline stage** (`app/modules/pipeline/`). `classify` reads the stored blocks, calls the classifier (the Extraction service with `USE_PARSING_SERVICE=true`, in-process `DocumentExtraction` otherwise), resolves the categories, topics and departments to the org's taxonomy nodes, and writes the summary into the stored record, the summary vector and the taxonomy edges; it owns `extractionStatus`. Named-entity extraction runs beside it as the `entities` stage (topic `pipeline.entities`), which needs only `embed`, not `classify`, so it never holds up classification. Their prerequisite, `embed`, is still produced by the record handler above; the registry knows it as an *external* stage. Stage consumers, topics and `/health` entries are built from the registry (`modules/pipeline/runtime.py`).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Hnd as Record handler (vectors written)
+    participant Co as Coordinator (library)
+    participant St as stageStates (graph)
+    participant Br as Topic pipeline.classify
+    participant SC as Stage consumer (classify)
+    participant Wk as StageJobHandler
+    participant G as Graph records
+
+    Hnd->>Co: on_external_done("embed", record view)
+    Co->>St: create_if_absent(vrid:rev:classify, QUEUED)
+    Co->>Br: stageJob (key connectorId)
+    Co->>St: publishedAtMs = now
+    Co->>G: extractionStatus = QUEUED (CAS on contentRev)
+    Br->>SC: deliver: stage permit, lease stage:classify, lease record:job:<id>
+    SC->>Wk: handle(job)
+    Wk->>St: fingerprint unchanged? COMPLETED without work
+    Wk->>St: CAS QUEUED → IN_PROGRESS (attempt + 1)
+    Wk->>Wk: stage.run(job, io) within budget_s
+    Wk->>St: outcome (COMPLETED stores the fingerprint)
+    Wk->>G: extractionStatus = COMPLETED / SKIPPED (CAS on contentRev)
+    Wk->>Co: on_stage_done: claim and publish successors
+    SC->>Br: ACK
+```
+
+| Guarantee | Mechanism |
+| --- | --- |
+| A stage is dispatched once per revision, however many upstream completions race | The dispatcher claims the stage's state before publishing: a unique insert of `vrid:rev:stage`, or one compare-and-set from a terminal status back to `QUEUED`. Only the claimer publishes. |
+| A duplicated or redelivered job runs once | `work_key` (`job:<jobId>`) serialises deliveries in-process and cluster-wide, the claim to `IN_PROGRESS` is a compare-and-set, and a job whose fingerprint matches the stored one completes without work. |
+| A run settles only its own claim | Each claim increments the state's `attempt`, and every later write of that run (its outcome, the unchanged-output completion, a dead-letter's FAILED) is a compare-and-set on the status and that `attempt`. A run the sweeper took for dead and another worker then claimed writes nothing, sets no record status and dispatches no successors; if nobody claimed it since, it still records its result. |
+| Unchanged content costs no LLM call | Fingerprint = `stage@version` + an input digest + a config digest; for `classify`, the text digest, the resolved indexing model, the prompt version, the org's departments, the record's name and type (both are in the prompt) and the entity-resolution mode; for `entities`, see below. `forceReindex` forces the job. A stage whose output lives outside its state keeps it with the state: classification's is in the stored record, which a re-index of unchanged content rewrites without it, and an unchanged job puts it back without a model call. |
+| A stale job cannot overwrite newer content | Every headline write is a compare-and-set on the record's `contentRev`; a job none of whose records is still on its revision ends `SKIPPED` ("superseded"). Every output a stage writes for a record (its section of the stored record, the summary point, taxonomy edges, entity points, named entities) is written under that record's exclusivity lease (`record:<recordId>`, the one its re-index holds), with `contentRev` re-checked once the lease is held, so it never lands over a newer revision's content; a bound copy that has moved on gets nothing. The lease is renewed while held, so long enrichment writes cannot outlive it. A stage that loses the record lease while writing (renewal refused, or failing until one interval before the term ends) stops before its next write and is retried; one that ran on regardless is retried too, since its last writes may have landed after the lease lapsed. |
+| A lost publish or a dead worker is recovered | The stage sweep, below. |
+| An LLM outage never stalls indexing | The index permit is released before the stage job exists; stage consumers have their own permits and lease pool. A paused job waits out the outage on its own schedule, so one organization's provider outage does not hold up another's classification. |
+
+Outcomes (`StageJobHandler`, `app/modules/pipeline/worker.py`):
+
+| Outcome | Stage state | `extractionStatus` | Consumer |
+| --- | --- | --- | --- |
+| COMPLETED | COMPLETED + fingerprint | COMPLETED, reason cleared | successors dispatched, ACK |
+| SKIPPED (classification off, nothing to classify, no LLM configured) | SKIPPED + reason | SKIPPED + reason | successors dispatched, ACK |
+| STALE (no bound record is on this revision any more) | SKIPPED "superseded" | untouched | ACK |
+| RETRY (the model call failed or produced nothing usable, an Extraction-service 5xx or 429, `budget_s` elapsed) | QUEUED + reason | stays QUEUED | transient: backoff, re-publish, dead-letter after `MAX_DELIVERY_ATTEMPTS` |
+| PAUSED (the model provider is unavailable, or the Extraction service is down, breaker-open or backpressured) | PAUSED + reason | stays QUEUED | `StagePaused`: re-queued without counting an attempt or a delivery, after a delay that grows with the stage attempt (15 s, 1 min, 4 min, then every 5 min) and is never shorter than the provider's remaining cooldown, so an outage of any length is waited out |
+| FAILED (the Extraction service rejected the document: a 4xx) | FAILED + reason | FAILED + reason | terminal, ACK |
+| Dead-lettered | FAILED | FAILED | the handler is also the consumer's `AbandonedMessageSink` |
+
+**Named entities.** `entities` (`stages/entities.py`) runs the named-entity extraction and its graph and entity-vector writes (`SinkOrchestrator.extract_named_entities` and `persist_named_entities`), then copies the mentions to the record's already-promoted duplicates. It is a sibling of `classify`, not its successor: named-entity extraction reads only the blocks and the record's name, type and dates, never the classification, so both are dispatched the moment `embed` is recorded and each waits only for its own work. It has no headline field: its outcomes land in its stage state (the record page reads it from `stageStates`), and `extractionStatus` is `classify`'s alone. When named-entity extraction is turned off the job still runs and ends `SKIPPED` "turned off", because turning it off must clear the entities a record already had. A failed extraction is `RETRY` and keeps the record's last good entities. Its fingerprint is the text digest, the extractor and prompt versions, the resolved model, whether extraction is on, the entity kinds, time zone and budgets, the record's name, type and source time, and whether the Extraction service or the in-process extractor runs it. Its limit is the same `MAX_CONCURRENT_INDEXING_LLM_CALLS` as `classify`'s; both draw on the gateway's process-wide cap (§2.4), so together they never exceed it. The re-extraction sweep for records whose extraction stopped short (`named_entity_completion`) is unchanged.
+
+**One stored record, two writers.** Classification and named entities both live in the stored record (`semantic_metadata` and its named-entity section). Each stage re-reads the stored record inside the record lease and replaces only its own section, so whichever finishes second keeps the other's (`stages/record_io.py`).
+
+**Duplicates.** A record whose MD5 matches an indexed twin that is still being classified (`extractionStatus` `QUEUED`, `IN_PROGRESS` or `PAUSED`) stays `QUEUED`; when `classify` writes the twin's final status, the stage releases those copies with the twin's outcome (`modules/pipeline/duplicates.py`).
+
+**Admission.** A stage consumer is an ordinary indexing consumer built by `MessagingFactory.create_consumer(..., stage_admission=StageAdmission(stage, limit))`, without a ResourceGovernor: stage work is bounded by its downstream (an LLM provider's rate), not by this node's CPU or memory. It has its own `limit` permits, its own cluster lease pool `stage:<name>` and the per-job exclusivity lease. Every worker process takes the `stage:<name>` lease, so it is sized for all of them, the stage limit × `INDEXING_UVICORN_WORKERS`, as the record leases are (section 4.3); sized for one process, N workers would share one worker's worth of leases; the dispatch budget, 429 backpressure, PEL/offset watermark, retry counters and dead-lettering are the record consumer's, unchanged. `classify`'s limit is `MAX_CONCURRENT_INDEXING_LLM_CALLS`. On Kafka a stage consumer always dispatches in parallel within a partition (the fair scheduler's parallel mode, which `record-events` leaves off because a record holds its partition for its whole lifetime): stage jobs are independent and serialised per job by `work_key`, so the admission limit, not the partition count, bounds concurrency.
+
+**Topics.** One per stage, `pipeline.<stage>`, consumer group `pipeline_<stage>_group`, not laned. On Kafka the indexing service creates them at startup (`KafkaAdmin`, `KAFKA_TOPIC_PARTITIONS` partitions, replication factor 1 like the topics Node creates); create them beforehand where the indexing service's Kafka principal may not create topics, or where the cluster needs more replicas. If they cannot be created, indexing still starts and records are still indexed and searchable: the stage publisher stays unbound, so each hand-off leaves its claim `QUEUED`, and a background task retries (30 s, doubling to 5 min), then binds the publisher and starts the stage consumers (if stage consumers fail to start after the topics exist, the start is retried with the same backoff); the sweeper then publishes the waiting claims. Until then `/health` reports `stages.publisher_bound: false`. Redis Streams needs no setup.
+
+**Schema.** Before any consumer starts, the indexing service ensures the graph schema the pipeline writes against (`IGraphDBProvider.ensure_pipeline_schema`), without relying on the connector service's bootstrap having run: on ArangoDB the `stageStates` collection with its schema and indexes, and the current `records` schema; on Neo4j the unique constraint on `StageState.id` and its indexes. Stage-state nodes written while that constraint was missing can share an id and block it; they are removed first, keeping the most recently updated. Startup retries (2 s, doubling to 60 s) until the graph accepts the schema, for example while the connector service is still creating `records` on a first start.
+
+**Loops.** A stage consumer runs its handlers on the process's one worker loop (§1), with its own permits and lease pool. The coordinator publishes through the retry producer, which lives on the main loop, via `DeferredPublisher` (`run_on_loop`); it is bound when the consumers start, and a hand-off before that raises instead of dropping the job.
+
+**Status and retry.** Record detail (`GET /api/v1/records/{id}`, and the knowledge-base record API that proxies it) returns `stageStates` for the record's current revision, and connector and collection stats count `extractionStatus` beside `indexingStatus`. `POST /api/v1/connectors/{id}/reindex` with `stages: ["classify"]` re-runs only classification, for records whose `extractionStatus` matches `statusFilters` (default `FAILED`): the connectors service publishes `reindexRecord` with `stages`, and the indexing service re-dispatches the stage from its stored state (no re-parse, no re-embed, no record status written) or, when it holds no state for the record's revision, falls back to a full reindex. Only `classify` is retryable this way: the selection is by a record status, and `entities` has none; a failed `entities` job is re-run by a reindex of the record. `GET /health` on the indexing service reports `stages`: each stage's topic, limit and how its deliveries ended since start.
+
+**Stage sweep.** `recover_in_progress_records`, under the cluster-wide `recovery` lease, also runs `Coordinator.sweep`: a `QUEUED` claim older than 2 min that never reached the broker is published; one that did is published again only after 6 h (a backstop for a lost message, since a long backlog is not a loss); an `IN_PROGRESS` job older than 30 min whose job lease is free goes back to `QUEUED` and is published (without distributed concurrency, `DISTRIBUTED_INDEXING_CONCURRENCY=false`, a running stage job untouched for 30 minutes, and past its stage's budget, is re-queued on age alone); a `PAUSED` state untouched for 6 h has lost its message (a paused job rewrites its state every time it comes back) and is published again. At most 200 states per pass. A re-published duplicate is harmless: see the second guarantee above.
+
+### 2.4 Model calls: the LLM gateway
+
+Every indexing-time model call (classification, named-entity extraction and entity resolution, image description, VLM OCR, table and row summaries) goes through one `LLMGateway` per process (`app/services/llm_gateway/`), in the indexing, parsing and Extraction services alike. A unit test fails if a parser, transformer, the extraction module or the named-entity and entity-resolution modules call `.ainvoke(` on a model directly; query-time entity linking is not indexing and is not covered.
+
+| Concern | Behaviour |
+| --- | --- |
+| Concurrency | One process-wide cap, `MAX_CONCURRENT_INDEXING_LLM_CALLS`, held across event loops by a thread-safe FIFO semaphore (an `asyncio.Semaphore` binds to one loop, so a per-loop cap multiplies with the loops). `indexing_llm_slot()` hands out the same permits. A call gets at most 3 attempts on a 429 (2 retries, after about 1 s and 2 s plus up to 1 s of jitter), sleeping outside the permit; a 429 on the last one counts as a provider failure. |
+| Hangs | A call is cut off after 600 s and counts as a provider failure. It is a ceiling on hangs, not a latency target: self-hosted models legitimately take minutes on long inputs. A caller's own shorter budget (`timeout=`, e.g. a structured call's `call_timeout`) raises `TimeoutError` and does not count against the provider. |
+| Errors that must not be retried | `NonRetryableError` (the request can never succeed as sent) passes through unchanged: no 429 retry, no breaker failure, and the parsers re-raise it before any fallback. |
+| Outages | A circuit breaker per model and endpoint (model class, model and base URL; never the credentials): an overloaded model or one deployment's rate limit must not stop the other models on the endpoint. Five consecutive provider failures (unreachable, timeout, 5xx, a 429 that outlasts its retries) open it for 30 s, and the first real call after the cooldown is the probe, since a health endpoint cannot tell whether the provider serves completions. While it is open, calls fail fast with `ProviderUnavailableError`, an `LLMUnavailableError` carrying the remaining cooldown as `retry_after`. An error that is the request's fault (a 4xx, output that does not parse) is raised unchanged and does not count against the provider. |
+| Degradation | Image description leaves the image undescribed. A VLM OCR page whose call fails becomes an empty page; a provider outage stops the document, so it is retried. An Excel or CSV table summary falls back to a plain one naming the row count and columns. Classification pauses (§2.3); across the Extraction service an outage is a `424` with `error_code: LLM_UNAVAILABLE` and, while the provider's circuit is open, `Retry-After`, which the classify stage waits at least. |
+| Observability | `pipeshub_indexing_llm_calls_total{call_site,outcome}`, `pipeshub_indexing_llm_tokens_total{call_site,direction}` and `pipeshub_indexing_llm_breaker_open{provider}`. `GET /health` on the indexing, parsing and Extraction services reports `llm_gateway`: the cap, permits in use, waiters, and each provider's circuit state and remaining cooldown. The indexing service's `indexing_llm` block reads the same permits: `slots` (the process-wide cap; it replaces `slots_per_loop` and `loops`), slots in use, callers waiting, slots granted, rate-limit retries, and total and mean wait and hold time. Long waits with steady hold times mean the cap binds; rising hold times or rate-limit retries mean the provider does. |
 
 ---
+
+### 2.5 Upgrading and rolling back
+
+**Order.** The indexing service applies the graph schema it writes against before it consumes (§2.3), so it can start before or after the connector service. On Kafka it needs two new topics, `pipeline.classify` and `pipeline.entities` (consumer groups `pipeline_classify_group` and `pipeline_entities_group`); it creates them itself where its principal may (§2.3, Topics). In a split deployment, upgrade the Extraction service with or before the indexing service: an older Extraction service's answer to a model outage is recorded as `SKIPPED`.
+
+**Records from the old inline classification.** Before the classify stage, classification ran inside the record's indexing attempt. A record it left with `extractionStatus` `IN_PROGRESS` (its pod stopped mid-classification) or `NOT_STARTED` (`DEFER_EXTRACTION=true`) has no stage state, so no sweep revisits it. `POST /api/v1/connectors/{id}/reindex` with `stages: ["classify"]` and `statusFilters: ["IN_PROGRESS", "NOT_STARTED"]` classifies them again; with no stage state for the record's revision, that is a full reindex.
+
+**Rolling back to 0.10.0 on ArangoDB.** 0.10.0's connector service re-applies its strict `records` schema, which does not declare `contentRev`, and does not accept `SKIPPED` in any status field, `PAUSED` or `ENABLE_MULTIMODAL_MODELS` in `parsingStatus`, or `QUEUED` or `ENABLE_MULTIMODAL_MODELS` in `extractionStatus`. ArangoDB then rejects every later update to a record carrying one of them, so status writes to those records fail. Stop the new services and run this first; it is accepted under either schema, and `stageStates` can stay (0.10.0 does not read it):
+
+```aql
+LET parsing = ["ENABLE_MULTIMODAL_MODELS", "PAUSED", "SKIPPED"]
+LET extraction = ["ENABLE_MULTIMODAL_MODELS", "QUEUED", "SKIPPED"]
+FOR r IN records
+  FILTER HAS(r, "contentRev")
+    OR r.parsingStatus IN parsing OR r.indexingStatus == "SKIPPED" OR r.extractionStatus IN extraction
+  UPDATE r WITH {
+    contentRev: null,
+    parsingStatus: r.parsingStatus == "SKIPPED" ? "FAILED" : (r.parsingStatus IN parsing ? "NOT_STARTED" : r.parsingStatus),
+    indexingStatus: r.indexingStatus == "SKIPPED" ? "FAILED" : r.indexingStatus,
+    extractionStatus: r.extractionStatus == "SKIPPED" ? "FAILED" : (r.extractionStatus IN extraction ? "NOT_STARTED" : r.extractionStatus)
+  } IN records OPTIONS { keepNull: false }
+```
+
+Neo4j has no schema for these fields and needs no cleanup.
 
 ## 3. Light and heavy documents
 
@@ -156,7 +272,7 @@ Jira issues and Confluence pages are published as `application/blocks` (Jira) or
 
 The tier decides four things, all in `consumer_concurrency.py` and `resource_governor/`:
 
-1. **Which index pool** the record holds for its whole lifetime: `Pool.INDEX_HEAVY` or `Pool.INDEX_LIGHT` (`acquire_index_slot`). This permit is taken before the handler runs and released on `INDEXING_COMPLETE`, so it covers download, the wait for a parse slot, parsing, embedding, and enrichment.
+1. **Which index pool** the record holds for its whole lifetime: `Pool.INDEX_HEAVY` or `Pool.INDEX_LIGHT` (`acquire_index_slot`). This permit is taken before the handler runs and released on `INDEXING_COMPLETE`, so it covers download, the wait for a parse slot, parsing and embedding. Classification is outside it, on the `classify` stage's own permits (§2.3).
 2. **Which parse pool** the record waits on at `START_PARSING`: `HEAVY_PARSE` or `LIGHT_PARSE`, cost 2 permits for a heavy file over 25 MiB.
 3. **Which cluster-wide Redis lease** it takes: `parsing` vs `parsing:light` always; `indexing` vs `indexing:light` only once `INDEXING_SPLIT_LEASE_POOLS=true`.
 4. **The ceilings and floors** the governor sizes each pool with (section 4.3).
@@ -254,6 +370,8 @@ A record passes through these, in order. Each is a separate limiter with its own
 | 11 | `CircuitBreaker` per HTTP client | `services/base_client.py` | process | no | fails fast for 30s after 5 consecutive failures to parsing/extraction/docling |
 | 12 | Record processing timeout | wrapper | record | n/a | 1800s of active processing (queue time excluded) |
 
+A pipeline-stage consumer (§2.3) has the same layers except the governor's: its `StageAdmission` permits and `stage:<name>` lease replace layers 3–5, and it has no parse layers (7–9). The `stage:<name>` lease is sized like layer 5, for every worker process: the stage limit × the number of worker processes.
+
 `GateWaiterToken` is the counter behind layer 2, one bucket per tier (`GateWaiters`). It is incremented synchronously in `_start_processing_task`, in the tier `dispatch_tier` resolves from the envelope, and decremented either when `acquire_index_slot` returns (`admit()`) or when the task ends without ever being admitted (`release()`). Between those two points the task is parked in the index gate's FIFO. The dispatch phase asks `DispatchBudget.allows(tier)` per buffered entry and DRR skips a leaf whose tier is at its ceiling without charging it; reads pause only when `DispatchBudget.blocked` (no tier may spawn), the buffer is full, or both index gates are saturated. Counts are reset when the worker loop stops, so a restart never inherits phantom waiters.
 
 ### 4.3 ResourceGovernor
@@ -297,15 +415,17 @@ Floors: heavy parse 2; light parse and both index pools half their ceiling as th
 
 Downstream feedback (`resource_governor/feedback.py`) is fed by `BaseServiceClient` (timeouts, 429s, exhausted retries), the Neo4j client (pool exhaustion), and the lease Redis client. It only ever shrinks or holds the index pools.
 
+**One memory brake per memory domain.** In the all-in-one image the indexing, parsing and Docling processes share one container, and each runs a governor on the same memory reading; a heavy parse was braked three times in series, each governor at its own floor. A process that admits a parse under its memory brake now stamps the request with its memory domain (`x-pipeshub-admitted-in`: a hash of the memory cgroup's inode and the host's boot id, carried by `inject_request_headers`). A service in the same domain admits that request against its pool's fixed ceiling instead of braking it again (`memory_domain.parse_admission_cap`); a service in another domain (its own pod) brakes it and restamps. Where the domain cannot be read, every process keeps its own brake.
+
 ### 4.4 Handler chain
 
-`RecordEventHandler.process_event` (`kafka/handlers/record.py`) → `EventProcessor.on_event` (`events/events.py`) → `Processor.process_<format>` (`events/processor.py`) or `_orchestrate_via_services` → `IndexingPipeline.apply` (`modules/transformers/pipeline.py`) → `SinkOrchestrator.index` then `enrich`.
+`RecordEventHandler.process_event` (`kafka/handlers/record.py`) → `EventProcessor.on_event` (`events/events.py`) → `Processor.process_<format>` (`events/processor.py`) or `_orchestrate_via_services` → `IndexingPipeline.apply` (`modules/transformers/pipeline.py`) → `SinkOrchestrator.index`, then `StageIngress.on_indexed` (`modules/pipeline/ingress.py`) hands the record to the stage runtime.
 
 Responsibilities by layer:
 
 - **RecordEventHandler**: routes non-record events (bulk delete, membership sync, collection rebuild), checks connector active, resolves extension/mime, rejects unsupported types, downloads bytes (signed URL, else `GET {connectors}/api/v1/internal/stream/record/{id}` with a scoped JWT), and owns the terminal status write in its `finally` (FAILED vs revert to QUEUED). Implements the `AbandonedMessageSink` the consumer calls before any dead-letter ACK.
-- **EventProcessor**: MD5 dedup against `records` (same content → reuse the duplicate's `virtualRecordId`, skip work), writes IN_PROGRESS, mints or preserves the `virtualRecordId` (reconciliation-enabled types keep it for diff-based updates), yields `START_PARSING` with tier and size, then dispatches by format. PDFs go through OCR-need detection, then Docling (via the Docling service), OCR, or pdfplumber.
-- **IndexingPipeline / SinkOrchestrator**: validate blocks, optional image description, blob write, reconciliation diff, embed + upsert (`VectorStore`), `indexingStatus=COMPLETED`, cache invalidation, then extraction and graph enrichment.
+- **EventProcessor**: MD5 dedup against `records` (same content → reuse the duplicate's `virtualRecordId`, skip work), writes IN_PROGRESS with the record's `contentRev`, mints or preserves the `virtualRecordId` (reconciliation-enabled types keep it for diff-based updates), yields `START_PARSING` with tier and size, then dispatches by format. PDFs go through OCR-need detection, then Docling (via the Docling service), OCR, or pdfplumber.
+- **IndexingPipeline / SinkOrchestrator**: validate blocks, optional image description, blob write, reconciliation diff, embed + upsert (`VectorStore`), `indexingStatus=COMPLETED`, cache invalidation, then the hand-off to the stage runtime. The parsing-service path (`_orchestrate_via_services`) ends the same way. A pipeline built without the runtime refuses the record rather than silently skip classification.
 
 ### 4.5 Background loops in the indexing process
 
@@ -313,7 +433,7 @@ Responsibilities by layer:
 | --- | --- | --- |
 | `ResourceGovernor.run` | 15s ± 1s | sample cgroup/CPU/memory, adjust pool limits |
 | `LeaseRenewer` (worker loop) | 30s | renew every held Redis lease in one pipeline; marks holders lost after ~90s of failures |
-| `run_stale_recovery_loop` | 60s, after a startup grace of `SHUTDOWN_TASK_TIMEOUT + 90s` | republish records IN_PROGRESS past the cutoff `is_stale` applies — one lease interval (120s) when a concurrency manager is present, because ownership is proven by the lease rather than by age, and `max(RECORD_PROCESSING_TIMEOUT, PDF_RECORD_PROCESSING_TIMEOUT) + parse admission wait + lease` (~122 min) when it is not; park records of gone/inactive connectors as AUTO_INDEX_OFF; republish QUEUED/NOT_STARTED records whose event the broker no longer holds (section 4.6); keep the Redis lane map in step (section 4.9); retry duplicate reconciles still pending 10 min after their promotion (`duplicateReconcileDueAt`), backing off 20/40/80/160 min and giving up after 5 attempts. It takes no `record:` lease, since the consumer drops an event whose lease it cannot take within `record_lease_wait_seconds`; the flag clear is fenced on the due time instead (`app/modules/indexing/duplicate_reconcile.py`) |
+| `run_stale_recovery_loop` | 60s, after a startup grace of `SHUTDOWN_TASK_TIMEOUT + 90s` | republish records IN_PROGRESS past the cutoff `is_stale` applies — one lease interval (120s) when a concurrency manager is present, because ownership is proven by the lease rather than by age, and `max(RECORD_PROCESSING_TIMEOUT, PDF_RECORD_PROCESSING_TIMEOUT) + parse admission wait + lease` (~122 min) when it is not; park records of gone/inactive connectors as AUTO_INDEX_OFF; republish QUEUED/NOT_STARTED records whose event the broker no longer holds (section 4.6); keep the Redis lane map in step (section 4.9); retry duplicate reconciles still pending 10 min after their promotion (`duplicateReconcileDueAt`), backing off 20/40/80/160 min and giving up after 5 attempts. It takes no `record:` lease, since the consumer drops an event whose lease it cannot take within `record_lease_wait_seconds`; the flag clear is fenced on the due time instead (`app/modules/indexing/duplicate_reconcile.py`); the pipeline stage sweep (§2.3) |
 | `run_vector_membership_backfill_loop` | 30s | repair `connectorIds`/`recordGroupIds` on vector points |
 | `run_entity_index_rebuild_loop` | 2s while working, 60s idle, after a 60s startup grace | project the graph into the `entities` collection, one page per tick under its own Redis leader key; see `docs/entity-resolution.md` (Entity index rebuild) |
 
@@ -446,7 +566,9 @@ Every record that was admitted to an index slot logs one INFO line when its deli
 ⏱ Indexing timings for record <id> (reindexRecord, light, ok): total=412.3s wait_slot=0.0s held=412.3s pre_parse=1.2s parse_wait=0.0s parse=0.4s post_parse=410.7s | embed.dense=1630.2s/180(max 28.1s) graph.read=310.4s/181(max 9.8s) vector.upsert=40.2s/180(max 1.1s) extract=31.0s ...
 ```
 
-The label ends with how the delivery finished: `ok`, `failed`, `stopped` (the consumer shut down), `contended` (a duplicate delivery owns the record) or `requeued` (it waited too long for a parse slot and went back on the queue without using an attempt). The first group is wall time on the record's own path, from the consumer wrapper: waiting for the index slot, holding it (up to the moment its leases and permits are handed back), and within the hold the time before parsing (record reads, download, dedup), waiting for a parse slot, parsing, and everything after parsing (embedding, storage, enrichment). The second group is busy time per step, largest first, as `total/count(max)`. Steps run concurrently (a record's embedding batches run five at a time), so a step's total can exceed the record's wall time; the count and the maximum say whether it was many ordinary calls or a few slow ones. Steps: `download`, `reconcile`, `chunk`, `embed.setup`, `embed.dense`, `embed.sparse`, `embed.image`, `graph.read`, `graph.status`, `graph.enrich`, `vector.delete`, `vector.upsert`, `vector.cleanup`, `blob.write`, `blob.metadata`, `images.describe`, `extract` (department lookup and classification), `entities.extract` (the wait for named-entity extraction left after classification, which runs alongside it), `entities.persist`, `entities.resolve`, `entities.identity`, `entities.upsert`, `lease.index`, `lease.record`. The record summary's embedding is not a step of its own: its time lands in `embed.*`, `vector.*` and `graph.read`, so no second counts the same work twice.
+The label ends with how the delivery finished: `ok`, `failed`, `stopped` (the consumer shut down), `contended` (a duplicate delivery owns the record) or `requeued` (it waited too long for a parse slot and went back on the queue without using an attempt). The first group is wall time on the record's own path, from the consumer wrapper: waiting for the index slot, holding it (up to the moment its leases and permits are handed back), and within the hold the time before parsing (record reads, download, dedup), waiting for a parse slot, parsing, and everything after parsing (embedding, storage, enrichment). The second group is busy time per step, largest first, as `total/count(max)`. Steps run concurrently (a record's embedding batches run five at a time), so a step's total can exceed the record's wall time; the count and the maximum say whether it was many ordinary calls or a few slow ones. Steps: `download`, `reconcile`, `chunk`, `embed.setup`, `embed.dense`, `embed.sparse`, `embed.image`, `graph.read`, `graph.status`, `graph.enrich`, `vector.delete`, `vector.upsert`, `vector.cleanup`, `blob.write`, `blob.metadata`, `images.describe`, `extract` (classification), `entities.extract` (named-entity extraction), `entities.persist`, `entities.resolve`, `entities.identity`, `entities.upsert`, `lease.index`, `lease.record`. The record summary's embedding is not a step of its own: its time lands in `embed.*`, `vector.*` and `graph.read`, so no second counts the same work twice.
+
+A stage job logs the same line for its own work, labelled `stage:<name>` (`stage:classify`, `stage:entities`) and ending `ok`, `failed`, `paused` or `retry`; classification's steps (`extract`, `entities.resolve`, `graph.enrich`, `entities.upsert`) and named entities' (`entities.extract`, `entities.persist`) appear there, not on the record's line.
 
 A single step slower than `INDEXING_SLOW_STEP_SECONDS` (30) also logs a WARNING as it ends (`⏱ Slow indexing step embed.dense took 41.0s ... for record <id>: batch of 50 texts / 9120 chars`), at most three per step per record; the summary counts all of them.
 
@@ -599,7 +721,11 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | How a repository file is read or skipped | `backend/python/app/modules/parsers/code_parser/routing.py` |
 | Parsing / extraction / docling HTTP clients | `backend/python/app/services/parsing/client.py`, `extraction/client.py`, `docling/client.py` |
 | Parsing service route with its own gate + 429 | `backend/python/app/api/routes/parsing.py` |
-| Pipeline and sinks | `backend/python/app/modules/transformers/{pipeline,sink_orchestrator,vectorstore,blob_storage,graphdb}.py` |
+| Record indexing pipeline and sinks | `backend/python/app/modules/transformers/{pipeline,sink_orchestrator,vectorstore,blob_storage,graphdb}.py` |
+| Stage runtime: contracts, registry, coordinator, state store, worker, ingress, assembly | `backend/python/app/modules/pipeline/` |
+| Stages and their IO adapters | `backend/python/app/modules/pipeline/stages/` |
+| Stage admission, work key, cross-loop calls | `consumer_concurrency.py` (`StageAdmission`, `work_key`, `run_on_loop`) |
+| Kafka topic creation for stage topics | `backend/python/app/services/messaging/kafka/admin.py` |
 | Governor / consumer unit tests | `backend/python/tests/unit/services/messaging/`, `tests/unit/services/resource_governor/` |
 
 ## 7. Tunables that matter for throughput
@@ -615,7 +741,7 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | `FAIR_SCHEDULING_LANE_ASSIGNMENT` | `assigned` | Redis only. `hash` puts every producer back on hashed lanes; set it on every service (section 4.9) |
 | `FAIR_SCHEDULING_LANE_CACHE_SECONDS` | 60 | how long a producer trusts a looked-up lane; a move is fenced this long plus 30s after it is made |
 | `FAIR_SCHEDULING_MAX_REMEMBERED_POSITIONS` | 200000 | Kafka: messages the consumer may read past connectors at their cap, keeping only partition and offset (~145 bytes each); `0` parks within the buffer as before (section 4.1) |
-| `KAFKA_TOPIC_PARTITIONS` | 32 for a new topic | partitions `record-events` is created with by the Node admin service; an existing topic is grown to it only when it is set explicitly |
+| `KAFKA_TOPIC_PARTITIONS` | 32 for a new topic | partitions `record-events` is created with by the Node admin service, and the `pipeline.*` stage topics by the indexing service (§2.3); an existing `record-events` topic is grown to it only when it is set explicitly |
 | `GOVERNOR_MEM_SOFT` / `GOVERNOR_MEM_HARD` | 0.70 / 0.80 | memory brakes on raw cgroup occupancy |
 | `GOVERNOR_HEAVY_PARSE_WORKING_SET_GB` | 1.5 | sizes `heavy_memory_cap` |
 | `GOVERNOR_EMBEDDING_CPU_RESERVATION` | 2 (≤ 25% of quota) | CPUs withheld from heavy parse when embeddings are local |
@@ -630,3 +756,4 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | `INDEXING_SLOW_STEP_SECONDS` | 30 | a single step at least this long logs a WARNING (section 4.10) |
 | `INDEXING_LOOP_LAG_WARN_SECONDS` | 1.0 | worker-loop lateness that logs a warning; `0` turns the lag monitor off (section 4.10) |
 | `INDEXING_LOOP_STALL_STACK_SECONDS` | 5 | how long the worker loop may not run before its stack is logged; `0` turns the watchdog off (section 4.10) |
+| `MAX_CONCURRENT_INDEXING_LLM_CALLS` | 24 | the LLM gateway's process-wide cap on indexing-time model calls, across event loops (§2.4); also the `classify` stage consumer's job limit |

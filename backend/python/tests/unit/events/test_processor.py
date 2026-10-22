@@ -863,6 +863,7 @@ class TestProcessExcelDocumentEmptyAndMissing:
         gp.get_document.return_value = None
 
         mock_parser = MagicMock()
+        mock_parser.new_document_parser.return_value = mock_parser
         mock_parser.load_workbook_from_binary = MagicMock()
         mock_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc.parsers["xlsx"] = mock_parser
@@ -2077,6 +2078,7 @@ class TestProcessExcelDocument:
         gp.get_document.return_value = _base_record_dict()
 
         mock_parser = MagicMock()
+        mock_parser.new_document_parser.return_value = mock_parser
         mock_parser.load_workbook_from_binary = MagicMock()
         mock_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc.parsers[ExtensionTypes.XLSX.value] = mock_parser
@@ -2100,6 +2102,7 @@ class TestProcessExcelDocument:
         gp.get_document.return_value = None
 
         mock_parser = MagicMock()
+        mock_parser.new_document_parser.return_value = mock_parser
         mock_parser.load_workbook_from_binary = MagicMock()
         mock_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc.parsers[ExtensionTypes.XLSX.value] = mock_parser

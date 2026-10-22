@@ -16,6 +16,7 @@ import { getReindexNodeFromHubItem, isKbCollectionNode } from './utils/reindex-l
 import { normalizeKbId } from './utils/resolve-root-kb-id';
 import { quietRejectedCursor } from './utils/cursor-recovery';
 import { ConnectorsApi } from '../workspace/connectors/api';
+import type { ReindexStage } from '../workspace/connectors/types';
 
 const BASE_URL = '/api/v1/knowledgeBase';
 
@@ -739,8 +740,12 @@ export const KnowledgeBaseApi = {
   // delegates to the shared connector-wide reindex endpoint. Omitting
   // statusFilters means "reindex everything" for a KB connector (unlike
   // other connectors, which default server-side to FAILED-only).
-  async reindexKnowledgeBase(kbId: string, statusFilters?: string[]) {
-    return ConnectorsApi.reindexConnector(kbId, statusFilters);
+  async reindexKnowledgeBase(
+    kbId: string,
+    statusFilters?: string[],
+    stages?: ReindexStage[]
+  ) {
+    return ConnectorsApi.reindexConnector(kbId, statusFilters, stages);
   },
 
   // Download a record file via stream endpoint

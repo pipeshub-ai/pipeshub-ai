@@ -3478,6 +3478,195 @@ class TestSharedWithMeFromSharedDrive:
         assert result.record.is_shared is True
 
     @pytest.mark.asyncio
+    async def test_grant_keeps_an_item_a_member_filed_under_its_drive(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        # This run's admin drive listing missed sd-1 (a new drive), so the grantee's
+        # pass sees it as an unsynced drive. A member's pass already filed the folder
+        # under sd-1; the grant only adds the grantee's 0S: group.
+        existing = _make_record(external_id="folder-1", external_record_group_id="sd-1")
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(file_id="folder-1", parents=["sd-1"])
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "root-1", force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id == "sd-1"
+        assert result.record.parent_external_record_id is None
+        assert result.record.parent_record_type is None
+        assert result.record.shared_with_me_record_group_ids == ["0S:grantee@t.com"]
+        assert connector._fetch_permissions.await_args.kwargs["inherits_from_drive"] is True
+
+    @pytest.mark.asyncio
+    async def test_grant_keeps_the_parent_folder_of_a_nested_item(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        existing = _make_record(
+            external_id="file-1", external_record_group_id="sd-1", parent_external_record_id="folder-1"
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(parents=["folder-1"])
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "root-1", force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id == "sd-1"
+        assert result.record.parent_external_record_id == "folder-1"
+
+    @pytest.mark.asyncio
+    async def test_grant_keeps_the_stored_parent_when_drive_hides_it(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        # The grantee cannot see the folder above the file, so Drive sends no `parents`.
+        existing = _make_record(
+            external_id="file-1", external_record_group_id="sd-1", parent_external_record_id="folder-1"
+        )
+        existing.parent_record_type = RecordType.FILE
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata()
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "root-1", force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id == "sd-1"
+        assert result.record.parent_external_record_id == "folder-1"
+        assert result.record.parent_record_type == RecordType.FILE
+
+    @pytest.mark.asyncio
+    async def test_grant_into_an_enumerated_drive_keeps_the_hidden_parent(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        # sd-1 is in this run's listing, so the grantee's pass runs as a shared drive
+        # pass; Drive still sends no `parents` because the grantee cannot see the folder.
+        existing = _make_record(
+            external_id="file-1", external_record_group_id="sd-1", parent_external_record_id="folder-1"
+        )
+        existing.parent_record_type = RecordType.FILE
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata()
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "sd-1", is_shared_drive=True, force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id == "sd-1"
+        assert result.record.parent_external_record_id == "folder-1"
+        assert result.record.parent_record_type == RecordType.FILE
+        assert result.metadata_changed is False
+
+    @pytest.mark.asyncio
+    async def test_a_real_move_in_the_drive_is_still_a_metadata_change(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        existing = _make_record(
+            external_id="file-1", external_record_group_id="sd-1", parent_external_record_id="folder-1"
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(parents=["folder-2"])
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "sd-1", is_shared_drive=True, force_shared_with_me=True
+        )
+
+        assert result.metadata_changed is True
+        assert result.record.parent_external_record_id == "folder-2"
+
+    @pytest.mark.asyncio
+    async def test_member_pass_files_a_standalone_item_under_its_drive(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        # The grantee synced first, while the run's admin listing missed sd-1, and
+        # stored the folder standalone with the drive id as its parent.
+        existing = _make_record(
+            external_id="folder-1", external_record_group_id=None, parent_external_record_id="sd-1"
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(file_id="folder-1", parents=["sd-1"])
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "member@t.com", "sd-1", is_shared_drive=True
+        )
+
+        assert result.is_updated is True
+        assert result.metadata_changed is True
+        assert result.record.external_record_group_id == "sd-1"
+        assert result.record.parent_external_record_id is None
+
+    @pytest.mark.asyncio
+    async def test_sharee_pass_on_a_my_drive_item_is_not_a_placement_change(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        # The owner's pass files it under their My Drive; the sharee's pass must not
+        # count its own standalone placement as a change, or the two passes would
+        # keep moving the item.
+        existing = _make_record(external_record_group_id="owner-root", parent_external_record_id="parent-1")
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(parents=["parent-1"], owners=[{"emailAddress": "owner@t.com"}])
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(meta, "uid", "sharee@t.com", "sharee-root")
+
+        assert result.record.external_record_group_id is None
+        assert result.metadata_changed is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored_group", [None, "root-1", "sd-other"])
+    async def test_grant_still_leaves_an_item_not_filed_under_its_drive_standalone(
+        self, connector: GoogleDriveTeamConnector, stored_group: str | None
+    ) -> None:
+        existing = _make_record(external_id="folder-1", external_record_group_id=stored_group)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(file_id="folder-1", parents=["sd-1"])
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "root-1", force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id is None
+        assert result.record.parent_external_record_id == "sd-1"
+
+    @pytest.mark.asyncio
+    async def test_grant_into_a_drive_the_filter_now_excludes_is_standalone(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        drive_filter = MagicMock()
+        drive_filter.is_empty.return_value = False
+        drive_filter.value = ["sd-1"]
+        drive_filter.get_operator.return_value = MagicMock(value=FilterOperator.NOT_IN)
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get = MagicMock(
+            side_effect=lambda k: drive_filter if k == SyncFilterKey.DRIVE_IDS else None
+        )
+        existing = _make_record(external_id="folder-1", external_record_group_id="sd-1")
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(file_id="folder-1", parents=["sd-1"])
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "root-1", force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id is None
+
+    @pytest.mark.asyncio
     async def test_without_force_flag_no_shared_with_me_group(self, connector):
         meta = _make_file_metadata(owners=[{"emailAddress": "owner@other-tenant.com"}])
         meta["driveId"] = "foreign-drive"

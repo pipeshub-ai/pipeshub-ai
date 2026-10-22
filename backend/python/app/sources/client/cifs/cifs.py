@@ -271,6 +271,7 @@ class CifsClient(IClient):
             created_time=_as_datetime(getattr(item, "create_time", None)),
             last_write_time=_as_datetime(getattr(item, "last_write_time", None)),
             file_id=file_id_int,
+            attributes=attrs,
         )
 
     @classmethod

@@ -6,7 +6,9 @@ threads (no pool), and real files through real parse worker processes.
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -321,6 +323,36 @@ class TestRealFilesInThreads:
         assert open_pdf(result.content).page_count == 1
 
 
+# Long enough for several whole probe bursts to fall inside the stall. One
+# file read once is not: a fast runner finished it before any burst did.
+PDFMINER_BUSY_SECONDS = 1.0
+
+
+@contextmanager
+def _untraced() -> Iterator[None]:
+    """Pause this thread's tracer, such as coverage's, and resume it after.
+
+    A tracer runs on every line in the pdfminer thread and in the probe alike,
+    which evens out the convoy: under CI's coverage run the probe saw 0.09 to
+    0.21 s, where the same read untraced gives it 0.5 to 1.2 s.
+    """
+    tracer = sys.gettrace()
+    sys.settrace(None)
+    try:
+        yield
+    finally:
+        sys.settrace(tracer)
+
+
+def _keep_pdfminer_busy(seconds: float) -> None:
+    """Read a damaged file with pdfminer, again and again, for at least *seconds*."""
+    content = broken_xref_pdf(256 * 1024)
+    deadline = time.monotonic() + seconds
+    with _untraced():
+        while time.monotonic() < deadline:
+            open_pdf(content)
+
+
 def _governor() -> MagicMock:
     governor = MagicMock()
     governor.ceilings = SimpleNamespace(heavy=4)
@@ -370,9 +402,9 @@ class TestRealFilesInWorkers:
 
     async def test_the_probe_sees_the_stall_a_pdfminer_thread_causes(self) -> None:
         """Without this, a probe that measured nothing would pass the test above."""
-        with IoProbe() as io_probe:
+        with _untraced(), IoProbe() as io_probe:
             await asyncio.sleep(0.1)
-            await asyncio.to_thread(open_pdf, broken_xref_pdf(1 * MIB))
+            await asyncio.to_thread(_keep_pdfminer_busy, PDFMINER_BUSY_SECONDS)
             await asyncio.sleep(0.1)
 
         assert io_probe.worst > 0.25

@@ -1,17 +1,18 @@
-"""SSE envelopes validate against the OpenAPI event schemas in the order generated SDKs parse them.
+"""SSE envelopes validate against the OpenAPI event schemas as the server writes them.
 
 No network, no services: real frames captured from a running instance, checked
-against `pipeshub-openapi.yaml` the way Speakeasy's runtime does it — the `data:`
-line is JSON-decoded first, then the envelope is validated. A schema that types
-`data` as a string passes the raw envelope and fails every SDK; this test pins
-the decoded shape so the spec and the contract tests can't drift apart again.
+against `pipeshub-openapi.yaml`. The spec types `data` as the JSON-encoded string
+on the wire, so the raw envelope is the contract; callers decode `data` themselves.
+These tests pin that so the spec and the contract tests can't drift apart again.
 """
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from helper.agui_sse import _parse_frame, decode_sse_envelope
+from helper.agui_sse import _parse_frame
 from helper.openapi_search_validator import assert_matches_component_schema
 
 pytestmark = pytest.mark.unit
@@ -52,43 +53,42 @@ _EMBEDDING_DOWNLOAD_FRAME = (
 
 
 @pytest.mark.parametrize("raw", _CONVERSATION_FRAMES, ids=lambda r: r.split("\n", 1)[0].split(": ")[1])
-def test_conversation_frames_validate_after_decoding(raw: str) -> None:
+def test_conversation_frames_validate_as_written(raw: str) -> None:
     envelope = _parse_frame(raw)
     assert envelope is not None
-    decoded = decode_sse_envelope(envelope)
-    assert isinstance(decoded["data"], dict), "data must be the decoded object, not the raw line"
-    assert_matches_component_schema(decoded, "ConversationStreamSSEEvent")
+    assert isinstance(json.loads(envelope["data"]), dict), "data must be a JSON-encoded object"
+    assert_matches_component_schema(envelope, "ConversationStreamSSEEvent")
     # The same envelope shape is shared by every AG-UI stream family.
-    assert_matches_component_schema(decoded, "ConversationMessageStreamSSEEvent")
-    assert_matches_component_schema(decoded, "AgentStreamSSEEvent")
-    assert_matches_component_schema(decoded, "AgentMessageStreamSSEEvent")
-    assert_matches_component_schema(decoded, "AgentRegenerateSSEEvent")
-    assert_matches_component_schema(decoded, "SSEEvent")
+    assert_matches_component_schema(envelope, "ConversationMessageStreamSSEEvent")
+    assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
+    assert_matches_component_schema(envelope, "AgentMessageStreamSSEEvent")
+    assert_matches_component_schema(envelope, "AgentRegenerateSSEEvent")
+    assert_matches_component_schema(envelope, "SSEEvent")
 
 
-def test_upload_frame_validates_after_decoding() -> None:
+def test_upload_frame_validates_as_written() -> None:
     envelope = _parse_frame(_UPLOAD_FRAME)
     assert envelope is not None
-    assert_matches_component_schema(decode_sse_envelope(envelope), "UploadStreamSSEEvent")
+    assert_matches_component_schema(envelope, "UploadStreamSSEEvent")
 
 
-def test_embedding_download_frame_validates_after_decoding() -> None:
+def test_embedding_download_frame_validates_as_written() -> None:
     """The eighth stream, and the only one whose payload the proxy extends."""
     envelope = _parse_frame(_EMBEDDING_DOWNLOAD_FRAME)
     assert envelope is not None
-    decoded = decode_sse_envelope(envelope)
-    assert isinstance(decoded["data"], dict)
-    assert decoded["data"]["timestamp"] == 1789072618883, "the proxy's added field must survive decoding"
-    assert_matches_component_schema(decoded, "EmbeddingDownloadProgressSSEEvent")
+    payload = json.loads(envelope["data"])
+    assert payload["timestamp"] == 1789072618883, "the proxy's added field must survive encoding"
+    assert_matches_component_schema(envelope, "EmbeddingDownloadProgressSSEEvent")
 
 
-def test_raw_envelope_is_not_the_contract() -> None:
-    """The raw envelope carries `data` as a string; that is not what SDKs validate.
+def test_decoded_envelope_is_not_the_contract() -> None:
+    """`data` is the encoded string, not the object it decodes to.
 
-    If this starts passing, `data` has been typed as a string again and every
-    generated stream client will fail on its first event.
+    If this starts passing, `data` has been typed as an object again, and
+    generated SDKs stop handing callers the string they decode.
     """
     envelope = _parse_frame(_CONVERSATION_FRAMES[0])
     assert envelope is not None
+    decoded = {"event": envelope["event"], "data": json.loads(envelope["data"])}
     with pytest.raises(AssertionError):
-        assert_matches_component_schema(envelope, "ConversationStreamSSEEvent")
+        assert_matches_component_schema(decoded, "ConversationStreamSSEEvent")

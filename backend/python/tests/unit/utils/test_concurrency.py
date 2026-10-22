@@ -4,13 +4,13 @@ import asyncio
 
 import pytest
 
+from app.services.llm_gateway.gateway import LLMGateway
 from app.utils.concurrency import (
     MAX_CONCURRENT_INDEXING_LLM_CALLS,
     MAX_CONCURRENT_PAGE_BUILDS,
     MAX_CONCURRENT_ROW_BATCHES,
     MAX_CONCURRENT_TABLES,
     TABLE_ROW_BATCH_SIZE,
-    _indexing_llm_semaphore,
     gather_with_concurrency,
     indexing_llm_slot,
 )
@@ -110,15 +110,14 @@ class TestGatherWithConcurrency:
 
 class TestIndexingLlmSemaphore:
     @pytest.mark.asyncio
-    async def test_returns_semaphore(self):
-        sem = _indexing_llm_semaphore()
-        assert isinstance(sem, asyncio.Semaphore)
+    async def test_the_slot_is_a_permit_of_the_gateways_process_wide_cap(self) -> None:
+        from app.services.llm_gateway.gateway import get_llm_gateway
 
-    @pytest.mark.asyncio
-    async def test_same_loop_same_semaphore(self):
-        sem1 = _indexing_llm_semaphore()
-        sem2 = _indexing_llm_semaphore()
-        assert sem1 is sem2
+        limiter = get_llm_gateway().limiter
+        before = limiter.in_use
+        async with indexing_llm_slot():
+            assert limiter.in_use == before + 1
+        assert limiter.in_use == before
 
 
 class TestIndexingLlmSlot:
@@ -128,6 +127,14 @@ class TestIndexingLlmSlot:
             pass
 
 
+def _fresh_gateway(monkeypatch: pytest.MonkeyPatch, limit: int) -> LLMGateway:
+    from app.services.llm_gateway import gateway as gateway_module
+
+    fresh = gateway_module.LLMGateway(limit)
+    monkeypatch.setattr(gateway_module, "get_llm_gateway", lambda: fresh)
+    return fresh
+
+
 class TestIndexingLlmStats:
     """Wait against hold time is what separates our slot budget from a provider limit."""
 
@@ -135,9 +142,7 @@ class TestIndexingLlmStats:
     async def test_waits_and_holds_are_counted_apart(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.utils import concurrency
 
-        monkeypatch.setattr(concurrency, "_slot_stats", concurrency._SlotStats())
-        sem = asyncio.Semaphore(1)
-        monkeypatch.setattr(concurrency, "_indexing_llm_semaphore", lambda: sem)
+        gateway = _fresh_gateway(monkeypatch, 1)
         seen: list[dict] = []
 
         async def call() -> None:
@@ -146,36 +151,49 @@ class TestIndexingLlmStats:
 
         async def watch() -> None:
             await asyncio.sleep(0.02)
-            seen.append(concurrency.indexing_llm_stats())
+            seen.append(dict(concurrency.indexing_llm_stats()))
 
         await asyncio.gather(call(), call(), watch())
         stats = concurrency.indexing_llm_stats()
 
         assert seen[0]["in_use"] == 1 and seen[0]["waiting"] == 1
         assert stats["in_use"] == 0 and stats["waiting"] == 0 and stats["acquired"] == 2
+        assert stats["slots"] == 1
         # Unrounded: the snapshot rounds totals to 0.1 s, which would hide a ~0.05 s wait.
-        assert concurrency._slot_stats.hold_s >= 0.09
-        assert concurrency._slot_stats.wait_s >= 0.04  # the second call waited out the first
+        timings = gateway.limiter.timings()
+        assert timings.hold_s >= 0.09
+        assert timings.wait_s >= 0.04  # the second call waited out the first
 
-    def test_hold_mean_ignores_calls_still_in_flight(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.asyncio
+    async def test_hold_mean_ignores_calls_still_in_flight(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.utils import concurrency
 
-        stats = concurrency._SlotStats()
-        stats.acquired, stats.in_use, stats.hold_s = 10, 9, 10.0
-        monkeypatch.setattr(concurrency, "_slot_stats", stats)
-
-        assert concurrency.indexing_llm_stats()["hold_s_mean"] == 10.0
-
-        stats.acquired, stats.in_use, stats.hold_s = 3, 3, 0.0
+        _fresh_gateway(monkeypatch, 2)
         assert concurrency.indexing_llm_stats()["hold_s_mean"] == 0.0
+
+        release = asyncio.Event()
+
+        async def held() -> None:
+            async with concurrency.indexing_llm_slot():
+                await release.wait()
+
+        task = asyncio.create_task(held())
+        async with concurrency.indexing_llm_slot():
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
+        stats = concurrency.indexing_llm_stats()
+        # One released call of ~0.05 s; the one still held must not halve the mean.
+        assert stats["acquired"] == 2 and stats["in_use"] == 1
+        assert stats["hold_s_mean"] >= 0.04
+        release.set()
+        await task
 
     @pytest.mark.asyncio
     async def test_a_cancelled_wait_leaves_no_phantom_waiter(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.utils import concurrency
 
-        monkeypatch.setattr(concurrency, "_slot_stats", concurrency._SlotStats())
-        sem = asyncio.Semaphore(0)
-        monkeypatch.setattr(concurrency, "_indexing_llm_semaphore", lambda: sem)
+        gateway = _fresh_gateway(monkeypatch, 1)
+        await gateway.limiter.acquire()  # the cap is full
 
         async def call() -> None:
             async with concurrency.indexing_llm_slot():
@@ -183,43 +201,59 @@ class TestIndexingLlmStats:
 
         task = asyncio.create_task(call())
         await asyncio.sleep(0.01)
+        assert concurrency.indexing_llm_stats()["waiting"] == 1
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         stats = concurrency.indexing_llm_stats()
-        assert stats["waiting"] == 0 and stats["in_use"] == 0 and stats["acquired"] == 0
+        assert stats["waiting"] == 0 and stats["in_use"] == 1 and stats["acquired"] == 0
+        gateway.limiter.release()
+
+    def test_rate_limit_retries_are_counted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.utils import concurrency
+
+        _fresh_gateway(monkeypatch, 1)
+        concurrency.note_indexing_llm_rate_limit()
+        assert concurrency.indexing_llm_stats()["rate_limit_retries"] == 1
 
 
 class TestIndexingLlmSlotsRemaining:
-    """The free count comes from the slots this loop holds, not the semaphore's
-    private counter, which a missing attribute would turn into "saturated"."""
+    """The cap is process-wide, so the free count is too: a slot held on any loop counts."""
 
     @pytest.mark.asyncio
-    async def test_counts_the_slots_this_loop_holds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_counts_the_slots_held(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.utils import concurrency
 
-        class _PublicOnlySemaphore:
-            def __init__(self) -> None:
-                self._inner = asyncio.Semaphore(concurrency.scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS))
-
-            async def acquire(self) -> bool:
-                return await self._inner.acquire()
-
-            def release(self) -> None:
-                self._inner.release()
-
-        monkeypatch.setattr(concurrency, "_slot_stats", concurrency._SlotStats())
-        sem = _PublicOnlySemaphore()
-        monkeypatch.setattr(concurrency, "_indexing_llm_semaphore", lambda: sem)
-        monkeypatch.setitem(concurrency._sem_by_loop, asyncio.get_running_loop(), sem)
-        ceiling = concurrency.scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS)
-
-        assert concurrency.indexing_llm_slots_remaining() == ceiling
+        _fresh_gateway(monkeypatch, 3)
+        assert concurrency.indexing_llm_slots_remaining() == 3
         async with indexing_llm_slot():
-            assert concurrency.indexing_llm_slots_remaining() == ceiling - 1
-        assert concurrency.indexing_llm_slots_remaining() == ceiling
+            assert concurrency.indexing_llm_slots_remaining() == 2
+        assert concurrency.indexing_llm_slots_remaining() == 3
+
+    def test_held_on_another_loop_counts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import threading
+
+        from app.utils import concurrency
+
+        _fresh_gateway(monkeypatch, 2)
+        holding, done = threading.Event(), threading.Event()
+
+        async def hold() -> None:
+            async with concurrency.indexing_llm_slot():
+                holding.set()
+                await asyncio.to_thread(done.wait)
+
+        worker = threading.Thread(target=lambda: asyncio.run(hold()))
+        worker.start()
+        assert holding.wait(5)
+        assert concurrency.indexing_llm_slots_remaining() == 1
+        done.set()
+        worker.join(5)
+        assert concurrency.indexing_llm_slots_remaining() == 2
 
     def test_outside_a_loop_reports_the_ceiling(self) -> None:
+        from app.services.llm_gateway.gateway import get_llm_gateway
         from app.utils import concurrency
 
-        assert concurrency.indexing_llm_slots_remaining() == concurrency.scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS)
+        limiter = get_llm_gateway().limiter
+        assert concurrency.indexing_llm_slots_remaining() == limiter.limit - limiter.in_use

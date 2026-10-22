@@ -25,7 +25,7 @@ import aiohttp
 
 from app.agent_loop_lib.tools.base import ParameterType, ToolParameter
 from app.agents.actions.util.blob_staging import DEFAULT_MAX_STAGE_BYTES
-from app.services.artifact_registry.models import Actor
+from app.services.artifact_registry.models import Actor, artifact_owner
 from app.services.record_content import (
     AttachmentFailure,
     RecordAccessDeniedError,
@@ -199,6 +199,8 @@ async def resolve_attachments(
         return bundle
 
     actor = Actor(org_id=org_id, user_id=user_id)
+    # Knowledge records are read as the run's user; the chat's artifacts as their owner.
+    artifact_actor = artifact_owner(state)
 
     # Build the artifact registry only when blob_store is available — it is
     # optional for tests and runtime contexts without it.
@@ -230,6 +232,7 @@ async def resolve_attachments(
                     conversation_id=conversation_id,
                     max_bytes=per_ref_max,
                     session=session,
+                    artifact_actor=artifact_actor,
                 )
             except RecordNotFoundError as exc:
                 return AttachmentFailure(ref=ref, error=str(exc), error_type="RecordNotFoundError")

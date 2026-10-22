@@ -501,6 +501,22 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"❌ Error initializing Google Drive enterprise connector: {ex}", exc_info=True)
             raise
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector.
+        The service account acts as the configured admin, so that admin is the account."""
+        admin_email = (((self.config or {}).get("credentials") or {}).get("auth") or {}).get("adminEmail")
+        if not self.admin_data_source or not admin_email:
+            return
+        email, source_user_id = None, None
+        try:
+            admin = await self.admin_data_source.users_get(userKey=admin_email)
+            email, source_user_id = admin.get("primaryEmail"), admin.get("id")
+        except Exception as e:
+            self.logger.debug("Could not read the Google Workspace admin %s: %s", admin_email, e)
+            return
+        await self.register_authenticated_source_user(email, source_user_id)
+
     async def run_sync(self) -> None:
         """
         Main entry point for the Google Drive enterprise connector.
@@ -534,6 +550,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.info(
                     f"📁 Folder filter active with {len(self._folder_seed_ids)} seed folder(s)"
                 )
+
+            await self._register_authenticated_identity()
 
             # Step 1: Sync users
             self.logger.info("Syncing users...")
@@ -2327,6 +2345,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             metadata_changed = False
             content_changed = False
             permissions_changed = False
+            parent_changed = False
 
             if existing_record:
 
@@ -2339,9 +2358,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     is_updated = True
 
                 parent_external_record_id = (metadata.get("parents") or [None])[0]
-                if existing_record and parent_external_record_id != existing_record.parent_external_record_id:
-                    is_updated = True
-                    metadata_changed = True
+                parent_changed = parent_external_record_id != existing_record.parent_external_record_id
 
             # Determine if it's a file or folder
             mime_type = metadata.get("mimeType", "")
@@ -2424,7 +2441,49 @@ class GoogleDriveTeamConnector(BaseConnector):
             # individual shares on them are layered on via shared_with_me_record_group_ids below,
             # not by detaching them from the drive.
             if is_shared_with_me and not is_shared_drive:
-                file_record.external_record_group_id = None
+                # The admin drive listing can miss a drive this run (a new drive, or a
+                # short listing) while a member's pass has already filed the item under
+                # it. Detaching it here stuck: no feed reports the unchanged item again.
+                grant_drive_id = metadata.get("driveId")
+                keeps_its_drive = (
+                    bool(grant_drive_id)
+                    and existing_record is not None
+                    and existing_record.external_record_group_id == grant_drive_id
+                    and self._pass_drive_ids_filter(grant_drive_id)
+                )
+                file_record.external_record_group_id = grant_drive_id if keeps_its_drive else None
+                if keeps_its_drive and parent_external_record_id == grant_drive_id:
+                    file_record.parent_external_record_id = None
+                    file_record.parent_record_type = None
+
+            item_shared_drive_id = metadata.get("driveId")
+            in_its_shared_drive = bool(item_shared_drive_id) and (
+                file_record.external_record_group_id == item_shared_drive_id
+            )
+            if (
+                is_shared_with_me
+                and in_its_shared_drive
+                and existing_record is not None
+                and not metadata.get("parents")
+            ):
+                # Drive leaves out `parents` when the grantee cannot see the folder; that
+                # is not a move to the drive's root, and writing it as one dropped the
+                # folder edge that no later member pass puts back.
+                file_record.parent_external_record_id = existing_record.parent_external_record_id
+                file_record.parent_record_type = existing_record.parent_record_type
+                parent_changed = False
+
+            # Filing an item under its shared drive is a placement change the permission
+            # path never writes: once the grantee's 0S: edge exists it skips the record,
+            # so an item a grantee stored standalone stayed out of its drive.
+            joins_its_drive = (
+                in_its_shared_drive
+                and existing_record is not None
+                and existing_record.external_record_group_id != item_shared_drive_id
+            )
+            if parent_changed or joins_its_drive:
+                is_updated = True
+                metadata_changed = True
 
             # Handle Permissions - fetch new permissions
             new_permissions = []

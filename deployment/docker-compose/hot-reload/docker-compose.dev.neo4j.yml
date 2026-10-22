@@ -73,7 +73,6 @@ services:
       - PARSING_SERVICE_URL=http://localhost:8092
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
-      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}

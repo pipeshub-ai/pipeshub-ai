@@ -401,6 +401,25 @@ async def _resolve_service_account_caller_identity(
     return enriched_user_info
 
 
+async def _service_account_artifact_owner(
+    user_context: dict[str, Any], graph_provider: IGraphDBProvider, org_id: str,
+) -> str | None:
+    """The caller who owns what a service-account agent makes in their chat.
+
+    The agent runs as its creator, but the conversation is the caller's, and so
+    are the files made in it. Only a signed-in user of the agent's org can own
+    them: a service JWT (the Slack bot's) has no user to grant them to, so
+    they stay the creator's, as do those of a caller who is not found.
+    """
+    if user_context.get("isServiceAccount"):
+        return None
+    caller_id = user_context.get("userId")
+    caller = await get_user_or_503(graph_provider, caller_id)
+    if not caller or str(caller.get("orgId") or "") != str(org_id or ""):
+        return None
+    return caller_id
+
+
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
     """Get user document with validation"""
     try:
@@ -3900,6 +3919,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             _apply_user_context_gate(enriched_user_info, enabled=user_context_enabled)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
             is_service_account = False
+            artifact_owner_user_id = None
 
         else:
             actions_enabled = mcp_enabled = None
@@ -3912,6 +3932,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             if not agent:
                 raise AgentNotFoundError(agent_id)
             is_service_account = agent.get("isServiceAccount", False)
+            artifact_owner_user_id = None
 
             if is_service_account:
                 enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
@@ -3919,6 +3940,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 )
                 enriched_user_info = await _resolve_service_account_caller_identity(
                     enriched_user_info, chat_query, user_context, graph_provider, logger,
+                )
+                artifact_owner_user_id = await _service_account_artifact_owner(
+                    user_context, graph_provider, org_key,
                 )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
                 logger.debug(f"loaded service account agent. enriched_user_info: {enriched_user_info}")
@@ -4437,6 +4461,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "toolsetConfigs": toolset_configs,
                     "conversationId": chat_query.conversationId,
                     "is_service_account": is_service_account,
+                    "artifact_owner_user_id": artifact_owner_user_id,
                     "isPlaceholderAgent": is_placeholder,
                     "modelName": model_name,
                     "modelKey": model_key,

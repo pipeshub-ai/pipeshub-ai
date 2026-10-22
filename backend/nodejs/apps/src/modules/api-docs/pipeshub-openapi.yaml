@@ -5273,6 +5273,49 @@ components:
         userPermission:
           type: string
 
+    StageStateSummary:
+      type: object
+      additionalProperties: false
+      description: |
+        Status of one pipeline stage (e.g. `classify`) for the record's current
+        content revision.
+      required:
+        - stage
+        - status
+        - reason
+        - attempt
+        - startedAtMs
+        - finishedAtMs
+        - updatedAtMs
+      properties:
+        stage:
+          type: string
+          description: Pipeline stage name.
+          example: classify
+        status:
+          type: string
+          description: Stage status (same values as `indexingStatus`).
+          example: COMPLETED
+        reason:
+          type: string
+          nullable: true
+          description: Failure or skip reason, when there is one.
+        attempt:
+          type: integer
+          description: Number of times this stage has run for this revision.
+        startedAtMs:
+          type: integer
+          format: int64
+          nullable: true
+        finishedAtMs:
+          type: integer
+          format: int64
+          nullable: true
+        updatedAtMs:
+          type: integer
+          format: int64
+          nullable: true
+
     GetRecordByIdResponseSchema:
       type: object
       additionalProperties: false
@@ -5447,6 +5490,21 @@ components:
             virtualRecordId:
               type: string
               nullable: true
+            contentRev:
+              type: string
+              nullable: true
+              description: |
+                Revision of the record's content, 16 lowercase hex characters:
+                the start of the SHA-256 of the content the indexer received
+                for the record. If a record still has no revision stored when
+                its vectors are written, a digest of its parsed blocks is
+                stored instead.
+                Identical content gives the same value, and a copy whose content
+                matches another record carries that record's value.
+                `stageStates` describes this revision. Set when indexing
+                starts; absent on records not indexed since pipeline stages
+                were introduced.
+              example: "78f3f276290c9f81"
             summaryDocumentId:
               type: string
               nullable: true
@@ -5548,6 +5606,14 @@ components:
               nullable: true
               additionalProperties: false
               properties: {}
+        stageStates:
+          type: array
+          description: |
+            Per-stage pipeline status for the record's current content revision.
+            Empty for records indexed before pipeline stages existed. The
+            `classify` stage's status is mirrored on `record.extractionStatus`.
+          items:
+            $ref: '#/components/schemas/StageStateSummary'
         knowledgeBase:
           type: object
           nullable: true
@@ -6752,7 +6818,9 @@ components:
       description: |
         Indexing status used to filter which records are included in a scoped
         reindex (record or record-group). Omit `statusFilters` to reindex all
-        descendants regardless of status.
+        descendants regardless of status. `SKIPPED` only matches a pipeline
+        stage's status (a stage that did not apply to the record), so it is
+        useful with a connector reindex that sets `stages`.
       enum:
         - NOT_STARTED
         - QUEUED
@@ -6762,6 +6830,7 @@ components:
         - FILE_TYPE_NOT_SUPPORTED
         - AUTO_INDEX_OFF
         - EMPTY
+        - SKIPPED
 
     ReindexRecordRequestBody:
       type: object
@@ -6818,6 +6887,19 @@ components:
           description: |
             Statuses to reindex. Omitting this reindexes everything for a KB
             connector; other connector types default server-side to `FAILED`.
+            When `stages` is set, these match the stage's own status field
+            instead of `indexingStatus`.
+        stages:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [classify]
+          description: |
+            Re-run only these pipeline stages instead of the full pipeline.
+            Records are selected by the stage's status field (`classify` ->
+            `extractionStatus`) using `statusFilters`, and are not re-parsed
+            or re-embedded. Omit to reindex the full pipeline.
 
     ResyncConnectorRequestBody:
       type: object
@@ -6874,6 +6956,11 @@ components:
                   description: Records synced from the connector
                 indexingStatus:
                   $ref: '#/components/schemas/ConnectorIndexingStatusCounts'
+                extractionStatus:
+                  type: object
+                  description: Record counts by classification (`classify` stage) status.
+                  additionalProperties:
+                    type: integer
             byRecordType:
               type: array
               description: The same counts per record type; empty before the first sync.
@@ -6891,6 +6978,11 @@ components:
                     type: integer
                   indexingStatus:
                     $ref: '#/components/schemas/ConnectorIndexingStatusCounts'
+                  extractionStatus:
+                    type: object
+                    description: Record counts by classification (`classify` stage) status.
+                    additionalProperties:
+                      type: integer
 
     ConnectorIndexingStatusCounts:
       type: object
@@ -10581,6 +10673,19 @@ components:
         block_index:
           type: integer
           nullable: true
+        qualified_name:
+          type: string
+          description: |
+            For a block of source code, the symbol it holds, written `kind:Scope.name` (for example
+            `method:Outer.Inner.run`). A span with no name is addressed by its lines instead:
+            `kind:L{line}` for one line (`statements:L1`), `kind:L{start}-{end}` for several
+            (`imports:L1-5`), or `kind:anonymous` when it has no line numbers. An empty string for a
+            block that is not code.
+            Present on a hit that is a code block, and on each passage of a list, thread, text
+            section or code group brought back whole because of a match inside it. Absent on any
+            other hit that matched directly, on the rows of a table brought back whole, and on
+            every piece of a section split around an image: its text, the image, and the text that
+            stands in for the image when it is not sent as an image.
         distanceFromMatch:
           type: integer
           minimum: 0
@@ -10724,6 +10829,13 @@ components:
         virtualRecordId:
           type: string
           nullable: true
+        contentRev:
+          type: string
+          nullable: true
+          description: |
+            Revision of the record's content (16 lowercase hex characters); see
+            `contentRev` on GET /knowledgeBase/record/{recordId}. Absent on
+            records not indexed since pipeline stages were introduced.
         previewRenderable:
           type: boolean
           nullable: true
@@ -14662,6 +14774,7 @@ components:
         - BEARER_TOKEN
         - BASIC_AUTH
         - ACCESS_KEY
+        - IAM_ROLE
         - ACCOUNT_KEY
         - CONNECTION_STRING
         - CUSTOM
@@ -15470,7 +15583,7 @@ components:
             Key-value map of feature flags to enable/disable platform features.
             Available flags:
             - ENABLE_BETA_CONNECTORS: Allow usage of beta connector integrations that may be unstable
-            - ENABLE_MCP: Allow agents to use MCP servers and show MCP server management in the UI
+            - ENABLE_MCP: Allow agents to use MCP servers and show MCP server management in the UI (default: true)
             - ENABLE_ACTIONS: Allow agents to use toolset actions and show Actions management in the UI
             - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
             - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
@@ -40722,15 +40835,13 @@ paths:
         a selected group), pass the parent paths via the
         <code>contextGroupPath</code> query parameter on that endpoint.<br><br>
         <b>Which connectors answer:</b><br>
-        Only connectors with auth type <code>API_TOKEN</code>, <code>USERNAME_PASSWORD</code>
-        or <code>OAUTH_ADMIN_CONSENT</code> (and saved settings), and <code>OAUTH</code>
-        connectors that have completed sign-in. Every other connector is refused with <code>400</code>:
-        those with auth type <code>NONE</code> (for example RSS), <code>BASIC_AUTH</code>,
-        <code>ACCESS_KEY</code>, <code>CONNECTION_STRING</code> or <code>CUSTOM</code>
-        (<code>Unsupported authentication type: ...</code>), an OAUTH connector that has not
-        signed in, and a token or password connector with no saved settings.
-        Their filter fields are in the registry schema; dynamic values come from
-        <code>GET /connectors/{connectorId}/filters/{filterKey}/options</code>.
+        An <code>OAUTH</code> connector answers once it has completed sign-in. A connector with
+        any other auth type (<code>API_TOKEN</code>, <code>BEARER_TOKEN</code>,
+        <code>OAUTH_ADMIN_CONSENT</code>, <code>BASIC_AUTH</code>, <code>ACCESS_KEY</code>,
+        <code>ACCOUNT_KEY</code>, <code>CONNECTION_STRING</code>, <code>CUSTOM</code>) answers once its settings,
+        including the auth section, are saved. A <code>NONE</code> connector (for example RSS)
+        needs saved settings but no auth section. Otherwise the request is refused with
+        <code>400</code>.
       operationId: getConnectorFilters
       x-pipeshub-sdk: true
       security:
@@ -40759,9 +40870,8 @@ paths:
                   - filterOptions
         '400':
           description: |
-            The connector's auth type has no filter options (for example <code>NONE</code>,
-            <code>BASIC_AUTH</code> or <code>ACCESS_KEY</code>), an OAUTH connector has not
-            signed in, or a token or password connector has no saved settings.
+            An OAUTH connector has not signed in, or another connector has no saved settings
+            (or, for any type except <code>NONE</code>, no saved auth section).
           content:
             application/json:
               schema:
@@ -47150,7 +47260,7 @@ paths:
 
         **Available Feature Flags:**
         - ENABLE_BETA_CONNECTORS: Enable beta connector integrations (default: false)
-        - ENABLE_MCP: Enable MCP servers (default: false)
+        - ENABLE_MCP: Enable MCP servers (default: true)
         - ENABLE_ACTIONS: Enable toolset actions (default: true)
         - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
         - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
@@ -47300,7 +47410,7 @@ paths:
                     description: Key-value map of every known feature flag to its resolved boolean value.
                     example:
                       ENABLE_BETA_CONNECTORS: false
-                      ENABLE_MCP: false
+                      ENABLE_MCP: true
                       ENABLE_ACTIONS: true
                       ENABLE_VECTOR_STORE_REBUILD: false
                       ENABLE_SKILLS: true
@@ -49163,7 +49273,7 @@ paths:
         - oauth2: []
       requestBody:
         required: true
-        description: MCP JSON-RPC 2.0 request object with method, params, and id.
+        description: MCP JSON-RPC 2.0 request object with method, params, and id. The body can be at most 5 MB.
         content:
           application/json:
             schema:
@@ -49211,6 +49321,52 @@ paths:
                         type: string
         '401':
           description: Unauthorized
+        '413':
+          description: |
+            The request body is larger than 5 MB, the most `/mcp` accepts. The
+            answer is a JSON-RPC 2.0 error whose `id` is null, because the
+            request was refused before it was read. `error.data.requestId`
+            identifies the request for support.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc:
+                    type: string
+                    enum: ["2.0"]
+                  id:
+                    type: string
+                    nullable: true
+                    enum: [null]
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: integer
+                        enum: [-32000]
+                      message:
+                        type: string
+                      data:
+                        type: object
+                        properties:
+                          requestId:
+                            type: string
+                    required:
+                      - code
+                      - message
+                required:
+                  - jsonrpc
+                  - id
+                  - error
+              example:
+                jsonrpc: "2.0"
+                id: null
+                error:
+                  code: -32000
+                  message: This request is too large for PipesHub. One MCP request can be at most 5 MB. Send less in one call, such as a shorter question or fewer IDs, and try again.
+                  data:
+                    requestId: 7f3c2a10-5b1e-4c8e-9a43-2d6f0e8b1c55
         '500':
           description: Internal server error
     get:

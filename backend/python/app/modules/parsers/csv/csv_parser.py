@@ -1,22 +1,14 @@
 import asyncio
 import io
 import json
-import os
 from datetime import datetime
 from collections.abc import Callable
 from typing import Any, Dict, List, Optional, TextIO, Tuple, TypeVar, Union
 
-from app.config.configuration_service import ConfigurationService
-from app.services.parsing.interface import ParseResult
-from app.exceptions.non_retryable import NonRetryableError
-from app.utils.llm import get_llm_for_role
 from langchain_core.language_models.chat_models import BaseChatModel
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-)
 
+from app.config.configuration_service import ConfigurationService
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -39,14 +31,19 @@ from app.modules.parsers.excel.prompt_template import (
     table_summary_prompt,
 )
 from app.modules.parsers.text_decoding import decode_text
+from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
+from app.services.parsing.interface import ParseResult
 from app.utils.aimodels import coerce_message_content_to_text
+from app.utils.concurrency import max_table_rows_for_llm
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.llm import get_llm_for_role
 from app.utils.logger import create_logger
 from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import (
     invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
 )
+from app.utils.table_enrichment import fallback_table_summary
 
 logger = create_logger("csv_parser")
 
@@ -465,13 +462,15 @@ class CSVParser:
         """Find every table in the rows. See ``table_detection.find_tables``."""
         return table_detection.find_tables(all_rows)
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-    )
-    async def _call_llm(self, llm, messages) -> Union[str, dict, list]:
-        """Wrapper for LLM calls with retry logic"""
-        return await llm.ainvoke(messages, config=get_llm_invoke_config(llm))
+    async def _call_llm(self, llm: BaseChatModel, messages: list[Any]) -> Union[str, dict, list]:
+        """Through the LLM gateway: its cap, the provider's breaker and its 429 retries."""
+        return await get_llm_gateway().invoke(
+            llm,
+            messages,
+            provider=provider_key(llm),
+            call_site="table_summary",
+            config=get_llm_invoke_config(llm),
+        )
 
 
     def _concatenate_multirow_headers(
@@ -756,8 +755,11 @@ class CSVParser:
             else:
                 # Fallback for dict/list responses
                 return str(response)
-        except Exception:
+        except NonRetryableError:
             raise
+        except Exception as e:
+            logger.warning("Table summary unavailable (%s); using a plain one", e)
+            return fallback_table_summary(list(rows[0].keys()) if rows else [], len(rows))
 
     async def get_rows_text(
         self, llm, rows: List[Dict[str, Any]], table_summary: str, batch_size: int = DEFAULT_BATCH_SIZE
@@ -871,7 +873,7 @@ class CSVParser:
         block_groups: List[BlockGroup] = []
 
         # Get threshold from environment variable (default: 1000)
-        threshold = int(os.getenv("MAX_TABLE_ROWS_FOR_LLM", "1000"))
+        threshold = max_table_rows_for_llm()
 
         # Track cumulative row count at record level
         cumulative_row_count = 0

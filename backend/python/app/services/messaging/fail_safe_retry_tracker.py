@@ -234,6 +234,13 @@ class FailSafeRetryTracker(IRetryTracker):
         finally:
             self._finish_clear(message_id)
 
+    async def clear_deliveries(self, message_id: str) -> None:
+        self._deliveries.start_clear(message_id)
+        try:
+            await self._inner.clear_deliveries(message_id)
+        finally:
+            self._deliveries.finish_clear(message_id)
+
     async def clear_batch(self, message_ids: list[str]) -> int:
         for message_id in message_ids:
             self._start_clear(message_id)

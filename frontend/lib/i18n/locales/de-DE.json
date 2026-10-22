@@ -599,7 +599,21 @@
     "chatSelectionLimit": "Der Chat kann bis zu {{max}} ausgewählte Elemente übernehmen. Wählen Sie einige ab und versuchen Sie es erneut.",
     "chatTooManyCollections": "Der Chat kann höchstens {{max}} Sammlungen auf einmal durchsuchen, und Sie haben mehr. Öffnen Sie eine Sammlung oder wählen Sie die gewünschten aus.",
     "chatCollectionsLoadFailed": "Ihre Sammlungen konnten für den Chat nicht geladen werden. Versuchen Sie es erneut.",
-    "chatNoCollections": "Sie haben noch keine Sammlungen, zu denen Sie fragen können."
+    "chatNoCollections": "Sie haben noch keine Sammlungen, zu denen Sie fragen können.",
+    "indexingStatus": {
+      "completed": "Abgeschlossen",
+      "inProgress": "In Bearbeitung",
+      "failed": "Fehlgeschlagen",
+      "fileTypeNotSupported": "Dateityp nicht unterstützt",
+      "notStarted": "Nicht gestartet",
+      "queued": "In der Warteschlange",
+      "manualIndexing": "Manuelle Indizierung",
+      "empty": "Leer",
+      "paused": "Pausiert",
+      "needsMultimodalModel": "Multimodales Modell erforderlich",
+      "skipped": "Übersprungen",
+      "pending": "Ausstehend"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -2607,6 +2621,11 @@
         "noRecordTypes": "Keine Datensatztypen verfügbar",
         "localWatcherLabel": "LOKALER WATCHER",
         "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen",
+        "classification": "Klassifizierung",
+        "classificationSkipped": "Übersprungen",
+        "retryFailedClassification": "Fehlgeschlagene Klassifizierung wiederholen",
+        "retryClassificationSuccess": "Klassifizierung erneut eingeplant",
+        "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden",
         "lastRun": {
           "title": "Letzte Synchronisierung",
           "outcome": {
@@ -4542,6 +4561,12 @@
       "noRecordMetadata": "Für dieses Element liegen keine zusätzlichen Metadaten vor."
     },
     "indexingReasonAria": "Details zur Indexierung",
+    "stageTrackLabel": "Pipeline",
+    "stageParsed": "Geparst",
+    "stageSearchable": "Durchsuchbar",
+    "stageClassified": "Klassifiziert",
+    "stageAttempt": "Versuch {{n}}",
+    "stageDetailsAria": "Phasendetails",
     "tabRecordInformation": "Datensatzinformationen",
     "tabDocumentDetails": "Dokumentdetails",
     "chat": "Chat",
@@ -4829,6 +4854,8 @@
   },
   "collections": {
     "stats": {
+      "retryClassificationStart": "Klassifizierung erneut eingeplant",
+      "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden",
       "title": "Analysen",
       "menuLabel": "Analysen",
       "fetchError": "Indexierungsstatistiken konnten nicht geladen werden",

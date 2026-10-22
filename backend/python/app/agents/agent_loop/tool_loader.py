@@ -44,6 +44,7 @@ from app.agents.agent_loop.web_tool_adapter import WebToolAdapter
 from app.agents.mcp.tool_kind import toolset_tool_kind
 from app.agents.tools.factories.base import ToolsetAuthError
 from app.agents.tools.factories.registry import ClientFactoryRegistry
+from app.services.artifact_registry.models import artifact_owner_id
 
 if TYPE_CHECKING:
     from langchain_core.tools import StructuredTool
@@ -190,6 +191,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 blob_store=state.get("blob_store"),
                 user_id=state.get("user_id"),
                 allowed_connector_ids=allowed_sql_connector_ids,
+                artifact_owner_user_id=artifact_owner_id(state),
             )
             setattr(execute_query_tool, "_original_name", "sql.execute_sql_query")
             app_name, tool_name = split_original_tool_name(execute_query_tool)

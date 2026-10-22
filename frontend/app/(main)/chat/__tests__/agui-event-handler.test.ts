@@ -1134,3 +1134,110 @@ describe('createAGUIEventHandler — sub-agent status lifecycle', () => {
     expect(lastParts[0].status).toBe('failed');
   });
 });
+
+describe('createAGUIEventHandler — a model call discarded mid-stream', () => {
+  // The server retries a model call whose stream dropped, after telling the
+  // client to take back what the failed attempt streamed.
+  function streamThenDrop(handle: (event: SSEEvent) => void): void {
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'Searching.' }));
+    handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'tc-1', toolCallName: 'jira_search' }));
+    handle(frame('TOOL_CALL_RESULT', { runId: 'root', toolCallId: 'tc-1', content: 'ok' }));
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm2' }));
+    handle(frame('REASONING_MESSAGE_START', { runId: 'root', messageId: 'r1' }));
+    handle(frame('REASONING_MESSAGE_CONTENT', { runId: 'root', messageId: 'r1', delta: 'Think' }));
+    handle(frame('REASONING_MESSAGE_END', { runId: 'root', messageId: 'r1' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The dep' }));
+    handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm2' }));
+    handle(frame('CUSTOM', { runId: 'root', name: 'message_discarded', value: { messageId: 'm2' } }));
+  }
+
+  it('drops the discarded text and reasoning but keeps earlier turns', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    streamThenDrop(handle);
+
+    const lastParts = spies.onParts.mock.calls.at(-1)?.[0];
+    expect(lastParts.map((part: { type: string }) => part.type)).toEqual(['text', 'tool_call']);
+    expect(lastParts[0]).toMatchObject({ content: 'Searching.' });
+    expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: '', citations: [] });
+  });
+
+  it('shows the retried answer once', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    streamThenDrop(handle);
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm3' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The deploy broke it.' }));
+
+    expect(spies.onChunk).toHaveBeenLastCalledWith({
+      chunk: 'The deploy broke it.',
+      accumulated: 'The deploy broke it.',
+      citations: [],
+    });
+    const lastParts = spies.onParts.mock.calls.at(-1)?.[0];
+    const texts = lastParts
+      .filter((part: { type: string }) => part.type === 'text')
+      .map((part: { content: string }) => part.content);
+    expect(texts).toEqual(['Searching.', 'The deploy broke it.']);
+  });
+
+  const patch = (normalizedAnswer: string, rawLength: number, discarded = false): SSEEvent =>
+    frame('STATE_DELTA', {
+      runId: 'root',
+      delta: [
+        { op: 'replace', path: '/citations', value: [] },
+        { op: 'replace', path: '/normalizedAnswer', value: normalizedAnswer },
+        { op: 'replace', path: '/rawLength', value: rawLength },
+        ...(discarded ? [{ op: 'replace', path: '/discarded', value: true }] : []),
+      ],
+    });
+
+  function discardWithLaggingSnapshot(handle: (event: SSEEvent) => void): void {
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The dep' }));
+    handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
+    handle(frame('CUSTOM', { runId: 'root', name: 'message_discarded', value: { messageId: 'm1' } }));
+    handle(patch('The dep', 7));
+  }
+
+  it('ignores a snapshot of the discarded attempt that lags behind the discard', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    discardWithLaggingSnapshot(handle);
+    spies.onChunk.mockClear();
+    handle(patch('The dep', 7));
+    handle(patch('', 0, true));
+
+    expect(spies.onChunk.mock.calls.map(([chunk]) => chunk.accumulated)).toEqual(['']);
+  });
+
+  it('shows an error answer that follows a discard the server did not retry', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    discardWithLaggingSnapshot(handle);
+    handle(patch('', 0, true));
+    handle(patch('The call to the AI model failed.', 32));
+
+    expect(spies.onChunk).toHaveBeenLastCalledWith({
+      chunk: '',
+      accumulated: 'The call to the AI model failed.',
+      citations: [],
+    });
+  });
+
+  it('restores the cut-off reply a discarded continuation carried', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    discardWithLaggingSnapshot(handle);
+    handle(patch('Part one, ', 10, true));
+
+    expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: 'Part one, ', citations: [] });
+  });
+});
