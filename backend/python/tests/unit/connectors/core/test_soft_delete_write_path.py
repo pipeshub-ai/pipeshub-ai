@@ -126,6 +126,10 @@ class _AutoCommitGraph:
         self._statement()
         self.record, self.parent_edge = None, False
 
+    async def delete_blocks_for_records(self, record_ids: list[str], transaction: str | None = None) -> int:
+        self._statement()
+        return 0
+
     async def delete_single_record(self, record_id: str, transaction: str | None = None) -> dict:
         # DETACH DELETE: the record and every edge on it, including the parent
         # edge, go in the same statement.

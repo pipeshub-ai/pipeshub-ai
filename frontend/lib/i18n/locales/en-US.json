@@ -660,6 +660,13 @@
     "message": "This re-indexes the document from scratch and may incur extra cost. Use this when search results are stale, or the document is not searchable even after indexing is complete.",
     "confirm": "Confirm"
   },
+  "reindexBlocked": {
+    "title": "This record can't be reindexed on its own",
+    "message": "GitHub and GitLab files form one code graph for the whole repo. Reindexing a single file would put it ahead of the rest and break cross-file links. To refresh it, reindex the whole repository from the knowledge hub — that re-indexes every file together. A connector sync only picks up files that changed.",
+    "folderTitle": "This folder can't be reindexed on its own",
+    "folderMessage": "GitHub and GitLab files form one code graph for the whole repo. Reindexing a folder would update only those files and put them ahead of the rest, breaking cross-file links. To refresh it, reindex the whole repository from the knowledge hub — that re-indexes every file together. A connector sync only picks up files that changed.",
+    "goToConnectors": "Go to connectors"
+  },
   "kb": {
     "viewToggle": "View Toggle",
     "collectionsView": "Collections View",
@@ -1831,6 +1838,7 @@
         "createDisabledScopesTooltip": "Select at least one permission scope to create the application.",
         "tabGeneral": "General",
         "tabPermissions": "Permissions & Scopes",
+        "tabGranular": "Granular permissions",
         "appNameLabel": "App name",
         "appNamePlaceholder": "My Application",
         "descriptionLabel": "Description",
@@ -2774,6 +2782,20 @@
         "retryFailedClassification": "Retry failed classification",
         "retryClassificationSuccess": "Classification retry queued",
         "retryClassificationError": "Failed to retry classification",
+        "codeGraph": {
+          "title": "Code graph",
+          "status": {
+            "never_built": "Not built yet",
+            "building": "Building",
+            "ready": "Ready",
+            "stale": "Updating",
+            "waiting_on_indexing": "Waiting for indexing",
+            "retrying": "Retrying",
+            "failed": "Failed",
+            "too_large": "Too large",
+            "unknown": "Unknown"
+          }
+        },
         "lastRun": {
           "title": "Last sync",
           "outcome": {
@@ -4796,6 +4818,30 @@
     "doneLine": "You can return to the terminal. This window can be closed.",
     "deniedTitle": "Request denied",
     "deniedLine": "The device was not granted access."
+  },
+  "knowledgeLimit": {
+    "title": "What can {{appName}} see?",
+    "help": "It can search and read only what you allow here, and never more than you can see.",
+    "everything": "Everything I can see",
+    "everythingHint": "Includes sources you add later.",
+    "only": "Only what I pick",
+    "onlyHint": "Pick whole sources, or open one to pick spaces, folders or files.",
+    "pickOne": "Pick at least one source, space, folder or file.",
+    "tooMany": "Pick at most {{max}} items, or pick a whole source instead.",
+    "selectedCount_one": "{{count}} item picked",
+    "selectedCount_other": "{{count}} items picked",
+    "canSeeEverything": "Can see: everything you can",
+    "canSeeSome_one": "Can see: {{count}} picked item",
+    "canSeeSome_other": "Can see: {{count}} picked items",
+    "thisToken": "this token",
+    "app": {
+      "thisApp": "this app",
+      "help": "Users who connect this app can search and read only what you pick here, and never more than they can see themselves.",
+      "everything": "Everything each user can see",
+      "everythingHint": "Includes sources added later."
+    },
+    "appLimited_one": "{{appName}} can see only {{count}} item its creator picked, and only if you can see it.",
+    "appLimited_other": "{{appName}} can see only {{count}} items its creator picked, and only the ones you can see."
   },
   "auth": {
     "titleSection": {

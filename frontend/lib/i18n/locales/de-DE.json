@@ -573,6 +573,13 @@
     "message": "Das Dokument wird von Grund auf neu indiziert; dies kann zusätzliche Kosten verursachen. Verwenden Sie dies, wenn Suchergebnisse veraltet sind oder das Dokument nach abgeschlossener Indizierung nicht durchsuchbar ist.",
     "confirm": "Bestätigen"
   },
+  "reindexBlocked": {
+    "title": "Dieser Eintrag kann nicht einzeln neu indexiert werden",
+    "message": "Dateien aus GitHub und GitLab werden gemeinsam als ein Code-Graph für das gesamte Repository indexiert. Würde eine einzelne Datei neu indexiert, wäre sie auf einem neueren Stand als der Rest des Repositorys, und die Verknüpfungen zwischen den Dateien würden brechen. Um ihn zu aktualisieren, indexiere das gesamte Repository über den Knowledge Hub neu – dabei werden alle Dateien gemeinsam neu indexiert. Eine Synchronisierung des Connectors übernimmt nur geänderte Dateien.",
+    "folderTitle": "Dieser Ordner kann nicht einzeln neu indexiert werden",
+    "folderMessage": "Dateien aus GitHub und GitLab werden gemeinsam als ein Code-Graph für das gesamte Repository indexiert. Würde ein Ordner neu indexiert, wären nur diese Dateien auf einem neueren Stand als der Rest des Repositorys, und die Verknüpfungen zwischen den Dateien würden brechen. Um ihn zu aktualisieren, indexiere das gesamte Repository über den Knowledge Hub neu – dabei werden alle Dateien gemeinsam neu indexiert. Eine Synchronisierung des Connectors übernimmt nur geänderte Dateien.",
+    "goToConnectors": "Zu den Connectors"
+  },
   "kb": {
     "viewToggle": "Ansicht wechseln",
     "collectionsView": "Sammlungsansicht",
@@ -1744,6 +1751,7 @@
         "createDisabledScopesTooltip": "Wählen Sie mindestens einen Berechtigungs-Scope, um die Anwendung zu erstellen.",
         "tabGeneral": "Allgemein",
         "tabPermissions": "Berechtigungen & Scopes",
+        "tabGranular": "Detaillierte Berechtigungen",
         "appNameLabel": "App-Name",
         "appNamePlaceholder": "Meine Anwendung",
         "descriptionLabel": "Beschreibung",
@@ -2626,6 +2634,20 @@
         "retryFailedClassification": "Fehlgeschlagene Klassifizierung wiederholen",
         "retryClassificationSuccess": "Klassifizierung erneut eingeplant",
         "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden",
+        "codeGraph": {
+          "title": "Code-Graph",
+          "status": {
+            "never_built": "Noch nicht erstellt",
+            "building": "Wird erstellt",
+            "ready": "Bereit",
+            "stale": "Wird aktualisiert",
+            "waiting_on_indexing": "Wartet auf Indexierung",
+            "retrying": "Neuer Versuch",
+            "failed": "Fehlgeschlagen",
+            "too_large": "Zu groß",
+            "unknown": "Unbekannt"
+          }
+        },
         "lastRun": {
           "title": "Letzte Synchronisierung",
           "outcome": {
@@ -4851,6 +4873,30 @@
     "doneLine": "Sie können zum Terminal zurückkehren. Dieses Fenster kann geschlossen werden.",
     "deniedTitle": "Anfrage abgelehnt",
     "deniedLine": "Dem Gerät wurde kein Zugriff gewährt."
+  },
+  "knowledgeLimit": {
+    "title": "Was darf {{appName}} sehen?",
+    "help": "Die App kann nur durchsuchen und lesen, was Sie hier erlauben, und nie mehr, als Sie selbst sehen.",
+    "everything": "Alles, was ich sehen kann",
+    "everythingHint": "Schließt Quellen ein, die Sie später hinzufügen.",
+    "only": "Nur, was ich auswähle",
+    "onlyHint": "Wählen Sie ganze Quellen, oder öffnen Sie eine, um Bereiche, Ordner oder Dateien zu wählen.",
+    "pickOne": "Wählen Sie mindestens eine Quelle, einen Bereich, einen Ordner oder eine Datei.",
+    "tooMany": "Wählen Sie höchstens {{max}} Elemente, oder wählen Sie stattdessen eine ganze Quelle.",
+    "selectedCount_one": "{{count}} Element ausgewählt",
+    "selectedCount_other": "{{count}} Elemente ausgewählt",
+    "canSeeEverything": "Sieht: alles, was Sie sehen",
+    "canSeeSome_one": "Sieht: {{count}} ausgewähltes Element",
+    "canSeeSome_other": "Sieht: {{count}} ausgewählte Elemente",
+    "thisToken": "dieses Token",
+    "app": {
+      "thisApp": "diese App",
+      "help": "Nutzer, die diese App verbinden, können nur durchsuchen und lesen, was Sie hier auswählen, und nie mehr, als sie selbst sehen können.",
+      "everything": "Alles, was jeder Nutzer sehen kann",
+      "everythingHint": "Gilt auch für später hinzugefügte Quellen."
+    },
+    "appLimited_one": "{{appName}} kann nur {{count}} vom Ersteller ausgewähltes Element sehen, und nur, wenn Sie es sehen können.",
+    "appLimited_other": "{{appName}} kann nur {{count}} vom Ersteller ausgewählte Elemente sehen, und nur die, die Sie sehen können."
   },
   "collections": {
     "stats": {

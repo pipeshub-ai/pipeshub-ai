@@ -34,6 +34,7 @@ from pydantic import BaseModel
 
 from app.agents.actions.knowledge_graph.catalog import ConnectorCatalog
 from app.agents.actions.knowledge_graph.identifiers import _BARE_ISSUE_KEY, _is_url
+from app.agents.actions.knowledge_graph.models import NavigationView
 from app.agents.actions.knowledge_graph.navigator import GraphNavigator
 from app.agents.actions.knowledge_graph.ops.time_range import (
     parse_time_range,
@@ -44,7 +45,17 @@ from app.agents.actions.knowledge_graph.views import (
     render_lookup_result,
     render_navigation_view,
 )
-from app.api.middlewares.auth import is_request_admin, require_scopes, require_service_token
+from app.api.connection_limit import (
+    ids_outside_connection,
+    keep_path_inside_connection,
+    refuse_outside_connection,
+)
+from app.api.middlewares.auth import (
+    connection_limit,
+    is_request_admin,
+    require_scopes,
+    require_service_token,
+)
 from app.api.middlewares.token_policy import has_service_scope
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -65,6 +76,8 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.config.redaction import REDACTED_PLACEHOLDER
+from app.connectors.core.registry.code_indexing_flags import code_indexing_filters_changed
+from app.connectors.services.reindex_events import build_reindex_event
 from app.edition_config import (
     allowed_connector_list_scopes,
     annotate_oauth_inheritance,
@@ -1247,6 +1260,7 @@ async def get_signed_url(
                 raise HTTPException(
                     status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
                 )
+            await refuse_outside_connection(request, graph_provider, caller_org, mint_user, record_id)
 
         additional_claims = {
             "connector": connector,
@@ -1559,6 +1573,7 @@ async def stream_record(
                 detail="You do not have permission to access this record"
             )
         await _refuse_hidden_demo_record(graph_provider, config_service, org_id, user_id, getattr(record, "connector_id", None))
+        await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
         if isinstance(record, ArtifactRecord):
             from app.services.artifact_registry.gallery import ArtifactDisplayPolicy
             if not ArtifactDisplayPolicy.is_user_visible_record(record):
@@ -1838,6 +1853,7 @@ async def get_record_by_id(
             await _refuse_hidden_demo_record(
                 graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
             )
+            await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
             record: object = cast("dict[str, object]", has_access).get("record")
             has_access["stageStates"] = await _stage_states_of(graph_provider, record)
             return has_access
@@ -1884,6 +1900,7 @@ async def get_record_content(
         await _refuse_hidden_demo_record(
             graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
         )
+        await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -2024,6 +2041,20 @@ async def knowledge_graph_navigate(
         resolved = await resolver.resolve_many([node_id])
         if resolved.matches:
             node_id = resolved.matches[0].id
+    if node_id:
+        await refuse_outside_connection(request, graph_provider, org_id, user_id, node_id)
+    # Inside an admitted node every row is inside too; the root spans every
+    # app, so it is bounded before paging, or a page could come back empty.
+    root_apps = None
+    if node_id is None and connection_limit(request.state.user) is not None:
+        outside_apps = await ids_outside_connection(request, graph_provider, org_id, user_id, connector_ids)
+        root_apps = [app_id for app_id in connector_ids if app_id not in outside_apps]
+        if not root_apps:
+            view = NavigationView(
+                current=None, breadcrumbs=[], rows=[], related=[], pagination=None,
+                web_url=None, indexing_status=None, connector=None,
+            )
+            return {**view.model_dump(), "text": render_navigation_view(view, page)}
 
     navigator = GraphNavigator(
         graph_provider=graph_provider,
@@ -2038,7 +2069,7 @@ async def knowledge_graph_navigate(
             name_filter=None,
             page=page,
             limit=limit,
-            connector_ids=None,
+            connector_ids=root_apps,
             record_group_ids=None,
             depth=depth,
             created_at=created_at,
@@ -2052,6 +2083,18 @@ async def knowledge_graph_navigate(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to navigate knowledge graph",
         ) from e
+
+    # shortcut: a limit to folders hides their apps at the root, so a connected
+    # app opens those folders by id (search finds them); list them at the root
+    # if apps limited to folders need to browse from the top.
+    outside = await ids_outside_connection(
+        request, graph_provider, org_id, user_id,
+        [row.id for row in [*view.rows, *view.related, *view.breadcrumbs]],
+    )
+    if outside:
+        view.rows = [row for row in view.rows if row.id not in outside]
+        view.related = [row for row in view.related if row.id not in outside]
+        view.breadcrumbs = [crumb for crumb in view.breadcrumbs if crumb.id not in outside]
 
     return {**view.model_dump(), "text": render_navigation_view(view, page)}
 
@@ -2134,10 +2177,28 @@ async def knowledge_graph_lookup(
             detail="Failed to resolve identifiers",
         ) from e
 
+    outside = await ids_outside_connection(
+        request, graph_provider, org_id, user_id, [match.id for match in result.matches],
+    )
+    if outside:
+        # Answers like a record the user cannot see: not-found and no-access stay alike.
+        hidden = [match for match in result.matches if match.id in outside]
+        result.matches = [match for match in result.matches if match.id not in outside]
+        result.not_found_identifiers = list(dict.fromkeys(
+            [*result.not_found_identifiers, *(match.identifier_used for match in hidden)]
+        ))
+        result.ambiguous = result.ambiguous and len(result.matches) > 1
+
     return {**result.model_dump(), "text": render_lookup_result(result)}
 
 
-@router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
+@router.delete(
+    "/api/v1/records/{record_id}",
+    dependencies=[
+        Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE)),
+        Depends(keep_path_inside_connection),
+    ],
+)
 @inject
 async def delete_record(
     record_id: str,
@@ -2423,45 +2484,13 @@ def _parse_stages(request_body: dict[str, Any] | None) -> list[str] | None:
     return list(dict.fromkeys(names))
 
 
-def _build_reindex_event(
-    *,
-    event_type: str,
-    org_id: str,
-    connector_id: str,
-    connector_name: str | None = None,
-    record_id: str | None = None,
-    record_group_id: str | None = None,
-    depth: int | None = None,
-    user_key: str | None = None,
-    status_filters: list[str] | None = None,
-    stages: list[str] | None = None,
-) -> dict:
-    """Build the {eventType, topic, payload} envelope for a '*.reindex' sync-event.
-
-    Shared by the record-group and connector-wide reindex routes so the payload
-    shape stays consistent (single-record reindex builds its own payload inside
-    reindex_single_record, which has a KB depth==0 'newRecord' special-case that
-    doesn't fit this generic shape).
-    """
-    payload: dict[str, Any] = {"orgId": org_id, "connectorId": connector_id}
-    if connector_name is not None:
-        payload["connector"] = connector_name
-    if record_id is not None:
-        payload["recordId"] = record_id
-    if record_group_id is not None:
-        payload["recordGroupId"] = record_group_id
-    if depth is not None:
-        payload["depth"] = depth
-    if user_key is not None:
-        payload["userKey"] = user_key
-    if status_filters:
-        payload["statusFilters"] = status_filters
-    if stages:
-        payload["stages"] = stages
-    return {"eventType": event_type, "topic": "sync-events", "payload": payload}
-
-
-@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE))])
+@router.post(
+    "/api/v1/records/{record_id}/reindex",
+    dependencies=[
+        Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)),
+        Depends(keep_path_inside_connection),
+    ],
+)
 @inject
 async def reindex_single_record(
     record_id: str,
@@ -2585,7 +2614,13 @@ async def get_connector_stats_endpoint(
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("load connector activity")) from e
 
-@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE))])
+@router.post(
+    "/api/v1/record-groups/{record_group_id}/reindex",
+    dependencies=[
+        Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)),
+        Depends(keep_path_inside_connection),
+    ],
+)
 @inject
 async def reindex_record_group(
     record_group_id: str,
@@ -2639,7 +2674,7 @@ async def reindex_record_group(
             connector_normalized = connector_name.replace(" ", "").lower()
             event_type = f"{connector_normalized}.reindex"
 
-            event_data = _build_reindex_event(
+            event_data = build_reindex_event(
                 event_type=event_type,
                 org_id=org_id,
                 connector_id=connector_id,
@@ -2936,7 +2971,7 @@ async def reindex_connector(
             f"status_filters={status_filters}"
         )
 
-        event_data = _build_reindex_event(
+        event_data = build_reindex_event(
             event_type=event_type,
             org_id=org_id,
             connector_id=connector_id,
@@ -5492,6 +5527,7 @@ async def update_connector_instance_filters_sync_config(
 
         # Snapshot old sync filters before merge
         old_sync_filters = existing_config.get("filters", {}).get("sync", {})
+        old_indexing_filters = existing_config.get("filters", {}).get("indexing", {})
 
         # Update sync section if provided
         if "sync" in body and isinstance(body["sync"], dict):
@@ -5521,7 +5557,12 @@ async def update_connector_instance_filters_sync_config(
         new_sync_filters = new_config.get("filters", {}).get("sync", {})
         first_time_sync_filters = not old_sync_filters and bool(new_sync_filters)
         sync_filters_changed = old_sync_filters != new_sync_filters
-        needs_full_resync = sync_filters_changed or first_time_sync_filters
+        # Turning "Index Test Files" on applies to files already synced only if
+        # they are synced again: a record's indexing status is set at sync time (P-6).
+        code_filters_changed = code_indexing_filters_changed(
+            old_indexing_filters, new_config.get("filters", {}).get("indexing", {}),
+        )
+        needs_full_resync = sync_filters_changed or first_time_sync_filters or code_filters_changed
         secret_auth_fields = await _secret_auth_field_names(connector_registry, instance.get("type", ""))
         # Save configuration
         await config_service.set_config(config_path, new_config)

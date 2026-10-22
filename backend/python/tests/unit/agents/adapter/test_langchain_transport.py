@@ -1053,6 +1053,24 @@ class TestSupportsMultipartToolResult:
 
         assert _supports_multipart_tool_result(AzureChatOpenAI()) is True
 
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        (
+            ("us.openai.gpt-6-luna", False),
+            ("global.openai.gpt-5.6-luna", False),
+            ("openai.gpt-oss-120b-1:0", True),
+            ("us.anthropic.claude-sonnet-5", True),
+        ),
+    )
+    def test_bedrock_converse_openai_gpt_rejects_tool_images(self, model_id: str, expected: bool) -> None:
+        """GPT-5.x / GPT-6 on Converse reject an image inside a toolResult."""
+        class ChatBedrockConverse(_FakeModel):
+            pass
+
+        model = ChatBedrockConverse()
+        model.model_id = model_id
+        assert _supports_multipart_tool_result(model) is expected
+
     async def test_complete_keeps_multipart_content_for_non_ollama(self) -> None:
         class ChatCapture(_FakeModel):
             def __init__(self, *a, **kw) -> None:

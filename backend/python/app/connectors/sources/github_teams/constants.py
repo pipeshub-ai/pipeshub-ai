@@ -157,6 +157,13 @@ HTTP_UNAUTHORIZED = 401
 # permission denial by the time it gets here, because the data source reports
 # GitHub's rate-limited 403s as 429, and ds_call waits those out separately.
 _RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+# httpx transport failures: the connection broke before GitHub sent a status. Not
+# retried, one dropped connection made a sync a silent no-op (B3: a force-push sat
+# unsynced until the next sync).
+_RETRYABLE_TRANSPORT_ERRORS: frozenset[str] = frozenset({
+    "RemoteProtocolError", "ConnectError", "ReadError", "WriteError", "CloseError",
+    "ConnectTimeout", "PoolTimeout",
+})
 _GITHUB_MAX_RETRIES = 3
 _GITHUB_RETRY_BASE_DELAY_SECONDS = 1.0
 _GITHUB_RETRY_MAX_DELAY_SECONDS = 30.0

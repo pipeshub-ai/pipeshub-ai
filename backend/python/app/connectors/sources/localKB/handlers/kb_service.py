@@ -39,6 +39,7 @@ from app.connectors.services.vector_cleanup_events import (
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
 from app.models.entities import FileRecord, RecordType
 from app.modules.indexing.record_republish import reembeds_from_storage
+from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
@@ -76,6 +77,9 @@ MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 # Restore asks for the role its delete needed: an owner or a writer.
+#: ``(kb_id, live ids, delete-batch members)`` to the ids a connected app may not reach.
+ConnectionCheck = Callable[[str, list[str], list[dict]], Awaitable[set[str]]]
+
 RESTORE_FILE_ROLES = ("OWNER", "WRITER")
 RESTORE_BATCH_ROLES = ("OWNER", "WRITER")
 MAX_RESTORE_RECORD_IDS = 100
@@ -1592,7 +1596,13 @@ class KnowledgeBaseService:
                 "code": 500
             }
 
-    async def restore_record(self, record_id: str, user_id: str, org_id: str) -> dict:
+    async def restore_record(
+        self,
+        record_id: str,
+        user_id: str,
+        org_id: str,
+        outside: ConnectionCheck | None = None,
+    ) -> dict:
         """Bring a deleted KB file or folder back from the trash, with everything
         deleted along with it.
 
@@ -1603,7 +1613,9 @@ class KnowledgeBaseService:
         when another item has taken the item's source id since. An item whose
         name is now used by another one beside it comes back as
         "name (restored)". Restored files are indexed again: their vectors went
-        when they were deleted.
+        when they were deleted. ``outside`` names the ids a connected app may
+        not reach; a batch holding any of them is refused whole, and an item
+        that is not in the trash is refused the same way.
         """
         try:
             if not await is_soft_delete_enabled(self.config_service):
@@ -1630,6 +1642,8 @@ class KnowledgeBaseService:
             if err:
                 return err
             if is_live_record(record):
+                if outside is not None and await outside(kb_id, [record_id], []):
+                    return {"success": False, "code": 403, "reason": CONNECTION_OUTSIDE_MESSAGE}
                 if self._owes_restore_reindex(record):
                     return await self._requeue_restored_file(record_id, record, kb_id, user_role)
                 return {
@@ -1646,6 +1660,8 @@ class KnowledgeBaseService:
             member_ids = {item["record"]["_key"] for item in members}
             if record_id not in member_ids:
                 return {"success": False, "code": 409, "reason": RESTORE_CHANGED_REASON}
+            if outside is not None and await outside(kb_id, [], members):
+                return {"success": False, "code": 403, "reason": CONNECTION_OUTSIDE_MESSAGE}
 
             single_file = len(members) == 1 and members[0].get("isFile") is True
             required_roles = RESTORE_FILE_ROLES if single_file else RESTORE_BATCH_ROLES
@@ -1924,7 +1940,13 @@ class KnowledgeBaseService:
             )
         return response
 
-    async def restore_records(self, record_ids: list[str], user_id: str, org_id: str) -> dict:
+    async def restore_records(
+        self,
+        record_ids: list[str],
+        user_id: str,
+        org_id: str,
+        outside: ConnectionCheck | None = None,
+    ) -> dict:
         """Restore several deleted items, each with the batch it was deleted in.
 
         Ids from one batch restore it once. Each id gets its own outcome, so
@@ -1947,7 +1969,7 @@ class KnowledgeBaseService:
                     "message": "Restored together with an item listed before it.",
                 })
                 continue
-            outcome = await self.restore_record(record_id, user_id, org_id)
+            outcome = await self.restore_record(record_id, user_id, org_id, outside)
             if outcome.get("success"):
                 restored_ids.update(r["recordId"] for r in outcome.get("restoredRecords", []))
             results.append({"recordId": record_id, **outcome})

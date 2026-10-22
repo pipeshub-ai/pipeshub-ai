@@ -104,6 +104,9 @@ class OAuthScopes(str, Enum):
     CONNECTOR_SYNC = "connector:sync"
     CONNECTOR_DELETE = "connector:delete"
 
+    # Code graph
+    CODE_READ = "code:read"
+
     # Teams
     TEAM_READ = "team:read"
     TEAM_WRITE = "team:write"

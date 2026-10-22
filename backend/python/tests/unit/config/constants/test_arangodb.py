@@ -393,6 +393,9 @@ class TestEventTypes:
     def test_delete_vector_collection_event(self):
         assert EventTypes.DELETE_VECTOR_COLLECTION.value == "deleteVectorCollection"
 
+    def test_build_code_edges_event(self) -> None:
+        assert EventTypes.BUILD_CODE_EDGES.value == "buildCodeEdges"
+
 
 # ---------------------------------------------------------------------------
 # AccountType, ConnectorScopes, AppStatus, ProgressStatus, QdrantCollectionNames

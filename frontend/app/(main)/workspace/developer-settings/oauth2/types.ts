@@ -1,3 +1,5 @@
+import type { KnowledgeLimit } from '@/app/components/knowledge-limit/knowledge-limit';
+
 /**
  * OAuth 2.0 clients (developer settings).
  * List item shape from GET /api/v1/oauth-clients.
@@ -25,6 +27,8 @@ export interface OAuthClient {
   homepageUrl?: string | null;
   privacyPolicyUrl?: string | null;
   termsOfServiceUrl?: string | null;
+  /** What every token of the app may reach; absent for everything each user can see. */
+  knowledgeLimit?: KnowledgeLimit;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -65,6 +69,7 @@ export interface CreateOAuthClientPayload {
   privacyPolicyUrl?: string;
   termsOfServiceUrl?: string;
   isConfidential: boolean;
+  knowledgeLimit?: KnowledgeLimit;
 }
 
 /** POST /api/v1/oauth-clients ΓÇö response includes clientSecret only at creation time */
@@ -86,6 +91,8 @@ export interface UpdateOAuthClientPayload {
   privacyPolicyUrl?: string;
   termsOfServiceUrl?: string;
   isConfidential?: boolean;
+  /** null lifts the limit. */
+  knowledgeLimit: KnowledgeLimit | null;
 }
 
 /** POST /api/v1/oauth-clients/:id/regenerate-secret */

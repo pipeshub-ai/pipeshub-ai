@@ -129,6 +129,14 @@ class TestParseGitlabUploads:
 
 
 class TestEmbedImagesAsBase64:
+    async def test_secrets_in_the_body_are_redacted(self) -> None:
+        _, helper = _make_attachment_helper()
+
+        result = await helper.embed_images_as_base64(
+            "key AKIAIOSFODNN7EXAMPLA", "https://gitlab.com/api/v4/projects/1"
+        )
+        assert result == "key «REDACTED:aws-access-key»"
+
     async def test_image_embedded_when_under_size_limit(self) -> None:
         c, helper = _make_attachment_helper()
         text = f"![img](/uploads/{_HASH32}/img.png)"

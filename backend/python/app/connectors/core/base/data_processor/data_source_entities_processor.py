@@ -2970,6 +2970,15 @@ class DataSourceEntitiesProcessor:
             await self._mark_queued_after_publish([record.id])
 
     @staticmethod
+    def _code_path_changed(new_record: Record, old_record: Record) -> bool:
+        """A code file's path is in what was embedded -- its block headers and
+        summary name it -- so a rename re-indexes it even when the bytes are the same (P-8)."""
+        return (
+            getattr(new_record.record_type, "value", new_record.record_type) == RecordType.CODE_FILE.value
+            and getattr(new_record, "file_path", None) != getattr(old_record, "file_path", None)
+        )
+
+    @staticmethod
     def _file_type_changed(new_record: Record, old_record: Record) -> bool:
         """A rename to another file type (.txt to .md) needs a new parse of the same bytes."""
         if (
@@ -3205,8 +3214,10 @@ class DataSourceEntitiesProcessor:
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
                     )
-                    needs_reindex = content_changed or self._file_type_changed(
-                        new_record, old_record
+                    needs_reindex = (
+                        content_changed
+                        or self._file_type_changed(new_record, old_record)
+                        or self._code_path_changed(new_record, old_record)
                     )
 
                     is_kb_item = new_record.origin == OriginTypes.UPLOAD

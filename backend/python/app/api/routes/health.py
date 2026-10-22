@@ -40,7 +40,7 @@ from app.utils.aimodels import (
     require_public_endpoint,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_errors import provider_error_code
+from app.utils.user_errors import bedrock_access_denied_cause, provider_error_code
 from app.web.deadline import Deadline
 from app.web.errors import (
     AuthFailed,
@@ -258,10 +258,67 @@ def _model_setup_failed_message(kind: str, provider: str | None) -> str:
 _REJECTED_SETTINGS_CODES = frozenset({"auth_error", "model_not_found", "invalid_request", "request_too_large"})
 
 
-def _rejected_settings_message(code: str, kind: str, model_config: dict, model: str) -> str:
+def _rejected_settings_message(
+    code: str, kind: str, model_config: dict, model: str, exc: BaseException | None = None,
+) -> str:
     provider = _provider_display_name(model_config.get("provider"))
     configuration = model_config.get("configuration") or {}
     name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
+    if _normalize_provider_key(model_config.get("provider")) == "bedrock":
+        from app.utils.aimodels import (
+            bedrock_inference_profile_hint,
+            bedrock_is_openai_gpt,
+        )
+
+        profiles = bedrock_inference_profile_hint(model)
+        if profiles and code in ("invalid_request", "model_not_found"):
+            return (
+                f"Bedrock only serves \"{model}\" through a cross-Region inference profile. "
+                f"Change the model name to {profiles} in Workspace > AI Models, then try again."
+            )
+        if code == "auth_error":
+            cause = bedrock_access_denied_cause(exc)
+            if cause == "credentials":
+                return (
+                    f"AWS rejected the credentials for {name}: the access key, secret key or "
+                    "session token is wrong or has expired. Check them in Workspace > AI Models, "
+                    "or the server's IAM role when no key is set, then try again."
+                )
+            if cause == "account":
+                return (
+                    f"AWS hasn't enabled {name} for this AWS account. IAM permissions can't fix "
+                    "this: ask AWS Support to enable the model for the account and Region, "
+                    "or choose another model."
+                )
+            if cause == "marketplace":
+                return (
+                    f"AWS couldn't complete the AWS Marketplace subscription for {name}, "
+                    "usually because the account has no valid payment method. Fix billing in "
+                    "the AWS console, wait a few minutes, then try again. IAM permissions "
+                    "can't fix this."
+                )
+            if cause == "other":
+                return (
+                    f"Bedrock denied access to {name}. Check the model's access, billing and "
+                    "account status in the Amazon Bedrock console, then try again."
+                )
+            if cause == "scp":
+                return (
+                    f"An AWS Organizations service control policy blocks {name}. Ask your AWS "
+                    "Organizations administrator to allow Bedrock for this account, then try again."
+                )
+            extra = (
+                " OpenAI GPT models also need that permission on the account's default project "
+                "(arn:aws:bedrock:<region>:<account-id>:project/default)."
+                if bedrock_is_openai_gpt(model) else ""
+            )
+            return (
+                f"Bedrock denied access to {name}. Make sure the access key, or the server's IAM "
+                f"role when no key is set, allows bedrock:InvokeModel and "
+                f"bedrock:InvokeModelWithResponseStream on this inference profile and on the "
+                f"foundation model in every Region the profile routes to "
+                f"(arn:aws:bedrock:*::foundation-model/...).{extra}"
+            )
     if code == "auth_error":
         return (
             f"The API key for {name} was rejected by {provider}. "
@@ -296,7 +353,7 @@ async def _model_setup_failed_response(
     code = provider_error_code(e)
     if code in _REJECTED_SETTINGS_CODES:
         return _config_error(
-            _rejected_settings_message(code, kind, model_config, model),
+            _rejected_settings_message(code, kind, model_config, model, e),
             model_config, model, error_code=code,
         )
     if _looks_like_connectivity_error(e):

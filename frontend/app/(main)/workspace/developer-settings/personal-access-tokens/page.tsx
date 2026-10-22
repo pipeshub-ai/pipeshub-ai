@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { KnowledgeLimitSummary } from '@/app/components/knowledge-limit';
 import { EntityEmptyState, ConfirmationDialog } from '../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { PatApi } from './api';
@@ -233,9 +234,12 @@ function PersonalAccessTokensPageContent() {
                     borderBottom: '1px solid var(--olive-3)',
                   }}
                 >
-                  <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', flex: 2 }}>
-                    {token.name}
-                  </Text>
+                  <Flex direction="column" style={{ flex: 2, minWidth: 0 }}>
+                    <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                      {token.name}
+                    </Text>
+                    <KnowledgeLimitSummary limit={token.knowledgeLimit} />
+                  </Flex>
                   <Text size="2" style={{ color: 'var(--slate-11)', flex: 2 }}>
                     {token.scopes.length === 1
                       ? token.scopes[0]

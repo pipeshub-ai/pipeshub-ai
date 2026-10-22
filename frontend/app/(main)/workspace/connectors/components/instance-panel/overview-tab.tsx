@@ -25,6 +25,7 @@ import type {
   LocalSyncStatus,
 } from '../../types';
 import { IndexingStatsPanel } from '@/app/components/indexing-stats/indexing-stats-panel';
+import { CodeGraphStatus } from './code-graph-status';
 import { LastRunSummary } from './last-run-summary';
 
 // ========================================
@@ -294,6 +295,9 @@ export function OverviewTab({
         </Flex>
       )}
 
+      {stats?.byRecordType?.some((t) => t.recordType === 'CODE_FILE' && t.total > 0) && (
+        <CodeGraphStatus connectorId={instance._key} />
+      )}
       <LastRunSummary instance={instance} />
 
       {/* Shared stats panel */}

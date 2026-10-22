@@ -518,6 +518,21 @@ class TestBatchCreateEdges:
             )
 
 
+class TestDeleteEdgesBySourceKeys:
+    @pytest.mark.asyncio
+    async def test_exclude_keeps_matching_edges(self, connected_provider: ArangoHTTPProvider) -> None:
+        connected_provider.http_client.execute_aql.return_value = [1, 1]
+
+        removed = await connected_provider.delete_edges_by_source_keys(
+            ["blocks/b1"], "recordLinks", filters={"source": "code_graph"}, exclude={"buildId": "new"},
+        )
+
+        call = connected_provider.http_client.execute_aql.await_args
+        assert "edge.buildId != @exclude_buildId" in call.args[0]
+        assert call.kwargs["bind_vars"]["exclude_buildId"] == "new"
+        assert removed == 2
+
+
 class TestCreateEdgesIfAbsent:
     """Create-only: an edge that is already there is left as it is."""
 
@@ -4626,6 +4641,29 @@ class TestReindexSingleRecord:
             assert result["code"] == 400
 
     @pytest.mark.asyncio
+    async def test_code_repo_record_requires_connector_sync(
+        self, connected_provider
+    ) -> None:
+        with patch.object(
+            connected_provider,
+            "get_document",
+            new_callable=AsyncMock,
+            return_value={
+                "id": "r1",
+                "origin": "CONNECTOR",
+                "connectorName": "GITHUB",
+                "connectorId": "c1",
+            },
+        ):
+            result = await connected_provider.reindex_single_record(
+                "r1", "u1", "org1"
+            )
+
+        assert result["success"] is False
+        assert result["code"] == 400
+        assert "connector sync" in result["reason"]
+
+    @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider):
         with patch.object(
             connected_provider, "get_document",
@@ -4850,7 +4888,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 67
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 77
 
     @pytest.mark.asyncio
     async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
@@ -4864,6 +4902,42 @@ class TestEnsureIndexes:
         assert len(walks) == 1
         assert walks[0].args[:2] == ("records", ["orgId", "deletedAtTimestamp", "_key"])
         assert walks[0].kwargs.get("sparse", False) is False
+
+    @pytest.mark.asyncio
+    async def test_block_indexes_cover_every_query_shape(self, connected_provider) -> None:
+        """Each of these backs a query that is otherwise a full collection scan.
+
+        The bare count above fails on any index change without saying which one;
+        this names them, so removing one is distinguishable from adding one.
+        """
+        from app.config.constants.arangodb import CollectionNames
+
+        connected_provider.http_client.ensure_persistent_index = AsyncMock()
+        await connected_provider._ensure_indexes()
+        blocks = {
+            tuple(call.args[1])
+            for call in connected_provider.http_client.ensure_persistent_index.await_args_list
+            if call.args[0] == CollectionNames.BLOCKS.value
+        }
+        assert blocks == {
+            ("orgId", "recordGroupId", "name"),           # a symbol name within a repo
+            ("orgId", "recordGroupId", "_key"),           # the per-repo block scan (SC-3)
+            ("orgId", "recordGroupId", "qualifiedName"),  # resolution target lookup
+            ("recordId",),                                # per-file reconciliation
+            ("orgId", "recordId", "qualifiedName"),       # the agent tools' addressing
+            ("orgId", "name"),                            # free-text select, repo-agnostic
+            ("connectorId",),                             # connector-scoped delete
+            ("orgId", "connectorId", "nameFolded", "_key"),  # exact bare-name lookup (SC-6)
+        }
+
+        code_files = {
+            tuple(call.args[1])
+            for call in connected_provider.http_client.ensure_persistent_index.await_args_list
+            if call.args[0] == CollectionNames.CODE_FILES.value
+        }
+        # A file's path lives here, not on its blocks, so this backs every
+        # path-prefix query the code tools make.
+        assert code_files == {("orgId", "filePath")}
 
 
 # ---------------------------------------------------------------------------
@@ -6959,7 +7033,7 @@ class TestEnsureIndexesExtended:
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
         calls = connected_provider.http_client.ensure_persistent_index.await_args_list
-        assert len(calls) == 67
+        assert len(calls) == 77
         assert sum(1 for c in calls if c.args[0] == "namedEntities") == 3
         assert sum(1 for c in calls if c.args[0] == "valueMentions") == 6
         assert sum(1 for c in calls if c.args[0] == "stageStates") == 3
@@ -13465,8 +13539,14 @@ class TestDeleteMainRecord:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        connected_provider.delete_blocks_for_records = AsyncMock(return_value=0)
         await connected_provider._delete_main_record("r1", transaction="txn1")
         connected_provider.http_client.execute_aql.assert_called_once()
+        # Every connector-specific delete executor ends here, so this is where a
+        # code file's blocks go with it.
+        connected_provider.delete_blocks_for_records.assert_awaited_once_with(
+            ["r1"], transaction="txn1"
+        )
 
 
 # ---------------------------------------------------------------------------

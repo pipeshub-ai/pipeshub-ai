@@ -109,8 +109,13 @@ async def make_api_call(route: str, token: str) -> dict:
                 content_type = response.headers.get("Content-Type", "").lower()
 
                 if response.status == HttpStatusCode.SUCCESS.value and "application/json" in content_type:
-                    data = await response.json()
-                    return {"is_json": True, "data": data}
+                    try:
+                        data = await response.json()
+                        return {"is_json": True, "data": data}
+                    except ValueError:
+                        # A file served as JSON is not always JSON: Kafka's protocol schemas and
+                        # tsconfig.json carry // comments. Hand over its bytes as for any file.
+                        return {"is_json": False, "data": await response.read()}
                 else:
                     data = await response.read()
                     return {"is_json": False, "data": data}

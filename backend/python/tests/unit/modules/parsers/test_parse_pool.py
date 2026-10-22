@@ -255,7 +255,8 @@ class TestParsersUseThePool:
         assert _shape(container) == _shape(MarkdownToBlocksConverter().convert(markdown))
 
     async def test_large_source_is_parsed_in_a_worker(self, governor: MagicMock) -> None:
-        source = b"def f():\n    return 1\n\n\n" * 14_000
+        # Large by size, under the parser's block cap.
+        source = (b"def f():\n" + b"    x = 1\n" * 30 + b"    return x\n\n\n") * 1_000
         assert len(source) >= LARGE
         parser = CodeFileParser()
 
@@ -512,7 +513,8 @@ async def test_the_event_loop_keeps_ticking_while_a_worker_parses_a_large_file(
 ) -> None:
     """Ticks are counted, not timed, so a slow runner cannot make this flaky:
     a loop held by the parse gives zero ticks, a free one gives dozens."""
-    source = b"class A:\n    def run(self, n: int) -> int:\n        return n + 1\n\n\n" * 6_000
+    body = b"        n = n + 1\n" * 40
+    source = (b"class A:\n    def run(self, n: int) -> int:\n" + body + b"        return n\n\n\n") * 900
     assert len(source) >= LARGE
     parser = CodeFileParser()
     ticks = 0
@@ -531,5 +533,5 @@ async def test_the_event_loop_keeps_ticking_while_a_worker_parses_a_large_file(
         running = False
         await beat
 
-    assert len(container.block_groups) == 6_000
+    assert len(container.block_groups) == 900
     assert ticks >= 3

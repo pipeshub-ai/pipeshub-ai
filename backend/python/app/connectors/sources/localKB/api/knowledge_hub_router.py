@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Set, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
+from app.api.connection_limit import ids_outside_connection, refuse_outside_connection
 from app.api.middlewares.auth import is_request_admin, require_scopes
 from app.config.constants.arangodb import ProgressStatus
 from app.config.constants.service import OAuthScopes
@@ -366,6 +367,9 @@ async def _handle_get_nodes(
         # Validate parent_id format if provided
         if parent_id:
             _validate_uuid_format(parent_id, "parent_id")
+            await refuse_outside_connection(
+                request, request.app.state.graph_provider, org_id, user_id, parent_id,
+            )
 
         # Validate and sanitize search query
         if q:
@@ -477,6 +481,16 @@ async def _handle_get_nodes(
                 status_code=status_code,
                 detail=error_detail
             )
+
+        # shortcut: hiding items after paging can leave a page short and the
+        # counts high; filter in the listing query if that matters to a client.
+        outside = await ids_outside_connection(
+            request, request.app.state.graph_provider, org_id, user_id, [item.id for item in result.items],
+        )
+        if outside:
+            result.items = [item for item in result.items if item.id not in outside]
+            if result.typed_records:
+                result.typed_records = {k: v for k, v in result.typed_records.items() if k not in outside}
 
         return result
 

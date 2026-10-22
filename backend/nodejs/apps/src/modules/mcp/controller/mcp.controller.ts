@@ -14,6 +14,13 @@ import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import { domainFromEmail } from '../../../libs/services/telemetry/identity';
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
 import { PAT_APP_CLIENT_ID_PREFIX } from '../../oauth_provider/constants/constants';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import {
+  CODE_GRAPH_TOOL_NAMES,
+  callerHasCodeRepos,
+  registerCodeGraphTools,
+  ToolRegistrar,
+} from '../code-graph.tools';
 
 const logger = Logger.getInstance({
   service: 'MCPController',
@@ -85,6 +92,27 @@ function mcpToolCallProps(
   };
 }
 
+/** Whether this request can reach a code tool: a listing or a call to one.
+ *  Anything else skips the repo check the code tools would cost. */
+function reachesCodeTools(body: unknown): boolean {
+  if (Array.isArray(body)) return body.some(reachesCodeTools);
+  const message = body as
+    | { method?: unknown; params?: { name?: unknown } }
+    | undefined;
+  if (message?.method === 'tools/list') return true;
+  return (
+    message?.method === 'tools/call' &&
+    (CODE_GRAPH_TOOL_NAMES as readonly unknown[]).includes(message.params?.name)
+  );
+}
+
+/** Session users pass, as in requireScopes; an OAuth token or PAT needs code:read. */
+function mayReadCode(user: Record<string, unknown> | undefined): boolean {
+  if (!user?.isOAuth) return true;
+  const scopes: unknown = user.oauthScopes;
+  return Array.isArray(scopes) && scopes.includes(OAuthScopeNames.CODE_READ);
+}
+
 /** The Grafana counter for the same step: org and domain only. */
 function recordActivityFromProps(
   activityName: string,
@@ -137,6 +165,23 @@ export const handleMCPRequest =
           }),
       });
 
+      const codeDeps = {
+        aiBackend: appConfig.aiBackend,
+        authorization: req.headers.authorization ?? '',
+      };
+      if (
+        reachesCodeTools(req.body) &&
+        mayReadCode(req.user) &&
+        (await callerHasCodeRepos(
+          codeDeps,
+          `${req.user?.orgId}:${req.user?.userId}`,
+        ))
+      ) {
+        // The package's McpServer is typed against its own zod 4; comparing that
+        // generic signature to ToolRegistrar's exceeds tsc's instantiation depth.
+        registerCodeGraphTools(mcpServer as unknown as ToolRegistrar, codeDeps);
+      }
+
       await mcpServer.connect(transport);
       const connectedProps = mcpConnectedProps(req);
       const toolCallProps = mcpToolCallProps(req);
@@ -145,7 +190,11 @@ export const handleMCPRequest =
       // "initialized" notification never reaches this one. Count an accepted
       // initialize: a refused one can still answer HTTP 200 with a JSON-RPC
       // error, and the server keeps the client's info only once it accepts.
-      if (connectedProps && res.statusCode < 400 && mcpServer.server.getClientVersion()) {
+      if (
+        connectedProps &&
+        res.statusCode < 400 &&
+        mcpServer.server.getClientVersion()
+      ) {
         recordEvent('mcp_connected', connectedProps);
         recordActivityFromProps('mcp_connected', connectedProps);
       }

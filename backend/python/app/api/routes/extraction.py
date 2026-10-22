@@ -89,6 +89,10 @@ async def classify(
 ) -> JSONResponse:
     """Classify a document (departments, categories, topics, summary).
 
+    ``record_type`` (``CODE_FILE``) selects the code prompt, which returns a
+    different field set -- hence the shared mapper rather than an inline
+    SemanticMetadata construction here.
+
     ``departments`` should be pre-fetched by the caller (e.g. from the graph
     DB) to avoid introducing a graph connection dependency here.
     """
@@ -102,6 +106,7 @@ async def classify(
             departments=body.departments or None,
             record_name=body.record_name,
             record_type=body.record_type,
+            block_groups=body.block_container.block_groups,
         )
     except LLMNotConfiguredError as exc:
         # 4xx: a configuration state, not an outage — the client must neither retry it

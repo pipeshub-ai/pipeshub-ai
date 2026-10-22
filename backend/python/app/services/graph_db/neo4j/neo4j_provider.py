@@ -8,6 +8,7 @@ Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, pro
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -59,6 +60,7 @@ from app.config.constants.neo4j import (
     build_node_id,
     collection_to_label,
     edge_collection_to_relationship,
+    label_to_collection,
     parse_node_id,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
@@ -94,12 +96,24 @@ from app.models.entities import (
     substitute_user_email,
 )
 from app.models.entities import EntityType as KnowledgeGraphEntityType
-from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES, read_role
+from app.models.permission import (
+    ORG_SHARE_PERMISSION_TYPES,
+    RETIRED_ROLES,
+    read_role,
+)
+from app.modules.code_graph.build_state import (
+    SYNC_POINT_SUFFIX as CODE_EDGE_BUILD_SUFFIX,
+)
+from app.modules.code_graph.edge_build_trigger import is_code_record
 from app.modules.named_entities.graph_ops import (
     NamedEntityGraphMixin,
     named_entity_neo4j_indexes,
 )
-from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
+from app.schema.node_schema_registry import (
+    JSON_ENCODED_FIELDS,
+    NODE_SCHEMA_REGISTRY,
+    get_required_fields,
+)
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.featureflag.platform_settings import is_kh_scope_listing_enabled
 from app.services.graph_db.common.full_sync_unlink import (
@@ -158,6 +172,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     KH_LISTING_STATE_FLAG,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
+    CodeFileInfo,
     IGraphDBProvider,
     MoveDestinationMissing,
     _distinct_connector_types,
@@ -211,6 +226,10 @@ from app.utils.user_messages import action_failed, folder_in_trash
 # Constants
 MAX_REINDEX_DEPTH = 100  # Maximum depth for reindexing records (unlimited depth is capped at this value)
 EDGE_DELETE_BATCH_SIZE = 2000  # Batch size for edge deletion to avoid huge single-query transactions
+# DETACH DELETE holds every touched node/rel in txn state; a mid-size code repo
+# is 100k+ blocks and blows dbms.memory.transaction.total.max (~70% of heap).
+BLOCK_DELETE_BATCH_SIZE = 500
+_BLOCK_FULLTEXT_INDEX = "block_text_org"
 
 # One node per stored taxonomy alias, so alias matches seek an index instead
 # of scanning a list property on every node of the org (see find_taxonomy_nodes).
@@ -362,6 +381,16 @@ def cypher_kh_stamp_all(batch_size: int) -> str:
             }} IN TRANSACTIONS OF {int(batch_size)} ROWS
             RETURN count(*) AS stamped
             """
+
+
+# The node labels a link endpoint can carry, by the collection its document id names.
+_LINK_ENDPOINT_LABELS = {CollectionNames.RECORDS.value: "Record", CollectionNames.BLOCKS.value: "Block"}
+
+
+def _link_endpoint_label(edge: dict, end: str) -> str | None:
+    """`Record` or `Block` when *edge* names the collection of its *end* ("from" or "to"), else None."""
+    collection = edge.get(f"{end}_collection") or (edge.get(f"_{end}") or "").partition("/")[0]
+    return _LINK_ENDPOINT_LABELS.get(collection)
 
 
 def _cypher_kh_tree_refresh(rel_types: str, *node_vars: str) -> str:
@@ -890,7 +919,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         return [
             "CREATE CONSTRAINT person_org_email_unique IF NOT EXISTS "
-            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.email) IS UNIQUE"
+            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.email) IS UNIQUE",
+            # A sync point key names one sync point: connectors embed their org and
+            # connector id, code-graph build state its record group's id. Without it
+            # two first upserts both created one, and reads returned either (B3).
+            "CREATE CONSTRAINT syncpoint_key_unique IF NOT EXISTS "
+            f"FOR (n:{collection_to_label(CollectionNames.SYNC_POINTS.value)}) REQUIRE n.syncPointKey IS UNIQUE",
         ]
 
     def _generate_performance_indexes(self) -> list[str]:
@@ -1027,6 +1061,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_parked_while_off IF NOT EXISTS "
             "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.reason, n.id)"
+        )
+
+        # COMPOSITE: "is every record of this repo indexed yet?", asked once per
+        # code file that finishes. A repo connector also syncs issues and merge
+        # requests into record groups of their own, so the connector-leading
+        # indexes above do not answer it.
+        indexes.append(
+            "CREATE INDEX record_org_group_indexing_status IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId, n.recordGroupId, n.indexingStatus)"
         )
 
         # SINGLE: parsingStatus. The indexing service's stale-record recovery
@@ -1202,9 +1245,86 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "FOR (n:Record) ON (n.recordType, n.externalGroupId)"
         )
 
+        # ==================== BLOCK INDEXES (code knowledge graph) ====================
+        # Blocks are the largest label by far (100k+ on a mid-size repo) and only
+        # carried the id uniqueness constraint, so every code-graph query was a
+        # full label scan.
+
+        # COMPOSITE: orgId + recordId + qualifiedName — the code tools address a
+        # symbol by (file, name); the file resolves to a record on Codefiles
+        # first, so blocks are reached by record.
+        indexes.append(
+            "CREATE INDEX block_org_record_qualified_name IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.recordId, n.qualifiedName)"
+        )
+
+        # COMPOSITE: orgId + filePath on Codefiles — the single home of a code
+        # file's path, and what every path-prefix query now drives from.
+        indexes.append(
+            "CREATE INDEX code_file_org_path IF NOT EXISTS "
+            "FOR (n:Codefiles) ON (n.orgId, n.filePath)"
+        )
+
+        # COMPOSITE: orgId + qualifiedName — symbol lookup by identity.
+        indexes.append(
+            "CREATE INDEX block_org_qualified_name IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.qualifiedName)"
+        )
+
+        # COMPOSITE: orgId + recordGroupId + name — a symbol name within a repo.
+        indexes.append(
+            "CREATE INDEX block_org_group_name IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.recordGroupId, n.name)"
+        )
+
+        # COMPOSITE: orgId + recordGroupId + id — the edge builder's per-repo
+        # block scan, which pages by id and orders by (orgId, recordGroupId,
+        # id) so this index serves both the cursor and the ORDER BY. Without it
+        # every page sorted the repo's blocks.
+        indexes.append(
+            "CREATE INDEX block_org_group_id IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.recordGroupId, n.id)"
+        )
+
+        # SINGLE: recordId — per-file reconciliation on re-index, and the
+        # record-scoped block delete.
+        indexes.append(
+            "CREATE INDEX block_record_id IF NOT EXISTS "
+            "FOR (n:Block) ON (n.recordId)"
+        )
+
+        # COMPOSITE: exact bare-name lookup within a connector, case-insensitive (SC-6).
+        indexes.append(
+            "CREATE INDEX block_org_connector_name_folded IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.connectorId, n.nameFolded)"
+        )
+
+        # SINGLE: connectorId — connector-instance deletion pages by this alone.
+        # Without it every batch is a full Block label scan.
+        indexes.append(
+            "CREATE INDEX block_connector_id IF NOT EXISTS "
+            "FOR (n:Block) ON (n.connectorId)"
+        )
+
         indexes.extend(named_entity_neo4j_indexes())
         indexes.extend(_STAGE_STATE_INDEXES)
         return indexes
+
+    def _generate_fulltext_indexes(self) -> list[str]:
+        """Full-text indexes, which use a different DDL form to range indexes.
+
+        Free-text symbol lookup is what lets an agent start from a question rather
+        than from a symbol id it already holds. Without this it means scanning and
+        scoring every Block on each call.
+        """
+        return [
+            # Replaced by block_text_org: a full-text index can't be altered in place.
+            "DROP INDEX block_text IF EXISTS",
+            # orgId is indexed so a query is scoped to one tenant inside Lucene,
+            # rather than collecting and scoring every tenant's matches first (S-9).
+            f"CREATE FULLTEXT INDEX {_BLOCK_FULLTEXT_INDEX} IF NOT EXISTS "
+            "FOR (n:Block) ON EACH [n.name, n.qualifiedName, n.orgId]",
+        ]
 
     def _generate_required_field_constraints(self) -> list[str]:
         """
@@ -1272,7 +1392,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Business-key uniqueness (e.g. Person.(orgId, email)). Creation fails on a
             # label that already holds duplicates, hence the same tolerant handling as above.
+            # The sync point key constraint cannot be created over duplicates the
+            # unconstrained upsert already made. Only code-edge-build points are
+            # ours to collapse; another connector's duplicates are left alone and
+            # the constraint skipped until they are resolved.
+            sync_point_duplicates_remain = True
+            try:
+                await self._remove_duplicate_sync_points()
+                sync_point_duplicates_remain = await self._count_duplicate_sync_point_keys() > 0
+            except Exception as e:
+                self.logger.warning(f"Sync point de-duplication failed: {str(e)}")
             business_key_constraints = self._generate_business_key_constraints()
+            if sync_point_duplicates_remain:
+                self.logger.warning(
+                    "Skipping syncpoint_key_unique: sync points of other connectors share a "
+                    "syncPointKey; they are not deleted automatically")
+                business_key_constraints = [
+                    q for q in business_key_constraints if "syncpoint_key_unique" not in q]
 
             for constraint_query in business_key_constraints:
                 try:
@@ -1307,6 +1443,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     self.logger.warning(f"Index creation failed: {str(e)}")
 
             self.logger.info(f"✅ Created {len(indexes)} performance indexes")
+
+            fulltext_indexes = self._generate_fulltext_indexes()
+            for index_query in fulltext_indexes:
+                try:
+                    await self.client.execute_query(index_query)
+                except Exception as e:
+                    self.logger.debug(f"Full-text index creation (may already exist): {str(e)}")
+
+            self.logger.info(f"✅ Created {len(fulltext_indexes)} full-text indexes")
             self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
 
             try:
@@ -1393,6 +1538,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # Remove _id if present (we'll reconstruct it if needed)
         neo4j_node.pop("_id", None)
 
+        # Neo4j properties must be primitives or arrays of primitives.
+        # JSON-serialize dicts and any list with a nested dict or list. None is
+        # kept so that `SET n += props` still removes the property on update paths.
+        for key, value in list(neo4j_node.items()):
+            if isinstance(value, dict):
+                neo4j_node[key] = json.dumps(value, default=str)
+            elif isinstance(value, list) and any(
+                isinstance(item, (dict, list)) for item in value
+            ):
+                neo4j_node[key] = json.dumps(value, default=str)
+
         return neo4j_node
 
     def _neo4j_to_arango_node(self, neo4j_node: dict, collection: str) -> dict:
@@ -1414,7 +1570,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Also create _id for compatibility
             arango_node["_id"] = f"{collection}/{arango_node['id']}"
 
-        return arango_node
+        return Neo4jProvider._decode_json_fields(arango_node, collection)
+
+    @staticmethod
+    def _decode_json_fields(node: dict, collection: str) -> dict:
+        """Undo the JSON encoding _arango_to_neo4j_node applied on write, so a
+        node reads the same here as it does from ArangoDB."""
+        for key in JSON_ENCODED_FIELDS.get(collection, ()):
+            value = node.get(key)
+            if isinstance(value, str):
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
+                    node[key] = json.loads(value)
+        return node
 
     def _neo4j_to_arango_edge(self, neo4j_edge: dict, edge_collection: str) -> dict:
         """
@@ -1553,6 +1720,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         raise_on_error: bool = False,
         after_key: str | None = None,
+        return_fields: list[str] | None = None,
     ) -> list[dict]:
         """
         Fetch a page of documents using Cypher SKIP/LIMIT so that only the
@@ -1594,12 +1762,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     [f"n.{field}" for field in filters] + ["n.id ASC"]
                 )
 
+            if return_fields:
+                return_expr = ", ".join(
+                    f"n.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
+            else:
+                return_expr = "n"
+
             query = f"""
             MATCH (n:{label})
             {where_cypher}
             {order_cypher}
             SKIP $skip LIMIT $limit
-            RETURN n
+            RETURN {return_expr}
             """
 
             results = await self.client.execute_query(
@@ -1611,7 +1787,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if results:
                 documents = []
                 for record in results:
-                    node_dict = dict(record["n"])
+                    if return_fields:
+                        node_dict = {field: record.get(field) for field in return_fields}
+                    else:
+                        node_dict = dict(record["n"])
                     documents.append(self._neo4j_to_arango_node(node_dict, collection))
                 return documents
 
@@ -1675,28 +1854,38 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """*nodes* in Neo4j form, each with an ``id``, validated for *collection*."""
         neo4j_nodes = []
         for node in nodes:
+            # Before conversion, which JSON-serializes nested values the schema
+            # expects as objects or arrays.
+            self.validator.validate_node_update(collection, node)
             neo4j_node = self._arango_to_neo4j_node(node, collection)
             if "id" not in neo4j_node:
                 if "_key" in neo4j_node:
                     neo4j_node["id"] = neo4j_node.pop("_key")
                 else:
                     neo4j_node["id"] = str(uuid.uuid4())
-            self.validator.validate_node_update(collection, neo4j_node)
             neo4j_nodes.append(neo4j_node)
         return neo4j_nodes
 
     def _upsert_record_with_type_cypher(
-        self, record: Record, *, release_trashed_external_ids: bool
+        self, records: list[Record], *, release_trashed_external_ids: bool
     ) -> tuple[str, dict[str, Any]]:
-        """The statement of ``_upsert_record_with_type`` up to its RETURN, with the record bound as ``n``."""
-        node = self._nodes_for_upsert([record.to_arango_base_record()], CollectionNames.RECORDS.value)[0]
+        """The statement of ``_upsert_record_with_type`` up to its RETURN, each record bound as ``n``.
+
+        *records* share one type collection, so one statement writes them all.
+        """
+        collection = RECORD_TYPE_COLLECTION_MAPPING.get(records[0].record_type)
+        bases = self._nodes_for_upsert([r.to_arango_base_record() for r in records], CollectionNames.RECORDS.value)
+        types = (self._nodes_for_upsert([r.to_arango_record() for r in records], collection)
+                 if collection else [None] * len(records))
         parameters: dict[str, Any] = {
-            "nodes": [node], "ids": [node["id"]], "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
+            "rows": [{"node": b, "type_node": t} for b, t in zip(bases, types)],
+            "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
         }
+        # Each record releases only holders other than itself, as when records were written one at a time.
         release = """
-            WITH node, COLLECT {
+            WITH node, type_node, COLLECT {
                 MATCH (holder:Record {externalRecordId: node.externalRecordId, connectorId: node.connectorId})
-                WHERE holder.isDeleted = true AND NOT holder.id IN $ids
+                WHERE holder.isDeleted = true AND holder.id <> node.id
                 RETURN holder
             } AS holders
             FOREACH (holder IN holders |
@@ -1706,19 +1895,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 })
         """ if release_trashed_external_ids else ""
         typed = ""
-        collection = RECORD_TYPE_COLLECTION_MAPPING.get(record.record_type)
         if collection:
-            parameters["type_node"] = self._nodes_for_upsert([record.to_arango_record()], collection)[0]
             now = get_epoch_timestamp_in_ms()
             parameters["edge"] = {"createdAtTimestamp": now, "updatedAtTimestamp": now}
             typed = f"""
-            MERGE (t:{collection_to_label(collection)} {{id: $type_node.id}})
-            SET t += $type_node
+            MERGE (t:{collection_to_label(collection)} {{id: type_node.id}})
+            SET t += type_node
             MERGE (n)-[e:{edge_collection_to_relationship(CollectionNames.IS_OF_TYPE.value)}]->(t)
             SET e = $edge
             """
         return f"""
-            UNWIND $nodes AS node
+            UNWIND $rows AS row
+            WITH row.node AS node, row.type_node AS type_node
             {release}
             MERGE (n:Record {{id: node.id}})
             SET n += node
@@ -1737,7 +1925,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *release_trashed_external_ids* is set.
         """
         statement, parameters = self._upsert_record_with_type_cypher(
-            record, release_trashed_external_ids=release_trashed_external_ids
+            [record], release_trashed_external_ids=release_trashed_external_ids
         )
         await self.client.execute_query(
             f"{statement}\n            RETURN n.id", parameters=parameters, txn_id=transaction
@@ -1841,10 +2029,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             label = collection_to_label(collection)
 
-            # Convert updates to Neo4j format
+            self.validator.validate_node_update(collection, node_updates)
             updates = self._arango_to_neo4j_node(node_updates, collection)
-            # Validate updates before writing
-            self.validator.validate_node_update(collection, updates)
 
             query = f"""
             MATCH (n:{label} {{id: $key}})
@@ -1879,10 +2065,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         concurrent overwrite cannot sneak in between the check and the write."""
         try:
             label = collection_to_label(collection)
+            # Before conversion, which JSON-serializes nested values the schema
+            # expects as objects or arrays.
+            self.validator.validate_node_update(collection, node)
             neo4j_node = self._arango_to_neo4j_node(node, collection)
             if "id" not in neo4j_node:
                 neo4j_node["id"] = key
-            self.validator.validate_node_update(collection, neo4j_node)
             query = f"""
             MATCH (n:{label} {{id: $key}})
             WHERE n[$field] = $expected
@@ -1931,11 +2119,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             label = collection_to_label(collection)
             
-            # Convert nodes to Neo4j format and validate
             neo4j_nodes = []
             for node in nodes:
+                self.validator.validate_node_update(collection, node)
                 neo4j_node = self._arango_to_neo4j_node(node, collection)
-                self.validator.validate_node_update(collection, neo4j_node)
                 neo4j_nodes.append(neo4j_node)
 
             # Use UNWIND to batch update multiple nodes
@@ -2833,9 +3020,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 where_clause = ""
                 parameters = {}
 
-            # Build return clause
+            # Build return clause. `_key` is stored as `id` on Neo4j nodes, so
+            # projecting it verbatim returns null for every row and silently
+            # empties any caller that reads keys back.
             if return_fields:
-                return_expr = ", ".join([f"n.{field} AS {field}" for field in return_fields])
+                return_expr = ", ".join(
+                    f"n.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
             else:
                 return_expr = "n"
 
@@ -2931,15 +3123,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Get nodes where field value is in list"""
         try:
             label = collection_to_label(collection)
+            neo4j_field = "id" if field_name == "_key" else field_name
 
             if return_fields:
-                return_expr = ", ".join([f"n.{field} AS {field}" for field in return_fields])
+                return_expr = ", ".join(
+                    f"n.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
             else:
                 return_expr = "n"
 
             query = f"""
             MATCH (n:{label})
-            WHERE n.{field_name} IN $values
+            WHERE n.{neo4j_field} IN $values
             RETURN {return_expr}
             """
 
@@ -2961,6 +3157,511 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get nodes by field in failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return []
+
+    @staticmethod
+    def _filter_conditions(
+        filters: dict[str, Any] | None,
+        in_filters: dict[str, list[Any]] | None = None,
+        var: str = "n",
+    ) -> tuple[list[str], dict[str, Any]]:
+        """Equality and membership filters as Cypher predicates on ``var`` plus their parameters."""
+        conditions: list[str] = []
+        parameters: dict[str, Any] = {}
+        for field, value in (filters or {}).items():
+            parameter = f"filter_{field}"
+            conditions.append(f"{var}.{field} = ${parameter}")
+            parameters[parameter] = value
+        for field, values in (in_filters or {}).items():
+            parameter = f"in_filter_{field}"
+            conditions.append(f"{var}.{field} IN ${parameter}")
+            parameters[parameter] = values
+        return conditions, parameters
+
+    async def get_nodes_by_field_prefix(
+        self,
+        collection: str,
+        field_name: str,
+        prefix: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        try:
+            label = collection_to_label(collection)
+            neo4j_field = "id" if field_name == "_key" else field_name
+            filter_conditions, parameters = self._filter_conditions(filters)
+            conditions = [f"n.{neo4j_field} STARTS WITH $prefix", *filter_conditions]
+            parameters.update({"prefix": prefix, "limit": limit})
+            query = f"""
+            MATCH (n:{label})
+            WHERE {" AND ".join(conditions)}
+            RETURN n
+            LIMIT $limit
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return [
+                self._neo4j_to_arango_node(dict(row.get("n", {})), collection)
+                for row in rows or []
+            ]
+        except Exception as e:
+            self.logger.error(f"❌ Get nodes by field prefix failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return []
+
+    async def search_nodes_by_field_terms(
+        self,
+        collection: str,
+        field_name: str,
+        terms: list[str],
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        if not terms:
+            return []
+        filters = filters or {}
+
+        def _lucene_literal(term: str) -> str:
+            return '"' + term.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+        # Fields named: orgId is indexed too, and a bare term would match its tokens.
+        lucene = " OR ".join(
+            f"{field}:{_lucene_literal(term)}" for term in terms for field in ("name", "qualifiedName")
+        )
+        if filters.get("orgId"):
+            lucene = f"({lucene}) AND orgId:{_lucene_literal(str(filters['orgId']))}"
+        parameters: dict[str, Any] = {
+            "terms": [term.lower() for term in terms],
+            "query": lucene,
+            "limit": limit,
+        }
+        for field, value in filters.items():
+            parameters[f"filter_{field}"] = value
+        try:
+            label = collection_to_label(collection)
+            if (
+                collection == CollectionNames.BLOCKS.value
+                and field_name == "name"
+            ):
+                filter_clause = " AND ".join(
+                    f"node.{field} = $filter_{field}" for field in filters
+                )
+                where_clause = f"WHERE {filter_clause}" if filter_clause else ""
+                fulltext_query = f"""
+                CALL db.index.fulltext.queryNodes('{_BLOCK_FULLTEXT_INDEX}', $query)
+                YIELD node, score
+                {where_clause}
+                RETURN node AS n, score
+                ORDER BY score DESC
+                LIMIT $limit
+                """
+                try:
+                    rows = await self.client.execute_query(
+                        fulltext_query,
+                        parameters=parameters,
+                        txn_id=transaction,
+                    )
+                    if rows:
+                        return [
+                            self._neo4j_to_arango_node(
+                                dict(row.get("n", {})), collection
+                            )
+                            for row in rows
+                        ]
+                except Exception as e:
+                    self.logger.debug(
+                        f"Full-text node search unavailable, using scan: {str(e)}"
+                    )
+
+            conditions = [
+                f"n.{field_name} IS NOT NULL",
+                f"any(term IN $terms WHERE toLower(n.{field_name}) CONTAINS term)",
+            ]
+            conditions.extend(
+                f"n.{field} = $filter_{field}" for field in filters
+            )
+            query = f"""
+            MATCH (n:{label})
+            WHERE {" AND ".join(conditions)}
+            RETURN n
+            LIMIT $limit
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return [
+                self._neo4j_to_arango_node(dict(row.get("n", {})), collection)
+                for row in rows or []
+            ]
+        except Exception as e:
+            self.logger.error(f"❌ Search nodes by field terms failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return []
+
+    async def delete_edges_touching_nodes(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        edge_collection: str,
+        transaction: str | None = None,
+    ) -> int:
+        if not node_keys:
+            return 0
+        try:
+            label = collection_to_label(node_collection)
+            relationship = edge_collection_to_relationship(edge_collection)
+            query = f"""
+            MATCH (node:{label})-[rel:{relationship}]-()
+            WHERE node.id IN $node_keys
+            WITH DISTINCT rel
+            DELETE rel
+            RETURN count(rel) AS deleted
+            """
+            rows = await self.client.execute_query(
+                query,
+                parameters={"node_keys": node_keys},
+                txn_id=transaction,
+            )
+            return int(rows[0].get("deleted", 0)) if rows else 0
+        except Exception as e:
+            self.logger.error(f"❌ Delete edges touching nodes failed: {str(e)}")
+            raise
+
+    async def get_edge_rollup_by_file_prefix(
+        self,
+        org_id: str,
+        file_path_prefix: str,
+        relationship_types: list[str],
+        direction: str,
+        connector_id: str,
+        limit: int = 100000,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        if direction not in ("outbound", "inbound", "any"):
+            raise ValueError("direction must be 'outbound', 'inbound', or 'any'")
+        try:
+            block_label = collection_to_label(CollectionNames.BLOCKS.value)
+            relationship = Neo4jRelationshipType.RECORD_LINK.value
+            pattern = {
+                "outbound": f"(block:{block_label})-[rel:{relationship}]->(target)",
+                "inbound": f"(block:{block_label})<-[rel:{relationship}]-(target)",
+                "any": f"(block:{block_label})-[rel:{relationship}]-(target)",
+            }[direction]
+            record_label = collection_to_label(CollectionNames.RECORDS.value)
+            code_file_label = collection_to_label(CollectionNames.CODE_FILES.value)
+            # The prefix is matched on codeFiles -- one node per file rather than
+            # ~30 per file on blocks -- and the connector scope is re-applied per
+            # record, since codeFiles carries no connectorId. Grouped by record,
+            # not by path: the caller resolves ids to paths in one batch, so a
+            # moved file needs no rewrite here.
+            query = f"""
+            MATCH (codeFile:{code_file_label})
+            WHERE codeFile.orgId = $orgId
+              AND codeFile.filePath STARTS WITH $prefix
+            MATCH (record:{record_label} {{id: codeFile.id}})
+            WHERE record.connectorId = $connectorId
+            WITH collect(record.id) AS scopedRecords
+            MATCH {pattern}
+            WHERE block.recordId IN scopedRecords
+              AND rel.relationshipType IN $relations
+            WITH block, target, rel,
+                 CASE WHEN startNode(rel).id = block.id
+                      THEN 'outbound' ELSE 'inbound' END AS dir
+            RETURN block.recordId AS srcRecord,
+                   rel.relationshipType AS rel,
+                   dir,
+                   coalesce(target.recordId, target.id) AS dstRecord,
+                   count(*) AS n
+            LIMIT $limit
+            """
+            return await self.client.execute_query(
+                query,
+                parameters={
+                    "orgId": org_id,
+                    "prefix": file_path_prefix,
+                    "relations": relationship_types,
+                    "limit": limit,
+                    "connectorId": connector_id,
+                },
+                txn_id=transaction,
+            ) or []
+        except Exception as e:
+            self.logger.error(f"❌ Get edge rollup by file prefix failed: {str(e)}")
+            return []
+
+    async def get_file_paths_for_records(
+        self,
+        org_id: str,
+        record_ids: list[str],
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> dict[str, CodeFileInfo]:
+        if not record_ids:
+            return {}
+        try:
+            record_label = collection_to_label(CollectionNames.RECORDS.value)
+            code_file_label = collection_to_label(CollectionNames.CODE_FILES.value)
+            # codeFiles is keyed by record id. recordName is the fallback for a
+            # source file that arrived without a codeFiles node -- a .py uploaded
+            # to a KB is a plain FILE record, and dispatch is by extension, so it
+            # still gets parsed and projected. referencedNames is only on codeFiles.
+            query = f"""
+            MATCH (record:{record_label})
+            WHERE record.orgId = $orgId
+              AND record.id IN $record_ids
+            OPTIONAL MATCH (codeFile:{code_file_label} {{id: record.id}})
+            WITH record,
+                 coalesce(codeFile.filePath, record.recordName) AS path,
+                 codeFile.referencedNames AS referencedNames,
+                 codeFile.changedNames AS changedNames,
+                 codeFile IS NOT NULL AS hasCodeFile
+            WHERE path IS NOT NULL
+            RETURN record.id AS recordId, path AS filePath, referencedNames, changedNames, hasCodeFile
+            """
+            rows = await self.client.execute_query(
+                query,
+                parameters={"orgId": org_id, "record_ids": record_ids},
+                txn_id=transaction,
+            )
+            return {
+                row["recordId"]: CodeFileInfo(
+                    file_path=row["filePath"],
+                    referenced_names=tuple(row.get("referencedNames") or ()),
+                    changed_names=tuple(row.get("changedNames") or ()),
+                    has_code_file=bool(row.get("hasCodeFile")),
+                )
+                for row in rows or []
+                if row.get("recordId") and row.get("filePath")
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Get file paths for records failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return {}
+
+    @staticmethod
+    def _endpoint_lookup(keys: list[str], alias: str, parameter: str) -> str:
+        """Cypher binding *alias* to the nodes the ArangoDB-style *keys* name.
+
+        The endpoint needs a label for ``id IN $ids`` to reach an index -- Neo4j
+        indexes are per label, so an unlabelled ``(target)`` pattern makes the
+        planner walk every relationship of the type instead. The labels come from
+        the collection half of the keys the caller passed, so a batch mixing
+        records and blocks still seeks both.
+        """
+        labels = sorted({
+            collection_to_label(key.partition("/")[0])
+            for key in keys
+            if "/" in key
+        })
+        if not labels:
+            return f"MATCH ({alias}) WHERE {alias}.id IN ${parameter}"
+        seeks = "\n            ".join(
+            f"OPTIONAL MATCH (_n{i}:{label} {{id: _id}})"
+            for i, label in enumerate(labels)
+        )
+        coalesced = ", ".join(f"_n{i}" for i in range(len(labels)))
+        return f"""UNWIND ${parameter} AS _id
+            {seeks}
+            WITH coalesce({coalesced}) AS {alias}
+            WHERE {alias} IS NOT NULL"""
+
+    async def get_edges_by_target_keys(
+        self,
+        target_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        return_field: str = "_from",
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[str]:
+        if not target_keys:
+            return []
+        if return_field not in ("_from", "_to"):
+            raise ValueError("return_field must be '_from' or '_to'")
+        try:
+            relationship = edge_collection_to_relationship(edge_collection)
+            # Deduped: the lookup below unwinds these, and a repeated id would
+            # otherwise expand the same relationship twice.
+            target_ids = sorted({key.split("/", 1)[-1] for key in target_keys})
+            conditions: list[str] = []
+            parameters: dict[str, Any] = {"target_ids": target_ids}
+            for field, value in (filters or {}).items():
+                parameter = f"filter_{field}"
+                conditions.append(f"rel.{field} = ${parameter}")
+                parameters[parameter] = value
+            endpoint = "source" if return_field == "_from" else "target"
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+            {self._endpoint_lookup(target_keys, "target", "target_ids")}
+            MATCH (source)-[rel:{relationship}]->(target)
+            {where_clause}
+            RETURN DISTINCT labels({endpoint}) AS labels,
+                            {endpoint}.id AS key
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            result: list[str] = []
+            for row in rows or []:
+                labels = row.get("labels") or []
+                key = row.get("key")
+                if labels and key:
+                    result.append(f"{label_to_collection(labels[0])}/{key}")
+            return result
+        except Exception as e:
+            self.logger.error(f"❌ Get edges by target keys failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return []
+
+    async def delete_edges_by_source_keys(
+        self,
+        source_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        transaction: str | None = None,
+        exclude: dict[str, Any] | None = None,
+    ) -> int:
+        if not source_keys:
+            return 0
+        try:
+            relationship = edge_collection_to_relationship(edge_collection)
+            source_ids = sorted({key.split("/", 1)[-1] for key in source_keys})
+            conditions, parameters = self._filter_conditions(filters, var="rel")
+            for field, value in (exclude or {}).items():
+                # `<>` on a missing property is null, which would keep the edge.
+                conditions.append(f"(rel.{field} IS NULL OR rel.{field} <> $exclude_{field})")
+                parameters[f"exclude_{field}"] = value
+            parameters["source_ids"] = source_ids
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+            {self._endpoint_lookup(source_keys, "source", "source_ids")}
+            MATCH (source)-[rel:{relationship}]->()
+            {where_clause}
+            DELETE rel
+            RETURN count(rel) AS deleted
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return int(rows[0].get("deleted", 0)) if rows else 0
+        except Exception as e:
+            self.logger.error(f"❌ Delete edges by source keys failed: {str(e)}")
+            raise
+
+    async def count_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        try:
+            label = collection_to_label(collection)
+            conditions, parameters = self._filter_conditions(filters, in_filters, var="node")
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+            MATCH (node:{label})
+            {where_clause}
+            RETURN count(node) AS count
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return int(rows[0].get("count", 0)) if rows else 0
+        except Exception as e:
+            # Callers gate on the count (build_code_graph_edges only builds when
+            # nothing is still indexing), so a swallowed failure reading as 0
+            # would let them act on a repo that has not drained.
+            self.logger.error(f"❌ Count nodes by filters failed: {str(e)}")
+            raise
+
+    async def has_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        try:
+            label = collection_to_label(collection)
+            conditions, parameters = self._filter_conditions(filters, in_filters, var="node")
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+            MATCH (node:{label})
+            {where_clause}
+            RETURN 1 AS matched
+            LIMIT 1
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            return bool(rows)
+        except Exception as e:
+            self.logger.error(f"❌ Node existence check failed: {str(e)}")
+            raise
+
+    async def get_nodes_updated_since(
+        self,
+        collection: str,
+        timestamp_field: str,
+        since: int,
+        filters: dict[str, Any] | None = None,
+        return_fields: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        try:
+            label = collection_to_label(collection)
+            conditions = [f"node.{timestamp_field} > $since"]
+            parameters: dict[str, Any] = {"since": since}
+            for field, value in (filters or {}).items():
+                parameter = f"filter_{field}"
+                conditions.append(f"node.{field} = ${parameter}")
+                parameters[parameter] = value
+            if return_fields:
+                return_expr = ", ".join(
+                    f"node.{'id' if field == '_key' else field} AS {field}"
+                    for field in return_fields
+                )
+            else:
+                return_expr = "node"
+            query = f"""
+            MATCH (node:{label})
+            WHERE {" AND ".join(conditions)}
+            RETURN {return_expr}
+            """
+            rows = await self.client.execute_query(
+                query, parameters=parameters, txn_id=transaction
+            )
+            if return_fields:
+                return [
+                    {field: row.get(field) for field in return_fields}
+                    for row in rows or []
+                ]
+            return [
+                self._neo4j_to_arango_node(
+                    dict(row.get("node", {})), collection
+                )
+                for row in rows or []
+            ]
+        except Exception as e:
+            self.logger.error(f"❌ Get nodes updated since failed: {str(e)}")
             if raise_on_error:
                 raise
             return []
@@ -3060,6 +3761,158 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get edges to node failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return []
+
+    async def get_neighbors_by_relationship_types(
+        self,
+        node_key: str,
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 25,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Walk one hop from a node along the given relationship types.
+
+        See IGraphDBProvider.get_neighbors_by_relationship_types.
+        """
+        if not relationship_types:
+            return []
+        if direction not in ("outbound", "inbound"):
+            raise ValueError(
+                f"direction must be 'outbound' or 'inbound', got {direction!r}"
+            )
+
+        try:
+            rel_type = Neo4jRelationshipType.RECORD_LINK.value
+            anchor_label = collection_to_label(node_collection)
+            # The neighbour is deliberately unlabelled: a code symbol can point
+            # at a whole file, so Block and Record both turn up here.
+            pattern = (
+                f"(n:{anchor_label} {{id: $node_key}})-[rel:{rel_type}]->(m)"
+                if direction == "outbound"
+                else f"(n:{anchor_label} {{id: $node_key}})<-[rel:{rel_type}]-(m)"
+            )
+            query = f"""
+            MATCH {pattern}
+            WHERE rel.relationshipType IN $relationship_types
+            RETURN labels(m) AS labels,
+                   m.id AS key,
+                   rel.relationshipType AS relationshipType,
+                   rel.sourceLineNumber AS sourceLineNumber,
+                   rel.sourceColumnNumber AS sourceColumnNumber,
+                   rel.provenance AS provenance,
+                   rel.line AS line,
+                   rel.confidence AS confidence
+            LIMIT $limit
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "node_key": node_key,
+                    "relationship_types": relationship_types,
+                    "limit": limit,
+                },
+                txn_id=transaction
+            )
+            neighbours: list[dict[str, Any]] = []
+            for row in results or []:
+                labels = row.get("labels") or []
+                neighbours.append({
+                    "collection": label_to_collection(labels[0]) if labels else "",
+                    "key": row.get("key"),
+                    "relationshipType": row.get("relationshipType"),
+                    "sourceLineNumber": row.get("sourceLineNumber"),
+                    "sourceColumnNumber": row.get("sourceColumnNumber"),
+                    "provenance": row.get("provenance"),
+                    "line": row.get("line"),
+                    "confidence": row.get("confidence"),
+                })
+            return neighbours
+        except Exception as e:
+            self.logger.error(f"❌ Get neighbors by relationship types failed: {str(e)}")
+            return []
+
+    async def get_neighbors_for_nodes_by_relationship_types(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 5000,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Walk one hop from many nodes at once.
+
+        See IGraphDBProvider.get_neighbors_for_nodes_by_relationship_types.
+        """
+        if not node_keys or not relationship_types:
+            return []
+        if direction not in ("outbound", "inbound", "any"):
+            raise ValueError(
+                f"direction must be 'outbound', 'inbound' or 'any', got {direction!r}"
+            )
+
+        try:
+            rel_type = Neo4jRelationshipType.RECORD_LINK.value
+            anchor_label = collection_to_label(node_collection)
+            # The neighbour stays unlabelled: a code symbol can point at a whole
+            # file, so Block and Record both turn up here.
+            pattern = {
+                "outbound": f"(n:{anchor_label})-[rel:{rel_type}]->(m)",
+                "inbound": f"(n:{anchor_label})<-[rel:{rel_type}]-(m)",
+                "any": f"(n:{anchor_label})-[rel:{rel_type}]-(m)",
+            }[direction]
+            query = f"""
+            MATCH {pattern}
+            WHERE n.id IN $node_keys
+              AND rel.relationshipType IN $relationship_types
+            RETURN n.id AS anchorKey,
+                   labels(m) AS labels,
+                   m.id AS key,
+                   CASE WHEN startNode(rel).id = n.id
+                        THEN 'outbound' ELSE 'inbound' END AS direction,
+                   rel.relationshipType AS relationshipType,
+                   rel.sourceLineNumber AS sourceLineNumber,
+                   rel.sourceColumnNumber AS sourceColumnNumber,
+                   rel.provenance AS provenance,
+                   rel.line AS line,
+                   rel.confidence AS confidence
+            LIMIT $limit
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "node_keys": node_keys,
+                    "relationship_types": relationship_types,
+                    "limit": limit,
+                },
+                txn_id=transaction
+            )
+            neighbours: list[dict[str, Any]] = []
+            for row in results or []:
+                labels = row.get("labels") or []
+                neighbours.append({
+                    "anchorKey": row.get("anchorKey"),
+                    "collection": label_to_collection(labels[0]) if labels else "",
+                    "key": row.get("key"),
+                    "direction": row.get("direction"),
+                    "relationshipType": row.get("relationshipType"),
+                    "sourceLineNumber": row.get("sourceLineNumber"),
+                    "sourceColumnNumber": row.get("sourceColumnNumber"),
+                    "provenance": row.get("provenance"),
+                    "line": row.get("line"),
+                    "confidence": row.get("confidence"),
+                })
+            return neighbours
+        except Exception as e:
+            self.logger.error(
+                f"❌ Get neighbors for nodes by relationship types failed: {str(e)}"
+            )
             if raise_on_error:
                 raise
             return []
@@ -3768,6 +4621,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             # Determine which collection this type uses
             collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
+            # Callers convert the type doc without knowing its collection.
+            type_doc = self._decode_json_fields(type_doc, collection)
 
             # Map collections to their corresponding Record classes
             if collection == CollectionNames.FILES.value:
@@ -7592,11 +8447,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         release_trashed_external_ids: bool = False,
     ) -> None:
-        """Batch upsert records (base + specific type + IS_OF_TYPE edge)"""
+        """Batch upsert records (base + specific type + IS_OF_TYPE edge).
+
+        One statement per record type: one statement per record committed each
+        record on its own, about 4 ms apiece (B2: 110 s for a 29k-file repo).
+        """
         try:
+            by_type: dict[str | None, list[Record]] = {}
             for record in records:
-                await self._upsert_record_with_type(
-                    record, transaction, release_trashed_external_ids=release_trashed_external_ids
+                by_type.setdefault(RECORD_TYPE_COLLECTION_MAPPING.get(record.record_type), []).append(record)
+            for group in by_type.values():
+                statement, parameters = self._upsert_record_with_type_cypher(
+                    group, release_trashed_external_ids=release_trashed_external_ids
+                )
+                await self.client.execute_query(
+                    f"{statement}\n            RETURN n.id", parameters=parameters, txn_id=transaction
                 )
         except Exception as e:
             self.logger.error(f"❌ Batch upsert records failed: {str(e)}")
@@ -7635,7 +8500,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # One statement: the record carries externalParentId, which the path reads
         # check against the edge, so the two change together or not at all. Written
         # apart, a failure after the old edge was deleted left the item in no folder.
-        statement, parameters = self._upsert_record_with_type_cypher(record, release_trashed_external_ids=True)
+        statement, parameters = self._upsert_record_with_type_cypher([record], release_trashed_external_ids=True)
         relationship_type = edge_collection_to_relationship(CollectionNames.NODE_RELATIONS.value)
         parameters["parent_child"] = RecordRelations.PARENT_CHILD.value
         carried = "n"
@@ -7730,9 +8595,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 edge_data.append({
                     "from_key": from_key,
                     "to_key": to_key,
+                    "from_label": _link_endpoint_label(edge, "from"),
+                    "to_label": _link_endpoint_label(edge, "to"),
                     "relationshipType": relationship_type,
                     "constraintName": constraint_name,
-                    "props": props
+                    "props": props,
+                    # An edge written again keeps when it was first created.
+                    "updateProps": {k: v for k, v in props.items() if k != "createdAtTimestamp"},
                 })
 
             for rel_type in (Neo4jRelationshipType.NODE_RELATIONS.value, Neo4jRelationshipType.RECORD_LINK.value):
@@ -7744,21 +8613,54 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if not group:
                     continue
                 refresh = _cypher_kh_tree_refresh(rel_type, "from", "to")
-                query = f"""
-                UNWIND $edges AS edge
-                MATCH (from:Record {{id: edge.from_key}})
-                MATCH (to:Record {{id: edge.to_key}})
-                MERGE (from)-[r:{rel_type} {{relationshipType: edge.relationshipType, constraintName: edge.constraintName}}]->(to)
-                SET r += edge.props
-                {"WITH from, to, r" if refresh else ""}
-                {refresh}
-                RETURN count(r) AS upserted
-                """
-                await self.client.execute_query(
-                    query,
-                    parameters={"edges": group},
-                    txn_id=transaction
-                )
+                if rel_type == Neo4jRelationshipType.RECORD_LINK.value:
+                    # A link endpoint is a Record or a code Block, and the id indexes
+                    # are per-label, so an unlabelled MATCH degrades to an
+                    # AllNodesScan per UNWIND row. An edge whose ends name their
+                    # collections seeks one index per end; any other seeks both labels.
+                    by_labels: dict[tuple[str, str] | None, list[dict]] = {}
+                    for e in group:
+                        labels = (e["from_label"], e["to_label"]) if e["from_label"] and e["to_label"] else None
+                        by_labels.setdefault(labels, []).append(e)
+                    batches = []
+                    for labels, rows in by_labels.items():
+                        if labels is None:
+                            endpoints = """
+                            OPTIONAL MATCH (fromRecord:Record {id: edge.from_key})
+                            OPTIONAL MATCH (fromBlock:Block {id: edge.from_key})
+                            WITH edge, coalesce(fromRecord, fromBlock) AS from
+                            OPTIONAL MATCH (toRecord:Record {id: edge.to_key})
+                            OPTIONAL MATCH (toBlock:Block {id: edge.to_key})
+                            WITH edge, from, coalesce(toRecord, toBlock) AS to
+                            WHERE from IS NOT NULL AND to IS NOT NULL
+                            """
+                        else:
+                            endpoints = f"""
+                            MATCH (from:{labels[0]} {{id: edge.from_key}})
+                            MATCH (to:{labels[1]} {{id: edge.to_key}})
+                            """
+                        batches.append((endpoints, rows))
+                else:
+                    batches = [("""
+                    MATCH (from:Record {id: edge.from_key})
+                    MATCH (to:Record {id: edge.to_key})
+                    """, group)]
+                for endpoints, rows in batches:
+                    query = f"""
+                    UNWIND $edges AS edge
+                    {endpoints}
+                    MERGE (from)-[r:{rel_type} {{relationshipType: edge.relationshipType, constraintName: edge.constraintName}}]->(to)
+                    ON CREATE SET r += edge.props
+                    ON MATCH SET r += edge.updateProps
+                    {"WITH from, to, r" if refresh else ""}
+                    {refresh}
+                    RETURN count(r) AS upserted
+                    """
+                    await self.client.execute_query(
+                        query,
+                        parameters={"edges": rows},
+                        txn_id=transaction
+                    )
 
             self.logger.debug(f"Successfully upserted {len(edge_data)} record relation edges.")
             return True
@@ -8289,6 +9191,37 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise
             return None
 
+    async def _remove_duplicate_sync_points(self) -> int:
+        """Delete all but the latest-written code-edge-build sync point of each
+        duplicated key. Other sync points carry connector state and are never touched."""
+        label = collection_to_label(CollectionNames.SYNC_POINTS.value)
+        rows = await self.client.execute_query(f"""
+            MATCH (sp:{label}) WHERE sp.syncPointKey ENDS WITH $suffix
+            WITH sp ORDER BY coalesce(sp.updatedAtTimestamp, 0) DESC
+            WITH sp.syncPointKey AS key, collect(sp) AS points
+            WHERE size(points) > 1
+            UNWIND points[1..] AS extra
+            WITH key, extra
+            DETACH DELETE extra
+            RETURN key, count(*) AS removed
+        """, {"suffix": f"/{CODE_EDGE_BUILD_SUFFIX}"})
+        removed = sum(int(r.get("removed") or 0) for r in rows or [])
+        if removed:
+            self.logger.warning(
+                f"Removed {removed} duplicate code-edge-build sync point(s) before adding the "
+                f"key constraint: {[r.get('key') for r in rows]}")
+        return removed
+
+    async def _count_duplicate_sync_point_keys(self) -> int:
+        label = collection_to_label(CollectionNames.SYNC_POINTS.value)
+        rows = await self.client.execute_query(f"""
+            MATCH (sp:{label}) WHERE sp.syncPointKey IS NOT NULL
+            WITH sp.syncPointKey AS key, count(sp) AS n
+            WHERE n > 1
+            RETURN count(key) AS keys
+        """)
+        return int(rows[0].get("keys") or 0) if rows else 0
+
     async def upsert_sync_point(
         self,
         sync_point_key: str,
@@ -8300,33 +9233,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             label = collection_to_label(collection)
 
-            # Raising: a read that failed must not answer "no row here". The
-            # CREATE below is unconstrained -- nothing makes syncPointKey
-            # unique -- so a second sync point would land for the same key and
-            # the two would race to be the one LIMIT 1 returns.
-            existing = await self.get_sync_point(
-                sync_point_key, collection, transaction, raise_on_error=True
-            )
-
+            # One MERGE, backed by the syncPointKey uniqueness constraint: a read
+            # then a CREATE let two first upserts both create a sync point (B3).
+            now = get_epoch_timestamp_in_ms()
             sync_point_data["syncPointKey"] = sync_point_key
-            sync_point_data["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
-
-            if existing:
-                # Update
-                query = f"""
-                MATCH (sp:{label} {{syncPointKey: $key}})
-                SET sp += $data
-                RETURN sp
-                """
-                parameters = {"key": sync_point_key, "data": sync_point_data}
-            else:
-                # Create
-                query = f"""
-                CREATE (sp:{label} $data)
-                RETURN sp
-                """
-                sync_point_data["createdAtTimestamp"] = get_epoch_timestamp_in_ms()
-                parameters = {"data": sync_point_data}
+            sync_point_data["updatedAtTimestamp"] = now
+            query = f"""
+            MERGE (sp:{label} {{syncPointKey: $key}})
+            ON CREATE SET sp.createdAtTimestamp = $now
+            SET sp += $data
+            RETURN sp
+            """
+            parameters = {"key": sync_point_key, "data": sync_point_data, "now": now}
 
             await self.client.execute_query(query, parameters, txn_id=transaction)
             return True
@@ -8334,6 +9252,59 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Upsert sync point failed: {str(e)}")
             raise
+
+    async def backfill_block_name_folded(self, limit: int = 5000) -> int:
+        """Set nameFolded on blocks projected before it existed; see the interface."""
+        results = await self.client.execute_query(
+            """
+            MATCH (n:Block)
+            WHERE n.nameFolded IS NULL AND n.name IS NOT NULL
+            WITH n LIMIT $limit
+            SET n.nameFolded = toLower(n.name)
+            RETURN count(n) AS updated
+            """,
+            {"limit": limit},
+        )
+        return int(results[0].get("updated") or 0) if results else 0
+
+    async def update_sync_point_if(
+        self,
+        sync_point_key: str,
+        expected: dict[str, Any],
+        sync_point_data: dict,
+        collection: str,
+    ) -> bool:
+        """Compare-and-set update of a sync point; see the interface."""
+        label = collection_to_label(collection)
+        conditions = []
+        parameters: dict[str, Any] = {"key": sync_point_key}
+        for i, (field, value) in enumerate(expected.items()):
+            parameters[f"f{i}"] = field
+            if value is None:
+                conditions.append(f"sp[$f{i}] IS NULL")
+            else:
+                conditions.append(f"sp[$f{i}] = $v{i}")
+                parameters[f"v{i}"] = value
+        parameters["data"] = {
+            **sync_point_data,
+            "syncPointKey": sync_point_key,
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        # The lock comes first so the conditions read a write that committed while
+        # this waited, instead of overwriting it (Neo4j's lost-update pattern).
+        query = f"""
+        MATCH (sp:{label} {{syncPointKey: $key}})
+        WITH sp LIMIT 1
+        SET sp.{_MATCH_LOCK} = true
+        REMOVE sp.{_MATCH_LOCK}
+        WITH sp
+        {where}
+        SET sp += $data
+        RETURN count(sp) AS updated
+        """
+        results = await self.client.execute_query(query, parameters)
+        return bool(results and results[0].get("updated"))
 
     async def remove_sync_point(
         self,
@@ -8938,6 +9909,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # In Neo4j, DETACH DELETE removes node and all relationships
             record_label = collection_to_label(CollectionNames.RECORDS.value)
+
+            # Blocks join the record by property, not by an edge, so the DETACH
+            # DELETE below does not take them with it.
+            await self.delete_blocks_for_records([record_key], transaction=transaction)
 
             query = f"""
             MATCH (r:{record_label} {{id: $record_key}})
@@ -9878,6 +10853,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"Groups: {len(collected['group_keys'])}, TypeNodes: {len(isoftype_targets)}"
             )
 
+            # Blocks are the bulk of a code connector. DETACH DELETE of the whole
+            # set inside the write txn below hits dbms.memory.transaction.total.max
+            # (~1.4 GiB on a 2G heap). Auto-committed batches free that memory
+            # before the rest of the delete opens; a later rollback leaves the
+            # connector intact so a retry finishes the leftover blocks.
+            deleted_blocks = await self.delete_blocks_by_connector_id(connector_id)
+
             # Phase 2: Delete within a single transaction
             node_collections = [
                 CollectionNames.RECORDS.value,
@@ -9895,6 +10877,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 CollectionNames.LINKS.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
+                CollectionNames.BLOCKS.value,
             ]
 
             if transaction is None:
@@ -9979,7 +10962,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     f"✅ Connector instance {connector_id} deleted successfully. "
                     f"Records: {deleted_records}, RecordGroups: {deleted_rg}, "
                     f"Roles: {deleted_roles}, Groups: {deleted_groups}, "
-                    f"isOfType targets: {deleted_isoftype}"
+                    f"Blocks: {deleted_blocks}, isOfType targets: {deleted_isoftype}"
                 )
 
                 return {
@@ -9988,6 +10971,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "deleted_record_groups_count": deleted_rg,
                     "deleted_roles_count": deleted_roles,
                     "deleted_groups_count": deleted_groups,
+                    "deleted_blocks_count": deleted_blocks,
                     "virtual_record_ids": collected["virtual_record_ids"],
                     # The connector's own record groups went with it. A point
                     # shared with a live connector survives the purge, so the
@@ -11226,6 +12210,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "reason": "Cannot reindex deleted record"
                 }
 
+            if is_code_record(record):
+                return {
+                    "success": False,
+                    "code": 400,
+                    "reason": (
+                        "Records from GitHub and GitLab cannot be reindexed individually "
+                        "because they belong to a repository-wide code graph. "
+                        "Run a connector sync instead."
+                    ),
+                }
+
             connector_name = record.get("connectorName", "")
             connector_id = record.get("connectorId", "")
             origin = record.get("origin", "")
@@ -12308,6 +13303,84 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return list(dict.fromkeys(i for i in ids if i))
 
+    async def _delete_blocks_where(
+        self,
+        condition: str,
+        parameters: dict[str, Any],
+        transaction: str | None,
+    ) -> int:
+        """Delete every block matching a Cypher ``condition`` on ``block``.
+
+        ``DETACH DELETE`` takes the structural CONTAINS/METHOD/DEFINES edges and
+        the cross-file CALLS/IMPORTS edges other files' blocks point in with, in
+        one pass -- those name a block, never its record, so a record-scoped
+        sweep never sees them.
+
+        Deletes page in batches of ``BLOCK_DELETE_BATCH_SIZE``. A single unbounded
+        DETACH DELETE on a code connector holds the whole subgraph in Neo4j txn
+        state and trips ``dbms.memory.transaction.total.max``. When ``transaction``
+        is None each page auto-commits and frees that state; when a txn is open
+        paging still caps the per-statement working set.
+        """
+        label = collection_to_label(CollectionNames.BLOCKS.value)
+        query = f"""
+        MATCH (block:{label})
+        WHERE {condition}
+        WITH block
+        LIMIT $limit
+        DETACH DELETE block
+        RETURN count(*) AS deleted
+        """
+        total_deleted = 0
+        try:
+            while True:
+                rows = await self.client.execute_query(
+                    query,
+                    parameters={**parameters, "limit": BLOCK_DELETE_BATCH_SIZE},
+                    txn_id=transaction,
+                )
+                deleted = int(rows[0].get("deleted", 0)) if rows else 0
+                total_deleted += deleted
+                if deleted < BLOCK_DELETE_BATCH_SIZE:
+                    break
+            if total_deleted:
+                self.logger.debug(f"🗑️ Deleted {total_deleted} block(s)")
+            return total_deleted
+        except Exception as e:
+            self.logger.error(f"❌ Delete blocks failed: {str(e)}")
+            raise
+
+    async def delete_blocks_for_records(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the blocks projected from the given records, and their edges.
+
+        Blocks are reached by their ``recordId`` property rather than by
+        traversal, so this stays correct whether it runs before or after the
+        record node goes.
+        """
+        if not record_ids:
+            return 0
+        return await self._delete_blocks_where(
+            "block.recordId IN $record_ids", {"record_ids": record_ids}, transaction
+        )
+
+    async def delete_blocks_by_connector_id(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every block a connector produced. The whole-connector form of
+        ``delete_blocks_for_records``, which would otherwise have to carry a
+        repo's worth of record ids in a parameter."""
+        if not connector_id:
+            return 0
+        return await self._delete_blocks_where(
+            "block.connectorId = $connector_id", {"connector_id": connector_id}, transaction
+        )
+
     async def delete_records_recursive(
         self,
         record_ids: list[str],
@@ -12338,7 +13411,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
                     "eventData": None,
                 }
-            node_collections = [CollectionNames.RECORDS.value] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+            node_collections = [
+                CollectionNames.RECORDS.value,
+                # blocks is not an isOfType target, so it is absent from the type
+                # mapping, but a code record's blocks are deleted with it.
+                CollectionNames.BLOCKS.value,
+            ] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
             txn_id = transaction
             if transaction is None:
                 txn_id = await self.begin_transaction(
@@ -12530,6 +13608,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     ]
                     valid_root_keys = [r for r in valid_root_keys if r not in kept_roots]
                 elif record_keys:
+                    # Auto-committed in batches and ahead of this transaction's first
+                    # write: a repo's worth of blocks DETACH DELETEd inside the txn
+                    # trips dbms.memory.transaction.total.max, and after the record
+                    # delete the batches would wait on the txn's Record locks. A
+                    # later rollback leaves the records, so a retry finishes the blocks.
+                    await self.delete_blocks_for_records(record_keys)
                     # DETACH DELETE removes every relationship on each node (the dynamic
                     # edge sweep — inheritPermissions/permissions/etc.). The survivors'
                     # parent id is cleared in the same statement.
@@ -12549,6 +13633,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     ]
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
+                if within_folder_id and records_with_type:
+                    # Only now is it known which records the folder delete removed.
+                    # In a caller's transaction, since its Record locks are still held.
+                    try:
+                        await self.delete_blocks_for_records(
+                            [rt["record"]["id"] for rt in records_with_type if rt.get("record")],
+                            transaction=transaction,
+                        )
+                    except Exception as block_error:
+                        if transaction is not None:
+                            raise
+                        # Our transaction is committed: rolling it back is impossible, and
+                        # the deleted records' events must still go out.
+                        self.logger.error(f"❌ Records deleted but their block cleanup failed: {block_error}")
 
                 event_payloads = []
                 try:
@@ -13179,7 +14277,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
                     "eventData": None,
                 }
-            node_collections = [CollectionNames.RECORDS.value] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+            node_collections = [
+                CollectionNames.RECORDS.value,
+                # blocks is not an isOfType target, so it is absent from the type
+                # mapping, but a code record's blocks are deleted with it.
+                CollectionNames.BLOCKS.value,
+            ] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
             txn_id = transaction
             if transaction is None:
                 txn_id = await self.begin_transaction(
@@ -13229,6 +14332,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         "MATCH (r:Record)-[:IS_OF_TYPE]->(t) WHERE r.id IN $record_ids DETACH DELETE t",
                         parameters={"record_ids": record_keys}, txn_id=txn_id,
                     )
+                    await self.delete_blocks_for_records(record_keys, transaction=txn_id)
                     await self.client.execute_query(
                         "MATCH (r:Record) WHERE r.id IN $record_ids DETACH DELETE r",
                         parameters={"record_ids": record_keys}, txn_id=txn_id,
@@ -13927,11 +15031,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if new_status == ProgressStatus.QUEUED.value
                 else ""
             )
-            # MATCH + SET in one statement; a read-then-write would let the
-            # indexing service advance a record in between and get clobbered.
+            # The lock comes first so the check reads a status the indexing service
+            # committed while this waited (Neo4j's lost-update pattern). Checked
+            # before the lock, a folder it finished in 10 ms was set back to QUEUED,
+            # which nothing consumes, and its repo's code graph never built again (B3).
             query = f"""
             MATCH (n:{label})
-            WHERE n.id IN $keys AND n.indexingStatus = $expected
+            WHERE n.id IN $keys
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE n.indexingStatus = $expected
             SET n.indexingStatus = $new_status{queued_stamp}
             RETURN n.id AS id
             """
@@ -14223,6 +15333,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "summaryDocumentId": record.get("summaryDocumentId"),
                 "virtualRecordId": record.get("virtualRecordId"),
                 "connectorId": record.get("connectorId"),
+                # A deleted code file's repo is owed an edge build, and by the
+                # time indexing handles this event the record is gone.
+                "recordGroupId": record.get("recordGroupId"),
+                "connectorName": record.get("connectorName"),
+                # Only a deleted CODE_FILE changes the graph, not an issue or PR.
+                "recordType": record.get("recordType"),
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")

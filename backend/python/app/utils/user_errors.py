@@ -121,8 +121,13 @@ EPUB_NO_READABLE_CHAPTERS = (
     "save a fresh copy from there, and upload it again."
 )
 GENERATED_FILE_SKIPPED = (
-    "This is a generated file (a lock file, minified bundle, source map or test snapshot), "
+    "This is a generated file (a lock file, minified bundle, source map, test snapshot or "
+    "a file its generator marked DO NOT EDIT), "
     "so PipesHub skips it to keep search results useful. Nothing needs fixing."
+)
+LFS_POINTER_SKIPPED = (
+    "This file is stored with Git LFS, so the repository holds only a pointer to it, not "
+    "its content. PipesHub skips the pointer. Nothing needs fixing."
 )
 BINARY_FILE_SKIPPED = (
     "This file holds binary data rather than text, so PipesHub can't read it. If it is "
@@ -233,6 +238,17 @@ def _ai_messages(model: str) -> dict[str, str]:
             "this file wasn't indexed. An admin can check the model name and endpoint in "
             "Workspace → AI Models, then Reindex the file."
         ),
+        "access_blocked": (
+            f"The {model}'s provider refused access to the model (model access, billing "
+            "or account policy), so this file wasn't indexed. An admin can check the "
+            "model's access in the provider's console, then Reindex the file."
+        ),
+        "permission_denied": (
+            f"The {model}'s credentials work but aren't allowed to use the model, so this "
+            "file wasn't indexed. An admin can grant them access to the model (on Bedrock, "
+            "bedrock:InvokeModel and bedrock:InvokeModelWithResponseStream on the model or "
+            "inference profile), then Reindex the file."
+        ),
         "server_error": unreachable,
         "timeout": unreachable,
         "content_filter": (
@@ -325,8 +341,67 @@ def _status_code(exc: BaseException) -> int | None:
     if _from(exc, ("google.genai",)) and isinstance(code, int):
         return code
     response = getattr(exc, "response", None)
+    # botocore's ClientError keeps the parsed response as a dict.
+    if isinstance(response, dict):
+        value = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+        return value if isinstance(value, int) else None
     value = getattr(response, "status_code", None)
     return value if isinstance(value, int) else None
+
+
+# What Bedrock says when the key itself is wrong. All of them are HTTP 403, like
+# a permission denial, and AWS words the three most common ones the same way.
+_BEDROCK_CREDENTIAL_MARKERS = (
+    "(unrecognizedclientexception)",
+    "(invalidclienttokenid)",
+    "(expiredtokenexception)",
+    "(expiredtoken)",
+    "(invalidsignatureexception)",
+    "(signaturedoesnotmatch)",
+    "(incompletesignature)",
+    "security token included in the request is invalid",
+    "security token included in the request is expired",
+    "signature we calculated does not match",
+)
+
+
+def bedrock_access_denied_cause(exc: BaseException | None) -> str | None:
+    """Why Bedrock refused a call: ``credentials``, ``account``, ``marketplace``,
+    ``scp``, ``iam``, ``other``, or None when there is no exception to read.
+
+    All of these are HTTP 403, but each has a different fix. ``credentials`` (an
+    unknown, mistyped or expired key, secret or session token) is the caller's
+    to re-enter. ``iam`` is fixed by the caller's policy. ``account`` (the model
+    is not enabled for the AWS account) needs AWS Support; ``marketplace`` (the
+    model's subscription failed, e.g. INVALID_PAYMENT_INSTRUMENT) needs billing
+    fixed; ``scp`` needs the Organizations admin. An unrecognised denial is
+    ``other`` so it is not mistaken for an IAM problem.
+    """
+    if exc is None:
+        return None
+    for current in _chain(exc):
+        text = str(current).lower()
+        if any(marker in text for marker in _BEDROCK_CREDENTIAL_MARKERS):
+            return "credentials"
+        if "not available for this account" in text:
+            return "account"
+        if "marketplace subscription" in text or "payment instrument" in text:
+            return "marketplace"
+        if "service control policy" in text:
+            return "scp"
+        if "not authorized to perform" in text or "(notauthorized)" in text:
+            return "iam"
+    return "other"
+
+
+def _aws_error_code(exc: BaseException) -> str | None:
+    """botocore's error code (``AccessDeniedException``, ``NotAuthorized``, ...)."""
+    if not _from(exc, ("botocore",)):
+        return None
+    response = getattr(exc, "response", None)
+    error = response.get("Error") if isinstance(response, dict) else None
+    code = error.get("Code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
 
 
 def _bad_request_code(exc: BaseException) -> str:
@@ -342,6 +417,10 @@ def _provider_code(chain: list[BaseException]) -> str:
     """
     theirs = [e for e in chain if not _ours(e)]
     for e in theirs:
+        # Bedrock documents NotAuthorized, a missing permission, as HTTP 400,
+        # which would otherwise read as a request the model could not process.
+        if _aws_error_code(e) == "NotAuthorized":
+            return "auth_error"
         status = _status_code(e)
         if status == 429:
             return "rate_limit"
@@ -376,6 +455,40 @@ def _provider_code(chain: list[BaseException]) -> str:
         if code != "unknown":
             return code
     return "unknown"
+
+
+# Bedrock refusals where the key is fine and something on the AWS side says no.
+_BEDROCK_BLOCKED_CAUSES = frozenset({"account", "marketplace", "scp", "other"})
+
+
+# bedrock-runtime operations PipesHub's chat and embedding models call. botocore
+# stays out of _PROVIDER_MODULES: a connector's S3 ClientError is a store failure,
+# and the operation name is what tells the two apart.
+_BEDROCK_MODEL_OPERATIONS = frozenset(
+    {"Converse", "ConverseStream", "InvokeModel", "InvokeModelWithResponseStream"}
+)
+
+
+def _bedrock_model_error(exc: BaseException) -> bool:
+    """A botocore error raised by a Bedrock model call, which langchain_aws lets out unwrapped."""
+    return _from(exc, ("botocore",)) and getattr(exc, "operation_name", None) in _BEDROCK_MODEL_OPERATIONS
+
+
+def _ai_failure_code(chain: list[BaseException]) -> str:
+    """`_provider_code`, except a Bedrock denial that is not a bad key.
+
+    botocore answers those with the same 403 as a bad key, which reads as
+    "rejected PipesHub's API key" and sends the admin to rotate a key that works.
+    """
+    code = _provider_code(chain)
+    if code != "auth_error" or not any(_bedrock_model_error(e) for e in chain):
+        return code
+    cause = bedrock_access_denied_cause(chain[0])
+    if cause == "iam":
+        return "permission_denied"
+    if cause in _BEDROCK_BLOCKED_CAUSES:
+        return "access_blocked"
+    return code
 
 
 def provider_error_code(exc: BaseException) -> str:
@@ -437,18 +550,18 @@ def to_user_reason(exc: BaseException | None) -> str:
     embedding = any(isinstance(e, _EMBEDDING_ERRORS) for e in chain)
     storage = any(isinstance(e, _STORAGE_ERRORS) for e in chain)
     content = any(isinstance(e, _CONTENT_ERRORS) for e in chain)
-    provider = [i for i, e in enumerate(chain) if _from(e, _PROVIDER_MODULES)]
+    provider = [i for i, e in enumerate(chain) if _from(e, _PROVIDER_MODULES) or _bedrock_model_error(e)]
     http = [i for i, e in enumerate(chain) if _from(e, _HTTP_CLIENT_MODULES)]
 
     if embedding:
-        code = _provider_code(chain)
+        code = _ai_failure_code(chain)
         return _ai_messages("embedding model").get(code, EMBEDDING_UNAVAILABLE)
 
     # Storing a file means embedding it first, so a provider error under a
     # storage wrapper is the embedding model's.
     model = "embedding model" if storage else "AI model"
     if provider:
-        return _ai_message(model, _provider_code(chain[provider[0]:]))
+        return _ai_message(model, _ai_failure_code(chain[provider[0]:]))
 
     if storage:
         return TEMPORARY_PROBLEM

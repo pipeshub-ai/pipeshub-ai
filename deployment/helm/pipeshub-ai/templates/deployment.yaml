@@ -154,6 +154,24 @@ spec:
               value: {{ .Values.config.governorLightParseSlotsPerCpu | quote }}
             - name: GOVERNOR_LIGHT_PARSE_MAX
               value: {{ .Values.config.governorLightParseMax | quote }}
+            - name: PARSE_MAX_ORG_SHARE
+              value: {{ .Values.config.parseMaxOrgShare | quote }}
+            - name: CODE_EDGE_BUILD_RECONCILE_INTERVAL_SECONDS
+              value: {{ .Values.config.codeEdgeBuildReconcileIntervalSeconds | quote }}
+            - name: CODE_EDGE_FULL_REBUILD_INTERVAL_SECONDS
+              value: {{ .Values.config.codeEdgeFullRebuildIntervalSeconds | quote }}
+            - name: CODE_EDGE_BUILD_MAX_CONCURRENT
+              value: {{ .Values.config.codeEdgeBuildMaxConcurrent | quote }}
+            - name: CODE_EDGE_BUILD_MAX_PER_ORG
+              value: {{ .Values.config.codeEdgeBuildMaxPerOrg | quote }}
+            - name: CODE_EDGE_BUILD_MAX_BLOCKS
+              value: {{ .Values.config.codeEdgeBuildMaxBlocks | quote }}
+            - name: CODE_EDGE_BUILD_MAX_FAILURES
+              value: {{ .Values.config.codeEdgeBuildMaxFailures | quote }}
+            - name: CODE_GRAPH_ENABLED
+              value: {{ .Values.config.codeGraphEnabled | quote }}
+            - name: CODE_GRAPH_BACKFILL
+              value: {{ .Values.config.codeGraphBackfill | quote }}
             - name: GOVERNOR_INDEX_HEADROOM
               value: {{ .Values.config.governorIndexHeadroom | quote }}
             - name: GOVERNOR_INDEX_MAX
