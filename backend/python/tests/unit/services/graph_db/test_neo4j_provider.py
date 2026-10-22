@@ -170,6 +170,21 @@ class TestConnectionManagement:
         assert kwargs["liveness_check_timeout"] == DEFAULT_LIVENESS_CHECK_TIMEOUT
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("env", "expected"), [({}, 120.0), ({"NEO4J_TRANSACTION_TIMEOUT": "600"}, 600.0), ({"NEO4J_TRANSACTION_TIMEOUT": "bad"}, 120.0)])
+    async def test_connect_reads_the_transaction_timeout_from_the_environment(self, env, expected) -> None:
+        provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+
+        with patch.dict("os.environ", {"NEO4J_PASSWORD": "secret", **env}, clear=True), patch(
+            "app.services.graph_db.neo4j.neo4j_provider.Neo4jClient"
+        ) as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.connect = AsyncMock(return_value=True)
+            mock_client_cls.return_value = mock_client
+            await provider.connect()
+
+        assert mock_client_cls.call_args.kwargs["transaction_timeout"] == expected
+
+    @pytest.mark.asyncio
     async def test_connect_returns_false_when_password_missing(self):
         provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
 

@@ -1214,11 +1214,21 @@ class TestGraphDataStore:
     @pytest.mark.asyncio
     async def test_the_store_says_whether_its_transaction_was_asked_to_be_explicit(self, mock_graph_provider) -> None:
         store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+        mock_graph_provider.opens_explicit_transaction = MagicMock(side_effect=lambda e: e is True)
 
         async with store.transaction() as by_default:
             assert by_default.explicit is False
         async with store.transaction(explicit=True) as asked:
             assert asked.explicit is True
+
+    @pytest.mark.asyncio
+    async def test_the_store_follows_the_provider_when_the_caller_does_not_ask(self, mock_graph_provider) -> None:
+        store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+        mock_graph_provider.opens_explicit_transaction = MagicMock(return_value=True)
+
+        async with store.transaction() as by_default:
+            assert by_default.explicit is True
+        mock_graph_provider.opens_explicit_transaction.assert_called_once_with(None)
 
     @pytest.mark.asyncio
     async def test_transaction_rolls_back_on_exception(self, mock_graph_provider) -> Never:

@@ -550,7 +550,7 @@ class IGraphDBProvider(ABC):
             write (List[str]): Collections/tables to write to
             explicit (bool | None): True asks for a real, all-or-nothing
                 transaction where the backend can run statements outside one
-                (Neo4j with NEO4J_EXPLICIT_TRANSACTIONS off). None leaves it to
+                (Neo4j with NEO4J_EXPLICIT_TRANSACTIONS false). None leaves it to
                 the backend's own setting. Backends that are always
                 transactional ignore it.
 
@@ -568,6 +568,12 @@ class IGraphDBProvider(ABC):
     async def rollback_transaction(self, transaction: str) -> None:
         """Roll back a database transaction."""
         pass
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        """Whether ``begin_transaction(explicit=...)`` yields a real,
+        all-or-nothing transaction. True unless the caller asked for False;
+        Neo4j also consults its own setting."""
+        return explicit is not False
 
     def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """Whether *error* means a rolled-back transaction block can simply

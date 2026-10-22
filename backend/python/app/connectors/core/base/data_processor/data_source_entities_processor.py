@@ -4735,6 +4735,7 @@ class DataSourceEntitiesProcessor:
             )
         return bool(edges)
 
+    @retry_on_deadlock()
     async def on_new_app_users(self, users: list[AppUser]) -> None:
         try:
             if not users:
@@ -5203,6 +5204,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_user_groups(connector_id, self.org_id, raise_on_error=raise_on_error)
 
+    @retry_on_deadlock()
     async def batch_upsert_user_groups(self, user_groups: list[AppUserGroup]) -> None:
         """Write user groups without their members, one node per external id.
 
@@ -5235,6 +5237,7 @@ class DataSourceEntitiesProcessor:
         for ug in user_groups:
             self._note_full_sync_seen(ug.connector_id, GROUP_WRITTEN_WITHOUT_MEMBERS, ug.source_user_group_id)
 
+    @retry_on_deadlock()
     async def delete_edges_between_collections(
         self,
         from_id: str,
@@ -5263,6 +5266,7 @@ class DataSourceEntitiesProcessor:
                 connector_id=connector_id, external_id=external_id
             )
 
+    @retry_on_deadlock()
     async def upsert_permission_edge(
         self,
         from_id: str,
@@ -5722,6 +5726,7 @@ class DataSourceEntitiesProcessor:
                 collection=CollectionNames.PERMISSION.value,
             )
 
+    @retry_on_deadlock()
     async def update_user_group_name(
         self,
         external_group_id: str,
@@ -6298,6 +6303,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_app_creator_user(connector_id)
 
+    @retry_on_deadlock()
     async def ensure_team_app_edge(self, connector_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.ensure_team_app_edge(connector_id, self.org_id)
@@ -6317,10 +6323,12 @@ class DataSourceEntitiesProcessor:
                 raise_on_error=raise_on_error,
             )
 
+    @retry_on_deadlock()
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.batch_update_nodes(nodes, collection)
 
+    @retry_on_deadlock()
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.delete_parent_child_edge_to_record(record_id)
@@ -6353,6 +6361,7 @@ class DataSourceEntitiesProcessor:
                 connector_id, conversation_index, thread_id, self.org_id, user_id
             )
 
+    @retry_on_deadlock()
     async def remove_user_access_to_record(
         self, connector_id: str, external_id: str, user_id: str
     ) -> None:
@@ -6376,6 +6385,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_record_by_weburl(weburl, self.org_id)
 
+    @retry_on_deadlock()
     async def create_record_relation(
         self, from_record_id: str, to_record_id: str, relation_type: str
     ) -> None:
@@ -6404,6 +6414,7 @@ class DataSourceEntitiesProcessor:
             # were gone would never come back to it.
             raise RuntimeError(f"Deletion failed: {(result or {}).get('reason')}")
 
+    @retry_on_deadlock()
     async def delete_records_and_relations(
         self, record_key: str, hard_delete: bool = False
     ) -> None:
@@ -6412,6 +6423,7 @@ class DataSourceEntitiesProcessor:
                 record_key, hard_delete=hard_delete
             )
 
+    @retry_on_deadlock()
     async def batch_upsert_records(self, records: list[Record]) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.batch_upsert_records(records)

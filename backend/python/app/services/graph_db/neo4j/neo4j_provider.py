@@ -664,14 +664,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 liveness_check_timeout=env_seconds(
                     "NEO4J_LIVENESS_CHECK_TIMEOUT", DEFAULT_LIVENESS_CHECK_TIMEOUT
                 ),
-                # Real transactions (abort rolls back) instead of one
-                # auto-commit per query. Off for one release: they hold node
-                # locks until commit, so shared-node writes can deadlock and
-                # retry where they used to interleave.
-                explicit_transactions=env_bool("NEO4J_EXPLICIT_TRANSACTIONS", False),
-                # The short creates (agents, teams, knowledge bases) ask for a
-                # real transaction while the flag above is off; false makes
-                # them follow that flag again if their locks ever get in the way.
+                # Real transactions: a failed block rolls back instead of
+                # leaving the statements before it committed. They hold node
+                # locks until commit, so shared-node writes can deadlock; the
+                # transaction helpers re-run such a block. Set to false to go
+                # back to one auto-commit per query.
+                explicit_transactions=env_bool("NEO4J_EXPLICIT_TRANSACTIONS", True),
+                # Callers that ask for a real transaction (explicit=True) keep
+                # it when the flag above is false; false here makes them follow
+                # that flag too, if their locks ever get in the way.
                 honour_explicit_requests=env_bool("NEO4J_CREATE_TRANSACTIONS", True),
             )
 
@@ -820,8 +821,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             read: Collections to read from (for compatibility)
             write: Collections to write to (for compatibility)
             explicit: True for a real transaction even with
-                NEO4J_EXPLICIT_TRANSACTIONS off (unless NEO4J_CREATE_TRANSACTIONS
-                is false); None follows NEO4J_EXPLICIT_TRANSACTIONS
+                NEO4J_EXPLICIT_TRANSACTIONS false (unless NEO4J_CREATE_TRANSACTIONS
+                is false); False auto-commits each statement; None follows NEO4J_EXPLICIT_TRANSACTIONS
 
         Returns:
             str: Transaction ID
@@ -830,6 +831,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise RuntimeError("Neo4j client not connected")
 
         return await self.client.begin_transaction(read, write, explicit=explicit)
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return self.client is not None and self.client.opens_explicit_transaction(explicit)
 
     async def commit_transaction(self, transaction: str) -> None:
         """
