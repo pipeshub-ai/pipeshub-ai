@@ -102,6 +102,7 @@ def _hub(documents: dict[str, dict] | None = None) -> KnowledgeHubService:
     graph.get_knowledge_hub_root_nodes_v2 = AsyncMock(side_effect=root_listing)
     graph.get_knowledge_hub_connector_page_v3 = AsyncMock(side_effect=scoped_page)
     graph.get_document = AsyncMock(side_effect=lambda key, collection: documents.get(key))
+    graph.get_hidden_app_ids = AsyncMock(return_value=[])
     return KnowledgeHubService(logger=MagicMock(), graph_provider=graph, excluded_app_ids=OFF)
 
 
