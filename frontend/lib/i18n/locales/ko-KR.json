@@ -4713,6 +4713,7 @@
     "stageParsed": "파싱됨",
     "stageSearchable": "검색 가능",
     "stageClassified": "분류됨",
+    "stageEntities": "엔터티",
     "stageAttempt": "시도 {{n}}회",
     "stageDetailsAria": "단계 세부 정보",
     "tabRecordInformation": "레코드 정보",

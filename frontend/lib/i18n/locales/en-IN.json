@@ -4640,6 +4640,7 @@
     "stageParsed": "Parsed",
     "stageSearchable": "Searchable",
     "stageClassified": "Classified",
+    "stageEntities": "Entities",
     "stageAttempt": "Attempt {{n}}",
     "stageDetailsAria": "Stage details",
     "tabRecordInformation": "Record Information",

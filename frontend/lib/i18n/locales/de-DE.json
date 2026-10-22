@@ -4640,6 +4640,7 @@
     "stageParsed": "Geparst",
     "stageSearchable": "Durchsuchbar",
     "stageClassified": "Klassifiziert",
+    "stageEntities": "Entitäten",
     "stageAttempt": "Versuch {{n}}",
     "stageDetailsAria": "Phasendetails",
     "tabRecordInformation": "Datensatzinformationen",

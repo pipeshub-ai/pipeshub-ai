@@ -4676,6 +4676,7 @@
     "stageParsed": "Analizado",
     "stageSearchable": "Buscable",
     "stageClassified": "Clasificado",
+    "stageEntities": "Entidades",
     "stageAttempt": "Intento {{n}}",
     "stageDetailsAria": "Detalles de la etapa",
     "tabRecordInformation": "Información del registro",

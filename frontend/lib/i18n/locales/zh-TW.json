@@ -4713,6 +4713,7 @@
     "stageParsed": "已解析",
     "stageSearchable": "可搜尋",
     "stageClassified": "已分類",
+    "stageEntities": "實體",
     "stageAttempt": "第 {{n}} 次嘗試",
     "stageDetailsAria": "階段詳細資訊",
     "tabRecordInformation": "記錄資訊",

@@ -4640,6 +4640,7 @@
     "stageParsed": "पार्स किया गया",
     "stageSearchable": "खोजने योग्य",
     "stageClassified": "वर्गीकृत",
+    "stageEntities": "इकाइयाँ",
     "stageAttempt": "प्रयास {{n}}",
     "stageDetailsAria": "चरण विवरण",
     "tabRecordInformation": "रिकॉर्ड जानकारी",

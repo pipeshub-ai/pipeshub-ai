@@ -4821,6 +4821,7 @@
     "stageParsed": "Parsováno",
     "stageSearchable": "Prohledávatelné",
     "stageClassified": "Klasifikováno",
+    "stageEntities": "Entity",
     "stageAttempt": "Pokus {{n}}",
     "stageDetailsAria": "Podrobnosti fází",
     "tabRecordInformation": "Informace o záznamu",
