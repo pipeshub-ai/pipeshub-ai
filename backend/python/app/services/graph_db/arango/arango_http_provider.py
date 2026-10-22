@@ -1096,6 +1096,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ["externalRecordId", "connectorId"],
         )
 
+        # COMPOSITE: externalParentId + connectorId (get_records_by_parent, run per
+        # synced record; the leading field also serves parent-only lookups).
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["externalParentId", "connectorId"],
+        )
+
         # SINGLE: orgId (queried independently and with other fields)
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,

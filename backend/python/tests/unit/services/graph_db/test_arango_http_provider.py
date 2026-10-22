@@ -4888,7 +4888,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 77
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 78
 
     @pytest.mark.asyncio
     async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
@@ -7040,7 +7040,7 @@ class TestEnsureIndexesExtended:
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
         calls = connected_provider.http_client.ensure_persistent_index.await_args_list
-        assert len(calls) == 77
+        assert len(calls) == 78
         assert sum(1 for c in calls if c.args[0] == "namedEntities") == 3
         assert sum(1 for c in calls if c.args[0] == "valueMentions") == 6
         assert sum(1 for c in calls if c.args[0] == "stageStates") == 3

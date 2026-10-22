@@ -185,6 +185,7 @@ from app.services.graph_db.neo4j.neo4j_client import (
     DEFAULT_LIVENESS_CHECK_TIMEOUT,
     DEFAULT_MAX_CONNECTION_LIFETIME,
     DEFAULT_MAX_CONNECTION_POOL_SIZE,
+    DEFAULT_TRANSACTION_TIMEOUT,
     Neo4jClient,
 )
 from app.services.graph_db.taxonomy import (
@@ -674,6 +675,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # it when the flag above is false; false here makes them follow
                 # that flag too, if their locks ever get in the way.
                 honour_explicit_requests=env_bool("NEO4J_CREATE_TRANSACTIONS", True),
+                # Server-side bound on one transaction, in seconds. A block that
+                # runs longer (a whole-connector delete) rolls back in full.
+                transaction_timeout=env_seconds(
+                    "NEO4J_TRANSACTION_TIMEOUT", DEFAULT_TRANSACTION_TIMEOUT
+                ),
             )
 
             # Connect
@@ -1000,6 +1006,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_external_id IF NOT EXISTS "
             "FOR (n:Record) ON (n.externalRecordId, n.connectorId)"
+        )
+
+        # COMPOSITE: externalParentId + connectorId (get_records_by_parent, run per
+        # synced record). Neo4j uses a composite only when every property is in the
+        # predicate, and both are. Unindexed, each call scanned the connector's
+        # records, so sync rate decayed with graph size.
+        indexes.append(
+            "CREATE INDEX record_external_parent_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.externalParentId, n.connectorId)"
         )
 
         # SINGLE: File.path (get_records_by_file_path: a delete reported by path only)
