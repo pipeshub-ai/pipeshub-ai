@@ -55,7 +55,8 @@ PR_HEAD_READ_ONLY = {"dco.yml"}
 # or without space before the colon; its value runs to the next `,` or `}` of a flow
 # mapping, or a comment. Only the base commit and the base repository are allowed.
 _CHECKOUT_REF = re.compile(
-    r"(?:^|[\s{,])['\"]?(?:ref|repository)['\"]?\s*:\s*((?:\$\{\{[^}]*\}\}|[^,}#])*)"
+    r"(?:^|[\s{,])['\"]?(?:ref|repository)['\"]?\s*:\s*((?:\$\{\{[^}]*\}\}|[^,}#])*)",
+    re.IGNORECASE,  # action inputs are case-insensitive: REF is ref
 )
 _BASE_REF = re.compile(
     r"^['\"]?\$\{\{\s*github\.(?:event\.pull_request\.base\.sha|sha|repository)\s*\}\}['\"]?$"
@@ -338,6 +339,8 @@ class TestHeadReadOnly(unittest.TestCase):
             "          gh pr checkout 1\n",
             '        with: { ref: "${{ env.HEAD }}" }\n',
             "        with: { ref: ${{ github.event.pull_request.head.sha }} }\n",
+            "          REF: ${{ github.event.pull_request.head.sha }}\n",
+            '        with: { Repository: "${{ env.HEAD_REPO }}" }\n',
             '        with: {fetch-depth: 0, ref: "${{ github.event.pull_request.head.sha }}"}\n',
             "          ref : ${{ github.event.pull_request.head.sha }}\n",
             '          echo >(git checkout "$HEAD")\n',
