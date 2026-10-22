@@ -55,6 +55,16 @@ def test_events_are_dropped_while_consent_is_off() -> None:
     assert event_buffer.size() == 0
 
 
+def test_an_event_that_raced_the_opt_out_is_not_kept() -> None:
+    # It passed record_event's check while collecting, then reached the buffer after the opt-out.
+    flag.set_collection_consent(True)
+    event_buffer.switch_off()
+
+    event_buffer.enqueue({"event": "late"})
+
+    assert event_buffer.drain() == []
+
+
 async def test_requests_pass_through_unrecorded_while_consent_is_off() -> None:
     flag.set_collection_consent(False)
     response = MagicMock(status_code=200)
