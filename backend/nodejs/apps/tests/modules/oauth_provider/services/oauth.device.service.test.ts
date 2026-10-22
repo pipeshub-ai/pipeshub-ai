@@ -208,6 +208,33 @@ describe('OAuthDeviceService', () => {
     )
   })
 
+  it('records the limit shown at approval, and refuses a poll once the app limit differs', async () => {
+    const shown = { apps: [], recordGroups: [], records: ['f1'] };
+    mockOAuthAppService.getAppByClientId.resolves({ ...app, knowledgeLimit: shown });
+    const pending: any = {
+      status: OAuthDeviceCodeStatus.PENDING,
+      expiresAt: new Date(Date.now() + 60_000),
+      clientId: 'cid',
+      save: sinon.stub().resolves(),
+    };
+    sinon.stub(OAuthDeviceCode, 'findOne').onFirstCall().resolves(pending);
+    await service.approve('ABCD-EFGH', new Types.ObjectId().toString(), new Types.ObjectId().toString(), 'granted');
+    expect(pending.knowledgeLimit).to.deep.equal(shown);
+
+    const approved = { ...pending, _id: new Types.ObjectId(), userId: new Types.ObjectId(), orgId: new Types.ObjectId(), scopes: ['user:read'] };
+    (OAuthDeviceCode.findOne as sinon.SinonStub).resolves(approved);
+    sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(approved as any);
+    mockOAuthAppService.getAppByClientId.resolves({ ...app, knowledgeLimit: undefined });
+
+    try {
+      await service.poll('cid', undefined, 'device-code');
+      expect.fail('should have thrown');
+    } catch (err) {
+      expect(err).to.be.instanceOf(InvalidGrantError);
+    }
+    expect(mockOAuthTokenService.generateTokens.called).to.be.false;
+  });
+
   it('should drop scopes the app lost between approval and poll', async () => {
     const userId = new Types.ObjectId()
     const orgId = new Types.ObjectId()

@@ -14,7 +14,10 @@ import {
   OAuthDeviceCodeStatus,
 } from '../schema/oauth.device_code.schema'
 import { OAuthGrantType } from '../schema/oauth.app.schema'
-import { toKnowledgeLimit } from '../schema/knowledge_limit.schema';
+import {
+  sameKnowledgeLimit,
+  toKnowledgeLimit,
+} from '../schema/knowledge_limit.schema';
 import { OAuthAppService } from './oauth.app.service'
 import { OAuthTokenService } from './oauth_token.service'
 import { ScopeValidatorService } from './scope.validator.service'
@@ -153,6 +156,9 @@ export class OAuthDeviceService {
     record.status = OAuthDeviceCodeStatus.APPROVED
     record.userId = new Types.ObjectId(userId)
     record.orgId = new Types.ObjectId(orgId)
+    // The limit the consent screen showed, so a poll after an edit is refused.
+    const app = await this.oauthAppService.getAppByClientId(record.clientId);
+    record.knowledgeLimit = toKnowledgeLimit(app.knowledgeLimit);
     await record.save()
     this.logger.info('Device authorization approved', {
       clientId: record.clientId,
@@ -226,6 +232,12 @@ export class OAuthDeviceService {
     })
     if (!claimed || !claimed.userId || !claimed.orgId) {
       throw new InvalidGrantError('device_code has already been used')
+    }
+
+    if (!sameKnowledgeLimit(claimed.knowledgeLimit, app.knowledgeLimit)) {
+      throw new InvalidGrantError(
+        "The application's permissions changed after you allowed it. Sign in again.",
+      );
     }
 
     const userId = claimed.userId.toString()

@@ -447,6 +447,36 @@ class TestKnowledgeBaseRoutes:
             await keep_path_inside_connection(request(kb_id="app-in", folder_id="rec-in"))
 
     @pytest.mark.asyncio
+    async def test_a_move_lands_only_inside_the_limit(self) -> None:
+        from app.connectors.sources.localKB.api.kb_router import move_record
+
+        async def move(new_parent_id: str | None) -> AsyncMock:
+            request = _request(graph=_graph())
+            request.json = AsyncMock(return_value={"newParentId": new_parent_id})
+            service = AsyncMock()
+            service.move_record = AsyncMock(return_value={"success": True})
+            await move_record("app-in", "rec-in", request, kb_service=service)
+            return service.move_record
+
+        (await move("rec-in")).assert_awaited_once()
+        (await move(None)).assert_awaited_once()
+        for outside in ("rec-out", "app-out"):
+            with pytest.raises(HTTPException) as exc:
+                await move(outside)
+            assert exc.value.status_code == 403
+        limit = {"apps": [], "recordGroups": [], "records": ["rec-in"]}
+        graph = _graph()
+        graph.get_selection_nodes = AsyncMock(return_value={
+            "groups": [], "records": [{"id": "rec-in", "vrid": "", "connectorId": "app-in"}], "truncated": False,
+        })
+        request = _request(limit, graph=graph)
+        request.json = AsyncMock(return_value={"newParentId": None})
+        service = AsyncMock()
+        with pytest.raises(HTTPException):
+            await move_record("app-in", "rec-in", request, kb_service=service)
+        service.move_record.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_restore_is_left_to_the_restore_itself(self) -> None:
         request = self._path_request(record_id="rec-out")
         request.scope = {"route": SimpleNamespace(path="/api/v1/kb/record/{record_id}/restore")}

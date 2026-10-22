@@ -10,6 +10,7 @@ from app.api.connection_limit import (
     ids_outside_connection,
     ids_outside_connection_on_restore,
     keep_path_inside_connection,
+    refuse_outside_connection,
 )
 from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
@@ -1709,6 +1710,9 @@ async def move_record(
 
         user_id = request.state.user.get("userId")
         new_parent_id = body.get("newParentId")  # None for KB root, folder_id for folder
+        await refuse_outside_connection(
+            request, request.app.state.graph_provider, request.state.user.get("orgId"), user_id, new_parent_id or kb_id,
+        )
 
         result = await kb_service.move_record(
             kb_id=kb_id,
