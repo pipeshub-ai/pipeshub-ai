@@ -142,8 +142,9 @@ async def _jira_product_access_account_ids(datasource: JiraDataSource) -> Option
     """Members of the groups of any application role, or None to keep every user.
 
     Mirrors ``JiraCloudConnector._keep_licensed_users``: an account outside every product
-    group has no Jira access, so the connector leaves it out. None when there are no role
-    groups or one of their member lists can't be read, as the connector keeps everyone then.
+    group has no Jira access, so the connector leaves it out. None only when there are no
+    role groups. A member list that can't be read raises: falling back to every user here
+    would let a sync that kept unlicensed accounts match the expectation.
     """
     mapping = await jira_fetch_application_roles_to_groups_mapping(datasource)
     names = {g["name"] for groups in mapping.values() for g in groups if g.get("name")}
@@ -161,8 +162,10 @@ async def _jira_product_access_account_ids(datasource: JiraDataSource) -> Option
                 maxResults=_JIRA_GROUP_MEMBER_PAGE,
                 context=f"product group members {name!r}",
             )
+            if resp.status in (401, 403):
+                _raise_on_auth_error(resp.status, "_jira_product_access_account_ids")
             if resp.status != 200:
-                return None
+                raise RuntimeError(f"product group {name!r} members: HTTP {resp.status} startAt={start_at}")
             data = resp.json() or {}
             batch = data.get("values") or []
             licensed.update(m["accountId"] for m in batch if m.get("accountId"))
