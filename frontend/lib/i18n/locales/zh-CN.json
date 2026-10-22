@@ -4342,6 +4342,11 @@
         "specSummary_other": "版本 {{version}} · OpenAPI {{openapi}} · {{count}} 个操作",
         "dropFile": "将规范文件拖放到此处，或点击选择文件",
         "dropFileHint": "JSON 或 YAML。您也可以在下方粘贴规范。",
+        "sampleHint": "手头没有规范？从示例开始：一个支持所有登录方式的帮助台 API。",
+        "sample": {
+          "yaml": "示例 YAML",
+          "json": "示例 JSON"
+        },
         "detailsHeading": "详情",
         "descriptionHint": "智能体会读取此内容来决定何时使用该 API。",
         "authSchemeHint": "智能体调用 API 时 PipesHub 的登录方式。",

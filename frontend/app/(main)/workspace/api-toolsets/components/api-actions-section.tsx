@@ -6,6 +6,7 @@ import { Badge, Button, Flex, Grid, Text } from '@radix-ui/themes';
 import { toast } from '@/lib/store/toast-store';
 import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { useFeatureFlagsStore, selectApiToolsetsEnabled } from '@/lib/store/feature-flags-store';
 import { ConfirmationDialog } from '../../components';
@@ -91,6 +92,7 @@ export function ApiActionsSection({ manage, searchQuery, filter }: ApiActionsSec
             <Badge size="1" variant="soft" color="gray" radius="full">
               {visible.length}
             </Badge>
+            <BetaBadge />
           </Flex>
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t(canManage ? 'workspace.apiToolsets.subtitleAdmin' : 'workspace.apiToolsets.subtitle')}

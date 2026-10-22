@@ -4305,6 +4305,11 @@
         "specSummary_other": "Versión {{version}} · OpenAPI {{openapi}} · {{count}} operaciones",
         "dropFile": "Suelta aquí un archivo de especificación o haz clic para elegir uno",
         "dropFileHint": "JSON o YAML. También puedes pegar la especificación abajo.",
+        "sampleHint": "¿No tienes una especificación a mano? Empieza con el ejemplo, una API de soporte con todos los tipos de inicio de sesión.",
+        "sample": {
+          "yaml": "Ejemplo en YAML",
+          "json": "Ejemplo en JSON"
+        },
         "detailsHeading": "Detalles",
         "descriptionHint": "Los agentes leen esto para decidir cuándo usar la API.",
         "authSchemeHint": "Cómo inicia sesión PipesHub cuando un agente llama a la API.",

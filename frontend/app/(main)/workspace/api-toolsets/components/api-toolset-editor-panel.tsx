@@ -36,6 +36,11 @@ import { PanelSection } from './panel-section';
 
 const SPEC_FILE_TYPES = '.json,.yaml,.yml,application/json,application/yaml,text/yaml';
 const OAUTH_CALLBACK_PATH = '/api-toolsets/oauth/callback/';
+/** The Acme Helpdesk reference spec, kept equal to integration-tests/openapi_fixture/openapi.yaml by a test there. */
+const SAMPLE_SPECS = [
+  { format: 'yaml', href: '/samples/api-action-sample.yaml' },
+  { format: 'json', href: '/samples/api-action-sample.json' },
+] as const;
 
 interface ApiToolsetEditorPanelProps {
   open: boolean;
@@ -248,6 +253,21 @@ export function ApiToolsetEditorPanel({ open, editingId, onOpenChange, onSaved }
                   {t('workspace.apiToolsets.editor.dropFileHint')}
                 </Text>
               </button>
+              <Flex align="center" justify="between" gap="2" wrap="wrap">
+                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                  {t('workspace.apiToolsets.editor.sampleHint')}
+                </Text>
+                <Flex gap="2">
+                  {SAMPLE_SPECS.map(({ format, href }) => (
+                    <Button key={format} asChild size="1" variant="soft" color="gray">
+                      <a href={href} download>
+                        <MaterialIcon name="download" size={14} />
+                        {t(`workspace.apiToolsets.editor.sample.${format}`)}
+                      </a>
+                    </Button>
+                  ))}
+                </Flex>
+              </Flex>
               <LabeledTextArea
                 aria-label={t('workspace.apiToolsets.editor.spec')}
                 size="2"

@@ -1,4 +1,4 @@
-# Acme Helpdesk: the reference spec for PipesHub API Toolsets.
+# Acme Helpdesk: the reference spec for PipesHub API actions.
 #
 # Upload this file (or copy it from the running server at /openapi.yaml) to turn
 # the Acme Helpdesk API into tools an agent can call. Copy its habits into your own spec:
@@ -14,7 +14,7 @@
 #     Only refs inside this file are followed; PipesHub never fetches remote refs.
 #   * Request bodies are application/json. Other body types are skipped in v1.
 #   * securitySchemes lists every way the API accepts credentials. The admin picks
-#     one when adding the toolset.
+#     one when adding the API action.
 #   * An operation anyone may call says `security: []` (see /announcements).
 #   * Relative OAuth URLs resolve against the server URL. The running server rewrites
 #     authorizationUrl to its --public-url, so a browser can open the sign-in page.

@@ -4450,6 +4450,11 @@
         "specSummary_other": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operací",
         "dropFile": "Přetáhněte sem soubor se specifikací, nebo klikněte a vyberte ho",
         "dropFileHint": "JSON nebo YAML. Specifikaci můžete také vložit níže.",
+        "sampleHint": "Nemáte specifikaci po ruce? Začněte ukázkou, API helpdesku se všemi typy přihlášení.",
+        "sample": {
+          "yaml": "Ukázka YAML",
+          "json": "Ukázka JSON"
+        },
         "detailsHeading": "Podrobnosti",
         "descriptionHint": "Agenti podle tohoto textu rozhodují, kdy API použít.",
         "authSchemeHint": "Jak se PipesHub přihlásí, když agent volá API.",

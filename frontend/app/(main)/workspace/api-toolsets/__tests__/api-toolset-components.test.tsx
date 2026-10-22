@@ -81,6 +81,15 @@ describe('ApiToolsetEditorPanel', () => {
     expect(checkbox(/^\/listOrders$/).getAttribute('aria-checked')).toBe('false');
   });
 
+  it('offers the sample spec as YAML and JSON downloads', () => {
+    renderInTheme(<ApiToolsetEditorPanel open editingId={null} onOpenChange={() => {}} onSaved={() => {}} />);
+    const yaml = screen.getByRole('link', { name: /Sample YAML/ });
+    const json = screen.getByRole('link', { name: /Sample JSON/ });
+    expect(yaml.getAttribute('href')).toBe('/samples/api-action-sample.yaml');
+    expect(json.getAttribute('href')).toBe('/samples/api-action-sample.json');
+    expect(yaml.hasAttribute('download') && json.hasAttribute('download')).toBe(true);
+  });
+
   it("shows the backend's reason when the spec is refused", async () => {
     api.validateSpec.mockRejectedValue({ type: 'VALIDATION_ERROR', message: 'Swagger 2.0 specs are not supported.', statusCode: 400 });
     renderInTheme(<ApiToolsetEditorPanel open editingId={null} onOpenChange={() => {}} onSaved={() => {}} />);

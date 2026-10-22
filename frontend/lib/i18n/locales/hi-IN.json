@@ -4269,6 +4269,11 @@
         "specSummary_other": "संस्करण {{version}} · OpenAPI {{openapi}} · {{count}} ऑपरेशन",
         "dropFile": "स्पेक फ़ाइल यहाँ छोड़ें, या चुनने के लिए क्लिक करें",
         "dropFileHint": "JSON या YAML। आप नीचे स्पेक पेस्ट भी कर सकते हैं।",
+        "sampleHint": "स्पेक पास नहीं है? सैंपल से शुरू करें, एक हेल्पडेस्क API जिसमें हर तरह का साइन-इन है।",
+        "sample": {
+          "yaml": "सैंपल YAML",
+          "json": "सैंपल JSON"
+        },
         "detailsHeading": "विवरण",
         "descriptionHint": "API का उपयोग कब करना है, यह तय करने के लिए एजेंट इसे पढ़ते हैं।",
         "authSchemeHint": "जब कोई एजेंट API कॉल करता है, तब PipesHub कैसे साइन इन करता है।",

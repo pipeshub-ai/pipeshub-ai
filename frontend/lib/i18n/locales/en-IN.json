@@ -4269,6 +4269,11 @@
         "specSummary_other": "Version {{version}} · OpenAPI {{openapi}} · {{count}} operations",
         "dropFile": "Drop a spec file here, or click to choose one",
         "dropFileHint": "JSON or YAML. You can also paste the spec below.",
+        "sampleHint": "No spec at hand? Start from the sample, a helpdesk API with every sign-in type.",
+        "sample": {
+          "yaml": "Sample YAML",
+          "json": "Sample JSON"
+        },
         "detailsHeading": "Details",
         "descriptionHint": "Agents read this to decide when to use the API.",
         "authSchemeHint": "How PipesHub signs in when an agent calls the API.",

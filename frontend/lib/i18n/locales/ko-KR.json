@@ -4342,6 +4342,11 @@
         "specSummary_other": "버전 {{version}} · OpenAPI {{openapi}} · 작업 {{count}}개",
         "dropFile": "명세 파일을 여기에 놓거나 클릭해서 선택하세요",
         "dropFileHint": "JSON 또는 YAML. 아래에 명세를 붙여 넣을 수도 있습니다.",
+        "sampleHint": "명세가 없나요? 모든 로그인 방식을 갖춘 헬프데스크 API 샘플로 시작하세요.",
+        "sample": {
+          "yaml": "샘플 YAML",
+          "json": "샘플 JSON"
+        },
         "detailsHeading": "세부 정보",
         "descriptionHint": "에이전트는 이 내용을 읽고 API를 언제 사용할지 결정합니다.",
         "authSchemeHint": "에이전트가 API를 호출할 때 PipesHub가 로그인하는 방식입니다.",

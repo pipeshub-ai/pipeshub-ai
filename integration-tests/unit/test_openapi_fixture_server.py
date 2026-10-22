@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib.util
+import json
 import sys
 import threading
 from pathlib import Path
@@ -106,6 +107,13 @@ def test_spec_and_server_list_the_same_operations() -> None:
     in_spec = {(method, path) for method, path, _ in _operations()}
     on_server = {(method, path) for method, path, _ in server_module.ROUTES}
     assert in_spec == on_server
+
+
+def test_the_samples_admins_download_are_this_spec() -> None:
+    """The Add API action panel offers this spec as YAML and JSON from the frontend's public files."""
+    samples = Path(__file__).resolve().parents[2] / "frontend" / "public" / "samples"
+    assert (samples / "api-action-sample.yaml").read_text() == (_DIR / "openapi.yaml").read_text()
+    assert json.loads((samples / "api-action-sample.json").read_text()) == SPEC
 
 
 def test_every_operation_is_usable_as_a_tool() -> None:

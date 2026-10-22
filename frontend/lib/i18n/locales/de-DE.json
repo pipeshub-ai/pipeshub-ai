@@ -4269,6 +4269,11 @@
         "specSummary_other": "Version {{version}} · OpenAPI {{openapi}} · {{count}} Operationen",
         "dropFile": "Spezifikationsdatei hier ablegen oder klicken, um eine auszuwählen",
         "dropFileHint": "JSON oder YAML. Sie können die Spezifikation auch unten einfügen.",
+        "sampleHint": "Keine Spezifikation zur Hand? Beginnen Sie mit dem Beispiel, einer Helpdesk-API mit jeder Anmeldeart.",
+        "sample": {
+          "yaml": "Beispiel als YAML",
+          "json": "Beispiel als JSON"
+        },
         "detailsHeading": "Details",
         "descriptionHint": "Agenten lesen dies, um zu entscheiden, wann sie die API verwenden.",
         "authSchemeHint": "Wie sich PipesHub anmeldet, wenn ein Agent die API aufruft.",
