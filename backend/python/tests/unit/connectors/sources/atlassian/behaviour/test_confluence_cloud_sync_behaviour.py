@@ -2308,3 +2308,22 @@ class TestWebLinksThroughTheGateway:
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         assert db.records["10"].weburl == f"{WIKI}/spaces/ENG/pages/10"
+
+
+class TestUserSearchCap:
+    async def test_reaching_the_user_search_cap_is_reported(self, api, db, checkpoints, monkeypatch) -> None:
+        from app.connectors.sources.atlassian.confluence_cloud import connector as module
+
+        monkeypatch.setattr(module, "USER_SEARCH_CAP", 150)
+
+        def users(first: int, count: int) -> dict[str, Any]:
+            return {"results": [{"user": {"accountId": f"acc-{i}"}, "email": f"u{i}@acme.com"}
+                                for i in range(first, first + count)], "_links": {"base": WIKI}}
+
+        api.on("GET", f"{V1}/search/user", [users(0, 100), users(100, 50), {"results": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._account_statuses_known = True
+
+        await connector._sync_users()
+
+        assert any("returns at most" in p for p in connector._sync_problems)

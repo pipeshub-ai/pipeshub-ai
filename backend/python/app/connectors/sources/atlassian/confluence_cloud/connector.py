@@ -213,6 +213,9 @@ class ContentListing(NamedTuple):
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
+# Most users /wiki/rest/api/search/user?cql=type=user returns (Atlassian's documented cap).
+USER_SEARCH_CAP = 10_000
+
 # Confluence v2 space permission access-class principals (ROLES-mode / default ACLs), as
 # normalised by _access_class_id: Cloud spells them "access-class"/"ALL_LICENSED_USERS" or
 # "ACCESS_CLASS"/"all-licensed-users".
@@ -1193,6 +1196,12 @@ class ConfluenceConnector(BaseConnector):
                 # page can come back short before the end, so only an empty page ends the list.
                 start += len(users_data)
 
+            if len(seen_account_ids) >= USER_SEARCH_CAP:
+                # Atlassian: "cql=type=user will return up to 10k users".
+                self._note_problem(
+                    f"Confluence's user search returns at most {USER_SEARCH_CAP:,} users, so users past that "
+                    "were not added and can't be given access from Confluence"
+                )
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
 
             try:
