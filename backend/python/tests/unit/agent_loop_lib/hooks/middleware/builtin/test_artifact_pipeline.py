@@ -704,7 +704,7 @@ class TestLoopCompactionArtifactIndex:
             AssistantMessage(content="recent response 3"),
         ]
         shaper = shape_loop_compaction(
-            compact_every_n_turns=5, keep_recent=6, trigger_ratio=0.0
+            keep_recent=6, trigger_ratio=0.0
         )
         result = await _run_pre_model(shaper, messages, _budget(3_000), turn_index=5)
 

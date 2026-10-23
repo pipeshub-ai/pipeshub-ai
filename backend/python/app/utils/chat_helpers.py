@@ -129,8 +129,7 @@ def image_dict_to_part(image: dict[str, Any]) -> Any | None:  # noqa: ANN401
     """Convert a `collected_images` entry (`{"image_url": {"url": ...}, ...}`)
     into an `ImagePart` for a multipart `ToolOutput`/`UserMessage`. Shared by
     every tool (`retrieval.py`, `citations.py`) and hook
-    (`attachment_resolver.py`'s `shape_image_injection`/
-    `shape_retrieved_image_injection`) that needs to hand collected images to
+    (`attachment_resolver.py`'s `shape_image_injection`) that needs to hand collected images to
     the agent loop, so the dict-to-Part conversion lives in exactly one
     place. Local import avoids a module-level dependency from this
     low-level formatting module onto `agent_loop_lib`.

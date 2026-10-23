@@ -221,15 +221,6 @@ class TestImages:
 
         assert output.data == "[image returned by the tool not shown: this model does not accept images]"
 
-    async def test_provider_without_multipart_tool_results_also_gets_pending_images(self) -> None:
-        context = _context(supports_multipart_tool_result=False)
-        output = await mcp_result_to_tool_output(_result([_image()]), context)
-
-        assert any(isinstance(part, ImagePart) for part in output.data)
-        assert context.tool_state["pending_tool_images"] == [
-            {"image_url": {"url": f"data:image/png;base64,{_PNG_A}"}},
-        ]
-
     async def test_image_over_the_request_cap_is_degraded_to_a_note(self) -> None:
         context = _context(image_admission=ImageAdmission(permissive_policy(1)))
         output = await mcp_result_to_tool_output(_result([_image(_PNG_A), _image(_PNG_B)]), context)

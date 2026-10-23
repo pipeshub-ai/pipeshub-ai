@@ -96,9 +96,8 @@ class OllamaTransport(LLMTransport):
             # model must disambiguate multiple pending calls from content
             # alone (a known Ollama tool-calling limitation, not ours).
             # It also has no multipart tool-result support, unlike
-            # OpenAI/Anthropic — any images are stripped here and delivered
-            # instead via the `shape_retrieved_image_injection` PRE_MODEL
-            # fallback hook, which injects them into a UserMessage.
+            # OpenAI/Anthropic, and this transport sends user messages as
+            # text only, so tool images are not delivered on this path.
             return {"role": "tool", "content": msg.text + getattr(msg, "step_footer", "")}
         if msg.role == MessageRole.ASSISTANT:
             return {

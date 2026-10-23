@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
+from app.agent_loop_lib.context.pipeline import ContextProfile, build_context_pipeline
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     Message,
@@ -60,36 +61,11 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.events.base import CompositeEmitter
 from app.agent_loop_lib.hooks.events import HookEvent
-from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import (
-    shape_artifact_compaction,
-)
 from app.agent_loop_lib.hooks.middleware.builtin.artifact_registration import (
     shape_artifact_registration,
 )
 from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import (
     make_llm_summarizer,
-    shape_auto_compact,
-)
-from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
-    shape_budget_reduction,
-)
-from app.agent_loop_lib.hooks.middleware.builtin.context_invariants import (
-    shape_context_invariants,
-)
-from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import (
-    shape_deterministic_compact,
-)
-from app.agent_loop_lib.hooks.middleware.builtin.loop_compaction import (
-    shape_loop_compaction,
-)
-from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import (
-    shape_sliding_window,
-)
-from app.agent_loop_lib.hooks.middleware.builtin.synthesis_guard import (
-    shape_synthesis_guard,
-)
-from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
-    shape_tool_result_clearing,
 )
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
@@ -144,7 +120,6 @@ from app.agents.agent_loop.hooks import (
     seed_visible_tools_from_history,
     selected_nodes_prompt,
     shape_image_injection,
-    shape_retrieved_image_injection,
     stash_tool_call_metadata,
     sync_visible_tools_for_prompt,
 )
@@ -154,10 +129,7 @@ from app.agents.agent_loop.hooks.progressive_tools import (
     entity_tools_used_in_history,
 )
 from app.agents.agent_loop.image_guard import with_image_cap
-from app.agents.agent_loop.langchain_transport import (
-    LangChainTransport,
-    _supports_multipart_tool_result,
-)
+from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.lazy_tools_wiring import (
     CONNECTORS_PARENT,
     META_TOOL_NAMES,
@@ -345,9 +317,41 @@ def _transport_provider() -> str:
 # Phase-1 auto-compact (gentle): protects up to 70% of budget in the tail,
 # summarizes only the oldest portion. Phase-2 (aggressive): if still over
 # budget, shrinks tail to 40%, forcing more into the summary.
-_AUTO_COMPACT_TRIGGER_RATIO = 0.85
-_AUTO_COMPACT_PHASE1_TAIL_RATIO = 0.70
-_AUTO_COMPACT_PHASE2_TAIL_RATIO = 0.40
+_AUTO_COMPACT_TAIL_RATIOS = (0.70, 0.40)
+
+#: Tool results no context layer summarises or shortens (context/protection.py).
+#: Plans are what a plan-execute run follows. Web search/fetch results carry
+#: Citation IDs (`url/Citation ID: ...`) and fetch_full_record results carry
+#: the [refN] markers AnswerFinalizer builds citations from: both are readable
+#: only from the result itself, so shortening one makes every citation the
+#: model already saw unciteable. Artifact compaction (L2) may still replace an
+#: old one with its retrievable artifact reference.
+_PROTECTED_TOOLS = frozenset({
+    "create_plan", "critique_plan",
+    "dynamic__web_search", "dynamic__fetch_url",
+    FETCH_RECORD_TOOL_NAME,
+})
+
+
+def _chat_context_profile(
+    context: "AgentContext", transport_registry: Any, model_name: str,  # noqa: ANN401
+) -> ContextProfile:
+    """The chat agent's PRE_MODEL profile for `build_context_pipeline`."""
+    # Fetch sized by characters gets a cap equal to its own budget, so the
+    # shared 64K cap never cuts a fetch in the middle.
+    fetch_cap = fetch_result_cap(context.context_length)
+    return ContextProfile(
+        protected_tools=_PROTECTED_TOOLS,
+        clearing_kept_tools=_CODE_TRAVERSAL_TOOLS,
+        summarizer=(
+            make_llm_summarizer(transport_registry, "langchain", model_name)
+            if transport_registry is not None else None
+        ),
+        image_injectors=(shape_image_injection(context),),
+        tool_caps={FETCH_RECORD_TOOL_NAME: fetch_cap} if fetch_cap else {},
+        artifact_keep_last_n_turns=2,
+        auto_compact_tail_ratios=_AUTO_COMPACT_TAIL_RATIOS,
+    )
 
 
 def _composed_agents_enabled() -> bool:
@@ -638,7 +642,6 @@ class PipesHubAgentFactory:
             context, sandbox_manager, allow_network=network_enabled,
             artifact_store=artifact_store, tool_registry=tool_registry,
             transport_registry=transport_registry, model_name=model_name,
-            supports_multipart_tool_result=_supports_multipart_tool_result(llm),
         )
         tool_registry.register_tool(RetrieveArtifactContentTool(store=artifact_store))
         _register_final_answer_if_enabled(tool_registry)
@@ -1073,22 +1076,12 @@ class PipesHubAgentFactory:
         context: "AgentContext", sandbox_manager: Any = None, *, allow_network: bool = False,  # noqa: ANN401
         artifact_store: Any = None, tool_registry: Any = None,  # noqa: ANN401
         transport_registry: Any = None, model_name: str = "",  # noqa: ANN401
-        supports_multipart_tool_result: bool = True,
     ) -> HookRegistry:
         """Phase 5's hooks, wired onto a fresh `HookRegistry` (never a
         shared/global one — see that phase's hook docstrings for why
         per-request instances matter for `ToolErrorTracker`/`CitationCollector`
         state isolation across concurrent requests)."""
         hooks = HookRegistry()
-
-        # Exposed on tool_state so search/fetch tools (retrieval.py,
-        # citations.py) can skip stashing into `pending_tool_images` when
-        # the model already receives images natively via the multipart
-        # ToolMessage — that stash only exists to feed
-        # `shape_retrieved_image_injection`'s fallback, which is only
-        # registered below (and thus only ever consumes the stash) when
-        # this flag is False.
-        context.tool_state["supports_multipart_tool_result"] = supports_multipart_tool_result
 
         # --- POST_TOOL_USE: artifact registration (Phase 1 of two-phase compaction) ---
         # Large tool results (>2K tokens) are persisted in the artifact store
@@ -1112,73 +1105,13 @@ class PipesHubAgentFactory:
                 )
             )
 
-        # --- PRE_MODEL context-shaping pipeline (least lossy first) ---
-        # Same ordering ControlPlane.start() uses for its context_engine.
-        # L0 puts image attachments on a copy of the current request (no-op
-        # when context.attachment_image_blocks is empty — deferred check).
-        # L1–L4 and L6 are pure-Python (no LLM call). L7a/L7b are LLM-backed
-        # auto-compact — two phases so old conversation history is
-        # summarized first (gentle) and old turns second (aggressive) only
-        # when the gentle pass wasn't enough. L5 eviction runs after them,
-        # so it drops only what extraction and summaries could not shrink.
-        # Every compaction layer keeps context/protection.py's protected
-        # messages (the current request, pinned messages) verbatim.
-        # L9 checks the result: tool pairing, the current request, and the
-        # model window (raises ContextBudgetExceeded past it).
-        hooks.on(HookEvent.PRE_MODEL).use(shape_image_injection(context))     # L0
-        if not supports_multipart_tool_result:
-            # Providers that reject images inside a tool result (Ollama,
-            # OpenAI-family models on Chat Completions — see
-            # `_supports_multipart_tool_result`) have them stripped before the
-            # request leaves; this is the fallback that gets them to the model
-            # anyway, via the same UserMessage-injection mechanism as L0.
-            # Only registered for providers that actually need it so
-            # Anthropic/Gemini never see an image delivered twice.
-            hooks.on(HookEvent.PRE_MODEL).use(shape_retrieved_image_injection(context))  # L0.1
-        # Fetch sized by characters gets a cap equal to its own budget, so
-        # the shared 64K cap never cuts a fetch in the middle.
-        fetch_cap = fetch_result_cap(context.context_length)
-        hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction(             # L1
-            tool_caps={FETCH_RECORD_TOOL_NAME: fetch_cap} if fetch_cap else None,
-        ))
-        hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(          # L2
-            keep_last_n_turns=2,
-        ))
-        hooks.on(HookEvent.PRE_MODEL).use(shape_tool_result_clearing(         # L3
-            protected_tool_names=frozenset({
-                "create_plan", "critique_plan",
-                # WebToolAdapter's Citation IDs (`url/Citation ID: ...`)
-                # are only readable from the tool result itself — clearing
-                # it makes every citation the model already saw unciteable
-                # on a later turn. `shape_artifact_compaction` above still
-                # summarizes these after `keep_last_n_turns=2` (see
-                # `_find_web_record_by_url`'s page-level fallback for why
-                # that's an acceptable, not fully solved, trade-off).
-                "dynamic__web_search", "dynamic__fetch_url",
-                # Same reasoning: fetch_full_record results carry [refN]
-                # markers that AnswerFinalizer needs to build citations.
-                "knowledgegraph__fetch_record",
-            }) | _CODE_TRAVERSAL_TOOLS,
-        ))
-        hooks.on(HookEvent.PRE_MODEL).use(shape_loop_compaction())            # L4
-        hooks.on(HookEvent.PRE_MODEL).use(shape_deterministic_compact())      # L6
-
-        if transport_registry is not None:
-            summarizer = make_llm_summarizer(transport_registry, "langchain", model_name)
-            hooks.on(HookEvent.PRE_MODEL).use(shape_auto_compact(             # L7a
-                summarizer=summarizer,
-                trigger_ratio=_AUTO_COMPACT_TRIGGER_RATIO,
-                max_tail_ratio=_AUTO_COMPACT_PHASE1_TAIL_RATIO,
-            ))
-            hooks.on(HookEvent.PRE_MODEL).use(shape_auto_compact(             # L7b
-                summarizer=summarizer,
-                trigger_ratio=_AUTO_COMPACT_TRIGGER_RATIO,
-                max_tail_ratio=_AUTO_COMPACT_PHASE2_TAIL_RATIO,
-            ))
-
-        hooks.on(HookEvent.PRE_MODEL).use(shape_sliding_window())             # L5
-        hooks.on(HookEvent.PRE_MODEL).use(shape_synthesis_guard())            # L8
-        hooks.on(HookEvent.PRE_MODEL).use(shape_context_invariants())         # L9
+        # --- PRE_MODEL context-shaping pipeline ---
+        # One ordered definition shared with ControlPlane.start()
+        # (context/pipeline.py); this profile is what chat changes. L0 puts
+        # image attachments on a copy of the current request (no-op when
+        # context.attachment_image_blocks is empty — deferred check).
+        for layer in build_context_pipeline(_chat_context_profile(context, transport_registry, model_name)):
+            hooks.on(HookEvent.PRE_MODEL).use(layer)
 
         # LLM transport retry (429/5xx/network) with SSE "retrying..." status
         # feedback — see retry_with_status.py's docstring for why this lives
