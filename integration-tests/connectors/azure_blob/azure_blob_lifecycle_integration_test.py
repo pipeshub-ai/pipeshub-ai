@@ -10,6 +10,7 @@ Each test makes its own connector in its own run folder:
   TC-EXPIRED-SAS   — a SAS that expires after the first sync is reported as rejected credentials; nothing is removed
   TC-RECREATE      — deleting the connector and adding the same source again is a clean full sync, no duplicates
   TC-DISABLE       — disabling keeps the data; enabling again picks up what changed meanwhile
+  TC-TEAM-CLEARED  — clearing a team connector's Container Names removes what it synced, which the org could read
 """
 
 import asyncio
@@ -257,6 +258,44 @@ class TestAzureBlobLifecycle:
             )
             assert await graph_provider.get_record_by_external_id(connector_id, f"{RESOURCE_NAME}/{kept}") is not None
             assert await graph_provider.count_records(connector_id) == count_while_off
+        finally:
+            if state.get("connector_id"):
+                delete_quietly(pipeshub_client, state["connector_id"])
+            azure_blob_storage.clear_objects(RESOURCE_NAME, folder)
+
+    async def test_tc_team_selection_cleared_removes_its_records(
+        self,
+        azure_blob_storage: AzureBlobStorageHelper,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-TEAM-CLEARED: the sync refused to run with no container named, and left the old records readable."""
+        folder = new_run_folder()
+        key = f"{folder}shared.txt"
+        azure_blob_storage.upload_blob(RESOURCE_NAME, key, b"team selection cleared\n", content_type="text/plain")
+        named = folder_filter(folder)
+        named["sync"]["values"]["containers"] = {"value": [RESOURCE_NAME], "operator": "in", "type": "multiselect"}
+        state: dict[str, Any] = {}
+        try:
+            await create_connector_and_await_sync(
+                pipeshub_client, graph_provider, state, connector_type="Azure Blob",
+                connector_name=f"azure-blob-team-cleared-{uuid.uuid4().hex[:8]}",
+                connector_config={**azure_blob_connector_config(), "filters": named},
+                expected_records=1, scope="team",
+            )
+            connector_id = state["connector_id"]
+            assert await graph_provider.get_record_by_external_id(connector_id, f"{RESOURCE_NAME}/{key}") is not None
+
+            pipeshub_client.update_connector_filters_sync_safe(connector_id, filters=folder_filter(folder))
+
+            async def removed() -> bool:
+                return (
+                    await graph_provider.count_records(connector_id) == 0
+                    and await graph_provider.get_record_group_by_external_id(connector_id, RESOURCE_NAME) is None
+                )
+            await wait_until_graph_condition(
+                connector_id, check=removed, timeout=180, poll_interval=5, description="cleared selection removed",
+            )
         finally:
             if state.get("connector_id"):
                 delete_quietly(pipeshub_client, state["connector_id"])

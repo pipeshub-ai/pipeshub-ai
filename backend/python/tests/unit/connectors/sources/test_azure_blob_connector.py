@@ -2891,7 +2891,8 @@ class TestFailedBlobCheckpoint:
 
         await self._sync(c)
 
-        c._ensure_parent_folders_exist.assert_awaited_once_with("c1", ["dir"])
+        c._ensure_parent_folders_exist.assert_awaited_once()
+        assert c._ensure_parent_folders_exist.await_args.args[:2] == ("c1", ["dir"])
         c._process_azure_blob.assert_not_called()
         assert self._saved_time(c) == _ms(_JAN[2])
 

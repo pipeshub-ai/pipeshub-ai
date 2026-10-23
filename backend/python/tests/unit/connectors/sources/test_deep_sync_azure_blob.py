@@ -281,7 +281,8 @@ class TestSyncContainer:
              patch.object(connector, "_ensure_parent_folders_exist", new_callable=AsyncMock) as mock_ensure:
             await connector._sync_container("c1")
             # Same folder record (c1/folder) as the paths of its files imply, not a second one.
-            mock_ensure.assert_awaited_once_with("c1", ["folder"])
+            mock_ensure.assert_awaited_once()
+            assert mock_ensure.await_args.args[:2] == ("c1", ["folder"])
             mock_proc.assert_not_called()
 
     async def test_blob_error_continues(self, connector):

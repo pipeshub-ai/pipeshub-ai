@@ -672,6 +672,9 @@ class AzureBlobConnector(BaseConnector):
                     "Pick the containers to sync under Container Names (In) in the connector's filters: "
                     "a team connector shares what it syncs with everyone in the organisation."
                 )
+                removed = await self._remove_containers_of_cleared_selection()
+                if removed:
+                    message += f" The {removed} container(s) it synced before were removed from PipesHub."
                 await self._notify_error(NotificationType.CONNECTOR_SYNC_ERROR, "No containers selected", message)
                 raise ValueError(message)
 
@@ -780,6 +783,37 @@ class AzureBlobConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"Error in Azure Blob connector run: {ex}", exc_info=True)
             raise
+
+    async def _remove_containers_of_cleared_selection(self) -> int:
+        """Remove what a team connector synced once its Container Names are cleared, since the
+        whole org could still read it. Returns how many containers were removed.
+
+        Only on a fresh read of the saved filters that names no container: a failed or empty
+        read, which ``load_connector_filters`` cannot tell from a cleared filter, removes nothing.
+        """
+        try:
+            config = await self.config_service.get_config(
+                f"/services/connectors/{self.connector_id}/config", use_cache=False, raise_on_error=True,
+            )
+        except Exception as e:
+            self.logger.warning(f"Not removing synced containers: the connector config could not be read: {e}")
+            return 0
+        filters = config.get("filters") if isinstance(config, dict) else None
+        sync = filters.get("sync") if isinstance(filters, dict) else None
+        values = sync.get("values") if isinstance(sync, dict) else None
+        if not isinstance(values, dict) or included_names(FilterCollection.from_dict(values, self.logger), "containers"):
+            return 0
+        try:
+            stored = await stored_containers(self.data_entities_processor, self.connector_id)
+        except Exception as e:  # retried on the next sync
+            self.logger.warning(f"Not removing synced containers: the stored ones could not be read: {e}")
+            return 0
+        for name in sorted(stored):
+            await remove_container(
+                self.data_entities_processor, self.connector_id, name,
+                "now that this team connector names no container", self.logger,
+            )
+        return len(stored)
 
     async def _sync_containers(self, container_names: list[str]) -> dict[str, str]:
         """Sync containers a few at a time, so one large container does not hold up the rest.
@@ -1082,7 +1116,7 @@ class AzureBlobConnector(BaseConnector):
         # One pass after every prefix: a rename into a folder listed later is
         # still stored under its old path until that folder is processed.
         if complete:
-            await self._claim_records_of_gone_copies(container_name, unrecorded, listed)
+            await self._claim_records_of_gone_copies(container_name, unrecorded, listed, recorded)
         else:
             self._sync_incomplete = True
             self.logger.info(f"Not removing records in container {container_name}: a listing did not cover every blob")
@@ -1106,7 +1140,9 @@ class AzureBlobConnector(BaseConnector):
         else:
             self._queued_removals.append((container_name, remove))
 
-    async def _claim_records_of_gone_copies(self, container_name: str, unrecorded: list[dict], listed: set[str]) -> None:
+    async def _claim_records_of_gone_copies(
+        self, container_name: str, unrecorded: list[dict], listed: set[str], recorded: Container[str] | None = None,
+    ) -> None:
         """Process the unchanged blobs that have no record of their own, when that is safe.
 
         The connectors take equal content at a new key for a move, so one record can
@@ -1127,7 +1163,7 @@ class AzureBlobConnector(BaseConnector):
                 )
                 segments = get_folder_path_segments_from_blob_name(blob_name)
                 if segments:
-                    await self._ensure_parent_folders_exist(container_name, segments)
+                    await self._ensure_parent_folders_exist(container_name, segments, recorded, blob_dict)
                 record, permissions = await self._process_azure_blob(blob_dict, container_name)
                 if record:
                     await self._save([(record, permissions)])
@@ -1230,7 +1266,8 @@ class AzureBlobConnector(BaseConnector):
                                 blob_dict, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
                             )):
                                 await self._ensure_parent_folders_exist(
-                                    container_name, [*get_folder_path_segments_from_blob_name(folder), folder]
+                                    container_name, [*get_folder_path_segments_from_blob_name(folder), folder],
+                                    recorded, blob_dict,
                                 )
                         continue
 
@@ -1279,7 +1316,7 @@ class AzureBlobConnector(BaseConnector):
                     # Ensure folder hierarchy exists from blob path (Azure Blob has no folder objects)
                     path_segments = get_folder_path_segments_from_blob_name(blob_name)
                     if path_segments:
-                        await self._ensure_parent_folders_exist(container_name, path_segments)
+                        await self._ensure_parent_folders_exist(container_name, path_segments, recorded, blob_dict)
 
                     record, permissions = await self._process_azure_blob(
                         blob_dict, container_name, recorded
@@ -1378,7 +1415,8 @@ class AzureBlobConnector(BaseConnector):
         return is_dir or blob.get("name", "").endswith("/")
 
     async def _ensure_parent_folders_exist(
-        self, container_name: str, path_segments: list[str]
+        self, container_name: str, path_segments: list[str],
+        recorded: Container[str] | None = None, blob: dict | None = None,
     ) -> None:
         """Ensure folder records exist for each path segment (root to leaf).
 
@@ -1387,10 +1425,17 @@ class AzureBlobConnector(BaseConnector):
         Always processes all segments so that edges are re-created after full sync.
         Process in order so parent exists before child. The processor handles existing
         records by external_record_id and re-creates edges without duplicating nodes.
+
+        Azure keeps no folder times. A new folder is dated by ``blob``, the blob that implies
+        it; a folder in ``recorded`` is sent without times, so the processor keeps the stored
+        ones instead of moving them to every write.
         """
         if not path_segments:
             return
-        timestamp_ms = get_epoch_timestamp_in_ms()
+        last_modified = (blob or {}).get("last_modified")
+        timestamp_ms = (
+            datetime_to_epoch_ms(last_modified) if isinstance(last_modified, datetime) else get_epoch_timestamp_in_ms()
+        )
         for i, segment in enumerate(path_segments):
             external_id = f"{container_name}/{segment}"
             if external_id in self._folders_written:
@@ -1402,6 +1447,7 @@ class AzureBlobConnector(BaseConnector):
             parent_record_type = RecordType.FILE if parent_external_id else None
             record_name = segment.split("/")[-1] if segment else segment
             web_url = self._generate_web_url(container_name, segment + "/")
+            stored = recorded is not None and external_id in recorded
             folder_record = FileRecord(
                 id=str(uuid.uuid4()),
                 record_name=record_name,
@@ -1414,8 +1460,8 @@ class AzureBlobConnector(BaseConnector):
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
-                source_created_at=timestamp_ms,
-                source_updated_at=timestamp_ms,
+                source_created_at=None if stored else timestamp_ms,
+                source_updated_at=None if stored else timestamp_ms,
                 weburl=web_url,
                 signed_url=None,
                 hide_weburl=True,

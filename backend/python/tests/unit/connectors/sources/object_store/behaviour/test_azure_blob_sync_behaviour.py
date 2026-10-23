@@ -574,3 +574,57 @@ class TestFailureReports:
         assert sent["type"] == NotificationType.CONNECTOR_AUTH_ERROR
         assert sent["title"].endswith("Credentials rejected")
         assert "HTTP 403 AuthenticationFailed" in sent["message"]
+
+
+class TestClearedTeamSelection:
+    """A team connector whose Container Names are cleared stops syncing; what it synced before must not stay readable by the org."""
+
+    @pytest.mark.asyncio
+    async def test_its_containers_are_removed(self, connector, store, other, db, config) -> None:
+        choose_containers(connector, config, [BUCKET, OTHER])
+        store.put("a.txt")
+        other.put("b.txt")
+        await connector.run_sync()
+        assert {path("a.txt"), path("b.txt", OTHER)} <= db.paths()
+
+        config.sync_filters.pop("containers")
+        with pytest.raises(ValueError, match="Container Names"):
+            await connector.run_sync()
+
+        assert not db.paths()
+        assert BUCKET not in db.record_groups and OTHER not in db.record_groups
+        assert "The 2 container(s) it synced before were removed" in connector.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fail_mode", ["raise", "empty"])
+    async def test_an_unreadable_config_removes_nothing(self, connector, store, db, config, fail_mode) -> None:
+        choose_containers(connector, config, [BUCKET])
+        store.put("a.txt")
+        await connector.run_sync()
+        # The run's own filter load then sees no filters, as it would after a failed read.
+        config.fail_mode, config.fail_from = fail_mode, config.reads
+
+        with pytest.raises(ValueError):
+            await connector.run_sync()
+
+        assert path("a.txt") in db.paths()
+        assert BUCKET in db.record_groups
+
+
+class TestFolderTimes:
+    """Azure keeps no folder times: a new folder is dated by the blob that implies it, and a stored one keeps its dates."""
+
+    @pytest.mark.asyncio
+    async def test_a_new_folder_takes_its_blobs_time_and_a_stored_one_keeps_its_own(self, connector, store, db) -> None:
+        store.put("a/x.txt")
+        first_ms = int(store.objects["a/x.txt"].modified.timestamp() * 1000)
+        await connector.run_sync()
+        folder = db.by_path()[path("a")]
+        assert (folder.source_created_at, folder.source_updated_at) == (first_ms, first_ms)
+
+        store.put("a/y.txt")
+        await connector.run_sync()
+
+        # Sent without times, which the processor answers by keeping the stored ones.
+        rewritten = db.by_path()[path("a")]
+        assert (rewritten.source_created_at, rewritten.source_updated_at) == (None, None)
