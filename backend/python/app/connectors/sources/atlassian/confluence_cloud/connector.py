@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from logging import Logger
 from typing import (
     Any,
@@ -2412,6 +2412,13 @@ class ConfluenceConnector(BaseConnector):
                     break
                 followed.add(pagination_token)
 
+            # A comment changes neither its page's version nor its last modified time, so the
+            # listing never brings that page back: its comments would stay as first indexed.
+            if last_sync_time and not within_ids and listing_complete:
+                listing_complete = await self._reindex_pages_with_changed_comments(
+                    space_key, record_type, modified_after, last_sync_time
+                )
+
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
             if not listing_complete:
@@ -2438,6 +2445,72 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ {content_type.capitalize()} sync failed: {e}", exc_info=True)
             raise
+
+    # A comment changed this long before the last checkpoint is still looked at: the checkpoint
+    # is taken at the end of a sync, after its comment search.
+    _COMMENT_CHECK_OVERLAP = timedelta(minutes=10)
+
+    async def _reindex_pages_with_changed_comments(
+        self, space_key: str, record_type: RecordType, search_after: str | None, checkpoint: str,
+    ) -> bool:
+        """Re-index the stored pages (or blog posts) of a space whose comments changed since the checkpoint.
+
+        Their blocks hold their comments. A stored HTML page streams as blocks from now on.
+        Returns False when the comments could not be searched, so the checkpoint holds.
+        """
+        if not await self._comments_indexed(record_type):
+            return True
+        container_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
+        since = datetime.fromisoformat(checkpoint.replace("Z", "+00:00")) - self._COMMENT_CHECK_OVERLAP
+        page_ids: set[str] = set()
+        token: str | None = None
+        followed: set[str] = set()
+        while True:
+            offset, cursor = self._split_pagination_token(token)
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_comments_v1(
+                    space_key=space_key, modified_after=search_after, start=offset, cursor=cursor, limit=100,
+                )
+                data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
+            except AtlassianQuotaExhausted:
+                raise
+            except Exception as e:
+                self.logger.warning(f"Could not search the comments of space {space_key}: {e}")
+                data = None
+            results = data.get("results") if isinstance(data, dict) else None
+            if not isinstance(results, list):
+                self._note_problem(f"Space {space_key}: couldn't check for changed comments; the next sync tries again")
+                return False
+            for item in results:
+                container = item.get("container") or {}
+                changed = ((item.get("version") or {}).get("when") or "").replace("Z", "+00:00")
+                try:
+                    recent = not changed or datetime.fromisoformat(changed) > since
+                except ValueError:
+                    recent = True
+                if recent and container.get("type") == container_type and container.get("id"):
+                    page_ids.add(str(container["id"]))
+            next_url = (data.get("_links") or {}).get("next")
+            if not next_url:
+                break
+            token = self._extract_cursor_from_next_link(next_url)
+            if not results or not token or token in followed:
+                self._note_problem(f"Space {space_key}: couldn't check for changed comments; the next sync tries again")
+                return False
+            followed.add(token)
+
+        records = []
+        # Pages this listing re-read too: one whose version did not change is not re-indexed by it.
+        for page_id in sorted(page_ids):
+            record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, page_id)
+            if record is not None and not record.is_placeholder:
+                records.append(record)
+        if records:
+            self.logger.info(f"Re-indexing {len(records)} {container_type}s in space {space_key} whose comments changed")
+            await self._fix_legacy_mime_types(records)
+            await self.data_entities_processor.reindex_existing_records(records)
+        return True
 
     async def _save_batch_checkpoint(
         self, sync_point_key: str, items: list[dict[str, Any]], nothing_skipped: bool,
