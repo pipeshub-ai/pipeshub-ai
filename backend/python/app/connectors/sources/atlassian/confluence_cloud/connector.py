@@ -2872,8 +2872,10 @@ class ConfluenceConnector(BaseConnector):
             self._note_problem("Couldn't check for deleted spaces; the next sync tries again", unread=False)
             return
 
+        # A space last seen in scope that has no records is in no record, so it comes from the last scope.
+        left_scope = {str(p) for p in (cleaned.get("space_ids") or [])} - wanted
         unfinished: list[str] = []
-        for space_id in sorted(set(by_space) | pending):
+        for space_id in sorted(set(by_space) | pending | left_scope):
             try:
                 removed = await self._remove_space(space_id, by_space.get(space_id, []))
             except Exception as e:

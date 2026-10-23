@@ -1583,6 +1583,19 @@ class TestSpacesOutOfScope:
         await connector._remove_spaces_out_of_scope(spaces)
         assert "99" not in db.record_groups, "the pending space is finished though no record points at it"
 
+    async def test_an_empty_space_that_leaves_scope_is_removed(self, api, db, checkpoints, search) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        db.record_groups["77"] = ENG
+        db.record_groups["55"] = space_group("55", "EMPTY")
+        self._spaces(api, ("77", "ENG"), ("55", "EMPTY"))
+        await connector._remove_spaces_out_of_scope(await connector._sync_spaces())
+
+        self._spaces(api, ("77", "ENG"))
+        await connector._remove_spaces_out_of_scope(await connector._sync_spaces())
+
+        assert "55" not in db.record_groups, "a space with no records still goes"
+        assert "77" in db.record_groups
+
     async def test_an_empty_space_listing_removes_nothing(self, api, db, checkpoints, search) -> None:
         connector = await self._synced_in(db, checkpoints, search)
         self._spaces(api)
