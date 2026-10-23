@@ -72,7 +72,9 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
     SharePointRecordType,
 )
-from app.connectors.sources.microsoft.sharepoint_online.sync_health import SharePointSyncIncomplete
+from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
+    SharePointSyncIncomplete,
+)
 from app.models.entities import (
     FileRecord,
     RecordGroup,

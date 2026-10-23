@@ -1,13 +1,22 @@
 """Tests for app.connectors.sources.microsoft.sharepoint_online.connector."""
 
 import logging
-from collections.abc import Awaitable, Callable
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from fastapi import HTTPException
 
-from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
+from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     COMPOSITE_SITE_ID_COMMA_COUNT,
     COMPOSITE_SITE_ID_PARTS_COUNT,
@@ -17,38 +26,21 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
     SharePointCredentials,
     SharePointRecordType,
-    SiteMetadata,
-)
-import urllib.parse
-from app.connectors.core.registry.filters import FilterCollection
-from app.models.entities import Record, RecordType
-from app.models.permission import EntityType, Permission, PermissionType
-import asyncio
-import os
-import uuid
-from datetime import timedelta
-from unittest.mock import PropertyMock
-from fastapi import HTTPException
-from app.config.constants.arangodb import (
-    MimeTypes,
-    OriginTypes,
-    ProgressStatus,
-)
-from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointSubscriptionManager,
+    SiteMetadata,
 )
 from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
     SharePointSyncIncomplete,
 )
 from app.models.entities import (
     FileRecord,
+    Record,
     RecordGroup,
-    RecordGroupType,
+    RecordType,
     SharePointListItemRecord,
-    SharePointListRecord,
     SharePointPageRecord,
 )
-
+from app.models.permission import EntityType, Permission, PermissionType
 
 # ===========================================================================
 # Helpers
@@ -345,7 +337,7 @@ class TestSharePointCleanup:
 # Merged from test_sharepoint_connector_coverage.py
 # =============================================================================
 
-def _stub_run_sync_parts(c):
+def _stub_run_sync_parts(c) -> None:
     """Stub the parts of run_sync around the site loop (users, groups, deleted sites, site permissions)."""
     c.drive_delta_sync_point = MagicMock()
     c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value={"version": PERMISSION_MODEL_VERSION})
@@ -357,7 +349,7 @@ def _stub_run_sync_parts(c):
     c.notify = AsyncMock()
 
 
-def _make_sync_site(site_id, display_name, name):
+def _make_sync_site(site_id, display_name, name) -> MagicMock:
     site = MagicMock()
     site.id = site_id
     site.display_name = display_name
@@ -568,7 +560,7 @@ class TestSharePointTestConnection:
         c.client.sites.get = AsyncMock(return_value=MagicMock())
         rest_urls = []
 
-        async def rest_pages(url, **kwargs):
+        async def rest_pages(url, **kwargs) -> AsyncIterator[dict]:
             rest_urls.append(url)
             yield {}
 
@@ -589,7 +581,7 @@ class TestSharePointTestConnection:
         c.client.sites.by_site_id.return_value.get = AsyncMock(return_value=root_site)
         c.client.sites.get = AsyncMock(return_value=MagicMock())
 
-        async def rest_pages(url, **kwargs):
+        async def rest_pages(url, **kwargs) -> AsyncIterator[dict]:
             raise RuntimeError("SharePoint REST answered 403")
             yield {}
 
@@ -2724,7 +2716,7 @@ class TestTestConnectionAndAccess:
         connector.client.sites.by_site_id.return_value.get = AsyncMock(return_value=root_site)
         connector.client.sites.get = AsyncMock(return_value=MagicMock())
 
-        async def rest_pages(url, **kwargs):
+        async def rest_pages(url, **kwargs) -> AsyncIterator[dict]:
             yield {}
 
         connector._sharepoint_rest_pages = rest_pages

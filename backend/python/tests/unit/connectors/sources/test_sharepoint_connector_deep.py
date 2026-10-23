@@ -16,50 +16,27 @@ Covers additional methods not exercised by existing test suites:
 - CountryToRegionMapper.get_region_string / is_valid_region / get_all_*
 """
 
-import asyncio
 import logging
-import os
-import uuid
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
     FilterCollection,
-    FilterOperator,
-    IndexingFilterKey,
     SyncFilterKey,
 )
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    COMPOSITE_SITE_ID_COMMA_COUNT,
-    COMPOSITE_SITE_ID_PARTS_COUNT,
     PERMISSION_MODEL_VERSION,
     CountryToRegionMapper,
-    MicrosoftRegion,
     SharePointConnector,
-    SharePointCredentials,
-    SharePointRecordType,
-    SiteMetadata,
 )
 from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
     SharePointSyncIncomplete,
 )
 from app.models.entities import (
-    AppUser,
-    AppUserGroup,
-    FileRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
     RecordType,
-    SharePointListItemRecord,
-    SharePointListRecord,
-    SharePointPageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-
 
 # ===========================================================================
 # Helpers
@@ -102,7 +79,7 @@ def _make_connector():
     return c, dep, dsp, cs, tx
 
 
-def _stub_run_sync_parts(c):
+def _stub_run_sync_parts(c) -> None:
     """Stub the parts of run_sync around the site loop (users, groups, deleted sites, site permissions)."""
     c.drive_delta_sync_point = MagicMock()
     c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value={"version": PERMISSION_MODEL_VERSION})
@@ -114,7 +91,7 @@ def _stub_run_sync_parts(c):
     c.notify = AsyncMock()
 
 
-def _make_sync_site(site_id, display_name, name):
+def _make_sync_site(site_id, display_name, name) -> MagicMock:
     site = MagicMock()
     site.id = site_id
     site.display_name = display_name

@@ -3,37 +3,30 @@
 import base64
 import json
 import logging
-import urllib.parse
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from http import HTTPStatus
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
-from fastapi import HTTPException
-
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    COMPOSITE_SITE_ID_COMMA_COUNT,
-    COMPOSITE_SITE_ID_PARTS_COUNT,
     DRIVE_CHECKPOINT,
-    CountryToRegionMapper,
     ListPermissionScope,
-    MicrosoftRegion,
     SharePointConnector,
-    SharePointCredentials,
-    SharePointRecordType,
     SiteMetadata,
     _sharepoint_filter_options_max_search_batches,
 )
 from app.connectors.sources.microsoft.sharepoint_online.everyone_groups import (
     EVERYONE_EXCEPT_EXTERNAL,
 )
-from app.models.entities import Record, RecordType
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.entities import RecordType
+from app.models.permission import EntityType
 
 MODULE = "app.connectors.sources.microsoft.sharepoint_online.connector"
 
@@ -63,11 +56,11 @@ def _make_connector(*, return_dep: bool = False):
     return c
 
 
-def _rest_pages(*bodies):
+def _rest_pages(*bodies) -> Callable[..., AsyncIterator[dict]]:
     """A stand-in for _sharepoint_rest_pages that yields the given ``d`` bodies."""
     calls = []
 
-    async def pages(url, **_kwargs):
+    async def pages(url, **_kwargs) -> AsyncIterator[dict]:
         calls.append(url)
         for body in bodies:
             yield body
@@ -76,7 +69,7 @@ def _rest_pages(*bodies):
     return pages
 
 
-def _role_assignment(member, role_name="Read"):
+def _role_assignment(member, role_name="Read") -> dict:
     return {"Member": member, "RoleDefinitionBindings": {"results": [{"Name": role_name, "RoleTypeKind": 2}]}}
 
 
@@ -309,9 +302,11 @@ class TestSharePointTestConnection:
         root_site.web_url = "https://contoso.sharepoint.com"
         c.client.sites.by_site_id.return_value.get = AsyncMock(return_value=root_site)
         c.client.sites.get = AsyncMock(return_value=MagicMock(value=[]))
+        c.client.sites.by_site_id.return_value.permissions.get = AsyncMock(return_value=MagicMock(value=[]))
         c._sharepoint_rest_pages = _rest_pages({"results": []})
         result = await c.test_connection_and_access()
         assert result is True
+        c.client.sites.by_site_id.return_value.permissions.get.assert_awaited_once()
         assert c._sharepoint_rest_pages.calls == [
             "https://contoso.sharepoint.com/_api/web/roleassignments?$top=1"
         ]
@@ -1713,7 +1708,7 @@ class TestSharePointProcessSitePages:
         c.indexing_filters = MagicMock()
         c.indexing_filters.is_enabled = MagicMock(return_value=True)
 
-        def _page(page_id, title, created):
+        def _page(page_id, title, created) -> MagicMock:
             page = MagicMock()
             page.id = page_id
             page.title = title

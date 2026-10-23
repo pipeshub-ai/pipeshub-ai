@@ -143,8 +143,6 @@ from app.services.notification.types import NotificationSeverity, NotificationTy
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-_T = TypeVar("_T")
-
 
 # Constants for SharePoint site ID composite format
 # A composite site ID has the format: "hostname,site-id,web-id"
@@ -275,6 +273,7 @@ INACTIVE_USERS_SYNC_POINT_KEY = "sharepoint-inactive-users"
 GRAPH_PERMISSION_SYNC_POINT_KEY = "sharepoint-graph-permission"
 FILTERED_SITES_SYNC_POINT_KEY = "sharepoint-filtered-out-sites"
 GRAPH_NOT_FOUND = HTTPStatus.NOT_FOUND
+T = TypeVar("T")
 GRAPH_RESYNC_REQUIRED = HTTPStatus.GONE
 # The Graph SDK retries 429, 503 and 504 itself; a listing also gets another try after these, and
 # after a dropped connection, before a run gives up on what it lists.
@@ -1045,7 +1044,7 @@ class SharePointConnector(BaseConnector):
 
         return site_id
 
-    async def _safe_api_call(self, api_call: Callable[[], Awaitable[_T]], max_retries: int = 3, retry_delay: float = 1.0) -> _T | None:
+    async def _safe_api_call(self, api_call: Callable[[], Awaitable[T]], max_retries: int = 3, retry_delay: float = 1.0) -> T | None:
         """
         Enhanced safe API call execution with intelligent retry logic and error handling.
 
@@ -1294,9 +1293,10 @@ class SharePointConnector(BaseConnector):
             return None
         return drives
 
-    async def _graph_read(self, call: Callable[[], Any]) -> Any:
+    async def _graph_read(self, call: Callable[[], Awaitable[T]]) -> T:
         """A Graph read, tried again after a transient server error or a dropped connection."""
-        for attempt in range(1, GRAPH_READ_ATTEMPTS + 1):
+        attempt = 1
+        while True:
             try:
                 async with self.rate_limiter:
                     return await call()
@@ -1305,9 +1305,10 @@ class SharePointConnector(BaseConnector):
                 transient = status in GRAPH_TRANSIENT_STATUSES or (
                     status is None and isinstance(e, (httpx.TransportError, asyncio.TimeoutError))
                 )
-                if not transient or attempt == GRAPH_READ_ATTEMPTS:
+                if not transient or attempt >= GRAPH_READ_ATTEMPTS:
                     raise
                 await asyncio.sleep(attempt)
+                attempt += 1
 
     async def _graph_says_gone(self, call: Callable[[], Any]) -> bool:
         """Whether Graph answers 404 for a container: the one answer that lets a missing container be removed."""

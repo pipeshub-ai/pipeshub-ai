@@ -6,20 +6,16 @@ edge cases (empty lists, None values, missing keys, permission errors), and all
 branches (if/else, try/except, for loops with empty and non-empty iterables).
 """
 
-import asyncio
 import base64
-import json
 import logging
 import os
-import uuid
-from datetime import datetime, timedelta, timezone
-from http import HTTPStatus
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import CollectionNames, Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import CollectionNames, MimeTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
@@ -29,31 +25,17 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    COMPOSITE_SITE_ID_COMMA_COUNT,
-    COMPOSITE_SITE_ID_PARTS_COUNT,
     DRIVE_CHECKPOINT,
     CountryToRegionMapper,
     MicrosoftRegion,
     SharePointConnector,
     SharePointCredentials,
     SharePointRecordType,
-    SharePointSubscriptionManager,
     SiteMetadata,
 )
-from app.connectors.sources.microsoft.sharepoint_online.sync_health import SharePointSyncIncomplete
-from app.models.entities import (
-    AppUser,
-    AppUserGroup,
-    FileRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-    SharePointListItemRecord,
-    SharePointListRecord,
-    SharePointPageRecord,
+from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
+    SharePointSyncIncomplete,
 )
-from app.models.permission import EntityType, Permission, PermissionType
 
 # =============================================================================
 # Helpers
@@ -1129,7 +1111,7 @@ class TestCreateFileRecord:
 # =============================================================================
 
 
-def _mock_drive_listing(c, root_id="root-id"):
+def _mock_drive_listing(c, root_id="root-id") -> None:
     """Mocks the library root read and the stored-records read that a delta listing makes."""
     c.client = MagicMock()
     c.client.drives.by_drive_id.return_value.root.get = AsyncMock(return_value=MagicMock(id=root_id))
@@ -1350,7 +1332,7 @@ class TestProcessDriveDelta:
 # =============================================================================
 
 
-def _mock_library_tracker(c):
+def _mock_library_tracker(c) -> None:
     """Mocks the sync point that remembers a site's libraries between runs."""
     c.drive_delta_sync_point = MagicMock()
     c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
@@ -2202,7 +2184,7 @@ class TestPerformInitialFullSync:
         readable.created_date_time = None
         c.msgraph_client.get_all_user_groups = AsyncMock(return_value=[failing, readable])
 
-        async def members(group_id, is_owner=False):
+        async def members(group_id, is_owner=False) -> list:
             if group_id == "g1":
                 raise Exception("processing fail")
             return []
@@ -2222,7 +2204,7 @@ class TestPerformInitialFullSync:
 # =============================================================================
 
 
-def _mock_transitive_members(c, members):
+def _mock_transitive_members(c, members) -> MagicMock:
     """Mocks the Graph transitiveMembers listing of every Entra group with one page of members."""
     page = MagicMock()
     page.value = members
@@ -2238,7 +2220,7 @@ class _GraphGroupMock:
     mail = None
     additional_data = {}
 
-    def __init__(self, object_id, odata_type=None):
+    def __init__(self, object_id, odata_type=None) -> None:
         self.id = object_id
         if odata_type:
             self.odata_type = odata_type
@@ -2544,7 +2526,7 @@ class TestHandleGroupCreate:
 # =============================================================================
 
 
-def _mock_run_sync_state(c):
+def _mock_run_sync_state(c) -> None:
     """Mocks the sync points a run reads and writes (permission model, inactive users, known sites)
     and the notification a run that skipped part of the source sends."""
     for sync_point in ("drive_delta_sync_point", "user_sync_point"):

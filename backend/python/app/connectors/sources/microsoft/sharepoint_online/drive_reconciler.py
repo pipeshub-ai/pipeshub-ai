@@ -35,25 +35,22 @@ class DriveReconciler:
     ) -> int:
         """Deletes the library's records that the complete listing did not contain and that ``is_gone``
         (given the record's external id) confirms the source no longer has."""
-        stored = []
+        removed = 0
         after_key = None
         while True:
             page = await self.processor.get_records_in_record_group(
                 self.connector_id, drive_id, _PAGE, after_key=after_key
             )
-            stored.extend(page)
+            # Pages are keyed on the last record id, so deleting from this page does not shift the next one.
+            for record in page:
+                if record.external_record_id not in listed_external_ids and await is_gone(record.external_record_id):
+                    await self.processor.on_record_deleted(record_id=record.id)
+                    removed += 1
             if len(page) < _PAGE:
                 break
             after_key = page[-1].id
-        gone = [
-            record
-            for record in stored
-            if record.external_record_id not in listed_external_ids and await is_gone(record.external_record_id)
-        ]
-        for record in gone:
-            await self.processor.on_record_deleted(record_id=record.id)
-        if gone:
+        if removed:
             self.logger.info(
-                f"Removed {len(gone)} record(s) of library {drive_id} that its complete listing no longer has"
+                f"Removed {removed} record(s) of library {drive_id} that its complete listing no longer has"
             )
-        return len(gone)
+        return removed

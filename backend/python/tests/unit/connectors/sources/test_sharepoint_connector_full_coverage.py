@@ -1,10 +1,9 @@
 """Comprehensive tests for SharePoint Online connector covering uncovered methods."""
 
-import asyncio
 import logging
-import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -18,23 +17,18 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    COMPOSITE_SITE_ID_COMMA_COUNT,
-    COMPOSITE_SITE_ID_PARTS_COUNT,
     SharePointConnector,
-    SharePointCredentials,
-    SharePointRecordType,
     SharePointSubscriptionManager,
     SiteMetadata,
 )
-from app.connectors.sources.microsoft.sharepoint_online.sync_health import SharePointSyncIncomplete
+from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
+    SharePointSyncIncomplete,
+)
 from app.models.entities import (
     FileRecord,
     Record,
-    RecordGroup,
-    RecordGroupType,
     RecordType,
     SharePointListItemRecord,
-    SharePointListRecord,
     SharePointPageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
@@ -919,6 +913,7 @@ class TestHandleRecordUpdates:
         )
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_records_deleted_cascade.assert_not_called()
         connector.data_entities_processor.on_record_deleted.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1078,7 +1073,7 @@ class TestReinitializeCredential:
 class TestRunIncrementalSync:
 
     @staticmethod
-    def _prepare_run(connector, mock_site):
+    def _prepare_run(connector, mock_site) -> None:
         connector._reinitialize_credential_if_needed = AsyncMock()
         connector._sync_users = AsyncMock()
         connector._sync_user_groups = AsyncMock()
@@ -1091,7 +1086,7 @@ class TestRunIncrementalSync:
         connector.drive_delta_sync_point.update_sync_point = AsyncMock()
 
     @staticmethod
-    def _site(name):
+    def _site(name) -> MagicMock:
         mock_site = MagicMock()
         mock_site.id = f"site-{name}"
         mock_site.display_name = f"{name.title()} Site"
@@ -2133,7 +2128,7 @@ class TestTestConnectionAndAccess:
         connector.client.sites.get = AsyncMock(return_value=MagicMock(value=[]))
         rest_urls = []
 
-        async def rest_pages(url, **_kwargs):
+        async def rest_pages(url, **_kwargs) -> AsyncIterator[dict]:
             rest_urls.append(url)
             yield {"results": []}
 
@@ -2152,7 +2147,7 @@ class TestTestConnectionAndAccess:
         )
         connector.client.sites.get = AsyncMock(return_value=MagicMock(value=[]))
 
-        async def rest_pages(url, **_kwargs):
+        async def rest_pages(url, **_kwargs) -> AsyncIterator[None]:
             raise RuntimeError("SharePoint REST answered 403")
             yield
 

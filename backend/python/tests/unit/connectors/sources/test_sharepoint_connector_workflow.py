@@ -5,49 +5,37 @@ drive processing, page processing, permissions, error handling, and record updat
 Each test covers many code paths to maximize statement coverage.
 """
 
-import asyncio
 import logging
-import re
-import urllib.parse
-import uuid
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    ProgressStatus,
+)
+from app.connectors.core.registry.filters import (
+    FilterCollection,
+)
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    COMPOSITE_SITE_ID_COMMA_COUNT,
-    COMPOSITE_SITE_ID_PARTS_COUNT,
     DRIVE_CHECKPOINT,
     CountryToRegionMapper,
     ListPermissionScope,
     MicrosoftRegion,
     SharePointConnector,
-    SharePointCredentials,
-    SharePointRecordType,
     SiteMetadata,
 )
-from app.connectors.sources.microsoft.sharepoint_online.everyone_groups import EVERYONE_EXCEPT_EXTERNAL
-from app.config.constants.arangodb import CollectionNames, Connectors, MimeTypes, OriginTypes, ProgressStatus
-from app.connectors.core.registry.filters import (
-    FilterCollection,
-    FilterOperator,
-    IndexingFilterKey,
-    SyncFilterKey,
+from app.connectors.sources.microsoft.sharepoint_online.everyone_groups import (
+    EVERYONE_EXCEPT_EXTERNAL,
 )
 from app.models.entities import (
-    AppUser,
-    FileRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
     RecordType,
-    SharePointListItemRecord,
-    SharePointListRecord,
-    SharePointPageRecord,
 )
-from app.models.permission import EntityType, Permission, PermissionType
-
+from app.models.permission import EntityType
 
 # ===========================================================================
 # Helpers
@@ -99,13 +87,13 @@ def _make_connector():
     return connector, dep, dsp, cs, tx
 
 
-def _mock_drive_root(connector, root_id="root-item"):
+def _mock_drive_root(connector, root_id="root-item") -> None:
     """The library root folder that _process_drive_delta reads before listing."""
     connector.client = MagicMock()
     connector.client.drives.by_drive_id.return_value.root.get = AsyncMock(return_value=MagicMock(id=root_id))
 
 
-def _mock_container_sync_point(connector):
+def _mock_container_sync_point(connector) -> None:
     """The sync point ContainerTracker keeps the last listing's sites and libraries in."""
     connector.drive_delta_sync_point = MagicMock()
     connector.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
@@ -113,15 +101,15 @@ def _mock_container_sync_point(connector):
     connector.drive_delta_sync_point.delete_sync_point = AsyncMock()
 
 
-def _mock_listing(builder, values):
+def _mock_listing(builder, values) -> None:
     builder.get = AsyncMock(return_value=MagicMock(value=values, odata_next_link=None))
 
 
-def _without_checkpoints(results):
+def _without_checkpoints(results) -> list:
     return [r for r in results if r is not DRIVE_CHECKPOINT]
 
 
-def _readable_scope(web_url="https://contoso.sharepoint.com/sites/test"):
+def _readable_scope(web_url="https://contoso.sharepoint.com/sites/test") -> ListPermissionScope:
     """A list whose permissions were read and that has no uniquely permissioned items."""
     return ListPermissionScope(
         web_url=web_url,
@@ -1103,7 +1091,9 @@ class TestSharePointFullSync:
 
         # Mock _process_site_drives to yield a new record
         async def fake_drives(*args, **kwargs):
-            from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+            from app.connectors.sources.microsoft.common.msgraph_client import (
+                RecordUpdate,
+            )
             record = MagicMock()
             record.indexing_status = None
             update = RecordUpdate(
@@ -1196,12 +1186,12 @@ class TestSharePointPermissions:
             is_root=False,
         )
 
-        def assignment(member, role_name):
+        def assignment(member, role_name) -> dict:
             return {"Member": member, "RoleDefinitionBindings": {"results": [{"Name": role_name}]}}
 
         rest_urls = []
 
-        async def rest_pages(url, **_kwargs):
+        async def rest_pages(url, **_kwargs) -> AsyncIterator[dict]:
             rest_urls.append(url)
             yield {"results": [
                 # Owners - M365 group
@@ -1300,7 +1290,7 @@ class TestConnectionTest:
         )
         _mock_listing(connector.client.sites, [])
 
-        async def rest_pages(url, **_kwargs):
+        async def rest_pages(url, **_kwargs) -> AsyncIterator[dict]:
             yield {"results": []}
 
         connector._sharepoint_rest_pages = rest_pages

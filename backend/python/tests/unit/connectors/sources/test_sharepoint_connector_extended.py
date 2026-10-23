@@ -32,17 +32,15 @@ Covers methods and branches not exercised by existing test suites:
 - CountryToRegionMapper edge cases
 """
 
-import asyncio
 import logging
 import os
 import uuid
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -52,23 +50,12 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
     CountryToRegionMapper,
     MicrosoftRegion,
     SharePointConnector,
-    SharePointCredentials,
-    SharePointRecordType,
     SharePointSubscriptionManager,
-    SiteMetadata,
 )
 from app.models.entities import (
-    FileRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
     RecordType,
-    SharePointListItemRecord,
-    SharePointListRecord,
-    SharePointPageRecord,
 )
-from app.models.permission import EntityType, Permission, PermissionType
-
+from app.models.permission import PermissionType
 
 # ===========================================================================
 # Helpers
