@@ -22,6 +22,7 @@ from app.agent_loop_lib.context.base import ContextBudget
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     SystemMessage,
+    TextPart,
     ToolCall,
     ToolMessage,
     ToolMessageMeta,
@@ -30,7 +31,6 @@ from app.agent_loop_lib.core.messages import (
 from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import (
     _build_groups,
     _find_tail_start,
-    _first_non_pinned_group,
     _group_tokens,
     _naive_summary,
     make_llm_summarizer,
@@ -267,7 +267,7 @@ class TestMakeLlmSummarizer:
 class TestBuildGroups:
     def test_standalone_messages_each_form_own_group(self):
         messages = [UserMessage(content="a"), UserMessage(content="b"), SystemMessage(content="c")]
-        groups = _build_groups(messages, pin_first_n=1)
+        groups = _build_groups(messages)
         assert groups == [[0], [1], [2]]
 
     def test_assistant_with_tool_calls_merges_matching_tool_messages(self):
@@ -277,7 +277,7 @@ class TestBuildGroups:
             _tool_msg(call_id="tc_2"),
             UserMessage(content="next"),
         ]
-        groups = _build_groups(messages, pin_first_n=0)
+        groups = _build_groups(messages)
         assert groups == [[0, 1, 2], [3]]
 
     def test_mismatched_tool_call_id_breaks_group_early(self):
@@ -286,21 +286,21 @@ class TestBuildGroups:
             _tool_msg(call_id="tc_1"),
             _tool_msg(call_id="unrelated"),
         ]
-        groups = _build_groups(messages, pin_first_n=0)
+        groups = _build_groups(messages)
         assert groups == [[0, 1], [2]]
 
     def test_assistant_with_tool_calls_but_no_following_tool_message(self):
         messages = [_assistant_with_calls("tc_1"), UserMessage(content="next")]
-        groups = _build_groups(messages, pin_first_n=0)
+        groups = _build_groups(messages)
         assert groups == [[0], [1]]
 
     def test_orphaned_tool_messages_each_own_group(self):
         messages = [_tool_msg(call_id="tc_1"), _tool_msg(call_id="tc_2")]
-        groups = _build_groups(messages, pin_first_n=0)
+        groups = _build_groups(messages)
         assert groups == [[0], [1]]
 
     def test_empty_messages_yields_no_groups(self):
-        assert _build_groups([], pin_first_n=1) == []
+        assert _build_groups([]) == []
 
 
 # ---------------------------------------------------------------------------
@@ -315,31 +315,17 @@ class TestGroupTokens:
         assert _group_tokens(messages, [0, 1, 2]) == 100
 
 
-class TestFirstNonPinnedGroup:
-    def test_finds_first_group_touching_non_pinned_index(self):
-        groups = [[0], [1, 2], [3]]
-        assert _first_non_pinned_group(groups, pin_first_n=1) == 1
-
-    def test_zero_pinned_returns_first_group(self):
-        groups = [[0], [1]]
-        assert _first_non_pinned_group(groups, pin_first_n=0) == 0
-
-    def test_all_pinned_returns_group_count(self):
-        groups = [[0], [1]]
-        assert _first_non_pinned_group(groups, pin_first_n=5) == 2
-
-
 class TestFindTailStart:
     def test_always_includes_last_group_even_over_budget(self):
         messages = [_user(50), _user(5_000)]
         groups = [[0], [1]]
-        tail_start = _find_tail_start(messages, groups, pin_first_n=0, budget=1_000, max_tail_ratio=0.01)
+        tail_start = _find_tail_start(messages, groups, budget=1_000, max_tail_ratio=0.01)
         assert tail_start == 1
 
     def test_stops_before_exceeding_tail_budget(self):
         messages = [_user(50), _user(100), _user(100), _user(100)]
         groups = [[0], [1], [2], [3]]
-        tail_start = _find_tail_start(messages, groups, pin_first_n=0, budget=1_000, max_tail_ratio=0.25)
+        tail_start = _find_tail_start(messages, groups, budget=1_000, max_tail_ratio=0.25)
 
         assert tail_start == 2
         tail_cost = sum(_group_tokens(messages, g) for g in groups[tail_start:])
@@ -347,19 +333,12 @@ class TestFindTailStart:
         # Adding the next-oldest group would have pushed the tail over budget.
         assert tail_cost + _group_tokens(messages, groups[tail_start - 1]) > 250
 
-    def test_stops_when_reaching_fully_pinned_group(self):
-        messages = [_system(10), _user(10), _user(10)]
-        groups = [[0], [1], [2]]
-        tail_start = _find_tail_start(messages, groups, pin_first_n=1, budget=10_000, max_tail_ratio=1.0)
-        assert tail_start == 1
-
-    def test_loop_exhausts_without_break_when_nothing_pinned_and_budget_huge(self):
-        """With `pin_first_n=0` the pin check never breaks, and a generous
-        budget never exceeds the tail limit either, so the loop runs to
-        completion over every group and the whole history becomes tail."""
+    def test_loop_exhausts_when_budget_huge(self):
+        """A generous budget never exceeds the tail limit, so the loop runs
+        to completion over every group and the whole history becomes tail."""
         messages = [_user(10), _user(10), _user(10)]
         groups = [[0], [1], [2]]
-        tail_start = _find_tail_start(messages, groups, pin_first_n=0, budget=10_000, max_tail_ratio=1.0)
+        tail_start = _find_tail_start(messages, groups, budget=10_000, max_tail_ratio=1.0)
         assert tail_start == 0
 
 
@@ -372,7 +351,7 @@ class TestTriggerGuards:
     @pytest.mark.asyncio
     async def test_noop_when_under_trigger_ratio(self):
         messages = [_system(10), _user(10), _user(10)]
-        shaper = shape_auto_compact(trigger_ratio=0.85, max_tail_ratio=0.6, pin_first_n=1)
+        shaper = shape_auto_compact(trigger_ratio=0.85, max_tail_ratio=0.6)
         ctx, calls = await _run_middleware(shaper, messages, _budget(1_000))
 
         assert calls == [True]
@@ -387,25 +366,16 @@ class TestTriggerGuards:
         assert ctx.messages == []
 
     @pytest.mark.asyncio
-    async def test_noop_when_message_count_at_or_below_pinned_plus_one(self):
-        huge = [_user(5_000)]
-        shaper = shape_auto_compact(trigger_ratio=0.0, pin_first_n=0)
-        ctx, calls = await _run_middleware(shaper, huge, _budget(1_000))
-
-        assert calls == [True]
-        assert ctx.messages == huge
-
-    @pytest.mark.asyncio
     async def test_noop_when_only_a_single_atomic_group(self):
         """An assistant tool-call turn plus its two tool results is one
         atomic group even though it is 3 messages long, so `len(groups) <= 1`
-        short-circuits even though `len(messages) > pin_first_n + 1`."""
+        short-circuits."""
         messages = [
             _assistant_with_calls("tc_1", "tc_2"),
             _tool_msg(content="x" * 4_000, call_id="tc_1"),
             _tool_msg(content="y" * 4_000, call_id="tc_2"),
         ]
-        shaper = shape_auto_compact(trigger_ratio=0.0, pin_first_n=0)
+        shaper = shape_auto_compact(trigger_ratio=0.0)
         ctx, calls = await _run_middleware(shaper, messages, _budget(1_000))
 
         assert calls == [True]
@@ -414,10 +384,10 @@ class TestTriggerGuards:
     @pytest.mark.asyncio
     async def test_noop_when_tail_absorbs_everything(self):
         """When `max_tail_ratio` is generous enough that the tail walk
-        reaches all the way back to the pinned head, `middle_indices` ends
-        up empty and compaction is skipped even though the trigger fired."""
+        reaches all the way back to the first message, nothing is left to
+        summarise and compaction is skipped even though the trigger fired."""
         messages = [_system(10), _user(10), _user(10)]
-        shaper = shape_auto_compact(trigger_ratio=0.0, max_tail_ratio=1.0, pin_first_n=1)
+        shaper = shape_auto_compact(trigger_ratio=0.0, max_tail_ratio=1.0)
         ctx, calls = await _run_middleware(shaper, messages, _budget(1_000))
 
         assert calls == [True]
@@ -425,7 +395,7 @@ class TestTriggerGuards:
 
 
 # ---------------------------------------------------------------------------
-# shape_auto_compact — actual compaction (head + summary + tail rewrite)
+# shape_auto_compact — actual compaction (protected + summaries + tail)
 # ---------------------------------------------------------------------------
 
 
@@ -446,7 +416,7 @@ class TestCompaction:
             return "CANNED_SUMMARY"
 
         shaper = shape_auto_compact(
-            summarizer=fake_summarizer, trigger_ratio=0.85, max_tail_ratio=0.6, pin_first_n=1
+            summarizer=fake_summarizer, trigger_ratio=0.85, max_tail_ratio=0.6
         )
         ctx, calls = await _run_middleware(shaper, messages, _budget(1_000))
 
@@ -459,7 +429,38 @@ class TestCompaction:
 
         summary_msg = ctx.messages[1]
         assert isinstance(summary_msg, UserMessage)
+        assert summary_msg.injected, "the loop wrote this summary, not the person"
         assert summary_msg.content == "[Auto-compacted summary of 2 earlier message(s)]\nCANNED_SUMMARY"
+
+    @pytest.mark.asyncio
+    async def test_current_request_mid_history_stays_verbatim_between_summaries(self):
+        """In a chat, earlier turns come before the current question and the
+        run's own work after it: each side is summarised on its own and the
+        question itself is sent unchanged, in place."""
+        first_question = UserMessage(content="QUESTION A " + "a" * 1_200)
+        first_answer = AssistantMessage(content=[TextPart(text="answer A " + "b" * 1_200)])
+        current = UserMessage(content="QUESTION B: which practice do I log into?")
+        work = [
+            _assistant_with_calls("tc_1"), _tool_msg(content="x" * 1_200, call_id="tc_1"),
+            _assistant_with_calls("tc_2"), _tool_msg(content="y" * 1_200, call_id="tc_2"),
+        ]
+        recent = [_assistant_with_calls("tc_3"), _tool_msg(content="z" * 400, call_id="tc_3")]
+        messages = [first_question, first_answer, current, *work, *recent]
+
+        captured: list = []
+
+        async def fake_summarizer(run):
+            captured.append(run)
+            return f"SUMMARY OF {len(run)}"
+
+        shaper = shape_auto_compact(summarizer=fake_summarizer, trigger_ratio=0.0, max_tail_ratio=0.15)
+        ctx, calls = await _run_middleware(shaper, messages, _budget(2_000))
+
+        assert calls == [True]
+        assert captured == [[first_question, first_answer], work]
+        assert ctx.messages[1] is current
+        assert [m for m in ctx.messages if isinstance(m, UserMessage) and not m.injected] == [current]
+        assert ctx.messages[-2:] == recent
 
     @pytest.mark.asyncio
     async def test_uses_naive_summary_when_no_summarizer_configured(self):
@@ -470,7 +471,7 @@ class TestCompaction:
         tail2 = _user(100)
         messages = [head, mid1, mid2, tail1, tail2]
 
-        shaper = shape_auto_compact(trigger_ratio=0.0, max_tail_ratio=0.25, pin_first_n=1)
+        shaper = shape_auto_compact(trigger_ratio=0.0, max_tail_ratio=0.25)
         ctx, calls = await _run_middleware(shaper, messages, _budget(1_000))
 
         assert calls == [True]
@@ -490,7 +491,7 @@ class TestCompaction:
         recent_result = _tool_msg(content="y" * 2_000, call_id="tc_new")
         messages = [head, old_call, old_result, filler, recent_call, recent_result]
 
-        shaper = shape_auto_compact(trigger_ratio=0.0, max_tail_ratio=0.3, pin_first_n=1)
+        shaper = shape_auto_compact(trigger_ratio=0.0, max_tail_ratio=0.3)
         ctx, calls = await _run_middleware(shaper, messages, _budget(2_000))
 
         assert calls == [True]
@@ -505,11 +506,11 @@ class TestCompaction:
     async def test_custom_thresholds_change_trigger_point(self):
         messages = [_system(10), _user(200), _user(200), _user(200)]
 
-        lenient = shape_auto_compact(trigger_ratio=0.95, pin_first_n=1)
+        lenient = shape_auto_compact(trigger_ratio=0.95)
         ctx_lenient, _ = await _run_middleware(lenient, messages, _budget(1_000))
         assert ctx_lenient.messages == messages
 
-        strict = shape_auto_compact(trigger_ratio=0.1, max_tail_ratio=0.3, pin_first_n=1)
+        strict = shape_auto_compact(trigger_ratio=0.1, max_tail_ratio=0.3)
         ctx_strict, _ = await _run_middleware(strict, messages, _budget(1_000))
         assert len(ctx_strict.messages) < len(messages)
 
@@ -531,7 +532,7 @@ class TestSummarizerFailure:
         async def failing_summarizer(_mid):
             raise RuntimeError("llm unavailable")
 
-        shaper = shape_auto_compact(summarizer=failing_summarizer, trigger_ratio=0.0, pin_first_n=1)
+        shaper = shape_auto_compact(summarizer=failing_summarizer, trigger_ratio=0.0)
         ctx = ModelCallContext(messages=list(messages), budget=_budget(1_000))
         next_called = []
 
@@ -553,7 +554,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_single_message_never_compacted(self):
         messages = [_user(5_000)]
-        shaper = shape_auto_compact(trigger_ratio=0.0, pin_first_n=0)
+        shaper = shape_auto_compact(trigger_ratio=0.0)
         ctx, calls = await _run_middleware(shaper, messages, _budget(1_000))
 
         assert calls == [True]
@@ -568,7 +569,7 @@ class TestEdgeCases:
             _tool_msg(content="c" * 800, call_id="tc_3"),
             _tool_msg(content="d" * 800, call_id="tc_4"),
         ]
-        shaper = shape_auto_compact(trigger_ratio=0.0, max_tail_ratio=0.3, pin_first_n=1)
+        shaper = shape_auto_compact(trigger_ratio=0.0, max_tail_ratio=0.3)
         ctx, calls = await _run_middleware(shaper, messages, _budget(1_000))
 
         assert calls == [True]
@@ -579,44 +580,3 @@ class TestEdgeCases:
         )
         remaining_tool_ids = {m.tool_call_id for m in ctx.messages if isinstance(m, ToolMessage)}
         assert remaining_tool_ids <= {"tc_1", "tc_2", "tc_3", "tc_4"}
-
-
-# ---------------------------------------------------------------------------
-# Suspected bug: pin_first_n does not protect an assistant+tool_calls head
-# ---------------------------------------------------------------------------
-
-
-class TestPinFirstNGroupingGap:
-    @pytest.mark.asyncio
-    async def test_pinned_assistant_tool_call_group_can_still_be_compacted(self):
-        """`_build_groups` ignores `pin_first_n` entirely, so when the
-        pinned message at index 0 is an `AssistantMessage` with
-        `tool_calls`, it gets merged with its following `ToolMessage`(s)
-        into a group spanning indices [0, 1, ...]. Downstream, both
-        `shape_auto_compact`'s head/middle/tail split and
-        `_find_tail_start` test `all(idx < pin_first_n for idx in group)`
-        to decide if a group is pinned/head — which is False for a group
-        that straddles the pin boundary. Net effect: a message the caller
-        asked to pin (`pin_first_n=1`) is NOT protected here, and can be
-        swept into the summarized middle. This test documents the current
-        (suspect) behavior without asserting it is *correct* — see the
-        summary reported back to the user.
-        """
-        pinned_call = _assistant_with_calls("tc_pin")
-        pinned_result = _tool_msg(content="PINNED_MARKER", call_id="tc_pin")
-        filler1 = _user(300)
-        filler2 = _user(300)
-        tail1 = _user(50)
-        tail2 = _user(50)
-        messages = [pinned_call, pinned_result, filler1, filler2, tail1, tail2]
-
-        shaper = shape_auto_compact(trigger_ratio=0.0, max_tail_ratio=0.05, pin_first_n=1)
-        ctx, calls = await _run_middleware(shaper, messages, _budget(1_000))
-
-        assert calls == [True]
-        # The supposedly-pinned assistant/tool pair is gone from the
-        # rewritten history — only referenced (lossily) inside the summary.
-        assert pinned_call not in ctx.messages
-        assert pinned_result not in ctx.messages
-        summary_msg = next(m for m in ctx.messages if isinstance(m, UserMessage) and "Auto-compacted" in str(m.content))
-        assert "PINNED_MARKER" in summary_msg.content

@@ -67,6 +67,15 @@ class ContextBudget(BaseModel):
         """Budget available to the shaping pipeline after all reserves."""
         return max(self.max_tokens - self.reserved_artifact_tokens, min(1_000, self.max_tokens))
 
+    @property
+    def hard_limit_tokens(self) -> int:
+        """Message tokens past which the request no longer fits the window.
+
+        Between the budget and this limit the request still fits; it only
+        leaves the reply less than its reserve, so it is sent.
+        """
+        return self.max_tokens + self.reserved_output_tokens
+
     @classmethod
     def for_model(
         cls,

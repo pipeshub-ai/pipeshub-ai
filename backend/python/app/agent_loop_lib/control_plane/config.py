@@ -26,15 +26,18 @@ class RetryHookConfig(BaseModel):
 class ContextEngineConfig(BaseModel):
     """Control-plane-level knobs for the context-shaper pipeline.
 
-    PRE_MODEL shapers run cheapest-first:
+    PRE_MODEL shapers run least lossy first, and every compaction layer
+    keeps context/protection.py's protected messages (the current request,
+    pinned messages) verbatim:
         L1  budget_reduction
         L2  artifact_compaction  (turn-aware, replaces offload)
         L3  tool_result_clearing
         L4  loop_compaction      (turn-boundary batch compaction)
-        L5  sliding_window
         L6  deterministic_compact (extractive, no LLM call)
-        L7  auto_compact         (LLM summariser, last resort)
+        L7  auto_compact         (LLM summariser)
+        L5  sliding_window       (eviction, after extraction and summaries)
         L8  synthesis_guard      (hard budget enforcement)
+        L9  context_invariants   (always on: pairing, current request, window)
 
     POST_TOOL_USE:
         artifact_registration   (large results → artifacts)
@@ -64,7 +67,6 @@ class ContextEngineConfig(BaseModel):
     offload_preview_lines: int = 10
 
     enable_sliding_window: bool = True
-    sliding_window_pin_first_n: int = 1
 
     enable_deterministic_compact: bool = True
     deterministic_compact_trigger_ratio: float = 0.85

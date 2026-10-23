@@ -104,7 +104,7 @@ class TestProviderPairingPreservation:
             _tool_msg("final result", call_id="tc_1"),
         ]
         shaper = shape_deterministic_compact(
-            trigger_ratio=0.0, keep_last_n_messages=2, pin_first_n=1
+            trigger_ratio=0.0, keep_last_n_messages=2
         )
         result = await _run_middleware(shaper, messages, _budget(500))
 
@@ -233,7 +233,7 @@ class TestDeterministicCompaction:
             AssistantMessage(content="response 2"),
         ]
         shaper = shape_deterministic_compact(
-            trigger_ratio=0.0, keep_last_n_messages=2, pin_first_n=1
+            trigger_ratio=0.0, keep_last_n_messages=2
         )
         result1 = await _run_middleware(shaper, messages, _budget(500))
         result2 = await _run_middleware(shaper, messages, _budget(500))
@@ -268,7 +268,7 @@ class TestDeterministicCompaction:
             AssistantMessage(content="response 2"),
         ]
         shaper = shape_deterministic_compact(
-            trigger_ratio=0.0, keep_last_n_messages=2, pin_first_n=1
+            trigger_ratio=0.0, keep_last_n_messages=2
         )
         result = await _run_middleware(shaper, messages, _budget(500))
 
@@ -300,13 +300,28 @@ class TestSynthesisGuard:
 
     @pytest.mark.asyncio
     async def test_raises_on_unresolvable_overflow(self):
-        """Raises ContextBudgetExceeded when budget is impossibly small."""
+        """Raises ContextBudgetExceeded when the context cannot fit the window."""
         messages = [
             SystemMessage(content="x" * 10_000),
         ]
         shaper = shape_synthesis_guard()
         with pytest.raises(ContextBudgetExceeded):
-            await _run_middleware(shaper, messages, _budget(1_100))
+            await _run_middleware(
+                shaper, messages, ContextBudget(max_tokens=1_100, model="test", reserved_output_tokens=0),
+            )
+
+    @pytest.mark.asyncio
+    async def test_over_budget_inside_window_is_sent(self, caplog):
+        """Over the budget but inside the window: sent, with a warning, since
+        the request fits and only the reply's reserve shrinks."""
+        messages = [
+            SystemMessage(content="x" * 10_000),
+        ]
+        shaper = shape_synthesis_guard()
+        with caplog.at_level("WARNING"):
+            result = await _run_middleware(shaper, messages, _budget(1_100))
+        assert result == messages
+        assert "over budget but inside the window" in caplog.text
 
     @pytest.mark.asyncio
     async def test_passes_when_under_budget(self):
