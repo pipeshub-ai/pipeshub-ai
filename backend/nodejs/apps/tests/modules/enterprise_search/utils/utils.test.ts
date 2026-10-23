@@ -18,6 +18,7 @@ import {
   buildConversationResponse,
   addComputedFields,
   attachSharedBy,
+  findOrgUserIds,
   attachSharedByIfRecipient,
   buildFilter,
   initializeSSEResponse,
@@ -869,6 +870,45 @@ describe('Enterprise Search Utils', () => {
       )
       expect(findStub.called).to.be.false
       expect(result[0]).to.not.have.property('sharedBy')
+    })
+  })
+
+  describe('findOrgUserIds', () => {
+    const THIRD_OID = new mongoose.Types.ObjectId().toString()
+
+    const chain = (rows: unknown[]) => ({
+      select: sinon.stub().returnsThis(),
+      lean: sinon.stub().returnsThis(),
+      exec: sinon.stub().resolves(rows),
+    })
+
+    it('asks once, for active users of the organisation among the given ids', async () => {
+      const find = sinon.stub(Users, 'find').returns(chain([]) as any)
+
+      await findOrgUserIds(VALID_OID2, [VALID_OID, THIRD_OID])
+
+      expect(find.calledOnce).to.be.true
+      const filter = find.firstCall.args[0] as any
+      expect(String(filter.orgId)).to.equal(VALID_OID2)
+      expect(filter.isDeleted).to.equal(false)
+      expect((filter._id.$in as unknown[]).map(String)).to.deep.equal([VALID_OID, THIRD_OID])
+    })
+
+    it('answers with the ids that were found, as strings, and leaves out the rest', async () => {
+      sinon.stub(Users, 'find').returns(chain([{ _id: new mongoose.Types.ObjectId(VALID_OID) }]) as any)
+
+      const found = await findOrgUserIds(VALID_OID2, [VALID_OID, THIRD_OID])
+
+      expect([...found]).to.deep.equal([VALID_OID])
+      expect(found.has(THIRD_OID)).to.be.false
+    })
+
+    it('answers with nothing when nobody is a member', async () => {
+      sinon.stub(Users, 'find').returns(chain([]) as any)
+
+      const found = await findOrgUserIds(VALID_OID2, [VALID_OID])
+
+      expect(found.size).to.equal(0)
     })
   })
 

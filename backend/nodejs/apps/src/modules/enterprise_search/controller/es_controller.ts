@@ -59,6 +59,7 @@ import {
   addComputedFields,
   attachSharedBy,
   attachSharedByIfRecipient,
+  findOrgUserIds,
   assignAiModelField,
   buildAIResponseMessage,
   buildFiltersMetadata,
@@ -2734,88 +2735,76 @@ const createShareConversationHandler =
         timestamp: new Date().toISOString(),
       });
 
-      async function performShareConversation(session?: ClientSession | null) {
-        // Validate request body
-        if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-          throw new BadRequestError('userIds is required and must be an array');
-        }
+      // Validate request body
+      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+        throw new BadRequestError('userIds is required and must be an array');
+      }
 
-        if (accessLevel && !['read', 'write'].includes(accessLevel)) {
+      if (accessLevel && !['read', 'write'].includes(accessLevel)) {
+        throw new BadRequestError(
+          "Invalid access level. Must be 'read' or 'write'",
+        );
+      }
+
+      // An ObjectId is hex, so 'ABC…' and 'abc…' are the same user. Compare and de-duplicate on one form.
+      userIds = (userIds as unknown[]).map((id) => String(id).toLowerCase());
+
+      if (readOnlyShares) {
+        if (accessLevel && accessLevel !== 'read') {
           throw new BadRequestError(
-            "Invalid access level. Must be 'read' or 'write'",
+            "Agent conversations can only be shared with 'read' access",
           );
         }
-
-        // An ObjectId is hex, so 'ABC…' and 'abc…' are the same user. Compare and de-duplicate on one form.
-        userIds = (userIds as unknown[]).map((id) => String(id).toLowerCase());
-
-        if (readOnlyShares) {
-          if (accessLevel && accessLevel !== 'read') {
-            throw new BadRequestError(
-              "Agent conversations can only be shared with 'read' access",
-            );
-          }
-          if ((userIds as string[]).includes(String(userId).toLowerCase())) {
-            throw new BadRequestError(
-              'You cannot share a conversation with yourself',
-            );
-          }
-          userIds = [...new Set(userIds as string[])];
+        if ((userIds as string[]).includes(String(userId).toLowerCase())) {
+          throw new BadRequestError(
+            'You cannot share a conversation with yourself',
+          );
         }
+        userIds = [...new Set(userIds as string[])];
+      }
 
-        const recipientIds = userIds as string[];
+      const recipientIds = userIds as string[];
 
-        // Get conversation with access control
-        const conversation = await ChatSession.findOne({
-          _id: conversationId,
-          orgId,
-          userId,
-          isDeleted: false,
-          initiator: userId, // Only initiator can share
-          ...scope,
-        });
+      // Get conversation with access control
+      const conversation = await ChatSession.findOne({
+        _id: conversationId,
+        orgId,
+        userId,
+        isDeleted: false,
+        initiator: userId, // Only initiator can share
+        ...scope,
+      });
 
-        if (!conversation) {
-          throw new NotFoundError('Conversation not found or unauthorized');
+      if (!conversation) {
+        throw new NotFoundError('Conversation not found or unauthorized');
+      }
+      const ownedConversation: IChatSessionDocument = conversation;
+
+      // The recipients are checked before the transaction opens: one query, and no network call
+      // while the transaction is held.
+      recipientIds.forEach((id) => {
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+          throw new BadRequestError(`Invalid user ID format: ${id}`);
         }
+      });
+      const orgUserIds = await findOrgUserIds(orgId as string, recipientIds);
+      const unknownId = recipientIds.find((id) => !orgUserIds.has(id));
+      if (unknownId) {
+        throw new BadRequestError(`User not found: ${unknownId}`);
+      }
+      const validUsers = recipientIds.map((id) => ({
+        userId: new mongoose.Types.ObjectId(id),
+        accessLevel: accessLevel || 'read',
+      }));
 
+      async function performShareConversation(session?: ClientSession | null) {
         // Update object for conversation
         const updateObject: Partial<IConversation> = {
           isShared: true,
         };
 
-        // Handle user-specific sharing
-        // Validate all user IDs
-        const validUsers = await Promise.all(
-          recipientIds.map(async (id) => {
-            if (!mongoose.Types.ObjectId.isValid(id)) {
-              throw new BadRequestError(`Invalid user ID format: ${id}`);
-            }
-            try {
-              const iamCommand = new IAMServiceCommand({
-                uri: `${appConfig.iamBackend}/api/v1/users/${encodeURIComponent(id)}`,
-                method: HttpMethod.GET,
-                headers: req.headers as Record<string, string>,
-              });
-              const userResponse = await iamCommand.execute();
-              if (userResponse && userResponse.statusCode !== 200) {
-                throw new BadRequestError(`User not found: ${id}`);
-              }
-            } catch (exception) {
-              logger.debug(`User does not exist: ${id}`, {
-                requestId,
-              });
-              throw new BadRequestError(`User not found: ${id}`);
-            }
-            return {
-              userId: new mongoose.Types.ObjectId(id),
-              accessLevel: accessLevel || 'read',
-            };
-          }),
-        );
-
         // Get existing shared users
-        const existingSharedWith = conversation.sharedWith || [];
+        const existingSharedWith = ownedConversation.sharedWith || [];
 
         // Create a map of existing users for quick lookup
         const existingUserMap = new Map(
@@ -7585,13 +7574,10 @@ export const regenerateAgentAnswers =
         agentKey,
         orgId,
         userId,
+        // Owner only: a chat shared with someone is read-only for them.
+        initiator: userId,
         isDeleted: false,
         ...ONLY_AGENT,
-        $or: [
-          { initiator: userId },
-          { 'sharedWith.userId': userId },
-          { isShared: true },
-        ],
       }),
       buildAIEndpoint: (appConfig, agentKey) =>
         `${appConfig.aiBackend}/api/v1/agent/${encodeURIComponent(agentKey as string)}/chat/stream`,

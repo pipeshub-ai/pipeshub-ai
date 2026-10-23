@@ -997,6 +997,25 @@ export const attachSharedBy = async <
   });
 };
 
+/**
+ * Which of `ids` (ObjectId strings) are active users of the organisation. One
+ * query, so a caller can check a whole list before it opens a transaction.
+ */
+export const findOrgUserIds = async (
+  orgId: string,
+  ids: string[],
+): Promise<Set<string>> => {
+  const users = await Users.find({
+    orgId: new mongoose.Types.ObjectId(orgId),
+    isDeleted: false,
+    _id: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) },
+  })
+    .select('_id')
+    .lean()
+    .exec();
+  return new Set(users.map((user) => user._id.toString()));
+};
+
 export const attachSharedByIfRecipient = async <
   T extends {
     initiator?: { toString(): string };

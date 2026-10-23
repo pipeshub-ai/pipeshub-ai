@@ -13530,6 +13530,9 @@ components:
             type: object
             additionalProperties: false
             properties:
+              _id:
+                type: string
+                format: objectId
               userId:
                 type: string
                 format: objectId
@@ -13601,6 +13604,8 @@ components:
           description: |
             Computed per request from `sharedWith`; defaults to `read` when no
             explicit share grant is attached to the serialized row.
+        sharedBy:
+          $ref: '#/components/schemas/ConversationSharedBy'
         projectId:
           type: string
           format: objectId
@@ -14128,11 +14133,13 @@ components:
         not the raw `AgentConversation` document shape: fields like `agentKey`,
         `userId`, `orgId`, `conversationSource`, and root-level `messages`
         metadata outside the selected slice are omitted.
+
+        `sharedWith` is the owner's list of recipients, so it is present only for the
+        owner. A recipient gets `sharedBy` (who shared the chat) instead.
       required:
         - id
         - createdAt
         - isShared
-        - sharedWith
         - messages
         - pagination
         - access
@@ -14156,6 +14163,9 @@ components:
             type: object
             additionalProperties: false
             properties:
+              _id:
+                type: string
+                format: objectId
               userId:
                 type: string
                 format: objectId
@@ -14167,6 +14177,8 @@ components:
           enum: [None, Inprogress, Complete, Failed, Stopped]
         failReason:
           type: string
+        sharedBy:
+          $ref: '#/components/schemas/ConversationSharedBy'
         messages:
           type: array
           items:

@@ -271,6 +271,14 @@ function createMockMessageDoc(overrides: Record<string, any> = {}): any {
  * Mongo connection. Safe to call even when the test doesn't care about the
  * inserted message shape — defaults to a single generic message doc.
  */
+/** The recipient lookup is one Users.find over the organisation; this answers it with the given ids as members. */
+function stubOrgMembers(ids: string[]) {
+  restoreIfStubbed(Users, 'find')
+  return sinon.stub(Users, 'find').returns({
+    select: () => ({ lean: () => ({ exec: async () => ids.map((id) => ({ _id: new mongoose.Types.ObjectId(id) })) }) }),
+  } as any)
+}
+
 function restoreIfStubbed(obj: any, method: string) {
   if (obj[method] && typeof obj[method].restore === 'function') {
     obj[method].restore()
@@ -1939,7 +1947,7 @@ describe('Enterprise Search Controller', () => {
       const findOne = stubThenableFindOne(ChatSession, mockConversation)
 
       // Stub IAM user validation
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
+      stubOrgMembers([VALID_OID2])
 
       // The controller now calls ChatSession.findOneAndUpdate({_id, ...EXCLUDE_AGENT}, ...),
       // never findByIdAndUpdate.
@@ -1989,7 +1997,7 @@ describe('Enterprise Search Controller', () => {
 
       sinon.stub(ChatSession, 'findOne').resolves(null)
 
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
+      stubOrgMembers([VALID_OID2])
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -2014,7 +2022,7 @@ describe('Enterprise Search Controller', () => {
       }
       stubThenableFindOne(ChatSession, mockConversation)
 
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
+      stubOrgMembers([VALID_OID2])
 
       restoreIfStubbed(ChatSession, 'findOneAndUpdate')
       sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
@@ -2066,7 +2074,7 @@ describe('Enterprise Search Controller', () => {
       }
       stubThenableFindOne(ChatSession, mockConversation)
 
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
+      stubOrgMembers([VALID_OID2])
 
       restoreIfStubbed(ChatSession, 'findOneAndUpdate')
       sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
@@ -2108,7 +2116,7 @@ describe('Enterprise Search Controller', () => {
       }
       stubThenableFindOne(ChatSession, mockConversation)
 
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
+      stubOrgMembers([VALID_OID2])
 
       restoreIfStubbed(ChatSession, 'findOneAndUpdate')
       sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
@@ -4667,7 +4675,7 @@ describe('Enterprise Search Controller', () => {
       }
 
       sinon.stub(ChatSession, 'findOne').resolves(mockConversation as any)
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
+      stubOrgMembers([VALID_OID2])
       sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: mockConversation._id,
         isShared: true,
@@ -4696,7 +4704,7 @@ describe('Enterprise Search Controller', () => {
         _id: new mongoose.Types.ObjectId(VALID_OID),
         sharedWith: [],
       } as any)
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
+      stubOrgMembers([VALID_OID2])
       sinon.stub(ChatSession, 'findByIdAndUpdate').resolves(null)
 
       const req = createMockRequest({
@@ -11116,7 +11124,7 @@ describe('Enterprise Search Controller', () => {
   // shareConversationById: IAM user check returns non-200
   // -----------------------------------------------------------------------
   describe('shareConversationById - IAM user check non-200', () => {
-    it('should call next when IAM returns non-200 for user validation', async () => {
+    it('should call next when the recipient is not a member of the organisation', async () => {
       const handler = shareConversationById(createMockAppConfig())
 
       const mockConversation = {
@@ -11125,7 +11133,7 @@ describe('Enterprise Search Controller', () => {
         isShared: false,
       }
       sinon.stub(ChatSession, 'findOne').resolves(mockConversation as any)
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 404, data: null })
+      stubOrgMembers([])
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -11145,12 +11153,13 @@ describe('Enterprise Search Controller', () => {
   // shareSearch: IAM user check throws exception
   // -----------------------------------------------------------------------
   describe('shareSearch - IAM user check throws', () => {
-    it('should call next when IAM execute throws for user validation', async () => {
+    it('should call next when the recipient lookup fails', async () => {
       const handler = shareSearch(createMockAppConfig())
 
       const mockSearch = { _id: VALID_OID, sharedWith: [], isShared: false }
       stubMongooseFind(EnterpriseSemanticSearch, 'findOne', mockSearch)
-      sinon.stub(IAMServiceCommand.prototype, 'execute').rejects(new Error('IAM service down'))
+      restoreIfStubbed(Users, 'find')
+      sinon.stub(Users, 'find').returns({ select: () => ({ lean: () => ({ exec: () => Promise.reject(new Error('db down')) }) }) } as any)
 
       const req = createMockRequest({
         params: { searchId: VALID_OID },
@@ -11207,7 +11216,7 @@ describe('Enterprise Search Controller', () => {
         isShared: false,
       }
       sinon.stub(ChatSession, 'findOne').resolves(mockConversation as any)
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
+      stubOrgMembers([VALID_OID2])
       sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
         _id: VALID_OID,
         isShared: true,

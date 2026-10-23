@@ -538,6 +538,31 @@ describe('Chat page — opening a conversation', () => {
     expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
   });
 
+  it('shows no composer while an existing chat is still loading, so a recipient never sees it', async () => {
+    let finishLoading!: (detail: ReturnType<typeof conversationDetail>) => void;
+    fetchConversation.mockReturnValue(new Promise((resolve) => { finishLoading = resolve as typeof finishLoading; }));
+    renderPage('conversationId=conv-1');
+
+    await waitFor(() => expect(fetchConversation).toHaveBeenCalled());
+    expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
+
+    await act(async () => finishLoading(conversationDetail({ isOwner: false })));
+    await screen.findByText('You get 25 days a year.');
+    expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
+  });
+
+  it('shows the composer to the owner once their chat has loaded', async () => {
+    let finishLoading!: (detail: ReturnType<typeof conversationDetail>) => void;
+    fetchConversation.mockReturnValue(new Promise((resolve) => { finishLoading = resolve as typeof finishLoading; }));
+    renderPage('conversationId=conv-1');
+
+    await waitFor(() => expect(fetchConversation).toHaveBeenCalled());
+    expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
+
+    await act(async () => finishLoading(conversationDetail({ isOwner: true })));
+    expect(await screen.findByRole('textbox', { name: 'Message composer' })).toBeTruthy();
+  });
+
   it('lets the owner see who it is shared with and open sharing', async () => {
     fetchConversation.mockResolvedValue(conversationDetail({ isOwner: true }));
     getSharedMembers.mockResolvedValue([

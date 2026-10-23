@@ -1059,10 +1059,6 @@ function ChatContent() {
     };
   }, [conversationId, chatShareAdapter, showConversationShare]);
 
-  // Hide chat input when viewing a shared conversation the user does not own.
-  // `null` means "not yet known" (loading) — keep input visible to avoid flash.
-  const showChatInput = activeSlotIsOwner !== false;
-
   // Show new chat view when no active slot, or slot is new with no messages
   const showNewChatView = !activeSlotId || (
     hasActiveSlot &&
@@ -1084,6 +1080,14 @@ function ChatContent() {
   // attaches AND its history has finished loading.
   const showInitialLoading =
     conversationId != null && (!activeSlotId || !activeSlotIsInitialized);
+
+  // Hide chat input when viewing a shared conversation the user does not own.
+  // `null` means "not yet known": an existing chat that is still loading must not show the
+  // composer, or a recipient sees it until the chat arrives. Otherwise (a new chat, or a chat
+  // whose ownership could not be read) it stays visible.
+  const showChatInput =
+    activeSlotIsOwner !== false &&
+    !(activeSlotIsOwner === null && (showInitialLoading || showLoading));
 
   // Search mode: show results view when in search mode with results/in-progress search
   const mode = useChatStore((s) => s.settings.mode);

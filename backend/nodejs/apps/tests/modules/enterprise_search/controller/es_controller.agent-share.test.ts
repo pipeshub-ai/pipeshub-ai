@@ -5,7 +5,8 @@ import { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
-import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
+import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
+import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
 
 /**
@@ -47,11 +48,14 @@ interface Setup {
 }
 
 /** One agent chat and one plain chat, both owned by OWNER and not shared with anyone. */
+let hookOrgUsers: () => void = () => undefined
+
 function setup(): Setup {
   const store = new InMemoryChatStore()
   const ai = new FakeAIBackend()
   store.install()
   ai.install()
+  hookOrgUsers()
 
   const agentChat = store.addSession({
     orgId: ORG,
@@ -140,13 +144,26 @@ const sharedWithOf = (s: Setup): string[] =>
 const share = (userIds: unknown, accessLevel?: string) => ({ userIds, ...(accessLevel ? { accessLevel } : {}) })
 
 describe('es_controller agent-chat sharing: read-only for recipients, owner-only to change', () => {
-  let iam: sinon.SinonStub
+  // The users of the caller's organisation, and every filter the recipient lookup was asked with.
+  let orgUsers: Set<string>
+  let userLookups: Array<Record<string, any>>
 
   beforeEach(() => {
     sinon.stub(conversationArtifacts, 'deleteConversationArtifacts').resolves()
-    // Every id resolves to a user in the caller's org unless a test says otherwise.
-    iam = sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} } as never)
+    orgUsers = new Set([OWNER, RECIPIENT, SECOND_RECIPIENT, STRANGER].map(String))
+    userLookups = []
   })
+
+  // Installed after setup(), which installs the store's own Users.find; this one answers from orgUsers.
+  hookOrgUsers = (): void => {
+    ;(Users.find as unknown as sinon.SinonStub).callsFake((filter: Record<string, any>) => {
+      userLookups.push(filter)
+      const asked: string[] = ((filter._id?.$in ?? []) as unknown[]).map(String)
+      const rows = asked.filter((id) => orgUsers.has(id)).map((id) => ({ _id: new Types.ObjectId(id) }))
+      const query = { select: () => query, lean: () => query, exec: async () => rows }
+      return query
+    })
+  }
 
   afterEach(() => {
     sinon.restore()
@@ -170,12 +187,18 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       expect(sharedWithOf(s)).to.deep.equal([String(RECIPIENT)])
     })
 
-    it('the recipient is looked up in the IAM service, which only knows users of the caller’s organisation', async () => {
+    it('looks every recipient up in one query, scoped to the caller’s organisation, with no call to another service', async () => {
       const s = setup()
-      await callJson(shareHandler(), request(owner, agentParams(s), share([String(RECIPIENT)])))
-      expect(iam.callCount).to.equal(1)
-      expect((iam.firstCall.thisValue as { uri?: string }).uri ?? '').to.contain(String(RECIPIENT))
+
+      await callJson(shareHandler(), request(owner, agentParams(s), share([String(RECIPIENT), String(SECOND_RECIPIENT)])))
+
+      expect(userLookups).to.have.length(1)
+      expect(String(userLookups[0]?.orgId)).to.equal(String(ORG))
+      expect(userLookups[0]?.isDeleted).to.equal(false)
+      expect((userLookups[0]?._id.$in as unknown[]).map(String)).to.have.members([String(RECIPIENT), String(SECOND_RECIPIENT)])
+      expect(s.ai.calls.some((c) => c.url.startsWith('http://iam.test'))).to.equal(false)
     })
+
 
     it('grants the recipient the conversation’s artifacts through the AI service, as the owner', async () => {
       const s = setup()
@@ -300,9 +323,9 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       expect(sharedWithOf(s)).to.deep.equal([])
     })
 
-    it('a user the IAM service does not know (other org, deleted) is refused and nothing is stored', async () => {
+    it('a user who is not an active member of the organisation (other org, deleted) is refused and nothing is stored', async () => {
       const s = setup()
-      iam.resolves({ statusCode: 404, data: {} } as never)
+      orgUsers.delete(String(RECIPIENT))
 
       const out = await callJson(shareHandler(), request(owner, agentParams(s), share([String(RECIPIENT)])))
 
@@ -314,8 +337,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
 
     it('one unknown user in a batch refuses the whole batch', async () => {
       const s = setup()
-      iam.onFirstCall().resolves({ statusCode: 200, data: {} } as never)
-      iam.onSecondCall().resolves({ statusCode: 404, data: {} } as never)
+      orgUsers.delete(String(SECOND_RECIPIENT))
 
       const out = await callJson(shareHandler(), request(owner, agentParams(s), share([String(RECIPIENT), String(SECOND_RECIPIENT)])))
 
@@ -749,6 +771,37 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       expect(s.store.session(s.agentChatId)?.isDeleted).to.equal(false)
       expect(s.store.writes).to.deep.equal([])
       expect((conversationArtifacts.deleteConversationArtifacts as sinon.SinonStub).called).to.equal(false)
+    })
+
+    it('regenerating asks for a chat the caller initiated, not for one that merely looks shared', async () => {
+      const s = setup()
+      shareWith(s, RECIPIENT)
+
+      await callStream(
+        controller.regenerateAgentAnswers(appConfig) as StreamHandler,
+        request(owner, agentParams(s, { messageId: s.agentBotMessageId }), {}),
+      )
+
+      const filters = (ChatSession.findOne as unknown as sinon.SinonStub).getCalls().map((call) => call.args[0] as Record<string, any>)
+      const lookup = filters.find((f) => f.agentKey === AGENT_KEY && f.sessionType === 'agent')
+      expect(lookup, 'the lookup of the chat to regenerate').to.not.equal(undefined)
+      expect(String(lookup?.initiator)).to.equal(String(OWNER))
+      expect(lookup).to.not.have.property('$or')
+    })
+
+    it('regenerating is refused when the caller owns the row but did not initiate the chat, even if it is shared', async () => {
+      const s = setup()
+      // isShared is what the old filter let through; only the initiator may regenerate.
+      s.store.session(s.agentChatId)?.set({ initiator: STRANGER, isShared: true })
+      s.store.writes.length = 0
+
+      const res = await callStream(
+        controller.regenerateAgentAnswers(appConfig) as StreamHandler,
+        request(owner, agentParams(s, { messageId: s.agentBotMessageId }), {}),
+      )
+
+      expect(res.eventsOf('RUN_ERROR')).to.have.length(1)
+      expect(s.ai.streamCalls).to.deep.equal([])
     })
 
     const streamCases: Array<{ name: string; handler: () => StreamHandler; body: Record<string, unknown> }> = [
