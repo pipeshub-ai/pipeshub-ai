@@ -213,7 +213,7 @@ class FakeBlobStore:
             }
         }
 
-    async def get_record_from_storage(self, virtual_record_id, org_id) -> dict | None:
+    async def get_record_from_storage(self, virtual_record_id, org_id, lookup_result=None) -> dict | None:
         return self.records.get(virtual_record_id)
 
 

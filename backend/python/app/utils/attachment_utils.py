@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.retrieval.selection_scope import outside_connection
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
 from app.utils.chat_helpers import ImageBudget, is_base64_image
@@ -294,9 +295,8 @@ async def _resolve_attachment_content(
     try:
         from app.utils.chat_helpers import record_to_message_content
 
-        record = await blob_store.get_record_from_storage(
-            virtual_record_id=virtual_record_id,
-            org_id=org_id,
+        record = await record_artifact_reader(blob_store).read_record(
+            virtual_record_id, org_id,
         )
         if not record:
             logger.warning(
