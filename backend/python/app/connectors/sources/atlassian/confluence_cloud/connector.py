@@ -589,6 +589,7 @@ class ConfluenceConnector(BaseConnector):
             # Initialize data source
             self.data_source = ConfluenceDataSource(self.external_client)
             await self._cache_authenticated_confluence_email()
+            await self._remember_configured_site()
 
             self.logger.info("✅ Confluence connector initialized successfully")
             return True
@@ -3579,6 +3580,18 @@ class ConfluenceConnector(BaseConnector):
         if urlparse(self_link).hostname == "api.atlassian.com":
             return self._site_wiki_url
         return self_link.split("/wiki/")[0] + "/wiki"
+
+    async def _remember_configured_site(self) -> None:
+        """Start from the site URL in the settings until a listing reports it in ``_links.base``."""
+        try:
+            config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+            auth = config.get("auth") if isinstance(config, dict) else None
+            site = (auth.get("baseUrl") if isinstance(auth, dict) else None) or ""
+        except Exception:
+            return
+        site = str(site).strip().rstrip("/")
+        if site.startswith("http") and not self._site_wiki_url:
+            self._site_wiki_url = site if site.endswith("/wiki") else f"{site}/wiki"
 
     def _remember_site_wiki_url(self, response_data: Any) -> None:
         """Keep the site's wiki URL a response reports in ``_links.base``, for links built later."""
