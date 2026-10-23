@@ -1955,3 +1955,52 @@ class TestGroupsGoneFromConfluence:
         await connector._sync_user_groups()
 
         assert db.deleted_groups == []
+
+
+class TestListingsThatDoNotEnd:
+    async def test_a_page_list_whose_next_link_repeats_stops_and_holds_the_checkpoint(
+        self, api, db, checkpoints, search
+    ) -> None:
+        search.by_cursor[None] = search_page([v1_page("10")], cursor="C2")
+        search.by_cursor["C2"] = search_page([v1_page("11")], cursor="C2")
+        connector, _ = await ready_connector(db, checkpoints)
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert listing.complete is False
+        assert [q.get("cursor") for q in search.queries] == [None, "C2"], "C2 is not read twice"
+        assert any("pointed back" in p for p in connector._sync_problems)
+
+    async def test_an_empty_folder_page_that_points_further_is_a_failed_read(self, api, db, checkpoints, search) -> None:
+        search.folders = []
+
+        def folders(request: httpx.Request) -> httpx.Response:
+            return json_response({"results": [], "_links": {"base": WIKI, "next": "/rest/api/content/search?cursor=F2"}})
+
+        api.on("GET", f"{V1}/content/search", folders)
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_folders("ENG")
+
+        assert checkpoints.values_for("confluence_folders/ENG") is None
+        assert any("folder list stopped early" in p for p in connector._sync_problems)
+
+    @pytest.mark.parametrize("next_page", [
+        {"results": [], "_links": {"next": f"{V2}/spaces/1/permissions?cursor=P3"}},
+        {"results": [{"principal": {"type": "user", "id": "acc-ana"}, "operation": {"key": "read", "targetType": "space"}}],
+         "_links": {"next": f"{V2}/spaces/1/permissions?cursor=P2"}},
+    ], ids=["empty-page-pointing-further", "next-link-repeats"])
+    async def test_a_space_permission_list_read_in_part_keeps_the_stored_access(
+        self, api, db, checkpoints, next_page
+    ) -> None:
+        first = {"results": [{"principal": {"type": "user", "id": "acc-ana"},
+                              "operation": {"key": "read", "targetType": "space"}}],
+                 "_links": {"next": f"{V2}/spaces/1/permissions?cursor=P2"}}
+
+        def perms(request: httpx.Request) -> httpx.Response:
+            return json_response(next_page if AtlassianApiStub.query(request).get("cursor") == "P2" else first)
+
+        api.on("GET", f"{V2}/spaces/1/permissions", perms)
+        connector, _ = await ready_connector(db, checkpoints)
+
+        assert await connector._fetch_space_permissions("1", "Engineering") is None

@@ -1576,6 +1576,7 @@ class ConfluenceConnector(BaseConnector):
             # Pagination variables
             batch_size = 20
             cursor = None
+            followed: set[str] = set()
             total_spaces_synced = 0
             total_permissions_synced = 0
             base_url = None  # Extract from first response
@@ -1688,6 +1689,11 @@ class ConfluenceConnector(BaseConnector):
                     listing_complete = False
                     self._note_problem("Couldn't follow the Confluence space list to its next page; no space was removed")
                     break
+                if cursor in followed:
+                    listing_complete = False
+                    self._note_problem("The Confluence space list pointed back at a page it had read; no space was removed")
+                    break
+                followed.add(cursor)
 
             self.logger.info(f"✅ Space sync complete. Spaces: {total_spaces_synced}, Permissions: {total_permissions_synced}")
 
@@ -1751,6 +1757,7 @@ class ConfluenceConnector(BaseConnector):
             # Pagination variables — v1 content/search may use start (offset) or cursor
             batch_size = 50
             pagination_token: Optional[str] = None
+            followed: set[str] = set()
             total_synced = 0
             total_permissions_synced = 0
             listing_complete = True
@@ -1786,6 +1793,10 @@ class ConfluenceConnector(BaseConnector):
                 items_data = response_data.get("results", [])
 
                 if not items_data:
+                    # Only a missing next link ends the listing; an empty page that points further is a failed read.
+                    if (response_data.get("_links") or {}).get("next"):
+                        listing_complete = False
+                        self._note_problem(f"Space {space_key}: the folder list stopped early")
                     break
 
                 # Transform folders to FileRecords with permissions
@@ -1864,6 +1875,11 @@ class ConfluenceConnector(BaseConnector):
                     listing_complete = False
                     self._note_problem(f"Space {space_key}: couldn't follow the folder list to its next page")
                     break
+                if pagination_token in followed:
+                    listing_complete = False
+                    self._note_problem(f"Space {space_key}: the folder list pointed back at a page it had read")
+                    break
+                followed.add(pagination_token)
 
             # Update sync checkpoint with current time (only if we synced something)
             if not listing_complete:
@@ -1987,6 +2003,7 @@ class ConfluenceConnector(BaseConnector):
             # v1 content/search may use offset (start) or cursor depending on Confluence version
             batch_size = 50
             pagination_token: Optional[str] = None
+            followed: set[str] = set()
             total_synced = 0
             total_attachments_synced = 0
             total_permissions_synced = 0
@@ -2330,6 +2347,11 @@ class ConfluenceConnector(BaseConnector):
                     listing_complete = False
                     self._note_problem(f"Space {space_key}: couldn't follow the {content_type} list to its next page")
                     break
+                if pagination_token in followed:
+                    listing_complete = False
+                    self._note_problem(f"Space {space_key}: the {content_type} list pointed back at a page it had read")
+                    break
+                followed.add(pagination_token)
 
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
@@ -3059,6 +3081,7 @@ class ConfluenceConnector(BaseConnector):
             try:
                 # One shared title can fill a page, so the search is read to its last page.
                 pagination_token: Optional[str] = None
+                followed: set[str] = set()
                 while True:
                     datasource = await self._get_fresh_datasource()
                     start_offset, cursor_token = self._split_pagination_token(pagination_token)
@@ -3173,10 +3196,11 @@ class ConfluenceConnector(BaseConnector):
                     if not next_url:
                         break
                     pagination_token = self._extract_cursor_from_next_link(next_url)
-                    if not pagination_token:
+                    if not pagination_token or pagination_token in followed:
                         self.logger.warning(f"⚠️ Title search has a next page that could not be followed: {next_url}")
                         has_failures = True
                         break
+                    followed.add(pagination_token)
 
             except Exception as batch_error:
                 self.logger.error(f"❌ Failed to process titles batch: {batch_error}")
@@ -3206,6 +3230,7 @@ class ConfluenceConnector(BaseConnector):
             permissions = []
             batch_size = 100
             cursor = None
+            followed: set[str] = set()
 
             # Paginate through space permissions
             while True:
@@ -3223,8 +3248,13 @@ class ConfluenceConnector(BaseConnector):
 
                 response_data = response.json()
                 permissions_data = response_data.get("results", [])
+                next_url = (response_data.get("_links") or {}).get("next")
 
                 if not permissions_data:
+                    if next_url:
+                        # Saving a list read only in part would take the rest of the grants away.
+                        self.logger.warning(f"⚠️ Permissions of space {space_name} stopped early")
+                        return None
                     break
 
                 # Transform permissions and add to list
@@ -3233,14 +3263,14 @@ class ConfluenceConnector(BaseConnector):
                     if permission:
                         permissions.append(permission)
 
-                # Extract next cursor
-                next_url = response_data.get("_links", {}).get("next")
                 if not next_url:
                     break
 
                 cursor = self._extract_cursor_from_next_link(next_url)
-                if not cursor:
-                    break
+                if not cursor or cursor in followed:
+                    self.logger.warning(f"⚠️ Couldn't follow the permissions of space {space_name}: {next_url}")
+                    return None
+                followed.add(cursor)
 
             deduped = self._dedupe_space_permissions(permissions)
             self.logger.debug(
