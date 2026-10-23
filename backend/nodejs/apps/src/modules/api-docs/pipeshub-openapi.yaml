@@ -23053,8 +23053,11 @@ components:
         unused): any the stored configuration lacks is filled in on read.
 
         Each entry's `configuration` is cut down to the public allowlist
-        (`model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`),
-        so provider credentials such as API keys are never returned here.
+        (`model`, `modelFriendlyName`, `dimensions`, `defaultReasoningEffort`,
+        and the saved `identityForwarding*` settings), so provider credentials
+        such as API keys, and the identity forwarding service API key, are never
+        returned here. A credential-bearing header template value reads as
+        `****************`.
       properties:
         ocr:
           type: array
@@ -24746,10 +24749,16 @@ paths:
                             additionalProperties: false
                             description: |
                               The caller. `email` is absent when the bearer token carries none (an
-                              OAuth access token). The user's name is never included.
+                              OAuth access token).
                             properties:
                               email:
                                 type: string
+                              name:
+                                type: string
+                                description: |
+                                  The controller writes this from the session's full name, but the
+                                  redirect middleware in front of this route does not pass `fullName`
+                                  through today, so current responses omit it.
                           workspace:
                             type: object
                             additionalProperties: false
