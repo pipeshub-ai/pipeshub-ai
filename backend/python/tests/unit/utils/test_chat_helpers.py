@@ -6102,7 +6102,7 @@ class TestEnrichRecordsWithGraphContext:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("outside", "shown"), [({"rec-issue-1"}, False), (set(), True)])
-    async def test_a_dependent_parent_outside_the_limit_is_not_named(self, outside, shown):
+    async def test_a_dependent_parent_outside_the_limit_is_not_named(self, outside, shown) -> None:
         rec = self._dependent_file_record()
         gp = self._make_graph_provider()
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
@@ -6118,7 +6118,7 @@ class TestEnrichRecordsWithGraphContext:
         assert check.await_args.args[4] == self._FILE_LIMIT
 
     @pytest.mark.asyncio
-    async def test_a_parent_relation_outside_the_limit_is_left_out_and_children_stay(self):
+    async def test_a_parent_relation_outside_the_limit_is_left_out_and_children_stay(self) -> None:
         rec = self._ticket_record()
         gp = self._make_graph_provider(
             outgoing_by_type={RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}]},
@@ -6134,7 +6134,7 @@ class TestEnrichRecordsWithGraphContext:
         assert set(check.await_args.args[3]) == {"rec-parent"}  # only parents are checked
 
     @pytest.mark.asyncio
-    async def test_without_a_limit_the_parent_is_named_and_no_limit_is_checked(self):
+    async def test_without_a_limit_the_parent_is_named_and_no_limit_is_checked(self) -> None:
         rec = self._dependent_file_record()
         gp = self._make_graph_provider()
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]

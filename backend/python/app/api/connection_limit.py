@@ -163,7 +163,7 @@ _RECORD_PARENT_FIELDS = {
 }
 
 
-def _record_docs(value: Any) -> Iterable[dict[str, Any]]:
+def _record_docs(value: object) -> Iterable[dict[str, Any]]:
     """Every dict under ``value`` that carries a record's parent fields."""
     if isinstance(value, dict):
         if any(key in value for key in _RECORD_PARENT_FIELDS):
@@ -176,7 +176,7 @@ def _record_docs(value: Any) -> Iterable[dict[str, Any]]:
 
 
 async def hide_record_parents_outside_connection(
-    request: Request, graph_provider: IGraphDBProvider, org_id: str, user_id: str, payload: Any,
+    request: Request, graph_provider: IGraphDBProvider, org_id: str, user_id: str, payload: object,
     *, containers: Sequence[str] = (),
 ) -> None:
     """Clear, in every record document under ``payload``, each parent the
@@ -188,13 +188,14 @@ async def hide_record_parents_outside_connection(
         return
     docs = list(_record_docs(payload))
     parents = {doc[key] for doc in docs for key in _RECORD_PARENT_FIELDS if isinstance(doc.get(key), str) and doc[key]}
-    above = {key: (payload.get(key) or {}).get("id") for key in containers if isinstance(payload.get(key), dict)}
+    holder = payload if isinstance(payload, dict) else {}
+    above = {key: holder[key].get("id") for key in containers if isinstance(holder.get(key), dict)}
     outside = await ids_outside_connection(
         request, graph_provider, org_id, user_id, [*parents, *(i for i in above.values() if i)],
     )
     for key, node_id in above.items():
         if node_id in outside:
-            payload[key] = None
+            holder[key] = None
     for doc in docs:
         for key, source_keys in _RECORD_PARENT_FIELDS.items():
             if doc.get(key) in outside:

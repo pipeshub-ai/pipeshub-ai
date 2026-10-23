@@ -418,7 +418,7 @@ class TestTheLocationKeepsToTheLimit:
     file the limit names does not name the folder above it."""
 
     @staticmethod
-    async def _location_limit(retrieval_service, mock_graph_provider, filter_groups):
+    async def _location_limit(retrieval_service, mock_graph_provider, filter_groups) -> object:
         mock_graph_provider.get_accessible_containers = AsyncMock(
             return_value=_containers(app_ids=frozenset({"a"}))
         )

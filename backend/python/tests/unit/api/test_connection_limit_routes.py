@@ -38,6 +38,7 @@ from app.connectors.api.router import (
     stream_record,
 )
 from app.connectors.sources.localKB.api.knowledge_hub_router import _handle_get_nodes
+from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.modules.retrieval.selection_scope import (
     CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
     CONNECTION_OUTSIDE_MESSAGE,
@@ -690,8 +691,6 @@ class TestParentsOutsideTheLimit:
 
     @pytest.mark.asyncio
     async def test_a_restore_refusal_does_not_name_a_trashed_folder_outside_the_limit(self) -> None:
-        from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
-
         members = [{"record": {"_key": "rec-in"}, "parentId": "trashed-dir", "parentIsDeleted": True,
                     "parentName": "Secret plans"}]
 

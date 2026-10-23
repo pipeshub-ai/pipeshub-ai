@@ -5409,7 +5409,13 @@ components:
     GetRecordByIdResponseSchema:
       type: object
       additionalProperties: false
-      description: Response returned by GET /knowledgeBase/record/{recordId}.
+      description: |
+        Response returned by GET /knowledgeBase/record/{recordId}.
+
+        For a connected app with a limit, a collection or folder the limit
+        leaves out is not named: `knowledgeBase` and `folder` are `null` for
+        it, as are the record's own `recordGroupId` (with `externalGroupId`),
+        `rootRecordGroupId` and `parentNodeId` (with `externalParentId`).
       required:
         - record
         - knowledgeBase
@@ -7200,7 +7206,10 @@ components:
         parentId:
           type: string
           nullable: true
-          description: Parent node ID, or `null` at the root browse level.
+          description: |
+            Parent node ID, or `null` at the root browse level. Also `null`
+            for a connected app whose limit leaves the parent out: the node is
+            listed, and the folder above it is not named.
         origin:
           type: string
           enum: [COLLECTION, CONNECTOR]
@@ -7343,7 +7352,11 @@ components:
         parentNode:
           type: object
           nullable: true
-          description: Parent of `currentNode` when present; `null` when not applicable.
+          description: |
+            Parent of `currentNode` when present; `null` when not applicable,
+            and for a connected app whose limit leaves that parent out. For
+            such an app, `breadcrumbs` likewise names only the nodes inside
+            its limit.
           required:
             - id
             - name
@@ -10810,6 +10823,10 @@ components:
         All listed fields are optional in the schema so partial or evolving documents validate; typical Arango documents
         usually include `_key`, `_id`, `_rev`, `orgId`, `recordName`, `externalRecordId`, `recordType`, `origin`,
         `createdAtTimestamp`, and `connectorId`. Extend this schema when new stable fields appear on Record vertices.
+
+        For a connected app with a limit, a parent the limit leaves out is not named: `recordGroupId`
+        (with `externalGroupId`), `rootRecordGroupId` and `parentNodeId` (with `externalParentId`) are `null`
+        for it, and `location` keeps only the part of the trail inside the limit, or is left out.
       properties:
         _key:
           type: string
@@ -10990,6 +11007,13 @@ components:
             there are none.
           items:
             $ref: '#/components/schemas/SemanticSearchLinkedRecord'
+        location:
+          type: string
+          description: |
+            Where the record sits, from its source down to its parent, as
+            `Name (App ID: id) -> Name (Record Group ID: id) -> Name (Record ID: id)`.
+            It names only the ancestors the caller can open; for a connected app
+            with a limit, only those inside the limit. Absent when none is left.
 
     SemanticSearchLinkedRecord:
       type: object
@@ -30458,6 +30482,9 @@ paths:
           the matches found so far and can grow from page to page; it is
           final once `hasNext` is false. `counts` is returned only when the
           whole result fits in the first page read, and is `null` otherwise.
+        - An item can sit in a folder the limit leaves out, as a file the
+          limit names does. Its `parentId` and `parent` are then `null`: the
+          item is returned, and the folder above it is not named.
 
         **Access control**
 
