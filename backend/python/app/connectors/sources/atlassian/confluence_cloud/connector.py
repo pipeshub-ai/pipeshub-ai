@@ -1038,6 +1038,11 @@ class ConfluenceConnector(BaseConnector):
 
                 if not users_data:
                     break
+                page_ids = {r.get("user", {}).get("accountId") or r.get("accountId") for r in users_data} - {None}
+                if not page_ids - seen_account_ids:
+                    # The same page again: the offset is being ignored, so stop rather than loop.
+                    break
+                seen_account_ids |= page_ids
 
                 # Transform users (skip users without email)
                 app_users = []
@@ -1073,11 +1078,6 @@ class ConfluenceConnector(BaseConnector):
 
                 # Cloud's /search/user has no next link and its totalSize is the page size, and a
                 # page can come back short before the end, so only an empty page ends the list.
-                page_ids = {r.get("user", {}).get("accountId") or r.get("accountId") for r in users_data} - {None}
-                if not page_ids - seen_account_ids:
-                    # The same page again: the offset is being ignored, so stop rather than loop.
-                    break
-                seen_account_ids |= page_ids
                 start += len(users_data)
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")

@@ -4601,7 +4601,7 @@ class TestSyncUsersHappyPath:
 
     @pytest.mark.asyncio
     async def test_multi_page_pagination(self):
-        """Stops when results < batch_size."""
+        """Stops at an empty page, not at the first short one."""
         c = _mk_connector()
         users_full = [
             {"user": {"accountId": f"acc-{i}", "email": f"u{i}@x.com", "displayName": f"U{i}"}}
@@ -4615,11 +4615,12 @@ class TestSyncUsersHappyPath:
             side_effect=[
                 _mk_resp(200, {"results": users_full}),
                 _mk_resp(200, {"results": users_partial}),
+                _mk_resp(200, {"results": []}),
             ]
         )
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         await c._sync_users()
-        # Two pages fetched, two on_new_app_users calls
+        # Two pages saved; the empty third one ends the list
         assert c.data_entities_processor.on_new_app_users.call_count == 2
 
 
