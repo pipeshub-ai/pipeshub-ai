@@ -119,6 +119,9 @@ class ImagePart(BaseModel):
     # unmeasured, never zero-cost -- see `tokens.py`.
     width: int | None = None
     height: int | None = None
+    # The person attached this image to their request. An image cap keeps these
+    # before images the run fetched, whatever their position in the request.
+    user_attached: bool = False
 
 
 # Open/Closed: adding a new content shape (e.g. DocumentPart) means adding a

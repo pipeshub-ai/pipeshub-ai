@@ -1,34 +1,20 @@
-"""Attachment resolution for `/chat/stream`, extracted from chatbot.py's
-former `_build_attachment_llm_messages()`/`_append_conversation_history()`
-so it survives the migration to the agent loop instead of being dropped.
+"""This turn's attachments for `/chat/stream`: which records the run may search.
 
-Two attachment kinds, two different fates on this path:
-
-- Document attachments (PDF/text/markdown/DOCX/XLSX/CSV/TSV) resolve to the
-  SAME `<record>` text-block format `record_to_message_content()` already
-  produces for chatbot and for `dynamic_fetch_full_record` -- folded into
-  the agent's `Goal.constraints` as plain text, so citation IDs stay on the
-  one shared `CitationRefMapper` the rest of the turn uses.
-- Image attachments do NOT currently reach the agent loop's first turn as
-  multimodal content. This is not a regression introduced by this
-  migration: `agents/agent_loop/respond.py`'s module docstring already
-  documents this as an accepted, pre-existing gap for agent endpoints
-  ("current-turn attachments are no longer resolved into multimodal blocks
-  here... tracked as a follow-up, not part of this fix") -- `Goal` itself
-  (`agent_loop_lib/core/types.py`) is a text-only pydantic model with no
-  multimodal `Part` slot to attach an image to. What this module DOES do
-  for images: note their presence/filenames as a text constraint (so the
-  model at least knows they exist and can ask the user to describe them or
-  try `dynamic_fetch_full_record` if the image was itself indexed as a
-  record) and merge their `virtualRecordId`s into the retrieval scope below.
+The attachments' content is not rendered here. `PipesHubAgentFactory.create`
+puts it on the current request: documents within the attachments' share of
+the model's budget, images through the request's image admission, or a
+"[Image attached by user: …]" line for a text-only model
+(`hooks/attachment_resolver.resolve_attachments_for_goal`). A second copy used
+to go into the goal's constraints, that is the system prompt: every document
+was sent twice, unbounded, and one large enough left the messages no budget at
+all; images were described as "not visible to you" while they were attached.
 
 Both kinds' `virtualRecordId`s are merged into the retrieval filter scope
 (`connector_ids` passed to `search_internal_knowledge` / the `filters`
 prefetch uses) so a retrieval call -- prefetch or a follow-up tool call --
 can surface the attachment's indexed content alongside the rest of the
 knowledge base. A client-supplied id is included only after
-`check_record_access_with_details` grants this user the record; otherwise
-the text is not loaded and the id is not added to that scope.
+`check_record_access_with_details` grants this user the record.
 """
 
 from __future__ import annotations
@@ -36,25 +22,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.modules.artifacts.reader import record_artifact_reader
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
-from app.utils.chat_helpers import CitationRefMapper, record_to_message_content
 from app.utils.record_access import caller_can_read_virtual_record
 
 if TYPE_CHECKING:
     import logging
-
-    from app.modules.transformers.blob_storage import BlobStorage
 
 __all__ = ["ResolvedAttachments", "resolve_attachments"]
 
 
 @dataclass
 class ResolvedAttachments:
-    """Everything the bridge needs to fold attachments into a chat-mode
-    turn without re-deriving any of it."""
+    """Everything the bridge needs from this turn's attachments."""
 
-    context_text: str  # empty string when there is nothing to add
     virtual_record_ids: list[str] = field(default_factory=list)
     has_image_attachments: bool = False
 
@@ -70,84 +50,37 @@ def _is_doc(mime_type: str) -> bool:
 async def resolve_attachments(
     attachments: list[dict[str, Any]] | None,
     *,
-    blob_store: "BlobStorage",
     org_id: str,
-    ref_mapper: CitationRefMapper,
     logger: "logging.Logger",
     user_id: str | None = None,
     graph_provider: Any = None,
     is_service_account: bool = False,
 ) -> ResolvedAttachments:
-    """Resolves the current turn's `query_info["attachments"]` into text
-    context + retrieval-scope record IDs. `ref_mapper` is the SAME mapper
-    the rest of the turn (prefetch, retrieval tool) shares, so citation IDs
-    minted here don't collide with or duplicate ones minted elsewhere.
-    """
+    """The current turn's `query_info["attachments"]` the user may read, as
+    retrieval-scope record IDs."""
     if not attachments:
-        return ResolvedAttachments(context_text="")
-
-    doc_attachments = [
-        att for att in attachments
-        if isinstance(att, dict) and _is_doc((att.get("mimeType") or ""))
-    ]
-    image_attachments = [
-        att for att in attachments
-        if isinstance(att, dict) and _is_image((att.get("mimeType") or ""))
-    ]
+        return ResolvedAttachments()
 
     virtual_record_ids: list[str] = []
-    content_blocks: list[dict[str, Any]] = []
-
-    async def _readable(vrid: str) -> bool:
-        return await caller_can_read_virtual_record(
+    has_images = False
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        mime = att.get("mimeType") or ""
+        if not _is_doc(mime) and not _is_image(mime):
+            continue
+        vrid = att.get("virtualRecordId") or ""
+        if vrid and not await caller_can_read_virtual_record(
             graph_provider,
             user_id=user_id,
             org_id=org_id,
             virtual_record_id=vrid,
             logger=logger,
             is_service_account=is_service_account,
-        )
-
-    for att in doc_attachments:
-        vrid = att.get("virtualRecordId") or ""
-        if not vrid or not await _readable(vrid):
+        ):
             continue
-        virtual_record_ids.append(vrid)
-        try:
-            record = await record_artifact_reader(blob_store).read_record(vrid, org_id)
-        except Exception as exc:  # noqa: BLE001 - one bad attachment must not fail the turn
-            logger.warning("resolve_attachments: failed to resolve vrid=%s: %s", vrid, exc)
-            continue
-        if not record:
-            continue
-        record_blocks, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper)
-        content_blocks.extend(record_blocks)
-
-    admitted_images: list[dict[str, Any]] = []
-    for att in image_attachments:
-        vrid = att.get("virtualRecordId") or ""
         if vrid:
-            if not await _readable(vrid):
-                continue
             virtual_record_ids.append(vrid)
-        admitted_images.append(att)
+        has_images = has_images or _is_image(mime)
 
-    parts: list[str] = []
-    if content_blocks:
-        parts.append("Attached documents:")
-        parts.extend(
-            block["text"] for block in content_blocks if block.get("type") == "text" and block.get("text")
-        )
-    if admitted_images:
-        names = ", ".join(att.get("fileName", "unnamed") for att in admitted_images if isinstance(att, dict))
-        parts.append(
-            f"The user also attached {len(admitted_images)} image(s) ({names}) this turn. "
-            "Image content is not visible to you directly -- if the image is relevant, ask the "
-            "user to describe it, or try searching/fetching the record if it was indexed."
-        )
-
-    return ResolvedAttachments(
-        context_text="\n\n".join(parts),
-        virtual_record_ids=virtual_record_ids,
-        has_image_attachments=bool(admitted_images),
-    )
+    return ResolvedAttachments(virtual_record_ids=virtual_record_ids, has_image_attachments=has_images)
