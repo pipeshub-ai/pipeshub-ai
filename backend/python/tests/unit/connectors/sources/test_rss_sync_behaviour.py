@@ -613,6 +613,18 @@ class TestPagedFeeds:
         assert fetch.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_an_empty_page_in_the_middle_does_not_end_the_walk(self) -> None:
+        conn = _connector(FakeStore(), [FEED_A])
+        pages = {
+            FEED_A: _xml(_page(_entries(1), "page2.xml")),
+            "https://a.example.com/page2.xml": _xml(_page([], "page3.xml")),
+            "https://a.example.com/page3.xml": _xml(_page(_entries(3))),
+        }
+        with patch(FETCH, new=AsyncMock(side_effect=lambda url, **_: pages[url])):
+            feed = await conn._fetch_and_parse_feed(FEED_A)
+        assert [e["id"] for e in feed.entries] == ["urn:p:1", "urn:p:3"]
+
+    @pytest.mark.asyncio
     async def test_a_failing_page_keeps_what_was_read(self) -> None:
         conn = _connector(FakeStore(), [FEED_A])
         pages = {
@@ -781,7 +793,15 @@ class TestReviewFindings:
             weburl=show, origin="CONNECTOR", connector_name="RSS", connector_id="rss-conn-1",
             record_type="FILE", version=0, is_file=True, mime_type="text/plain",
         )
-        with patch(FETCH, new=AsyncMock(side_effect=lambda url, **_: pages[url])), \
-             pytest.raises(HTTPException) as raised:
+        fetch = AsyncMock(side_effect=lambda url, **_: pages[url])
+        with patch(FETCH, new=fetch), pytest.raises(HTTPException) as raised:
             await conn.stream_record(on_page_two)
         assert raised.value.status_code == 502
+
+        # With a link of its own, the entry's page is still not crawled in its place.
+        on_page_two.weburl = "https://a.example.com/episode-2"
+        fetch.reset_mock()
+        with patch(FETCH, new=fetch), pytest.raises(HTTPException) as raised:
+            await conn.stream_record(on_page_two)
+        assert raised.value.status_code == 502
+        assert "https://a.example.com/episode-2" not in [c.kwargs["url"] for c in fetch.await_args_list]
