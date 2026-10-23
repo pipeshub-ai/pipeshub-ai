@@ -5935,13 +5935,21 @@ class ConfluenceConnector(BaseConnector):
             return []
 
         threads: dict[str, list[dict[str, Any]]] = {}
+        parent_of = {
+            str(c.get("id", "")): str(c["parentCommentId"]) for c in comments_data if c.get("parentCommentId")
+        }
+
+        def root_of(comment_id: str) -> str:
+            # A reply to a reply belongs to the thread of the comment that started it.
+            seen: set[str] = set()
+            while comment_id in parent_of and comment_id not in seen:
+                seen.add(comment_id)
+                comment_id = parent_of[comment_id]
+            return comment_id
 
         for comment in comments_data:
             comment_id = str(comment.get("id", ""))
-            parent_comment_id = comment.get("parentCommentId")
-
-            # Thread ID is parent's ID if it's a reply, or self ID if top-level
-            thread_id = str(parent_comment_id) if parent_comment_id else comment_id
+            thread_id = root_of(comment_id) if comment_id else ""
             if not thread_id:
                 continue
 
@@ -5949,12 +5957,13 @@ class ConfluenceConnector(BaseConnector):
                 threads[thread_id] = []
             threads[thread_id].append(comment)
 
-        # Sort each thread by created timestamp (oldest first)
+        # Sort each thread: the comment that started it first, then replies oldest first
         for thread_id in threads:
             threads[thread_id].sort(
-                key=lambda c: self._parse_confluence_datetime(
-                    c.get("version", {}).get("createdAt", "")
-                ) or 0
+                key=lambda c, root=thread_id: (
+                    str(c.get("id", "")) != root,
+                    self._parse_confluence_datetime(c.get("version", {}).get("createdAt", "")) or 0,
+                )
             )
 
         # Sort threads by first comment's created timestamp (oldest thread first)
@@ -6268,7 +6277,7 @@ class ConfluenceConnector(BaseConnector):
                         author_name=user_display_names.get(author_id, "Unknown"),
                         thread_id=thread_id,
                         weburl=parser._normalize_url(comment_weburl),
-                        created_at=parser._parse_confluence_timestamp(comment.get("createdAt")),
+                        created_at=parser._parse_confluence_timestamp(parser.comment_created_at(comment)),
                     )
 
                     # Create COMMENT BlockGroup

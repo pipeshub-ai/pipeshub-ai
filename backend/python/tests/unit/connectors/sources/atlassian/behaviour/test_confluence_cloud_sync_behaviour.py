@@ -2383,3 +2383,20 @@ class TestCommentsReindexTheirPage:
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         assert not any(q["cql"].startswith("type=comment") for q in search.queries)
+
+
+class TestFooterCommentThreads:
+    async def test_a_reply_to_a_reply_stays_in_its_thread(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+
+        def comment(cid: str, parent: str | None, created: str) -> dict[str, Any]:
+            return {"id": cid, "parentCommentId": parent, "version": {"createdAt": created}}
+
+        threads = connector._organize_confluence_comments_to_threads([
+            comment("c3", "c2", "2024-05-03T00:00:00.000Z"),
+            comment("c1", None, "2024-05-01T00:00:00.000Z"),
+            comment("c2", "c1", "2024-05-02T00:00:00.000Z"),
+            comment("d1", None, "2024-04-01T00:00:00.000Z"),
+        ])
+
+        assert [[c["id"] for c in t] for t in threads] == [["d1"], ["c1", "c2", "c3"]]
