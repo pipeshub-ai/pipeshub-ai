@@ -3234,13 +3234,17 @@ class ConfluenceDataSource:
         self,
         page_id: str,
         expand: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        headers: Optional[Dict[str, Any]] = None,
+        start: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> HTTPResponse:
         """Fetch page permissions using v1 content API.
 
         Args:
             page_id: The page ID
             expand: Properties to expand (default includes user/group details)
+            start: Offset into each operation's user and group lists
+            limit: Most users and most groups per operation in one response (Cloud default 100)
 
         Returns:
             HTTPResponse containing restrictions data
@@ -3253,6 +3257,10 @@ class ConfluenceDataSource:
             _query: Dict[str, Any] = {"expand": expand}
         else:
             _query: Dict[str, Any] = {}
+        if start is not None:
+            _query["start"] = start
+        if limit is not None:
+            _query["limit"] = limit
         _path: Dict[str, Any] = {"id": page_id}
 
         url = self._v1_rest_api_base() + _safe_format_url("/content/{id}/restriction", _path)

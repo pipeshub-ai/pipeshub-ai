@@ -1901,3 +1901,29 @@ class TestBackgroundStartFailure:
         assert "Couldn't connect to Confluence" in notes[0]["message"]
         assert notes[0]["recipient_user_ids"] == ["creator-1"]
         assert [r.value for r in notes[0]["recipient_roles"]] == ["admin"]
+
+
+class TestLongRestrictionLists:
+    async def test_a_read_restriction_naming_more_than_one_page_of_users_grants_them_all(
+        self, api, db, checkpoints, search
+    ) -> None:
+        for i in range(150):
+            db.add_user(f"acc-{i}", f"user{i}@acme.com")
+
+        def restriction(request: httpx.Request) -> httpx.Response:
+            start = int(AtlassianApiStub.query(request).get("start", "0"))
+            users = [{"accountId": f"acc-{i}"} for i in range(start, min(start + 100, 150))]
+            return json_response({"results": [{"operation": "read", "restrictions": {
+                "user": {"results": users, "start": start, "limit": 100, "size": len(users)},
+                "group": {"results": [], "start": start, "limit": 100, "size": 0},
+            }}]})
+
+        api.on("GET", f"{V1}/content/10/restriction", restriction)
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        granted = {p.email for p in db.record_permissions["10"]}
+        assert len(granted) == 150, "users past the first 100 keep their access"
+        assert [AtlassianApiStub.query(r)["start"] for r in api.calls("GET", f"{V1}/content/10/restriction")] == ["0", "100"]

@@ -3245,6 +3245,50 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch permissions for space {space_name}: {e}")
             return None
 
+    # Users and groups per operation in one restriction response (Cloud's default and our page size).
+    _RESTRICTION_PAGE = 100
+    # Runaway backstop: 100 pages is 10,000 users and 10,000 groups on one restriction.
+    _RESTRICTION_MAX_PAGES = 100
+
+    async def _read_all_restrictions(self, page_id: str) -> Optional[list[dict[str, Any]]]:
+        """Every user and group of each of a content item's restrictions; None when it can't be read.
+
+        Cloud returns at most ``limit`` users and ``limit`` groups per operation in one
+        response, so a longer list is read page by page and merged per operation.
+        """
+        merged: dict[str, dict[str, Any]] = {}
+        seen: set[tuple[str, str, str]] = set()
+        for page in range(self._RESTRICTION_MAX_PAGES):
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_page_permissions_v1(
+                page_id=page_id, start=page * self._RESTRICTION_PAGE, limit=self._RESTRICTION_PAGE
+            )
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                self.logger.warning(f"⚠️ Failed to fetch permissions for page {page_id}: {response.status if response else 'No response'}")
+                return None
+            more = False
+            new = False
+            for restriction in response.json().get("results", []) or []:
+                operation = restriction.get("operation")
+                target = merged.setdefault(operation, {
+                    "operation": operation,
+                    "restrictions": {"user": {"results": []}, "group": {"results": []}},
+                })
+                for kind in ("user", "group"):
+                    entries = ((restriction.get("restrictions") or {}).get(kind) or {}).get("results") or []
+                    for entry in entries:
+                        key = (str(operation), kind, str(entry.get("accountId") or entry.get("id") or entry.get("name")))
+                        if key not in seen:
+                            seen.add(key)
+                            new = True
+                            target["restrictions"][kind]["results"].append(entry)
+                    more = more or len(entries) >= self._RESTRICTION_PAGE
+            # A full page may be followed by more; a page that adds nothing new ends it.
+            if not more or not new:
+                return list(merged.values())
+        self.logger.warning(f"⚠️ Restrictions of {page_id} have more than {self._RESTRICTION_MAX_PAGES} pages")
+        return None
+
     async def _fetch_page_permissions(self, page_id: str) -> Optional[list[Permission]]:
         """
         Fetch permissions for a Confluence page using v1 API.
@@ -3261,19 +3305,9 @@ class ConfluenceConnector(BaseConnector):
         try:
             self.logger.debug(f"Fetching permissions for page: {page_id}")
 
-            # Fetch page restrictions using v1 API
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.get_page_permissions_v1(
-                page_id=page_id
-            )
-
-            # Check response
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(f"⚠️ Failed to fetch permissions for page {page_id}: {response.status if response else 'No response'}")
+            restrictions = await self._read_all_restrictions(page_id)
+            if restrictions is None:
                 return None
-
-            response_data = response.json()
-            restrictions = response_data.get("results", [])
 
             # Process each restriction (read and update operations)
             for restriction_data in restrictions:
