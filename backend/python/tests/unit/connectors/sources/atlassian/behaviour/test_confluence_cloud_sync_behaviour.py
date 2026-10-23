@@ -74,6 +74,13 @@ def db() -> CloudRecordsDb:
     return CloudRecordsDb()
 
 
+@pytest.fixture(autouse=True)
+def _fresh_notice_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """What was already noticed is kept per connector id across instances; no test sees another's."""
+    monkeypatch.setattr(ConfluenceConnector, "_persistent_noticed", {})
+    monkeypatch.setattr(ConfluenceConnector, "_quota_noticed_reset", {})
+
+
 @pytest.fixture
 def api(monkeypatch: pytest.MonkeyPatch) -> AtlassianApiStub:
     stub = AtlassianApiStub()
@@ -1840,6 +1847,24 @@ class TestSyncProblemsNotice:
         (note,) = connector._notification_service.sent
         assert "Space ENG: skipped 2 pages whose restrictions could not be read" in note["message"]
 
+    async def test_a_condition_counts_as_noticed_only_after_a_finished_run(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        condition = "Couldn't read the Confluence audit log (HTTP 403)"
+
+        async def run(finished: bool) -> int:
+            connector._sync_problems = []
+            connector._persistent_problems = set()
+            connector._note_problem(condition, unread=False, persistent=True)
+            connector._sync_finished = finished
+            before = len(connector._notification_service.sent)
+            await connector._report_sync_problems()
+            return len(connector._notification_service.sent) - before
+
+        assert await run(finished=False) == 1
+        assert await run(finished=False) == 1, "a run that stopped early may not have reached the check"
+        assert await run(finished=True) == 1
+        assert await run(finished=True) == 0, "shown once per change"
+
     async def test_a_refused_audit_log_explains_what_it_needs(self, api, db, checkpoints) -> None:
         api.on("GET", f"{V1}/audit", json_response({"message": "Forbidden"}, status=403))
         connector, _ = await ready_connector(db, checkpoints)
@@ -2039,6 +2064,29 @@ class TestBackgroundStartFailure:
 
 
 class TestLongRestrictionLists:
+    async def test_pages_follow_the_page_size_confluence_used(self, api, db, checkpoints, search) -> None:
+        for i in range(60):
+            db.add_user(f"acc-{i}", f"user{i}@acme.com")
+
+        def restriction(request: httpx.Request) -> httpx.Response:
+            start = int(AtlassianApiStub.query(request).get("start", "0"))
+            users = [{"accountId": f"acc-{i}"} for i in range(start, min(start + 25, 60))]
+            return json_response({"results": [{"operation": "read", "restrictions": {
+                "user": {"results": users, "start": start, "limit": 25, "size": len(users), "totalSize": 60},
+                "group": {"results": [], "start": start, "limit": 25, "size": 0},
+            }}]})
+
+        api.on("GET", f"{V1}/content/10/restriction", restriction)
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert len({p.email for p in db.record_permissions["10"]}) == 60
+        assert [AtlassianApiStub.query(r)["start"] for r in api.calls("GET", f"{V1}/content/10/restriction")] == [
+            "0", "25", "50",
+        ]
+
     async def test_a_read_restriction_naming_more_than_one_page_of_users_grants_them_all(
         self, api, db, checkpoints, search
     ) -> None:
