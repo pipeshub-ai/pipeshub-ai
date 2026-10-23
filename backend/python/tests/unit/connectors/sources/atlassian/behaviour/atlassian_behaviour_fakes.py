@@ -197,10 +197,6 @@ class FakeRecordsDb:
     async def on_new_app_users(self, users: list[Any]) -> None:
         self.app_users.extend(users)
 
-    async def get_all_app_users(self, connector_id: str) -> list[Any]:
-        latest = {u.source_user_id: u for u in self.app_users}
-        return [u for u in latest.values() if u not in self.withdrawn_users]
-
     async def withdraw_app_user_access(self, connector_id: str, users: list[Any]) -> None:
         self.withdrawn_users.extend(users)
 
