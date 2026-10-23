@@ -424,7 +424,7 @@ def test_no_module_writes_entity_extraction_status():
     assert writers == allowed
 
 
-async def test_an_extraction_never_touches_the_stored_record():
+async def test_an_extraction_never_touches_the_stored_record() -> None:
     """The extraction is kept as the stage's output; the stored record stays classification's
     alone, and still reads as unclassified to the classify stage."""
     from app.events.processor import convert_record_dict_to_record
@@ -466,7 +466,7 @@ async def test_an_extraction_never_touches_the_stored_record():
     assert not await classify_io.stored_metadata_present(_view_job("classify"))
 
 
-def _reproject_ctx(legacy):
+def _reproject_ctx(legacy: object) -> SimpleNamespace:
     return SimpleNamespace(
         record=SimpleNamespace(
             virtual_record_id="vr-1",
@@ -475,7 +475,7 @@ def _reproject_ctx(legacy):
     )
 
 
-async def test_the_kept_extraction_is_written_again_without_a_model():
+async def test_the_kept_extraction_is_written_again_without_a_model() -> None:
     graph = MagicMock()
     graph.stage_state_get = AsyncMock(return_value={"status": "COMPLETED", "output": _extraction().model_dump_json()})
     sink = _sink(graph)
@@ -488,7 +488,7 @@ async def test_the_kept_extraction_is_written_again_without_a_model():
     assert [entity.display_name for entity in extraction.entities] == [_SECRET_NAME]
 
 
-async def test_a_revision_the_stage_kept_nothing_for_reprojects_nothing():
+async def test_a_revision_the_stage_kept_nothing_for_reprojects_nothing() -> None:
     """Skipped or turned off: the legacy section may hold an older revision's entities."""
     graph = MagicMock()
     graph.stage_state_get = AsyncMock(return_value={"status": "SKIPPED", "output": None})
@@ -500,7 +500,7 @@ async def test_a_revision_the_stage_kept_nothing_for_reprojects_nothing():
     sink.persist_named_entities.assert_not_awaited()
 
 
-async def test_a_record_from_before_the_stage_reprojects_its_legacy_section():
+async def test_a_record_from_before_the_stage_reprojects_its_legacy_section() -> None:
     graph = MagicMock()
     graph.stage_state_get = AsyncMock(return_value=None)
     sink = _sink(graph)
