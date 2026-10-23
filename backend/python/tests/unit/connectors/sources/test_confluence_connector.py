@@ -3267,6 +3267,8 @@ class TestRunSyncCoverage:
         c._remove_content_gone_from_source = AsyncMock(return_value=True)
         c._remove_spaces_out_of_scope = AsyncMock()
         c._sync_permission_changes_from_audit_log = AsyncMock()
+        c._remove_folders_gone = AsyncMock()
+        c._reindex_pages_with_changed_comments = AsyncMock()
 
         await c.run_sync()
         c._sync_users.assert_awaited_once()

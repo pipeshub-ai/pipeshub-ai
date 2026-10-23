@@ -4496,7 +4496,8 @@ class ConfluenceConnector(BaseConnector):
                 # changes (or it is re-indexed), so what is stored matches what was indexed.
                 mime_type=(
                     existing_record.mime_type
-                    if not is_new and existing_record.mime_type and str(version_number) == existing_record.external_revision_id
+                    if not is_new and isinstance(existing_record.mime_type, str) and existing_record.mime_type
+                    and str(version_number) == existing_record.external_revision_id
                     else MimeTypes.BLOCKS.value
                 ),
                 # The preview has no renderer for blocks; as for Jira, the page opens at its link.
