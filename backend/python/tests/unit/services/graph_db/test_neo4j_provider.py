@@ -11,6 +11,10 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     MoveDestinationMissing,
 )
+from app.services.graph_db.neo4j.neo4j_client import (
+    DEFAULT_LIVENESS_CHECK_TIMEOUT,
+    DEFAULT_MAX_CONNECTION_LIFETIME,
+)
 from app.services.graph_db.neo4j.neo4j_provider import (
     BLOCK_DELETE_BATCH_SIZE,
     Neo4jProvider,
@@ -132,6 +136,38 @@ class TestConnectionManagement:
         assert kwargs["uri"] == "bolt://localhost:7687"
         assert kwargs["username"] == "neo4j"
         assert kwargs["database"] == "neo4j"
+        assert kwargs["max_connection_lifetime"] == DEFAULT_MAX_CONNECTION_LIFETIME
+        assert kwargs["liveness_check_timeout"] == DEFAULT_LIVENESS_CHECK_TIMEOUT
+
+    @staticmethod
+    async def _client_kwargs(env: dict[str, str]) -> dict:
+        provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        with patch.dict("os.environ", {"NEO4J_PASSWORD": "secret", **env}, clear=True), patch(
+            "app.services.graph_db.neo4j.neo4j_provider.Neo4jClient"
+        ) as mock_client_cls:
+            mock_client_cls.return_value.connect = AsyncMock(return_value=True)
+            assert await provider.connect() is True
+        return mock_client_cls.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_connection_lifetime_and_liveness_come_from_env(self) -> None:
+        kwargs = await self._client_kwargs(
+            {"NEO4J_MAX_CONNECTION_LIFETIME": "240", "NEO4J_LIVENESS_CHECK_TIMEOUT": "0"}
+        )
+
+        assert kwargs["max_connection_lifetime"] == 240.0
+        assert kwargs["liveness_check_timeout"] == 0.0
+
+    # Compose passes an unset knob through as "": that must mean the default.
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["", "  ", "abc", "-5", "nan", "inf"])
+    async def test_unusable_connection_timeouts_fall_back_to_defaults(self, raw: str) -> None:
+        kwargs = await self._client_kwargs(
+            {"NEO4J_MAX_CONNECTION_LIFETIME": raw, "NEO4J_LIVENESS_CHECK_TIMEOUT": raw}
+        )
+
+        assert kwargs["max_connection_lifetime"] == DEFAULT_MAX_CONNECTION_LIFETIME
+        assert kwargs["liveness_check_timeout"] == DEFAULT_LIVENESS_CHECK_TIMEOUT
 
     @pytest.mark.asyncio
     async def test_connect_returns_false_when_password_missing(self):

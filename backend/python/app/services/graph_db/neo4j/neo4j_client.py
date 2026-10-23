@@ -25,7 +25,10 @@ DEFAULT_MAX_CONNECTION_POOL_SIZE = 100
 # for a minute before failing, which is how one leaked session per record
 # turned into 1800s record timeouts instead of retryable errors.
 DEFAULT_CONNECTION_ACQUISITION_TIMEOUT = 30.0
-DEFAULT_MAX_CONNECTION_LIFETIME = 30 * 60.0
+# Under the idle timeouts between us and a hosted or clustered server (a cloud
+# NAT gateway drops idle flows at 350s). Those answer the next packet on a
+# dropped connection with a reset, so the pool has to retire it first.
+DEFAULT_MAX_CONNECTION_LIFETIME = 5 * 60.0
 DEFAULT_LIVENESS_CHECK_TIMEOUT = 30.0
 # Longer than any record is allowed to process (RECORD_PROCESSING_TIMEOUT,
 # 1800s by default) plus a margin: a session older than this belongs to a
@@ -112,6 +115,14 @@ class Neo4jClient:
         self.database = database
         self._max_connection_pool_size = max(1, int(max_connection_pool_size))
         self._connection_acquisition_timeout = float(connection_acquisition_timeout)
+        # Zero retires every connection before reuse, so each query would pay
+        # a fresh connect and TLS handshake.
+        if not max_connection_lifetime > 0:
+            self.logger.warning(
+                "Ignoring Neo4j max_connection_lifetime=%r; falling back to %r",
+                max_connection_lifetime, DEFAULT_MAX_CONNECTION_LIFETIME,
+            )
+            max_connection_lifetime = DEFAULT_MAX_CONNECTION_LIFETIME
         self._max_connection_lifetime = float(max_connection_lifetime)
         self._liveness_check_timeout = float(liveness_check_timeout)
         self._stale_session_max_age = float(stale_session_max_age)

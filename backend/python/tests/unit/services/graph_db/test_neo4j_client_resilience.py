@@ -15,7 +15,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from neo4j.exceptions import ServiceUnavailable
 
-from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
+from app.services.graph_db.neo4j.neo4j_client import (
+    DEFAULT_LIVENESS_CHECK_TIMEOUT,
+    DEFAULT_MAX_CONNECTION_LIFETIME,
+    Neo4jClient,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -257,12 +261,33 @@ class TestDriverSettings:
     @pytest.mark.asyncio
     async def test_settings_reach_the_driver(self, ensure_db) -> None:
         with patch("app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver", return_value=_driver([])) as ctor:
-            client = _client(max_connection_pool_size=7, connection_acquisition_timeout=3.0)
+            client = _client(
+                max_connection_pool_size=7,
+                connection_acquisition_timeout=3.0,
+                max_connection_lifetime=240.0,
+                liveness_check_timeout=0.0,
+            )
             await client.connect()
 
         kwargs = ctor.call_args.kwargs
         assert kwargs["max_connection_pool_size"] == 7
         assert kwargs["connection_acquisition_timeout"] == 3.0
+        assert kwargs["max_connection_lifetime"] == 240.0
+        # Zero is the driver's "check every time", not "off".
+        assert kwargs["liveness_check_timeout"] == 0.0
+
+    def test_default_lifetime_retires_connections_before_a_nat_idle_timeout(self) -> None:
+        # A NAT gateway drops a flow idle for 350s and resets the next packet
+        # on it; a pooled connection kept longer is reused after the drop.
+        assert DEFAULT_MAX_CONNECTION_LIFETIME < 350
+        assert DEFAULT_LIVENESS_CHECK_TIMEOUT < DEFAULT_MAX_CONNECTION_LIFETIME
+
+    @pytest.mark.parametrize("lifetime", [0, 0.0, -1.0, float("nan")])
+    def test_a_lifetime_that_would_retire_every_connection_falls_back(self, lifetime: float) -> None:
+        client = _client(max_connection_lifetime=lifetime)
+
+        assert client._max_connection_lifetime == DEFAULT_MAX_CONNECTION_LIFETIME
+        client.logger.warning.assert_called_once()
 
 
 class TestExplicitTransactions:

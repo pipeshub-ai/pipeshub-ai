@@ -182,6 +182,8 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.graph_db.neo4j import kh_scope
 from app.services.graph_db.neo4j.neo4j_client import (
+    DEFAULT_LIVENESS_CHECK_TIMEOUT,
+    DEFAULT_MAX_CONNECTION_LIFETIME,
     DEFAULT_MAX_CONNECTION_POOL_SIZE,
     Neo4jClient,
 )
@@ -218,7 +220,7 @@ from app.services.graph_db.vector_membership_queries import (
     build_page_records_for_vector_membership_backfill_cypher,
     can_use_membership_cleanup,
 )
-from app.utils.env_config import env_int
+from app.utils.env_config import env_int, env_seconds
 from app.utils.env_utils import env_bool
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed, folder_in_trash
@@ -649,10 +651,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 password=password,
                 database=database,
                 logger=self.logger,
-                # The one driver knob that has to match the server (its bolt
-                # thread pool); the timeouts around it are constants.
+                # Has to match the server's bolt thread pool.
                 max_connection_pool_size=env_int(
                     "NEO4J_MAX_CONNECTION_POOL_SIZE", DEFAULT_MAX_CONNECTION_POOL_SIZE
+                ),
+                # These two have to fit the network path to the server: a
+                # pooled connection idle past a proxy or NAT timeout is reset
+                # on its next use.
+                max_connection_lifetime=env_seconds(
+                    "NEO4J_MAX_CONNECTION_LIFETIME", DEFAULT_MAX_CONNECTION_LIFETIME
+                ),
+                liveness_check_timeout=env_seconds(
+                    "NEO4J_LIVENESS_CHECK_TIMEOUT", DEFAULT_LIVENESS_CHECK_TIMEOUT
                 ),
                 # Real transactions (abort rolls back) instead of one
                 # auto-commit per query. Off for one release: they hold node
