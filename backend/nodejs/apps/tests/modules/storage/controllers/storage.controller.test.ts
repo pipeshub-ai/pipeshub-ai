@@ -1779,6 +1779,23 @@ describe('StorageController.moveTree collision handling', () => {
     })
   })
 
+  it('scopes the tree lookup by orgId, not just the path prefix', async () => {
+    const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
+    const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
+    const orgId = makeOrgId()
+    const find = sinon.stub(DocumentModel, 'find').returns({
+      select: () => ({ lean: () => Promise.resolve([]) }),
+    } as any)
+
+    await controller.moveTree(
+      makeReq({ orgId, body: { oldPath: 'records/c1/Folder', newPath: 'records/c1/Renamed' } }),
+      makeRes(),
+      sinon.stub(),
+    )
+
+    expect(String(find.firstCall.args[0].orgId)).to.equal(String(orgId))
+  })
+
   it('allows folder names containing ".." but rejects a ".." segment', async () => {
     const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
     const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)

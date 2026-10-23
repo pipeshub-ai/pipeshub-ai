@@ -265,17 +265,20 @@ export const appendMessages = async (
  */
 export const updateMessageById = async (
   messageId: mongoose.Types.ObjectId | string,
+  orgId: mongoose.Types.ObjectId | string,
   newContent: IMessage,
   mongoSession?: ClientSession | null,
 ): Promise<IChatSessionMessageDocument | null> => {
-  const existing = await ChatSessionMessage.findById(messageId, undefined, {
-    session: mongoSession || undefined,
-  });
+  const existing = await ChatSessionMessage.findOne(
+    { _id: messageId, orgId },
+    undefined,
+    { session: mongoSession || undefined },
+  );
   if (!existing) {
     return null;
   }
   return ChatSessionMessage.findOneAndReplace(
-    { _id: messageId },
+    { _id: messageId, orgId },
     {
       ...newContent,
       sessionId: existing.sessionId,
@@ -347,6 +350,7 @@ export const staleAskUserQuestionToolCallIds = (
 
 export const deleteMessagesById = async (
   messageIds: mongoose.Types.ObjectId[],
+  orgId: mongoose.Types.ObjectId | string,
   mongoSession?: ClientSession | null,
   sessionId?: mongoose.Types.ObjectId | string,
 ): Promise<number> => {
@@ -354,7 +358,7 @@ export const deleteMessagesById = async (
     return 0;
   }
   const result = await ChatSessionMessage.deleteMany(
-    { _id: { $in: messageIds }, ...(sessionId ? { sessionId } : {}) },
+    { _id: { $in: messageIds }, orgId, ...(sessionId ? { sessionId } : {}) },
     mongoSession ? { session: mongoSession } : undefined,
   );
   return result.deletedCount ?? 0;
@@ -363,11 +367,12 @@ export const deleteMessagesById = async (
 /** Append a feedback entry to one message's `feedback` array. */
 export const appendMessageFeedback = async (
   messageId: mongoose.Types.ObjectId | string,
+  orgId: mongoose.Types.ObjectId | string,
   feedbackEntry: unknown,
   mongoSession?: ClientSession | null,
 ): Promise<IChatSessionMessageDocument | null> => {
   return ChatSessionMessage.findOneAndUpdate(
-    { _id: messageId },
+    { _id: messageId, orgId },
     { $push: { feedback: feedbackEntry } },
     { new: true, session: mongoSession || undefined, runValidators: true },
   );
@@ -383,18 +388,25 @@ export const appendMessageFeedback = async (
 export const getMessages = async (
   sessionId: mongoose.Types.ObjectId | string,
   options: {
+    orgId: mongoose.Types.ObjectId | string;
     skip?: number;
     limit?: number;
     populateCitations?: boolean;
     sort?: 1 | -1;
-  } = {},
+  },
   mongoSession?: ClientSession | null,
 ): Promise<any[]> => {
-  const { skip = 0, limit, populateCitations = false, sort = 1 } = options;
+  const {
+    orgId,
+    skip = 0,
+    limit,
+    populateCitations = false,
+    sort = 1,
+  } = options;
   if (limit !== undefined && limit <= 0) {
     return [];
   }
-  let query = ChatSessionMessage.find({ sessionId }).sort({ seq: sort });
+  let query = ChatSessionMessage.find({ sessionId, orgId }).sort({ seq: sort });
   if (skip) {
     query = query.skip(skip);
   }
@@ -505,7 +517,10 @@ export const attachPopulatedCitations = async (
     try {
       messages = await getMessages(
         sessionId,
-        { populateCitations: true },
+        {
+          orgId: (session as { orgId: string }).orgId,
+          populateCitations: true,
+        },
         mongoSession,
       );
     } catch (err: any) {
@@ -1913,6 +1928,7 @@ export const savePartialConversation = async (
     if (options?.replaceMessageId) {
       const updated = await updateMessageById(
         options.replaceMessageId,
+        conversation.orgId,
         partialMessage,
         session,
       );
@@ -1989,6 +2005,7 @@ export const replaceMessageWithError = async (
     const failedMessage = buildAIFailureResponseMessage(errorMessage);
     const updatedMessage = await updateMessageById(
       messageId,
+      conversation.orgId,
       failedMessage,
       session,
     );
@@ -2777,6 +2794,7 @@ export const handleRegenerationSuccess = async (
 
   const updatedMessage = await updateMessageById(
     messageId,
+    existingConversation.orgId,
     aiResponseMessage,
     session,
   );
@@ -2793,6 +2811,7 @@ export const handleRegenerationSuccess = async (
     try {
       await deleteMessagesById(
         staleAskToolCallIds,
+        existingConversation.orgId,
         session,
         existingConversation._id,
       );
@@ -2884,7 +2903,7 @@ export const handleRegenerationError = async (
       if (updatedConversation) {
         const messages = await getMessages(
           updatedConversation._id as mongoose.Types.ObjectId,
-          {},
+          { orgId: updatedConversation.orgId },
           session,
         );
         const plainConversation = attachMessages(
