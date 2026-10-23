@@ -84,9 +84,12 @@ passes only when everything did.
     without putting it back: every later file on that worker sees it. Use
     `monkeypatch`, or a fixture that restores the original.
 - **Time limits**: CI passes `--timeout=60`, not `pytest.ini`'s 30s, because
-  4 workers share 2 physical cores. A test that needs a fixed time bound to
-  mean something (a linear-time check, say) should run under
-  `@pytest.mark.no_cover`: coverage slows Python code ~3x.
+  4 workers share 2 physical cores. For a performance check (a linear-time
+  guard, say), compare against a control input timed in the same test rather
+  than a fixed number of milliseconds: coverage slows Python code ~3x and a
+  shared core slows it again. `@pytest.mark.no_cover` does not help here, as
+  it does not stop coverage inside xdist workers. See
+  `TestAdversarialInput` in `tests/unit/utils/test_url_redaction.py`.
 - **Keeping shards even**: the run takes as long as the slowest shard.
   `scripts/unit_shard_durations.json` holds measured minutes per test file,
   and `scripts/test_unit_shards.py` fails when one shard grows far past the
