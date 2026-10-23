@@ -157,6 +157,7 @@ export function CreateOAuthApplicationPanel({
   const [serviceAccountsError, setServiceAccountsError] = useState<string | null>(
     null
   );
+  const [serviceAccountsLoading, setServiceAccountsLoading] = useState(false);
 
   const [scopesByCategory, setScopesByCategory] = useState<Record<
     string,
@@ -211,6 +212,12 @@ export function CreateOAuthApplicationPanel({
       setHomepageUrl('');
       setPrivacyPolicyUrl('');
       setTermsUrl('');
+      // Cleared with the rest, so reopening cannot carry over a selection, or
+      // a list fetched when a different person was signed in.
+      setServiceAccountId('');
+      setServiceAccounts(null);
+      setServiceAccountsError(null);
+      setServiceAccountsLoading(false);
       setGeneralErrors({});
       setScopesByCategory(null);
       setScopesError(null);
@@ -368,9 +375,14 @@ export function CreateOAuthApplicationPanel({
 
   useEffect(() => {
     if (!grantTypes.has('client_credentials')) return;
-    if (serviceAccounts !== null) return;
+    // `serviceAccountsAttempt` rather than the list itself: a failure leaves
+    // an empty list behind, and guarding on that would make one bad request
+    // block creation for as long as the panel stays open.
+    if (serviceAccounts !== null && serviceAccountsError === null) return;
+    if (serviceAccountsLoading) return;
 
     let cancelled = false;
+    setServiceAccountsLoading(true);
     void (async () => {
       try {
         const { serviceAccounts: list } = await ServiceAccountsApi.list();
@@ -390,12 +402,20 @@ export function CreateOAuthApplicationPanel({
         setServiceAccountsError(
           t('workspace.oauth2.create.serviceAccountLoadError')
         );
+      } finally {
+        if (!cancelled) setServiceAccountsLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [grantTypes, serviceAccounts, t]);
+  }, [grantTypes, serviceAccounts, serviceAccountsError, serviceAccountsLoading, t]);
+
+  const retryServiceAccounts = useCallback(() => {
+    // Clearing the error is what re-arms the effect above.
+    setServiceAccountsError(null);
+    setServiceAccounts(null);
+  }, []);
 
   const buildPayload = useCallback(() => {
     const redirectUrisClean = usesAuthorizationCode
@@ -428,6 +448,10 @@ export function CreateOAuthApplicationPanel({
     termsUrl,
     usesAuthorizationCode,
     knowledgeLimit,
+    // Without this the form validates against the chosen account and then
+    // submits whatever was selected at the last edit of another field —
+    // an empty string, or the account chosen before.
+    serviceAccountId,
   ]);
 
   const handleNext = useCallback(() => {
@@ -872,6 +896,17 @@ export function CreateOAuthApplicationPanel({
                           {serviceAccountsError ??
                             t('workspace.oauth2.create.serviceAccountNone')}
                         </Text>
+                        {serviceAccountsError && (
+                          <Button
+                            size="1"
+                            variant="soft"
+                            type="button"
+                            onClick={retryServiceAccounts}
+                            style={{ marginTop: 'var(--space-2)' }}
+                          >
+                            {t('workspace.oauth2.create.serviceAccountRetry')}
+                          </Button>
+                        )}
                       </Box>
                     ) : (
                       <select

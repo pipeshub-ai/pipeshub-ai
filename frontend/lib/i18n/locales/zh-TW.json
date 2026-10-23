@@ -1876,12 +1876,13 @@
         "grantRequiredTitle": "必須選取授權類型",
         "grantRequiredDescription": "至少必須保留一種已選取的授權類型。",
         "serviceAccountHeading": "此應用程式代表其行事的服務帳號",
-        "clientCredentialsIdentityNote": "此應用程式的權杖以所指向的服務帳號身分行事；若未設定，則以建立它的人的身分行事——如果建立者是管理員，就意味著管理員權限。可在該應用程式的權杖身分中設定或變更。",
+        "clientCredentialsIdentityNote": "此應用程式的權杖以所指向的服務帳號身分行事；若未設定，則以建立它的人的身分行事——如果建立者是管理員，就意味著管理員權限。",
         "serviceAccountHelper": "用戶端認證權杖不包含任何人員，因此此應用程式需要自己的身分。服務帳號始終是成員，絕不會是管理員，且無法登入。沒有服務帳號，應用程式將以建立它的人的身分行事。",
         "serviceAccountPlaceholder": "選擇服務帳號",
         "serviceAccountLoading": "正在載入服務帳號…",
         "serviceAccountNone": "目前還沒有服務帳號。請在「工作區 → 服務帳號」中建立一個，然後返回此處。",
         "serviceAccountLoadError": "無法載入服務帳號。請稍後再試。",
+        "serviceAccountRetry": "重試",
         "errorServiceAccountRequired": "請選擇此應用程式代表其行事的服務帳號。"
       }
     },

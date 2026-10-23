@@ -20,7 +20,12 @@ import {
   InvalidClientError,
   InvalidRedirectUriError,
 } from '../../../libs/errors/oauth.errors'
-import { NotFoundError, BadRequestError } from '../../../libs/errors/http.errors'
+import {
+  NotFoundError,
+  BadRequestError,
+  ForbiddenError,
+} from '../../../libs/errors/http.errors';
+import { ADMIN_ACCESS_REQUIRED_MESSAGE } from '../../user_management/services/user-admin.service';
 import { Users } from '../../user_management/schema/users.schema'
 import {
   CreateOAuthAppRequest,
@@ -144,6 +149,17 @@ export class OAuthAppService {
     );
     let tokenIdentityUserId: Types.ObjectId | undefined;
     if (needsServiceAccount) {
+      // Choosing the service account decides whose documents this app's
+      // tokens reach, so it is an administrator's decision wherever it is
+      // made. Changing it later already requires one (`userAdminCheck` on
+      // PUT /oauth-clients/:appId/token-identity); creating an app does not,
+      // because any member may create an authorization_code app. Without this
+      // a member could set at creation what they would be refused a minute
+      // later — and knowing one service account id is enough, since the
+      // lookup only checks the org, the kind and that it is enabled.
+      if (!isAdmin) {
+        throw new ForbiddenError(ADMIN_ACCESS_REQUIRED_MESSAGE);
+      }
       if (!data.tokenIdentityUserId) {
         throw new BadRequestError(
           'An application that uses client_credentials must name the service ' +
@@ -277,7 +293,23 @@ export class OAuthAppService {
     const previousIdentity = app.tokenIdentityUserId
 
     if (serviceAccountId === null) {
-      app.tokenIdentityUserId = undefined
+      // Clearing it puts the tokens back on the app's creator, which is the
+      // thing creation and the update path both exist to prevent. Refused
+      // while the grant is allowed, so a binding this product now requires is
+      // not one request away from being undone.
+      //
+      // Switching to a different service account stays allowed, and an app
+      // that is already unbound never needs this call, so nothing legacy is
+      // frozen by it.
+      if (app.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS)) {
+        throw new BadRequestError(
+          'This application uses client_credentials, so it must act as a ' +
+            'service account. Point it at a different one instead of ' +
+            'clearing it; clearing it would put its tokens back on whoever ' +
+            'created the application.',
+        );
+      }
+      app.tokenIdentityUserId = undefined;
     } else {
       app.tokenIdentityUserId = await this.requireUsableServiceAccount(
         serviceAccountId,
@@ -525,6 +557,17 @@ export class OAuthAppService {
           'Point this application at a service account before allowing ' +
             'client_credentials. Without one its tokens would act as whoever ' +
             'created it.',
+        );
+      }
+
+      // And that the account still works. One bound months ago may since have
+      // been disabled or deleted, in which case the update would succeed and
+      // every token request afterwards would fail — a confusing way to find
+      // out, and the check is the same one creation uses.
+      if (gainingClientCredentials && app.tokenIdentityUserId) {
+        await this.requireUsableServiceAccount(
+          app.tokenIdentityUserId.toString(),
+          orgId,
         );
       }
     }

@@ -160,6 +160,45 @@ describe('OAuthAppService', () => {
       expect(createStub.called).to.equal(false)
     })
 
+    it('refuses a member, because the binding is an admin decision', async () => {
+      // Changing this later needs an administrator (userAdminCheck on
+      // PUT /oauth-clients/:appId/token-identity), and creating an app does
+      // not, so without this a member could set at creation what they would
+      // be refused a minute later.
+      const createStub = sinon.stub(OAuthApp, 'create')
+
+      let message = ''
+      try {
+        await service.createApp(fakeOrgId, fakeUserId, false, {
+          name: 'Nightly export',
+          allowedScopes: ['org:read'],
+          allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+          tokenIdentityUserId: serviceAccountId,
+        })
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        message = error.message ?? ''
+      }
+
+      expect(message.toLowerCase()).to.contain('admin')
+      expect(createStub.called).to.equal(false)
+    })
+
+    it('still lets a member create an authorization_code app', async () => {
+      const createStub = sinon
+        .stub(OAuthApp, 'create')
+        .resolves({ _id: new Types.ObjectId(), slug: 'x' } as any)
+
+      await service.createApp(fakeOrgId, fakeUserId, false, {
+        name: 'A normal app',
+        allowedScopes: ['org:read'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE],
+        redirectUris: ['https://example.com/cb'],
+      })
+
+      expect(createStub.calledOnce).to.equal(true)
+    })
+
     it('leaves authorization_code apps alone', async () => {
       const createStub = sinon
         .stub(OAuthApp, 'create')

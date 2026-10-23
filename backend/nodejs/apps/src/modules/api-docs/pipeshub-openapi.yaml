@@ -2726,11 +2726,17 @@ components:
         Request to create a new OAuth app (`createAppSchema` in `oauth.validators.ts`).
 
         **Required:** `name`, `allowedScopes`. **Optional:** `description`, `redirectUris`, `allowedGrantTypes`,
-        `homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`, `isConfidential`, `accessTokenLifetime`, `refreshTokenLifetime`.
+        `homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`, `isConfidential`, `accessTokenLifetime`,
+        `refreshTokenLifetime`, `tokenIdentityUserId`.
 
         **Redirect rule (Zod refine):** If the effective grant list includes `authorization_code`
         (including when `allowedGrantTypes` is omitted — defaults to `authorization_code` + `refresh_token`),
         at least one redirect URI is required. If grants exclude `authorization_code`, `redirectUris` may be omitted.
+
+        **Service account rule:** If the effective grant list includes `client_credentials`,
+        `tokenIdentityUserId` is **required** and the caller must be an organisation administrator.
+        That grant issues tokens with no person in them, so without a service account the app would act
+        as whoever created it. Omitting it answers `400`; a non-administrator answers `403`.
       properties:
         name:
           type: string
@@ -2738,6 +2744,15 @@ components:
           minLength: 1
           maxLength: 100
           example: "My Integration App"
+        tokenIdentityUserId:
+          type: string
+          description: |
+            The service account this app's own tokens act as. Required when
+            `allowedGrantTypes` includes `client_credentials`, ignored otherwise.
+
+            Must name a service account in the same organisation that is not disabled;
+            an ordinary user's id is refused. Administrators only.
+          example: "65f0c0ffee00000000000000"
         description:
           type: string
           description: App description
@@ -20220,6 +20235,11 @@ paths:
       summary: Update OAuth app
       description: |
         Update an OAuth app's configuration. All body fields are optional — supply only what should change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) accept `null` to clear them.
+
+        **Adding `client_credentials`** to `allowedGrantTypes` answers `400` unless the app already acts as a
+        service account, and unless that account is still present and enabled. Point the app at one first with
+        `PUT /oauth-clients/{appId}/token-identity`. An app that already allows the grant without a service
+        account predates this rule and can still be edited.
 
         Creator-only: even org admins cannot edit apps owned by other users.
 

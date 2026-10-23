@@ -1885,12 +1885,13 @@
         "grantRequiredTitle": "Grant type required",
         "grantRequiredDescription": "At least one grant type must stay selected.",
         "serviceAccountHeading": "Service account this application acts as",
-        "clientCredentialsIdentityNote": "This application’s tokens act as the service account it is pointed at, and as whoever created it where none is set — which for an administrator means administrator access. Set or change it under the application’s token identity.",
+        "clientCredentialsIdentityNote": "This application’s tokens act as the service account it is pointed at, and as whoever created it where none is set — which for an administrator means administrator access.",
         "serviceAccountHelper": "Client credentials tokens carry no person, so this application needs an identity of its own. A service account is a member, never an administrator, and cannot sign in. Without one the application would act as whoever created it.",
         "serviceAccountPlaceholder": "Choose a service account",
         "serviceAccountLoading": "Loading service accounts…",
         "serviceAccountNone": "There are no service accounts yet. Create one in Workspace → Service accounts, then come back.",
         "serviceAccountLoadError": "Could not load service accounts. Try again in a moment.",
+        "serviceAccountRetry": "Try again",
         "errorServiceAccountRequired": "Choose the service account this application acts as."
       }
     },

@@ -1876,12 +1876,13 @@
         "grantRequiredTitle": "需要授权类型",
         "grantRequiredDescription": "必须至少保留一种已选择的授权类型。",
         "serviceAccountHeading": "此应用程序代表其行事的服务账户",
-        "clientCredentialsIdentityNote": "此应用程序的令牌以所指向的服务账户身份行事；若未设置，则以创建它的人的身份行事——如果创建者是管理员，就意味着管理员权限。可在该应用程序的令牌身份中设置或更改。",
+        "clientCredentialsIdentityNote": "此应用程序的令牌以所指向的服务账户身份行事；若未设置，则以创建它的人的身份行事——如果创建者是管理员，就意味着管理员权限。",
         "serviceAccountHelper": "客户端凭据令牌不包含任何人员，因此此应用程序需要自己的身份。服务账户始终是成员，绝不会是管理员，并且无法登录。没有服务账户，应用程序将以创建它的人的身份行事。",
         "serviceAccountPlaceholder": "选择服务账户",
         "serviceAccountLoading": "正在加载服务账户…",
         "serviceAccountNone": "目前还没有服务账户。请在“工作区 → 服务账户”中创建一个，然后返回此处。",
         "serviceAccountLoadError": "无法加载服务账户。请稍后重试。",
+        "serviceAccountRetry": "重试",
         "errorServiceAccountRequired": "请选择此应用程序代表其行事的服务账户。"
       }
     },
