@@ -609,10 +609,21 @@ class ConfluenceConnector(BaseConnector):
                 "the connector's log has the details."
             ) from e
 
+    # Process-wide: each failed start builds a new connector instance.
+    _failed_start_noticed_at: dict[str, float] = {}
+    _FAILED_START_NOTICE_WINDOW_S = 600
+
     async def on_background_init_failed(self, error: Optional[Exception]) -> None:
         """A sync could not start: tell the creator and the org admins, on every failed start."""
         if error is not None and isinstance(error.__cause__, AtlassianMultiSiteError):
             return  # init already sent its own notice for this
+        # One start can be retried several times (a redelivered event builds a new instance each
+        # time), so one notice per connector per window; the next scheduled run notifies again.
+        now = time.time()
+        last = ConfluenceConnector._failed_start_noticed_at.get(self.connector_id, 0.0)
+        if now - last < self._FAILED_START_NOTICE_WINDOW_S:
+            return
+        ConfluenceConnector._failed_start_noticed_at[self.connector_id] = now
         reason = str(error)[:300] if error else "the connector could not be set up"
         try:
             await self.notify_and_wait(

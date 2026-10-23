@@ -1917,11 +1917,14 @@ class TestBackgroundStartFailure:
         with pytest.raises(ConnectorInitError) as err:
             await connector.init()
 
+        ConfluenceConnector._failed_start_noticed_at.clear()
         await connector.on_background_init_failed(err.value)
+        await connector.on_background_init_failed(err.value)  # the same start, retried at once
+        ConfluenceConnector._failed_start_noticed_at[CONNECTOR_ID] -= 3600  # the next scheduled run
         await connector.on_background_init_failed(err.value)
 
         notes = connector._notification_service.sent
-        assert len(notes) == 2, "every failed start is reported"
+        assert len(notes) == 2, "one notice per failed run, not per retry"
         assert notes[0]["title"].endswith("sync could not start")
         assert "Couldn't connect to Confluence" in notes[0]["message"]
         assert "Unauthorized" not in notes[0]["message"] and "401" not in notes[0]["message"], "no raw response text"
