@@ -158,7 +158,9 @@ jobs:
       # -n logical: one worker per vCPU (`auto` counts physical cores). --dist
       # loadfile keeps each file's tests on one worker, so tests in a file that
       # share module state still run together and in order. pytest-cov merges
-      # the workers' data into COVERAGE_FILE.
+      # the workers' data into COVERAGE_FILE. GitHub's 4 vCPUs are 2 cores, so
+      # each of the 4 workers runs a test at about half serial speed:
+      # --timeout=60 keeps pytest.ini's 30s hang guard at the same CPU budget.
       - name: Run unit tests (${{ matrix.shard }})
         working-directory: backend/python
         env:
@@ -169,7 +171,7 @@ jobs:
         run: |
           args=$(python3 ../../scripts/unit_shards.py args "$SHARD")
           mapfile -t shard_args <<< "$args"
-          pytest "${shard_args[@]}" -n logical --dist loadfile --cov --cov-report= --durations=15
+          pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15
 
       # upload-artifact skips dotfiles unless told otherwise, and every coverage
       # data file is one. Not named python-coverage-report-*: weekly-coverage.yml
