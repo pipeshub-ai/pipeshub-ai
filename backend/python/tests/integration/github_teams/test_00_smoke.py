@@ -9,7 +9,7 @@ import pytest
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
 
-async def test_first_sync_matches_github(world, org):
+async def test_first_sync_matches_github(world, org) -> None:
     gh = world.gh
     issue = gh.add_issue(org["repo"], "Login fails", body="steps")
     gh.comment(issue, "seen it too", org["alice"])

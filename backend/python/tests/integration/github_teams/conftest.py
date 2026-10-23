@@ -6,6 +6,8 @@ delete) off and on.
 
 import logging
 import os
+from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 
@@ -31,7 +33,9 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 
 @pytest.fixture
-async def world(request: pytest.FixtureRequest, backend: str, trash: bool, monkeypatch: pytest.MonkeyPatch):
+async def world(
+    request: pytest.FixtureRequest, backend: str, trash: bool, monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[World]:
     marker = request.node.get_closest_marker("behaviour")
     behaviour = Behaviour(**marker.kwargs) if marker else Behaviour()
     w = await World.create(backend, monkeypatch, behaviour=behaviour, soft_delete=trash)
@@ -44,7 +48,7 @@ async def world(request: pytest.FixtureRequest, backend: str, trash: bool, monke
 
 
 @pytest.fixture
-async def org(world: World):
+async def org(world: World) -> dict[str, Any]:
     """The standard org with matching PipesHub users, configured on its one repository."""
     people = acme(world.gh)
     for name in ("alice", "bob", "olga"):

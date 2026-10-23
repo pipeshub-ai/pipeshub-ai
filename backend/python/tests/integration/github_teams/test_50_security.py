@@ -11,7 +11,7 @@ import pytest
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
 
-async def test_images_and_attachments_are_fetched_and_the_token_stays_on_the_api(world, org):
+async def test_images_and_attachments_are_fetched_and_the_token_stays_on_the_api(world, org) -> None:
     """github.com/user-attachments refuses API tokens (404, live-verified) and redirects
     an anonymous request to signed storage. The token must not be sent to either host,
     and the content must arrive."""
@@ -29,7 +29,7 @@ async def test_images_and_attachments_are_fetched_and_the_token_stays_on_the_api
     assert not world.index_failures, world.index_failures
 
 
-async def test_links_to_other_hosts_are_never_fetched(world, org):
+async def test_links_to_other_hosts_are_never_fetched(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     body = ("![a](https://evil.example/user-attachments/assets/x) "
             "![b](https://github.com.evil.example/user-attachments/assets/x) "
@@ -44,7 +44,7 @@ async def test_links_to_other_hosts_are_never_fetched(world, org):
 
 
 @pytest.mark.parametrize("token_accepted", [False, True], ids=["public-anonymous", "private-token-accepted"])
-async def test_huge_embedded_image_is_not_downloaded_whole(world, org, token_accepted):
+async def test_huge_embedded_image_is_not_downloaded_whole(world, org, token_accepted) -> None:
     """An issue may embed any upload with image syntax, including a 100 MB video. The
     5 MB image limit must stop the download, not be checked after it. Run under both
     answers to "does github.com accept the token" (live: no for a public repository;
@@ -61,7 +61,7 @@ async def test_huge_embedded_image_is_not_downloaded_whole(world, org, token_acc
     assert read <= 6 * 1024 * 1024, f"read {read} bytes"
 
 
-async def test_attachment_over_the_limit_is_refused_without_reading_it_all(world, org):
+async def test_attachment_over_the_limit_is_refused_without_reading_it_all(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     repo.visibility = "public"
     big = gh.upload(repo, "huge.zip", b"\x00" * (30 * 1024 * 1024))
@@ -80,7 +80,7 @@ async def test_attachment_over_the_limit_is_refused_without_reading_it_all(world
     assert read <= 26 * 1024 * 1024
 
 
-async def test_unsafe_title_and_filename_in_headers(world, org):
+async def test_unsafe_title_and_filename_in_headers(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     url = gh.upload(repo, "a.txt", b"hello")
     gh.add_issue(repo, 'Quote " and \r\nX-Injected: 1 ünïcødé', body=f'[evil"\r\nX-Bad: 1.txt]({url})')
@@ -96,7 +96,7 @@ async def test_unsafe_title_and_filename_in_headers(world, org):
             assert "\n" not in response.headers.get("content-disposition", "")
 
 
-async def test_token_never_appears_in_logs(world, org):
+async def test_token_never_appears_in_logs(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Issue", body=f"![x]({gh.upload(repo, 'x.png', b'png', image=True)})")
     await world.sync()

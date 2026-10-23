@@ -13,7 +13,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 BOTH_TRASH_MODES = True
 
 
-async def test_deleted_issue_is_removed(world, org):
+async def test_deleted_issue_is_removed(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     keep = gh.add_issue(repo, "Keep")
     gone = gh.add_issue(repo, "Delete me")
@@ -25,7 +25,7 @@ async def test_deleted_issue_is_removed(world, org):
     assert diff.clean(), diff
 
 
-async def test_issue_transferred_to_another_repository_leaves_the_old_one(world, org):
+async def test_issue_transferred_to_another_repository_leaves_the_old_one(world, org) -> None:
     """Transferred to a repository this connector does not sync (a private one only
     the security team can read): the old copy must not stay readable to the old
     repository's audience."""
@@ -40,7 +40,7 @@ async def test_issue_transferred_to_another_repository_leaves_the_old_one(world,
     assert diff.clean(), diff
 
 
-async def test_repository_deleted_on_github_is_removed(world, org):
+async def test_repository_deleted_on_github_is_removed(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Issue")
     gh.add_pull(repo, "PR")
@@ -52,7 +52,7 @@ async def test_repository_deleted_on_github_is_removed(world, org):
     assert not (await world.live_docs())
 
 
-async def test_lost_access_to_the_repository_removes_it(world, org):
+async def test_lost_access_to_the_repository_removes_it(world, org) -> None:
     """The sync account is removed from the organisation: GitHub now answers 404 for
     the repository, so nobody may keep reading it through PipesHub."""
     gh, repo = world.gh, org["repo"]
@@ -63,7 +63,7 @@ async def test_lost_access_to_the_repository_removes_it(world, org):
     assert not (await world.live_docs())
 
 
-async def test_selecting_a_different_repository_removes_the_old_one(world, org):
+async def test_selecting_a_different_repository_removes_the_old_one(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     other = gh.add_repo(org["org"], "gadgets", files={"g.py": "g"})
     gh.add_issue(repo, "Old repo issue")
@@ -76,7 +76,7 @@ async def test_selecting_a_different_repository_removes_the_old_one(world, org):
     assert diff.clean(), diff
 
 
-async def test_renamed_repository_keeps_everything(world, org):
+async def test_renamed_repository_keeps_everything(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Issue")
     await world.sync()
@@ -86,7 +86,7 @@ async def test_renamed_repository_keeps_everything(world, org):
     assert sorted((await world.live_docs()).keys()) == before
 
 
-async def test_failed_listing_removes_nothing(world, org):
+async def test_failed_listing_removes_nothing(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     for n in range(5):
         gh.add_issue(repo, f"I{n}")
@@ -98,7 +98,7 @@ async def test_failed_listing_removes_nothing(world, org):
     assert sorted((await world.live_docs()).keys()) == before
 
 
-async def test_repository_unreachable_for_a_moment_removes_nothing(world, org):
+async def test_repository_unreachable_for_a_moment_removes_nothing(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Issue")
     await world.sync()
@@ -109,7 +109,7 @@ async def test_repository_unreachable_for_a_moment_removes_nothing(world, org):
     assert sorted((await world.live_docs()).keys()) == before
 
 
-async def test_attachment_removed_from_the_issue_is_removed(world, org):
+async def test_attachment_removed_from_the_issue_is_removed(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     url = gh.upload(repo, "design.pdf", b"%PDF-1.4 design")
     issue = gh.add_issue(repo, "Spec", body=f"See [design.pdf]({url})")
@@ -120,7 +120,7 @@ async def test_attachment_removed_from_the_issue_is_removed(world, org):
     assert await world.names("FILE") == ["src"]
 
 
-async def test_attachments_of_a_deleted_issue_are_removed(world, org):
+async def test_attachments_of_a_deleted_issue_are_removed(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     url = gh.upload(repo, "dump.log", b"secret log")
     issue = gh.add_issue(repo, "Crash", body=f"[dump.log]({url})")
@@ -130,7 +130,7 @@ async def test_attachments_of_a_deleted_issue_are_removed(world, org):
     assert await world.names("FILE") == ["src"]
 
 
-async def test_force_push_that_drops_most_files_removes_them(world, org):
+async def test_force_push_that_drops_most_files_removes_them(world, org) -> None:
     """A force push to a much smaller history (or a switch of the default branch to a
     small one) is only visible to a full tree walk. A complete, untruncated tree is
     GitHub's definite answer for what exists."""
@@ -143,7 +143,7 @@ async def test_force_push_that_drops_most_files_removes_them(world, org):
     assert diff.clean(), diff
 
 
-async def test_code_file_deleted_in_a_normal_commit_is_removed(world, org):
+async def test_code_file_deleted_in_a_normal_commit_is_removed(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     await world.sync()
     gh.commit(repo, {"src/app.py": None})

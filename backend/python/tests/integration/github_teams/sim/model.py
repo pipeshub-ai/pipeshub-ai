@@ -16,9 +16,11 @@ import base64
 import hashlib
 import itertools
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 ROLES = ["read", "triage", "write", "maintain", "admin"]  # ascending
 ROLE_PERMISSION = {"read": "pull", "triage": "triage", "write": "push", "maintain": "maintain", "admin": "admin"}
@@ -299,7 +301,7 @@ class World:
         self.clock.advance(seconds)
 
     def add_user(self, login: str, email: str | None = None, *, name: str | None = None,
-                 corporate_email: str | None = None, type: str = "User") -> User:
+                 corporate_email: str | None = None, type: str = "User") -> User:  # noqa: A002 - GitHub's field name
         user = User(next_id(), login, name or login, email, corporate_email, type)
         self.users[user.id] = user
         return user
@@ -322,26 +324,26 @@ class World:
         org.teams[slug] = team
         return team
 
-    def add_repo(self, owner: Any, name: str, *, visibility: str = "private",
+    def add_repo(self, owner: Any, name: str, *, visibility: str = "private",  # noqa: ANN401
                  files: dict[str, str] | None = None, default_branch: str = "main") -> Repo:
         repo = Repo(next_id(), owner, name, visibility=visibility, default_branch=default_branch)
         self.repos[repo.id] = repo
         self.commit(repo, files if files is not None else {"README.md": f"# {name}\n"}, "initial", replace=True)
         return repo
 
-    def token_for(self, user: User, value: str | None = None, **kw: Any) -> Token:
+    def token_for(self, user: User, value: str | None = None, **kw: Any) -> Token:  # noqa: ANN401
         token = Token(value or f"ghp_{uuid.uuid4().hex}", user.id, **kw)
         self.tokens[token.value] = token
         return token
 
-    def set_sync_account(self, user: User, **kw: Any) -> Token:
+    def set_sync_account(self, user: User, **kw: Any) -> Token:  # noqa: ANN401
         self.sync_token = self.token_for(user, **kw)
         return self.sync_token
 
     # ------------------------------------------------------------ git
 
     def commit(self, repo: Repo, changes: dict[str, str | None], message: str = "change", *,
-               branch: str | None = None, replace: bool = False, parent: Any = "head") -> Commit:
+               branch: str | None = None, replace: bool = False, parent: Any = "head") -> Commit:  # noqa: ANN401
         """Commit ``changes`` (path -> text, None deletes). ``replace`` starts a fresh
         tree; ``parent=None`` makes an unrelated history (a force push)."""
         branch = branch or repo.default_branch
@@ -389,7 +391,7 @@ class World:
         repo.issues[issue.number] = issue
         return issue
 
-    def edit_issue(self, issue: Issue, **changes: Any) -> None:
+    def edit_issue(self, issue: Issue, **changes: Any) -> None:  # noqa: ANN401
         self.tick(1)
         for k, v in changes.items():
             setattr(issue, k, v)
@@ -397,14 +399,14 @@ class World:
             issue.closed_at = self.clock.now()
         issue.updated_at = self.clock.now()
 
-    def comment(self, issue: Any, body: str, user: User | None = None) -> Comment:
+    def comment(self, issue: Any, body: str, user: User | None = None) -> Comment:  # noqa: ANN401
         self.tick(1)
         c = Comment(next_id(), body, user or self.users[self.sync_token.user_id], self.clock.now(), self.clock.now())
         issue.comments.append(c)
         issue.updated_at = self.clock.now()  # documented: a new comment updates the issue
         return c
 
-    def edit_comment(self, issue: Any, comment: Comment, body: str | None) -> None:
+    def edit_comment(self, issue: Any, comment: Comment, body: str | None) -> None:  # noqa: ANN401
         """Edit, or delete with ``body=None``."""
         self.tick(1)
         if body is None:
@@ -445,7 +447,7 @@ class World:
         repo.pulls[pr.number] = pr
         return pr
 
-    def edit_pull(self, pr: PullRequest, **changes: Any) -> None:
+    def edit_pull(self, pr: PullRequest, **changes: Any) -> None:  # noqa: ANN401
         self.tick(1)
         for k, v in changes.items():
             setattr(pr, k, v)
@@ -477,9 +479,10 @@ class World:
         roles = [repo.collaborators.get(user.id)]
         if membership == "member":
             roles.append(org.base_permission)
-            for team in org.teams.values():
-                if repo.id in team.repo_roles and user.id in team.all_members(self):
-                    roles.append(team.repo_roles[repo.id])
+            roles.extend(
+                team.repo_roles[repo.id] for team in org.teams.values()
+                if repo.id in team.repo_roles and user.id in team.all_members(self)
+            )
         return best(*roles)
 
     def can_read(self, user: User | None, repo: Repo) -> bool:
@@ -514,7 +517,7 @@ class World:
         repo.old_names.append(repo.full_name)
         repo.name = name
 
-    def transfer_repo(self, repo: Repo, owner: Any) -> None:
+    def transfer_repo(self, repo: Repo, owner: Any) -> None:  # noqa: ANN401
         repo.old_names.append(repo.full_name)
         repo.owner = owner
 

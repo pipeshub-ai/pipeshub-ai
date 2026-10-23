@@ -13,12 +13,13 @@ makes the next sync a full one, as ``pendingFullSync`` does in the product.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import types
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import httpx
@@ -28,9 +29,9 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.sync import sync_runner
 from app.connectors.sources.github_teams import runtime as runtime_module
 from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
-from app.models.entities import Record
 from app.sources.client.github import github as client_module
 from app.sources.external.github import github_async as ds_module
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -50,6 +51,9 @@ from tests.integration.real_graph import (
     connect_neo4j,
 )
 
+if TYPE_CHECKING:
+    from app.models.entities import Record
+
 ARANGO_DB = "github_teams_it"
 
 # Fields GitHub really leaves out of some payloads, so the connector's ``getattr(x, f,
@@ -67,7 +71,7 @@ ABSENT_ON_PURPOSE: dict[str, tuple[str, Any]] = {
     "updated_at": ("pull-request-review has submitted_at only", lambda d: "submitted_at" in d),
 }
 
-async def connect(backend: str, monkeypatch: Any) -> Any:
+async def connect(backend: str, monkeypatch: Any) -> Any:  # noqa: ANN401
     """The production graph provider on the integration graph store (NEO4J_IT_URI /
     ARANGO_IT_URL, see ``tests.integration.real_graph``)."""
     logger = logging.getLogger(f"github_teams_it.{backend}")
@@ -83,13 +87,11 @@ async def connect(backend: str, monkeypatch: Any) -> Any:
 _OWNED_BY = ("orgId", "connectorId")
 
 
-async def remove_owned(graph: Any, org_id: str, connector_id: str) -> None:
+async def remove_owned(graph: Any, org_id: str, connector_id: str) -> None:  # noqa: ANN401
     """Delete what one World wrote, and only that: the database is shared with every
     other real-graph suite."""
-    try:
+    with contextlib.suppress(Exception):
         await graph.delete_connector_instance(connector_id, org_id)
-    except Exception:
-        pass
     for collection in CollectionNames:
         keys: set[str] = set()
         for prop, value in zip(_OWNED_BY, (org_id, connector_id)):
@@ -111,11 +113,11 @@ class Producer:
     async def initialize(self) -> None:
         return None
 
-    async def send_message(self, topic: str, message: dict[str, Any], key: str | None = None, **_: Any) -> bool:
+    async def send_message(self, topic: str, message: dict[str, Any], key: str | None = None, **_: Any) -> bool:  # noqa: ANN401
         self.events.append((topic, message))
         return True
 
-    async def send_messages(self, topic: str, items: list[Any], **_: Any) -> list[bool]:
+    async def send_messages(self, topic: str, items: list[Any], **_: Any) -> list[bool]:  # noqa: ANN401
         for _key, message in items:
             self.events.append((topic, message))
         return [True] * len(items)
@@ -131,7 +133,7 @@ class ConfigService:
         self.platform: dict[str, Any] = {}
         self.fail_reads = 0  # the next N reads of the connector config raise
 
-    async def get_config(self, path: str, default: Any = None, **_: Any) -> Any:
+    async def get_config(self, path: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
         if path == f"/services/connectors/{self.connector_id}/config":
             if self.fail_reads:
                 self.fail_reads -= 1
@@ -178,7 +180,7 @@ class Diff:
 
 
 class World:
-    def __init__(self, backend: str, graph: Any, gh: GitHub) -> None:
+    def __init__(self, backend: str, graph: Any, gh: GitHub) -> None:  # noqa: ANN401
         self.backend, self.graph, self.gh = backend, graph, gh
         self.api = ApiServer(gh)
         self.internet = Internet(gh, self.api)
@@ -213,7 +215,7 @@ class World:
     # ------------------------------------------------------------------ setup
 
     @classmethod
-    async def create(cls, backend: str, monkeypatch: Any, *, behaviour: Behaviour | None = None,
+    async def create(cls, backend: str, monkeypatch: Any, *, behaviour: Behaviour | None = None,  # noqa: ANN401
                      soft_delete: bool = False) -> "World":
         graph = await connect(backend, monkeypatch)
         world = cls(backend, graph, GitHub(behaviour))
@@ -232,10 +234,10 @@ class World:
         await world.add_pipeshub_user(world.creator_email, user_id=world.creator_id)
         return world
 
-    def _patch(self, monkeypatch: Any) -> None:
+    def _patch(self, monkeypatch: Any) -> None:  # noqa: ANN401
         world, gh = self, self.gh
 
-        def _async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        def _async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:  # noqa: ANN401
             kwargs["transport"] = world.internet
             kwargs["timeout"] = min(float(kwargs.get("timeout") or 30.0), world.http_timeout)
             return httpx.AsyncClient(*args, **kwargs)
@@ -250,7 +252,7 @@ class World:
         monkeypatch.setattr(client_module, "time", clock)
         monkeypatch.setattr(runtime_module, "time", clock)
 
-        async def _sleep(delay: float, *_: Any, **__: Any) -> None:
+        async def _sleep(delay: float, *_: Any, **__: Any) -> None:  # noqa: ANN401
             world.sleeps.append(delay)
             gh.clock.advance(delay)
 
@@ -260,7 +262,7 @@ class World:
 
         original = ds_module.GhObject.__getattr__
 
-        def audited(obj: Any, name: str) -> Any:
+        def audited(obj: Any, name: str) -> Any:  # noqa: ANN401
             try:
                 value = original(obj, name)
             except AttributeError:
@@ -326,6 +328,13 @@ class World:
         if self.synced_once:
             self.pending_full_sync = True
 
+    def set_window(self, start_seconds: int) -> None:
+        """The admin sets the "updated since" window (GitHub time): a filter change."""
+        self.config["filters"]["sync"]["values"]["modified"] = {
+            "operator": "is_after", "type": "datetime", "value": {"start": start_seconds * 1000, "end": None}}
+        if self.synced_once:
+            self.pending_full_sync = True
+
     def set_indexing(self, **values: bool) -> None:
         self.config["filters"]["indexing"]["values"] = {
             k: {"operator": "is", "type": "boolean", "value": v} for k, v in values.items()}
@@ -387,11 +396,19 @@ class World:
         assert self.connector is not None
         self.gh.tick(180)  # syncs are minutes apart
         full, self.pending_full_sync, self.synced_once = full or self.pending_full_sync, False, True
+        # A full sync as the product runs one (EventService, then sync_runner): the sync
+        # points go first; links are not deleted up front. The processor notes what the
+        # sync writes, and only a sync that ran to the end unlinks what it did not write.
+        processor, seen = None, None
         if full:
             await self.graph.delete_sync_points_by_connector_id(connector_id=self.connector_id)
-            await self.graph.delete_connector_sync_edges(connector_id=self.connector_id)
+            processor, seen = sync_runner._begin_full_sync_run(self.connector, self.connector_id)
         try:
             await self.connector.run_sync()
+            if seen is not None:
+                assert await sync_runner._unlink_what_full_sync_missed(
+                    self.connector, self.connector_id, self.graph, self.logger, seen
+                ), "the unlink after the full sync failed"
         except Exception as exc:
             await self._drain()
             if index:
@@ -399,6 +416,9 @@ class World:
             if expect_error:
                 return exc
             raise
+        finally:
+            if seen is not None:
+                processor.end_full_sync_run(self.connector_id, seen)
         await self._drain()
         if index:
             await self.index()
@@ -421,7 +441,7 @@ class World:
 
     # ------------------------------------------------------------------ reading PipesHub
 
-    async def record_docs(self, **filters: Any) -> list[dict[str, Any]]:
+    async def record_docs(self, **filters: Any) -> list[dict[str, Any]]:  # noqa: ANN401
         docs = await self.graph.get_nodes_by_filters(
             CollectionNames.RECORDS.value, {"connectorId": self.connector_id, **filters})
         return [{**d, "id": d.get("id") or d.get("_key")} for d in docs]
@@ -577,11 +597,8 @@ class World:
             container = json.loads(body)
         except ValueError:
             return body.decode(errors="replace")
-        parts = []
-        for group in container.get("block_groups", []):
-            parts.append(str(group.get("data") or ""))
-        for block in container.get("blocks", []):
-            parts.append(str(block.get("data") or ""))
+        parts = [str(group.get("data") or "") for group in container.get("block_groups", [])]
+        parts += [str(block.get("data") or "") for block in container.get("blocks", [])]
         return "\n".join(parts)
 
     async def checkpoint(self, group: str) -> dict[str, Any]:
@@ -599,10 +616,8 @@ class World:
 
     async def destroy(self) -> None:
         if self.connector is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self.connector.cleanup()
-            except Exception:
-                pass
         await self.api.stop()
         try:
             await remove_owned(self.graph, self.org_id, self.connector_id)

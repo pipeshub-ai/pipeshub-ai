@@ -15,7 +15,7 @@ from tests.integration.github_teams.helpers import (
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
 
-async def test_incremental_sync_picks_up_new_and_changed_items(world, org):
+async def test_incremental_sync_picks_up_new_and_changed_items(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     first = gh.add_issue(repo, "First")
     pr = gh.add_pull(repo, "Feature", changes={"src/f.py": "f"})
@@ -31,7 +31,7 @@ async def test_incremental_sync_picks_up_new_and_changed_items(world, org):
     assert diff.clean(), diff
 
 
-async def test_issue_updated_while_the_listing_is_read_is_not_skipped(world, org):
+async def test_issue_updated_while_the_listing_is_read_is_not_skipped(world, org) -> None:
     """GitHub pages the issues listing by offset (``page=N``). Read ``updated asc``, an
     issue edited between two page requests moves to the end, every later issue shifts
     back one place, and the first issue of the next page is never read. Read ``updated
@@ -51,7 +51,7 @@ async def test_issue_updated_while_the_listing_is_read_is_not_skipped(world, org
     assert await world.names("TICKET") == expected
 
 
-async def test_pull_request_updated_in_the_same_second_as_the_watermark(world, org):
+async def test_pull_request_updated_in_the_same_second_as_the_watermark(world, org) -> None:
     """GitHub timestamps have one-second resolution. A PR changed in the same second
     as the newest PR the last sync saw, but after that sync read the listing, carries
     the same ``updated_at`` as the checkpoint."""
@@ -67,7 +67,7 @@ async def test_pull_request_updated_in_the_same_second_as_the_watermark(world, o
     assert await world.names("PULL_REQUEST") == ["A v2", "B v2"]
 
 
-async def test_issue_updated_in_the_same_second_as_the_watermark(world, org):
+async def test_issue_updated_in_the_same_second_as_the_watermark(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     a = gh.add_issue(repo, "A")
     b = gh.add_issue(repo, "B")
@@ -79,7 +79,7 @@ async def test_issue_updated_in_the_same_second_as_the_watermark(world, org):
     assert await world.names("TICKET") == ["A v2", "B v2"]
 
 
-async def test_sync_interrupted_mid_listing_resumes_without_loss(world, org):
+async def test_sync_interrupted_mid_listing_resumes_without_loss(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     for n in range(230):
         gh.add_issue(repo, f"I{n:03}")
@@ -92,7 +92,7 @@ async def test_sync_interrupted_mid_listing_resumes_without_loss(world, org):
     assert diff.clean(), diff
 
 
-async def test_full_sync_rebuilds_the_same_state(world, org):
+async def test_full_sync_rebuilds_the_same_state(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "One")
     gh.add_pull(repo, "Two")
@@ -104,7 +104,7 @@ async def test_full_sync_rebuilds_the_same_state(world, org):
     assert diff.clean(), diff
 
 
-async def test_restart_between_syncs_keeps_checkpoints(world, org):
+async def test_restart_between_syncs_keeps_checkpoints(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "One")
     await world.sync()

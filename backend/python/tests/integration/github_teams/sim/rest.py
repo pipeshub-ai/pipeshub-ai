@@ -18,6 +18,7 @@ import asyncio
 import json
 import re
 import uuid
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlencode
 
@@ -46,7 +47,7 @@ HOSTS = ("api.github.com", "github.com", "private-user-images.githubusercontent.
 
 
 class Reply(Exception):
-    def __init__(self, status: int, body: Any = None, headers: dict[str, str] | None = None) -> None:
+    def __init__(self, status: int, body: Any = None, headers: dict[str, str] | None = None) -> None:  # noqa: ANN401
         self.status, self.body, self.headers = status, body, headers or {}
 
 
@@ -67,7 +68,7 @@ def public_user(u: User) -> dict[str, Any]:
                      html_url=f"https://github.com/{u.login}", user_view_type="public")
 
 
-def owner_obj(owner: Any) -> dict[str, Any]:
+def owner_obj(owner: Any) -> dict[str, Any]:  # noqa: ANN401
     if isinstance(owner, Org):
         return spec.make("simple-user", login=owner.login, id=owner.id, type="Organization",
                          html_url=f"https://github.com/{owner.login}", site_admin=False)
@@ -115,19 +116,19 @@ def _ref(p: PullRequest, sha: str, ref: str) -> dict[str, Any]:
 
 
 def pr_obj(p: PullRequest, component: str) -> dict[str, Any]:
-    values = dict(id=p.id, number=p.number, title=p.title, body=p.body, state=p.state, user=simple_user(p.user),
-                  assignees=[simple_user(a) for a in p.assignees], assignee=None,
-                  requested_reviewers=[simple_user(r) for r in p.requested_reviewers],
-                  labels=[label_obj(n) for n in p.labels], created_at=iso(p.created_at),
-                  updated_at=iso(p.updated_at), merged_at=iso(p.merged_at) if p.merged_at else None,
-                  closed_at=None, html_url=f"https://github.com/{p.repo.full_name}/pull/{p.number}",
-                  head=_ref(p, p.head_sha, f"pr-{p.number}"), base=_ref(p, p.base_sha, p.repo.default_branch))
+    values = {"id": p.id, "number": p.number, "title": p.title, "body": p.body, "state": p.state, "user": simple_user(p.user),
+                  "assignees": [simple_user(a) for a in p.assignees], "assignee": None,
+                  "requested_reviewers": [simple_user(r) for r in p.requested_reviewers],
+                  "labels": [label_obj(n) for n in p.labels], "created_at": iso(p.created_at),
+                  "updated_at": iso(p.updated_at), "merged_at": iso(p.merged_at) if p.merged_at else None,
+                  "closed_at": None, "html_url": f"https://github.com/{p.repo.full_name}/pull/{p.number}",
+                  "head": _ref(p, p.head_sha, f"pr-{p.number}"), "base": _ref(p, p.base_sha, p.repo.default_branch)}
     if component == "pull-request":
         values.update(merged=p.merged_at is not None, mergeable=None, merged_by=None)
     return spec.make(component, **values)
 
 
-def comment_obj(c: Any, url: str) -> dict[str, Any]:
+def comment_obj(c: Any, url: str) -> dict[str, Any]:  # noqa: ANN401
     return spec.make("issue-comment", id=c.id, body=c.body, user=simple_user(c.user), created_at=iso(c.created_at),
                      updated_at=iso(c.updated_at), html_url=f"{url}#issuecomment-{c.id}")
 
@@ -192,7 +193,7 @@ class ApiServer:
         except _Drop:
             ws.calls.append(Call(request.method, host, path, query, 0, resource, bool(auth)))
             request.transport.close()  # type: ignore[union-attr]
-            raise web.HTTPInternalServerError()
+            raise web.HTTPInternalServerError() from None
         ws.calls.append(Call(request.method, host, path, query, status, resource, bool(auth)))
         if isinstance(body, (bytes, bytearray)):
             return web.Response(status=status, body=bytes(body), headers=headers)
@@ -352,11 +353,14 @@ def paginate(items: list[Any], query: dict[str, str], base: str) -> tuple[list[A
 
 # ---------------------------------------------------------------- handlers
 
-HANDLERS: dict[tuple[str, str], Any] = {}
+# (status, body, headers): body is JSON-ready data, or bytes.
+Response = tuple[int, Any, dict[str, str]]
+Handler = Callable[..., Response]
+HANDLERS: dict[tuple[str, str], Handler] = {}
 
 
-def route(method: str, template: str):
-    def deco(fn):
+def route(method: str, template: str) -> Callable[[Handler], Handler]:
+    def deco(fn: Handler) -> Handler:
         HANDLERS[(method, template)] = fn
         return fn
     return deco
@@ -383,7 +387,7 @@ def _member_view(s: ApiServer, viewer: User | None, org: Org) -> bool:
 
 
 @route("GET", "/user")
-def get_user_me(s, viewer, p, q):
+def get_user_me(s, viewer, p, q) -> Response:
     if viewer is None:
         raise Reply(401, {"message": "Requires authentication"})
     return 200, spec.make("private-user", login=viewer.login, id=viewer.id, type=viewer.type, name=viewer.name,
@@ -392,7 +396,7 @@ def get_user_me(s, viewer, p, q):
 
 
 @route("GET", "/users/{username}")
-def get_user(s, viewer, p, q):
+def get_user(s, viewer, p, q) -> Response:
     u = next((u for u in s.ws.users.values() if u.login.lower() == p["username"].lower()), None)
     if u is None:
         raise not_found()
@@ -400,7 +404,7 @@ def get_user(s, viewer, p, q):
 
 
 @route("GET", "/user/orgs")
-def list_my_orgs(s, viewer, p, q):
+def list_my_orgs(s, viewer, p, q) -> Response:
     orgs = [o for o in s.ws.orgs.values() if viewer and viewer.id in o.members]
     rows = [spec.make("organization-simple", login=o.login, id=o.id) for o in orgs]
     page, links = paginate(rows, q, "/user/orgs")
@@ -408,7 +412,7 @@ def list_my_orgs(s, viewer, p, q):
 
 
 @route("GET", "/orgs/{org}/members")
-def list_members(s, viewer, p, q):
+def list_members(s, viewer, p, q) -> Response:
     org = s.ws.orgs.get(p["org"].lower())
     if org is None:
         raise not_found()
@@ -422,7 +426,7 @@ def list_members(s, viewer, p, q):
 
 
 @route("GET", "/orgs/{org}/outside_collaborators")
-def list_outside(s, viewer, p, q):
+def list_outside(s, viewer, p, q) -> Response:
     ws = s.ws
     org = ws.orgs.get(p["org"].lower())
     if org is None:
@@ -436,7 +440,7 @@ def list_outside(s, viewer, p, q):
 
 
 @route("GET", "/orgs/{org}/repos")
-def list_org_repos(s, viewer, p, q):
+def list_org_repos(s, viewer, p, q) -> Response:
     ws = s.ws
     org = ws.orgs.get(p["org"].lower())
     if org is None:
@@ -449,7 +453,7 @@ def list_org_repos(s, viewer, p, q):
 
 
 @route("GET", "/user/repos")
-def list_my_repos(s, viewer, p, q):
+def list_my_repos(s, viewer, p, q) -> Response:
     ws = s.ws
     repos = [r for r in ws.repos.values() if not r.deleted and viewer and (
         r.owner.id == viewer.id or ws.role(viewer, r))]
@@ -459,7 +463,7 @@ def list_my_repos(s, viewer, p, q):
 
 
 @route("GET", "/search/repositories")
-def search_repos(s, viewer, p, q):
+def search_repos(s, viewer, p, q) -> Response:
     ws = s.ws
     terms = q.get("q", "").split()
     words = [t for t in terms if ":" not in t]
@@ -478,12 +482,12 @@ def search_repos(s, viewer, p, q):
 
 
 @route("GET", "/repos/{owner}/{repo}")
-def get_repo(s, viewer, p, q):
+def get_repo(s, viewer, p, q) -> Response:
     return 200, repo_obj(_repo(s, viewer, p)), {}
 
 
 @route("GET", "/repos/{owner}/{repo}/collaborators")
-def list_collaborators(s, viewer, p, q):
+def list_collaborators(s, viewer, p, q) -> Response:
     ws = s.ws
     repo = _repo(s, viewer, p)
     if rank(ws.role(viewer, repo)) < rank("write"):
@@ -512,7 +516,7 @@ def _issue_rows(repo: Repo) -> list[Any]:
 
 
 @route("GET", "/repos/{owner}/{repo}/issues")
-def list_issues(s, viewer, p, q):
+def list_issues(s, viewer, p, q) -> Response:
     repo = _repo(s, viewer, p)
     if not repo.has_issues:
         raise Reply(410, {"message": "Issues are disabled for this repo"})
@@ -533,13 +537,12 @@ def list_issues(s, viewer, p, q):
 
 
 @route("GET", "/repos/{owner}/{repo}/issues/comments")
-def list_repo_comments(s, viewer, p, q):
+def list_repo_comments(s, viewer, p, q) -> Response:
     repo = _repo(s, viewer, p)
-    rows = []
-    for item in _issue_rows(repo):
-        url = f"https://github.com/{repo.full_name}/{'pull' if isinstance(item, PullRequest) else 'issues'}/{item.number}"
-        for c in item.comments:
-            rows.append((c, item, url))
+    rows = [
+        (c, item, f"https://github.com/{repo.full_name}/{'pull' if isinstance(item, PullRequest) else 'issues'}/{item.number}")
+        for item in _issue_rows(repo) for c in item.comments
+    ]
     if "since" in q:
         from datetime import datetime
         since = int(datetime.fromisoformat(q["since"].replace("Z", "+00:00")).timestamp())
@@ -551,7 +554,7 @@ def list_repo_comments(s, viewer, p, q):
     return 200, page, links
 
 
-def _issue(s: ApiServer, viewer, p) -> Any:
+def _issue(s: ApiServer, viewer, p) -> Any:  # noqa: ANN401
     repo = _repo(s, viewer, p)
     n = int(p["issue_number"])
     item = repo.issues.get(n) or repo.pulls.get(n)
@@ -569,13 +572,13 @@ def _issue(s: ApiServer, viewer, p) -> Any:
 
 
 @route("GET", "/repos/{owner}/{repo}/issues/{issue_number}")
-def get_issue(s, viewer, p, q):
+def get_issue(s, viewer, p, q) -> Response:
     item = _issue(s, viewer, p)
     return 200, (pr_as_issue(item) if isinstance(item, PullRequest) else issue_obj(item)), {}
 
 
 @route("GET", "/repos/{owner}/{repo}/issues/{issue_number}/comments")
-def list_issue_comments(s, viewer, p, q):
+def list_issue_comments(s, viewer, p, q) -> Response:
     item = _issue(s, viewer, p)
     kind = "pull" if isinstance(item, PullRequest) else "issues"
     url = f"https://github.com/{item.repo.full_name}/{kind}/{item.number}"
@@ -585,13 +588,13 @@ def list_issue_comments(s, viewer, p, q):
 
 
 @route("GET", "/repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocking")
-def list_blocking(s, viewer, p, q):
+def list_blocking(s, viewer, p, q) -> Response:
     _issue(s, viewer, p)
     return 200, [], {}
 
 
 @route("GET", "/repos/{owner}/{repo}/pulls")
-def list_pulls(s, viewer, p, q):
+def list_pulls(s, viewer, p, q) -> Response:
     repo = _repo(s, viewer, p)
     rows = list(repo.pulls.values())
     state = q.get("state", "open")
@@ -614,19 +617,19 @@ def _pull(s: ApiServer, viewer, p) -> PullRequest:
 
 
 @route("GET", "/repos/{owner}/{repo}/pulls/{pull_number}")
-def get_pull(s, viewer, p, q):
+def get_pull(s, viewer, p, q) -> Response:
     return 200, pr_obj(_pull(s, viewer, p), "pull-request"), {}
 
 
 @route("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/commits")
-def pull_commits(s, viewer, p, q):
+def pull_commits(s, viewer, p, q) -> Response:
     pr = _pull(s, viewer, p)
     page, links = paginate([commit_obj(pr.repo, sha) for sha in pr.commits], q, f"/repos/{p['owner']}/{p['repo']}/pulls/{p['pull_number']}/commits")
     return 200, page, links
 
 
 @route("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/reviews")
-def pull_reviews(s, viewer, p, q):
+def pull_reviews(s, viewer, p, q) -> Response:
     pr = _pull(s, viewer, p)
     rows = [spec.make("pull-request-review", id=r.id, body=r.body, user=simple_user(r.user), state=r.state,
                       submitted_at=iso(r.submitted_at), html_url=f"https://github.com/{pr.repo.full_name}/pull/{pr.number}#pullrequestreview-{r.id}")
@@ -636,7 +639,7 @@ def pull_reviews(s, viewer, p, q):
 
 
 @route("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/comments")
-def pull_review_comments(s, viewer, p, q):
+def pull_review_comments(s, viewer, p, q) -> Response:
     pr = _pull(s, viewer, p)
     rows = [spec.make("pull-request-review-comment", id=c.id, body=c.body, user=simple_user(c.user), path=c.path,
                       line=c.line, original_line=c.line, created_at=iso(c.created_at), updated_at=iso(c.updated_at),
@@ -648,7 +651,7 @@ def pull_review_comments(s, viewer, p, q):
 
 
 @route("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/files")
-def pull_files(s, viewer, p, q):
+def pull_files(s, viewer, p, q) -> Response:
     pr = _pull(s, viewer, p)
     rows = [spec.make("diff-entry", blob_url="", raw_url="", contents_url="", **f) for f in pr.files[:3000]]
     page, links = paginate(rows, q, f"/repos/{p['owner']}/{p['repo']}/pulls/{p['pull_number']}/files")
@@ -656,7 +659,7 @@ def pull_files(s, viewer, p, q):
 
 
 @route("GET", "/repos/{owner}/{repo}/branches/{branch}")
-def get_branch(s, viewer, p, q):
+def get_branch(s, viewer, p, q) -> Response:
     repo = _repo(s, viewer, p)
     sha = repo.branches.get(p["branch"])
     if sha is None:
@@ -683,7 +686,7 @@ def _trees(repo: Repo, commit_sha: str) -> tuple[str, dict[str, dict[str, tuple[
 
 
 @route("GET", "/repos/{owner}/{repo}/git/trees/{tree_sha}")
-def get_tree(s, viewer, p, q):
+def get_tree(s, viewer, p, q) -> Response:
     ws = s.ws
     repo = _repo(s, viewer, p)
     target = p["tree_sha"]
@@ -729,7 +732,7 @@ def _blob_lookup(repo: Repo, sha: str) -> bytes | None:
 
 
 @route("GET", "/repos/{owner}/{repo}/git/blobs/{file_sha}")
-def get_blob(s, viewer, p, q):
+def get_blob(s, viewer, p, q) -> Response:
     repo = _repo(s, viewer, p)
     data = _blob_lookup(repo, p["file_sha"])
     if data is None:
@@ -746,7 +749,7 @@ def _resolve_ref(repo: Repo, ref: str | None) -> str | None:
 
 
 @route("GET", "/repos/{owner}/{repo}/contents/{path}")
-def get_contents(s, viewer, p, q):
+def get_contents(s, viewer, p, q) -> Response:
     repo = _repo(s, viewer, p)
     sha = _resolve_ref(repo, q.get("ref"))
     if sha is None:
@@ -761,7 +764,7 @@ def get_contents(s, viewer, p, q):
 
 
 @route("GET", "/repos/{owner}/{repo}/compare/{basehead}")
-def compare(s, viewer, p, q):
+def compare(s, viewer, p, q) -> Response:
     ws = s.ws
     repo = _repo(s, viewer, p)
     base, head = p["basehead"].split("...", 1)
@@ -796,9 +799,10 @@ def compare(s, viewer, p, q):
         files.append({"filename": path, "status": "added", "sha": git_blob_sha(data), "additions": 1, "deletions": 0, "changes": 1})
     for path, data in removed.items():
         files.append({"filename": path, "status": "removed", "sha": git_blob_sha(data), "additions": 0, "deletions": 1, "changes": 1})
-    for path in sorted(set(old) & set(new)):
-        if old[path] != new[path]:
-            files.append({"filename": path, "status": "modified", "sha": git_blob_sha(new[path]), "additions": 1, "deletions": 1, "changes": 2})
+    files.extend(
+        {"filename": path, "status": "modified", "sha": git_blob_sha(new[path]), "additions": 1, "deletions": 1, "changes": 2}
+        for path in sorted(set(old) & set(new)) if old[path] != new[path]
+    )
     files = [spec.make("diff-entry", blob_url="", raw_url="", contents_url="", **f) for f in files[:300]]
     commits = [commit_obj(repo, c) for c in head_line[:ahead][:250]]
     return 200, spec.make("commit-comparison", status=status, ahead_by=ahead, behind_by=behind,
@@ -807,7 +811,7 @@ def compare(s, viewer, p, q):
 
 
 @route("GET", "/repos/{owner}/{repo}/commits")
-def list_commits(s, viewer, p, q):
+def list_commits(s, viewer, p, q) -> Response:
     ws = s.ws
     repo = _repo(s, viewer, p)
     history = ws.path_history(repo, q["path"]) if q.get("path") else [repo.commits[c] for c in ws.ancestors(repo, repo.head().sha)]
@@ -816,7 +820,7 @@ def list_commits(s, viewer, p, q):
 
 
 @route("GET", "/rate_limit")
-def rate_limit(s, viewer, p, q):
+def rate_limit(s, viewer, p, q) -> Response:
     return 200, spec.make("rate-limit-overview"), {}
 
 
@@ -849,7 +853,7 @@ class Internet(httpx.AsyncBaseTransport):
         inner_stream = response.stream
 
         class Counting(httpx.AsyncByteStream):
-            async def __aiter__(self):  # type: ignore[override]
+            async def __aiter__(self) -> AsyncIterator[bytes]:  # type: ignore[override]
                 async for chunk in inner_stream:  # type: ignore[union-attr]
                     ws.bytes_read[url] = ws.bytes_read.get(url, 0) + len(chunk)
                     yield chunk

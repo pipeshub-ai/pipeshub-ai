@@ -5,6 +5,8 @@ Every test runs on Neo4j and ArangoDB (NEO4J_IT_URI / ARANGO_IT_URL) against the
 GitHub in ``sim/``; see README.md.
 """
 
+import contextlib
+
 import pytest
 
 from app.config.constants.arangodb import Connectors
@@ -18,7 +20,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 BOTH_TRASH_MODES = True
 
 
-async def _forget_issue_total(world, repo):
+async def _forget_issue_total(world, repo) -> None:
     """Make the work-items checkpoint look like one the old code wrote."""
     sp = world.connector.record_sync_point
     key = generate_record_sync_point_key(Connectors.GITHUB_TEAMS.value, f"{repo.id}-work-items", "")
@@ -27,7 +29,7 @@ async def _forget_issue_total(world, repo):
     await sp.create_sync_point(key, {"last_sync_time": old.get("last_sync_time")})
 
 
-async def test_upgrade_removes_issues_the_old_code_left_behind(world, org):
+async def test_upgrade_removes_issues_the_old_code_left_behind(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     keep = gh.add_issue(repo, "Keep")
     gone = gh.add_issue(repo, "Deleted before the upgrade")
@@ -38,7 +40,7 @@ async def test_upgrade_removes_issues_the_old_code_left_behind(world, org):
     assert await world.names("TICKET") == [keep.title]
 
 
-async def test_upgrade_rekeys_attachments_written_by_url(world, org):
+async def test_upgrade_rekeys_attachments_written_by_url(world, org) -> None:
     """The old code keyed an attachment by its URL alone. After the upgrade the record
     belongs to its issue and the URL-keyed one is gone."""
     gh, repo = world.gh, org["repo"]
@@ -62,7 +64,7 @@ async def test_upgrade_rekeys_attachments_written_by_url(world, org):
     assert diff.clean(), diff
 
 
-async def test_sweep_failing_halfway_removes_nothing(world, org):
+async def test_sweep_failing_halfway_removes_nothing(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     issues = [gh.add_issue(repo, f"I{n:03}") for n in range(150)]
     await world.sync()
@@ -78,7 +80,7 @@ async def test_sweep_failing_halfway_removes_nothing(world, org):
     assert len(await world.names("TICKET")) == 149
 
 
-async def test_issue_missing_from_graphql_but_present_over_rest_is_kept(world, org):
+async def test_issue_missing_from_graphql_but_present_over_rest_is_kept(world, org) -> None:
     """If the two APIs disagree, the direct GET decides, and it says the issue exists."""
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "One")
@@ -87,11 +89,11 @@ async def test_issue_missing_from_graphql_but_present_over_rest_is_kept(world, o
     from tests.integration.github_teams.sim import gql
     original = gql._repository
 
-    def lagging(ws, viewer, owner, name):
+    def lagging(ws: object, viewer: object, owner: str, name: str) -> dict:
         out = original(ws, viewer, owner, name)
         inner = out["issues"]
 
-        def issues(**kw):
+        def issues(**kw: object) -> dict:
             page = inner(**kw)
             page["nodes"] = [n for n in page["nodes"] if n["number"] != hidden.number]
             page["totalCount"] -= 1
@@ -107,7 +109,7 @@ async def test_issue_missing_from_graphql_but_present_over_rest_is_kept(world, o
     assert await world.names("TICKET") == ["One", "Two"]
 
 
-async def test_issue_moved_between_two_synced_repositories(world, org):
+async def test_issue_moved_between_two_synced_repositories(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     other = gh.add_repo(org["org"], "gadgets")
     other.collaborators[org["olga"].id] = "read"
@@ -122,7 +124,7 @@ async def test_issue_moved_between_two_synced_repositories(world, org):
     assert diff.clean(), diff
 
 
-async def test_sub_issue_survives_its_parent_being_deleted(world, org):
+async def test_sub_issue_survives_its_parent_being_deleted(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     parent = gh.add_issue(repo, "Epic")
     child = gh.add_issue(repo, "Task")
@@ -134,7 +136,7 @@ async def test_sub_issue_survives_its_parent_being_deleted(world, org):
     assert await world.names("TICKET") == ["Task (orphaned)"]
 
 
-async def test_attachment_shared_by_two_issues_survives_one_being_deleted(world, org):
+async def test_attachment_shared_by_two_issues_survives_one_being_deleted(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     url = gh.upload(repo, "plan.pdf", b"%PDF plan")
     first = gh.add_issue(repo, "First", body=f"[plan.pdf]({url})")
@@ -148,7 +150,7 @@ async def test_attachment_shared_by_two_issues_survives_one_being_deleted(world,
     assert diff.clean(), diff
 
 
-async def test_deleted_repository_restored_on_github_comes_back_whole(world, org):
+async def test_deleted_repository_restored_on_github_comes_back_whole(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Issue")
     gh.add_pull(repo, "PR")
@@ -156,17 +158,15 @@ async def test_deleted_repository_restored_on_github_comes_back_whole(world, org
     repo.deleted = True
     # Other tests cover what this sync does with a deleted repository; only what happens
     # after the restore is under test.
-    try:
+    with contextlib.suppress(Exception):
         await world.sync()
-    except Exception:
-        pass
     repo.deleted = False  # GitHub lets an owner restore a deleted repository
     await world.sync()
     diff = await world.diff()
     assert diff.clean(), diff
 
 
-async def test_repository_transferred_to_another_org_is_kept(world, org):
+async def test_repository_transferred_to_another_org_is_kept(world, org) -> None:
     """The filter still names the old full name; GitHub redirects it. Nothing is lost."""
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Issue")
@@ -178,7 +178,7 @@ async def test_repository_transferred_to_another_org_is_kept(world, org):
     assert sorted((await world.live_docs()).keys()) == before
 
 
-async def test_issue_listing_answering_empty_removes_nothing(world, org):
+async def test_issue_listing_answering_empty_removes_nothing(world, org) -> None:
     """A 200 with no items (not an error) must not read as 'every issue is gone':
     removal is decided by the issue numbers GitHub lists, then confirmed one by one."""
     gh, repo = world.gh, org["repo"]
@@ -190,7 +190,7 @@ async def test_issue_listing_answering_empty_removes_nothing(world, org):
     assert len(await world.names("TICKET")) == 3
 
 
-async def test_repository_shifted_out_of_an_org_listing_is_not_removed(world, org):
+async def test_repository_shifted_out_of_an_org_listing_is_not_removed(world, org) -> None:
     """A legacy configuration selects the whole organization. Its repository listing is
     paged by offset: a repository deleted while the listing is read shifts a live one
     out of view. Only GitHub's direct answer may remove a repository."""

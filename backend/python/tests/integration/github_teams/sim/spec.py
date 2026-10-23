@@ -33,7 +33,7 @@ FILLER_STR = "__sim_unmodelled__"
 FILLER_INT = -987654321
 
 
-def _nullable_to_jsonschema(node: Any) -> Any:
+def _nullable_to_jsonschema(node: Any) -> Any:  # noqa: ANN401
     """OpenAPI 3.0 ``nullable: true`` -> JSON Schema null union, recursively."""
     if isinstance(node, list):
         return [_nullable_to_jsonschema(n) for n in node]
@@ -83,9 +83,8 @@ def operation(template: str, method: str) -> dict[str, Any] | None:
 
 def query_params(op: dict[str, Any]) -> dict[str, dict[str, Any]]:
     out = {}
-    for prm in op.get("parameters", []):
-        if "$ref" in prm:
-            prm = spec()["components"]["parameters"][prm["$ref"].split("/")[-1]]
+    for declared in op.get("parameters", []):
+        prm = spec()["components"]["parameters"][declared["$ref"].split("/")[-1]] if "$ref" in declared else declared
         if prm["in"] == "query":
             out[prm["name"]] = prm
     return out
@@ -146,13 +145,13 @@ def _validator(key: str) -> jsonschema.protocols.Validator:
     return jsonschema.Draft7Validator(_with_ref_base(schema), registry=_registry())
 
 
-def validate(schema: dict[str, Any], instance: Any) -> list[str]:
+def validate(schema: dict[str, Any], instance: Any) -> list[str]:  # noqa: ANN401
     validator = _validator(json.dumps(schema, sort_keys=True))
     errors = sorted(validator.iter_errors(instance), key=lambda e: list(e.path))
     return [f"{'/'.join(map(str, e.path)) or '<root>'}: {e.message[:200]}" for e in errors[:5]]
 
 
-def fill(schema: dict[str, Any], overrides: dict[str, Any] | None = None, depth: int = 0) -> Any:
+def fill(schema: dict[str, Any], overrides: dict[str, Any] | None = None, depth: int = 0) -> Any:  # noqa: ANN401
     """An instance of ``schema`` with every required field present.
 
     ``overrides`` supplies the modelled values (shallow, keyed by property). Anything
@@ -205,10 +204,10 @@ def fill(schema: dict[str, Any], overrides: dict[str, Any] | None = None, depth:
     return None
 
 
-def make(component_name: str, **values: Any) -> dict[str, Any]:
+def make(component_name: str, **values: Any) -> dict[str, Any]:  # noqa: ANN401
     """A full ``component_name`` object with ``values`` as its modelled fields."""
     return fill(component(component_name), values)
 
 
-def deep(value: Any) -> Any:
+def deep(value: Any) -> Any:  # noqa: ANN401
     return copy.deepcopy(value)

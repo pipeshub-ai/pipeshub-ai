@@ -14,7 +14,7 @@ from tests.integration.github_teams.sim.model import Fault
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
 
-async def test_one_bad_gateway_is_retried(world, org):
+async def test_one_bad_gateway_is_retried(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Issue")
     fail(world, issues_listing(repo), 502, times=1)
@@ -22,7 +22,7 @@ async def test_one_bad_gateway_is_retried(world, org):
     assert await world.names("TICKET") == ["Issue"]
 
 
-async def test_one_dropped_connection_is_retried(world, org):
+async def test_one_dropped_connection_is_retried(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Issue")
     gh.faults.append(Fault(on(issues_listing(repo)), kind="drop", times=1))
@@ -30,7 +30,7 @@ async def test_one_dropped_connection_is_retried(world, org):
     assert await world.names("TICKET") == ["Issue"]
 
 
-async def test_timeout_is_retried(world, org):
+async def test_timeout_is_retried(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Issue")
     world.http_timeout = 0.5
@@ -39,7 +39,7 @@ async def test_timeout_is_retried(world, org):
     assert await world.names("TICKET") == ["Issue"]
 
 
-async def test_secondary_rate_limit_is_waited_out(world, org):
+async def test_secondary_rate_limit_is_waited_out(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Issue")
     gh.faults.append(Fault(on(issues_listing(repo)), kind="secondary", seconds=30, times=1))
@@ -48,7 +48,7 @@ async def test_secondary_rate_limit_is_waited_out(world, org):
     assert any(s >= 30 for s in world.sleeps)
 
 
-async def test_exhausted_hourly_limit_fails_the_sync_and_loses_nothing(world, org):
+async def test_exhausted_hourly_limit_fails_the_sync_and_loses_nothing(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Before")
     await world.sync()
@@ -60,7 +60,7 @@ async def test_exhausted_hourly_limit_fails_the_sync_and_loses_nothing(world, or
     assert await world.names("TICKET") == ["Before", "During"]
 
 
-async def test_revoked_token_fails_the_sync(world, org):
+async def test_revoked_token_fails_the_sync(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Issue")
     await world.sync()
@@ -70,7 +70,7 @@ async def test_revoked_token_fails_the_sync(world, org):
     assert sorted((await world.live_docs()).keys()) == before
 
 
-async def test_persistent_5xx_on_pull_requests_fails_the_sync(world, org):
+async def test_persistent_5xx_on_pull_requests_fails_the_sync(world, org) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_pull(repo, "PR")
     fail(world, f"api.github.com/repos/{repo.full_name}/pulls", 503)
@@ -80,13 +80,13 @@ async def test_persistent_5xx_on_pull_requests_fails_the_sync(world, org):
     assert await world.names("PULL_REQUEST") == ["PR"]
 
 
-async def test_store_failure_fails_the_sync_and_is_redone(world, org, monkeypatch):
+async def test_store_failure_fails_the_sync_and_is_redone(world, org, monkeypatch) -> None:
     gh, repo = world.gh, org["repo"]
     gh.add_issue(repo, "Issue")
     original = world.processor.on_new_records
     calls = {"n": 0}
 
-    async def flaky(records):
+    async def flaky(records: list) -> None:
         if any(getattr(r, "record_type", None) == "TICKET" for r, _ in records) and calls["n"] == 0:
             calls["n"] += 1
             raise RuntimeError("graph store unavailable")
@@ -98,7 +98,7 @@ async def test_store_failure_fails_the_sync_and_is_redone(world, org, monkeypatc
     assert await world.names("TICKET") == ["Issue"]
 
 
-async def test_config_store_failure_does_not_widen_the_scope(world, org):
+async def test_config_store_failure_does_not_widen_the_scope(world, org) -> None:
     """The sync filter names one repository. If the config store cannot be read when the
     filters are loaded, the sync must not fall back to every repository the token can
     see (it would index and grant repositories the admin never selected)."""

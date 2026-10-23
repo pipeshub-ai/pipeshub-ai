@@ -19,11 +19,14 @@ from __future__ import annotations
 import gzip
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from graphql import GraphQLError, build_schema, execute, parse, validate
+from graphql import GraphQLError, GraphQLSchema, build_schema, execute, parse, validate
 
 from tests.integration.github_teams.sim.model import Org, User, World, iso
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "specs" / "schema.docs.graphql.gz"
 
@@ -33,12 +36,12 @@ class NotModelled(Exception):
 
 
 @lru_cache(maxsize=1)
-def schema():
+def schema() -> GraphQLSchema:
     return build_schema(gzip.decompress(SCHEMA_PATH.read_bytes()).decode(), assume_valid_sdl=True)
 
 
-def _resolver(ws: World):
-    def resolve(parent: Any, info: Any, **args: Any) -> Any:
+def _resolver(ws: World) -> Callable[..., Any]:
+    def resolve(parent: Any, info: Any, **args: Any) -> Any:  # noqa: ANN401
         name = info.field_name
         if name == "__typename":
             return parent.get("__typename")
@@ -92,7 +95,7 @@ def _repository(ws: World, viewer: User | None, owner: str, name: str) -> dict[s
                            extensions={"type": "NOT_FOUND"})
     head = repo.head()
 
-    def history(first: int = 1, path: str | None = None, after: str | None = None, **_: Any) -> dict[str, Any]:
+    def history(first: int = 1, path: str | None = None, after: str | None = None, **_: Any) -> dict[str, Any]:  # noqa: ANN401
         commits = ws.path_history(repo, path) if path else [repo.commits[c] for c in ws.ancestors(repo, head.sha)]
         offset = int(after.split(" ")[1]) + 1 if after else 0
         page = commits[offset:offset + first]
@@ -100,7 +103,7 @@ def _repository(ws: World, viewer: User | None, owner: str, name: str) -> dict[s
         return {"totalCount": len(commits), "nodes": [{"authoredDate": iso(c.date), "oid": c.sha} for c in page],
                 "pageInfo": {"endCursor": end, "hasNextPage": offset + len(page) < len(commits)}}
 
-    def issues(first: int | None = None, after: str | None = None, **_: Any) -> dict[str, Any]:
+    def issues(first: int | None = None, after: str | None = None, **_: Any) -> dict[str, Any]:  # noqa: ANN401
         """Default order CREATED_AT ASC; cursors are keysets (the last number seen), so
         an issue removed during a walk cannot shift another out of it."""
         live = sorted((i for i in repo.issues.values() if not i.deleted and i.transferred_to is None),
@@ -112,7 +115,7 @@ def _repository(ws: World, viewer: User | None, owner: str, name: str) -> dict[s
                 "pageInfo": {"hasNextPage": len(start) > len(page),
                              "endCursor": f"n:{page[-1].number}" if page else after}}
 
-    def pulls(**_: Any) -> dict[str, Any]:
+    def pulls(**_: Any) -> dict[str, Any]:  # noqa: ANN401
         return {"totalCount": len(repo.pulls)}
 
     return {
