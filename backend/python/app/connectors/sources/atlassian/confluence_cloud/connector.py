@@ -221,6 +221,9 @@ class ContentListing(NamedTuple):
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
+# Largest image inlined into a page's content (10 MiB, as fetch_authenticated_binary allows).
+MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
+
 # Most users /wiki/rest/api/search/user?cql=type=user returns (Atlassian's documented cap).
 USER_SEARCH_CAP = 10_000
 
@@ -5527,12 +5530,17 @@ class ConfluenceConnector(BaseConnector):
                 return None
 
             try:
-                content_bytes = b""
+                content = bytearray()
                 async for chunk in datasource.download_attachment(
                     parent_page_id=page_id,
                     attachment_id=str(attachment_id),
                 ):
-                    content_bytes += chunk
+                    content.extend(chunk)
+                    if len(content) > MAX_INLINE_IMAGE_BYTES:
+                        # Inlined as base64 in the page: a huge image would sit in memory several times over.
+                        self.logger.debug(f"Image {attachment_id} is over {MAX_INLINE_IMAGE_BYTES} bytes; left out of the page body")
+                        return None
+                content_bytes = bytes(content)
                 if not content_bytes:
                     return None
                 return content_bytes, mime_type
@@ -5689,12 +5697,17 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.debug(f"Skipping non-image media type: {mime_type} for {media_alt}")
                 return None
 
-            content_bytes = b""
+            content = bytearray()
             async for chunk in datasource.download_attachment(
                 parent_page_id=page_id,
                 attachment_id=str(attachment_id),
             ):
-                content_bytes += chunk
+                content.extend(chunk)
+                if len(content) > MAX_INLINE_IMAGE_BYTES:
+                    # Inlined as base64 in the page: a huge image would sit in memory several times over.
+                    self.logger.debug(f"Image {attachment_id} is over {MAX_INLINE_IMAGE_BYTES} bytes; left out of the page body")
+                    return None
+            content_bytes = bytes(content)
 
             if not content_bytes:
                 return None
