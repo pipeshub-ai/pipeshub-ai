@@ -1921,9 +1921,8 @@ function getDocumentationHtml(): string {
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100%;
       text-align: center;
-      padding: 40px;
+      padding: 64px 40px 8px;
     }
 
     .welcome-icon {
@@ -2484,9 +2483,8 @@ function getDocumentationHtml(): string {
     // Load health status on page load
     async function loadInitialHealthStatus() {
       try {
-        const response = await fetch('/api/v1/docs/health');
-        if (!response.ok) throw new Error('Health check failed');
-        const healthData = await response.json();
+        const healthData = await fetchHealthStatus();
+        if (!healthData) throw new Error('Health check failed');
 
         const healthSection = document.getElementById('healthSection');
         if (healthSection) {
@@ -3098,87 +3096,62 @@ function getDocumentationHtml(): string {
       let html = '';
       html += '<a class="nav-item" data-module="' + module.id + '">';
       html += '  <span class="nav-item-icon">';
-      html += getModuleIcon(module.id);
+      html += getModuleIcon(module.icon);
       html += '  </span>';
       html += '  <span>' + escapeHtml(module.name) + '</span>';
       html += '</a>';
 
-      // Group endpoints by tag
-      const moduleEndpoints = apiDocs.endpoints.filter(e => e.moduleId === module.id);
-      if (moduleEndpoints.length > 0) {
-        // Check if this is an internal service module
-        const internalServiceIds = ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service', 'embedding-service'];
-        const isInternalService = internalServiceIds.includes(module.id);
+      html += '<div class="endpoint-list" data-module="' + module.id + '" style="display: none;">';
+      for (const tag of module.tags) {
+        const endpoints = tagEndpoints(tag);
+        html += '<div class="tag-section" data-module="' + module.id + '" data-tag="' + escapeHtml(tag) + '">';
+        html += '<div class="tag-header">';
+        html += '<svg class="tag-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>';
+        html += '<span class="tag-name">' + escapeHtml(tag) + '</span>';
+        html += '<span class="tag-count">' + endpoints.length + '</span>';
+        html += '</div>';
 
-        // Group by tag
-        const byTag = {};
-        for (const ep of moduleEndpoints) {
-          const tag = ep.tags[0] || 'Other';
-          if (!byTag[tag]) byTag[tag] = [];
-          byTag[tag].push(ep);
-        }
-
-        html += '<div class="endpoint-list" data-module="' + module.id + '" style="display: none;">';
-
-        // For internal services, render endpoints directly without tag headers
-        if (isInternalService) {
-          html += '<div class="tag-section" data-module="' + module.id + '">';
-          html += '<div class="tag-endpoints" style="display: block;">';
-          for (const endpoint of moduleEndpoints) {
-            html += '<div class="endpoint-item" data-endpoint="' + endpoint.operationId + '">';
-            html += '  <span class="method-badge method-' + endpoint.method.toLowerCase() + '">' + endpoint.method + '</span>';
-            html += '  <span>' + escapeHtml(endpoint.summary || endpoint.path) + '</span>';
-            html += '</div>';
-          }
+        html += '<div class="tag-endpoints">';
+        for (const endpoint of endpoints) {
+          html += '<div class="endpoint-item" data-endpoint="' + endpoint.operationId + '">';
+          html += '  <span class="method-badge method-' + endpoint.method.toLowerCase() + '">' + endpoint.method + '</span>';
+          html += '  <span>' + escapeHtml(endpoint.summary || endpoint.path) + '</span>';
           html += '</div>';
-          html += '</div>';
-        } else {
-          // Render each tag as a subsection for non-internal services
-          for (const [tag, endpoints] of Object.entries(byTag)) {
-            html += '<div class="tag-section" data-module="' + module.id + '" data-tag="' + escapeHtml(tag) + '">';
-            html += '<div class="tag-header">';
-            html += '<svg class="tag-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>';
-            html += '<span class="tag-name">' + escapeHtml(tag) + '</span>';
-            html += '<span class="tag-count">' + endpoints.length + '</span>';
-            html += '</div>';
-
-            html += '<div class="tag-endpoints">';
-            for (const endpoint of endpoints) {
-              html += '<div class="endpoint-item" data-endpoint="' + endpoint.operationId + '">';
-              html += '  <span class="method-badge method-' + endpoint.method.toLowerCase() + '">' + endpoint.method + '</span>';
-              html += '  <span>' + escapeHtml(endpoint.summary || endpoint.path) + '</span>';
-              html += '</div>';
-            }
-            html += '</div>';
-            html += '</div>';
-          }
         }
-
+        html += '</div>';
         html += '</div>';
       }
+      html += '</div>';
 
       return html;
     }
 
+    // An endpoint with several tags is listed under each of them.
+    function tagEndpoints(tag) {
+      return apiDocs.endpoints.filter(e => e.tags.includes(tag));
+    }
+
     // Get module icon SVG
-    function getModuleIcon(moduleId) {
+    function getModuleIcon(icon) {
       const icons = {
-        'auth': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0110 0v4"></path></svg>',
-        'user-management': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>',
-        'storage': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"></path></svg>',
-        'knowledge-base': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"></path></svg>',
-        'enterprise-search': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="M21 21l-4.35-4.35"></path></svg>',
-        'connector-manager': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>',
-        'configuration-manager': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"></path></svg>',
-        'crawling-manager': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
+        'lock': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0110 0v4"></path></svg>',
+        'user': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>',
+        'folder': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"></path></svg>',
+        'book': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"></path></svg>',
+        'search': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="M21 21l-4.35-4.35"></path></svg>',
+        'code': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>',
+        'gear': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"></path></svg>',
+        'clock': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
         'mail': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>',
-        'query-service': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="M21 21l-4.35-4.35"></path><path d="M11 8v6"></path><path d="M8 11h6"></path></svg>',
-        'indexing-service': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>',
-        'connector-service-internal': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>',
-        'docling-service': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M12 18v-6"></path><path d="M9 15h6"></path></svg>',
-        'embedding-service': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"></path></svg>',
+        'layers': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>',
+        'key': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>',
+        'image': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>',
+        'cpu': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg>',
+        'tool': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"></path></svg>',
+        'server': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>',
+        'activity': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>',
       };
-      return icons[moduleId] || '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle></svg>';
+      return icons[icon] || '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle></svg>';
     }
 
     // Setup event listeners
@@ -3194,7 +3167,7 @@ function getDocumentationHtml(): string {
         const endpointItem = e.target.closest('.endpoint-item');
         if (endpointItem && endpointItem.dataset.endpoint) {
           const operationId = endpointItem.dataset.endpoint;
-          selectEndpoint(operationId);
+          selectEndpoint(operationId, endpointItem.closest('.tag-section')?.dataset.tag);
         }
 
         // Tag header click to expand/collapse
@@ -3231,7 +3204,7 @@ function getDocumentationHtml(): string {
 
         const responseHeader = e.target.closest('.response-header');
         if (responseHeader && responseHeader.dataset.endpoint) {
-          selectEndpoint(responseHeader.dataset.endpoint);
+          selectEndpoint(responseHeader.dataset.endpoint, responseHeader.dataset.tag);
         }
 
         // Schema block toggle
@@ -3418,13 +3391,12 @@ function getDocumentationHtml(): string {
       if (!currentEndpoint) return;
 
       const ep = currentEndpoint;
-      const module = apiDocs.modules.find(m => m.id === ep.moduleId);
       const configuredBaseUrl = document.getElementById('baseUrlInput').value || config.baseUrl;
       const authToken = document.getElementById('authTokenInput').value || config.authToken;
 
       // Build URL with path params - check if basePath is already a full URL
-      const isFullUrl = module.basePath.startsWith('http://') || module.basePath.startsWith('https://');
-      let url = isFullUrl ? module.basePath + ep.path : configuredBaseUrl + module.basePath + ep.path;
+      const isFullUrl = ep.basePath.startsWith('http://') || ep.basePath.startsWith('https://');
+      let url = isFullUrl ? ep.basePath + ep.path : configuredBaseUrl + ep.basePath + ep.path;
 
       // Replace path parameters
       const pathParams = ep.parameters?.filter(p => p.in === 'path') || [];
@@ -3689,14 +3661,12 @@ function getDocumentationHtml(): string {
       if (!currentEndpoint) return;
 
       const ep = currentEndpoint;
-      const module = apiDocs.modules.find(m => m.id === ep.moduleId);
 
-      // Set base URL based on module - Python services have full URLs in basePath
+      // An operation whose server is an absolute URL is called there, not on this instance
       const baseUrlInput = document.getElementById('baseUrlInput');
-      const isFullUrl = module.basePath.startsWith('http://') || module.basePath.startsWith('https://');
+      const isFullUrl = ep.basePath.startsWith('http://') || ep.basePath.startsWith('https://');
       if (isFullUrl) {
-        // For Python services, show the actual service URL
-        baseUrlInput.value = module.basePath;
+        baseUrlInput.value = ep.basePath;
       } else {
         // For Node.js services, use localhost:3000
         baseUrlInput.value = 'http://localhost:3000';
@@ -4068,15 +4038,26 @@ function getDocumentationHtml(): string {
     window.removeArrayItem = removeArrayItem;
 
     // Fetch and render health status
+    // Infrastructure from /api/v1/health, the Python services from /api/v1/health/services.
     async function fetchHealthStatus() {
-      try {
-        const response = await fetch('/api/v1/docs/health');
-        if (!response.ok) throw new Error('Health check failed');
-        return await response.json();
-      } catch (error) {
-        console.error('Failed to fetch health status:', error);
-        return null;
-      }
+      const get = (url) => fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      const [platform, python] = await Promise.all([get('/api/v1/health'), get('/api/v1/health/services')]);
+      if (!platform && !python) return null;
+      const services = [];
+      const add = (group, names) => {
+        for (const [key, status] of Object.entries((group && group.services) || {})) {
+          services.push({ name: (names && names[key]) || key, status: status === 'healthy' || status === 'unhealthy' ? status : 'unknown' });
+        }
+      };
+      add(platform, platform && platform.serviceNames);
+      add(python, { query: 'Query', connector: 'Connectors', indexing: 'Indexing', docling: 'Docling', embedding: 'Embedding', parsing: 'Parsing', extraction: 'Extraction' });
+      const platformDown = !platform || platform.status !== 'healthy';
+      const anyDown = services.some((svc) => svc.status !== 'healthy');
+      return {
+        overallStatus: platformDown ? 'unhealthy' : anyDown ? 'degraded' : 'healthy',
+        timestamp: (platform && platform.timestamp) || (python && python.timestamp) || new Date().toISOString(),
+        services,
+      };
     }
 
     function renderHealthSection(healthData) {
@@ -4134,18 +4115,8 @@ function getDocumentationHtml(): string {
           '<div class="health-service-indicator ' + service.status + '"></div>' +
           '<div class="health-service-info">' +
           '<div class="health-service-name">' + escapeHtml(service.name) + '</div>' +
-          '<div class="health-service-details">' +
-          '<span class="health-service-port">:' + service.port + '</span>';
-
-        if (service.responseTime !== undefined && service.status === 'healthy') {
-          html += '<span class="health-service-time">' + service.responseTime + 'ms</span>';
-        }
-        html += '</div>';
-
-        if (service.error) {
-          html += '<div class="health-service-error">' + escapeHtml(service.error) + '</div>';
-        }
-        html += '</div></div>';
+          '<div class="health-service-details">' + escapeHtml(service.status) + '</div>' +
+          '</div></div>';
       }
       html += '</div></div>';
 
@@ -4257,7 +4228,6 @@ function getDocumentationHtml(): string {
     // Show module overview
     function showModuleOverview(moduleId) {
       const module = apiDocs.modules.find(m => m.id === moduleId);
-      const endpoints = apiDocs.endpoints.filter(e => e.moduleId === moduleId);
 
       document.getElementById('breadcrumb').innerHTML =
         '<span class="breadcrumb-link" data-action="home">API Reference</span>' +
@@ -4279,22 +4249,14 @@ function getDocumentationHtml(): string {
       html += '<h2 class="section-title">Endpoints</h2>';
       html += '<div class="module-list">';
 
-      // Group endpoints by tag
-      const byTag = {};
-      for (const ep of endpoints) {
-        const tag = ep.tags[0] || 'Other';
-        if (!byTag[tag]) byTag[tag] = [];
-        byTag[tag].push(ep);
-      }
-
-      for (const [tag, tagEndpoints] of Object.entries(byTag)) {
+      for (const tag of module.tags) {
         html += '<div class="module-card" data-module-id="' + escapeHtml(moduleId) + '" data-tag="' + escapeHtml(tag) + '">';
         html += '<div class="module-card-header">';
-        html += '<div class="module-card-icon">' + getModuleIcon(moduleId) + '</div>';
+        html += '<div class="module-card-icon">' + getModuleIcon(module.icon) + '</div>';
         html += '<div class="module-card-title">' + escapeHtml(tag) + '</div>';
         html += '</div>';
         html += '<div class="module-card-meta">';
-        html += '<span>' + tagEndpoints.length + ' endpoints</span>';
+        html += '<span>' + tagEndpoints(tag).length + ' endpoints</span>';
         html += '</div>';
         html += '</div>';
       }
@@ -4308,7 +4270,7 @@ function getDocumentationHtml(): string {
     // Show tag endpoints
     function showTagEndpoints(moduleId, tag) {
       const module = apiDocs.modules.find(m => m.id === moduleId);
-      const endpoints = apiDocs.endpoints.filter(e => e.moduleId === moduleId && (e.tags[0] || 'Other') === tag);
+      const endpoints = tagEndpoints(tag);
 
       document.getElementById('breadcrumb').innerHTML =
         '<span class="breadcrumb-link" data-action="home">API Reference</span>' +
@@ -4330,7 +4292,7 @@ function getDocumentationHtml(): string {
       html += '<div class="doc-section">';
       for (const ep of endpoints) {
         html += '<div class="response-item">';
-        html += '<div class="response-header" data-endpoint="' + escapeHtml(ep.operationId) + '" style="cursor: pointer;">';
+        html += '<div class="response-header" data-endpoint="' + escapeHtml(ep.operationId) + '" data-tag="' + escapeHtml(tag) + '" style="cursor: pointer;">';
         html += '<span class="method-badge method-' + ep.method.toLowerCase() + '">' + ep.method + '</span>';
         html += '<span style="flex: 1; margin-left: 12px;"><strong>' + escapeHtml(ep.summary || 'Untitled') + '</strong></span>';
         html += '<span style="font-family: monospace; font-size: 12px; color: var(--text-muted);">' + escapeHtml(ep.path) + '</span>';
@@ -4343,18 +4305,18 @@ function getDocumentationHtml(): string {
     }
 
     // Select endpoint
-    function selectEndpoint(operationId) {
+    function selectEndpoint(operationId, fromTag) {
       currentEndpoint = apiDocs.endpoints.find(e => e.operationId === operationId);
       if (!currentEndpoint) return;
 
-      const module = apiDocs.modules.find(m => m.id === currentEndpoint.moduleId);
+      const tag = currentEndpoint.tags.includes(fromTag) ? fromTag : currentEndpoint.tags[0];
+      const module = apiDocs.modules.find(m => m.tags.includes(tag));
 
       // Update active state
       document.querySelectorAll('.endpoint-item').forEach(el => {
         el.classList.toggle('active', el.dataset.endpoint === operationId);
       });
 
-      const tag = currentEndpoint.tags[0] || 'Other';
       document.getElementById('breadcrumb').innerHTML =
         '<span class="breadcrumb-link" data-action="home">API Reference</span>' +
         '<span class="breadcrumb-separator">/</span>' +
@@ -4460,11 +4422,9 @@ function getDocumentationHtml(): string {
     function updateCodeExample(lang) {
       if (!currentEndpoint) return;
       const ep = currentEndpoint;
-      const module = apiDocs.modules.find(m => m.id === ep.moduleId);
       const configuredBaseUrl = document.getElementById('baseUrlInput')?.value || config.baseUrl || window.location.origin;
-      // Check if basePath is already a full URL (for Python services)
-      const isFullUrl = module.basePath.startsWith('http://') || module.basePath.startsWith('https://');
-      const baseUrl = isFullUrl ? module.basePath : configuredBaseUrl + module.basePath;
+      const isFullUrl = ep.basePath.startsWith('http://') || ep.basePath.startsWith('https://');
+      const baseUrl = isFullUrl ? ep.basePath : configuredBaseUrl + ep.basePath;
 
       let code = '';
       let bodyExample = '';
