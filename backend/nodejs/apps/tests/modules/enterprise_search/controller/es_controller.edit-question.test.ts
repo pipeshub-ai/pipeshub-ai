@@ -30,6 +30,10 @@ function editFlow(options: {
   storedFiles?: Array<typeof FILE_A>
   /** Files the request sends; omitted sends none. */
   files?: Array<typeof FILE_A>
+  /** A card turn the chat went through before the last question. */
+  cardTurnBefore?: boolean
+  /** A question asked after the last answer, that has none of its own. */
+  unansweredQuestion?: string
 }): Flow {
   return {
     name: 'regenerateAnswers (edited question)',
@@ -44,6 +48,17 @@ function editFlow(options: {
       })
       if (options.earlierTurn) {
         store.addMessage(session, { messageType: 'user_query', content: 'An earlier question' })
+        store.addMessage(session, { messageType: 'bot_response', content: 'An earlier answer.' })
+      }
+      if (options.cardTurnBefore) {
+        store.addMessage(session, { messageType: 'user_query', content: 'An earlier card question' })
+        store.addMessage(session, { messageType: 'bot_response', content: 'Which one do you enjoy?' })
+        store.addMessage(session, {
+          messageType: 'tool_call',
+          content: '',
+          tools: [{ toolName: 'ask_user_question', toolCallId: 'ask_0' }],
+        } as never)
+        store.addMessage(session, { messageType: 'user_query', content: CARD_ANSWERS })
         store.addMessage(session, { messageType: 'bot_response', content: 'An earlier answer.' })
       }
       // The harness keeps messages in memory but does not model deletes.
@@ -74,11 +89,18 @@ function editFlow(options: {
         }
         if (turn === 'card-after-approval') {
           store.addMessage(session, { messageType: 'user_query', content: 'Tool approval: allow once' })
-          store.addMessage(session, { messageType: 'bot_response', content: 'Approved.' })
+          store.addMessage(session, {
+            messageType: 'bot_response',
+            content: 'Approved.',
+            tools: [{ toolName: 'ask_user_question' }],
+          } as never)
         }
         store.addMessage(session, { messageType: 'user_query', content: CARD_ANSWERS })
       }
       const bot = store.addMessage(session, { messageType: 'bot_response', content: 'An older answer.' })
+      if (options.unansweredQuestion) {
+        store.addMessage(session, { messageType: 'user_query', content: options.unansweredQuestion })
+      }
       store.writes.length = 0
       return {
         params: { conversationId: String(session._id), messageId: String(bot._id) },
@@ -547,15 +569,6 @@ describe('es_controller editing the last question', () => {
       expect(rowsOf(run).slice(0, 2)).to.deep.equal(['user_query: An earlier question', 'bot_response: An earlier answer.'])
     })
 
-    it('refuses to edit a question that starts like card answers when it cannot tell what it is', async () => {
-      const run = await start({ edit: 'What changed in v2?', question: TYPED })
-      await run.done
-      await settle()
-
-      expect(run.res.eventsOf('RUN_ERROR')[0]?.data.message).to.match(/cannot be edited/)
-      expect(run.ai.streamCalls).to.deep.equal([])
-    })
-
     it('keeps the card rows when the new answer cannot be saved', async () => {
       sinon.stub(searchUtils, 'handleRegenerationSuccess').rejects(new Error('database is down'))
       const run = await start({ edit: 'What changed in v2?', turn: 'card' })
@@ -638,9 +651,161 @@ describe('es_controller editing the last question', () => {
     it('keeps the answer when only the files of such a turn were changed', async () => {
       expectAnswerKept(await start({ turn: 'card-without-question', files: [FILE_B] }))
     })
+  })
 
-    it('keeps the answer of a first question that starts like card answers', async () => {
-      expectAnswerKept(await start({ edit: 'What changed in v2?', question: 'User selections: what does this mean?' }))
+  describe('a run that fails, a save that fails, and questions that are not the last', () => {
+    const TYPED = 'User selections: what does this mean?'
+    const FAILURE = {
+      answer: 'The model is rate limited right now.',
+      citations: [],
+      confidence: 'Low',
+      answerMatchType: 'Error',
+      errorCode: 'rate_limit',
+    }
+    type Run = Awaited<ReturnType<typeof startStream>>
+    const rowsOf = (run: Run) => run.messages().map((m) => `${String(m.messageType)}: ${String(m.content)}`)
+    const start = async (options: Parameters<typeof editFlow>[0]) => {
+      const run = await startStream(editFlow(options), controllerModule, undefined, { wait: false })
+      await settle()
+      return run
+    }
+    async function end(run: Run) {
+      run.ai.finish()
+      await run.res.ended
+      await run.done
+      await settle()
+    }
+
+    it('keeps the question, its files and its title when the run ends in an error answer', async () => {
+      const run = await start({ edit: 'What changed in v2?', storedFiles: [FILE_A], files: [FILE_B] })
+
+      run.ai.send('RUN_FINISHED', { runId: RUN, result: FAILURE })
+      await end(run)
+
+      expect(lastQuestion(run)).to.equal(FIRST_QUESTION)
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-a'])
+      expect(run.conversation().title).to.equal(FIRST_QUESTION)
+      expect(run.answer()?.messageType).to.equal('error')
+    })
+
+    it('keeps the whole card turn when the run ends in an error answer', async () => {
+      const run = await start({ edit: 'What changed in v2?', turn: 'card' })
+      const before = rowsOf(run)
+
+      run.ai.send('RUN_FINISHED', { runId: RUN, result: FAILURE })
+      await end(run)
+
+      expect(rowsOf(run).slice(0, 4)).to.deep.equal(before.slice(0, 4))
+      expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
+        .to.deep.equal([FIRST_QUESTION, CARD_ANSWERS])
+    })
+
+    it('keeps the question when the run ends with no answer at all', async () => {
+      const run = await start({ edit: 'What changed in v2?', turn: 'card' })
+
+      run.ai.send('RUN_FINISHED', finalAnswer('   '))
+      await end(run)
+
+      expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
+        .to.deep.equal([FIRST_QUESTION, CARD_ANSWERS])
+    })
+
+    it('saves the edit when the new answer is a question card of its own', async () => {
+      const run = await start({ edit: 'What changed in v2?', turn: 'card' })
+
+      run.ai.send('CUSTOM', { name: 'ask_user_question', value: { toolData: { question: 'Which quarter?' } } })
+      // A reply that only asks a question has no text; the run reports it is waiting for the answer.
+      run.ai.send('RUN_FINISHED', { runId: RUN, result: { answer: '', citations: [], status: 'waiting_input' } })
+      await end(run)
+
+      expect(lastQuestion(run)).to.equal('What changed in v2?')
+      expect(run.messages().filter((m) => m.messageType === 'user_query')).to.have.length(1)
+    })
+
+    it('saves the edit when the reader stopped the run after some answer text', async () => {
+      const run = await start({ edit: 'What changed in v2?' })
+
+      run.ai.send('RUN_FINISHED', { runId: RUN, result: { answer: 'Two ', citations: [], status: 'stopped' } })
+      await end(run)
+
+      expect(lastQuestion(run)).to.equal('What changed in v2?')
+      expect(run.answer()?.content).to.equal('Two ')
+    })
+
+    it('puts the question, files and title back when the new answer cannot be saved', async () => {
+      sinon.stub(searchUtils, 'handleRegenerationSuccess').rejects(new Error('database is down'))
+      const run = await start({ edit: 'What changed in v2?', storedFiles: [FILE_A], files: [FILE_B] })
+
+      run.ai.send('RUN_FINISHED', finalAnswer('Two things.'))
+      await end(run)
+
+      expect(lastQuestion(run)).to.equal(FIRST_QUESTION)
+      expect(lastQuestionFiles(run)).to.deep.equal(['rec-a'])
+      expect(run.conversation().title).to.equal(FIRST_QUESTION)
+    })
+
+    it('puts the question back and keeps the card rows when the new answer of a card turn cannot be saved', async () => {
+      sinon.stub(searchUtils, 'handleRegenerationSuccess').rejects(new Error('database is down'))
+      const run = await start({ edit: 'What changed in v2?', turn: 'card' })
+      const before = rowsOf(run)
+
+      run.ai.send('RUN_FINISHED', finalAnswer('Two things.'))
+      await end(run)
+
+      expect(rowsOf(run).slice(0, 4)).to.deep.equal(before.slice(0, 4))
+    })
+
+    it('refuses an edit of an older question while a newer one has no answer', async () => {
+      const run = await startStream(
+        editFlow({ edit: 'What changed in v2?', unansweredQuestion: 'And what about v3?' }),
+        controllerModule, undefined, { wait: false },
+      )
+      await run.done
+      await settle()
+
+      expect(run.res.eventsOf('RUN_ERROR')[0]?.data.message).to.match(/last question/)
+      expect(run.ai.streamCalls).to.deep.equal([])
+      expect(run.answer()?.content).to.equal('An older answer.')
+      expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content))
+        .to.deep.equal([FIRST_QUESTION, 'And what about v3?'])
+    })
+
+    it('edits only a typed question that follows a card turn, and leaves that turn alone', async () => {
+      const run = await start({ edit: 'What changed in v2?', question: TYPED, cardTurnBefore: true })
+
+      expect((run.ai.streamCalls[0]?.body as { query: string }).query).to.equal('What changed in v2?')
+      run.ai.send('RUN_FINISHED', finalAnswer('Two things.'))
+      await end(run)
+
+      expect(rowsOf(run)).to.deep.equal([
+        'user_query: An earlier card question',
+        'bot_response: Which one do you enjoy?',
+        'tool_call: ',
+        `user_query: ${CARD_ANSWERS}`,
+        'bot_response: An earlier answer.',
+        'user_query: What changed in v2?',
+        'bot_response: Two things.',
+      ])
+    })
+
+    it('edits a first question that starts like card answers as an ordinary question', async () => {
+      const run = await start({ edit: 'What changed in v2?', question: TYPED })
+
+      run.ai.send('RUN_FINISHED', finalAnswer('Two things.'))
+      await end(run)
+
+      expect(rowsOf(run)).to.deep.equal(['user_query: What changed in v2?', 'bot_response: Two things.'])
+      expect(run.conversation().title).to.equal(FIRST_QUESTION)
+    })
+
+    it('still edits the answers of a card turn that follows an earlier card turn', async () => {
+      const run = await start({ edit: 'What changed in v2?', turn: 'card', cardTurnBefore: true })
+
+      run.ai.send('RUN_FINISHED', finalAnswer('Two things.'))
+      await end(run)
+
+      expect(rowsOf(run).slice(-2)).to.deep.equal(['user_query: What changed in v2?', 'bot_response: Two things.'])
+      expect(rowsOf(run)).to.have.length(7)
     })
   })
 })

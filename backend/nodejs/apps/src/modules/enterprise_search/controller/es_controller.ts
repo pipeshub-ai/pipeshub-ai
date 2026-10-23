@@ -16,6 +16,7 @@ import {
   updateUserQueryContent,
   deleteMessagesById,
   hasAskUserQuestionTool,
+  isClassifiedFailureAnswer,
   staleAskUserQuestionToolCallIds,
   handleRegenerationError,
 } from './../utils/utils';
@@ -3236,7 +3237,7 @@ interface CardTurnQuestion {
   question: IMessage & { _id: mongoose.Types.ObjectId };
   /** Rows between that question and the turn's last answer: the card, its answers, earlier replies. */
   intermediateIds: mongoose.Types.ObjectId[];
-  /** Whether one of those rows holds a question card, as stored. Text alone does not make a card turn. */
+  /** Whether the turn's answers each follow a stored question card. Text alone does not make a card turn. */
   hasCard: boolean;
 }
 
@@ -3262,19 +3263,35 @@ export function findQuestionBehindCard(
 ): CardTurnQuestion | null {
   const intermediateIds: mongoose.Types.ObjectId[] = [];
   let hasCard = false;
-  for (const row of older) {
+  for (const [i, row] of older.entries()) {
     if (row.messageType === 'user_query') {
-      if (isAskUserQuestionAnswer(row.content)) {
+      if (isAskUserQuestionAnswer(row.content) && answersCardBefore(older, i)) {
         intermediateIds.push(row._id);
+        hasCard = true;
         continue;
       }
       if (isToolApprovalAnswer(row.content)) return null;
       return { question: row, intermediateIds, hasCard };
     }
-    hasCard = hasCard || rowHoldsQuestionCard(row);
     intermediateIds.push(row._id);
   }
   return null;
+}
+
+/**
+ * Whether the row of answers at `older[i]` answers a card: the reply just before it holds one, or the
+ * `tool_call` rows beside that reply do. A card an earlier turn asked does not make a question the
+ * reader typed with the same first words into answers.
+ */
+function answersCardBefore(
+  older: Array<IMessage & { _id: mongoose.Types.ObjectId }>,
+  i: number,
+): boolean {
+  for (const row of older.slice(i + 1)) {
+    if (rowHoldsQuestionCard(row)) return true;
+    if (row.messageType !== 'tool_call') return false;
+  }
+  return false;
 }
 
 /** Whether two lists name the same files, whatever their order. */
@@ -3347,6 +3364,7 @@ async function regenerateAnswersInternal(
     staleAskToolCallIds: mongoose.Types.ObjectId[];
     cardEdit: CardTurnQuestion | null;
     editBlocked: boolean;
+    newerQuestion: boolean;
   }> {
     if (!conversationId) {
       throw new BadRequestError('Conversation ID is required');
@@ -3421,6 +3439,11 @@ async function regenerateAnswersInternal(
     // Only a stored card makes a card turn: a question the reader typed with the same first words has none.
     const cardEdit = behindCard?.hasCard ? behindCard : null;
     const editBlocked = looksLikeCardAnswer && behindCard === null;
+    // A question after the newest answer has none of its own (a run that never got to answer), so
+    // the answer found here belongs to an older question than the last one.
+    const newerQuestion = recentMessages
+      .slice(0, lastBotIdx)
+      .some((msg) => msg.messageType === 'user_query');
 
     logger.debug('Regenerate answers validation passed', {
       requestId,
@@ -3442,6 +3465,7 @@ async function regenerateAnswersInternal(
       staleAskToolCallIds,
       cardEdit,
       editBlocked,
+      newerQuestion,
     };
   }
 
@@ -3475,6 +3499,7 @@ async function regenerateAnswersInternal(
       staleAskToolCallIds: mongoose.Types.ObjectId[];
       cardEdit: CardTurnQuestion | null;
       editBlocked: boolean;
+      newerQuestion: boolean;
     } | null = null;
     if (rsAvailable) {
       session = await mongoose.startSession();
@@ -3521,6 +3546,11 @@ async function regenerateAnswersInternal(
     if (isEdit && validationResult.editBlocked) {
       throw new BadRequestError(
         'This question cannot be edited. Ask again instead.',
+      );
+    }
+    if (isEdit && validationResult.newerQuestion) {
+      throw new BadRequestError(
+        'Can only edit the last question in the conversation',
       );
     }
     const editedQuery = isEdit ? requestedQuery || shownQuestion.content : null;
@@ -3573,6 +3603,7 @@ async function regenerateAnswersInternal(
     // They go only after the new answer is saved, so a failed save loses nothing but the old answer.
     const replacedTurnIds =
       editedQuery && cardEdit ? cardEdit.intermediateIds : [];
+    const originalTitle = existingConversation.title;
     let editedQuestionSaved = false;
     const saveEditedQuestion = async (): Promise<void> => {
       if (!editedQuery || !existingConversation) return;
@@ -3589,6 +3620,46 @@ async function regenerateAnswersInternal(
       editedQuestionSaved = true;
       if (titleFollowsEdit) {
         existingConversation.title = editedQuery.slice(0, 100);
+      }
+    };
+    // A save that failed after the question was rewritten leaves the question as the reader had it,
+    // not edited and without an answer.
+    const restoreOriginalQuestion = async (): Promise<void> => {
+      if (!editedQuestionSaved || !existingConversation) return;
+      editedQuestionSaved = false;
+      existingConversation.title = originalTitle;
+      try {
+        await updateUserQueryContent(
+          (shownQuestion as IMessage & { _id: mongoose.Types.ObjectId })._id,
+          shownQuestion.content,
+          existingConversation._id,
+          session,
+          editedAttachments ? (shownQuestion.attachments ?? []) : undefined,
+        );
+      } catch (err: unknown) {
+        logger.error('Failed to put the original question back', {
+          requestId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+    // The rows the new answer replaced go once it is saved, and never fail it.
+    const dropReplacedTurn = async (): Promise<boolean> => {
+      if (!editedQuestionSaved || !existingConversation) return false;
+      if (replacedTurnIds.length === 0) return false;
+      try {
+        await deleteMessagesById(
+          replacedTurnIds,
+          session,
+          existingConversation._id,
+        );
+        return true;
+      } catch (err: unknown) {
+        logger.warn('Failed to drop the rows an edited turn replaced', {
+          requestId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return false;
       }
     };
 
@@ -3683,15 +3754,7 @@ async function regenerateAnswersInternal(
           }),
         )
         .then(async () => {
-          if (!editedQuestionSaved || replacedTurnIds.length === 0) return;
-          try {
-            await deleteMessagesById(replacedTurnIds, null, abandoned._id);
-          } catch (err: unknown) {
-            logger.warn('Failed to drop the rows an edited turn replaced', {
-              requestId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
+          await dropReplacedTurn();
         })
         .catch((err: unknown) => {
           logger.error('Failed to save partial conversation on disconnect', {
@@ -3752,8 +3815,14 @@ async function regenerateAnswersInternal(
         // Save the AI response to the conversation, replacing the existing message
         // A failed save is handled once, by the catch below: one error frame, one saved reason.
         if (completeData && existingConversation) {
-          // Only once an answer exists, so a failed run keeps the original question.
-          await saveEditedQuestion();
+          // A run that ended in an error answer, or in none, did not answer the edited question: it
+          // stays as it was, with the rows of its card turn, and only the answer is replaced.
+          const answeredEdit =
+            !isClassifiedFailureAnswer(completeData) &&
+            (Boolean(completeData.answer.trim()) ||
+              Boolean(askUserQuestionPayload) ||
+              completeData.status === 'waiting_input');
+          if (answeredEdit) await saveEditedQuestion();
           const { conversation: responseConversation, savedCitations } =
             await handleRegenerationSuccess(
               completeData,
@@ -3763,8 +3832,17 @@ async function regenerateAnswersInternal(
               session,
               modelInfo,
               askUserQuestionPayload,
-              [...staleAskToolCallIds, ...replacedTurnIds],
+              staleAskToolCallIds,
             );
+          if (await dropReplacedTurn()) {
+            const shown = responseConversation as {
+              messages: Array<{ _id?: unknown }>;
+            };
+            const gone = new Set(replacedTurnIds.map(String));
+            shown.messages = shown.messages.filter(
+              (row) => !gone.has(String(row._id)),
+            );
+          }
 
           // Send final response event with the complete conversation data
           sendSSECompleteEvent(
@@ -3841,6 +3919,7 @@ async function regenerateAnswersInternal(
             error: dbError.message,
           },
         );
+        await restoreOriginalQuestion();
 
         const errorMessage =
           causeCode(dbError) === 'ECONNREFUSED'

@@ -23,7 +23,9 @@ vi.mock('@/config', async () => {
 
 const { useAuthStore } = await import('@/lib/store/auth-store');
 const { useChatStore } = await import('../store');
-const { streamRegenerateForSlot, withEditedQuestion, withoutQuestionCard } = await import('../streaming');
+const { streamRegenerateForSlot, withEditedQuestion, withoutQuestionCard, editWasNotTaken } = await import('../streaming');
+const { ChatStreamError } = await import('../stream-error');
+const { StreamError } = await import('@/lib/api/stream-errors');
 const { getThreadMessagePlainText } = await import('../runtime');
 const { apiClient } = await import('@/lib/api');
 
@@ -424,5 +426,125 @@ describe('editing the files of the question', () => {
 
     expect(String(fetchMock.mock.calls[0][0])).toContain('/api/v1/agents/agent-1/');
     expect(sentBody()).toMatchObject({ query: 'Edited question', attachments: [FILE_B] });
+  });
+});
+
+describe('an edit whose connection drops', () => {
+  const EDIT = { query: 'Edited question' };
+
+  it('reads what the server did back, instead of putting the old question on screen', async () => {
+    const slotId = newSlot();
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
+
+    expect(slot(slotId).isStreaming).toBe(false);
+    expect(slot(slotId).remoteRunInProgress).toBe(true);
+    expect(slot(slotId).convId).toBe('conv-1');
+    expect(questionOf(slotId)).toBe('Edited question');
+  });
+
+  it('does the same when the connection drops part-way through the answer', async () => {
+    const slotId = newSlot();
+    fetchMock.mockImplementationOnce(async () =>
+      sseResponse({
+        chunks: [frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'Two ' })],
+        failWith: new TypeError('network error'),
+      }),
+    );
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
+
+    expect(slot(slotId).remoteRunInProgress).toBe(true);
+    expect(questionOf(slotId)).toBe('Edited question');
+  });
+
+  it('does the same when the stream closes without saying how it ended', async () => {
+    const slotId = newSlot();
+    fetchMock.mockImplementationOnce(async () => sseResponse([frame('TEXT_MESSAGE_START')]));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
+
+    expect(slot(slotId).remoteRunInProgress).toBe(true);
+    expect(questionOf(slotId)).toBe('Edited question');
+  });
+
+  it('keeps the card of the old turn off the screen, and does not bring it back', async () => {
+    const slotId = newSlot();
+    const card = { name: 'ask_user_question', questions: [{ question: 'What do you enjoy?', options: [] }] };
+    const messages = threadWith('Old question');
+    messages[1] = {
+      ...messages[1],
+      metadata: { custom: { messageId: 'a1', persistedAskUserQuestion: card } },
+    } as ThreadMessageLike;
+    useChatStore.getState().updateSlot(slotId, {
+      messages,
+      pendingAskUserQuestion: { assistantMessageId: 'a1', payload: card, answers: {}, status: 'persisted' } as never,
+    });
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
+
+    expect(slot(slotId).pendingAskUserQuestion).toBeNull();
+    expect((slot(slotId).messages[1].metadata?.custom as Record<string, unknown>)).not.toHaveProperty(
+      'persistedAskUserQuestion',
+    );
+    expect(slot(slotId).remoteRunInProgress).toBe(true);
+  });
+
+  it('puts the old question back when the server says the run failed', async () => {
+    const slotId = newSlot();
+    fetchMock.mockImplementationOnce(async () =>
+      sseResponse([frame('RUN_ERROR', { message: 'The model is rate limited.', code: 'rate_limit' })]),
+    );
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
+
+    expect(questionOf(slotId)).toBe('Old question');
+    expect(slot(slotId).remoteRunInProgress).toBe(false);
+  });
+
+  it('puts the old question back when the server refused the request', async () => {
+    const slotId = newSlot();
+    fetchMock.mockResolvedValueOnce(jsonResponse(500, {}));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
+
+    expect(questionOf(slotId)).toBe('Old question');
+    expect(slot(slotId).remoteRunInProgress).toBe(false);
+  });
+
+  it('puts the old question back when the server is busy', async () => {
+    const slotId = newSlot();
+    fetchMock.mockResolvedValueOnce(jsonResponse(429, {}, { 'retry-after': '5' }));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, EDIT);
+
+    expect(questionOf(slotId)).toBe('Old question');
+    expect(slot(slotId).remoteRunInProgress).toBe(false);
+  });
+
+  it('leaves a plain regenerate that drops as it was: nothing was edited to read back', async () => {
+    const slotId = newSlot();
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    await streamRegenerateForSlot(slotId, 'a1', MODEL);
+
+    expect(slot(slotId).remoteRunInProgress).toBe(false);
+    expect(questionOf(slotId)).toBe('Old question');
+  });
+});
+
+describe('editWasNotTaken', () => {
+  it('is true for a run the server reported as failed and for a request it refused', () => {
+    expect(editWasNotTaken(new ChatStreamError('The model is rate limited.', 'rate_limit'))).toBe(true);
+    expect(editWasNotTaken(new StreamError('PipesHub is busy.', 429))).toBe(true);
+  });
+
+  it('is false for a connection that dropped, where the run goes on', () => {
+    expect(editWasNotTaken(new StreamError('The connection dropped.'))).toBe(false);
+    expect(editWasNotTaken(new TypeError('Failed to fetch'))).toBe(false);
+    expect(editWasNotTaken(new Error('The answer was interrupted'))).toBe(false);
+    expect(editWasNotTaken(undefined)).toBe(false);
   });
 });

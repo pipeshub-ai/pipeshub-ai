@@ -8612,7 +8612,11 @@ components:
             edited: the question is rewritten and the whole turn, including its
             card and the card's answers, is replaced by the new answer. A card
             turn that spans more than 50 saved rows cannot be edited; the
-            request is refused and the stored answer is left as it was.
+            request is refused and the stored answer is left as it was. So is
+            an edit of an older question while a newer question has no answer.
+            A run that ends in an error answer, or whose answer cannot be
+            saved, leaves the stored question, its files and the rows of its
+            card turn as they were.
         attachments:
           type: array
           maxItems: 10

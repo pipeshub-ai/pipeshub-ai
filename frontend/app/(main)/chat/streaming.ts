@@ -59,7 +59,8 @@ import {
 } from './components/message-area/response-tabs/citations';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
-import { streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
+import { ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
+import { StreamError } from '@/lib/api/stream-errors';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -348,6 +349,18 @@ export function withEditedQuestion(
           }),
     };
   });
+}
+
+/**
+ * Whether a failure says the server did not take an edit: its own error (a run that failed) or a
+ * request it refused before streaming. A connection that dropped says nothing, the run goes on there
+ * and may save the edit, so what it did is read back from the server instead of guessed.
+ */
+export function editWasNotTaken(error: unknown): boolean {
+  return (
+    error instanceof ChatStreamError ||
+    (error instanceof StreamError && error.status !== undefined)
+  );
 }
 
 /** The answer row without the question card it asked, for a turn that is being asked again. */
@@ -1487,6 +1500,7 @@ export async function streamRegenerateForSlot(
   if (!slot || !slot.convId) return;
   if (slot.remoteRunInProgress) return;
 
+  const editConvId = slot.convId;
   const preEditMessages = slot.messages;
   const preEditPending = slot.pendingAskUserQuestion;
   const editedMessages = edit
@@ -1809,8 +1823,9 @@ export async function streamRegenerateForSlot(
       }
       cancelPendingStatus();
       console.error('[streaming] Regenerate error for slot', slotId, error);
+      const dropped = questionWasEdited && !editWasNotTaken(error);
       useChatStore.getState().updateSlot(slotId, {
-        ...undoEditedQuestion(),
+        ...(dropped ? {} : undoEditedQuestion()),
         isStreaming: false,
         regenerateMessageId: null,
         streamingAssistantId: null,
@@ -1822,6 +1837,7 @@ export async function streamRegenerateForSlot(
         runId: null,
         stopping: false,
       });
+      if (dropped) followRemoteRun(slotId, editConvId);
       debugLog.flush('regenerate-error', { slotId });
     },
 
@@ -1918,8 +1934,9 @@ export async function streamRegenerateForSlot(
     if (!aborted) {
       console.error('[streaming] Fatal regenerate error for slot', slotId, error);
     }
+    const dropped = questionWasEdited && !aborted && !editWasNotTaken(error);
     useChatStore.getState().updateSlot(slotId, {
-      ...undoEditedQuestion(),
+      ...(dropped ? {} : undoEditedQuestion()),
       isStreaming: false,
       regenerateMessageId: null,
       streamingAssistantId: null,
@@ -1931,6 +1948,7 @@ export async function streamRegenerateForSlot(
       runId: null,
       stopping: false,
     });
+    if (dropped) followRemoteRun(slotId, editConvId);
     debugLog.flush(aborted ? 'regenerate-aborted' : 'regenerate-fatal-error', { slotId });
   }
 }
