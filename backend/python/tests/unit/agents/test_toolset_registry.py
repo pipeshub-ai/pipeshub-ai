@@ -21,7 +21,7 @@ def _fresh_registry():
 
 
 @pytest.fixture(autouse=True)
-def _restore_registry_singleton():
+def _restore_registry_singleton() -> typing.Iterator[None]:
     """Put the process-wide registry back after each test.
 
     Otherwise every later test file in the same process sees this file's fake
