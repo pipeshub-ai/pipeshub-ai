@@ -2296,3 +2296,15 @@ class TestFoldersGoneFromConfluence:
         await connector._remove_folders_gone(ENG)
 
         assert "500" in db.records
+
+
+class TestWebLinksThroughTheGateway:
+    async def test_a_page_link_points_at_the_site_not_the_api_gateway(self, api, db, checkpoints, search) -> None:
+        page = v1_page("10")
+        page["_links"]["self"] = f"https://api.atlassian.com{V1}/content/10"
+        search.by_cursor[None] = search_page([page])
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert db.records["10"].weburl == f"{WIKI}/spaces/ENG/pages/10"

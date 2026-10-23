@@ -524,6 +524,8 @@ class ConfluenceConnector(BaseConnector):
         # Users _sync_users held back; saved if this sync's group read finds them active.
         self._held_back_users: list[AppUser] = []
         self._space_listing_complete = False
+        # The site's wiki URL (https://<site>/wiki) from a listing's _links.base, for web links.
+        self._site_wiki_url: str | None = None
         # What this run could not do, sent once as one notification when it ends.
         self._sync_problems: list[str] = []
         # (space key, what was skipped) -> count, shown as one line per pair.
@@ -1641,6 +1643,7 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 # Extract base URL from first response
+                self._remember_site_wiki_url(response_data)
                 if not base_url and response_data.get("_links", {}).get("base"):
                     base_url = response_data["_links"]["base"]
                     self.logger.debug(f"Base URL extracted: {base_url}")
@@ -2092,6 +2095,7 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 response_data = response.json()
+                self._remember_site_wiki_url(response_data)
                 items_data = response_data.get("results") if isinstance(response_data, dict) else None
                 if not isinstance(items_data, list):
                     self.logger.error(f"❌ {content_type.capitalize()} listing for space {space_key} had no results list")
@@ -3558,12 +3562,29 @@ class ConfluenceConnector(BaseConnector):
             return f"{base_url}{web_path}"
 
         # Fall back to v1 format (extract from _links.self)
-        self_link = links.get("self")
-        if self_link and "https://" in self_link and "/wiki/" in self_link:
-            extracted_base_url = self_link.split("/wiki/")[0] + "/wiki"
+        extracted_base_url = self._wiki_base_from_self_link(links.get("self"))
+        if extracted_base_url and extracted_base_url.startswith("https://"):
             return f"{extracted_base_url}{web_path}"
 
         return None
+
+    def _wiki_base_from_self_link(self, self_link: str | None) -> str | None:
+        """The site's wiki URL for a v1 item's self link.
+
+        Through OAuth the self link is the API gateway (api.atlassian.com/ex/confluence/...),
+        not the site, so the site URL a listing reported (``_links.base``) is used instead.
+        """
+        if not self_link or "/wiki/" not in self_link:
+            return None
+        if urlparse(self_link).hostname == "api.atlassian.com":
+            return self._site_wiki_url
+        return self_link.split("/wiki/")[0] + "/wiki"
+
+    def _remember_site_wiki_url(self, response_data: Any) -> None:
+        """Keep the site's wiki URL a response reports in ``_links.base``, for links built later."""
+        base = ((response_data or {}).get("_links") or {}).get("base") if isinstance(response_data, dict) else None
+        if isinstance(base, str) and base.startswith("http") and urlparse(base).hostname != "api.atlassian.com":
+            self._site_wiki_url = base.rstrip("/")
 
     @staticmethod
     def _split_pagination_token(token: Optional[str]) -> tuple[Optional[int], Optional[str]]:
@@ -4191,9 +4212,8 @@ class ConfluenceConnector(BaseConnector):
                     web_url = f"{base_url}{webui}"
                 else:
                     # Fall back to v1 format (extract from _links.self)
-                    self_link = links.get("self")
-                    if self_link and "/wiki/" in self_link:
-                        base_url = self_link.split("/wiki/")[0] + "/wiki"
+                    base_url = self._wiki_base_from_self_link(links.get("self"))
+                    if base_url:
                         web_url = f"{base_url}{webui}"
 
             # Set parent_record_type from parent's actual type when available
@@ -4348,9 +4368,8 @@ class ConfluenceConnector(BaseConnector):
                 if base_url:
                     web_url = f"{base_url}{webui}"
                 else:
-                    self_link = links.get("self")
-                    if self_link and "/wiki/" in self_link:
-                        base_url = self_link.split("/wiki/")[0] + "/wiki"
+                    base_url = self._wiki_base_from_self_link(links.get("self"))
+                    if base_url:
                         web_url = f"{base_url}{webui}"
 
             # Set parent_record_type from parent's actual type
