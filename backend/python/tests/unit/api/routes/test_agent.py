@@ -251,7 +251,7 @@ class TestBuildPriorRoutingMessages:
         assert msgs[0].content == "Hello"
 
     @pytest.mark.asyncio
-    async def test_bot_response_first_line_only(self) -> None:
+    async def test_bot_response_keeps_more_than_its_first_line(self) -> None:
         from langchain_core.messages import AIMessage
 
         from app.api.routes.agent import _build_prior_routing_messages
@@ -262,7 +262,9 @@ class TestBuildPriorRoutingMessages:
         })
         assert len(msgs) == 1
         assert isinstance(msgs[0], AIMessage)
-        assert msgs[0].content == "Line one"
+        # The intent step reads past an answer's first line: a follow-up often
+        # refers to something further down (HG-04).
+        assert msgs[0].content == "Line one\nLine two"
 
     @pytest.mark.asyncio
     async def test_user_and_bot_turns_in_order(self) -> None:
@@ -278,7 +280,7 @@ class TestBuildPriorRoutingMessages:
         assert isinstance(msgs[0], HumanMessage)
         assert msgs[0].content == "Q?"
         assert isinstance(msgs[1], AIMessage)
-        assert msgs[1].content == "A1"
+        assert msgs[1].content == "A1\nmore"
 
     @pytest.mark.asyncio
     async def test_only_last_six_messages(self) -> None:
