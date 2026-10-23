@@ -213,13 +213,20 @@ class ContentListing(NamedTuple):
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
-# Confluence v2 space permission access-class principals (ROLES-mode / default ACLs)
+# Confluence v2 space permission access-class principals (ROLES-mode / default ACLs), as
+# normalised by _access_class_id: Cloud spells them "access-class"/"ALL_LICENSED_USERS" or
+# "ACCESS_CLASS"/"all-licensed-users".
 ACCESS_CLASS_LICENSED_USERS = "ALL_LICENSED_USERS"
 ACCESS_CLASS_PRODUCT_ADMINS = "ALL_PRODUCT_ADMINS"
+ACCESS_CLASS_AUTHENTICATED_USERS = "AUTHENTICATED_USERS"
+ACCESS_CLASS_ANONYMOUS_USERS = "ANONYMOUS_USERS"
 
-# Ordered fallbacks: first synced group name match wins
+# Synced groups an access class stands for: exact names, then name prefixes. Cloud sites
+# name them per site, e.g. "confluence-users-acme" and "confluence-admins-acme".
 LICENSED_USER_GROUP_NAMES = ("confluence-users",)
-PRODUCT_ADMIN_GROUP_NAMES = ("org-admins", "confluence-administrators", "site-admins")
+LICENSED_USER_GROUP_PREFIXES = ("confluence-users-",)
+PRODUCT_ADMIN_GROUP_NAMES = ("org-admins", "confluence-administrators", "site-admins", "system-administrators")
+PRODUCT_ADMIN_GROUP_PREFIXES = ("confluence-admins-",)
 
 def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
     """
@@ -3300,6 +3307,9 @@ class ConfluenceConnector(BaseConnector):
 
                 # Transform permissions and add to list
                 for perm_data in permissions_data:
+                    if self._access_class_id(perm_data):
+                        permissions.extend(await self._access_class_permissions(perm_data, space_name))
+                        continue
                     permission = await self._transform_space_permission(perm_data)
                     if permission:
                         permissions.append(permission)
@@ -3619,79 +3629,56 @@ class ConfluenceConnector(BaseConnector):
         )
         return name_map
 
-    async def _resolve_group_external_id_by_names(
-        self,
-        names: tuple[str, ...],
-    ) -> tuple[str, str] | None:
-        """Return (matched_group_name, external_id) for the first synced group name hit."""
+    @staticmethod
+    def _access_class_id(perm_data: dict[str, Any]) -> str | None:
+        """The access class a space permission row grants, normalised (e.g. ALL_LICENSED_USERS); None for a user or group."""
+        principal = perm_data.get("principal") or {}
+        kind = str(principal.get("type") or "").lower().replace("_", "-")
+        if kind != "access-class" or not principal.get("id"):
+            return None
+        return str(principal["id"]).upper().replace("-", "_")
+
+    async def _groups_matching(self, names: tuple[str, ...], prefixes: tuple[str, ...]) -> list[str]:
+        """External ids of every synced group named one of ``names`` or starting with one of ``prefixes``."""
         name_map = await self._ensure_group_name_cache()
-        for name in names:
-            external_id = name_map.get(name.lower())
-            if external_id:
-                return name, external_id
-        return None
+        wanted = {n.lower() for n in names}
+        return sorted({
+            external_id for name, external_id in name_map.items()
+            if name in wanted or any(name.startswith(prefix) for prefix in prefixes)
+        })
 
-    async def _permission_for_access_class_group_or_org(
-        self,
-        group_names: tuple[str, ...],
-        permission_type: PermissionType,
-    ) -> Permission:
+    async def _access_class_permissions(
+        self, perm_data: dict[str, Any], space_name: str = ""
+    ) -> list[Permission]:
+        """Map an access-class space grant to the synced groups it stands for.
+
+        Never to the whole PipesHub org, except anonymous access (a public space), which
+        is open to everyone. A class with no synced group grants nothing and is reported.
         """
-        Map an access-class grant to a synced Confluence group, or ORG as fallback.
-
-        ORG fallback may grant all org members access (same tradeoff as Jira Cloud
-        applicationRole → ORG mapping for unresolvable licensed-user grants).
-        """
-        resolved = await self._resolve_group_external_id_by_names(group_names)
-        if resolved:
-            matched_name, external_id = resolved
-            return Permission(
-                entity_type=EntityType.GROUP,
-                external_id=external_id,
-                type=permission_type,
+        access_class = self._access_class_id(perm_data)
+        operation = perm_data.get("operation") or {}
+        operation_key, target_type = operation.get("key"), operation.get("targetType")
+        if target_type != "space":
+            return []
+        if access_class == ACCESS_CLASS_ANONYMOUS_USERS and operation_key == "read":
+            return [Permission(entity_type=EntityType.ORG, type=PermissionType.READ)]
+        if access_class in (ACCESS_CLASS_LICENSED_USERS, ACCESS_CLASS_AUTHENTICATED_USERS) and operation_key == "read":
+            names, prefixes, permission_type = LICENSED_USER_GROUP_NAMES, LICENSED_USER_GROUP_PREFIXES, PermissionType.READ
+        elif access_class == ACCESS_CLASS_PRODUCT_ADMINS and operation_key == "administer":
+            names, prefixes, permission_type = PRODUCT_ADMIN_GROUP_NAMES, PRODUCT_ADMIN_GROUP_PREFIXES, PermissionType.OWNER
+        else:
+            self.logger.debug("Skipping access-class %s for operation %s/%s", access_class, operation_key, target_type)
+            return []
+        group_ids = await self._groups_matching(names, prefixes)
+        if not group_ids:
+            self.logger.warning(f"Space {space_name}: no synced group stands for access class {access_class}; it grants nothing")
+            self._note_problem(
+                f"Space {space_name}: its {access_class.lower().replace('_', ' ')} grant matches no synced Confluence "
+                "group, so it gives no one access in PipesHub",
+                unread=False,
             )
-
-        self.logger.info(
-            "Mapped access-class to ORG fallback → %s (groups %s not synced)",
-            permission_type.value,
-            group_names,
-        )
-        return Permission(entity_type=EntityType.ORG, type=permission_type)
-
-    async def _transform_access_class_space_permission(
-        self,
-        principal_id: str,
-        operation_key: str,
-        target_type: str,
-    ) -> Optional[Permission]:
-        """Map Confluence access-class principals to group or org permissions."""
-        if (
-            principal_id == ACCESS_CLASS_LICENSED_USERS
-            and operation_key == "read"
-            and target_type == "space"
-        ):
-            return await self._permission_for_access_class_group_or_org(
-                LICENSED_USER_GROUP_NAMES,
-                PermissionType.READ,
-            )
-
-        if (
-            principal_id == ACCESS_CLASS_PRODUCT_ADMINS
-            and operation_key == "administer"
-            and target_type == "space"
-        ):
-            return await self._permission_for_access_class_group_or_org(
-                PRODUCT_ADMIN_GROUP_NAMES,
-                PermissionType.OWNER,
-            )
-
-        self.logger.debug(
-            "Skipping access-class %s for operation %s/%s",
-            principal_id,
-            operation_key,
-            target_type,
-        )
-        return None
+            return []
+        return [Permission(entity_type=EntityType.GROUP, external_id=g, type=permission_type) for g in group_ids]
 
     @staticmethod
     def _dedupe_space_permissions(permissions: list[Permission]) -> list[Permission]:
@@ -3739,12 +3726,10 @@ class ConfluenceConnector(BaseConnector):
             if not principal_type or not principal_id or not operation_key:
                 return None
 
-            if principal_type == "access-class":
-                return await self._transform_access_class_space_permission(
-                    principal_id,
-                    operation_key,
-                    target_type or "",
-                )
+            if self._access_class_id(perm_data):
+                # Callers that keep every grant use _access_class_permissions; this keeps the first.
+                granted = await self._access_class_permissions(perm_data)
+                return granted[0] if granted else None
 
             # Map Confluence permission to PermissionType
             permission_type = self._map_confluence_permission(operation_key, target_type)
