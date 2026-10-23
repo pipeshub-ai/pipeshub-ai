@@ -265,10 +265,6 @@ class TestFollowUpQuestionUnderCompaction:
             if _A in texts and _B in texts:
                 assert texts.index(_A) < texts.index(_B), f"call #{n + 1}: {texts}"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="CE-05 (P1): loop-written summaries are still sent as user turns, so they can follow the question",
-    )
     async def test_the_follow_up_question_is_the_last_user_turn_on_the_wire(
         self, model: _RecordingChatModel,
     ) -> None:
