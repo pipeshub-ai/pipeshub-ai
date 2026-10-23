@@ -229,5 +229,4 @@ class TestEntraIdFailures:
 
     def test_urls_in_a_reason_lose_their_query(self) -> None:
         error = ConnectionError("Cannot connect to https://acct.file.core.windows.net/s?sig=SECRET&se=1")
-        described = describe_error(error)
-        assert "SECRET" not in described and "acct.file.core.windows.net" in described
+        assert describe_error(error) == "Cannot connect to https://acct.file.core.windows.net/s"

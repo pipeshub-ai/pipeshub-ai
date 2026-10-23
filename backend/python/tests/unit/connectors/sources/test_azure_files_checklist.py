@@ -203,6 +203,29 @@ class TestRefusedCredentials:
         assert len([d for _, d in ds.listed if d.startswith("docs/")]) < 6
         assert conn.notify.await_args.kwargs["title"] == f"{conn.display_name}: Credentials rejected"
 
+    async def test_refusal_on_a_later_share_keeps_an_earlier_share_deletes(self) -> None:
+        ds = FakeDataSource({})
+        ds.add("a", "gone.txt")
+        ds.add("b", "x.txt")
+        proc = FakeProcessor()
+        conn = _connector(ds, proc, shares=["a", "b"])
+        await _sync(conn)
+        before = set(proc.records)
+
+        del ds.shares["a"]["gone.txt"]
+        real = ds.list_directories_and_files
+
+        async def refuse_b(share_name: str, directory_path: str = "", **kwargs: object) -> object:
+            if share_name == "b":
+                return _err("Azure Files API error: AuthenticationFailed (HTTP 403)", "AuthenticationFailed")
+            return await real(share_name, directory_path, **kwargs)
+
+        ds.list_directories_and_files = refuse_b
+        with pytest.raises(CredentialsRejectedError):
+            await _sync(conn)
+        assert set(proc.records) == before
+        assert proc.deleted == []
+
     async def test_refused_share_listing_names_the_credentials(self) -> None:
         ds = _tree()
         ds.fail_list_shares = True
@@ -531,6 +554,30 @@ class TestListingPages:
         assert set(proc.records) == before
         assert proc.deleted == []
         assert conn.full_sync_coverage().complete is False
+
+    async def test_a_failed_later_page_moves_nothing(self) -> None:
+        """A file on the unread page is not gone, so a same-FileId copy on page 1 must not take its record."""
+        ds = FakeDataSource({})
+        ds.add("s", "docs", is_dir=True)
+        for name in ["a.txt", "b.txt", "c.txt", "d.txt"]:
+            ds.add("s", f"docs/{name}", file_id="7" if name == "d.txt" else None)
+        proc = FakeProcessor()
+        conn = _connector(ds, proc, shares=["s"])
+        await _sync(conn)
+        d_id = proc.records["s/docs/d.txt"].id
+
+        # x.txt replaces a.txt on page 1 as a copy of d.txt; d.txt's page (offset 2) fails.
+        tree = ds.shares["s"]
+        d = tree["docs/d.txt"]
+        ds.shares["s"] = {
+            "docs": tree["docs"],
+            "docs/x.txt": {**d, "name": "x.txt", "path": "docs/x.txt"},
+            **{k: tree[k] for k in ["docs/b.txt", "docs/c.txt", "docs/d.txt"]},
+        }
+        ds.fail_pages.add(("s", "docs", 2))
+        await _sync(conn)
+        assert proc.records["s/docs/d.txt"].id == d_id
+        assert proc.moved_calls == []
 
 
 WRITTEN_UTC = datetime(2024, 5, 1, 10, 0, tzinfo=timezone.utc)

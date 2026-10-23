@@ -707,6 +707,8 @@ class AzureFilesConnector(BaseConnector):
             # Sync each share. Deletes are decided per share, so a share that
             # cannot be read holds back only its own.
             failed_shares: list[str] = []
+            # Applied after the loop: a later share refusing the credentials must leave every record.
+            read_in_full: list[tuple[str, set[str]]] = []
             for share_name in dict.fromkeys(n for n in shares_to_sync if n):
                 try:
                     self.logger.info(f"Syncing share: {share_name}")
@@ -720,9 +722,11 @@ class AzureFilesConnector(BaseConnector):
                         f"Error syncing share {share_name}: {e}", exc_info=True
                     )
                 if share_complete:
-                    await self._remove_records_not_seen(share_name, share_seen)
+                    read_in_full.append((share_name, share_seen))
                 else:
                     failed_shares.append(share_name)
+            for share_name, share_seen in read_in_full:
+                await self._remove_records_not_seen(share_name, share_seen)
 
             removed = await self._remove_unsynced_shares(target_names - self._gone_shares)
             for share_name in sorted(removed & self._gone_shares):
@@ -1238,7 +1242,6 @@ class AzureFilesConnector(BaseConnector):
                                 await write_folder_above_the_walk(path)
 
                         items = response.data or []
-                        listed.add(f"{share_name}/{directory_path}" if directory_path else share_name)
                         self.logger.debug(
                             f"Processing {len(items)} items from {share_name}/{directory_path or 'root'}"
                         )
@@ -1337,6 +1340,8 @@ class AzureFilesConnector(BaseConnector):
 
                         token = response.continuation_token
                         if not token:
+                            # Only a directory read to its last page shows which children are gone.
+                            listed.add(f"{share_name}/{directory_path}" if directory_path else share_name)
                             break
 
                 except Exception as e:
