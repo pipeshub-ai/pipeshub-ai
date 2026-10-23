@@ -129,6 +129,34 @@ export class OAuthAppService {
     ]
     this.validateGrantTypes(allowedGrantTypes)
 
+    // An app that allows client_credentials gets tokens with no person in
+    // them. Without a service account to act as, it falls back to whoever
+    // created it (`oauth.provider.controller.ts`, where the identity resolves
+    // to `tokenIdentityUserId ?? createdBy`) — so an app created by an
+    // administrator would carry administrator rights for as long as it lives,
+    // with nothing on screen saying so.
+    //
+    // Required at creation rather than offered, because a safety step nobody
+    // is asked about is one almost nobody takes. Only this grant needs it:
+    // an authorization_code app acts as the person who authorised it.
+    const needsServiceAccount = allowedGrantTypes.includes(
+      OAuthGrantType.CLIENT_CREDENTIALS,
+    )
+    let tokenIdentityUserId: Types.ObjectId | undefined
+    if (needsServiceAccount) {
+      if (!data.tokenIdentityUserId) {
+        throw new BadRequestError(
+          'An application that uses client_credentials must name the service ' +
+            'account its tokens act as. Without one it would act as whoever ' +
+            'created it.',
+        )
+      }
+      tokenIdentityUserId = await this.requireUsableServiceAccount(
+        data.tokenIdentityUserId,
+        orgId,
+      )
+    }
+
     const redirectUris = data.redirectUris || []
     this.validateRedirectUris(redirectUris)
 
@@ -144,6 +172,7 @@ export class OAuthAppService {
       description: data.description,
       orgId: new Types.ObjectId(orgId),
       createdBy: new Types.ObjectId(createdBy),
+      tokenIdentityUserId,
       redirectUris,
       allowedGrantTypes,
       allowedScopes: data.allowedScopes,
@@ -189,6 +218,43 @@ export class OAuthAppService {
    * is what Developer Settings filters on. Moving it would leave the app
    * visible to nobody, since no person can sign in as a service account.
    */
+  /**
+   * The service account an app's own tokens may act as, or a refusal.
+   *
+   * `kind` is part of the query on purpose: a colleague's user id cannot be
+   * used here to make an app's tokens act as them. Shared by creation and
+   * re-binding so the two cannot drift on what counts as a valid target.
+   */
+  private async requireUsableServiceAccount(
+    serviceAccountId: string,
+    orgId: string,
+  ): Promise<Types.ObjectId> {
+    if (!Types.ObjectId.isValid(serviceAccountId)) {
+      throw new NotFoundError('Service account not found')
+    }
+
+    const serviceAccount = await Users.findOne({
+      _id: serviceAccountId,
+      orgId,
+      kind: 'service',
+      isDeleted: false,
+    })
+      .select('isDisabled')
+      .lean()
+      .exec()
+
+    if (!serviceAccount) {
+      throw new NotFoundError('Service account not found')
+    }
+    if (serviceAccount.isDisabled === true) {
+      throw new BadRequestError(
+        'That service account is disabled. Enable it before pointing an application at it.',
+      )
+    }
+
+    return new Types.ObjectId(serviceAccountId)
+  }
+
   async setTokenIdentity(
     appId: string,
     orgId: string,
@@ -213,30 +279,10 @@ export class OAuthAppService {
     if (serviceAccountId === null) {
       app.tokenIdentityUserId = undefined
     } else {
-      if (!Types.ObjectId.isValid(serviceAccountId)) {
-        throw new NotFoundError('Service account not found')
-      }
-      // `kind` is part of the query, so a colleague's user id cannot be used
-      // here to make an app's tokens act as them.
-      const serviceAccount = await Users.findOne({
-        _id: serviceAccountId,
+      app.tokenIdentityUserId = await this.requireUsableServiceAccount(
+        serviceAccountId,
         orgId,
-        kind: 'service',
-        isDeleted: false,
-      })
-        .select('isDisabled')
-        .lean()
-        .exec()
-
-      if (!serviceAccount) {
-        throw new NotFoundError('Service account not found')
-      }
-      if (serviceAccount.isDisabled === true) {
-        throw new BadRequestError(
-          'That service account is disabled. Enable it before pointing an application at it.',
-        )
-      }
-      app.tokenIdentityUserId = new Types.ObjectId(serviceAccountId)
+      )
     }
 
     await app.save()
@@ -460,6 +506,27 @@ export class OAuthAppService {
     // Validate grant types if provided
     if (data.allowedGrantTypes) {
       this.validateGrantTypes(data.allowedGrantTypes)
+
+      // Creation requires a service account for client_credentials. Without
+      // this, that requirement is one edit away from meaningless: make an
+      // authorization_code app, then add the grant here and it falls back to
+      // its creator again.
+      //
+      // Scoped to apps that are *gaining* the grant. An app that already has
+      // it without a service account predates this rule, and refusing here
+      // would mean it could not be renamed until it was migrated, which
+      // punishes the wrong thing.
+      const gainingClientCredentials =
+        data.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS) &&
+        !app.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS)
+
+      if (gainingClientCredentials && !app.tokenIdentityUserId) {
+        throw new BadRequestError(
+          'Point this application at a service account before allowing ' +
+            'client_credentials. Without one its tokens would act as whoever ' +
+            'created it.',
+        )
+      }
     }
 
     const previousScopes = [...app.allowedScopes]

@@ -15,6 +15,7 @@ import {
 } from '../../../../src/libs/errors/oauth.errors'
 import { NotFoundError, BadRequestError } from '../../../../src/libs/errors/http.errors'
 import { PAT_APP_CLIENT_ID_PREFIX, SERVICE_TOKEN_APP_CLIENT_ID_PREFIX, FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
+import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 describe('OAuthAppService', () => {
@@ -51,6 +52,131 @@ describe('OAuthAppService', () => {
 
   afterEach(() => {
     sinon.restore()
+  })
+
+  /**
+   * An app that allows client_credentials must name the service account its
+   * tokens act as.
+   *
+   * That grant has no person in it, so without a service account the app
+   * falls back to whoever created it — and an app created by an
+   * administrator would carry administrator rights for as long as it exists,
+   * with nothing on screen saying so. Required at creation rather than
+   * offered, because a safety step nobody is asked about is one almost nobody
+   * takes.
+   */
+  describe('client_credentials requires a service account', () => {
+    const serviceAccountId = new Types.ObjectId().toString()
+
+    function stubServiceAccount(doc: unknown) {
+      return sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({ exec: sinon.stub().resolves(doc) }),
+        }),
+      } as any)
+    }
+
+    it('refuses to create one without a service account', async () => {
+      const createStub = sinon.stub(OAuthApp, 'create')
+
+      let message = ''
+      try {
+        await service.createApp(fakeOrgId, fakeUserId, true, {
+          name: 'Nightly export',
+          allowedScopes: ['org:read'],
+          allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+        })
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        message = error.message ?? ''
+      }
+
+      expect(message).to.contain('service account')
+      // Nothing was written: the refusal comes before the app exists.
+      expect(createStub.called).to.equal(false)
+    })
+
+    it('creates one bound to the service account it was given', async () => {
+      stubServiceAccount({ isDisabled: false })
+      const createStub = sinon
+        .stub(OAuthApp, 'create')
+        .resolves({ _id: new Types.ObjectId(), slug: 'x' } as any)
+
+      await service.createApp(fakeOrgId, fakeUserId, true, {
+        name: 'Nightly export',
+        allowedScopes: ['org:read'],
+        allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+        tokenIdentityUserId: serviceAccountId,
+      })
+
+      const args = createStub.firstCall.args[0] as any
+      expect(String(args.tokenIdentityUserId)).to.equal(serviceAccountId)
+      // And not the creator, which is the whole point.
+      expect(String(args.tokenIdentityUserId)).to.not.equal(fakeUserId)
+    })
+
+    it('refuses a disabled service account', async () => {
+      stubServiceAccount({ isDisabled: true })
+      const createStub = sinon.stub(OAuthApp, 'create')
+
+      let message = ''
+      try {
+        await service.createApp(fakeOrgId, fakeUserId, true, {
+          name: 'Nightly export',
+          allowedScopes: ['org:read'],
+          allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+          tokenIdentityUserId: serviceAccountId,
+        })
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        message = error.message ?? ''
+      }
+
+      expect(message).to.contain('disabled')
+      expect(createStub.called).to.equal(false)
+    })
+
+    it('refuses a colleague\'s user id, not just a missing one', async () => {
+      // `kind: 'service'` is part of the lookup, so an ordinary user simply
+      // is not found. Without that, this would be a way to make an app's
+      // tokens act as a named person.
+      stubServiceAccount(null)
+      const createStub = sinon.stub(OAuthApp, 'create')
+
+      let message = ''
+      try {
+        await service.createApp(fakeOrgId, fakeUserId, true, {
+          name: 'Nightly export',
+          allowedScopes: ['org:read'],
+          allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+          tokenIdentityUserId: new Types.ObjectId().toString(),
+        })
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        message = error.message ?? ''
+      }
+
+      expect(message).to.contain('Service account not found')
+      expect(createStub.called).to.equal(false)
+    })
+
+    it('leaves authorization_code apps alone', async () => {
+      const createStub = sinon
+        .stub(OAuthApp, 'create')
+        .resolves({ _id: new Types.ObjectId(), slug: 'x' } as any)
+
+      // No service account, and no complaint: this grant acts as the person
+      // who authorised it, so there is nothing to inherit.
+      await service.createApp(fakeOrgId, fakeUserId, true, {
+        name: 'A normal app',
+        allowedScopes: ['org:read'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE],
+        redirectUris: ['https://example.com/cb'],
+      })
+
+      const args = createStub.firstCall.args[0] as any
+      expect(args.tokenIdentityUserId).to.equal(undefined)
+    })
   })
 
   describe('createApp', () => {
