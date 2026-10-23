@@ -4885,10 +4885,27 @@ class TestPeopleEmailUniqueIndex:
 
 class TestEnsureIndexes:
     @pytest.mark.asyncio
-    async def test_calls_ensure_persistent_index(self, connected_provider):
+    async def test_registers_each_index_once(self, connected_provider):
+        """A total count broke whenever two PRs each added an index, and said nothing
+        about which one; a definition repeated by mistake is the error worth catching."""
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 78
+        keys = [
+            (c.args[0], tuple(c.args[1]))
+            for c in connected_provider.http_client.ensure_persistent_index.await_args_list
+        ]
+        assert keys
+        assert [k for k in set(keys) if keys.count(k) > 1] == []
+
+    @pytest.mark.asyncio
+    async def test_registers_the_parent_lookup_index(self, connected_provider) -> None:
+        """get_records_by_parent runs once per synced record and filters on these two fields."""
+        connected_provider.http_client.ensure_persistent_index = AsyncMock()
+        await connected_provider._ensure_indexes()
+        assert any(
+            c.args[:2] == ("records", ["externalParentId", "connectorId"])
+            for c in connected_provider.http_client.ensure_persistent_index.await_args_list
+        )
 
     @pytest.mark.asyncio
     async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
@@ -4907,8 +4924,7 @@ class TestEnsureIndexes:
     async def test_block_indexes_cover_every_query_shape(self, connected_provider) -> None:
         """Each of these backs a query that is otherwise a full collection scan.
 
-        The bare count above fails on any index change without saying which one;
-        this names them, so removing one is distinguishable from adding one.
+        Named rather than counted, so removing one is distinguishable from adding one.
         """
         from app.config.constants.arangodb import CollectionNames
 
@@ -7040,10 +7056,23 @@ class TestEnsureIndexesExtended:
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
         calls = connected_provider.http_client.ensure_persistent_index.await_args_list
-        assert len(calls) == 78
         assert sum(1 for c in calls if c.args[0] == "namedEntities") == 3
         assert sum(1 for c in calls if c.args[0] == "valueMentions") == 6
-        assert sum(1 for c in calls if c.args[0] == "stageStates") == 4
+
+    @pytest.mark.asyncio
+    async def test_stage_state_indexes_match_the_pipeline_schema(self, connected_provider):
+        """ensure_pipeline_schema creates the same stage-state indexes on its own, and
+        each one is written out in both places, so the two lists can drift apart."""
+        index = connected_provider.http_client.ensure_persistent_index = AsyncMock()
+
+        await connected_provider._ensure_indexes()
+        from_schema = [c for c in index.await_args_list if c.args[0] == "stageStates"]
+        index.reset_mock()
+        await connected_provider.ensure_pipeline_schema()
+        from_pipeline = [c for c in index.await_args_list if c.args[0] == "stageStates"]
+
+        assert from_pipeline
+        assert from_schema == from_pipeline
 
 
 # ---------------------------------------------------------------------------
