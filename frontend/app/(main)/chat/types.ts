@@ -669,6 +669,43 @@ export interface ChatCitation {
  * More detailed than ChatCitation - this is the raw backend format.
  * Transformed to ChatSource for display via loadHistoricalMessages().
  */
+/** What a viewer needs to ask for a source redacted from a shared chat. */
+export interface RequestAccessInfo {
+  recordId: string;
+  /** native: the owner approves in PipesHub. connector: ask at the source. */
+  kind: 'native' | 'connector';
+  /** Connector only: the record's page in its source system. */
+  sourceUrl?: string;
+  /** Collection record: asking is asking for the whole collection that contains it. */
+  collection?: boolean;
+  endpoint: string;
+}
+
+/** A citation the viewer may not read: no text, name or URL. */
+export interface RedactedCitationApiResponse {
+  citationId: string;
+  redacted: true;
+  reason: 'no_access';
+  requestAccess: RequestAccessInfo;
+}
+
+/** An attachment the viewer may not read: id and request info only. */
+export interface RedactedAttachmentApiRef {
+  recordId: string;
+  redacted: true;
+  reason: 'no_access';
+  requestAccess: RequestAccessInfo;
+}
+
+/** Set on a message of a shared chat when some of its sources are unreadable to the viewer. */
+export interface MessageRedaction {
+  /** Every cited source is unreadable and `content` is empty. */
+  redacted: boolean;
+  /** Some sentences were replaced by the redaction token. */
+  partial: boolean;
+  reason: 'no_access';
+}
+
 export interface CitationApiResponse {
   citationId: string;
   citationData: {
@@ -840,7 +877,10 @@ export interface ConversationMessage {
   messageType: 'user_query' | 'bot_response' | 'tool_call' | 'error';
   content: string;
   contentFormat: 'MARKDOWN';
-  citations: CitationApiResponse[];
+  citations: Array<CitationApiResponse | RedactedCitationApiResponse>;
+  redaction?: MessageRedaction;
+  /** Tool results, reasoning and the activity transcript were dropped for this shared viewer. */
+  detailsHidden?: boolean;
   confidence?: 'Very High' | 'High' | 'Medium' | 'Low';
   followUpQuestions: string[];
   referenceData: ReferenceData[];
@@ -850,7 +890,7 @@ export interface ConversationMessage {
   feedback: Record<string, unknown>[];
   appliedFilters?: AppliedFilters;
   /** File attachments uploaded with this user query (PDF / JPEG / PNG). */
-  attachments?: AttachmentRef[];
+  attachments?: Array<AttachmentRef | RedactedAttachmentApiRef>;
   tools?: ToolCallEntry[];
   /** Present only when the org has reasoning persistence enabled server-side. */
   reasoning?: ReasoningTurn[];

@@ -9523,6 +9523,7 @@ components:
             anyOf:
               - $ref: '#/components/schemas/CitationReference'
               - $ref: '#/components/schemas/PopulatedCitationReference'
+              - $ref: '#/components/schemas/RedactedCitationReference'
           description: |
             References to source documents used in the response. Routes that
             return the saved conversation after a turn (create, add message)
@@ -9604,7 +9605,14 @@ components:
             Files uploaded for this message turn (see
             `POST /conversations/attachments/upload`).
           items:
-            $ref: '#/components/schemas/ChatAttachmentRef'
+            anyOf:
+              - $ref: '#/components/schemas/ChatAttachmentRef'
+              - $ref: '#/components/schemas/RedactedAttachmentRef'
+        redaction:
+          $ref: '#/components/schemas/MessageRedaction'
+        detailsHidden:
+          type: boolean
+          description: Tool results, reasoning and the activity transcript were dropped because the viewer is not the chat's author.
         tools:
           type: array
           description: Tool call results invoked during this message turn.
@@ -9647,6 +9655,125 @@ components:
         context:
           type: string
           description: Additional context around the citation
+
+    RequestAccessInfo:
+      type: object
+      additionalProperties: false
+      description: |
+        What a viewer needs to ask for a redacted source. For a `native` record
+        (uploaded to PipesHub) `POST {endpoint}` with `{ "recordId" }` asks the
+        owner. For a `connector` record nothing is granted in PipesHub: open
+        `sourceUrl` (when present) to ask in the source system; the grant
+        arrives through the next permission sync.
+      required: [recordId, kind, endpoint]
+      properties:
+        recordId:
+          type: string
+        kind:
+          type: string
+          enum: [native, connector]
+        sourceUrl:
+          type: string
+          description: Connector records only. The record's page in its source system.
+        collection:
+          type: boolean
+          description: |
+            Record of a collection (knowledge base): access exists only at the
+            collection, so asking means asking for read access to the whole
+            collection that contains it. The collection's name and owners are
+            never sent to a viewer who cannot read it.
+        endpoint:
+          type: string
+          example: /api/v1/access-requests
+
+    RedactedCitationReference:
+      type: object
+      additionalProperties: false
+      description: |
+        A citation the viewer may not read, in a chat or search shared with them.
+        It carries no text, name or URL of the source.
+      required: [citationId, redacted, reason, requestAccess]
+      properties:
+        citationId:
+          type: string
+          format: objectId
+        redacted:
+          type: boolean
+          enum: [true]
+        reason:
+          type: string
+          enum: [no_access]
+        requestAccess:
+          $ref: '#/components/schemas/RequestAccessInfo'
+
+    RedactedAttachmentRef:
+      type: object
+      additionalProperties: false
+      description: An attachment the viewer may not read. No name or type is included.
+      required: [recordId, redacted, reason, requestAccess]
+      properties:
+        recordId:
+          type: string
+        redacted:
+          type: boolean
+          enum: [true]
+        reason:
+          type: string
+          enum: [no_access]
+        requestAccess:
+          $ref: '#/components/schemas/RequestAccessInfo'
+
+    MessageRedaction:
+      type: object
+      additionalProperties: false
+      description: |
+        Present on a message in a shared chat when the viewer cannot read some of
+        its sources. `redacted: true`: every cited source is unreadable and
+        `content` is empty. Otherwise `partial: true`: sentences cited only by
+        unreadable sources are replaced by `{{redacted}}`, and the answer is
+        "partially based on sources you can't access". Absent when the viewer
+        can read every source, and for the chat's author. Separately, for ANY
+        viewer who is not the author `tools`, `reasoning`, `parts` and
+        `referenceData` are omitted and the message carries `detailsHidden: true`.
+      required: [redacted, partial, reason]
+      properties:
+        redacted:
+          type: boolean
+        partial:
+          type: boolean
+        reason:
+          type: string
+          enum: [no_access]
+
+    AccessRequest:
+      type: object
+      additionalProperties: false
+      required: [id, recordId, kind, status, requesterId, createdAt]
+      properties:
+        id:
+          type: string
+          format: objectId
+        recordId:
+          type: string
+        recordName:
+          type: string
+          description: Only in owner-facing responses (inbox, approve). Never returned to the requester.
+        collectionName:
+          type: string
+          description: Only in owner-facing responses. Set when the record belongs to a collection; the request is then for the whole collection.
+        kind:
+          type: string
+          enum: [native, connector]
+        status:
+          type: string
+          enum: [pending, approved, denied, forwarded]
+          description: '`forwarded`: a connector record; the owner was told and the viewer sent to the source.'
+        requesterId:
+          type: string
+          format: objectId
+        createdAt:
+          type: string
+          format: date-time
 
     PopulatedCitationReference:
       type: object
@@ -11868,7 +11995,34 @@ components:
         citationIds:
           type: array
           items:
-            $ref: '#/components/schemas/PersistedSemanticSearchCitation'
+            anyOf:
+              - $ref: '#/components/schemas/PersistedSemanticSearchCitation'
+              - type: object
+                additionalProperties: false
+                description: A hit the viewer may not read (search shared with them). No text, name or URL.
+                required: [_id, redacted, reason, requestAccess]
+                properties:
+                  _id:
+                    type: string
+                    format: objectId
+                  redacted:
+                    type: boolean
+                    enum: [true]
+                  reason:
+                    type: string
+                    enum: [no_access]
+                  requestAccess:
+                    $ref: '#/components/schemas/RequestAccessInfo'
+        redaction:
+          type: object
+          additionalProperties: false
+          description: Present when this search is shared with the caller and some hits are unreadable to them.
+          properties:
+            redacted:
+              type: boolean
+            reason:
+              type: string
+              enum: [no_access]
         records:
           type: object
           description: |
@@ -14555,7 +14709,14 @@ components:
         citations:
           type: array
           items:
-            $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+            anyOf:
+              - $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+              - $ref: '#/components/schemas/RedactedCitationReference'
+        redaction:
+          $ref: '#/components/schemas/MessageRedaction'
+        detailsHidden:
+          type: boolean
+          description: Tool results, reasoning and the activity transcript were dropped because the viewer is not the chat's author.
         confidence:
           type: string
           enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
@@ -36629,6 +36790,218 @@ paths:
         '401':
           description: Unauthorized — valid bearer token required.
 
+  # -------------------- Access requests --------------------
+  /access-requests:
+    post:
+      tags:
+        - Conversations
+      summary: Request access to a redacted source
+      description: |
+        Ask for a record that was redacted from a chat or search shared with you.
+        Org-scoped and limited to 20 requests per user per hour. The record's kind
+        and owner come from the server.
+
+        - **Native** record (uploaded to PipesHub): a `pending` request is stored and
+          the owners are notified; any of them can approve or deny. A record of a
+          collection (knowledge base) is reachable only through the collection, so
+          the request is addressed to the collection's owners and approval gives you
+          read access to the **whole collection**. Refresh the shared chat to see the source.
+        - **Connector** record: nothing is granted in PipesHub. The request is
+          stored as `forwarded`, the owner is notified and `sourceUrl` links to the
+          record in its source system. Access arrives through the next permission sync.
+
+        A repeat request for the same record (or the same collection) returns the open one with `duplicate: true`.
+      operationId: createAccessRequest
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [recordId]
+              properties:
+                recordId:
+                  type: string
+      responses:
+        '200':
+          description: Already requested (`duplicate`), or you can already read the record (`alreadyAccessible`).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  request:
+                    $ref: '#/components/schemas/AccessRequest'
+                  duplicate:
+                    type: boolean
+                  alreadyAccessible:
+                    type: boolean
+        '201':
+          description: Request created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request]
+                properties:
+                  request:
+                    $ref: '#/components/schemas/AccessRequest'
+                  sourceUrl:
+                    type: string
+                    description: Connector records only.
+        '400':
+          description: Invalid `recordId`.
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '404':
+          description: The record does not exist in your organization.
+        '409':
+          description: Nobody can approve access to this record.
+        '429':
+          description: Too many access requests. Try again later.
+    get:
+      tags:
+        - Conversations
+      summary: List access requests addressed to you
+      description: Pending requests for native records you own, newest first (up to 100).
+      operationId: listAccessRequests
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      responses:
+        '200':
+          description: Pending requests.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requests]
+                properties:
+                  requests:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AccessRequest'
+        '401':
+          description: Unauthorized — valid bearer token required.
+
+  /access-requests/{requestId}:
+    get:
+      tags:
+        - Conversations
+      summary: Get an access request
+      description: An owner who may decide the request reads its state (for example to show it was already decided). Others get 404.
+      operationId: getAccessRequest
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: The request.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request]
+                properties:
+                  request:
+                    $ref: '#/components/schemas/AccessRequest'
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '404':
+          description: Access request not found.
+
+  /access-requests/{requestId}/approve:
+    post:
+      tags:
+        - Conversations
+      summary: Approve an access request
+      description: |
+        Owner of the record or collection only. For a collection record this grants the
+        requester read access to the whole collection; notifies them. Fails with `409` if the grant does not take effect or the
+        request was already decided; `400` for a connector request.
+      operationId: approveAccessRequest
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Approved.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request]
+                properties:
+                  request:
+                    $ref: '#/components/schemas/AccessRequest'
+        '400':
+          description: Connector requests are granted in their source system.
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Only an owner of the record or collection can decide this request.
+        '404':
+          description: Access request not found.
+        '409':
+          description: Already decided, or access could not be granted.
+
+  /access-requests/{requestId}/deny:
+    post:
+      tags:
+        - Conversations
+      summary: Deny an access request
+      description: Owner only. Marks a native request denied and notifies the requester.
+      operationId: denyAccessRequest
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: Denied.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request]
+                properties:
+                  request:
+                    $ref: '#/components/schemas/AccessRequest'
+        '400':
+          description: Connector requests are granted in their source system.
+        '401':
+          description: Unauthorized — valid bearer token required.
+        '403':
+          description: Only an owner of the record or collection can decide this request.
+        '404':
+          description: Access request not found.
+        '409':
+          description: Already decided.
+
   # -------------------- Semantic Search --------------------
   /search:
     post:
@@ -37082,6 +37455,10 @@ paths:
         persisted search document. An unknown id returns an empty array
         with a `200` status — callers should check array length rather
         than relying on a `404`.
+
+        For a search shared with you, hits from records you cannot read come back
+        as `{ _id, redacted: true, reason, requestAccess }` with no text, and
+        `records` lists only the records you can read.
       operationId: getSearchById
       x-pipeshub-sdk: true
       security:

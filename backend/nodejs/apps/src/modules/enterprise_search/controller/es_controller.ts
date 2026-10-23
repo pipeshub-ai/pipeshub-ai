@@ -125,6 +125,12 @@ import {
 } from '../constants/constants';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
+import {
+  conversationForAuthorOnly,
+  redactConversationFor,
+  redactMessagesFor,
+  redactSearchesFor,
+} from '../utils/viewer-redaction';
 import { validateNoFormatSpecifiers } from '../../../utils/xss-sanitization';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import {
@@ -1475,10 +1481,19 @@ export const addMessageStream =
       const confirmedConversation = existingConversation as IChatSessionDocument;
 
       // Format previous conversations for context (excluding the user message we just added)
-      const allMessagesSoFar = (await getMessages(
-        confirmedConversation._id as mongoose.Types.ObjectId,
-        { orgId: confirmedConversation.orgId },
-        session,
+      // A write-shared viewer's model history is redacted for them like any other
+      // view of the author's messages, or the model could repeat hidden content.
+      const isAuthor =
+        confirmedConversation.initiator?.toString() === String(userId);
+      const allMessagesSoFar = (await redactMessagesFor(
+        appConfig,
+        await getMessages(
+          confirmedConversation._id as mongoose.Types.ObjectId,
+          { orgId: confirmedConversation.orgId, populateCitations: !isAuthor },
+          session,
+        ),
+        confirmedConversation.initiator?.toString(),
+        { userId: String(userId), orgId: String(orgId) },
       )) as IMessage[];
       const previousConversations = formatPreviousConversations(
         allMessagesSoFar.slice(0, -1),
@@ -1867,11 +1882,15 @@ export const addMessageStream =
               }
 
               // Return the updated conversation in the same format as addMessage
-              const responseConversation = await attachPopulatedCitations(
-                updatedConversation.toObject(),
-                [insertedAiMessage!.toObject()],
-                savedCitations,
-                session,
+              const responseConversation = await redactConversationFor(
+                appConfig,
+                await attachPopulatedCitations(
+                  updatedConversation.toObject(),
+                  [insertedAiMessage!.toObject()],
+                  savedCitations,
+                  session,
+                ),
+                { userId: String(userId), orgId: String(orgId) },
               );
 
               // Send the final conversation data in the same format as addMessage
@@ -2115,6 +2134,7 @@ export const getAllConversations = async (
       contentMatchIds = await findSessionIdsMatchingContent(
         orgId,
         escapedSearch,
+        String(userId),
       );
     }
     const accessibleProjectIds = !isOwned
@@ -2347,6 +2367,7 @@ export const getConversationById =
       contentMatchIds = await findSessionIdsMatchingContent(
         orgId,
         escapedSearch,
+        String(userId),
       );
     }
     const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
@@ -2461,11 +2482,16 @@ export const getConversationById =
     const conversationWithMessages = attachMessages(session, messages);
 
     // Sort messages using existing helper
-    const sortedMessages = sortMessages(
-      (conversationWithMessages?.messages ||
-        []) as unknown as IMessageDocument[],
-      messageSortOptions as { field: keyof IMessage },
-    );
+    const sortedMessages = (await redactMessagesFor(
+      appConfig,
+      sortMessages(
+        (conversationWithMessages?.messages ||
+          []) as unknown as IMessageDocument[],
+        messageSortOptions as { field: keyof IMessage },
+      ),
+      initiatorId,
+      { userId, orgId },
+    )) as unknown as IMessageDocument[];
 
     const conversationResponse = await attachSharedByIfRecipient(
       buildConversationResponse(
@@ -3903,7 +3929,7 @@ async function regenerateAnswersInternal(
               Boolean(askUserQuestionPayload) ||
               completeData.status === 'waiting_input');
           if (answeredEdit) await saveEditedQuestion();
-          const { conversation: responseConversation, savedCitations } =
+          const { conversation: regeneratedConversation, savedCitations } =
             await handleRegenerationSuccess(
               completeData,
               existingConversation,
@@ -3915,7 +3941,7 @@ async function regenerateAnswersInternal(
               staleAskToolCallIds,
             );
           if (await dropReplacedTurn()) {
-            const shown = responseConversation as {
+            const shown = regeneratedConversation as {
               messages: Array<{ _id?: unknown }>;
             };
             const gone = new Set(replacedTurnIds.map(String));
@@ -3923,6 +3949,12 @@ async function regenerateAnswersInternal(
               (row) => !gone.has(String(row._id)),
             );
           }
+
+          const responseConversation = await redactConversationFor(
+            appConfig,
+            regeneratedConversation,
+            { userId: String(userId), orgId: String(orgId) },
+          );
 
           // Send final response event with the complete conversation data
           sendSSECompleteEvent(
@@ -3974,7 +4006,7 @@ async function regenerateAnswersInternal(
                 res,
                 errorMessage,
                 undefined,
-                plainConversation,
+                conversationForAuthorOnly(plainConversation, String(userId)),
                 protocol,
               );
             } else {
@@ -4036,7 +4068,7 @@ async function regenerateAnswersInternal(
                 res,
                 errorMessage,
                 dbError.message,
-                plainConversation,
+                conversationForAuthorOnly(plainConversation, String(userId)),
                 protocol,
               );
             } else {
@@ -4099,6 +4131,7 @@ async function regenerateAnswersInternal(
           requestId || '',
           'stream_error',
           protocol,
+          String(userId),
         );
       } catch (dbError: any) {
         logger.error('Failed to replace message with error', {
@@ -4143,6 +4176,7 @@ async function regenerateAnswersInternal(
         requestId || '',
         'regeneration_error',
         protocol,
+        String(userId),
       );
     } catch (dbError: any) {
       logger.error('Failed to mark conversation as failed in catch block', {
@@ -5070,6 +5104,7 @@ export const listAllArchivesConversation = async (
       contentMatchIds = await findSessionIdsMatchingContent(
         orgId,
         escapedSearch,
+        String(userId),
       );
     }
     const filter = {
@@ -5230,6 +5265,7 @@ export const searchArchivedConversations =
     const contentMatchIds = await findSessionIdsMatchingContent(
       orgId,
       escapedSearch,
+      String(userId),
     );
     const titleOrContentMatch = {
       $or: [
@@ -5493,11 +5529,9 @@ export const search =
     }
   };
 
-export const searchHistory = async (
-  req: AuthenticatedUserRequest,
-  res: Response,
-  next: NextFunction,
-) => {
+export const searchHistory =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
 
@@ -5527,8 +5561,15 @@ export const searchHistory = async (
       ),
     ]);
 
+    // Searches shared with the caller are listed too: redact them like the by-id read.
+    const plain = searchHistory.map((doc: any) =>
+      typeof doc.toJSON === 'function' ? doc.toJSON() : doc,
+    );
     const response = {
-      searchHistory: searchHistory,
+      searchHistory: await redactSearchesFor(appConfig, plain, {
+        userId,
+        orgId,
+      }),
       pagination: buildPaginationMetadata(totalCount, page, limit),
       filters: buildFiltersMetadata(filter, req.query),
       meta: {
@@ -5548,11 +5589,9 @@ export const searchHistory = async (
   }
 };
 
-export const getSearchById = async (
-  req: AuthenticatedUserRequest,
-  res: Response,
-  next: NextFunction,
-) => {
+export const getSearchById =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
   const requestId = req.context?.requestId;
   const searchId = req.params.searchId;
 
@@ -5578,7 +5617,11 @@ export const getSearchById = async (
       throw new NotFoundError('Search Id not found');
     }
 
-    res.status(HTTP_STATUS.OK).json(search);
+    // A search shared with this user holds the author's hits: show only the
+    // ones this user can read.
+    res
+      .status(HTTP_STATUS.OK)
+      .json(await redactSearchesFor(appConfig, search, { userId, orgId }));
   } catch (error: any) {
     logger.error('Error getting search by ID', {
       requestId,
@@ -7248,10 +7291,19 @@ export const addMessageStreamToAgentConversation =
       const confirmedConversation = existingConversation as IChatSessionDocument;
 
       // Format previous conversations for context (excluding the user message we just added)
-      const allMessagesSoFar = (await getMessages(
-        confirmedConversation._id as mongoose.Types.ObjectId,
-        { orgId: confirmedConversation.orgId },
-        session,
+      // A write-shared viewer's model history is redacted for them like any other
+      // view of the author's messages, or the model could repeat hidden content.
+      const isAuthor =
+        confirmedConversation.initiator?.toString() === String(userId);
+      const allMessagesSoFar = (await redactMessagesFor(
+        appConfig,
+        await getMessages(
+          confirmedConversation._id as mongoose.Types.ObjectId,
+          { orgId: confirmedConversation.orgId, populateCitations: !isAuthor },
+          session,
+        ),
+        confirmedConversation.initiator?.toString(),
+        { userId: String(userId), orgId: String(orgId) },
       )) as IMessage[];
       const previousConversations = formatPreviousConversations(
         allMessagesSoFar.slice(0, -1),
@@ -7639,11 +7691,15 @@ export const addMessageStreamToAgentConversation =
               }
 
               // Return the updated conversation in the same format as addMessage
-              const responseConversation = await attachPopulatedCitations(
-                updatedConversation.toObject(),
-                [insertedAiMessage!.toObject()],
-                savedCitations,
-                session,
+              const responseConversation = await redactConversationFor(
+                appConfig,
+                await attachPopulatedCitations(
+                  updatedConversation.toObject(),
+                  [insertedAiMessage!.toObject()],
+                  savedCitations,
+                  session,
+                ),
+                { userId: String(userId), orgId: String(orgId) },
               );
 
               // Send the final conversation data in the same format as addMessage
@@ -7963,6 +8019,7 @@ export const getAllAgentConversations = async (
       contentMatchIds = await findSessionIdsMatchingContent(
         orgId,
         escapedSearch,
+        String(userId),
       );
     }
     const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
@@ -8102,6 +8159,7 @@ const getAgentConversationByIdOf = async (
       contentMatchIds = await findSessionIdsMatchingContent(
         orgId,
         escapedSearch,
+        String(userId),
       );
     }
     const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
@@ -8212,11 +8270,16 @@ const getAgentConversationByIdOf = async (
     const conversationWithMessages = attachMessages(session, messages);
 
     // Sort messages using existing helper
-    const sortedMessages = sortMessages(
-      (conversationWithMessages?.messages ||
-        []) as unknown as IMessageDocument[],
-      messageSortOptions as { field: keyof IMessage },
-    );
+    const sortedMessages = (await redactMessagesFor(
+      appConfig,
+      sortMessages(
+        (conversationWithMessages?.messages ||
+          []) as unknown as IMessageDocument[],
+        messageSortOptions as { field: keyof IMessage },
+      ),
+      session.initiator?.toString(),
+      { userId, orgId },
+    )) as unknown as IMessageDocument[];
 
     // Build conversation response using existing helper
     const builtResponse = buildConversationResponse(
@@ -8566,6 +8629,7 @@ export const listAllArchivesAgentConversation = () =>
       contentMatchIds = await findSessionIdsMatchingContent(
         orgId,
         escapedSearch,
+        String(userId),
       );
     }
     const filter = {

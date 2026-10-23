@@ -2151,14 +2151,14 @@ describe('Enterprise Search Utils', () => {
       stubUpdateMessageById({ _id: messageId, sessionId, orgId: 'org-1', seq: 2 })
       sinon.stub(ChatSession, 'findById').resolves({
         _id: sessionId,
-        toObject: () => ({ _id: sessionId, title: 'Test' }),
+        toObject: () => ({ _id: sessionId, initiator: 'author-1', title: 'Test' }),
       })
       stubGetMessagesChain([
         { _id: messageId, content: 'Regeneration failed', messageType: 'error' },
       ])
 
       await handleRegenerationError(
-        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'regen_error'
+        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'regen_error', undefined, 'author-1'
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -4147,9 +4147,11 @@ describe('chatSessions helpers', () => {
   it('findSessionIdsMatchingContent groups by sessionId and honours the cap', async () => {
     const sid = new mongoose.Types.ObjectId()
     const agg = sinon.stub(ChatSessionMessage, 'aggregate').resolves([{ _id: sid }])
-    const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', 10)
+    const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', VALID_OID, 10)
     expect(ids).to.deep.equal([sid])
     expect(agg.firstCall.args[0][2]).to.deep.equal({ $limit: 10 })
+    // Content search covers only chats the searcher authored (no oracle on shared chats).
+    expect(String((agg.firstCall.args[0][4] as any).$match['session.initiator'])).to.equal(VALID_OID)
   })
 
   // -----------------------------------------------------------------------

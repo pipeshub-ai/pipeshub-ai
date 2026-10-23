@@ -1,5 +1,5 @@
 import type { AppliedFilters, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, MessagePart } from '../../types';
-import type { ConfidenceLevel, ModelInfo } from '../../types';
+import type { ConfidenceLevel, ModelInfo, RequestAccessInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import type { ChatStreamErrorInfo } from '../../stream-error';
 
@@ -21,6 +21,8 @@ export interface MessagePair {
   createdAt?: string;
   /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** Attachments of this query the viewer may not read (shared chats). */
+  redactedAttachments?: RequestAccessInfo[];
   /** Persisted ask_user_question payload from a historical tool_call (read-only display) */
   persistedAskUserQuestion?: AskUserQuestionPayload;
   persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
@@ -61,6 +63,7 @@ type UserCustom = {
   appliedFilters?: AppliedFilters;
   createdAt?: string;
   attachments?: AttachmentRef[];
+  redactedAttachments?: RequestAccessInfo[];
 };
 
 export interface BuildMessagePairsOptions {
@@ -183,6 +186,7 @@ export function buildMessagePairs(
         appliedFilters: userMsgCustom?.appliedFilters,
         createdAt: userMsgCustom?.createdAt,
         attachments: userMsgCustom?.attachments,
+        redactedAttachments: userMsgCustom?.redactedAttachments,
         persistedAskUserQuestion: metadata?.persistedAskUserQuestion,
         persistedAskUserQuestionAnswers: metadata?.persistedAskUserQuestionAnswers,
         persistedParts: metadata?.persistedParts,

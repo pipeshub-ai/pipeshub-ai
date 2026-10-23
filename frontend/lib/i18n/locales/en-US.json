@@ -396,7 +396,22 @@
     "filterTooltip": "Filter: {{filter}}",
     "loadFailed": "Failed to load notifications",
     "updateFailed": "Could not update notification",
-    "removeFailed": "Could not remove notification"
+    "removeFailed": "Could not remove notification",
+    "accessRequest": {
+      "approve": "Approve",
+      "deny": "Deny",
+      "approved": "Access granted",
+      "denied": "Request declined",
+      "failed": "Couldn't save your decision. Please try again.",
+      "approveTitle": "Approve access?",
+      "approveBodyCollection": "This gives {{user}} read access to the whole collection “{{name}}”.",
+      "approveBodyRecord": "This gives {{user}} read access to this record.",
+      "cancel": "Cancel",
+      "alreadyDecided": "This request was already decided.",
+      "someone": "Someone",
+      "alreadyApproved": "Already approved",
+      "alreadyDeclined": "Already declined"
+    }
   },
   "action": {
     "find": "Find",
@@ -1469,7 +1484,20 @@
       "download": "Download artifact",
       "downloading": "Downloading artifact"
     },
-    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too."
+    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
+    "redaction": {
+      "partial": "This answer is partially based on sources you can't access.",
+      "hidden": "This answer is based on sources you can't access.",
+      "sourceLabel": "Source you can't access",
+      "requestAccess": "Request access",
+      "requested": "Access requested",
+      "requestFailed": "Couldn't send the request. Please try again.",
+      "openInSource": "Open in source",
+      "inlineHidden": "Hidden: you don't have access",
+      "alreadyAccessible": "You can already open this source. Refresh the chat.",
+      "detailsHidden": "Details such as tool results and reasoning are hidden for shared viewers.",
+      "collectionLabel": "Request access to the collection that contains this source"
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",

@@ -396,7 +396,22 @@
     "filterTooltip": "筛选：{{filter}}",
     "loadFailed": "加载通知失败",
     "updateFailed": "无法更新通知",
-    "removeFailed": "无法移除通知"
+    "removeFailed": "无法移除通知",
+    "accessRequest": {
+      "approve": "批准",
+      "deny": "拒绝",
+      "approved": "已授予访问权限",
+      "denied": "已拒绝申请",
+      "failed": "无法保存你的决定，请重试。",
+      "approveTitle": "批准访问？",
+      "approveBodyCollection": "这将授予 {{user}} 对整个集合“{{name}}”的读取权限。",
+      "approveBodyRecord": "这将授予 {{user}} 对此记录的读取权限。",
+      "cancel": "取消",
+      "alreadyDecided": "此申请已处理。",
+      "someone": "有人",
+      "alreadyApproved": "已批准",
+      "alreadyDeclined": "已拒绝"
+    }
   },
   "action": {
     "find": "查找",
@@ -1465,7 +1480,20 @@
       "download": "下载产物",
       "downloading": "正在下载产物"
     },
-    "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。"
+    "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。",
+    "redaction": {
+      "partial": "此回答部分基于你无权访问的来源。",
+      "hidden": "此回答基于你无权访问的来源。",
+      "sourceLabel": "你无权访问的来源",
+      "requestAccess": "申请访问",
+      "requested": "已申请访问",
+      "requestFailed": "无法发送申请，请重试。",
+      "openInSource": "在来源中打开",
+      "inlineHidden": "已隐藏：你没有访问权限",
+      "alreadyAccessible": "你现在可以打开此来源，请刷新对话。",
+      "detailsHidden": "工具结果和推理等详情对共享查看者隐藏。",
+      "collectionLabel": "申请访问包含此来源的集合"
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",

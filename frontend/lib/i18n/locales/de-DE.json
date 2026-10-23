@@ -314,7 +314,22 @@
     "filterTooltip": "Filter: {{filter}}",
     "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
     "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
-    "removeFailed": "Benachrichtigung konnte nicht entfernt werden"
+    "removeFailed": "Benachrichtigung konnte nicht entfernt werden",
+    "accessRequest": {
+      "approve": "Genehmigen",
+      "deny": "Ablehnen",
+      "approved": "Zugriff gewährt",
+      "denied": "Anfrage abgelehnt",
+      "failed": "Ihre Entscheidung konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
+      "approveTitle": "Zugriff genehmigen?",
+      "approveBodyCollection": "Damit erhält {{user}} Lesezugriff auf die gesamte Sammlung „{{name}}“.",
+      "approveBodyRecord": "Damit erhält {{user}} Lesezugriff auf diesen Datensatz.",
+      "cancel": "Abbrechen",
+      "alreadyDecided": "Diese Anfrage wurde bereits entschieden.",
+      "someone": "Jemand",
+      "alreadyApproved": "Bereits genehmigt",
+      "alreadyDeclined": "Bereits abgelehnt"
+    }
   },
   "action": {
     "find": "Finden",
@@ -1382,7 +1397,20 @@
       "download": "Artefakt herunterladen",
       "downloading": "Artefakt wird heruntergeladen"
     },
-    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht."
+    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
+    "redaction": {
+      "partial": "Diese Antwort basiert teilweise auf Quellen, auf die Sie keinen Zugriff haben.",
+      "hidden": "Diese Antwort basiert auf Quellen, auf die Sie keinen Zugriff haben.",
+      "sourceLabel": "Quelle ohne Zugriff",
+      "requestAccess": "Zugriff anfragen",
+      "requested": "Zugriff angefragt",
+      "requestFailed": "Die Anfrage konnte nicht gesendet werden. Bitte versuchen Sie es erneut.",
+      "openInSource": "In der Quelle öffnen",
+      "inlineHidden": "Ausgeblendet: kein Zugriff",
+      "alreadyAccessible": "Sie können diese Quelle bereits öffnen. Laden Sie den Chat neu.",
+      "detailsHidden": "Details wie Tool-Ergebnisse und Begründungen sind für geteilte Ansichten ausgeblendet.",
+      "collectionLabel": "Zugriff auf die Sammlung anfragen, die diese Quelle enthält"
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",

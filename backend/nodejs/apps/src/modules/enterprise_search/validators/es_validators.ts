@@ -1550,3 +1550,16 @@ export const agentAttachmentUploadSchema = z.object({
 export const agentAttachmentRecordIdParamsSchema = z.object({
   params: z.object({ ...agentKeyParam, ...recordIdParam }),
 });
+
+// ---------------------------------------------------------------------------
+// Access requests (redacted content in shared chats and searches)
+// ---------------------------------------------------------------------------
+export const createAccessRequestSchema = z.object({
+  body: z.object({
+    recordId: z.string().min(1).max(128).regex(/^[\w.:-]+$/, { message: 'Invalid record ID format' }),
+  }),
+});
+
+export const accessRequestIdParamsSchema = z.object({
+  params: z.object({ requestId: objectId('access request ID') }),
+});

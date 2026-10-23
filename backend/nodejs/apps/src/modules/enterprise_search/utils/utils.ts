@@ -42,6 +42,7 @@ import {
   SSEProtocol,
 } from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
+import { conversationForAuthorOnly } from './viewer-redaction';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
@@ -164,6 +165,7 @@ export const validateAndEscapeSearch = (
 export const findSessionIdsMatchingContent = async (
   orgId: string,
   escapedSearch: string,
+  authorUserId: string,
   limit = 10000,
 ): Promise<mongoose.Types.ObjectId[]> => {
   const rows = await ChatSessionMessage.aggregate<{
@@ -177,6 +179,17 @@ export const findSessionIdsMatchingContent = async (
     },
     { $group: { _id: '$sessionId' } },
     { $limit: limit },
+    // Only the author's own chats are searched by content: for a shared viewer a
+    // match would reveal text in answers they may not be allowed to read.
+    {
+      $lookup: {
+        from: ChatSession.collection?.name ?? 'chatsessions',
+        localField: '_id',
+        foreignField: '_id',
+        as: 'session',
+      },
+    },
+    { $match: { 'session.initiator': new mongoose.Types.ObjectId(authorUserId) } },
   ]);
   return rows.map((r) => r._id);
 };
@@ -1543,10 +1556,15 @@ export const buildConversationResponse = (
     messages: messages.map((message) => ({
       ...message,
       citations:
-        message.citations?.map((citation) => ({
-          citationId: citation.citationId?._id,
-          citationData: citation.citationId,
-        })) || [],
+        message.citations?.map((citation) =>
+          // Already viewer-redacted (viewer-redaction.ts): no citationData.
+          (citation as { redacted?: boolean }).redacted
+            ? citation
+            : {
+                citationId: citation.citationId?._id,
+                citationData: citation.citationId,
+              },
+        ) || [],
     })),
     modelInfo: conversation.modelInfo,
     pagination: {
@@ -2884,6 +2902,7 @@ export const handleRegenerationError = async (
   requestId: string,
   errorType: string = 'regeneration_error',
   protocol?: SSEProtocol,
+  viewerUserId?: string,
 ): Promise<void> => {
   const errorMessage = userFacingChatError(error);
 
@@ -2914,7 +2933,8 @@ export const handleRegenerationError = async (
           res,
           errorMessage,
           error.message,
-          plainConversation,
+          // Only the author's client gets the whole conversation back.
+          conversationForAuthorOnly(plainConversation, viewerUserId),
           protocol,
         );
       } else {

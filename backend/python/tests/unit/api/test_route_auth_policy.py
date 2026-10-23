@@ -51,6 +51,8 @@ _SERVICE_TOKEN_ROUTES = {
     ("chatbot", "DELETE", "/chat/attachments/permissions"): {"conversation:permissions"},
     ("chatbot", "POST", "/chat/artifacts/permissions"): {"conversation:permissions"},
     ("chatbot", "DELETE", "/chat/artifacts/permissions"): {"conversation:permissions"},
+    ("chatbot", "POST", "/chat/records/access"): {"conversation:permissions"},
+    ("chatbot", "POST", "/chat/records/access-grant"): {"conversation:permissions"},
     (
         "connectors",
         "GET",

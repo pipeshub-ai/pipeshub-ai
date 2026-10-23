@@ -7,7 +7,12 @@ import type {
   ConnectorConfig,
   CitationOrigin,
 } from './types';
-import type { CitationApiResponse } from '@/chat/types';
+import type {
+  CitationApiResponse,
+  MessageRedaction,
+  RedactedCitationApiResponse,
+  RequestAccessInfo,
+} from '@/chat/types';
 
 // ---------------------------------------------------------------------------
 // Connector configuration (delegates to centralized ConnectorIcon mapping)
@@ -75,14 +80,21 @@ export function getConnectorConfig(connector: string, instanceName?: string): Co
 // ---------------------------------------------------------------------------
 
 export function buildCitationMapsFromApi(
-  rawCitations: CitationApiResponse[]
+  rawCitations: Array<CitationApiResponse | RedactedCitationApiResponse>,
+  redaction?: MessageRedaction,
+  detailsHidden?: boolean,
 ): CitationMaps {
   const citations: Record<string, CitationData> = {};
   const sources: Record<string, string> = {};
   const sourcesOrder: string[] = [];
   const citationsOrder: Record<number, string> = {};
+  const redactedSources = new Map<string, RequestAccessInfo>();
 
   for (const raw of rawCitations) {
+    if ('redacted' in raw) {
+      redactedSources.set(raw.requestAccess.recordId, raw.requestAccess);
+      continue;
+    }
     const citationId = raw.citationId;
     const data = raw.citationData;
     if (!data) continue;
@@ -123,7 +135,14 @@ export function buildCitationMapsFromApi(
     }
   }
 
-  return { citations, sources, sourcesOrder, citationsOrder };
+  return {
+    citations,
+    sources,
+    sourcesOrder,
+    citationsOrder,
+    ...(detailsHidden ? { detailsHidden } : {}),
+    ...(redaction ? { redaction: { ...redaction, sources: [...redactedSources.values()] } } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

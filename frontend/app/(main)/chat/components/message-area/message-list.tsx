@@ -1130,6 +1130,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
                     collections={pair.collections}
                     appliedFilters={pair.appliedFilters}
                     attachments={pair.attachments}
+                    redactedAttachments={pair.redactedAttachments}
                     messageId={pair.messageId}
                     isLastMessage={isLast}
                     rowId={pair.key}
