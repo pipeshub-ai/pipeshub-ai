@@ -494,6 +494,18 @@ class TestReindexAppliesTheLevel:
         assert await c._check_and_fetch_updated_issue(_stored_ticket(), {}) is None
 
     @pytest.mark.asyncio
+    async def test_a_cleared_level_is_applied_by_the_reindex_even_on_a_transient_read(self) -> None:
+        """`security: null` is a positive "no level": the stored level grants are replaced by none."""
+        cleared = _issue(None, updated="2025-01-01T00:00:00.000+0000")
+        c = _reindex_connector(cleared, [_resp(503, {})])
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(access_rule=AccessRule.RESTRICTED), {})
+        assert (record.access_rule, perms, record.rewrite_permissions) == (AccessRule.STRICT, [], True)
+        missing = _issue(None, updated="2025-01-01T00:00:00.000+0000")
+        del missing["fields"]["security"]
+        c = _reindex_connector(missing, [_resp(503, {})])
+        assert await c._check_and_fetch_updated_issue(_stored_ticket(), {}) is None  # not returned is not null
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("holders", [
         [{"type": "applicationRole", "parameter": "jira-software"}],
         [{"type": "applicationRole", "parameter": "jira-software"}, {"type": "group", "value": "group-1"}],

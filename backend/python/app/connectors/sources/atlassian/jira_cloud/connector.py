@@ -6161,7 +6161,9 @@ class JiraConnector(BaseConnector):
                 reporter_email=issue_data["reporter_email"],
                 assignee_email=issue_data["assignee_email"],
             )
-            if security.defer_checkpoint or skipped_holders or (
+            # A null level opens the issue to the project whatever the scheme state, so only a
+            # leveled issue waits for a settled read.
+            if (security.defer_checkpoint and fields.get("security")) or skipped_holders or (
                 issue_record.access_rule == AccessRule.RESTRICTED and not permissions
             ):
                 # Not every holder resolved (application roles are read by the sync), or the
