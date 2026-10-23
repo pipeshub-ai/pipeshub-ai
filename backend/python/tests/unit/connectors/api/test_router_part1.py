@@ -1126,6 +1126,34 @@ class TestGetRecordById:
         # No revision on the record, so no stage states.
         assert result == {"record": "data", "stageStates": []}
 
+    async def test_the_record_leaves_out_internal_bookkeeping(self) -> None:
+        """The response schema rejects fields it does not list, and these are
+        the services' own bookkeeping, so the stored record is returned without
+        them; documented fields beside them stay."""
+        from app.connectors.api.router import get_record_by_id
+        from app.services.graph_db.common.utils import INTERNAL_RECORD_FIELDS
+
+        stored = {
+            "id": "rec-1",
+            "recordName": "notes.md",
+            "indexingStatus": "QUEUED",
+            "retryNotBefore": 1_700_000_060_000,
+            "restoredAtTimestamp": 1_700_000_000_000,
+            "deletedByUserId": None,
+            **dict.fromkeys(INTERNAL_RECORD_FIELDS, 1),
+        }
+        gp = AsyncMock()
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": stored})
+        container = MagicMock()
+        container.logger = MagicMock(return_value=MagicMock())
+
+        result = await get_record_by_id("rec-1", _mock_request(container=container), gp)
+
+        assert set(result["record"]) == {
+            "id", "recordName", "indexingStatus", "retryNotBefore", "restoredAtTimestamp", "deletedByUserId",
+        }
+        assert INTERNAL_RECORD_FIELDS <= set(stored), "the stored record itself is not changed"
+
     async def test_no_access_raises_404(self):
         from app.connectors.api.router import get_record_by_id
 

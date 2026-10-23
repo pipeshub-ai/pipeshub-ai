@@ -5528,6 +5528,32 @@ components:
             lastExtractionTimestamp:
               type: integer
               format: int64
+            entityExtractionStatus:
+              type: string
+              pattern: '^[A-Z_]{1,32}$'
+              description: |
+                Where named-entity extraction (people, organizations, dates and
+                other values found in the content) stands for this record:
+                NOT_STARTED, IN_PROGRESS, COMPLETED, PARTIAL, FAILED or SKIPPED.
+                Absent when no status has been stored on the record; read that
+                as not extracted. New values may be added, so treat an unknown
+                one as not finished.
+            lastEntityExtractionTimestamp:
+              type: integer
+              format: int64
+              nullable: true
+              description: When named-entity extraction last ran on the record (epoch milliseconds). Absent until it is written.
+            entityExtractionStrategy:
+              type: string
+              nullable: true
+              description: |
+                How the named entities were found: `deterministic` (pattern
+                recognizers only), `single_call` (one model call) or `agent`.
+                Absent until it is written.
+            entityExtractorVersion:
+              type: string
+              nullable: true
+              description: Version of the named-entity extractor that produced the record's entities, for example `ner-1`. Absent until it is written.
             secretsRedacted:
               type: integer
               description: >-
@@ -5542,6 +5568,17 @@ components:
               type: integer
               format: int64
               nullable: true
+            retryNotBefore:
+              type: integer
+              format: int64
+              nullable: true
+              description: |
+                Set while the record is QUEUED because its source rate-limited
+                the content fetch: the earliest time (epoch milliseconds)
+                indexing reads it again. `reason` then says when indexing
+                resumes. Null or absent once the source serves the record or
+                indexing ends; a value on a record that is no longer QUEUED is
+                left over from an earlier wait and means nothing.
             parsingStatus:
               type: string
               nullable: true
@@ -5567,6 +5604,15 @@ components:
             deletedByUserId:
               type: string
               nullable: true
+            restoredAtTimestamp:
+              type: integer
+              format: int64
+              nullable: true
+              description: |
+                When a restore last brought this knowledge-base file back from
+                the trash and queued it to be indexed again (epoch
+                milliseconds). Absent on records never restored, on folders, and
+                on files restored while their indexing was turned off.
             isDirty:
               type: boolean
               nullable: true
@@ -10886,12 +10932,22 @@ components:
         deletedByUserId:
           type: string
           nullable: true
+        restoredAtTimestamp:
+          type: number
+          nullable: true
+          description: When a restore last brought the file back from the trash (epoch milliseconds); see `restoredAtTimestamp` on GET /knowledgeBase/record/{recordId}.
         processingStartedAt:
           type: number
           nullable: true
         queuedAtTimestamp:
           type: number
           nullable: true
+        retryNotBefore:
+          type: number
+          nullable: true
+          description: |
+            Earliest time (epoch milliseconds) indexing reads a record its source
+            rate-limited; see `retryNotBefore` on GET /knowledgeBase/record/{recordId}.
         parsingStatus:
           type: string
           nullable: true
@@ -10915,6 +10971,21 @@ components:
           nullable: true
         lastExtractionTimestamp:
           type: number
+          nullable: true
+        entityExtractionStatus:
+          type: string
+          nullable: true
+          description: |
+            Where named-entity extraction stands for the record; see
+            `entityExtractionStatus` on GET /knowledgeBase/record/{recordId}.
+        lastEntityExtractionTimestamp:
+          type: number
+          nullable: true
+        entityExtractionStrategy:
+          type: string
+          nullable: true
+        entityExtractorVersion:
+          type: string
           nullable: true
         summaryDocumentId:
           type: string

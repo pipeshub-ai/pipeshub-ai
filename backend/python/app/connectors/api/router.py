@@ -158,6 +158,7 @@ from app.services.featureflag.platform_settings import (
     is_soft_delete_enabled,
     read_platform_feature_flag,
 )
+from app.services.graph_db.common.utils import api_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
@@ -1855,6 +1856,8 @@ async def get_record_by_id(
             )
             await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
             record: object = cast("dict[str, object]", has_access).get("record")
+            if isinstance(record, dict):
+                has_access["record"] = api_record(record)
             has_access["stageStates"] = await _stage_states_of(graph_provider, record)
             return has_access
         else:
