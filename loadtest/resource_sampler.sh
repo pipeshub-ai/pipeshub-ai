@@ -47,7 +47,7 @@ detect_docker || exit 1
 # Default: every running container of the app container's compose project, so a
 # stack on Kafka, etcd or OpenSearch is sampled without anyone listing it.
 if [ -z "${PIPESHUB_STACK_CONTAINERS:-}" ]; then
-    proj=$($DOCKER inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$CONTAINER" 2>/dev/null)
+    proj=$($DOCKER inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$CONTAINER" 2>/dev/null | tr -d '\r')
     if [ -n "$proj" ]; then
         PIPESHUB_STACK_CONTAINERS=$($DOCKER ps --filter "label=com.docker.compose.project=$proj" \
             --format '{{.Names}}' 2>/dev/null | tr -d '\r' | sort | tr '\n' ' ')
@@ -61,7 +61,7 @@ CLK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 # cgroup at /sys/fs/cgroup, so reading from inside gives the same counters.
 declare -A CG
 for c in $CONTAINERS; do
-    cid=$($DOCKER inspect "$c" --format '{{.Id}}' 2>/dev/null) || continue
+    cid=$($DOCKER inspect "$c" --format '{{.Id}}' 2>/dev/null | tr -d '\r') || continue
     [ -n "$cid" ] || continue
     d=""
     for cand in "/sys/fs/cgroup/system.slice/docker-${cid}.scope" "/sys/fs/cgroup/docker/${cid}"; do

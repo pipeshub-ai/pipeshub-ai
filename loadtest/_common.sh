@@ -95,7 +95,7 @@ detect_sudo() {
 
 container_state() {
     detect_docker 2>/dev/null || return 1
-    $DOCKER inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null
+    $DOCKER inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null | tr -d '\r'
 }
 
 # A running container wins over a host process: if both exist, the container is

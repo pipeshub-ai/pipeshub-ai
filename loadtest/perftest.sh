@@ -128,7 +128,9 @@ TURN_MAX_SECONDS=${PIPESHUB_TURN_MAX_SECONDS:-${PIPESHUB_MAX_TIME:-300}}
 # spends its first turns importing modules and filling caches: in one restarted
 # run a third of all CPU samples were importlib. PIPESHUB_WARMUP=1 sends every
 # query once, one at a time; the log and the server counters only start after.
-if [ "${PIPESHUB_WARMUP:-0}" != 0 ] && [ "$USERS" -gt 0 ]; then
+if [ "${PIPESHUB_WARMUP:-0}" != 0 ] && [ "${PIPESHUB_QUERY_ORDER:-random}" = unique ]; then
+  say "== warm-up skipped: PIPESHUB_QUERY_ORDER=unique (it would make every measured question a repeat)"
+elif [ "${PIPESHUB_WARMUP:-0}" != 0 ] && [ "$USERS" -gt 0 ]; then
   say "== warm-up: ${#BODIES[@]} sequential turns (not measured)"
   for qi in "${!BODIES[@]}"; do
     w=$(curl -s -N -o /dev/null -w '%{http_code} %{time_total}' \

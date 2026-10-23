@@ -69,3 +69,15 @@ def test_empty_read_after_a_busy_window_keeps_waiting(tmp_path: Path) -> None:
     assert r.returncode == 1
     assert "stack busy" in r.stdout
     assert "needs cgroup v2" not in r.stdout
+
+
+def test_container_state_is_clean_of_docker_exe_cr(tmp_path: Path) -> None:
+    stub = tmp_path / "docker"
+    stub.write_text("#!/usr/bin/env bash\nprintf 'running\\r\\n'\n", newline="\n")
+    stub.chmod(0o755)
+    common = SCRIPT.parent / "_common.sh"
+    r = subprocess.run(
+        [BASH, "-c", f'. "{common.as_posix()}"; [ "$(container_state)" = running ] && echo ok'],
+        env={**os.environ, "DOCKER": stub.as_posix()}, capture_output=True, text=True, timeout=30,
+    )
+    assert r.stdout.strip() == "ok", r.stderr
