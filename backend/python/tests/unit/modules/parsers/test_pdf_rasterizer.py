@@ -112,10 +112,14 @@ def test_worker_count_chars_from_bytes_with_reportlab_pdf() -> None:
     assert shapes_page == 0
 
 
-def test_effective_resolution_leaves_standard_pages_untouched():
-    for width, height in ((595.0, 842.0), (612.0, 792.0), (1191.0, 1684.0)):
-        page = SimpleNamespace(width=width, height=height)
-        assert rasterizer._effective_resolution(page, 150) == 150
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [(595.0, 842.0), (612.0, 792.0), (1191.0, 1684.0)],
+    ids=["a4", "letter", "a2"],
+)
+def test_effective_resolution_leaves_standard_pages_untouched(width, height):
+    page = SimpleNamespace(width=width, height=height)
+    assert rasterizer._effective_resolution(page, 150) == 150
 
 
 def test_effective_resolution_clamps_large_format_sheet():
