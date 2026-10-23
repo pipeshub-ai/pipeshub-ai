@@ -14,6 +14,7 @@ import { NotificationContainer } from '../../notification/container/notification
 import { Notifications } from '../../notification/schema/notification.schema';
 import { AccessRequest } from '../schema/access.request.schema';
 import { Users } from '../../user_management/schema/users.schema';
+import type { IAccessRequest } from '../schema/access.request.schema';
 import { callRecordAccess, readableRecordIds } from '../utils/viewer-redaction';
 
 const logger = Logger.getInstance({ service: 'Access Requests' });
@@ -59,13 +60,29 @@ const notify = async (
       'newNotification',
       saved.toObject(),
     );
-  } catch (error: any) {
+  } catch (error: unknown) {
     // The request is stored either way; the owner also finds it in their inbox.
-    logger.warn('Access request notification failed', { error: error.message });
+    logger.warn('Access request notification failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 };
 
-const present = (r: any, forRequester = false) => ({
+type RequestRow = Pick<
+  IAccessRequest,
+  | 'recordId'
+  | 'recordName'
+  | 'collectionName'
+  | 'kind'
+  | 'status'
+  | 'requesterId'
+  | 'createdAt'
+> & { _id: unknown };
+
+const present = (
+  r: RequestRow,
+  forRequester = false,
+): Record<string, unknown> => ({
   id: String(r._id),
   recordId: r.recordId,
   // The requester cannot read the record: its name and collection stay server-side.
@@ -85,7 +102,11 @@ const present = (r: any, forRequester = false) => ({
  */
 export const createAccessRequest =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
     try {
       const { userId, orgId } = req.user as { userId: string; orgId: string };
       const { recordId } = req.body as { recordId: string };
@@ -94,7 +115,7 @@ export const createAccessRequest =
 
       // Recorded per scope: one open request per collection (or per record outside one).
       const check = await callRecordAccess<{
-        accessible: string[];
+        accessible?: string[];
         deniedDetails?: DeniedDetail[];
       }>(appConfig, { userId, orgId }, 'access', {
         recordIds: [recordId],
@@ -105,14 +126,41 @@ export const createAccessRequest =
         return;
       }
       const detail = check.deniedDetails?.find((d) => d.recordId === recordId);
-      if (!detail || detail.kind === 'unknown') {
-        throw new NotFoundError('Record not found');
-      }
-      const owners = [...new Set(detail.ownerUserIds ?? [])].filter((id) =>
+      const owners = [...new Set(detail?.ownerUserIds ?? [])].filter((id) =>
         mongoose.isValidObjectId(id),
       );
-      if (detail.kind === 'native' && owners.length === 0) {
-        throw new ConflictError('Nobody can approve access to this record.');
+      const recent = await AccessRequest.countDocuments({
+        orgId: org,
+        requesterId,
+        createdAt: { $gte: new Date(Date.now() - HOUR_MS) },
+      });
+      // A record that does not exist, is not visible, or has nobody who could approve it
+      // is answered exactly like an accepted request (same status and shape, nothing stored,
+      // nobody notified), so this route cannot be used to ask whether a record id exists.
+      if (
+        !detail ||
+        detail.kind === 'unknown' ||
+        (detail.kind === 'native' && owners.length === 0)
+      ) {
+        if (recent >= ACCESS_REQUESTS_PER_HOUR) {
+          throw new TooManyRequestsError(
+            'Too many access requests. Try again later.',
+          );
+        }
+        res.status(201).json({
+          request: present(
+            {
+              _id: new mongoose.Types.ObjectId(),
+              recordId,
+              kind: 'native',
+              status: 'pending',
+              requesterId,
+              createdAt: new Date(),
+            },
+            true,
+          ),
+        });
+        return;
       }
 
       const scope = detail.collection
@@ -125,23 +173,23 @@ export const createAccessRequest =
         status: { $in: ['pending', 'forwarded'] },
       }).lean();
       if (existing) {
-        res.status(200).json({ request: present(existing, true), duplicate: true });
+        res
+          .status(200)
+          .json({ request: present(existing, true), duplicate: true });
         return;
       }
 
-      const recent = await AccessRequest.countDocuments({
-        orgId: org,
-        requesterId,
-        createdAt: { $gte: new Date(Date.now() - HOUR_MS) },
-      });
       if (recent >= ACCESS_REQUESTS_PER_HOUR) {
-        throw new TooManyRequestsError('Too many access requests. Try again later.');
+        throw new TooManyRequestsError(
+          'Too many access requests. Try again later.',
+        );
       }
 
       const requester = await Users.findById(requesterId)
         .select('fullName email')
         .lean();
-      const requesterName = requester?.fullName || requester?.email || 'A colleague';
+      const requesterName =
+        requester?.fullName || requester?.email || 'A colleague';
       const created = await AccessRequest.create({
         orgId: org,
         requesterId,
@@ -189,7 +237,7 @@ export const listIncomingAccessRequests = async (
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
-) => {
+): Promise<void> => {
   try {
     const { userId, orgId } = req.user as { userId: string; orgId: string };
     const rows = await AccessRequest.find({
@@ -211,7 +259,7 @@ export const getAccessRequest = async (
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
-) => {
+): Promise<void> => {
   try {
     const { userId, orgId } = req.user as { userId: string; orgId: string };
     const request = await AccessRequest.findOne({
@@ -229,7 +277,11 @@ export const getAccessRequest = async (
 /** POST /api/v1/access-requests/:requestId/{approve,deny} : owner only. */
 export const decideAccessRequest =
   (appConfig: AppConfig, decision: 'approve' | 'deny') =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
     try {
       const { userId, orgId } = req.user as { userId: string; orgId: string };
       const request = await AccessRequest.findOne({

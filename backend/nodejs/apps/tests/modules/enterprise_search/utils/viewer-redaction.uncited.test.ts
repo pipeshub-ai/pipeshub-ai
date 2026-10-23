@@ -14,7 +14,7 @@ const answer = (extra: Record<string, any> = {}) => ({
 const hidden = (m: Record<string, any>) => m.redaction?.redacted === true && m.content === ''
 const view = (message: Record<string, any>, readable: string[] = []) => redactMessagesForViewer([message], new Set(readable))[0]!
 
-describe('D-22 rule 2: another person’s answer, judged by the records its turn drew on', () => {
+describe('another person’s answer, judged by the records its turn drew on', () => {
   it('is hidden when no list was stored (older answers): unknown sources fail closed', () => {
     expect(hidden(view(answer()))).to.equal(true)
   })

@@ -1,5 +1,5 @@
-"""Shared-chat redaction attributes text to the citation that follows it (D-22
-citation spans), so the answer prompts must keep telling the model to cite after
+"""Shared-chat redaction attributes text to the citation that follows it
+(a citation span), so the answer prompts must keep telling the model to cite after
 the claim. A citation that leads its sentence would leave that sentence uncited."""
 from app.agents.agent_loop import prompt_builder
 from app.modules.qna import prompt_templates

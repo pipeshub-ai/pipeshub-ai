@@ -14,7 +14,7 @@
  *     `redaction.partial` so the UI shows "partially based on sources you can't access";
  *   - every citation of the message unreadable: the whole body is dropped.
  * Paraphrase in uncited or mixed sentences can still reflect unreadable content
- * (accepted residual risk, D-22 6b).
+ * (accepted residual risk).
  */
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -40,8 +40,6 @@ export interface RequestAccessInfo {
   recordId: string;
   /** native: the owner approves in PipesHub. connector: ask at the source. */
   kind: 'native' | 'connector';
-  /** Connector only: the record's page in its source system. */
-  sourceUrl?: string;
   /** Collection record: asking is asking for the whole collection (its name is not disclosed). */
   collection?: boolean;
   endpoint: string;
@@ -220,9 +218,6 @@ const requestAccessFor = (
   return {
     recordId: recordId ?? '',
     kind,
-    ...(kind === 'connector' && metadata?.webUrl && !metadata.hideWeburl
-      ? { sourceUrl: metadata.webUrl }
-      : {}),
     ...(collection ? { collection } : {}),
     endpoint: ACCESS_REQUESTS_ENDPOINT,
   };
@@ -295,7 +290,7 @@ const citesIn = (text: string, resolves: CitationResolver): Cite[] => {
 };
 
 /**
- * Fail-closed attribution by citation spans (D-22 refinement 2). In a turn that
+ * Fail-closed attribution by citation spans. In a turn that
  * used any source the viewer cannot read, only spans whose group has a readable
  * citation survive. A span is the text from the end of the previous citation
  * group (or the block start) up to and including the next group, plus the
@@ -567,7 +562,7 @@ export const redactMessagesForViewer = (
     });
 
     // Records the turn drew on, cited or not. Any the viewer cannot read counts as
-    // an unreadable source (D-22 rule 2); a missing list (older answers) is unknown.
+    // an unreadable source; a missing list (older answers) is unknown.
     const isAnswer = message.messageType === 'bot_response';
     const sources: string[] | undefined = Array.isArray(message.sourceRecordIds)
       ? message.sourceRecordIds.map(String)
@@ -669,7 +664,8 @@ export const redactMessagesFor = async (
     const author = messageAuthorId(m, initiatorId);
     // Callers may hand over an ObjectId where a string is typed.
     const viewerId: unknown = viewer.userId;
-    return !!author && author !== String(viewerId);
+    // A turn with no known author (no stamp, no initiator) is nobody's: it is treated as someone else's.
+    return author !== String(viewerId);
   };
   const others = messages.filter(isOthers);
   if (others.length === 0) return messages.map(withoutSourceIds);
@@ -745,8 +741,8 @@ export const redactConversationFor = async <
   conversation: T,
   viewer: { userId: string; orgId: string },
 ): Promise<T> => {
+  // No initiator (legacy row): every unstamped turn counts as someone else's and is redacted.
   const initiator = conversation.initiator?.toString();
-  if (!initiator) return conversation;
   const messages = await redactMessagesFor(
     appConfig,
     conversation.messages ?? [],
@@ -783,6 +779,8 @@ export const conversationForAuthorOnly = <
     : undefined;
 };
 
+const PLACEHOLDER_TIME = new Date(0).toISOString();
+
 /** A search's stored hits: unreadable citations lose their text, name and URL. */
 export const redactSearchForViewer = (
   search: ViewerSearch,
@@ -796,8 +794,24 @@ export const redactSearchForViewer = (
     const id = doc?.metadata?.recordId;
     if (id && readable.has(id)) return c;
     changed = true;
+    // The hit keeps the fields the API documents as always present, with empty
+    // placeholders, so a client that reads them does not break; none carries the source's text or name.
     return redactedItem(
-      { _id: doc?._id ?? c },
+      {
+        _id: doc?._id ?? c,
+        content: '',
+        chunkIndex: 0,
+        citationType: '',
+        metadata: {
+          orgId: doc?.metadata?.orgId ?? '',
+          mimeType: '',
+          recordId: id ?? '',
+          recordName: '',
+          origin: '',
+        },
+        createdAt: PLACEHOLDER_TIME,
+        updatedAt: PLACEHOLDER_TIME,
+      },
       requestAccessFor(id, doc?.metadata, false),
     );
   });

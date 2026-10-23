@@ -786,7 +786,7 @@ export const streamChat =
       (res as any).flush?.();
       timer.mark('conversation_created');
 
-      const { agentMode } = parseChatMode(req.body.chatMode);
+      const { agentMode } = parseChatMode((req.body as { chatMode?: string }).chatMode);
       // A new conversation has no stored history; history is never taken from the client (CE-19).
       const aiRequest = buildAiChatRequest({ kind: 'assistant' }, req.body, {
         conversationId: newConversationId,
@@ -1335,7 +1335,11 @@ export const streamChatInternal =
 
 export const addMessageStream =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next?: NextFunction) => {
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next?: NextFunction,
+  ): Promise<void> => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     const userId = req.user?.userId;
@@ -1494,7 +1498,8 @@ export const addMessageStream =
       if (!existingConversation) {
         throw new NotFoundError('Conversation not found');
       }
-      const confirmedConversation = existingConversation as IChatSessionDocument;
+      const confirmedConversation =
+        existingConversation as IChatSessionDocument;
 
       // Format previous conversations for context (excluding the user message we just added)
       // The model history is redacted for the requester like any view of other
@@ -1502,7 +1507,7 @@ export const addMessageStream =
       const allMessagesSoFar = (await redactMessagesFor(
         appConfig,
         (await getMessages(
-          confirmedConversation._id as mongoose.Types.ObjectId,
+          confirmedConversation._id,
           {
             orgId: confirmedConversation.orgId,
             populateCitations: !!confirmedConversation.isShared,
@@ -1532,7 +1537,9 @@ export const addMessageStream =
       });
       const aiPayload = withStreamProtocol(aiRequest.payload, protocol);
       if (confirmedConversation.projectId) {
-        void ProjectService.touchActivity(confirmedConversation.projectId.toString());
+        void ProjectService.touchActivity(
+          confirmedConversation.projectId.toString(),
+        );
       }
 
       const aiCommandOptions: AICommandOptions = {
@@ -1649,7 +1656,11 @@ export const addMessageStream =
                 });
                 filteredChunk += event + '\n\n';
               }
-            } else if (agui && eventType === AGUIEventType.TEXT_MESSAGE_CONTENT && dataLine) {
+            } else if (
+              agui &&
+              eventType === AGUIEventType.TEXT_MESSAGE_CONTENT &&
+              dataLine
+            ) {
               // Feed the passive-disconnect accumulator so a partial answer
               // survives a dropped connection — see savePartialConversation.
               try {
@@ -1658,7 +1669,11 @@ export const addMessageStream =
                 // Non-fatal: still forward the frame below.
               }
               filteredChunk += event + '\n\n';
-            } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
+            } else if (
+              agui &&
+              eventType === AGUIEventType.RUN_ERROR &&
+              dataLine
+            ) {
               try {
                 const errorData = JSON.parse(dataLine);
                 const errorMessage =
@@ -1669,13 +1684,18 @@ export const addMessageStream =
                     existingConversation,
                     errorMessage,
                     session,
-                    aguiErrorCodeFromPayload(errorData as Record<string, unknown>),
+                    aguiErrorCodeFromPayload(
+                      errorData as Record<string, unknown>,
+                    ),
                     errorData.stack,
                   ).catch((markErr: any) => {
-                    logger.error('Failed to mark conversation from AI RUN_ERROR SSE', {
-                      requestId,
-                      error: markErr?.message,
-                    });
+                    logger.error(
+                      'Failed to mark conversation from AI RUN_ERROR SSE',
+                      {
+                        requestId,
+                        error: markErr?.message,
+                      },
+                    );
                   });
                 }
                 filteredChunk += event + '\n\n';
@@ -1738,10 +1758,13 @@ export const addMessageStream =
                       ? new Map(Object.entries(errorData.metadata))
                       : undefined,
                   ).catch((markErr: any) => {
-                    logger.error('Failed to mark conversation from AI error SSE', {
-                      requestId,
-                      error: markErr?.message,
-                    });
+                    logger.error(
+                      'Failed to mark conversation from AI error SSE',
+                      {
+                        requestId,
+                        error: markErr?.message,
+                      },
+                    );
                   });
                 }
                 filteredChunk += event + '\n\n';
@@ -1761,40 +1784,56 @@ export const addMessageStream =
                     'parse_error',
                     parseError.stack,
                   ).catch((markErr: any) => {
-                    logger.error('Failed to mark conversation after SSE parse error', {
-                      requestId,
-                      error: markErr?.message,
-                    });
+                    logger.error(
+                      'Failed to mark conversation after SSE parse error',
+                      {
+                        requestId,
+                        error: markErr?.message,
+                      },
+                    );
                   });
                 }
                 filteredChunk += event + '\n\n';
               }
-            } else if (agui && eventType === AGUIEventType.CUSTOM && dataLine && existingConversation) {
+            } else if (
+              agui &&
+              eventType === AGUIEventType.CUSTOM &&
+              dataLine &&
+              existingConversation
+            ) {
               try {
                 const eventData = JSON.parse(dataLine);
-                if (eventData?.name === 'ask_user_question' && eventData.value) {
+                if (
+                  eventData?.name === 'ask_user_question' &&
+                  eventData.value
+                ) {
                   const toolCallMessage = {
                     messageType: 'tool_call' as const,
                     content: '',
-                    tools: [{
-                      toolName: 'ask_user_question',
-                      toolResult: eventData.value.toolData ?? eventData.value,
-                    }],
+                    tools: [
+                      {
+                        toolName: 'ask_user_question',
+                        toolResult: eventData.value.toolData ?? eventData.value,
+                      },
+                    ],
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
                   void appendMessages(
-                    existingConversation._id as mongoose.Types.ObjectId,
+                    existingConversation._id,
                     existingConversation.orgId,
                     [toolCallMessage as unknown as IMessage],
                     session,
                     String(userId),
                   ).catch((saveErr: any) => {
-                    logger.error('Failed to persist ask_user_question tool_call message', {
-                      requestId,
-                      conversationId: existingConversation?._id,
-                      error: saveErr?.message,
-                    });
+                    logger.error(
+                      'Failed to persist ask_user_question tool_call message',
+                      {
+                        requestId,
+                        conversationId: existingConversation?._id,
+                        error: saveErr?.message,
+                      },
+                    );
                   });
                 }
               } catch (parseErr: any) {
@@ -1804,32 +1843,42 @@ export const addMessageStream =
                 });
               }
               filteredChunk += event + '\n\n';
-            } else if (!agui && eventType === 'ask_user_question' && dataLine && existingConversation) {
+            } else if (
+              !agui &&
+              eventType === 'ask_user_question' &&
+              dataLine &&
+              existingConversation
+            ) {
               try {
                 const eventData = JSON.parse(dataLine);
                 if (eventData.status === 'success') {
                   const toolCallMessage = {
                     messageType: 'tool_call' as const,
                     content: '',
-                    tools: [{
-                      toolName: 'ask_user_question',
-                      toolResult: eventData.toolData ?? eventData,
-                    }],
+                    tools: [
+                      {
+                        toolName: 'ask_user_question',
+                        toolResult: eventData.toolData ?? eventData,
+                      },
+                    ],
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
                   void appendMessages(
-                    existingConversation._id as mongoose.Types.ObjectId,
+                    existingConversation._id,
                     existingConversation.orgId,
                     [toolCallMessage as unknown as IMessage],
                     session,
                     String(userId),
                   ).catch((saveErr: any) => {
-                    logger.error('Failed to persist ask_user_question tool_call message', {
-                      requestId,
-                      conversationId: existingConversation?._id,
-                      error: saveErr?.message,
-                    });
+                    logger.error(
+                      'Failed to persist ask_user_question tool_call message',
+                      {
+                        requestId,
+                        conversationId: existingConversation?._id,
+                        error: saveErr?.message,
+                      },
+                    );
                   });
                 }
               } catch (parseErr: any) {
@@ -1886,7 +1935,7 @@ export const addMessageStream =
               // Add the AI message to the existing conversation
               const insertedAiMessage = (
                 await appendMessages(
-                  existingConversation._id as mongoose.Types.ObjectId,
+                  existingConversation._id,
                   existingConversation.orgId,
                   [aiResponseMessage],
                   session,
@@ -1894,7 +1943,10 @@ export const addMessageStream =
                 )
               )[0];
               existingConversation.lastActivityAt = Date.now();
-              recordClassifiedFailureOnSession(existingConversation, completeData);
+              recordClassifiedFailureOnSession(
+                existingConversation,
+                completeData,
+              );
 
               // Save the updated conversation with AI response
               const updatedConversation = session
@@ -1934,7 +1986,9 @@ export const addMessageStream =
               // Send final response event with the complete conversation data
               res.write(
                 isAGUI(protocol)
-                  ? frameAGUI(AGUIEventType.RUN_FINISHED, { result: responsePayload })
+                  ? frameAGUI(AGUIEventType.RUN_FINISHED, {
+                      result: responsePayload,
+                    })
                   : `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
               );
 
@@ -1967,28 +2021,28 @@ export const addMessageStream =
               throw error;
             }
           } else if (!upstreamAiErrorEventForwarded) {
-          // Mark as failed if no complete data received (and AI did not already send error SSE)
-          if (existingConversation) {
-            await markConversationFailed(
-              existingConversation,
-              CHAT_ERROR_MESSAGES.interrupted,
-              session,
-              'no_response',
+            // Mark as failed if no complete data received (and AI did not already send error SSE)
+            if (existingConversation) {
+              await markConversationFailed(
+                existingConversation,
+                CHAT_ERROR_MESSAGES.interrupted,
+                session,
+                'no_response',
+              );
+            }
+
+            // Send error event
+            res.write(
+              isAGUI(protocol)
+                ? frameAGUI(AGUIEventType.RUN_ERROR, {
+                    message: CHAT_ERROR_MESSAGES.interrupted,
+                    code: 'no_response',
+                  })
+                : `event: error\ndata: ${JSON.stringify({
+                    error: CHAT_ERROR_MESSAGES.interrupted,
+                  })}\n\n`,
             );
           }
-
-          // Send error event
-          res.write(
-            isAGUI(protocol)
-              ? frameAGUI(AGUIEventType.RUN_ERROR, {
-                  message: CHAT_ERROR_MESSAGES.interrupted,
-                  code: 'no_response',
-                })
-              : `event: error\ndata: ${JSON.stringify({
-                  error: CHAT_ERROR_MESSAGES.interrupted,
-                })}\n\n`,
-          );
-        }
         } catch (dbError: any) {
           logger.error('Failed to save AI response to conversation', {
             requestId,
@@ -2516,7 +2570,7 @@ export const getConversationById =
         messageSortOptions as { field: keyof IMessage },
       ),
       initiatorId,
-      { userId, orgId },
+      { userId: String(userId), orgId: String(orgId) },
     )) as unknown as IMessageDocument[];
 
     const conversationResponse = await attachSharedByIfRecipient(
@@ -2610,7 +2664,11 @@ const deleteConversation = async (
 
     const ownerOrWriter: Record<string, unknown>[] = [
       { initiator: userId },
-      { sharedWith: { $elemMatch: { userId, accessLevel: 'write' } } },
+      {
+        sharedWith: {
+          $elemMatch: { userId: String(userId), accessLevel: 'write' },
+        },
+      },
     ];
     const deletable: Record<string, unknown> = {
       _id: conversationId,
@@ -3714,7 +3772,7 @@ async function regenerateAnswersInternal(
     const allMessagesForRegen = (await redactMessagesFor(
       appConfig,
       (await getMessages(
-        existingConversation._id as mongoose.Types.ObjectId,
+        existingConversation._id,
         {
           orgId: existingConversation.orgId,
           populateCitations: !!existingConversation.isShared,
@@ -3822,7 +3880,8 @@ async function regenerateAnswersInternal(
 
     // For the assistant (non-agent-key) path, detect universal agent mode from chatMode
     // so the regenerate request is routed to the correct backend endpoint and carries tools.
-    const { chatMode: parsedRegenChatMode, agentMode: regenIsAgentMode } = parseChatMode(req.body.chatMode);
+    const { chatMode: parsedRegenChatMode, agentMode: regenIsAgentMode } =
+      parseChatMode((req.body as { chatMode?: string }).chatMode);
 
     // Prepare AI payload
     const aiPayload: Record<string, unknown> = {
@@ -3850,7 +3909,10 @@ async function regenerateAnswersInternal(
     };
     if (agentKey || regenIsAgentMode) {
       assignToolsToPayload(aiPayload, req.body.tools);
-      assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
+      assignAgentCapabilitiesToPayload(
+        aiPayload,
+        req.body as Record<string, unknown>,
+      );
     }
     const regenProject = await loadProjectForSession(
       existingConversation.orgId.toString(),
@@ -3859,7 +3921,9 @@ async function regenerateAnswersInternal(
     );
     applyProjectScope(aiPayload, regenProject);
     if (existingConversation.projectId) {
-      void ProjectService.touchActivity(existingConversation.projectId.toString());
+      void ProjectService.touchActivity(
+        existingConversation.projectId.toString(),
+      );
     }
 
     const regenEndpoint = regenIsAgentMode
@@ -4029,8 +4093,7 @@ async function regenerateAnswersInternal(
         } else if (!upstreamAiErrorEventForwarded) {
           // Mark as failed if no complete data received
           if (existingConversation && messageId) {
-            const errorMessage =
-              CHAT_ERROR_MESSAGES.interrupted;
+            const errorMessage = CHAT_ERROR_MESSAGES.interrupted;
             await replaceMessageWithError(
               existingConversation,
               messageId,
@@ -4061,7 +4124,13 @@ async function regenerateAnswersInternal(
                 protocol,
               );
             } else {
-              await sendSSEErrorEvent(res, errorMessage, undefined, undefined, protocol);
+              await sendSSEErrorEvent(
+                res,
+                errorMessage,
+                undefined,
+                undefined,
+                protocol,
+              );
             }
           } else {
             await sendSSEErrorEvent(
@@ -4123,7 +4192,13 @@ async function regenerateAnswersInternal(
                 protocol,
               );
             } else {
-              await sendSSEErrorEvent(res, errorMessage, dbError.message, undefined, protocol);
+              await sendSSEErrorEvent(
+                res,
+                errorMessage,
+                dbError.message,
+                undefined,
+                protocol,
+              );
             }
           } catch (replaceError: any) {
             logger.error(
@@ -4859,7 +4934,11 @@ export const archiveConversation = async (
         ...EXCLUDE_AGENT,
         $or: [
           { initiator: userId },
-          { sharedWith: { $elemMatch: { userId, accessLevel: 'write' } } },
+          {
+        sharedWith: {
+          $elemMatch: { userId: String(userId), accessLevel: 'write' },
+        },
+      },
         ],
       });
 
@@ -4974,7 +5053,11 @@ export const unarchiveConversation = async (
         ...EXCLUDE_AGENT,
         $or: [
           { initiator: userId },
-          { sharedWith: { $elemMatch: { userId, accessLevel: 'write' } } },
+          {
+        sharedWith: {
+          $elemMatch: { userId: String(userId), accessLevel: 'write' },
+        },
+      },
         ],
       });
 
@@ -5588,105 +5671,108 @@ export const search =
 export const searchHistory =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-  const requestId = req.context?.requestId;
-  const startTime = Date.now();
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
 
-  try {
-    const orgId = req.user?.orgId;
-    const userId = req.user?.userId;
-    if (!userId || !orgId) {
-      throw new BadRequestError('User ID and Organization ID are required');
-    }
-    const { page, limit, skip } = getPaginationParams(req);
-    const sortOptions = buildSortOptions(req);
-    const filter = buildFilter(req, orgId, userId);
+    try {
+      const orgId = req.user?.orgId;
+      const userId = req.user?.userId;
+      if (!userId || !orgId) {
+        throw new BadRequestError('User ID and Organization ID are required');
+      }
+      const { page, limit, skip } = getPaginationParams(req);
+      const sortOptions = buildSortOptions(req);
+      const filter = buildFilter(req, orgId, userId);
 
-    logger.debug('Attempting to get search history', {
-      requestId,
-      timestamp: new Date().toISOString(),
-    });
-
-    const [searchHistory, totalCount] = await Promise.all([
-      EnterpriseSemanticSearch.find(filter)
-        .sort(sortOptions as any)
-        .skip(skip)
-        .limit(limit)
-        .exec(),
-      EnterpriseSemanticSearch.countDocuments(
-        filter as Record<string, unknown>,
-      ),
-    ]);
-
-    // Searches shared with the caller are listed too: redact them like the by-id read.
-    const plain = searchHistory.map((doc: any) =>
-      typeof doc.toJSON === 'function' ? doc.toJSON() : doc,
-    );
-    const response = {
-      searchHistory: await redactSearchesFor(appConfig, plain, {
-        userId,
-        orgId,
-      }),
-      pagination: buildPaginationMetadata(totalCount, page, limit),
-      filters: buildFiltersMetadata(filter, req.query),
-      meta: {
+      logger.debug('Attempting to get search history', {
         requestId,
         timestamp: new Date().toISOString(),
-        duration: Date.now() - startTime,
-      },
-    };
-    res.status(HTTP_STATUS.OK).json(response);
-  } catch (error: any) {
-    logger.error('Error searching history', {
-      requestId,
-      message: 'Error searching history',
-      error: error.message,
-    });
-    next(error);
-  }
-};
+      });
+
+      const [searchHistory, totalCount] = await Promise.all([
+        EnterpriseSemanticSearch.find(filter)
+          .sort(sortOptions as any)
+          .skip(skip)
+          .limit(limit)
+          .exec(),
+        EnterpriseSemanticSearch.countDocuments(
+          filter as Record<string, unknown>,
+        ),
+      ]);
+
+      // Searches shared with the caller are listed too: redact them like the by-id read.
+      const plain = searchHistory.map((doc) => doc.toJSON());
+      const response = {
+        searchHistory: await redactSearchesFor(appConfig, plain, {
+          userId: String(userId),
+          orgId: String(orgId),
+        }),
+        pagination: buildPaginationMetadata(totalCount, page, limit),
+        filters: buildFiltersMetadata(filter, req.query),
+        meta: {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+        },
+      };
+      res.status(HTTP_STATUS.OK).json(response);
+    } catch (error: any) {
+      logger.error('Error searching history', {
+        requestId,
+        message: 'Error searching history',
+        error: error.message,
+      });
+      next(error);
+    }
+  };
 
 export const getSearchById =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-  const requestId = req.context?.requestId;
-  const searchId = req.params.searchId;
+    const requestId = req.context?.requestId;
+    const searchId = req.params.searchId;
 
-  try {
-    const orgId = req.user?.orgId;
-    const userId = req.user?.userId;
-    const filter = buildFilter(req, orgId, userId, searchId);
+    try {
+      const orgId = req.user?.orgId;
+      const userId = req.user?.userId;
+      const filter = buildFilter(req, orgId, userId, searchId);
 
-    logger.debug('Attempting to get search', {
-      requestId,
-      searchId,
-      timestamp: new Date().toISOString(),
-    });
-    const search = await EnterpriseSemanticSearch.find(filter)
-      .populate({
-        path: 'citationIds',
-        model: 'citation',
-        select: '-__v',
-      })
-      .lean()
-      .exec();
-    if (!search) {
-      throw new NotFoundError('Search Id not found');
+      logger.debug('Attempting to get search', {
+        requestId,
+        searchId,
+        timestamp: new Date().toISOString(),
+      });
+      const search = await EnterpriseSemanticSearch.find(filter)
+        .populate({
+          path: 'citationIds',
+          model: 'citation',
+          select: '-__v',
+        })
+        .lean()
+        .exec();
+      if (!search) {
+        throw new NotFoundError('Search Id not found');
+      }
+
+      // A search shared with this user holds the author's hits: show only the
+      // ones this user can read.
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          await redactSearchesFor(appConfig, search, {
+            userId: String(userId),
+            orgId: String(orgId),
+          }),
+        );
+    } catch (error: any) {
+      logger.error('Error getting search by ID', {
+        requestId,
+        message: 'Error getting search by ID',
+        error: error.message,
+      });
+      next(error);
     }
-
-    // A search shared with this user holds the author's hits: show only the
-    // ones this user can read.
-    res
-      .status(HTTP_STATUS.OK)
-      .json(await redactSearchesFor(appConfig, search, { userId, orgId }));
-  } catch (error: any) {
-    logger.error('Error getting search by ID', {
-      requestId,
-      message: 'Error getting search by ID',
-      error: error.message,
-    });
-    next(error);
-  }
-};
+  };
 
 export const deleteSearchById = async (
   req: AuthenticatedUserRequest,
@@ -7187,7 +7273,7 @@ export const addMessageStreamToAgentConversation =
     const startTime = Date.now();
     let userId: Types.ObjectId | undefined;
     let orgId: Types.ObjectId | undefined;
-    if('user' in req) {
+    if ('user' in req) {
       const auth_req = req as AuthenticatedUserRequest;
       userId = auth_req.user?.userId;
       orgId = auth_req.user?.orgId;
@@ -7219,16 +7305,6 @@ export const addMessageStreamToAgentConversation =
       if (!req.body.query) {
         throw new BadRequestError('Query is required');
       }
-      await assertNotReadOnlyViewer(
-        {
-          _id: conversationId,
-          agentKey,
-          orgId,
-          isDeleted: false,
-          ...ONLY_AGENT,
-        },
-        userId,
-      );
     } catch (error) {
       if (!next) throw error;
       return next(error);
@@ -7243,9 +7319,9 @@ export const addMessageStreamToAgentConversation =
         _id: conversationId,
         agentKey,
         orgId,
+        userId,
         isDeleted: false,
         ...ONLY_AGENT,
-        ...ownerOrWriterFilter(userId),
       });
 
       if (!conversation) {
@@ -7345,9 +7421,9 @@ export const addMessageStreamToAgentConversation =
         _id: conversationId,
         agentKey,
         orgId,
+        userId,
         isDeleted: false,
         ...ONLY_AGENT,
-        ...ownerOrWriterFilter(userId),
       });
 
       // Get existing conversation and add user message
@@ -7364,7 +7440,8 @@ export const addMessageStreamToAgentConversation =
       if (!existingConversation) {
         throw new NotFoundError('Conversation not found');
       }
-      const confirmedConversation = existingConversation as IChatSessionDocument;
+      const confirmedConversation =
+        existingConversation as IChatSessionDocument;
 
       // Format previous conversations for context (excluding the user message we just added)
       // The model history is redacted for the requester like any view of other
@@ -7372,7 +7449,7 @@ export const addMessageStreamToAgentConversation =
       const allMessagesSoFar = (await redactMessagesFor(
         appConfig,
         (await getMessages(
-          confirmedConversation._id as mongoose.Types.ObjectId,
+          confirmedConversation._id,
           {
             orgId: confirmedConversation.orgId,
             populateCitations: !!confirmedConversation.isShared,
@@ -7392,15 +7469,21 @@ export const addMessageStreamToAgentConversation =
         String(userId),
         confirmedConversation.projectId,
       );
-      const aiRequest = buildAiChatRequest({ kind: 'agent', agentKey: agentKey as string }, req.body, {
-        conversationId,
-        previousConversations,
-        isNewConversation: false,
-        project: followUpProject,
-      });
+      const aiRequest = buildAiChatRequest(
+        { kind: 'agent', agentKey: agentKey as string },
+        req.body as Record<string, unknown>,
+        {
+          conversationId,
+          previousConversations,
+          isNewConversation: false,
+          project: followUpProject,
+        },
+      );
       const aiPayload = withStreamProtocol(aiRequest.payload, protocol);
       if (confirmedConversation.projectId) {
-        void ProjectService.touchActivity(confirmedConversation.projectId.toString());
+        void ProjectService.touchActivity(
+          confirmedConversation.projectId.toString(),
+        );
       }
 
       const aiCommandOptions: AICommandOptions = {
@@ -7517,7 +7600,11 @@ export const addMessageStreamToAgentConversation =
                 });
                 filteredChunk += event + '\n\n';
               }
-            } else if (agui && eventType === AGUIEventType.TEXT_MESSAGE_CONTENT && dataLine) {
+            } else if (
+              agui &&
+              eventType === AGUIEventType.TEXT_MESSAGE_CONTENT &&
+              dataLine
+            ) {
               // Feed the passive-disconnect accumulator so a partial answer
               // survives a dropped connection — see savePartialConversation.
               try {
@@ -7526,7 +7613,11 @@ export const addMessageStreamToAgentConversation =
                 // Non-fatal: still forward the frame below.
               }
               filteredChunk += event + '\n\n';
-            } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
+            } else if (
+              agui &&
+              eventType === AGUIEventType.RUN_ERROR &&
+              dataLine
+            ) {
               try {
                 const errorData = JSON.parse(dataLine);
                 const errorMessage =
@@ -7537,13 +7628,18 @@ export const addMessageStreamToAgentConversation =
                     existingConversation,
                     errorMessage,
                     session,
-                    aguiErrorCodeFromPayload(errorData as Record<string, unknown>),
+                    aguiErrorCodeFromPayload(
+                      errorData as Record<string, unknown>,
+                    ),
                     errorData.stack,
                   ).catch((markErr: any) => {
-                    logger.error('Failed to mark agent conversation from AI RUN_ERROR SSE', {
-                      requestId,
-                      error: markErr?.message,
-                    });
+                    logger.error(
+                      'Failed to mark agent conversation from AI RUN_ERROR SSE',
+                      {
+                        requestId,
+                        error: markErr?.message,
+                      },
+                    );
                   });
                 }
                 filteredChunk += event + '\n\n';
@@ -7555,32 +7651,45 @@ export const addMessageStreamToAgentConversation =
                 });
                 filteredChunk += event + '\n\n';
               }
-            } else if (agui && eventType === AGUIEventType.CUSTOM && dataLine && existingConversation) {
+            } else if (
+              agui &&
+              eventType === AGUIEventType.CUSTOM &&
+              dataLine &&
+              existingConversation
+            ) {
               try {
                 const eventData = JSON.parse(dataLine);
-                if (eventData?.name === 'ask_user_question' && eventData.value) {
+                if (
+                  eventData?.name === 'ask_user_question' &&
+                  eventData.value
+                ) {
                   const toolCallMessage = {
                     messageType: 'tool_call' as const,
                     content: '',
-                    tools: [{
-                      toolName: 'ask_user_question',
-                      toolResult: eventData.value.toolData ?? eventData.value,
-                    }],
+                    tools: [
+                      {
+                        toolName: 'ask_user_question',
+                        toolResult: eventData.value.toolData ?? eventData.value,
+                      },
+                    ],
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
                   void appendMessages(
-                    existingConversation._id as mongoose.Types.ObjectId,
+                    existingConversation._id,
                     existingConversation.orgId,
                     [toolCallMessage as unknown as IMessage],
                     session,
                     String(userId),
                   ).catch((saveErr: any) => {
-                    logger.error('Failed to persist ask_user_question tool_call message', {
-                      requestId,
-                      conversationId: existingConversation?._id,
-                      error: saveErr?.message,
-                    });
+                    logger.error(
+                      'Failed to persist ask_user_question tool_call message',
+                      {
+                        requestId,
+                        conversationId: existingConversation?._id,
+                        error: saveErr?.message,
+                      },
+                    );
                   });
                 }
               } catch (parseErr: any) {
@@ -7641,10 +7750,13 @@ export const addMessageStreamToAgentConversation =
                       ? new Map(Object.entries(errorData.metadata))
                       : undefined,
                   ).catch((markErr: any) => {
-                    logger.error('Failed to mark agent conversation from AI error SSE', {
-                      requestId,
-                      error: markErr?.message,
-                    });
+                    logger.error(
+                      'Failed to mark agent conversation from AI error SSE',
+                      {
+                        requestId,
+                        error: markErr?.message,
+                      },
+                    );
                   });
                 }
                 filteredChunk += event + '\n\n';
@@ -7663,40 +7775,53 @@ export const addMessageStreamToAgentConversation =
                     'parse_error',
                     parseError.stack,
                   ).catch((markErr: any) => {
-                    logger.error('Failed to mark agent conversation after error-event parse failure', {
-                      requestId,
-                      error: markErr?.message,
-                    });
+                    logger.error(
+                      'Failed to mark agent conversation after error-event parse failure',
+                      {
+                        requestId,
+                        error: markErr?.message,
+                      },
+                    );
                   });
                 }
                 filteredChunk += event + '\n\n';
               }
-            } else if (!agui && eventType === 'ask_user_question' && dataLine && existingConversation) {
+            } else if (
+              !agui &&
+              eventType === 'ask_user_question' &&
+              dataLine &&
+              existingConversation
+            ) {
               try {
                 const eventData = JSON.parse(dataLine);
                 if (eventData.status === 'success') {
                   const toolCallMessage = {
                     messageType: 'tool_call' as const,
                     content: '',
-                    tools: [{
-                      toolName: 'ask_user_question',
-                      toolResult: eventData.toolData ?? eventData,
-                    }],
+                    tools: [
+                      {
+                        toolName: 'ask_user_question',
+                        toolResult: eventData.toolData ?? eventData,
+                      },
+                    ],
                     createdAt: new Date(),
                     updatedAt: new Date(),
                   };
                   void appendMessages(
-                    existingConversation._id as mongoose.Types.ObjectId,
+                    existingConversation._id,
                     existingConversation.orgId,
                     [toolCallMessage as unknown as IMessage],
                     session,
                     String(userId),
                   ).catch((saveErr: any) => {
-                    logger.error('Failed to persist ask_user_question tool_call message', {
-                      requestId,
-                      conversationId: existingConversation?._id,
-                      error: saveErr?.message,
-                    });
+                    logger.error(
+                      'Failed to persist ask_user_question tool_call message',
+                      {
+                        requestId,
+                        conversationId: existingConversation?._id,
+                        error: saveErr?.message,
+                      },
+                    );
                   });
                 }
               } catch (parseErr: any) {
@@ -7753,7 +7878,7 @@ export const addMessageStreamToAgentConversation =
               // Add the AI message to the existing conversation
               const insertedAiMessage = (
                 await appendMessages(
-                  existingConversation._id as mongoose.Types.ObjectId,
+                  existingConversation._id,
                   existingConversation.orgId,
                   [aiResponseMessage],
                   session,
@@ -7761,7 +7886,10 @@ export const addMessageStreamToAgentConversation =
                 )
               )[0];
               existingConversation.lastActivityAt = Date.now();
-              recordClassifiedFailureOnSession(existingConversation, completeData);
+              recordClassifiedFailureOnSession(
+                existingConversation,
+                completeData,
+              );
 
               // Save the updated conversation with AI response
               const updatedConversation = session
@@ -7801,7 +7929,9 @@ export const addMessageStreamToAgentConversation =
               // Send final response event with the complete conversation data
               res.write(
                 isAGUI(protocol)
-                  ? frameAGUI(AGUIEventType.RUN_FINISHED, { result: responsePayload })
+                  ? frameAGUI(AGUIEventType.RUN_FINISHED, {
+                      result: responsePayload,
+                    })
                   : `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
               );
 
@@ -7999,9 +8129,11 @@ export const regenerateAgentAnswers =
         _id: conversationId,
         agentKey,
         orgId,
+        userId,
+        // Owner only: a chat shared with someone is read-only for them.
+        initiator: userId,
         isDeleted: false,
         ...ONLY_AGENT,
-        ...ownerOrWriterFilter(userId),
       }),
       buildAIEndpoint: (appConfig, agentKey) =>
         `${appConfig.aiBackend}/api/v1/agent/${encodeURIComponent(agentKey as string)}/chat/stream`,
@@ -8456,12 +8588,6 @@ const deleteAgentConversationOf = async (
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
 
-    // Missing or foreign ids stay an idempotent 200; a read-only sharee is told no.
-    await assertNotReadOnlyViewer(
-      { _id: conversationId, agentKey, orgId, isDeleted: false, ...ONLY_AGENT },
-      userId,
-      'delete it',
-    );
     const conversation = await deleteAgentConversation(
       conversationId as string,
       agentKey as string,
@@ -8697,7 +8823,11 @@ export const unarchiveAgentConversation = async (
 };
 
 export const listAllArchivesAgentConversation = () =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
   try {
@@ -8959,7 +9089,11 @@ export const updateAgentFeedback = async (
  */
 export const listAllAgentsArchivedConversationsGrouped =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
   try {

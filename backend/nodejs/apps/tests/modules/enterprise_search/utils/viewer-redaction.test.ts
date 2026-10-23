@@ -91,7 +91,7 @@ describe('viewer redaction (shared chats)', () => {
   })
 
   describe('redactMessagesForViewer', () => {
-    it('T1: leaves a message untouched when every source is readable', () => {
+    it('leaves a message untouched when every source is readable', () => {
       const msg = answer('Fact [1]. Other [2].', [cite(1, 'r1'), cite(2, 'r2')])
       const [out] = redactMessagesForViewer([msg], new Set(['r1', 'r2']))
       expect(out.content).to.equal(msg.content)
@@ -102,7 +102,7 @@ describe('viewer redaction (shared chats)', () => {
       expect(out.reasoning).to.equal(undefined)
     })
 
-    it('T2: redacts one unreadable citation and its sentence, keeps the rest, marks partial', () => {
+    it('redacts one unreadable citation and its sentence, keeps the rest, marks partial', () => {
       const msg = answer(`${SECRET} [1]. Public fact [2]. A closing remark.`, [cite(1, 'r1'), cite(2, 'r2')])
       const [out] = redactMessagesForViewer([msg], new Set(['r2']))
       expect(out.content).to.equal(`${REDACTED_TOKEN} Public fact ${K(2)}. ${REDACTED_TOKEN}`)
@@ -116,29 +116,30 @@ describe('viewer redaction (shared chats)', () => {
       expect(out.redaction).to.deep.equal({ redacted: false, partial: true, reason: 'no_access' })
     })
 
-    it('T3: drops the whole body when every citation is unreadable', () => {
+    it('drops the whole body when every citation is unreadable', () => {
       const msg = answer(`${SECRET} [1]. And more.`, [cite(1, 'r1'), cite(2, 'r2')])
       const [out] = redactMessagesForViewer([msg], new Set())
       expect(out.content).to.equal('')
       expect(out.redaction).to.deep.equal({ redacted: true, partial: false, reason: 'no_access' })
     })
 
-    it('T5: a connector citation carries the source deep link, native ones do not', () => {
+    it('a redacted connector citation never carries the source URL, a native one has no kind connector', () => {
       const msg = answer('A [1]. B [2].', [
-        cite(1, 'wiki', { origin: 'CONNECTOR', webUrl: 'https://wiki.example/p/1' }),
+        cite(1, 'wiki', { origin: 'CONNECTOR', webUrl: 'https://wiki.example/Secret-Page-Title' }),
         cite(2, 'kb'),
       ])
       const [out] = redactMessagesForViewer([msg], new Set())
       expect(out.citations[0].requestAccess).to.deep.equal({
         recordId: 'wiki',
         kind: 'connector',
-        sourceUrl: 'https://wiki.example/p/1',
         endpoint: '/api/v1/access-requests',
       })
-      expect(out.citations[1].requestAccess.sourceUrl).to.equal(undefined)
+      expect(out.citations[1].requestAccess.kind).to.equal('native')
+      expect(JSON.stringify(out)).to.not.include('Secret-Page-Title')
+      expect(JSON.stringify(out)).to.not.include('sourceUrl')
     })
 
-    it('T6: the serialized response never contains redacted text, names or derived data', () => {
+    it('the serialized response never contains redacted text, names or derived data', () => {
       const msg = answer(`${SECRET} [1]. Public fact [2].`, [cite(1, 'r1'), cite(2, 'r2')], {
         attachments: [{ recordId: 'att', recordName: 'Secret attachment.pdf', mimeType: 'application/pdf' }],
         referenceData: [{ name: SECRET }],
@@ -239,7 +240,7 @@ describe('viewer redaction (shared chats)', () => {
     })
   })
 
-  describe('QA-W7-1: saved search list', () => {
+  describe('saved search list', () => {
     afterEach(() => sinon.restore())
     const config: any = { jwtSecret: 's', scopedJwtSecret: 's2', aiBackend: 'http://ai' }
     const viewer = { userId: 'viewer', orgId: 'o' }
@@ -285,7 +286,7 @@ describe('viewer redaction (shared chats)', () => {
     })
   })
 
-  describe('T8: redactSearchForViewer', () => {
+  describe('redactSearchForViewer', () => {
     const search = {
       _id: 's1',
       userId: 'author',
@@ -304,6 +305,16 @@ describe('viewer redaction (shared chats)', () => {
       expect(out.records).to.deep.equal({ r2: 'Public' })
       expect(JSON.stringify(out)).to.not.include('Secret name')
       expect(JSON.stringify(out)).to.not.include('Q3 revenue')
+    })
+
+    it('keeps the documented always-present fields on a redacted hit, as placeholders', () => {
+      const out = redactSearchForViewer(search, new Set(['r2']))
+      const hit = out.citationIds[0]
+      expect(hit).to.include({ _id: 'c1', content: '', chunkIndex: 0, redacted: true })
+      for (const field of ['citationType', 'metadata', 'createdAt', 'updatedAt']) expect(hit, field).to.have.property(field)
+      expect(hit.metadata).to.include({ recordId: 'r1', recordName: '', mimeType: '', origin: '' })
+      expect(hit.createdAt).to.equal(new Date(0).toISOString())
+      expect(JSON.stringify(hit)).to.not.include('UPLOAD')
     })
 
     it('returns the search untouched when everything is readable', () => {

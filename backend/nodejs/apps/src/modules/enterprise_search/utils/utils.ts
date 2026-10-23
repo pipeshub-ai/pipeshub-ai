@@ -186,13 +186,15 @@ export const findSessionIdsMatchingContent = async (
     {
       $group: {
         _id: '$sessionId',
-        hasOwnTurn: { $max: { $cond: [{ $eq: ['$authorUserId', author] }, 1, 0] } },
+        hasOwnTurn: {
+          $max: { $cond: [{ $eq: ['$authorUserId', author] }, 1, 0] },
+        },
       },
     },
     { $limit: limit },
     {
       $lookup: {
-        from: ChatSession.collection?.name ?? 'chatsessions',
+        from: ChatSession.collection.name,
         localField: '_id',
         foreignField: '_id',
         as: 'session',
@@ -1215,7 +1217,7 @@ export const buildFilter = (
   shared: boolean = true,
   contentMatchIds?: mongoose.Types.ObjectId[],
   accessibleProjectIds?: mongoose.Types.ObjectId[],
-) => {
+): Record<string, unknown> => {
   if (!owned && !shared) {
     throw new BadRequestError('Either owned or shared must be true');
   }
@@ -1303,7 +1305,7 @@ export const buildFilter = (
     }
   }
 
-  return filter;
+  return filter as Record<string, unknown>;
 };
 
 export const buildPaginationMetadata = (

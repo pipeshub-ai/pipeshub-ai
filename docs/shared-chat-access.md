@@ -18,9 +18,11 @@ service token. If the check fails, every source is treated as unreadable.
 hidden source. A redacted citation or attachment is
 `{ citationId | recordId, redacted: true, reason: "no_access", requestAccess }`;
 a message gets `redaction: { redacted, partial, reason }`.
+A redacted saved-search hit keeps the documented always-present fields as empty placeholders
+(`content`, `recordName`, `chunkIndex` 0, epoch timestamps), so existing clients do not break.
 
 **Which text goes: fail closed by citation spans** (`redactAnswerText` in `utils/viewer-redaction.ts`;
-no language heuristics; D-22 refinement 2). When a turn used **any** source the viewer cannot read, the
+no language heuristics). When a turn used **any** source the viewer cannot read, the
 viewer sees **only** the spans that have a readable citation; everything else is replaced by the
 `{{redacted}}` notice (consecutive notices merge). A turn whose sources the viewer can all read is
 returned unchanged.
@@ -93,7 +95,7 @@ stream starts; anyone with no access gets 404.
 
 **Requesting access** (`POST /api/v1/access-requests`, `schema/access.request.schema.ts`,
 `controller/access_request.controller.ts`). Org-scoped, 20 per user per hour. Kind
-and owner come from the graph, never the client.
+and owner come from the graph, never the client. A record that does not exist, is not visible or has nobody who could approve it is answered exactly like an accepted request (`201`, same shape; nothing stored, nobody notified), so the route cannot be used to test whether a record id exists.
 
 - Record of a collection (knowledge base): access exists only at the collection (no
   per-record owner, and a direct record grant inside a collection the user cannot enter
@@ -106,8 +108,8 @@ and owner come from the graph, never the client.
   Per-record grants inside a collection are not supported.
 - Other uploads (chat attachments): the record's own OWNER is asked and a READER edge is
   written on that record.
-- Connector record: stored `forwarded`, the owner is notified and `sourceUrl` links to
-  the source system. Nothing is ever granted here; access arrives with the next
+- Connector record: stored `forwarded`, the owner is notified and the reply to the request carries `sourceUrl`,
+  the page in the source system (it is never part of a redacted item: a source's URL can carry its title). Nothing is ever granted here; access arrives with the next
   permission sync.
 
 **Saved searches.** `GET /api/v1/search` and `GET /api/v1/search/:id` redact a shared search through `redactSearchesFor` (hits and the `records` map).

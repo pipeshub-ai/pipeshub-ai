@@ -6,7 +6,7 @@ import {
 } from '../../../../src/modules/enterprise_search/utils/viewer-redaction'
 
 /**
- * D-22 refinement 2: fail closed. In a turn that used any source the viewer cannot
+ * Fail closed. In a turn that used any source the viewer cannot
  * read, only spans whose group has a readable citation (canonical link form,
  * outside code) survive; everything else becomes the redacted notice. A span is the
  * text from the end of the previous citation group (or the block start) up to and
@@ -21,9 +21,9 @@ const real = (n: number, target?: string) =>
 const leaks = (out: string) => /SECRETX/.test(out) || /rec1\//.test(out)
 const T = (rows: string[]) => '| Fact |\n|---|\n' + rows.map((r) => `| ${r} |`).join('\n')
 
-// Every adversarial layout QA found over four rounds. Each must show no private text.
+// Adversarial layouts; each must show no private text.
 const LAYOUTS: Array<[string, string]> = [
-  // round 1-2 (r2/adv.ts)
+  // sentence boundaries
   ['lowercase next sentence', `Secret SECRETX fact ${L(1)}. then the open fact ${L(2)}.`],
   ['abbreviation Inc.', `The target is Wombat Inc. SECRETX ${L(1)} Open fact ${L(2)}.`],
   ['single-letter initial', `Codename SECRETX is held by J. ${L(1)} Open fact ${L(2)}.`],
@@ -53,7 +53,7 @@ const LAYOUTS: Array<[string, string]> = [
   ['double bracket', `Secret SECRETX fact. [[1]] Open fact [[2]].`],
   ['only cite glued', `Secret SECRETX fact.${L(1)}Open fact ${L(2)}.`],
   ['markers on their own line', `Secret SECRETX fact\n${L(1)}\nOpen fact ${L(2)}.`],
-  // round 3 (r2/adv3.ts)
+  // block ends and paragraph boundaries
   ['paragraph-end citation', `Line one SECRETX\nline two SECRETX ${L(1)}\n\nOpen para ${L(2)}`],
   ['list-end citation', `- a SECRETX\n- b SECRETX ${L(1)}\n\nOpen ${L(2)}`],
   ['private line between readable lines', `Open A ${L(2)}\nSecret SECRETX ${L(1)}\nOpen B ${L(2)}`],
@@ -67,22 +67,22 @@ const LAYOUTS: Array<[string, string]> = [
   ['marker then text no space', `SECRETX fact ${L(1)}Open ${L(2)}`],
   ['heading without marker then cited body', `## SECRETX heading\nBody text ${L(1)}`],
   ['uncited private paragraph, blank line before the cite', `SECRETX uncited\n\nOpen ${L(2)}`],
-  // round 3-4 (table / code / marker forms)
+  // tables, code and marker forms
   ['table cited below', `${T(['SECRETX row'])}\n\n${L(1)}`],
   ['table with a caption below', `${T(['SECRETX row'])}\nSource: board doc ${L(1)}`],
   ['table with a long caption below', `${T(['SECRETX row'])}\nSource: ${'the board document that describes the budget '.repeat(3)}${L(1)}`],
-  ['two tables, one citation line (QA-W20-13)', `${T(['SECRETX row A'])}\n\n${T(['SECRETX row B'])}\n\n${L(1)}`],
-  ['table, heading, citation (QA-W20-13)', `${T(['SECRETX row'])}\n\n## Sources\n${L(1)}`],
+  ['two tables, one citation line', `${T(['SECRETX row A'])}\n\n${T(['SECRETX row B'])}\n\n${L(1)}`],
+  ['table, heading, citation', `${T(['SECRETX row'])}\n\n## Sources\n${L(1)}`],
   ['table per-cell plus trailing', `| SECRETX a | open ${L(2)} |\n|---|---|\n| SECRETX b | SECRETX c |\n\n${L(1)}`],
   ['table, trailing mixed group', `${T(['SECRETX row'])}\n\n${L(1)} ${L(2)}`],
   ['private uncited table, readable trailing citation', `${T(['SECRETX row'])}\n\n${L(2)}`],
   ['code block cited below', '```\nSECRETX = 42\n```\n' + L(1)],
   ['code block, blank, cited below', '```\nSECRETX = 42\n```\n\n' + L(1)],
-  ['code with arr[2], cited below (QA-W20-14)', '```\nSECRETX = arr[2]\n```\n' + L(1)],
-  ['code with a real-looking link, cited below (QA-W20-14)', '```\nSECRETX ' + L(2) + '\n```\n' + L(1)],
+  ['code with arr[2], cited below', '```\nSECRETX = arr[2]\n```\n' + L(1)],
+  ['code with a real-looking link, cited below', '```\nSECRETX ' + L(2) + '\n```\n' + L(1)],
   ['code with a readable citation only', '```\nSECRETX ' + L(2) + '\n```'],
   ['table cell with bare [2] and trailing', `${T(['SECRETX arr[2]'])}\n\n${L(1)}`],
-  ['bare [2] before the real cite (QA-W20-14)', `SECRETX in arr[2] slot ${L(1)}. Open ${L(2)}`],
+  ['bare [2] before the real cite', `SECRETX in arr[2] slot ${L(1)}. Open ${L(2)}`],
   ['[[2]] before the real cite', `SECRETX fact [[2]] then ${L(1)}`],
   ['bracket number is not a citation', `SECRETX in arr[7] slot ${L(1)}. Open ${L(2)}`],
   ['fact [9] with no such citation', `SECRETX fact [9] more ${L(1)}. Open ${L(2)}`],

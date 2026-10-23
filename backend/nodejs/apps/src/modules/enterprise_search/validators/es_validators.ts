@@ -1560,7 +1560,11 @@ export const agentAttachmentRecordIdParamsSchema = z.object({
 // ---------------------------------------------------------------------------
 export const createAccessRequestSchema = z.object({
   body: z.object({
-    recordId: z.string().min(1).max(128).regex(/^[\w.:-]+$/, { message: 'Invalid record ID format' }),
+    recordId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[\w.:-]+$/, { message: 'Invalid record ID format' }),
   }),
 });
 
