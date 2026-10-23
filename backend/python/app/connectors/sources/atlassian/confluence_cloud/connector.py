@@ -2419,13 +2419,6 @@ class ConfluenceConnector(BaseConnector):
                     break
                 followed.add(pagination_token)
 
-            # A comment changes neither its page's version nor its last modified time, so the
-            # listing never brings that page back: its comments would stay as first indexed.
-            if last_sync_time and not within_ids and listing_complete:
-                listing_complete = await self._reindex_pages_with_changed_comments(
-                    space_key, record_type, modified_after, last_sync_time
-                )
-
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
             if not listing_complete:
@@ -2457,18 +2450,29 @@ class ConfluenceConnector(BaseConnector):
     # is taken at the end of a sync, after its comment search.
     _COMMENT_CHECK_OVERLAP = timedelta(minutes=10)
 
-    async def _reindex_pages_with_changed_comments(
-        self, space_key: str, record_type: RecordType, search_after: str | None, checkpoint: str,
-    ) -> bool:
-        """Re-index the stored pages (or blog posts) of a space whose comments changed since the checkpoint.
+    async def _reindex_pages_with_changed_comments(self, space_key: str) -> None:
+        """Re-index the stored pages and blog posts of a space whose comments changed since the last check.
 
-        Their blocks hold their comments. A stored HTML page streams as blocks from now on.
-        Returns False when the comments could not be searched, so the checkpoint holds.
+        A comment changes neither its page's version nor its last modified time, so the listing
+        never brings the page back. One search per space covers both types; its own checkpoint
+        moves only after a search read to the end, so quiet spaces don't re-index the same page
+        on every run. The first sync only sets the checkpoint: it indexes every page anyway.
         """
-        if not await self._comments_indexed(record_type):
-            return True
-        container_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
-        since = datetime.fromisoformat(checkpoint.replace("Z", "+00:00")) - self._COMMENT_CHECK_OVERLAP
+        types = {
+            "page": await self._comments_indexed(RecordType.CONFLUENCE_PAGE),
+            "blogpost": await self._comments_indexed(RecordType.CONFLUENCE_BLOGPOST),
+        }
+        if not any(types.values()):
+            return
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_comments", space_key)
+        stored = await self.pages_sync_point.read_sync_point(key) or {}
+        checked_at = stored.get("checked_at")
+        searched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        if not checked_at:
+            await self.pages_sync_point.update_sync_point(key, {"checked_at": searched_at})
+            return
+        since = datetime.fromisoformat(checked_at.replace("Z", "+00:00")) - self._COMMENT_CHECK_OVERLAP
+        search_after = listing_modified_after(None, checked_at, TIME_OFFSET_HOURS)
         page_ids: set[str] = set()
         token: str | None = None
         followed: set[str] = set()
@@ -2487,37 +2491,55 @@ class ConfluenceConnector(BaseConnector):
                 data = None
             results = data.get("results") if isinstance(data, dict) else None
             if not isinstance(results, list):
-                self._note_problem(f"Space {space_key}: couldn't check for changed comments; the next sync tries again")
-                return False
+                self._note_problem(
+                    f"Space {space_key}: couldn't check for changed comments; the next sync tries again", unread=False
+                )
+                return
             for item in results:
                 container = item.get("container") or {}
-                changed = ((item.get("version") or {}).get("when") or "").replace("Z", "+00:00")
-                try:
-                    recent = not changed or datetime.fromisoformat(changed) > since
-                except ValueError:
-                    recent = True
-                if recent and container.get("type") == container_type and container.get("id"):
+                if not types.get(container.get("type")) or not container.get("id"):
+                    continue
+                if self._changed_since(item, since):
                     page_ids.add(str(container["id"]))
             next_url = (data.get("_links") or {}).get("next")
             if not next_url:
                 break
             token = self._extract_cursor_from_next_link(next_url)
             if not results or not token or token in followed:
-                self._note_problem(f"Space {space_key}: couldn't check for changed comments; the next sync tries again")
-                return False
+                self._note_problem(
+                    f"Space {space_key}: couldn't check for changed comments; the next sync tries again", unread=False
+                )
+                return
             followed.add(token)
 
         records = []
-        # Pages this listing re-read too: one whose version did not change is not re-indexed by it.
         for page_id in sorted(page_ids):
             record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, page_id)
-            if record is not None and not record.is_placeholder:
+            # A page left out of indexing on purpose stays out: a comment is not a request to index it.
+            if (
+                record is not None and not record.is_placeholder
+                and record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+            ):
                 records.append(record)
         if records:
-            self.logger.info(f"Re-indexing {len(records)} {container_type}s in space {space_key} whose comments changed")
+            self.logger.info(f"Re-indexing {len(records)} pages and blog posts in space {space_key} whose comments changed")
             await self._fix_legacy_mime_types(records)
             await self.data_entities_processor.reindex_existing_records(records)
-        return True
+        await self.pages_sync_point.update_sync_point(key, {"checked_at": searched_at})
+
+    @staticmethod
+    def _changed_since(item: dict[str, Any], since: datetime) -> bool:
+        """Whether a search result changed after ``since``; true when its time can't be read."""
+        changed = ((item.get("version") or {}).get("when") or "").replace("Z", "+00:00")
+        if not changed:
+            return True
+        try:
+            when = datetime.fromisoformat(changed)
+        except ValueError:
+            return True
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return when > since
 
     async def _save_batch_checkpoint(
         self, sync_point_key: str, items: list[dict[str, Any]], nothing_skipped: bool,
@@ -2566,6 +2588,8 @@ class ConfluenceConnector(BaseConnector):
             self.logger.info(f"Syncing folders for space: {space.name} ({space_key})")
             await self._sync_folders(space_key)
             await self._remove_folders_gone(space)
+
+            await self._reindex_pages_with_changed_comments(space_key)
 
             for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST):
                 self.logger.info(f"Syncing {record_type.value} records for space: {space.name} ({space_key})")
@@ -4366,9 +4390,15 @@ class ConfluenceConnector(BaseConnector):
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=parent_record_type,
                 weburl=web_url,
-                # Blocks carry the page's comments. A stored HTML page streams as blocks only
-                # once its content changes: a file type change alone does not re-index it.
-                mime_type=MimeTypes.BLOCKS.value,
+                # Blocks carry the page's comments. A stored HTML page keeps HTML until its content
+                # changes (or it is re-indexed), so what is stored matches what was indexed.
+                mime_type=(
+                    existing_record.mime_type
+                    if not is_new and existing_record.mime_type and str(version_number) == existing_record.external_revision_id
+                    else MimeTypes.BLOCKS.value
+                ),
+                # The preview has no renderer for blocks; as for Jira, the page opens at its link.
+                preview_renderable=False,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 is_dependent_node=False,  # Pages are root nodes
@@ -5890,6 +5920,10 @@ class ConfluenceConnector(BaseConnector):
                         limit=batch_size
                     )
 
+                if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                    # Deleted between the list and this read: its replies went with it.
+                    self.logger.warning(f"Replies to comment {comment_id} are gone; indexing the page without them")
+                    break
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     raise CommentsUnreadable(
                         f"replies to comment {comment_id} could not be read "
