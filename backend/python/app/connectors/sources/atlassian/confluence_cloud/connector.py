@@ -587,6 +587,8 @@ class ConfluenceConnector(BaseConnector):
         self._sync_running = False
         self._sync_finished = False
         self._close_after_sync = False
+        # Pages just stored as blocks, whose comment records from older versions are dropped once saved.
+        self._now_blocks: set[str] = set()
         # The status the audit log was refused with this run (401/403), if it was.
         self._audit_log_refused: int | None = None
 
@@ -2516,6 +2518,7 @@ class ConfluenceConnector(BaseConnector):
                 if records_with_permissions:
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments)")
+                    await self._drop_legacy_comment_records()
                 if not within_ids:
                     await self._save_batch_checkpoint(
                         sync_point_key, items_data, listing_complete,
@@ -3222,6 +3225,32 @@ class ConfluenceConnector(BaseConnector):
                 f"Space {space_key}: couldn't remove some deleted attachments; the next sync tries again", unread=False
             )
 
+    async def _drop_legacy_comment_records(self) -> None:
+        """Delete the comment records older versions stored under pages now stored as blocks.
+
+        The blocks carry the page's comments, so the separate records would answer twice.
+        An HTML page keeps them until it is converted (when it next changes or is re-indexed).
+        """
+        page_ids, self._now_blocks = self._now_blocks, set()
+        comment_types = (RecordType.COMMENT, RecordType.INLINE_COMMENT)
+        for page_id in sorted(page_ids):
+            try:
+                queue, owned = [page_id], []
+                while queue:
+                    for child in await self.data_entities_processor.get_records_by_parent(
+                        self.connector_id, queue.pop(), visibility=RecordVisibility.ALL
+                    ):
+                        if child.record_type in comment_types:
+                            owned.append(child)
+                            queue.append(child.external_record_id)
+                for child in owned:
+                    await self.data_entities_processor.on_record_deleted(child.id)
+                if owned:
+                    self.logger.info(f"Removed {len(owned)} comment records of page {page_id}: its blocks hold them")
+            except Exception as e:
+                # shortcut: not retried; the page is blocks now, so these stay until the page is deleted.
+                self.logger.warning(f"Could not remove the old comment records of page {page_id}: {e}")
+
     async def _delete_content_records(self, records: list[Record]) -> bool:
         """Delete pages or blog posts with their file attachments and comments; True if every delete succeeded.
 
@@ -3806,7 +3835,7 @@ class ConfluenceConnector(BaseConnector):
                             webpage_record = (
                                 self._transform_to_folder_file_record(item_data, existing_record)
                                 if record_type == RecordType.FILE
-                                else self._transform_to_webpage_record(item_data, record_type)
+                                else self._transform_to_webpage_record(item_data, record_type, existing_record)
                             )
                             if not webpage_record:
                                 continue
@@ -4766,6 +4795,18 @@ class ConfluenceConnector(BaseConnector):
                 else:
                     record_version = existing_record.version
 
+            mime_type = (
+                existing_record.mime_type
+                if not is_new and isinstance(existing_record.mime_type, str) and existing_record.mime_type
+                and str(version_number) == existing_record.external_revision_id
+                else MimeTypes.BLOCKS.value
+            )
+            if (
+                not is_new and isinstance(existing_record.mime_type, str)
+                and existing_record.mime_type != MimeTypes.BLOCKS.value and mime_type == MimeTypes.BLOCKS.value
+            ):
+                self._now_blocks.add(item_id)
+
             return WebpageRecord(
                 id=record_id,
                 org_id=self.data_entities_processor.org_id,
@@ -4784,12 +4825,7 @@ class ConfluenceConnector(BaseConnector):
                 weburl=web_url,
                 # Blocks carry the page's comments. A stored HTML page keeps HTML until its content
                 # changes (or it is re-indexed), so what is stored matches what was indexed.
-                mime_type=(
-                    existing_record.mime_type
-                    if not is_new and isinstance(existing_record.mime_type, str) and existing_record.mime_type
-                    and str(version_number) == existing_record.external_revision_id
-                    else MimeTypes.BLOCKS.value
-                ),
+                mime_type=mime_type,
                 # The preview has no renderer for blocks; as for Jira, the page opens at its link.
                 preview_renderable=False,
                 source_created_at=source_created_at,
@@ -7098,6 +7134,7 @@ class ConfluenceConnector(BaseConnector):
                 if all_reindex_records:
                     await self.data_entities_processor.reindex_existing_records(all_reindex_records)
                     self.logger.info(f"Published reindex events for {len(all_reindex_records)} non-updated records")
+            await self._drop_legacy_comment_records()
         except Exception as e:
             self.logger.error(f"Error during Confluence reindex: {e}", exc_info=True)
             raise
@@ -7902,6 +7939,7 @@ class ConfluenceConnector(BaseConnector):
             has_html_mime = record.mime_type == MimeTypes.HTML.value
             
             if is_page_or_blogpost and has_html_mime:
+                self._now_blocks.add(record.external_record_id)
                 self.logger.info(
                     f"Detected legacy HTML mime type for {record.record_type.value} "
                     f"{record.record_name} ({record.external_record_id}), updating to BLOCKS"

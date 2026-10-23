@@ -2384,6 +2384,43 @@ class TestSpentQuotaEdges:
         assert int(err.value.headers["Retry-After"]) > 0
 
 
+class TestCommentRecordsFromOlderVersions:
+    """Older versions stored each comment as its own record; a page stored as blocks carries them."""
+
+    async def _html_page_with_comment_records(self, api, db, checkpoints, search) -> ConfluenceConnector:
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        db.records["10"] = db.records["10"].model_copy(update={"mime_type": MimeTypes.HTML.value})
+        comment = CommentRecord(
+            org_id="org-1", record_name="c", record_type=RecordType.COMMENT, external_record_id="c1",
+            external_record_group_id="77", parent_external_record_id="10", parent_record_type=RecordType.WEBPAGE,
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+            version=0, author_source_id="acc-ana",
+        )
+        db.records["c1"] = comment
+        db.records["c2"] = comment.model_copy(update={"id": "reply-id", "external_record_id": "c2",
+                                                      "parent_external_record_id": "c1"})
+        return connector
+
+    async def test_they_go_once_the_page_is_stored_as_blocks(self, api, db, checkpoints, search) -> None:
+        connector = await self._html_page_with_comment_records(api, db, checkpoints, search)
+        search.by_cursor[None] = search_page([v1_page("10", version=2)])
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert db.records["10"].mime_type == MimeTypes.BLOCKS.value
+        assert not {"c1", "c2"} & set(db.records)
+
+    async def test_an_unchanged_html_page_keeps_them(self, api, db, checkpoints, search) -> None:
+        connector = await self._html_page_with_comment_records(api, db, checkpoints, search)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert db.records["10"].mime_type == MimeTypes.HTML.value
+        assert {"c1", "c2"} <= set(db.records), "an HTML page has no comments of its own"
+
+
 class TestSmallAuditFixes:
     async def test_a_site_url_typed_with_wiki_is_not_doubled(self, api, db, checkpoints) -> None:
         connector, _ = await ready_connector(db, checkpoints, {"auth": {
