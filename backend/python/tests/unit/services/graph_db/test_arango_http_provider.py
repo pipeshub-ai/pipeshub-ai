@@ -4885,7 +4885,7 @@ class TestPeopleEmailUniqueIndex:
 
 class TestEnsureIndexes:
     @pytest.mark.asyncio
-    async def test_registers_each_index_once(self, connected_provider):
+    async def test_registers_each_index_once(self, connected_provider) -> None:
         """A total count broke whenever two PRs each added an index, and said nothing
         about which one; a definition repeated by mistake is the error worth catching."""
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
@@ -7060,7 +7060,7 @@ class TestEnsureIndexesExtended:
         assert sum(1 for c in calls if c.args[0] == "valueMentions") == 6
 
     @pytest.mark.asyncio
-    async def test_stage_state_indexes_match_the_pipeline_schema(self, connected_provider):
+    async def test_stage_state_indexes_match_the_pipeline_schema(self, connected_provider) -> None:
         """ensure_pipeline_schema creates the same stage-state indexes on its own, and
         each one is written out in both places, so the two lists can drift apart."""
         index = connected_provider.http_client.ensure_persistent_index = AsyncMock()
