@@ -980,12 +980,13 @@ class ConfluenceConnector(BaseConnector):
                     is_folder = isinstance(record, FileRecord) and not record.is_file
                     record.is_placeholder = not is_folder
                 else:
-                    # Source fetch failed (inaccessible/deleted/unsupported). Re-submit the
-                    # persisted stub anyway so its structural edges — record group (BELONGS_TO)
-                    # and parent (PARENT_CHILD) — which a full sync deletes are still restored.
-                    # Keeps it a stub; access fails closed (inherits the record group's perms).
-                    record, permissions = stub, []
-                    record.is_placeholder = True
+                    # Unchanged since it was filled in, or the source can't be read: keep the stub
+                    # as stored. Writing it again with no permissions replaced its grants with
+                    # none on a full sync, hiding the in-scope pages under it from everyone.
+                    self.data_entities_processor.note_kept_records(self.connector_id, [stub.id])
+                    if stub.parent_external_record_id and stub.parent_record_type:
+                        parent_refs.append((stub.parent_external_record_id, stub.parent_record_type))
+                    continue
                 backfills.append((record, permissions))
                 if record.parent_external_record_id and record.parent_record_type:
                     parent_refs.append((record.parent_external_record_id, record.parent_record_type))
@@ -3189,6 +3190,8 @@ class ConfluenceConnector(BaseConnector):
                             )
                             if not webpage_record:
                                 continue
+                            # A stub of an item the filters leave out stays a stub: only its access changes.
+                            webpage_record.is_placeholder = bool(getattr(existing_record, "is_placeholder", False))
 
                             # Fetch current permissions
                             permissions = await self._fetch_page_permissions(item_id)

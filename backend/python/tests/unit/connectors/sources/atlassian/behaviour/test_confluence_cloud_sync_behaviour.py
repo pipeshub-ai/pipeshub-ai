@@ -1012,15 +1012,40 @@ class TestPlaceholderSweep:
 
         await connector._sweep_placeholder_records("org-1")
 
-        page, folder, gone = db.records["10"], db.records["500"], db.records["404"]
+        page, folder = db.records["10"], db.records["500"]
         assert page.record_name == "Design doc" and page.is_placeholder is True, "content stays unindexed"
         assert page.id == page_stub.id
         assert page.parent_external_record_id == "500" and page.parent_record_type == RecordType.FILE
         assert folder.record_name == "Specs" and folder.is_placeholder is False
         assert folder.access_rule == AccessRule.RESTRICTED
         assert [p.email for p in db.record_permissions["500"]] == ["ana@acme.com"]
-        assert gone.is_placeholder is True and db.record_permissions["404"] == [], "an unreachable ancestor fails closed"
+        assert "404" not in db.records and "gone-id" in db.kept_records, "an unreachable stub is kept as stored, not rewritten"
         assert api.calls("GET", f"{V2}/folders/500"), "the folder was fetched via the folder API"
+
+    async def test_a_filled_in_stub_that_did_not_change_keeps_its_grants(self, api, db, checkpoints) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        page_stub = WebpageRecord(
+            org_id="org-1", record_name="10", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="10",
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+            origin=OriginTypes.CONNECTOR, version=0, is_placeholder=True,
+        )
+        db.placeholders = [page_stub]
+        api.on("GET", f"{V2}/pages/10", {
+            "id": "10", "title": "Design doc", "spaceId": "77",
+            "version": {"number": 4, "createdAt": "2024-05-01T10:00:00.000Z"}, "_links": {"base": WIKI, "webui": "/x/10"},
+        })
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sweep_placeholder_records("org-1")
+        assert [p.email for p in db.record_permissions["10"]] == ["ana@acme.com"]
+        db.placeholders = [db.records["10"]]
+        writes_before = len(db.record_batches)
+
+        await connector._sweep_placeholder_records("org-1")
+
+        assert len(db.record_batches) == writes_before, "an unchanged stub is not written again"
+        assert [p.email for p in db.record_permissions["10"]] == ["ana@acme.com"]
+        assert db.records["10"].id in db.kept_records, "a full sync keeps its edges"
 
     async def test_a_chain_of_folder_ancestors_is_named_in_one_sweep(self, api, db, checkpoints) -> None:
         page_stub = WebpageRecord(
@@ -2050,3 +2075,21 @@ class TestAttachmentsGoneFromAPage:
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         assert {"att1", "att2"} <= set(db.records)
+
+
+class TestAuditLogKeepsStubsAsStubs:
+    async def test_a_restriction_change_on_a_stub_does_not_make_it_indexable(self, api, db, checkpoints, search) -> None:
+        stub = WebpageRecord(
+            org_id="org-1", record_name="Out of scope", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="10",
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID,
+            origin=OriginTypes.CONNECTOR, version=0, is_placeholder=True,
+        )
+        db.records["10"] = stub
+        search.by_cursor[None] = search_page([v1_page("10")])
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content_permissions_by_titles(["Page 10"])
+
+        assert db.records["10"].is_placeholder is True
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED, "its access is still updated"
