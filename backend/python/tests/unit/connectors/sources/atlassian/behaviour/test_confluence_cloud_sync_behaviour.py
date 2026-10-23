@@ -1173,7 +1173,7 @@ class TestMovedPages:
 
     @staticmethod
     def _reads_of(search, page_id: str) -> int:
-        return sum(1 for q in search.queries if re.search(rf"id in \([^)]*{page_id}", q.get("cql", "")))
+        return sum(1 for q in search.queries if re.search(rf"id in \([^)]*\b{page_id}\b", q.get("cql", "")))
 
     async def test_a_page_moved_without_a_new_version_gets_its_new_parent(self, api, db, checkpoints, search) -> None:
         connector = await self._synced(api, db, checkpoints, search)
