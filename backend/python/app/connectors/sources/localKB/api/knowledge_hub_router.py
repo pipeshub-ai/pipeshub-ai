@@ -505,12 +505,26 @@ async def _handle_get_nodes(
             )
 
         # Every listing above keeps to the limit before it is paged; this only
-        # guards against a row that should not have reached it.
+        # guards against a row that should not have reached it. A node inside
+        # the limit can sit in a folder outside it, as a file or folder the
+        # limit names does: that folder is left out of the row's parent, the
+        # browsed node's parent and the breadcrumbs rather than named.
+        named_ids = [i for item in result.items for i in (item.id, item.parentId, item.parent and item.parent.id)]
+        named_ids += [crumb.id for crumb in result.breadcrumbs or []]
+        named_ids.append(result.parentNode.id if result.parentNode else None)
         outside = await ids_outside_connection(
-            request, request.app.state.graph_provider, org_id, user_id, [item.id for item in result.items],
+            request, request.app.state.graph_provider, org_id, user_id, [i for i in named_ids if i],
         )
         if outside:
             result.items = [item for item in result.items if item.id not in outside]
+            for item in result.items:
+                if item.parentId in outside or (item.parent and item.parent.id in outside):
+                    item.parentId = None
+                    item.parent = None
+            if result.breadcrumbs:
+                result.breadcrumbs = [crumb for crumb in result.breadcrumbs if crumb.id not in outside]
+            if result.parentNode and result.parentNode.id in outside:
+                result.parentNode = None
             if result.typed_records:
                 result.typed_records = {k: v for k, v in result.typed_records.items() if k not in outside}
 

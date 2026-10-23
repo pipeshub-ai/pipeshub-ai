@@ -6096,6 +6096,58 @@ class TestEnrichRecordsWithGraphContext:
         assert len(ids) == MAX_RELATED_RECORDS_PER_HIT
         assert rec["node_relations_truncated"] is True
 
+    # --- A connected app's limit ---
+
+    _FILE_LIMIT = {"apps": [], "recordGroups": [], "records": ["rec-attach", "rec-ticket"]}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("outside", "shown"), [({"rec-issue-1"}, False), (set(), True)])
+    async def test_a_dependent_parent_outside_the_limit_is_not_named(self, outside, shown):
+        rec = self._dependent_file_record()
+        gp = self._make_graph_provider()
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        check = AsyncMock(return_value=outside)
+        with patch("app.modules.retrieval.selection_scope.outside_connection", check):
+            await enrich_records_with_graph_context(
+                {"vr-attach": rec}, graph_provider=gp, flattened_results=flattened,
+                virtual_to_record_map={"vr-attach": self._virtual_to_record_map_entry()},
+                user_id="user-1", org_id="org-1", connection_sources=self._FILE_LIMIT,
+            )
+        assert ("parent_node_relation" in flattened[0]) is shown
+        assert set(check.await_args.args[3]) == {"rec-issue-1"}
+        assert check.await_args.args[4] == self._FILE_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_a_parent_relation_outside_the_limit_is_left_out_and_children_stay(self):
+        rec = self._ticket_record()
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}]},
+            incoming_by_type={RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-parent"}]},
+        )
+        check = AsyncMock(side_effect=lambda _gp, _u, _o, ids, _s: set(ids) & {"rec-parent"})
+        with patch("app.modules.retrieval.selection_scope.outside_connection", check):
+            await enrich_records_with_graph_context(
+                {"vr-ticket": rec}, graph_provider=gp, flattened_results=[], org_id="org-1",
+                user_id="user-1", connection_sources=self._FILE_LIMIT,
+            )
+        assert [r["record_id"] for r in rec["node_relations"]] == ["rec-child-1"]
+        assert set(check.await_args.args[3]) == {"rec-parent"}  # only parents are checked
+
+    @pytest.mark.asyncio
+    async def test_without_a_limit_the_parent_is_named_and_no_limit_is_checked(self):
+        rec = self._dependent_file_record()
+        gp = self._make_graph_provider()
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        check = AsyncMock(return_value=set())
+        with patch("app.modules.retrieval.selection_scope.outside_connection", check):
+            await enrich_records_with_graph_context(
+                {"vr-attach": rec}, graph_provider=gp, flattened_results=flattened,
+                virtual_to_record_map={"vr-attach": self._virtual_to_record_map_entry()},
+                user_id="user-1", org_id="org-1",
+            )
+        assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
+        check.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_parent_check_failure_adds_nothing(self):
         rec = self._dependent_file_record()

@@ -1676,7 +1676,7 @@ class KnowledgeBaseService:
                 }
 
             name = record.get("recordName") or "This item"
-            if parent_refusal := self._trashed_parent_refusal(name, members, member_ids):
+            if parent_refusal := await self._trashed_parent_refusal(name, members, member_ids, kb_id, outside):
                 return parent_refusal
 
             renames = await self._restore_renames(kb_id, members, member_ids)
@@ -1728,7 +1728,7 @@ class KnowledgeBaseService:
                     kb_id, batch_id, items, restore_source=DeleteSource.USER, require_live_parent=True
                 )
             except RestoreRefused as refused:
-                return await self._restore_refused_response(refused, name, kb_id, batch_id, org_id)
+                return await self._restore_refused_response(refused, name, kb_id, batch_id, org_id, outside)
 
             return await self._finish_restore(
                 processor, batch_id, members, renames, reindex_ids, reembed_ids=reembed_ids
@@ -1772,10 +1772,29 @@ class KnowledgeBaseService:
         return response
 
     @staticmethod
-    def _trashed_parent_refusal(name: str, members: list[dict], member_ids: set[str]) -> dict | None:
-        """The 409 for a batch whose folder is in the trash outside it, else None."""
+    async def _trashed_parent_refusal(
+        name: str, members: list[dict], member_ids: set[str], kb_id: str, outside: ConnectionCheck | None,
+    ) -> dict | None:
+        """The 409 for a batch whose folder is in the trash outside it, else None.
+
+        A connected app whose limit leaves that folder out is told what to do
+        without the folder's name or id: a file the limit names does not name
+        the folder above it."""
         for item in members:
-            if item.get("parentIsDeleted") and item.get("parentId") not in member_ids:
+            parent_id = item.get("parentId")
+            if item.get("parentIsDeleted") and parent_id not in member_ids:
+                hidden = outside is not None and bool(
+                    await outside(kb_id, [], [{"record": {"_key": parent_id}, "parentId": None}])
+                )
+                if hidden:
+                    return {
+                        "success": False,
+                        "code": 409,
+                        "reason": (
+                            f"'{name}' was in a folder that is also in the trash. Ask someone who can "
+                            f"open that folder to restore it, then restore '{name}'."
+                        ),
+                    }
                 parent = item.get("parentName") or "the folder it was in"
                 return {
                     "success": False,
@@ -1784,12 +1803,13 @@ class KnowledgeBaseService:
                         f"'{name}' was in '{parent}', which is also in the trash. Restore "
                         f"'{parent}' first, then restore '{name}'."
                     ),
-                    "parentId": item.get("parentId"),
+                    "parentId": parent_id,
                 }
         return None
 
     async def _restore_refused_response(
-        self, refused: RestoreRefused, name: str, kb_id: str, batch_id: str, org_id: str
+        self, refused: RestoreRefused, name: str, kb_id: str, batch_id: str, org_id: str,
+        outside: ConnectionCheck | None = None,
     ) -> dict:
         """The answer for a restore the write refused, nothing written.
 
@@ -1799,8 +1819,8 @@ class KnowledgeBaseService:
         try:
             batch = await self.graph_provider.get_records_in_delete_batch(batch_id, org_id)
             members = [item for item in batch if item["record"].get("connectorId") == kb_id]
-            parent_refusal = self._trashed_parent_refusal(
-                name, members, {item["record"]["_key"] for item in members}
+            parent_refusal = await self._trashed_parent_refusal(
+                name, members, {item["record"]["_key"] for item in members}, kb_id, outside,
             )
         except Exception as e:
             self.logger.warning("Could not re-read delete batch %s after a refused restore: %s", batch_id, e)

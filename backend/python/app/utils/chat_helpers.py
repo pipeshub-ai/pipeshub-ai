@@ -7,7 +7,7 @@ import logging
 import math
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from itertools import groupby
 from typing import TYPE_CHECKING, Any, Optional
@@ -1869,6 +1869,7 @@ async def enrich_records_with_graph_context(
     config_service: "ConfigurationService | None" = None,
     *,
     user_id: str,
+    connection_sources: Mapping[str, Iterable[str]] | None = None,
 ) -> None:
     """
     Unified graph context enrichment for search results. Performs both:
@@ -1878,6 +1879,8 @@ async def enrich_records_with_graph_context(
     Only records ``user_id`` may read are shown: hits were adjudicated by the
     search, and everything reached from them is adjudicated here. If that check
     cannot run nothing is added; the hits themselves are left untouched.
+    ``connection_sources`` is a connected app's limit: a parent outside it is
+    not named, so a file the limit names does not name the folder above it.
     All graph/blob calls are batched and deduplicated across both paths.
     """
     if not graph_provider or flattened_results is None:
@@ -1929,6 +1932,19 @@ async def enrich_records_with_graph_context(
         except Exception as exc:
             # Fail closed: without a verdict a related record may be one the user cannot open.
             logger.warning("Graph context enrichment skipped: access check unavailable: %s", exc)
+            return
+    if connection_sources is not None:
+        from app.modules.retrieval.selection_scope import outside_connection
+
+        parent_ids = set(dependent_vrid_to_parent_id.values()) | {
+            rid for _, _, bucket in relation_buckets for rid, entry in bucket.items() if "PARENT" in entry["labels"]
+        }
+        try:
+            readable_ids -= await outside_connection(
+                graph_provider, user_id, org_id, parent_ids & readable_ids - in_context_ids, connection_sources,
+            )
+        except Exception as exc:
+            logger.warning("Graph context enrichment skipped: limit check unavailable: %s", exc)
             return
 
     # Keep each hit's first MAX_RELATED_RECORDS_PER_HIT readable relations (parents

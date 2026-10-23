@@ -413,6 +413,58 @@ class TestTheBatchCheckVerifiesHits:
         assert call.kwargs["connector_ids"] is None       # an unscoped request
 
 
+class TestTheLocationKeepsToTheLimit:
+    """A connected app's limit reaches the Location trail of every hit, so a
+    file the limit names does not name the folder above it."""
+
+    @staticmethod
+    async def _location_limit(retrieval_service, mock_graph_provider, filter_groups):
+        mock_graph_provider.get_accessible_containers = AsyncMock(
+            return_value=_containers(app_ids=frozenset({"a"}))
+        )
+        mock_graph_provider.get_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1"})
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[_hit("v1")])
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v1": "r1"}, node_ids_in_scope=frozenset({"r1"}))
+        )
+        mock_graph_provider.get_selection_nodes = AsyncMock(return_value={
+            "groups": [], "records": [{"id": "r1", "vrid": "v1", "connectorId": "a"}],
+        })
+        mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[{
+            "_key": "r1", "virtualRecordId": "v1", "origin": "CONNECTOR", "recordName": "n",
+            "mimeType": "text/plain", "connectorName": "X", "connectorId": "a", "webUrl": "http://x",
+        }])
+        locations = AsyncMock(return_value={})
+        with patch("app.agents.actions.knowledge_graph.location.resolve_ancestor_locations", locations):
+            result = await retrieval_service.search_with_filters(
+                queries=["q"], user_id="u1", org_id="o1", filter_groups=filter_groups,
+            )
+        assert result.get("searchResults"), result
+        locations.assert_awaited_once()
+        return locations.await_args.kwargs["connection_limit"]
+
+    @pytest.mark.asyncio
+    async def test_without_a_limit_the_trail_is_untouched(self, retrieval_service, mock_graph_provider) -> None:
+        assert await self._location_limit(retrieval_service, mock_graph_provider, {"apps": ["a"]}) is None
+
+    @pytest.mark.asyncio
+    async def test_a_file_limit_reaches_the_trail(self, retrieval_service, mock_graph_provider) -> None:
+        limit = await self._location_limit(retrieval_service, mock_graph_provider, {
+            "apps": ["a"], "records": ["r1"], "strictScope": True,
+            "connectionApps": [], "connectionRecordGroups": [], "connectionRecords": ["r1"],
+        })
+
+        assert limit is not None and set(limit.records) == {"r1"} and not limit.app_ids
+
+    @pytest.mark.asyncio
+    async def test_a_whole_app_limit_reaches_the_trail_as_its_app(self, retrieval_service, mock_graph_provider) -> None:
+        limit = await self._location_limit(
+            retrieval_service, mock_graph_provider, {"apps": ["a"], "connectionApps": ["a"]},
+        )
+
+        assert limit.app_ids == frozenset({"a"})
+
+
 class TestOverfetchSizing:
     def test_no_verify_groups_costs_nothing(self, retrieval_service) -> None:
         """An all-app-level tenant must not pay for a change it cannot benefit

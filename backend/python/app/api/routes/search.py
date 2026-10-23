@@ -25,6 +25,7 @@ from app.agents.actions.knowledge_graph.ops.timeline import (
     timeline_search_response,
     timeline_summaries_enabled,
 )
+from app.api.connection_limit import hide_record_parents_outside_connection
 from app.api.middlewares.auth import (
     connection_limit,
     deny_service_tokens,
@@ -400,6 +401,9 @@ async def search(
                     period_limit = min(period_limit, PERIOD_SEARCH_LIMIT)
                 searched = _timeline_search(span, period_limit, run_search, logger, automatic=automatic)
             results = await _with_search_without_dates(searched, run_search, time_range, logger)
+            await hide_record_parents_outside_connection(
+                request, graph_provider, request.state.user.get("orgId"), request.state.user.get("userId"), results,
+            )
             timer.mark("retrieval")
             timer.emit(
                 logger, "search",

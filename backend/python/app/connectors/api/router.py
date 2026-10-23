@@ -50,6 +50,7 @@ from app.agents.actions.knowledge_graph.views import (
     render_navigation_view,
 )
 from app.api.connection_limit import (
+    hide_record_parents_outside_connection,
     ids_outside_connection,
     keep_path_inside_connection,
     named_inside_connection,
@@ -1860,6 +1861,9 @@ async def get_record_by_id(
                 graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
             )
             await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
+            await hide_record_parents_outside_connection(
+                request, graph_provider, org_id, user_id, has_access, containers=("knowledgeBase", "folder"),
+            )
             record: object = cast("dict[str, object]", has_access).get("record")
             has_access["stageStates"] = await _stage_states_of(graph_provider, record)
             return has_access
