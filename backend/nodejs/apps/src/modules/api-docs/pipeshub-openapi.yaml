@@ -17,7 +17,7 @@ info:
     ## Authentication
     Most endpoints require JWT Bearer token authentication. Some internal endpoints use scoped tokens for service-to-service communication.
 
-    **OAuth 2.0 Bearer tokens** from `POST /oauth2/token` use the same `Authorization: Bearer` header. For **`client_credentials`**, machine tokens may encode `userId === client_id` in the JWT; the **Node API gateway** resolves the OAuth **app creator** and sets the authenticated user accordingly. See the **OAuth Provider** tag for full behavior.
+    **OAuth 2.0 Bearer tokens** from `POST /oauth2/token` use the same `Authorization: Bearer` header. For **`client_credentials`**, machine tokens may encode `userId === client_id` in the JWT; the **Node API gateway** resolves the application's **token identity** — the service account it is pointed at (`tokenIdentityUserId`), or its creator for an application registered before that was required and never bound, and sets the authenticated user accordingly. See the **OAuth Provider** tag for full behavior.
 
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
@@ -74,11 +74,13 @@ tags:
       - Discovery endpoint for automatic configuration
 
       **Machine tokens (`client_credentials`) — gateway and downstream identity:**
-      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the OAuth **app creator**: first using the JWT **`createdBy`** claim when present, otherwise by loading the OAuth app by **`client_id`** from the registry. After verification it sets the authenticated session to that creator.
+      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the application's **token identity**: the service account it is pointed at (**`tokenIdentityUserId`**), or its creator for an application registered before a service account was required and never bound. It reads the JWT **`createdBy`** claim when present, otherwise loads the OAuth app by **`client_id`** from the registry, and sets the authenticated session to that identity.
 
-      **Python services:** Validate `Authorization: Bearer` as today and use the JWT payload’s **`userId`** as-is for scopes and user-scoped logic (which may still equal **`client_id`** for machine tokens).
+      Despite its name, **`createdBy`** carries the identity rather than who registered the application. The gateway rejects a token whose claim disagrees with the application record, so a token minted before the identity changed cannot be used afterwards — pointing an application at a different service account revokes the tokens it has already issued.
 
-      **Operational note:** Prefer tokens whose JWT already carries the creator as **`userId`**; use **`POST /oauth-clients/{appId}/revoke-all-tokens`** and obtain new tokens from **`POST /oauth2/token`** when rotating integrations.
+      **Python services:** Validate `Authorization: Bearer` as today and use the JWT payload’s **`userId`** as-is for scopes and user-scoped logic. Where a machine token carries **`userId === client_id`** and a **`createdBy`** claim, Python copies that claim onto **`userId`** first, so both halves of the product agree on the identity.
+
+      **Operational note:** Prefer tokens whose JWT already carries the identity as **`userId`**; use **`POST /oauth-clients/{appId}/revoke-all-tokens`** and obtain new tokens from **`POST /oauth2/token`** when rotating integrations.
   - name: OAuth Apps
     description: |
       Manage OAuth 2.0 client applications registered with PipesHub.
@@ -486,7 +488,7 @@ components:
         OAuth 2.0 authentication with fine-grained scopes.
         Supports authorization_code (with PKCE) and client_credentials flows.
         OAuth tokens are Bearer JWTs — use the same Authorization header as regular tokens.
-        For **client_credentials**, machine JWTs may use `userId === client_id`; the Node gateway resolves the OAuth app creator — see **OAuth Provider** tag.
+        For **client_credentials**, machine JWTs may use `userId === client_id`; the Node gateway resolves the application's token identity — the service account it is pointed at, or its creator for an application registered before that was required — see **OAuth Provider** tag.
       flows:
         authorizationCode:
           authorizationUrl: /api/v1/oauth2/authorize
@@ -20236,10 +20238,14 @@ paths:
       description: |
         Update an OAuth app's configuration. All body fields are optional — supply only what should change. URL fields (`homepageUrl`, `privacyPolicyUrl`, `termsOfServiceUrl`) accept `null` to clear them.
 
-        **Adding `client_credentials`** to `allowedGrantTypes` answers `400` unless the app already acts as a
-        service account, and unless that account is still present and enabled. Point the app at one first with
-        `PUT /oauth-clients/{appId}/token-identity`. An app that already allows the grant without a service
-        account predates this rule and can still be edited.
+        **Adding `client_credentials`** to `allowedGrantTypes` requires an organisation administrator, because
+        it settles whose documents the application's tokens reach. A non-administrator answers `403`, and that
+        check runs first — so a member sees `403` whether or not a service account is bound.
+
+        For an administrator, it answers `400` unless the application already acts as a service account and that
+        account is still present and enabled. Point the application at one first with
+        `PUT /oauth-clients/{appId}/token-identity`. An application that already allows the grant without a
+        service account predates this rule and can still be edited.
 
         Creator-only: even org admins cannot edit apps owned by other users.
 
@@ -20285,7 +20291,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account. An app the caller did not create is 404, not 403.
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the update adds `client_credentials` and the caller is not an organisation administrator. An app the caller did not create is 404, not 403.
           content:
             application/json:
               schema:
