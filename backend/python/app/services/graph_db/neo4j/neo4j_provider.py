@@ -2902,9 +2902,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         graph_name: str = "knowledgeGraph",
         transaction: str | None = None
     ) -> None:
-        """Delete nodes and all their connected edges"""
+        """Delete nodes and all their connected edges.
+
+        Record deletes also remove type nodes (files/mails/…) by isOfType and by
+        matching id, matching ``_delete_records_with_their_types``.
+        """
         try:
             if not keys:
+                return
+
+            if collection == CollectionNames.RECORDS.value:
+                await self._delete_records_with_their_types(keys, transaction)
                 return
 
             label = collection_to_label(collection)
@@ -9980,17 +9988,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 except Exception as e:
                     self.logger.warning(f"kh scope: could not mark {connector_id} changed after a delete: {e}")
 
-            # Also delete from type-specific collections
-            type_labels = [
-                Neo4jLabel.FILES.value,
-                Neo4jLabel.MAILS.value,
-                Neo4jLabel.WEBPAGES.value,
-                Neo4jLabel.COMMENTS.value,
-                Neo4jLabel.TICKETS.value,
-                Neo4jLabel.ARTIFACTS.value,
-            ]
-
-            for label in type_labels:
+            # Also delete from type-specific collections, including a type node
+            # whose IS_OF_TYPE edge is already gone.
+            for label in self._record_type_labels():
                 delete_query = f"""
                 MATCH (n:{label} {{id: $record_key}})
                 DETACH DELETE n
@@ -10483,6 +10483,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 await self.rollback_transaction(txn_id)
             return (0, edge_collections)
 
+    def _record_type_labels(self) -> list[str]:
+        return sorted({collection_to_label(c) for c in RECORD_TYPE_COLLECTION_MAPPING.values()})
+
     async def _collect_isoftype_targets(self, transaction: str | None, connector_id: str) -> tuple[list[dict], bool]:
         """Collect isOfType target nodes using connectorId directly."""
         if not connector_id:
@@ -10518,6 +10521,151 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to collect isOfType targets: {str(e)}")
             return ([], False)
+
+    async def _delete_type_docs_matching_record_keys(
+        self, transaction: str | None, keys: list[str]
+    ) -> int:
+        """Remove type nodes whose id matches a record id (edge optional)."""
+        if not keys or not self.client:
+            return 0
+        deleted = 0
+        for label in self._record_type_labels():
+            results = await self.client.execute_query(
+                f"""
+                UNWIND $keys AS rid
+                OPTIONAL MATCH (t:`{label}` {{id: rid}})
+                WITH t, rid WHERE t IS NOT NULL
+                DETACH DELETE t
+                RETURN rid
+                """,
+                parameters={"keys": keys},
+                txn_id=transaction,
+            )
+            deleted += len(results or [])
+        return deleted
+
+    async def _sweep_orphan_type_docs_for_org(
+        self, org_id: str, transaction: str | None = None
+    ) -> int:
+        """Delete type nodes in ``org_id`` whose matching Record no longer exists."""
+        if not org_id or not self.client:
+            return 0
+        deleted = 0
+        for label in self._record_type_labels():
+            results = await self.client.execute_query(
+                f"""
+                MATCH (t:`{label}` {{orgId: $org_id}})
+                WHERE NOT EXISTS {{ MATCH (:Record {{id: t.id}}) }}
+                  AND NOT EXISTS {{ MATCH (:Record)-[:IS_OF_TYPE]->(t) }}
+                WITH t, t.id AS id
+                DETACH DELETE t
+                RETURN id
+                """,
+                parameters={"org_id": org_id},
+                txn_id=transaction,
+            )
+            deleted += len(results or [])
+        # Mail, Comment and Meeting nodes are not given an orgId. A node whose
+        # Record is already gone is an orphan on every tenant.
+        for label in (
+            collection_to_label(CollectionNames.MAILS.value),
+            collection_to_label(CollectionNames.COMMENTS.value),
+            collection_to_label(CollectionNames.MEETINGS.value),
+        ):
+            results = await self.client.execute_query(
+                f"""
+                MATCH (t:`{label}`)
+                WHERE t.orgId IS NULL
+                  AND NOT EXISTS {{ MATCH (:Record {{id: t.id}}) }}
+                  AND NOT EXISTS {{ MATCH (:Record)-[:IS_OF_TYPE]->(t) }}
+                WITH t, t.id AS id
+                DETACH DELETE t
+                RETURN id
+                """,
+                txn_id=transaction,
+            )
+            deleted += len(results or [])
+        if deleted:
+            self.logger.info(
+                f"🧹 Swept {deleted} orphan type node(s) for org {org_id}"
+            )
+        return deleted
+
+    async def _collect_connector_taxonomy_targets(
+        self, connector_id: str
+    ) -> tuple[dict[str, list[str]], bool]:
+        """Ids of the taxonomy nodes this connector's records link, by collection.
+
+        Read before the records go, so the post-delete pass only considers
+        these nodes. A node another record is about to link (its relationship
+        not yet committed) looks unlinked to any read, so an org-wide sweep
+        could take it from a live record.
+        """
+        if not self.client:
+            return ({}, False)
+        targets: dict[str, list[str]] = {}
+        try:
+            for collection in sorted(TAXONOMY_COLLECTIONS):
+                label = collection_to_label(collection)
+                rel = edge_collection_to_relationship(TAXONOMY_EDGE_COLLECTIONS[collection])
+                results = await self.client.execute_query(
+                    f"""
+                    MATCH (:Record {{connectorId: $connector_id}})-[:{rel}]->(t:`{label}`)
+                    RETURN DISTINCT t.id AS id
+                    """,
+                    parameters={"connector_id": connector_id},
+                )
+                ids = [row["id"] for row in results or [] if row.get("id")]
+                if ids:
+                    targets[collection] = ids
+            return (targets, True)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to collect taxonomy targets: {str(e)}")
+            return ({}, False)
+
+    async def _delete_unlinked_taxonomy_nodes(
+        self,
+        org_id: str,
+        targets: dict[str, list[str]],
+        batch_size: int = 1000,
+    ) -> int:
+        """Delete the given taxonomy nodes of ``org_id`` that no record links.
+
+        A merge loser (mergedInto set) is left for the redirect, and so is the
+        node a loser redirects to.
+        """
+        if not org_id or not self.client:
+            return 0
+        deleted = 0
+        for collection, ids in targets.items():
+            label = collection_to_label(collection)
+            rel = edge_collection_to_relationship(TAXONOMY_EDGE_COLLECTIONS[collection])
+            for i in range(0, len(ids), batch_size):
+                results = await self.client.execute_query(
+                    f"""
+                    OPTIONAL MATCH (other:`{label}` {{orgId: $org_id}})
+                    WHERE other.mergedInto IN $ids
+                    WITH collect(DISTINCT other.mergedInto) AS merge_winners
+                    MATCH (t:`{label}` {{orgId: $org_id}})
+                    WHERE t.id IN $ids
+                      AND NOT t.id IN merge_winners
+                      AND t.mergedInto IS NULL
+                      AND NOT EXISTS {{ MATCH (:Record)-[:{rel}]->(t) }}
+                    OPTIONAL MATCH (a:{TAXONOMY_ALIAS_LABEL})-[:{TAXONOMY_ALIAS_REL}]->(t)
+                    WHERE NOT EXISTS {{
+                        MATCH (a)-[:{TAXONOMY_ALIAS_REL}]->(other) WHERE other <> t
+                    }}
+                    WITH t, t.id AS id, collect(a) AS aliases
+                    FOREACH (alias IN aliases | DETACH DELETE alias)
+                    DETACH DELETE t
+                    RETURN id
+                    """,
+                    parameters={"org_id": org_id, "ids": ids[i:i + batch_size]},
+                )
+                deleted += len(results or [])
+        if deleted:
+            self.logger.info(f"🧹 Removed {deleted} unlinked taxonomy node(s) for org {org_id}")
+        return deleted
 
     async def _delete_isoftype_targets_from_collected(
         self,
@@ -10894,6 +11042,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "error": "Failed to collect isOfType targets. Cannot safely delete type nodes."
                 }
 
+            # Labels are only cleanup: a failed read skips the label pass, not the delete.
+            taxonomy_targets, taxonomy_collect_success = await self._collect_connector_taxonomy_targets(
+                connector_id
+            )
+
             self.logger.debug(
                 f"📊 Collected for deletion - Records: {len(collected['record_keys'])}, "
                 f"RecordGroups: {len(collected['record_group_keys'])}, Roles: {len(collected['role_keys'])}, "
@@ -10939,6 +11092,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 deleted_isoftype, _ = await self._delete_isoftype_targets_from_collected(
                     transaction,
                     isoftype_targets
+                )
+                # Same-id type nodes cover records whose IS_OF_TYPE edge was already gone.
+                deleted_isoftype += await self._delete_type_docs_matching_record_keys(
+                    transaction, collected["record_keys"]
                 )
 
                 # Step 2: Delete records
@@ -11005,10 +11162,63 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if created_transaction:
                     await self.commit_transaction(transaction)
 
+                orphan_types = 0
+                orphan_labels = 0
+                # A caller-owned transaction has not committed. Reading late
+                # records outside it would see rows this delete is removing.
+                if created_transaction:
+                    try:
+                        late = await self.client.execute_query(
+                            """
+                            MATCH (r:Record {connectorId: $connector_id})
+                            RETURN r.id AS id, r.virtualRecordId AS virtualRecordId
+                            """,
+                            parameters={"connector_id": connector_id},
+                        )
+                        late_keys = [row["id"] for row in late or [] if row.get("id")]
+                        if late_keys:
+                            self.logger.warning(
+                                f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"
+                            )
+                            await self._delete_records_with_their_types(late_keys, None)
+                            deleted_records += len(late_keys)
+                            vrids = collected.get("virtual_record_ids")
+                            if needs_virtual_record_ids and isinstance(vrids, list):
+                                removed = {row["id"] for row in late or [] if row.get("id")}
+                                vrids.extend(
+                                    row["virtualRecordId"]
+                                    for row in late or []
+                                    if row.get("id") in removed
+                                    and isinstance(row.get("virtualRecordId"), str)
+                                    and row["virtualRecordId"]
+                                )
+                    except Exception as late_err:
+                        self.logger.warning(
+                            f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
+                        )
+                    try:
+                        orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
+                    except Exception as sweep_err:
+                        self.logger.warning(
+                            f"⚠️ Post-delete orphan type sweep failed for connector {connector_id} "
+                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                        )
+                    try:
+                        if taxonomy_collect_success:
+                            orphan_labels = await self._delete_unlinked_taxonomy_nodes(
+                                org_id, taxonomy_targets
+                            )
+                    except Exception as sweep_err:
+                        self.logger.warning(
+                            f"⚠️ Post-delete orphan taxonomy sweep failed for connector {connector_id} "
+                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                        )
+
                 self.logger.debug(
                     f"✅ Connector instance {connector_id} deleted successfully. "
                     f"Records: {deleted_records}, RecordGroups: {deleted_rg}, "
                     f"Roles: {deleted_roles}, Groups: {deleted_groups}, "
+                    f"Orphan type docs: {orphan_types}, orphan labels: {orphan_labels}, "
                     f"Blocks: {deleted_blocks}, isOfType targets: {deleted_isoftype}"
                 )
 
@@ -11019,6 +11229,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "deleted_roles_count": deleted_roles,
                     "deleted_groups_count": deleted_groups,
                     "deleted_blocks_count": deleted_blocks,
+                    "deleted_isoftype_targets_count": deleted_isoftype,
+                    "deleted_orphan_type_docs_count": orphan_types,
+                    "deleted_orphan_taxonomy_count": orphan_labels,
                     "virtual_record_ids": collected["virtual_record_ids"],
                     # The connector's own record groups went with it. A point
                     # shared with a live connector survives the purge, so the

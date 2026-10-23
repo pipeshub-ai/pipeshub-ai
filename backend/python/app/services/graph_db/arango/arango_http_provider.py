@@ -10109,8 +10109,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 return False
 
+            # Collect before the edges go. A type document whose key differs from the
+            # record (or that lives outside files/mails) is otherwise left behind.
+            isoftype_targets = await self._collect_isoftype_targets_for_keys(transaction, [node_key])
+
             # Step 1: Remove every edge of the record
             await self._delete_every_edge_of_record(node_key, transaction)
+            if isoftype_targets:
+                await self._delete_isoftype_targets_from_collected(
+                    transaction, isoftype_targets, [], raise_on_error=transaction is not None
+                )
+            await self._delete_type_docs_matching_record_keys(transaction, [node_key])
 
             # Step 2: Drop the record's projected code blocks. They are joined to the
             # record by field, not by an edge, so the sweep above never reaches them.
@@ -10666,6 +10675,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 failed_collections.append(edge_collection)
         return (total_deleted, failed_collections)
 
+    def _record_type_collections(self) -> list[str]:
+        return sorted(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+
+    @staticmethod
+    def _isoftype_targets_of(rows: list) -> list[dict]:
+        """Every type target on an inventory row, including the single-target shape."""
+        targets: list[dict] = []
+        for row in rows or []:
+            many = row.get("type_targets")
+            if many:
+                targets.extend(target for target in many if target)
+            elif row.get("type_target"):
+                targets.append(row["type_target"])
+        return targets
+
     async def _collect_isoftype_targets(self, transaction: str | None, connector_id: str) -> tuple[list[dict], bool]:
         """
         Collect isOfType target nodes (files, mails, etc.) BEFORE deleting edges.
@@ -10682,6 +10706,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET record_id = CONCAT('records/', record._key)
             FOR edge IN @@isOfType
                 FILTER edge._from == record_id
+                FILTER DOCUMENT(edge._to) != null
                 LET target = PARSE_IDENTIFIER(edge._to)
                 RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
         """
@@ -10702,6 +10727,223 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Error collecting isOfType targets: {str(e)}")
             return ([], False)
+
+    async def _collect_isoftype_targets_for_keys(
+        self, transaction: str | None, keys: list[str]
+    ) -> list[dict]:
+        """Collect isOfType targets for specific record keys before their edges go."""
+        if not keys:
+            return []
+        collect_query = """
+        FOR key IN @keys
+            LET record_id = CONCAT('records/', key)
+            FOR edge IN @@isOfType
+                FILTER edge._from == record_id
+                FILTER DOCUMENT(edge._to) != null
+                LET target = PARSE_IDENTIFIER(edge._to)
+                RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
+        """
+        results = await self.http_client.execute_aql(
+            query=collect_query,
+            bind_vars={
+                "@isOfType": CollectionNames.IS_OF_TYPE.value,
+                "keys": keys,
+            },
+            txn_id=transaction,
+        )
+        return results or []
+
+    async def _delete_type_docs_matching_record_keys(
+        self, transaction: str | None, keys: list[str], batch_size: int = 5000
+    ) -> int:
+        """Remove type documents whose `_key` matches a record id (edge optional).
+
+        batch_upsert_records can leave a type doc without an isOfType edge; matching
+        by key covers that the same way Neo4j's `_delete_records_with_their_types` does.
+        """
+        if not keys:
+            return 0
+        deleted = 0
+        for collection in self._record_type_collections():
+            for i in range(0, len(keys), batch_size):
+                results = await self.http_client.execute_aql(
+                    """
+                    FOR key IN @keys
+                        LET doc = DOCUMENT(@@collection, key)
+                        FILTER doc != null
+                        REMOVE doc IN @@collection
+                        RETURN 1
+                    """,
+                    bind_vars={"@collection": collection, "keys": keys[i:i + batch_size]},
+                    txn_id=transaction,
+                )
+                deleted += len(results or [])
+        return deleted
+
+    async def _sweep_orphan_type_docs_for_org(
+        self, org_id: str, transaction: str | None = None
+    ) -> int:
+        """Delete type documents in ``org_id`` whose matching record no longer exists.
+
+        Type docs store no connectorId, so connector delete can only find leftovers
+        by the missing record.
+        """
+        if not org_id:
+            return 0
+        deleted = 0
+        for collection in self._record_type_collections():
+            results = await self.http_client.execute_aql(
+                """
+                FOR d IN @@collection
+                    FILTER d.orgId == @org_id
+                    FILTER DOCUMENT(CONCAT(@records, '/', d._key)) == null
+                    FILTER LENGTH(
+                        FOR e IN @@is_of_type
+                            FILTER e._to == d._id
+                            LIMIT 1
+                            RETURN 1
+                    ) == 0
+                    REMOVE d IN @@collection
+                    RETURN 1
+                """,
+                bind_vars={
+                    "@collection": collection,
+                    "org_id": org_id,
+                    "records": CollectionNames.RECORDS.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                },
+                txn_id=transaction,
+            )
+            deleted += len(results or [])
+        # Mails, comments and meetings cannot store orgId. A document whose record
+        # is already gone belongs to no org; the record is written before the type
+        # document, so this does not see an insert that is still in progress.
+        for collection in (
+            CollectionNames.MAILS.value,
+            CollectionNames.COMMENTS.value,
+            CollectionNames.MEETINGS.value,
+        ):
+            results = await self.http_client.execute_aql(
+                """
+                FOR d IN @@collection
+                    FILTER DOCUMENT(CONCAT(@records, '/', d._key)) == null
+                    FILTER LENGTH(
+                        FOR e IN @@is_of_type
+                            FILTER e._to == d._id
+                            LIMIT 1
+                            RETURN 1
+                    ) == 0
+                    REMOVE d IN @@collection
+                    RETURN 1
+                """,
+                bind_vars={
+                    "@collection": collection,
+                    "records": CollectionNames.RECORDS.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                },
+                txn_id=transaction,
+            )
+            deleted += len(results or [])
+        if deleted:
+            self.logger.info(
+                f"🧹 Swept {deleted} orphan type document(s) for org {org_id}"
+            )
+        return deleted
+
+    async def _collect_connector_taxonomy_targets(
+        self, connector_id: str
+    ) -> tuple[dict[str, list[str]], bool]:
+        """Keys of the taxonomy nodes this connector's records link, by collection.
+
+        Read before the connector's edges go, so the post-delete pass only
+        considers these nodes. A node another record is about to link (its
+        belongsTo edge not yet committed) looks unlinked to any read, so an
+        org-wide sweep could take it from a live record.
+        """
+        targets: dict[str, list[str]] = {}
+        try:
+            for collection in sorted(TAXONOMY_COLLECTIONS):
+                results = await self.http_client.execute_aql(
+                    """
+                    FOR r IN @@records
+                        FILTER r.connectorId == @connector_id
+                        FOR e IN @@edge
+                            FILTER e._from == r._id
+                            FILTER STARTS_WITH(e._to, @prefix)
+                            RETURN DISTINCT PARSE_IDENTIFIER(e._to).key
+                    """,
+                    bind_vars={
+                        "@records": CollectionNames.RECORDS.value,
+                        "@edge": TAXONOMY_EDGE_COLLECTIONS[collection],
+                        "connector_id": connector_id,
+                        "prefix": f"{collection}/",
+                    },
+                )
+                keys = [k for k in results or [] if isinstance(k, str)]
+                if keys:
+                    targets[collection] = keys
+            return (targets, True)
+        except Exception as e:
+            self.logger.error(f"❌ Error collecting taxonomy targets: {str(e)}")
+            return ({}, False)
+
+    async def _delete_unlinked_taxonomy_nodes(
+        self,
+        org_id: str,
+        targets: dict[str, list[str]],
+        batch_size: int = 1000,
+    ) -> int:
+        """Delete the given taxonomy nodes of ``org_id`` that no live record links.
+
+        A merge loser (mergedInto set) is left for the redirect, and so is the
+        node a loser redirects to. Hierarchy edges go only with a node removed here.
+        """
+        if not org_id:
+            return 0
+        deleted = 0
+        for collection, keys in targets.items():
+            for i in range(0, len(keys), batch_size):
+                results = await self.http_client.execute_aql(
+                    """
+                    LET merge_winners = (
+                        FOR other IN @@collection
+                            FILTER other.orgId == @org_id AND other.mergedInto IN @keys
+                            RETURN DISTINCT other.mergedInto
+                    )
+                    FOR key IN @keys
+                        FILTER key NOT IN merge_winners
+                        LET node = DOCUMENT(@@collection, key)
+                        FILTER node != null
+                        FILTER node.orgId == @org_id
+                        FILTER node.mergedInto == null
+                        FILTER LENGTH(
+                            FOR e IN @@edge
+                                FILTER e._to == node._id
+                                FILTER DOCUMENT(e._from) != null
+                                LIMIT 1
+                                RETURN 1
+                        ) == 0
+                        LET removed_edges = (
+                            FOR h IN @@hierarchy
+                                FILTER h._from == node._id OR h._to == node._id
+                                REMOVE h IN @@hierarchy
+                                RETURN 1
+                        )
+                        REMOVE node IN @@collection
+                        RETURN 1
+                    """,
+                    bind_vars={
+                        "keys": keys[i:i + batch_size],
+                        "@collection": collection,
+                        "@edge": TAXONOMY_EDGE_COLLECTIONS[collection],
+                        "@hierarchy": CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                        "org_id": org_id,
+                    },
+                )
+                deleted += len(results or [])
+        if deleted:
+            self.logger.info(f"🧹 Removed {deleted} unlinked taxonomy node(s) for org {org_id}")
+        return deleted
 
     async def _delete_isoftype_targets_from_collected(
         self,
@@ -11060,9 +11302,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         6. Delete the nodes themselves
         7. Return virtualRecordIds for Qdrant cleanup
 
-        Classification nodes (departments, categories, topics, languages) are NOT deleted
-        as they are shared resources.
-        Users are NOT deleted - only userAppRelation edges are removed.
+        Taxonomy nodes (categories, topics, languages, subcategories) that no
+        remaining record links to are swept after the connector's nodes go.
+        Departments stay — they are org seed data. Users are NOT deleted; only
+        userAppRelation edges are removed.
 
         Args:
             connector_id: The connector instance ID (_key in apps collection)
@@ -11113,6 +11356,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "success": False,
                     "error": "Failed to collect isOfType targets. Cannot safely delete type nodes (files, mails, etc.)."
                 }
+
+            # Labels are only cleanup: a failed read skips the label pass, not the delete.
+            taxonomy_targets, taxonomy_collect_success = await self._collect_connector_taxonomy_targets(
+                connector_id
+            )
 
             # Step 5: Delete edges OUTSIDE the main transaction.
             # Edge deletion runs non-transactionally to avoid lock contention when processing
@@ -11199,6 +11447,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     transaction,
                     isoftype_targets,
                     edge_collections
+                )
+                # Same-key type docs cover records whose isOfType edge was already gone.
+                deleted_isoftype += await self._delete_type_docs_matching_record_keys(
+                    transaction, collected["record_keys"]
                 )
 
                 # Step 8: Delete records (CRITICAL - must succeed completely)
@@ -11325,6 +11577,69 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if created_transaction:
                     await self.commit_transaction(transaction)
 
+                # A sync that did not stop in time can commit a record after the
+                # collect above. One more pass removes those, then the sweeps.
+                # Only after this method committed: a caller-owned transaction
+                # has not committed, and a read outside it would see rows this
+                # delete is removing.
+                orphan_types = 0
+                orphan_labels = 0
+                if created_transaction:
+                    try:
+                        late_rows = await self.http_client.execute_aql(
+                            """
+                            FOR r IN @@records
+                                FILTER r.connectorId == @connector_id
+                                RETURN { key: r._key, virtualRecordId: r.virtualRecordId }
+                            """,
+                            bind_vars={
+                                "@records": CollectionNames.RECORDS.value,
+                                "connector_id": connector_id,
+                            },
+                        )
+                        late_keys = [
+                            row["key"] for row in late_rows or []
+                            if isinstance(row, dict) and row.get("key")
+                        ]
+                        if late_keys:
+                            self.logger.warning(
+                                f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"
+                            )
+                            await self.delete_nodes_and_edges(late_keys, CollectionNames.RECORDS.value)
+                            deleted_records += len(late_keys)
+                            vrids = collected.get("virtual_record_ids")
+                            if needs_virtual_record_ids and isinstance(vrids, list):
+                                removed = set(late_keys)
+                                vrids.extend(
+                                    row["virtualRecordId"]
+                                    for row in late_rows or []
+                                    if isinstance(row, dict)
+                                    and row.get("key") in removed
+                                    and isinstance(row.get("virtualRecordId"), str)
+                                    and row["virtualRecordId"]
+                                )
+                    except Exception as late_err:
+                        self.logger.warning(
+                            f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
+                        )
+                    try:
+                        orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
+                    except Exception as sweep_err:
+                        self.logger.warning(
+                            f"⚠️ Post-delete orphan type sweep failed for connector {connector_id} "
+                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                        )
+                    try:
+                        if taxonomy_collect_success:
+                            orphan_labels = await self._delete_unlinked_taxonomy_nodes(
+                                org_id, taxonomy_targets
+                            )
+                    except Exception as sweep_err:
+                        self.logger.warning(
+                            f"⚠️ Post-delete orphan taxonomy sweep failed for connector {connector_id} "
+                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                        )
+
                 self.logger.debug(
                     f"✅ Connector instance {connector_id} deleted successfully. "
                     f"Records: {deleted_records}/{len(collected['record_keys'])}, "
@@ -11332,6 +11647,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     f"Roles: {deleted_roles}/{len(collected['role_keys'])}, "
                     f"Groups: {deleted_groups}/{len(collected['group_keys'])}, "
                     f"Edges: {deleted_edges}, "
+                    f"Orphan type docs: {orphan_types}, orphan labels: {orphan_labels}, "
                     f"Blocks: {deleted_blocks}, "
                     f"isOfType targets: {deleted_isoftype}"
                 )
@@ -11345,6 +11661,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "deleted_edges_count": deleted_edges,
                     "deleted_blocks_count": deleted_blocks,
                     "deleted_isoftype_targets_count": deleted_isoftype,
+                    "deleted_orphan_type_docs_count": orphan_types,
+                    "deleted_orphan_taxonomy_count": orphan_labels,
                     "virtual_record_ids": collected["virtual_record_ids"],
                     # The connector's own record groups went with it. A point
                     # shared with a live connector survives the purge, so the
@@ -12874,9 +13192,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         Steps:
         1. Get the graph's edge collections (cached after a successful read)
-        2. Delete all edges FROM the nodes, then all edges TO the nodes, in every
+        2. When deleting records, collect isOfType targets before edges go
+        3. Delete all edges FROM the nodes, then all edges TO the nodes, in every
            edge collection: one statement each, so the edge index serves both
-        3. Delete the nodes themselves
+        4. Delete type documents for records (via collected edges and same key)
+        5. Delete the nodes themselves
 
         Without a transaction each statement would commit on its own, so a failure
         partway left the edges already removed (the permission edges go early) with
@@ -12892,6 +13212,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         owns_transaction = transaction is None
         txn = transaction
+        deleting_records = collection == CollectionNames.RECORDS.value
+        type_collections = self._record_type_collections() if deleting_records else []
         try:
             self.logger.debug(f"🚀 Starting deletion of nodes {keys} from '{collection}' and their edges in graph '{graph_name}'.")
 
@@ -12904,7 +13226,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ))
 
             if owns_transaction:
-                txn = await self.begin_transaction(read=[], write=[collection, *edge_collections])
+                txn = await self.begin_transaction(
+                    read=[],
+                    write=[collection, *edge_collections, *type_collections],
+                )
+
+            isoftype_targets: list[dict] = []
+            if deleting_records:
+                isoftype_targets = await self._collect_isoftype_targets_for_keys(txn, keys)
 
             # Construct the full node IDs to match against _from and _to fields
             node_ids = [f"{collection}/{key}" for key in keys]
@@ -12937,7 +13266,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             self.logger.debug(f"🔥 Successfully ran edge cleanup for nodes: {keys}")
 
-            # Step 3: Delete the nodes themselves
+            if deleting_records:
+                if isoftype_targets:
+                    await self._delete_isoftype_targets_from_collected(
+                        txn, isoftype_targets, edge_collections, raise_on_error=True
+                    )
+                await self._delete_type_docs_matching_record_keys(txn, keys)
+
+            # Delete the nodes themselves
             await self.delete_nodes(keys, collection, txn)
 
             if owns_transaction:
@@ -15160,14 +15496,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 LET records_with_type = (
                     FOR rec IN all_records
-                        LET tt = FIRST(
+                        LET targets = (
                             FOR isEdge IN @@is_of_type
                                 FILTER isEdge._from == rec._id
                                 LET t = DOCUMENT(isEdge._to)
                                 FILTER t != null
                                 RETURN { collection: PARSE_IDENTIFIER(isEdge._to).collection, key: PARSE_IDENTIFIER(isEdge._to).key, full_id: isEdge._to, doc: t }
                         )
-                        RETURN { record: rec, type_target: tt }
+                        RETURN { record: rec, type_target: FIRST(targets), type_targets: targets }
                 )
                 LET tree_edges = @folder_id == null ? [] : UNIQUE(
                     FOR root IN valid_roots
@@ -15206,7 +15542,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 record_keys = [rt["record"]["_key"] for rt in records_with_type]
                 if within_folder_id and valid_root_keys:
                     await self._abort_if_records_moved_in(valid_root_keys, record_keys, follow_types, connector_id)
-                type_targets = [rt["type_target"] for rt in records_with_type if rt.get("type_target")]
+                type_targets = self._isoftype_targets_of(records_with_type)
                 failed_records = [
                     {"record_id": rid, "reason": "Validation failed"}
                     for rid in record_ids if rid not in valid_root_keys
@@ -15298,21 +15634,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     await self._delete_isoftype_targets_from_collected(
                         txn_id, type_targets, edge_collections, raise_on_error=True
                     )
-                # batch_upsert_records writes the isOfType edge after the type doc, so
-                # one can exist without it; it carries its record's key.
-                unlinked: dict[str, list[str]] = {}
-                for rt in records_with_type:
-                    collection = RECORD_TYPE_COLLECTION_MAPPING.get(rt["record"].get("recordType"))
-                    if collection and not rt.get("type_target"):
-                        unlinked.setdefault(collection, []).append(rt["record"]["_key"])
-                for collection, keys in unlinked.items():
-                    await self.execute_query(
-                        "FOR key IN @keys REMOVE key IN @@collection OPTIONS { ignoreErrors: true }",
-                        bind_vars={"keys": keys, "@collection": collection},
-                        transaction=txn_id,
-                    )
                 if record_keys:
                     await self.delete_blocks_for_records(record_keys, transaction=txn_id)
+                    # Same-key type docs whose isOfType edge was already gone.
+                    await self._delete_type_docs_matching_record_keys(txn_id, record_keys)
                     await self._remove_records_or_raise(txn_id, record_keys)
                 if within_folder_id and valid_root_keys:
                     # Again after the deletes: a move committed while they ran is outside
@@ -15960,7 +16285,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 LIMIT 1
                                 RETURN 1
                         ) == 0
-                    LET target = !due ? null : FIRST(
+                    LET targets = !due ? [] : (
                         FOR e IN @@is_of_type
                             FILTER e._from == rec._id
                             LET t = DOCUMENT(e._to)
@@ -15972,7 +16297,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 doc: t
                             }
                     )
-                    RETURN { record: rec, type_target: target, due: due }
+                    RETURN { record: rec, type_target: FIRST(targets), type_targets: targets, due: due }
                 """,
                 bind_vars={
                     "keys": keys_in,
@@ -15999,9 +16324,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 if failed_edges:
                     raise RuntimeError(f"Could not remove the edges of purged records from {failed_edges}")
-                targets = [row["type_target"] for row in due if row.get("type_target")]
+                targets = self._isoftype_targets_of(due)
                 if targets:
                     await self._delete_isoftype_targets_from_collected(txn_id, targets, edge_collections)
+                await self._delete_type_docs_matching_record_keys(txn_id, keys)
                 removed, failed_batches = await self._delete_nodes_by_keys(
                     txn_id, keys, CollectionNames.RECORDS.value
                 )
@@ -16219,7 +16545,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 inventory_query = """
                 LET rec = DOCUMENT('records', @record_id)
                 FILTER rec != null AND rec.isDeleted != true
-                LET tt = FIRST(
+                LET targets = (
                     FOR isEdge IN @@is_of_type
                         FILTER isEdge._from == rec._id
                         LET t = DOCUMENT(isEdge._to)
@@ -16228,7 +16554,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 RETURN {
                     valid_root_keys: [rec._key],
-                    records_with_type: [{ record: rec, type_target: tt }]
+                    records_with_type: [{ record: rec, type_target: FIRST(targets), type_targets: targets }]
                 }
                 """
                 inv_results = await self.execute_query(
@@ -16243,7 +16569,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 valid_root_keys = inventory.get("valid_root_keys", [])
                 records_with_type = inventory.get("records_with_type", [])
                 record_keys = [rt["record"]["_key"] for rt in records_with_type]
-                type_targets = [rt["type_target"] for rt in records_with_type if rt.get("type_target")]
+                type_targets = self._isoftype_targets_of(records_with_type)
                 # Read before the edge sweep below removes them.
                 taxonomy_refs = await deleted_record_taxonomy_refs(
                     self, [rt["record"] for rt in records_with_type], self.logger
@@ -16258,6 +16584,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     await self._delete_isoftype_targets_from_collected(txn_id, type_targets, edge_collections)
                 if record_keys:
                     await self.delete_blocks_for_records(record_keys, transaction=txn_id)
+                    await self._delete_type_docs_matching_record_keys(txn_id, record_keys)
                     await self._remove_records_or_raise(txn_id, record_keys)
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)

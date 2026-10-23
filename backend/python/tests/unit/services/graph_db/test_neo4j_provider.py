@@ -1517,10 +1517,12 @@ class TestAdvancedEdgeOperations:
 
         await neo4j_provider.delete_nodes_and_edges(["r1", "r2"], "records", transaction="txn-delne")
 
+        # Record deletes go through _delete_records_with_their_types (type nodes too).
         neo4j_provider.client.execute_query.assert_awaited_once()
         kwargs = neo4j_provider.client.execute_query.await_args.kwargs
-        assert kwargs["parameters"] == {"keys": ["r1", "r2"]}
+        assert kwargs["parameters"] == {"record_ids": ["r1", "r2"]}
         assert kwargs["txn_id"] == "txn-delne"
+        assert "IS_OF_TYPE" in neo4j_provider.client.execute_query.await_args.args[0]
 
     @pytest.mark.asyncio
     async def test_delete_nodes_and_edges_raises_on_exception(self, neo4j_provider: Neo4jProvider):

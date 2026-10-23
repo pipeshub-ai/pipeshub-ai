@@ -2242,11 +2242,11 @@ class TestDeleteRecordsAndRelations:
 
         assert await connected_provider.delete_records_and_relations("r1", hard_delete=True) is True
 
-        swept = [
-            c.args[1]["@edge_collection"]
-            for c in connected_provider.http_client.execute_aql.await_args_list
-            if "@edge_collection" in c.args[1]
-        ]
+        swept = []
+        for call in connected_provider.http_client.execute_aql.await_args_list:
+            bind = call.args[1] if len(call.args) > 1 and isinstance(call.args[1], dict) else call.kwargs.get("bind_vars") or {}
+            if "@edge_collection" in bind:
+                swept.append(bind["@edge_collection"])
         assert swept == ["inheritPermissions", "inheritPermissions", "entityRelations", "entityRelations"]
 
     async def test_a_failed_edge_delete_fails_the_delete(self, connected_provider) -> None:

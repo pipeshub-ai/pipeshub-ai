@@ -5176,9 +5176,7 @@ class TestDeleteRecordsAndRelationsWithTransaction:
     async def test_hard_delete_success(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {"_key": "r1"}
         connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
-        connected_provider.http_client.execute_aql.return_value = [
-            {"record_removed": True, "file_removed": True, "mail_removed": False}
-        ]
+        connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.delete_records_and_relations(
             "r1", hard_delete=True
         )
@@ -5189,11 +5187,20 @@ class TestDeleteRecordsAndRelationsWithTransaction:
         """The record is not removed with its grants left behind."""
         connected_provider.http_client.get_document.return_value = {"_key": "r1"}
         connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
-        connected_provider.http_client.execute_aql.side_effect = RuntimeError("edge sweep failed")
+        async def execute_aql(query, bind_vars=None, txn_id=None) -> list:
+            if "@isOfType" in query:
+                return []
+            raise RuntimeError("edge sweep failed")
+
+        connected_provider.http_client.execute_aql.side_effect = execute_aql
         with pytest.raises(RuntimeError):
             await connected_provider.delete_records_and_relations("r1", hard_delete=True, transaction="txn1")
-        queries = [c.args[0] for c in connected_provider.http_client.execute_aql.await_args_list]
-        assert queries and all("REMOVE edge" in q for q in queries)
+        queries = [
+            c.kwargs.get("query", c.args[0] if c.args else "")
+            for c in connected_provider.http_client.execute_aql.await_args_list
+        ]
+        removes = [q for q in queries if "@isOfType" not in q]
+        assert removes and all("REMOVE edge" in q for q in removes)
 
 
 # ---------------------------------------------------------------------------
@@ -10639,9 +10646,7 @@ class TestDeleteRecordsAndRelationsSoftDelete:
     async def test_soft_delete(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {"_key": "r1"}
         connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
-        connected_provider.http_client.execute_aql.return_value = [
-            {"record_removed": True, "file_removed": True, "mail_removed": False}
-        ]
+        connected_provider.http_client.execute_aql.return_value = []
         connected_provider._get_all_edge_collections = AsyncMock(return_value=["permission"])
         connected_provider._delete_edges_by_node_ids = AsyncMock(return_value=(1, []))
         result = await connected_provider.delete_records_and_relations(
