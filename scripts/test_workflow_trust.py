@@ -39,7 +39,18 @@ _SECRET = re.compile(
 # A workflow listed here may keep a privileged trigger; it must never check out
 # PR code. Add to it only with a security reviewer's sign-off. post-release-probe
 # runs on the release workflow (tag pushes only) and checks out the default branch.
-PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml"}
+# dco runs the base branch's copy so a pull request cannot edit its own sign-off check.
+PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml", "dco.yml"}
+
+# Privileged workflows that read the PR head SHA as data (git log, the commits API).
+# The head may still never be checked out: no checkout `ref:` and no git command that
+# puts it in the worktree.
+HEAD_SHA_AS_DATA_ALLOWLIST = {"dco.yml"}
+_PR_HEAD_CHECKOUT = re.compile(
+    r"^\s*(?:-\s*)?ref:.*(?:github\.event\.pull_request\.head\.|github\.head_ref|refs/pull/)"
+    r"|\bgit\s+(?:checkout|switch|restore|worktree\s+add|reset|merge|cherry-pick)\b",
+    re.M,
+)
 
 _PULL_REQUEST_TRIGGER = _trigger("pull_request")
 _SECRETS_INHERIT = re.compile(r"^\s+secrets:\s*inherit\s*$", re.M)
@@ -56,6 +67,12 @@ _JOBS_KEY = re.compile(r"^jobs:\s*$", re.M)
 
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _references_pr_head(name: str, text: str) -> bool:
+    if name in HEAD_SHA_AS_DATA_ALLOWLIST:
+        return bool(_PR_HEAD_CHECKOUT.search(text))
+    return bool(_PR_HEAD_REF.search(text))
 
 
 def _jobs(text: str) -> dict[str, tuple[str, int]]:
@@ -184,9 +201,26 @@ class TestWorkflowTrust(unittest.TestCase):
         offenders = [
             p.name
             for p in WORKFLOWS
-            if _PRIVILEGED_TRIGGER.search(_text(p)) and _PR_HEAD_REF.search(_text(p))
+            if _PRIVILEGED_TRIGGER.search(_text(p)) and _references_pr_head(p.name, _text(p))
         ]
         self.assertEqual(offenders, [], "a privileged trigger checks out or references the PR head")
+
+    def test_a_data_only_head_read_may_not_check_the_head_out(self) -> None:
+        base = "on:\n  pull_request_target:\njobs:\n  signoff:\n    steps:\n      - uses: actions/checkout@v4\n"
+        data_read = (
+            "        env:\n          HEAD: ${{ github.event.pull_request.head.sha }}\n"
+            '        run: git fetch origin "$HEAD" && git log "$HEAD"\n'
+        )
+        self.assertFalse(_references_pr_head("dco.yml", base + data_read))
+        self.assertTrue(_references_pr_head("other.yml", base + data_read))
+        for checkout in (
+            "        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n",
+            "        with:\n          ref: refs/pull/1/head\n",
+            '      - run: git checkout "$HEAD"\n',
+            '      - run: git worktree add pr "$HEAD"\n',
+        ):
+            with self.subTest(checkout=checkout):
+                self.assertTrue(_references_pr_head("dco.yml", base + checkout + data_read))
 
     def test_pull_request_jobs_with_secrets_skip_forks(self) -> None:
         # pull_request gives a fork no secrets anyway; this guards the self-hosted
