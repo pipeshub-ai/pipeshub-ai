@@ -826,18 +826,23 @@ class TestMergePatternMatchResults:
             {"virtual_record_id": "vr-1", "matched_terms": 3},
         ]
         graph_provider = AsyncMock()
-        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={"vr-1": "rec-1"})
-        graph_provider.get_records_by_record_ids = AsyncMock(
-            return_value=[{"_key": "rec-1", "indexingStatus": "COMPLETED", "recordName": "a.pdf"}],
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
+            return_value={"vr-1": "rec-1", "vr-2": "rec-2"},
         )
+        graph_provider.get_records_by_record_ids = AsyncMock(return_value=[
+            {"_key": "rec-1", "indexingStatus": "COMPLETED", "recordName": "a.pdf"},
+            {"_key": "rec-2", "indexingStatus": "COMPLETED", "recordName": "b.pdf"},
+        ])
 
-        await merge_pattern_match_results(
+        results = await merge_pattern_match_results(
             raw_records=raw, virtual_record_id_to_result={}, user_id="user-1", org_id="org-1",
             blob_store=AsyncMock(), graph_provider=graph_provider,
             is_multimodal_llm=False, logger_instance=MagicMock(), max_records=1,
         )
 
-        assert graph_provider.filter_accessible_virtual_record_ids.call_args[0][0] == ["vr-1"]
+        # The cap comes after the access check, over readable records.
+        assert graph_provider.filter_accessible_virtual_record_ids.call_args[0][0] == ["vr-1", "vr-2"]
+        assert [r["virtual_record_id"] for r in results] == ["vr-1"]
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_graph_records_found(self):
@@ -2006,6 +2011,12 @@ class TestValidatePatternMatchCommand:
         'egrep -rci "term" .',
         'fgrep -rci "term" .',
         'grep -rci -e "-rf" .',
+        "grep -rciF -e 'List<String>' .",
+        "grep -rciF -e 'x -> y' .",
+        "grep -rciF -e 'a => b' .",
+        "grep -rciF -e 'a && b || c' .",
+        'grep -rciF -e "a&b" .',
+        "grep -rciF -e '$(MAKE)' .",
     ])
     def test_accepts_prompt_shaped_commands(self, cmd):
         assert validate_pattern_match_command(cmd) == (True, "")
@@ -2016,6 +2027,7 @@ class TestValidatePatternMatchCommand:
         "grep " + "a" * 1000,
         "grep `whoami` .",
         'grep "$(id)" .',
+        'grep "a`id`" .',
         'grep "x" .; rm -rf /',
         'grep "x" . && echo',
         'grep "x" . || echo',

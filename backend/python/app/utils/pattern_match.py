@@ -2020,9 +2020,9 @@ async def merge_pattern_match_results(
     # ranked, but concatenation order would otherwise decide who is dropped.
     unique = _best_hit_per_record(raw_records)
     unseen = [r for r in unique if r.get("virtual_record_id") not in virtual_record_id_to_result]
-    if len(unseen) > max_records and coverage is not None:
-        coverage.records_truncated = True
-    new_records = unseen[:max_records]
+    # Not cut here: a cap on records not yet access-checked would let the
+    # caller's coverage depend on records they cannot read.
+    new_records = unseen
 
     if not new_records:
         return []
@@ -2122,6 +2122,14 @@ async def merge_pattern_match_results(
             )
         if not accessible_records:
             return []
+
+    # The cap comes last, over readable records only, so what "more matched
+    # than are listed" says never depends on what the caller cannot read.
+    accessible_records = [r for r in accessible_records if r["virtual_record_id"] in graph_by_vrid]
+    if len(accessible_records) > max_records:
+        if coverage is not None:
+            coverage.records_truncated = True
+        accessible_records = accessible_records[:max_records]
 
     matches = _best_match_by_vrid(raw_records)
     viewer_email = await _viewer_email_for(graph_by_vrid.values(), graph_provider, user_id, logger_instance)
