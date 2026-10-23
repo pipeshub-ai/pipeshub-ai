@@ -37,7 +37,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from connectors.rss.conftest import (  # type: ignore[import-not-found]
+from connectors.rss.conftest import (  # noqa: E402  # type: ignore[import-not-found]
     CHANGELOG_FEED,
     CHANGELOG_GUIDS,
     NEWS_FEED,
@@ -46,15 +46,15 @@ from connectors.rss.conftest import (  # type: ignore[import-not-found]
     item_record_id,
     news_feed,
 )
-from helper.graph_provider import GraphProviderProtocol
-from helper.graph_provider_utils import (
+from helper.graph_provider import GraphProviderProtocol  # noqa: E402
+from helper.graph_provider_utils import (  # noqa: E402
     wait_for_records_indexed,
     wait_for_sync_completion,
     wait_until_graph_condition,
 )
-from helper.storage_incremental import settle_record_baseline
-from helper.web_fixtures import WebFixtures, html_page
-from pipeshub_client import PipeshubClient, PipeshubClientError  # type: ignore[import-not-found]
+from helper.storage_incremental import settle_record_baseline  # noqa: E402
+from helper.web_fixtures import WebFixtures, html_page  # noqa: E402
+from pipeshub_client import PipeshubClient, PipeshubClientError  # noqa: E402  # type: ignore[import-not-found]
 
 logger = logging.getLogger("rss-feed-lifecycle-test")
 

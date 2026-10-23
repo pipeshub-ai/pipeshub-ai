@@ -658,21 +658,22 @@ class RSSConnector(BaseConnector):
                 raise to_stream_error(e, connector=self.display_name) from e
             return None
 
-    async def _read_next_pages(self, feed: feedparser.FeedParserDict, page_url: str) -> None:
+    async def _read_next_pages(self, feed: feedparser.FeedParserDict, page_url: str) -> bool:
         """A paged feed (RFC 5005) links its older entries with rel="next"; add them to
-        *feed* up to the article limit. A page that fails ends the walk, keeping what was read."""
+        *feed* up to the article limit. A page that fails ends the walk, keeping what was read,
+        and returns False."""
         seen = {page_url}
         page = feed
         for _ in range(MAX_FEED_PAGES - 1):
             links = page.feed.get("links")
             if len(feed.entries) >= self.max_articles_per_feed or not isinstance(links, list):
-                return
+                return True
             href = next((link.get("href") for link in links if link.get("rel") == "next"), None)
             if not href:
-                return
+                return True
             page_url = urljoin(page_url, href)
             if page_url in seen:
-                return
+                return True
             seen.add(page_url)
             try:
                 result = await fetch_url_with_fallback(
@@ -681,17 +682,18 @@ class RSSConnector(BaseConnector):
                 if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
                     status = result.status_code if result else "no response"
                     self.logger.warning(f"⚠️ HTTP {status} reading the next page of a feed: {redact_url(page_url)}")
-                    return
+                    return False
                 page = await asyncio.to_thread(feedparser.parse, BytesIO(result.content_bytes))
             except Exception as e:
                 self.logger.warning(
                     f"⚠️ Could not read the next page of a feed {redact_url(page_url)}: "
                     f"{redact_urls_in_text(str(e))[:200]}"
                 )
-                return
+                return False
             if not page.entries:
-                return
+                return True
             feed.entries.extend(page.entries)
+        return True
 
     async def _process_entry(
         self, entry: Dict, feed_url: str
@@ -854,15 +856,16 @@ class RSSConnector(BaseConnector):
                 )
                 if raise_on_error:
                     # Same reason as an empty extraction below: no summary under the article's revision.
-                    raise not_found_at_source(self.display_name)
+                    raise self._source_fetch_error(None)
                 return ""
 
             # Extraction is CPU-bound and slow on a large page; it would stall every other sync.
             text = await asyncio.to_thread(self._extract_text_content, result.content_bytes)
             if not text and raise_on_error:
                 # Falling back to the summary here would re-index a synced article as its
-                # summary, and back again once the page reads normally.
-                raise not_found_at_source(self.display_name)
+                # summary, and back again once the page reads normally. Retryable, as
+                # a page that renders by script or answers oddly may read next time.
+                raise self._source_fetch_error(None)
             return text
 
         except HTTPException:
@@ -1019,16 +1022,12 @@ class RSSConnector(BaseConnector):
                             return candidate
                     return None
 
-                def entry_by_link() -> dict | None:
-                    # Entries can share a link (a podcast's show page); then the link names none of them.
-                    matches = [c for c in feed.entries if article_url and self._article_link(c) == article_url]
-                    return matches[0] if len(matches) == 1 else None
-
                 if feed and feed.entries:
                     entry = entry_by_id()
-                    if entry is None:
-                        await self._read_next_pages(feed, feed_url)
-                        entry = entry_by_id() or entry_by_link()
+                    if entry is None and not await self._read_next_pages(feed, feed_url):
+                        # The entry may be on the page that failed; let indexing retry.
+                        source_error = self._source_fetch_error(None)
+                    entry = entry or entry_by_id()
                     if entry is not None:
                         entry_url = self._article_link(entry)
                         try:
@@ -1045,8 +1044,12 @@ class RSSConnector(BaseConnector):
                             content_text = fallback
 
             # Fallback: entry aged out of the feed → crawl the article page directly.
-            # An entry without a web link was stored with the feed's URL instead.
-            if not content_text and article_url and article_url != feed_url:
+            # An entry without a web link was stored with the feed's URL instead, and
+            # a link other entries still have (a podcast's show page) is not this entry's page.
+            shared_link = feed_url and feed and any(
+                self._article_link(c) == article_url for c in feed.entries
+            )
+            if not content_text and article_url and article_url != feed_url and not shared_link:
                 try:
                     content_text = await self._fetch_article_content(
                         article_url, raise_on_error=True

@@ -1280,6 +1280,19 @@ class TestTestConnectionAndAccess:
             with pytest.raises(ConnectorInitError, match="network error"):
                 await conn.test_connection_and_access()
 
+    @pytest.mark.asyncio
+    async def test_a_url_in_the_exception_is_redacted(self) -> None:
+        conn = _make_connector_cov()
+        conn.feed_urls = ["https://feed.com/rss"]
+        conn.session = MagicMock()
+        with _patch_fetch_raises(Exception("cannot reach https://u:pw@feed.com/rss?token=s3cret")):
+            with pytest.raises(ConnectorInitError) as raised:
+                await conn.test_connection_and_access()
+        assert "cannot reach https://feed.com/rss" in str(raised.value)
+        assert "s3cret" not in str(raised.value) and "pw@" not in str(raised.value)
+        logged = " ".join(str(c) for m in ("warning", "error", "debug") for c in getattr(conn.logger, m).call_args_list)
+        assert "s3cret" not in logged and "pw@" not in logged
+
 
 # ===================================================================
 # get_app_users

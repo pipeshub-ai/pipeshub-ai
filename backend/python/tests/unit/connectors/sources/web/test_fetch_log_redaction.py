@@ -23,7 +23,23 @@ def test_the_wrapper_cuts_urls_to_scheme_host_and_path() -> None:
     first, second = logger.log.call_args_list
     assert first.args == (logging.WARNING, "Gave up on https://feeds.example.com/rss after timeout")
     assert second.args == (logging.ERROR, "failed for https://feeds.example.com/a")
-    assert second.kwargs == {"exc_info": True}
+    assert second.kwargs == {}
+
+
+def test_a_traceback_is_redacted_too() -> None:
+    logger = MagicMock(spec=logging.Logger)
+    logger.isEnabledFor.return_value = True
+    wrapped = _UrlRedactingLogger(logger)
+    try:
+        raise RuntimeError("cannot reach https://u:pw@feeds.example.com/rss?token=s3cret")
+    except RuntimeError:
+        wrapped.exception("fetch failed")
+
+    (call,) = logger.log.call_args_list
+    level, text = call.args
+    assert level == logging.ERROR and "exc_info" not in call.kwargs
+    assert "Traceback" in text and "RuntimeError: cannot reach https://feeds.example.com/rss" in text
+    assert "s3cret" not in text and "pw@" not in text
 
 
 def test_nothing_is_formatted_below_the_logger_level() -> None:

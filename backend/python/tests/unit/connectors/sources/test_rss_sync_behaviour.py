@@ -744,8 +744,44 @@ class TestReviewFindings:
             assert store.records[f"{FEED_A}#1"].external_revision_id == stored.external_revision_id
 
             with patch.object(conn, "_fetch_and_parse_feed", new=AsyncMock(return_value=feed)):
-                with pytest.raises(HTTPException):
+                with pytest.raises(HTTPException) as raised:
                     await conn.stream_record(stored)
+                assert raised.value.status_code == 502, "indexing retries a 502, not a 404"
                 stored.external_revision_id = hashlib.md5(b"Only the summary.").hexdigest()
                 response = await conn.stream_record(stored)
         assert b"".join([c async for c in response.body_iterator]) == b"Only the summary."
+
+    @pytest.mark.asyncio
+    async def test_an_episode_gone_from_the_feed_is_not_served_as_another_with_its_link(self) -> None:
+        conn = _connector(FakeStore(), [FEED_A])
+        show = "https://a.example.com/show"
+        pages = {FEED_A: _xml(_page([_entry("urn:ep:2", "Episode 2", show, "Notes for episode 2.")]))}
+        fetch = AsyncMock(side_effect=lambda url, **_: pages[url])
+        gone = FileRecord(
+            record_name="Episode 1", external_record_id="urn:ep:1", external_record_group_id=FEED_A,
+            weburl=show, origin="CONNECTOR", connector_name="RSS", connector_id="rss-conn-1",
+            record_type="FILE", version=0, is_file=True, mime_type="text/plain",
+        )
+        with patch(FETCH, new=fetch), pytest.raises(HTTPException) as raised:
+            await conn.stream_record(gone)
+        assert raised.value.status_code == 404
+        # The show page is no episode's text, so it is not crawled in the episode's place.
+        assert [c.kwargs["url"] for c in fetch.await_args_list] == [FEED_A]
+
+    @pytest.mark.asyncio
+    async def test_an_entry_behind_a_failed_page_is_retried(self) -> None:
+        conn = _connector(FakeStore(), [FEED_A])
+        show = "https://a.example.com/show"
+        pages = {
+            FEED_A: _xml(_page([_entry("urn:ep:1", "Episode 1", show)], "page2.xml")),
+            "https://a.example.com/page2.xml": _xml(b"", status=503),
+        }
+        on_page_two = FileRecord(
+            record_name="Episode 2", external_record_id="urn:ep:2", external_record_group_id=FEED_A,
+            weburl=show, origin="CONNECTOR", connector_name="RSS", connector_id="rss-conn-1",
+            record_type="FILE", version=0, is_file=True, mime_type="text/plain",
+        )
+        with patch(FETCH, new=AsyncMock(side_effect=lambda url, **_: pages[url])), \
+             pytest.raises(HTTPException) as raised:
+            await conn.stream_record(on_page_two)
+        assert raised.value.status_code == 502

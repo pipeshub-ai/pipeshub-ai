@@ -120,17 +120,18 @@ class TestRSSConnectorDeletion:
         """TC-DEL-002 (checklist 7.8)."""
         connector_id = await _new_connector(pipeshub_client, graph_provider, rss_fixtures)
         agent_name = f"it-rss-agent-{uuid.uuid4().hex[:6]}"
-        # No models: the agent falls back to the org's default LLM, which this test never calls.
-        resp = agents_client.create_agent(
-            name=agent_name,
-            description="Answers from the RSS feed.",
-            systemPrompt="Answer from the attached knowledge.",
-            knowledge=[{"connectorId": connector_id, "filters": {}}],
-        )
-        assert resp.status_code in (200, 201), f"creating the agent: {resp.status_code} {resp.text[:500]}"
-        agent_key = (resp.json().get("agent") or {}).get("_key")
-        assert agent_key, f"agent create returned no key: {resp.text[:300]}"
+        agent_key = None
         try:
+            # No models: the agent falls back to the org's default LLM, which this test never calls.
+            resp = agents_client.create_agent(
+                name=agent_name,
+                description="Answers from the RSS feed.",
+                systemPrompt="Answer from the attached knowledge.",
+                knowledge=[{"connectorId": connector_id, "filters": {}}],
+            )
+            assert resp.status_code in (200, 201), f"creating the agent: {resp.status_code} {resp.text[:500]}"
+            agent_key = (resp.json().get("agent") or {}).get("_key")
+            assert agent_key, f"agent create returned no key: {resp.text[:300]}"
             refused = _delete(pipeshub_client, connector_id)
             assert refused.status_code == 409, (
                 f"TC-DEL-002: a connector an agent uses was deleted: {refused.status_code} {refused.text[:300]}"
@@ -138,8 +139,9 @@ class TestRSSConnectorDeletion:
             assert agent_name in refused.text, f"TC-DEL-002: the refusal does not name the agent: {refused.text[:300]}"
             assert await graph_provider.count_records(connector_id) >= 3
         finally:
-            deleted = agents_client.delete_agent(agent_key)
-            assert deleted.status_code in (200, 204, 404), f"deleting the agent: {deleted.status_code}"
+            if agent_key:
+                deleted = agents_client.delete_agent(agent_key)
+                assert deleted.status_code in (200, 204, 404), f"deleting the agent: {deleted.status_code}"
             resp = _delete(pipeshub_client, connector_id)
             assert resp.status_code in (*DELETE_ACCEPTED, 404), f"delete after the agent: {resp.status_code}"
 

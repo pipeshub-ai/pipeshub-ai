@@ -22,8 +22,10 @@ import functools
 import logging
 import random
 import socket
+import sys
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -103,9 +105,17 @@ class _UrlRedactingLogger:
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - forwards the rest of the Logger API
         return getattr(self._logger, name)
 
-    def _log(self, level: int, msg: object, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
+    def _log(self, level: int, msg: object, *args: object, exc_info: object = None, **kwargs: Any) -> None:  # noqa: ANN401
         if self._logger.isEnabledFor(level):
             text = str(msg) % args if args else str(msg)
+            if exc_info:
+                # Formatted here: the traceback ends with the exception's text, which can hold the URL.
+                if isinstance(exc_info, BaseException):
+                    exc_info = (type(exc_info), exc_info, exc_info.__traceback__)
+                elif not isinstance(exc_info, tuple):
+                    exc_info = sys.exc_info()
+                if exc_info[0] is not None:
+                    text = f"{text}\n{''.join(traceback.format_exception(*exc_info)).rstrip()}"
             self._logger.log(level, redact_urls_in_text(text), **kwargs)
 
     def debug(self, msg: object, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
