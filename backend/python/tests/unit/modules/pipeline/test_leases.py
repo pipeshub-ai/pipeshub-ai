@@ -1,5 +1,7 @@
 """RecordLeases: a stage's write to the stored record under the lease its re-index holds."""
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock
 
 import pytest
@@ -31,6 +33,108 @@ async def test_unbound_it_only_checks_the_revision() -> None:
         async with leases.hold("r1", owner="stage:j", wait_s=1, still_current=_current(False)):
             pass
 
+
+
+class TestUnboundHoldsOfOneRecordDoNotOverlap:
+    """Without distributed concurrency there is no lease to take, but classify and entities still
+    read-modify-write the same stored record on this process's loop: one would drop the other's section."""
+
+    @pytest.mark.asyncio
+    async def test_a_second_holder_waits_for_the_first(self) -> None:
+        leases = RecordLeases()
+        events: list[str] = []
+        first_in = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def first() -> None:
+            async with leases.hold("r1", owner="classify", wait_s=5, still_current=AsyncMock(return_value=True)):
+                events.append("first in")
+                first_in.set()
+                await release_first.wait()
+                events.append("first out")
+
+        async def second() -> None:
+            await first_in.wait()
+            async with leases.hold("r1", owner="entities", wait_s=5, still_current=AsyncMock(return_value=True)):
+                events.append("second in")
+
+        tasks = [asyncio.create_task(first()), asyncio.create_task(second())]
+        await first_in.wait()
+        await asyncio.sleep(0.05)
+        assert events == ["first in"]
+        release_first.set()
+        await asyncio.gather(*tasks)
+        assert events == ["first in", "first out", "second in"]
+
+    @pytest.mark.asyncio
+    async def test_the_revision_is_checked_again_once_the_wait_is_over(self) -> None:
+        leases = RecordLeases()
+        held = asyncio.Event()
+        release = asyncio.Event()
+
+        async def holder() -> None:
+            async with leases.hold("r1", owner="reindex", wait_s=5, still_current=AsyncMock(return_value=True)):
+                held.set()
+                await release.wait()
+
+        task = asyncio.create_task(holder())
+        await held.wait()
+        current = {"rev": True}
+
+        async def still_current() -> bool:
+            return current["rev"]
+
+        waiting = asyncio.create_task(self._enter(leases, still_current))
+        await asyncio.sleep(0.05)
+        # A re-index moves the record on while this one waits for the lock.
+        current["rev"] = False
+        release.set()
+        await task
+        with pytest.raises(RevisionSuperseded):
+            await waiting
+
+    @pytest.mark.asyncio
+    async def test_a_holder_that_waits_too_long_is_busy(self) -> None:
+        leases = RecordLeases()
+        held = asyncio.Event()
+        release = asyncio.Event()
+
+        async def holder() -> None:
+            async with leases.hold("r1", owner="classify", wait_s=5, still_current=AsyncMock(return_value=True)):
+                held.set()
+                await release.wait()
+
+        task = asyncio.create_task(holder())
+        await held.wait()
+        with pytest.raises(RecordBusy):
+            async with leases.hold("r1", owner="entities", wait_s=0.05, still_current=AsyncMock(return_value=True)):
+                pass
+        release.set()
+        await task
+
+    @pytest.mark.asyncio
+    async def test_other_records_do_not_wait(self) -> None:
+        leases = RecordLeases()
+        release = asyncio.Event()
+        held = asyncio.Event()
+
+        async def holder() -> None:
+            async with leases.hold("r1", owner="classify", wait_s=5, still_current=AsyncMock(return_value=True)):
+                held.set()
+                await release.wait()
+
+        task = asyncio.create_task(holder())
+        await held.wait()
+        async with leases.hold("r2", owner="entities", wait_s=0.05, still_current=AsyncMock(return_value=True)):
+            pass
+        release.set()
+        await task
+        assert leases._local == {}
+
+    @staticmethod
+    async def _enter(leases: RecordLeases, still_current: Callable[[], Awaitable[bool]]) -> None:
+        async with leases.hold("r1", owner="entities", wait_s=5, still_current=still_current):
+            pass
 
 @pytest.mark.asyncio
 async def test_it_takes_the_records_own_lease_and_always_releases_it() -> None:

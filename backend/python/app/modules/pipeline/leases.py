@@ -33,11 +33,14 @@ class LeaseLost(RecordBusy):
 
 class RecordLeases:
     """Bound when the consumers start, which is when the lease manager exists. Unbound (no
-    distributed concurrency), holding only re-checks the revision."""
+    distributed concurrency), holding takes a lock of this process instead and re-checks the
+    revision once it has it."""
 
     def __init__(self) -> None:
         super().__init__()
         self._manager: IDistributedLeaseManager | None = None
+        # record id -> (lock, holders and waiters). Every holder runs on the worker loop.
+        self._local: dict[str, tuple[asyncio.Lock, int]] = {}
 
     @property
     def bound(self) -> bool:
@@ -64,9 +67,12 @@ class RecordLeases:
         """
         manager = self._manager
         if manager is None:
-            if not await still_current():
-                raise RevisionSuperseded(record_id)
-            yield
+            # Classify and entities both read-modify-write the stored record: without a lease
+            # to serialise them, the second write would drop the first one's section.
+            async with self._local_hold(record_id, wait_s):
+                if not await still_current():
+                    raise RevisionSuperseded(record_id)
+                yield
             return
         pool, holder = f"record:{record_id}", f"{owner}:{uuid4().hex[:8]}"
         loop = asyncio.get_running_loop()
@@ -129,6 +135,27 @@ class RecordLeases:
                 # The body swallowed the cancellation and ran on: take back the request it consumed.
                 _ = task.uncancel()
             raise LeaseLost(f"record {record_id}: {lost[0]}")
+
+
+    @contextlib.asynccontextmanager
+    async def _local_hold(self, record_id: str, wait_s: float) -> AsyncIterator[None]:
+        lock, users = self._local.get(record_id, (asyncio.Lock(), 0))
+        self._local[record_id] = (lock, users + 1)
+        try:
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=max(0.0, wait_s))
+            except TimeoutError:
+                raise RecordBusy(f"record {record_id} stayed busy for {wait_s:.0f}s") from None
+            try:
+                yield
+            finally:
+                lock.release()
+        finally:
+            lock, users = self._local[record_id]
+            if users <= 1:
+                del self._local[record_id]
+            else:
+                self._local[record_id] = (lock, users - 1)
 
 
 async def _keep_renewed(
