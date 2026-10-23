@@ -202,6 +202,26 @@ class CommentsUnreadable(Exception):
     """A page's comments could not be read in full, so its blocks must not be indexed without them."""
 
 
+# Each item's own read restriction, for finding changed restrictions without the audit log
+RESTRICTION_EXPAND_PARAMS = "restrictions.read.restrictions.user,restrictions.read.restrictions.group"
+RESTRICTION_LISTING_LIMIT = 100
+
+
+def read_restriction_fingerprint(item: dict[str, Any]) -> str | None:
+    """Who a listed item's own read restriction names; None when it has none."""
+    read = ((item.get("restrictions") or {}).get("read") or {}).get("restrictions") or {}
+    users = read.get("user") or {}
+    groups = read.get("group") or {}
+    names = sorted(str(u.get("accountId")) for u in users.get("results") or [] if isinstance(u, dict))
+    names += sorted(
+        f"group:{g.get('id') or g.get('name')}" for g in groups.get("results") or [] if isinstance(g, dict)
+    )
+    if not names and not users.get("size") and not groups.get("size"):
+        return None
+    # The sizes catch a change past the listing's first page of names.
+    return f"{users.get('size')}/{groups.get('size')}:" + ",".join(names)
+
+
 class ContentListing(NamedTuple):
     """What one space's page or blog post listing read.
 
@@ -556,6 +576,8 @@ class ConfluenceConnector(BaseConnector):
         self._persistent_problems: set[str] = set()
         self._quota_hit_in_run = False
         self._sync_running = False
+        # The status the audit log was refused with this run (401/403), if it was.
+        self._audit_log_refused: int | None = None
 
     async def _build_confluence_client(self):
         """EE override point: swap to EE ConfluenceClient for org-scoped OAuth inheritance."""
@@ -889,7 +911,7 @@ class ConfluenceConnector(BaseConnector):
 
             # Step 5: Sync permission changes from audit log
             # This catches permission changes that don't update content's lastModified
-            await self._sync_permission_changes_from_audit_log()
+            await self._sync_permission_changes_from_audit_log(spaces)
 
             # Step 6: Backfill placeholder ancestors that out-of-scope sync filters left
             # unreconciled (metadata + permissions only; they remain non-indexed stubs).
@@ -3210,7 +3232,7 @@ class ConfluenceConnector(BaseConnector):
             # The window then opens when the sync ends, as before.
             self.logger.warning(f"Could not open the audit log window: {e}")
 
-    async def _sync_permission_changes_from_audit_log(self) -> None:
+    async def _sync_permission_changes_from_audit_log(self, spaces: list[RecordGroup] | None = None) -> None:
         """
         Sync permission changes for pages/blogs using Confluence Audit Log API.
 
@@ -3266,6 +3288,14 @@ class ConfluenceConnector(BaseConnector):
             content_titles = await self._fetch_permission_audit_logs(window_start_ms, current_time_ms)
 
             if content_titles is None:
+                if self._audit_log_refused and spaces is not None:
+                    # Only administrators can read the audit log: find restriction changes from the
+                    # listings instead, so they still apply at the next sync.
+                    if await self._recheck_restrictions(spaces):
+                        await self.audit_log_sync_point.update_sync_point(
+                            audit_sync_key, {"last_sync_time_ms": current_time_ms}
+                        )
+                    return
                 self.logger.warning(
                     "Keeping the audit log checkpoint: the audit log could not be read in full, "
                     "so the next sync reads this window again"
@@ -3333,6 +3363,7 @@ class ConfluenceConnector(BaseConnector):
         content_titles_set: set[str] = set()
         batch_size = 100
         start = 0
+        self._audit_log_refused = None
 
         while True:
             datasource = await self._get_fresh_datasource()
@@ -3348,10 +3379,11 @@ class ConfluenceConnector(BaseConnector):
                 if response is not None and response.status in (
                     HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value
                 ):
+                    self._audit_log_refused = response.status
                     problem = (
                         f"Couldn't read the Confluence audit log (HTTP {response.status}): it needs a Confluence "
-                        "administrator account and a paid plan. Restriction changes made without editing the "
-                        "page are not picked up until it can be read"
+                        "administrator account (and the read:audit-log:confluence scope for OAuth). Instead, each "
+                        "sync re-reads every page's read restriction (one request per 100 pages in a space)"
                     )
                 else:
                     problem = (
@@ -3390,6 +3422,107 @@ class ConfluenceConnector(BaseConnector):
             start = next_start
 
         return list(content_titles_set)
+
+    async def _recheck_restrictions(self, spaces: list[RecordGroup]) -> bool:
+        """Sync again the stored pages and blog posts whose own read restriction changed.
+
+        For when the audit log is refused. One listing per space and type carries each
+        item's read restriction. An item is synced again when that restriction differs
+        from the one the previous check saw, or when it has none and is stored as
+        restricted; the first check therefore syncs every restricted item once. Returns
+        False when a listing, the stored records or a sync could not be read in full.
+        """
+        complete = True
+        for space in spaces:
+            for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST):
+                listed = await self._list_read_restrictions(space.short_name, record_type)
+                if listed is None:
+                    complete = False
+                    continue
+                try:
+                    stored = await self._stored_content(space.external_group_id, record_type)
+                except Exception as e:
+                    self.logger.warning(f"Could not read the stored records of space {space.short_name}: {e}")
+                    complete = False
+                    continue
+                key = generate_record_sync_point_key(
+                    RecordType.WEBPAGE.value, "restrictions", f"{record_type.value}/{space.short_name}"
+                )
+                seen = await self.audit_log_sync_point.read_sync_point(key)
+                before: dict[str, str] = json.loads(seen.get("restricted") or "{}") if seen else {}
+                stored_rule = {r.external_record_id: r.access_rule for r in stored}
+                changed = sorted(
+                    item_id for item_id, fingerprint in listed.items()
+                    if item_id in stored_rule and (
+                        fingerprint != before.get(item_id) if fingerprint
+                        else stored_rule[item_id] == AccessRule.RESTRICTED
+                    )
+                )
+                failed: set[str] = set()
+                for start in range(0, len(changed), ID_SEARCH_CHUNK):
+                    chunk = changed[start:start + ID_SEARCH_CHUNK]
+                    result = await self._sync_content(
+                        space.short_name, record_type, defer_checkpoint=True, within_ids=chunk,
+                    )
+                    if not result.complete:
+                        failed.update(chunk)
+                if changed:
+                    self.logger.info(
+                        f"Synced {len(changed)} {record_type.value} items in space {space.short_name} again: "
+                        "their read restriction changed"
+                    )
+                complete = complete and not failed
+                # A failed item keeps the restriction last seen, so the next check retries it.
+                restricted = {
+                    item_id: (before.get(item_id) if item_id in failed else fingerprint)
+                    for item_id, fingerprint in listed.items()
+                }
+                await self.audit_log_sync_point.update_sync_point(
+                    key, {"restricted": json.dumps({k: v for k, v in restricted.items() if v}, sort_keys=True)}
+                )
+        if not complete:
+            self._note_problem("Couldn't re-check every page's restrictions; the next sync tries again")
+        return complete
+
+    async def _list_read_restrictions(self, space_key: str, record_type: RecordType) -> dict[str, str | None] | None:
+        """Read restriction fingerprint by id of every page or blog post in a space; None unless read to the end."""
+        datasource = await self._get_fresh_datasource()
+        listing = datasource.get_pages_v1 if record_type == RecordType.CONFLUENCE_PAGE else datasource.get_blogposts_v1
+        found: dict[str, str | None] = {}
+        token: str | None = None
+        followed: set[str] = set()
+        while True:
+            offset, cursor = self._split_pagination_token(token)
+            try:
+                response = await listing(
+                    space_key=space_key, expand=RESTRICTION_EXPAND_PARAMS, start=offset, cursor=cursor,
+                    limit=RESTRICTION_LISTING_LIMIT,
+                )
+                data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
+            except AtlassianQuotaExhausted:
+                raise
+            except Exception as e:
+                self.logger.warning(f"Could not list the restrictions in space {space_key}: {e}")
+                return None
+            results = data.get("results") if isinstance(data, dict) else None
+            if not isinstance(results, list):
+                self.logger.warning(f"Could not list the restrictions in space {space_key}")
+                return None
+            for item in results:
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                if "read" not in (item.get("restrictions") or {}):
+                    self.logger.warning(f"The listing of space {space_key} did not carry read restrictions")
+                    return None
+                found[str(item["id"])] = read_restriction_fingerprint(item)
+            next_url = (data.get("_links") or {}).get("next")
+            if not next_url:
+                return found
+            token = self._extract_cursor_from_next_link(next_url)
+            if not results or not token or token in followed:
+                self.logger.warning(f"Can't follow the restriction listing of space {space_key}")
+                return None
+            followed.add(token)
 
     def _extract_content_title_from_audit_record(self, record: dict[str, Any]) -> str | None:
         """

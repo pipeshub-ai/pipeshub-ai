@@ -2419,3 +2419,33 @@ class TestFooterCommentThreads:
         ])
 
         assert [[c["id"] for c in t] for t in threads] == [["d1"], ["c1", "c2", "c3"]]
+
+
+class TestRestrictionsWithoutTheAuditLog:
+    """Only administrators can read the audit log; without it, restrictions are re-checked from the listing."""
+
+    def _with_read_restriction(self, page: dict[str, Any], *account_ids: str) -> dict[str, Any]:
+        users = [{"accountId": a} for a in account_ids]
+        page = {**page, "restrictions": {"read": {"restrictions": {
+            "user": {"results": users, "size": len(users)}, "group": {"results": [], "size": 0}}}}}
+        return page
+
+    async def test_a_restriction_added_without_an_edit_is_applied(self, api, db, checkpoints, search) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        search.by_cursor[None] = search_page([self._with_read_restriction(v1_page("10"))])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert db.records["10"].access_rule == AccessRule.STRICT
+        await connector._open_audit_window()
+        api.on("GET", f"{V1}/audit", json_response({"message": "Forbidden"}, status=403))
+
+        # Restricted to Ana, page not edited: the listing shows it, the audit log can't.
+        restricted = self._with_read_restriction(v1_page("10"), "acc-ana")
+        search.by_cursor = {None: search_page([restricted])}
+        search.indexed = {"10": restricted}
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        await connector._sync_permission_changes_from_audit_log([ENG])
+
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
+        assert [p.email for p in db.record_permissions["10"]] == ["ana@acme.com"]
+        assert any("audit log (HTTP 403)" in p for p in connector._sync_problems)
