@@ -632,12 +632,15 @@ class IGraphDBProvider(ABC):
     async def get_typed_records_batch(
         self,
         record_ids: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, "Record"]:
         """Batch-fetch typed Record instances for the given record IDs.
 
         Returns a dict mapping record ID to typed Record (FileRecord,
         TicketRecord, etc.). IDs not found or failing typed construction
-        are silently omitted from the result.
+        are silently omitted from the result. A query that fails returns an
+        empty dict, or raises with ``raise_on_error``.
         """
         pass
 
@@ -2400,18 +2403,22 @@ class IGraphDBProvider(ABC):
         """
 
     @abstractmethod
-    async def get_record_ids_by_stage_status(
+    async def get_stage_states_with_records(
         self,
         org_id: str,
         connector_id: str,
         stage: str,
-        status_filters: list[str],
+        status: str,
         *,
         limit: int,
         after_key: str | None = None,
-    ) -> list[str]:
-        """Keys of the connector's live, non-placeholder records whose current revision's
-        ``stage`` state has a status in ``status_filters``, ascending, after ``after_key``.
+        exclude_indexing_statuses: list[str] | None = None,
+    ) -> list[tuple[str, list[str]]]:
+        """A page of the connector's ``stage`` states in ``status``: up to ``limit`` of them,
+        by state key after ``after_key``, each with the keys of the connector's live,
+        non-placeholder records on that state's revision whose ``indexingStatus`` is not in
+        ``exclude_indexing_statuses``. A state none of whose records qualifies has an empty
+        list and still advances the page.
 
         For stages with no status field on the record. Raises on infrastructure errors.
         """

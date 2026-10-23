@@ -478,7 +478,7 @@ PARAM_PROBES = {
 # LIVE registry methods this file calls against the real graphs, by the test that does.
 # tests/unit/services/graph_db/test_record_visibility_registry.py requires every one.
 EXERCISED_HERE: dict[str, str] = {
-    "get_record_ids_by_stage_status": "test_records_selected_by_their_stage_state",
+    "get_stage_states_with_records": "test_records_selected_by_their_stage_state",
     "check_access": "test_access_check",
     "check_record_access_with_details": "test_access_check",
     "get_accessible_virtual_record_ids": "test_public_search_permission_map",
@@ -620,11 +620,16 @@ async def test_queued_duplicate_status_is_not_copied_onto_the_trash(world: _Worl
 
 
 async def test_records_selected_by_their_stage_state(world: _World) -> None:
-    """A stage retry by stage state takes the live record on its current revision only."""
+    """A stage retry by stage state takes the live record on its current revision only, never
+    a trashed one or one the indexer is working on; states page by key."""
     g = world.graph
-    states = {"live_failed": "rev-1", "trashed_failed": "rev-1", "live": "rev-old"}
+    states = {"live_failed": "rev-1", "trashed_failed": "rev-1", "live": "rev-old", "live_shared": "rev-1"}
     for name in states:
         await g.update_node(world.ids[name], CollectionNames.RECORDS.value, {"contentRev": "rev-1"})
+    await g.update_node(
+        world.ids["live_shared"], CollectionNames.RECORDS.value, {"indexingStatus": ProgressStatus.IN_PROGRESS.value}
+    )
+    vrids = sorted({world.vrids[name] for name in states})
     try:
         for name, rev in states.items():
             job = StageJob(
@@ -637,18 +642,28 @@ async def test_records_selected_by_their_stage_state(world: _World) -> None:
             document["id"] = document.pop("key")
             assert await g.stage_state_create(document)
 
-        got = await g.get_record_ids_by_stage_status(
-            world.org_id, world.connector_id, "entities", [ProgressStatus.FAILED.value], limit=50
-        )
-        assert got == [world.ids["live_failed"]]
-        assert await g.get_record_ids_by_stage_status(
-            world.org_id, world.connector_id, "entities", [ProgressStatus.FAILED.value], limit=50, after_key=got[0]
-        ) == []
-        assert await g.get_record_ids_by_stage_status(
-            world.org_id, world.connector_id, "classify", [ProgressStatus.FAILED.value], limit=50
+        def page(**kwargs: object) -> object:
+            return g.get_stage_states_with_records(
+                world.org_id, world.connector_id, "entities", ProgressStatus.FAILED.value,
+                exclude_indexing_statuses=[ProgressStatus.IN_PROGRESS.value], **kwargs,
+            )
+
+        got = await page(limit=50)
+        # Keys come back in the engine's own string order (ArangoDB collates), which is what
+        # the cursor is compared in, so paging is checked against the engine, not Python's sort.
+        selected = {record for _, records in got for record in records}
+        assert selected == {world.ids["live_failed"]}
+
+        assert len(got) == 4
+        first, rest = await page(limit=1), await page(limit=50, after_key=got[0][0])
+        assert first == got[:1] and rest == got[1:]
+        second = await page(limit=2, after_key=got[0][0])
+        assert second == got[1:3]
+        assert await g.get_stage_states_with_records(
+            world.org_id, world.connector_id, "classify", ProgressStatus.FAILED.value, limit=50
         ) == []
     finally:
-        await g.stage_states_delete_for_virtual_records([world.vrids[name] for name in states])
+        await g.stage_states_delete_for_virtual_records(vrids)
 
 async def test_failed_records(world: _World) -> None:
     g = world.graph

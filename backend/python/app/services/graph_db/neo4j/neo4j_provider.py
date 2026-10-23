@@ -574,6 +574,8 @@ _STAGE_STATE_INDEXES = (
     "CREATE INDEX stage_state_status_updated IF NOT EXISTS FOR (n:StageState) ON (n.status, n.updatedAtMs)",
     "CREATE INDEX stage_state_revision IF NOT EXISTS FOR (n:StageState) ON (n.virtualRecordId, n.rev)",
     "CREATE INDEX stage_state_connector IF NOT EXISTS FOR (n:StageState) ON (n.connectorId)",
+    # A stage retry pages a connector's states in one status by id, off this index alone.
+    "CREATE INDEX stage_state_page IF NOT EXISTS FOR (n:StageState) ON (n.connectorId, n.stage, n.status, n.id)",
 )
 
 
@@ -11814,6 +11816,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_typed_records_batch(
         self,
         record_ids: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, Record]:
         """
         Batch-fetch typed Record instances for the given record IDs.
@@ -11852,6 +11856,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     continue
             return typed
         except Exception as e:
+            if raise_on_error:
+                raise
             self.logger.error(f"❌ get_typed_records_batch failed: {str(e)}")
             return {}
 
@@ -15449,43 +15455,50 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return deleted
 
     @override
-    async def get_record_ids_by_stage_status(
+    async def get_stage_states_with_records(
         self,
         org_id: str,
         connector_id: str,
         stage: str,
-        status_filters: list[str],
+        status: str,
         *,
         limit: int,
         after_key: str | None = None,
-    ) -> list[str]:
-        if not status_filters or limit <= 0:
+        exclude_indexing_statuses: list[str] | None = None,
+    ) -> list[tuple[str, list[str]]]:
+        if limit <= 0:
             return []
         label = collection_to_label(CollectionNames.STAGE_STATES.value)
         record_label = collection_to_label(CollectionNames.RECORDS.value)
-        # From the states (indexed on connectorId): a stage's failures are few next to its records.
+        after = "state.id > $after_key" if after_key is not None else "state.id IS NOT NULL"
+        # Ordered by every property of stage_state_page so the seek returns the page in index
+        # order and stops at the limit, instead of sorting every match.
         rows = await self._stage_cypher(
             f"""
-            MATCH (state:{label} {{connectorId: $connector_id}})
-            WHERE state.orgId = $org_id AND state.stage = $stage AND state.status IN $statuses
-            MATCH (r:{record_label} {{virtualRecordId: state.virtualRecordId}})
+            MATCH (state:{label})
+            WHERE state.connectorId = $connector_id AND state.stage = $stage AND state.status = $status
+              AND {after}
+            WITH state ORDER BY state.connectorId, state.stage, state.status, state.id LIMIT $limit
+            OPTIONAL MATCH (r:{record_label} {{virtualRecordId: state.virtualRecordId}})
             WHERE r.orgId = $org_id AND r.contentRev = state.rev AND r.connectorId = $connector_id
               AND coalesce(r.isPlaceholder, false) <> true
               AND {cypher_record_visibility("r", RecordVisibility.LIVE)}
-              AND ($after_key IS NULL OR r.id > $after_key)
-            WITH DISTINCT r.id AS id
-            RETURN id ORDER BY id LIMIT $limit
+              AND NOT coalesce(r.indexingStatus, '') IN $exclude
+            WITH state, r ORDER BY r.id
+            WITH state, collect(r.id) AS records
+            RETURN state.id AS key, records ORDER BY key
             """,
             {
                 "connector_id": connector_id,
                 "org_id": org_id,
                 "stage": stage,
-                "statuses": status_filters,
+                "status": status,
                 "after_key": after_key,
+                "exclude": exclude_indexing_statuses or [],
                 "limit": limit,
             },
         )
-        return [str(row["id"]) for row in rows]
+        return [(str(row["key"]), [str(k) for k in row["records"]]) for row in rows]
 
     @override
     async def compare_and_set_record_fields(
