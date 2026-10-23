@@ -14,7 +14,9 @@ from unittest.mock import MagicMock, create_autospec
 import pytest
 
 from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
+from app.modules.retrieval.selection_scope import within_connection
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 from ..kh_listing_stub import connector_pages, node, root_listings, stub_listing
 
@@ -121,3 +123,57 @@ class TestStaysInsideTheAgentsSources:
         assert [len(_ids(text)) for _, text in pages] == [1, 1]
         assert set().union(*(_ids(text) for _, text in pages)) == {"jira-1", "drive-1"}
         assert {p["limit"] for p in connector_pages(graph)} == {1}
+
+
+def _check_access(graph: MagicMock) -> None:
+    """`check_access` as the providers answer it for whole-app scopes: every
+    node the user can see, and of those the ones inside every scope's apps."""
+    owner = {row["id"]: app_id for app_id, rows in _USER_VISIBLE.items() for row in rows}
+    owner |= {app_id: app_id for app_id in _USER_VISIBLE}
+
+    def check(_user_key: str, _org_id: str, node_ids=(), scopes=(), **_: object) -> AccessCheck:
+        seen = frozenset(i for i in node_ids if i in owner)
+        inside = frozenset(i for i in seen if all(owner[i] in scope.app_ids for scope in scopes or ()))
+        return AccessCheck(node_ids=seen, node_ids_in_scope=inside)
+
+    graph.check_access.side_effect = check
+
+
+class TestStaysInsideAConnectionLimit:
+    """A connected app limited to some sources (a personal access token or an
+    OAuth app with a knowledge limit) asks the universal agent, whose sources
+    are everything the user can read. A name search must not name what lies
+    outside the limit, though the user could open it on the website."""
+
+    @staticmethod
+    def _limited_state(graph: MagicMock) -> dict[str, Any]:
+        state = _state(graph, apps=["app-jira"], kb=["kb-hr", "kb-finance"])
+        state["filters"] = within_connection(
+            {"apps": [], "kb": ["kb-hr", "kb-finance"]},
+            {"apps": ["kb-hr"], "recordGroups": [], "records": []},
+        )
+        _check_access(graph)
+        return state
+
+    async def test_a_name_search_names_nothing_outside_the_limit(self, graph: MagicMock) -> None:
+        _, text = await execute_list_files(self._limited_state(graph), query="budget")
+
+        assert _ids(text) == {"hr-1", "hr-2"}
+        assert "budget plan" not in text and "budget ticket" not in text
+
+    async def test_naming_a_source_outside_the_limit_does_not_reach_it(self, graph: MagicMock) -> None:
+        _, text = await execute_list_files(
+            self._limited_state(graph), query="budget", source_ids=["kb-finance"],
+        )
+
+        assert not _ids(text) & {"fin-1", "kb-finance"}
+
+    async def test_the_listing_shows_only_the_limit(self, graph: MagicMock) -> None:
+        _, text = await execute_list_files(self._limited_state(graph))
+
+        assert _ids(text) == {"kb-hr"}
+
+    async def test_a_page_is_filled_from_inside_the_limit(self, graph: MagicMock) -> None:
+        _, text = await execute_list_files(self._limited_state(graph), query="budget", limit=1)
+
+        assert len(_ids(text)) == 1 and _ids(text) <= {"hr-1", "hr-2"}

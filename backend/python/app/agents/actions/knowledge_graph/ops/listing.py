@@ -23,6 +23,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.modules.demo_data.chat import excluded_app_ids
+from app.services.graph_db.interface.graph_db_provider import ALLOWED_FILTER_KEYS
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -156,9 +157,11 @@ async def execute_list_files(
             return False, "Graph provider not available."
 
         from app.agents.actions.knowledge_graph.ops.scope import (
+            ids_within_scope,
             list_selected_nodes,
             resolve_scope,
         )
+        from app.modules.retrieval.selection_scope import resolve_request_scopes
 
         selected = await list_selected_nodes(
             state, graph_provider, user_id, org_id, cursor=cursor,
@@ -201,6 +204,22 @@ async def execute_list_files(
         allowed = set(agent_source_ids)
         matched = [sid for sid in source_ids_norm or [] if sid in allowed]
         use_connector_ids = matched or agent_source_ids
+
+        # The agent's sources can be everything the user reads, while a bound
+        # (a connected app's limit, a saved agent's or a project's sources) is
+        # narrower, and the listing service knows nothing of it.
+        filters = state.get("filters") or {}
+        bound_user_key: str | None = None
+        if any(key in filters for key in ALLOWED_FILTER_KEYS):
+            user = await graph_provider.get_user_by_user_id(user_id=user_id)
+            bound_user_key = (user.get("_key") or user.get("id")) if user else None
+            if not bound_user_key:
+                return False, "User not found."
+            _, bounds = await resolve_request_scopes(graph_provider, bound_user_key, org_id, filters)
+            for bound in bounds:
+                use_connector_ids = [sid for sid in use_connector_ids if sid in bound.connector_ids]
+            if not use_connector_ids:
+                return True, _render_flat_text(KnowledgeHubNodesResponse(success=True, items=[]), query)
         use_record_group_ids = [sid for sid in use_connector_ids if sid in kb_ids] or None
 
         service = KnowledgeHubService(
@@ -228,6 +247,13 @@ async def execute_list_files(
             flattened=None if query else False,
             record_group_ids=use_record_group_ids,
         )
+        if bound_user_key and response.items:
+            # A bound below app level (a folder, a file) leaves the rest of its
+            # app outside, and only check_access knows which rows lie inside.
+            inside = await ids_within_scope(
+                state, graph_provider, bound_user_key, org_id, [item.id for item in response.items],
+            )
+            response.items = [item for item in response.items if item.id in inside]
 
         from app.modules.agents.qna.chat_state import remember_record_ids
         remember_record_ids(
