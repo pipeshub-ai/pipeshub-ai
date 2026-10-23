@@ -42,6 +42,8 @@ on:
             - local_fs
             - google_drive_workspace
             - google_drive_individual
+            - gmail_workspace
+            - gmail_individual
             - gcs
             - azure_blob
             - smb
@@ -273,7 +275,7 @@ jobs:
       BOOKSTACK_DB_PORT: '3308'
       ZAMMAD_TEST_URL: http://localhost:8096
       ZAMMAD_CONNECTOR_URL: http://zammad-railsserver:3000
-      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3},{4}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '', (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'atlassian-sim' || '') }}
+      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3},{4},{5}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '', (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'atlassian-sim' || '') , (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'gmail-sim' || '' }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       # Optional: the S3 IAM role and second-bucket tests skip while these are unset.
@@ -315,6 +317,9 @@ jobs:
       CONNSIM_IMAGE: pipeshub/connectors-simulator:it
       CONNSIM_PACK_URI: s3://pipeshub-simulator-dataset/packs/lumenfold-1.tar.gz
       CONNSIM_PACK_SHA256: d39e021dc029ebd3c6e8af29b7dc8de161020ecc0818411204d6ce585db2d725
+      # The Gmail suites run against the Gmail simulator (gmail-sim profile) on shard 4, with the Drive suites'
+      # Google credentials; connectors/gmail_sim.env points the Gmail connectors at it.
+      NEEDS_GMAIL_SIM: ${{ (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'true' || 'false' }}
       NEEDS_ATLASSIAN_SIM: ${{ (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
@@ -393,7 +398,7 @@ jobs:
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
       CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
-      CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
+      CONN_SHARD_4: "google_drive_workspace or google_drive_individual or gmail_workspace or gmail_individual"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
@@ -443,7 +448,7 @@ jobs:
       # read it (CONNSIM_REPO_TOKEN). Without one the step fails rather than letting
       # the Confluence and Jira suites skip on a missing source.
       - name: Check out the Atlassian simulators
-        if: env.NEEDS_ATLASSIAN_SIM == 'true'
+        if: env.NEEDS_ATLASSIAN_SIM == 'true' || env.NEEDS_GMAIL_SIM == 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: pipeshub-ai/connectors-simulator
@@ -472,6 +477,15 @@ jobs:
           tar -xzf "$RUNNER_TEMP/connsim-pack.tar.gz" -C "$RUNNER_TEMP/connsim-pack" --strip-components=1
           echo "CONNSIM_PACK_DIR=$RUNNER_TEMP/connsim-pack" >> "$GITHUB_ENV"
           grep -Ev '^\s*(#|$)' integration-tests/connectors/atlassian_sim.env >> "$GITHUB_ENV"
+
+      # The Gmail simulator is in the same image and needs no dataset: each suite loads its own mailboxes.
+      - name: Use the Gmail simulator
+        if: env.NEEDS_GMAIL_SIM == 'true'
+        run: |
+          if [ "$NEEDS_ATLASSIAN_SIM" != "true" ]; then
+            docker build -q -t "$CONNSIM_IMAGE" connectors-simulator
+          fi
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/gmail_sim.env >> "$GITHUB_ENV"
 
       - name: Pull pre-built base images
         run: |

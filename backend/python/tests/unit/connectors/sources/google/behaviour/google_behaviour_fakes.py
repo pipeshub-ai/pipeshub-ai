@@ -374,6 +374,18 @@ class FakeEntitiesProcessor:
         )[offset:]
         return found[:limit] if limit else found
 
+    async def get_records_in_record_group(
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[Any]:
+        """The real processor: the group by external id, then a keyset page of its records."""
+        group = await self.get_record_group_by_external_id(connector_id, external_group_id)
+        if group is None:
+            return []
+        return [r for r in self.records.values() if getattr(r, "external_record_group_id", None) == external_group_id
+                and getattr(r, "connector_id", None) == connector_id and matches_visibility(r, visibility)
+                and (after_key is None or r.id > after_key)][:limit]
+
     async def get_record_owner_source_user_email(self, record_id: str, *, raise_on_error: bool = False) -> str | None:
         if self.fail_owner_lookup:
             # Both stores log the failure and answer None unless asked to raise.
