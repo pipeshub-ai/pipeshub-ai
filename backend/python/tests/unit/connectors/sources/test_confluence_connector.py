@@ -9415,9 +9415,9 @@ class TestSweepPlaceholderRecords:
         assert submitted["F"].is_placeholder is False  # folder synced as a real record
 
     @pytest.mark.asyncio
-    async def test_fetch_failure_still_restores_structural_edges(self):
-        """When the source fetch fails, the persisted stub is still re-submitted so a full
-        sync's deleted structural edges (record group + parent) get restored."""
+    async def test_fetch_failure_keeps_the_stub_and_walks_up(self):
+        """When the source fetch fails (or the stub did not change), the stored stub is kept as
+        it is, noted as seen so a full sync keeps its edges, and its parent is still walked."""
         c = _make_connector()
         c.data_entities_processor.get_placeholder_records = AsyncMock(
             return_value=[_wp_stub("B", parent="A", is_placeholder=True)]
@@ -9431,14 +9431,10 @@ class TestSweepPlaceholderRecords:
 
         await c._sweep_placeholder_records("org-conf-1")
 
-        # Despite fetch failure, B (and its walked parent A) are re-submitted to restore edges.
-        submitted = {
-            r.external_record_id
-            for call in c.data_entities_processor.on_new_records.call_args_list
-            for (r, _p) in call.args[0]
-        }
-        assert "B" in submitted
-        assert "A" in submitted
+        # Neither is written again (that replaced their grants with none); both are kept as stored.
+        c.data_entities_processor.on_new_records.assert_not_awaited()
+        kept = [rid for call in c.data_entities_processor.note_kept_records.call_args_list for rid in call.args[1]]
+        assert len(kept) == 2, "B and its walked parent A are kept"
 
 
 class TestIncludeJiraScopeSetting:

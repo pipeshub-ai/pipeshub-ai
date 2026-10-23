@@ -3631,8 +3631,9 @@ class ConfluenceConnector(BaseConnector):
             return None
 
         except Exception as e:
+            # A failed lookup is not "not found": callers keep what is stored instead.
             self.logger.error(f"❌ Failed to create permission from principal: {e}")
-            return None
+            raise
 
     async def _create_pseudo_group(self, account_id: str) -> AppUserGroup | None:
         """
@@ -3792,15 +3793,18 @@ class ConfluenceConnector(BaseConnector):
             permission_type = self._map_confluence_permission(operation_key, target_type)
 
             # Use common function to create permission
+            # A user whose email is hidden keeps their space access through a pseudo-group, as on pages.
             return await self._create_permission_from_principal(
                 principal_type,
                 principal_id,
-                permission_type
+                permission_type,
+                create_pseudo_group_if_missing=True,
             )
 
         except Exception as e:
+            # Raised, not dropped: saving the space without this grant would take it away.
             self.logger.error(f"❌ Failed to transform space permission: {e}")
-            return None
+            raise
 
     def _map_confluence_permission(self, operation_key: str, target_type: str) -> PermissionType:
         """

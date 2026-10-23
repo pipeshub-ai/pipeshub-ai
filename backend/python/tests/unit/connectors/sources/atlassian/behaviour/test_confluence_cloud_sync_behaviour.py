@@ -281,7 +281,8 @@ class TestSpacesAndPermissions:
         grants = {(p.entity_type, p.email or p.external_id, p.type) for p in db.record_group_permissions["1"]}
         assert (EntityType.USER, "ana@acme.com", PermissionType.OWNER) in grants
         assert (EntityType.GROUP, "grp-eng", PermissionType.READ) in grants
-        assert not any("stranger" in str(g) or "unknown" in str(g) for g in grants), "unknown principals get nothing"
+        assert (EntityType.GROUP, "acc-stranger", PermissionType.READ) in grants, "a hidden-email user keeps access via a pseudo-group"
+        assert not any("grp-unknown" in str(g) for g in grants), "an unknown group gets nothing"
         assert db.record_group_permissions["2"] == []
 
     async def test_a_failed_space_permission_read_keeps_the_stored_access(self, api, db, checkpoints) -> None:
@@ -2244,3 +2245,18 @@ class TestSmallAuditFixes:
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         assert db.records["10"].access_rule == AccessRule.RESTRICTED, "not opened to the whole space"
+
+
+class TestSpaceGrantErrors:
+    async def test_a_failed_user_lookup_keeps_the_spaces_stored_access(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V2}/spaces/1/permissions", {"results": [
+            {"principal": {"type": "user", "id": "acc-ana"}, "operation": {"key": "read", "targetType": "space"}},
+        ]})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        async def broken(**_: object) -> None:
+            raise RuntimeError("graph store unavailable")
+
+        db.get_user_by_source_id = broken
+
+        assert await connector._fetch_space_permissions("1", "Engineering") is None, "not saved without the grant"
