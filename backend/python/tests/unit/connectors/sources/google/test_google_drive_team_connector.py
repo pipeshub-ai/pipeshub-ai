@@ -1041,7 +1041,7 @@ class TestFetchPermissions:
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
         # A failed read is not an empty ACL: it raises, so the item is read again.
-        with pytest.raises(Exception):
+        with pytest.raises(HttpError):
             await conn._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio
@@ -1061,9 +1061,9 @@ class TestFetchPermissions:
     @pytest.mark.asyncio
     async def test_generic_error_for_file_raises(self):
         conn = _make_connector()
-        conn.drive_data_source.permissions_list = AsyncMock(side_effect=Exception("fail"))
+        conn.drive_data_source.permissions_list = AsyncMock(side_effect=RuntimeError("fail"))
         # A failed read is not an empty ACL: it raises, so the item is read again.
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             await conn._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio

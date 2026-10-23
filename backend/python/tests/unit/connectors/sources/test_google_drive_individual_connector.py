@@ -1254,7 +1254,7 @@ class TestHandleRecordUpdates:
         connector.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_deleted_folder_removes_only_contents_the_account_can_no_longer_open(self, connector):
+    async def test_deleted_folder_removes_only_contents_the_account_can_no_longer_open(self, connector) -> None:
         """Drive may report only the folder: its files go too, unless still open through their own share."""
         from googleapiclient.errors import HttpError
 
@@ -1273,7 +1273,7 @@ class TestHandleRecordUpdates:
         )
         not_found = HttpError(MagicMock(status=404), b'{"error": {"errors": [{"reason": "notFound"}]}}')
 
-        async def files_get(fileId, **_):
+        async def files_get(fileId, **_) -> dict:
             if fileId == "gone-ext":
                 raise not_found
             return {"id": fileId, "trashed": False}

@@ -16,7 +16,6 @@ from fastapi import HTTPException
 from googleapiclient.errors import HttpError
 from httplib2 import HttpLib2Error
 
-from app.connectors.sources.google.drive.team.user_status import UserStatusChange
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -34,6 +33,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
 from app.connectors.sources.google.drive.team.drive_access import permission_is_direct
+from app.connectors.sources.google.drive.team.user_status import UserStatusChange
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -491,14 +491,14 @@ class TestFetchPermissions:
         http_err = HttpError(resp, b"Server Error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
         # A failed read is not an empty ACL: it raises, so the item is read again.
-        with pytest.raises(Exception):
+        with pytest.raises(HttpError):
             await connector._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_file_generic_error(self, connector):
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=RuntimeError("oops"))
         # A failed read is not an empty ACL: it raises, so the item is read again.
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             await connector._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio
@@ -2391,14 +2391,14 @@ class TestFetchPermissionsFullCoverage:
         http_err = HttpError(resp, b"Server Error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
         # A failed read is not an empty ACL: it raises, so the item is read again.
-        with pytest.raises(Exception):
+        with pytest.raises(HttpError):
             await connector._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_file_generic_error(self, connector):
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=RuntimeError("oops"))
         # A failed read is not an empty ACL: it raises, so the item is read again.
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             await connector._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio

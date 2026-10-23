@@ -846,7 +846,7 @@ class TestFetchPermissionsDeep:
         http_error = HttpError(mock_resp, b"server error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
         # A failed read is not an empty ACL: it raises, so the item is read again.
-        with pytest.raises(Exception):
+        with pytest.raises(HttpError):
             await connector._fetch_permissions("file-1", is_drive=False)
 
     async def test_generic_exception_on_drive_raises(self, connector):
@@ -863,7 +863,7 @@ class TestFetchPermissionsDeep:
             side_effect=RuntimeError("network error")
         )
         # A failed read is not an empty ACL: it raises, so the item is read again.
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             await connector._fetch_permissions("file-1", is_drive=False)
 
     async def test_group_permission_maps_external_id_to_email(self, connector):

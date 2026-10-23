@@ -1812,7 +1812,7 @@ class GoogleDriveDataSource:
         fileId: str,
         pageSize: Optional[int] = None,
         pageToken: Optional[str] = None,
-        fields: Optional[str] = None,
+        fields: str | None = None,
     ) -> Dict[str, Any]:
         """Google Drive API: Lists a file's revisions. For more information, see [Manage file revisions](https://developers.google.com/workspace/drive/api/guides/manage-revisions).
 

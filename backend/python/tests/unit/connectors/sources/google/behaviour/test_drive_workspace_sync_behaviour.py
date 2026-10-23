@@ -13,8 +13,6 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any, Optional
 
 import pytest
-
-from app.connectors.sources.google.common.connector_google_exceptions import DriveSyncIncomplete
 from drive_world import FOLDER, DriveWorld, FileState
 from fastapi.responses import StreamingResponse
 from google_behaviour_fakes import (
@@ -27,6 +25,7 @@ from google_behaviour_fakes import (
 from googleapiclient.errors import HttpError
 
 from app.connectors.sources.google.common.connector_google_exceptions import (
+    DriveSyncIncomplete,
     GoogleDriveError,
 )
 from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector

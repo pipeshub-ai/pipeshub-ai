@@ -12,8 +12,6 @@ from typing import Any, Optional
 from unittest.mock import AsyncMock
 
 import pytest
-
-from app.connectors.sources.google.common.connector_google_exceptions import DriveSyncIncomplete
 from drive_world import GDOC, DriveWorld
 from fastapi.responses import StreamingResponse
 from google_behaviour_fakes import (
@@ -28,6 +26,7 @@ from googleapiclient.errors import HttpError
 from app.config.constants.arangodb import MimeTypes
 from app.connectors.sources.google.common import datasource_refresh
 from app.connectors.sources.google.common.connector_google_exceptions import (
+    DriveSyncIncomplete,
     GoogleDriveError,
 )
 from app.connectors.sources.google.drive.individual.connector import (
