@@ -1,7 +1,9 @@
 """Tests for Azure Blob Storage connector."""
 
+import base64
 import logging
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
@@ -9,8 +11,15 @@ from urllib.parse import urlparse
 import pytest
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import MimeTypes
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.connectors.core.registry.filters import FilterCollection, FilterOperator
 from app.connectors.sources.azure_blob.connector import (
     AzureBlobConnector,
     AzureBlobDataSourceEntitiesProcessor,
@@ -22,13 +31,7 @@ from app.connectors.sources.azure_blob.connector import (
     get_parent_weburl_for_azure_blob,
     parse_parent_external_id,
 )
-import base64
-from contextlib import asynccontextmanager
-from app.config.constants.arangodb import ProgressStatus
-from app.connectors.core.registry.filters import FilterCollection, FilterOperator
-from app.models.entities import RecordType, User
-from app.config.constants.arangodb import Connectors, OriginTypes
-from app.models.entities import FileRecord, RecordGroupType
+from app.models.entities import FileRecord, RecordGroupType, RecordType, User
 
 
 # ---------------------------------------------------------------------------
@@ -916,15 +919,15 @@ class TestTestConnectionAndAccess:
         azure_connector.data_source.list_containers = AsyncMock(
             return_value=_make_response(False, error="denied")
         )
-        result = await azure_connector.test_connection_and_access()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="Cannot list containers: denied"):
+            await azure_connector.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_exception(self, azure_connector):
         azure_connector.data_source = MagicMock()
         azure_connector.data_source.list_containers = AsyncMock(side_effect=Exception("err"))
-        result = await azure_connector.test_connection_and_access()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="err"):
+            await azure_connector.test_connection_and_access()
 
 
 # ===========================================================================
@@ -1016,8 +1019,9 @@ class TestGetSignedUrl:
 class TestStreamRecord:
     @pytest.mark.asyncio
     async def test_folder_raises(self, azure_connector):
-        from app.models.entities import FileRecord
         from fastapi import HTTPException
+
+        from app.models.entities import FileRecord
         record = MagicMock(spec=FileRecord)
         record.is_file = False
         with pytest.raises(HTTPException):

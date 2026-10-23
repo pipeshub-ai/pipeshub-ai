@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from azure.storage.blob import BlobProperties  # type: ignore[import-untyped]
 
 from azure.core.async_paging import AsyncItemPaged  # type: ignore[import-untyped]
+from azure.core.exceptions import AzureError  # type: ignore[import-untyped]
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     Connectors,
@@ -29,7 +30,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -90,7 +91,7 @@ from app.models.entities import (
 )
 from app.models.permission import Permission
 from app.sources.client.azure.azure_blob import AzureBlobClient
-from app.sources.external.azure.azure_blob import AzureBlobDataSource
+from app.sources.external.azure.azure_blob import AzureBlobDataSource, azure_error_code, azure_error_text
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     not_downloadable,
@@ -114,6 +115,13 @@ _CONTAINER_CONCURRENCY = 3
 
 # Azure error codes that mean the container is gone, not unreachable.
 _CONTAINER_GONE_CODES = frozenset({"ContainerNotFound", "ResourceNotFound"})
+
+# Azure error codes that mean the credentials are wrong, expired or lack a permission.
+_AUTH_ERROR_CODES = frozenset({
+    "AuthenticationFailed", "InvalidAuthenticationInfo", "KeyBasedAuthenticationNotPermitted",
+    "AuthorizationFailure", "AuthorizationPermissionMismatch", "AuthorizationResourceTypeMismatch",
+    "AuthorizationServiceMismatch", "AuthorizationProtocolMismatch", "AuthorizationSourceIPMismatch",
+})
 
 _SETUP_INFO = (
     "The connection string under Access keys in the Azure portal holds the account key, which "
@@ -496,6 +504,9 @@ class AzureBlobConnector(BaseConnector):
         self._queued_removals: list[tuple[str, Callable[[], Awaitable[None]]]] | None = None
         # Part of the source was not read (a container, a listing or a blob failed).
         self._sync_incomplete = False
+        # Blobs this sync could not process, and Azure's reason when it refused the credentials.
+        self._failed_blob_count = 0
+        self._auth_error: str | None = None
 
     def full_sync_coverage(self) -> FullSyncCoverage:
         """A sync that skipped a container, a listing or a blob after an error did not read
@@ -511,6 +522,19 @@ class AzureBlobConnector(BaseConnector):
         await self.notify(
             type=kind, severity=NotificationSeverity.ERROR, title=f"{self.display_name}: {title}", message=message,
         )
+
+    def _log_failure(self, what: str, error: BaseException) -> str:
+        """Log a failed call and return its reason. An Azure error is logged by status, code and
+        message only: its own text, which a traceback prints, can hold the request signature."""
+        azure = error if isinstance(error, AzureError) else error.__cause__
+        if isinstance(azure, AzureError):
+            reason = azure_error_text(azure)
+            if azure_error_code(azure) in _AUTH_ERROR_CODES:
+                self._auth_error = reason
+            self.logger.error(f"{what}: {reason}")
+            return reason
+        self.logger.error(f"{what}: {error}", exc_info=True)
+        return str(error)
 
     def get_app_users(self, users: list[User]) -> list[AppUser]:
         """Convert User objects to AppUser objects for Azure Blob connector."""
@@ -691,11 +715,19 @@ class AzureBlobConnector(BaseConnector):
                 containers_response = await self.data_source.list_containers()
                 if not containers_response.success:
                     self.logger.error(f"Failed to list containers: {containers_response.error}")
-                    await self._notify_error(
-                        NotificationType.CONNECTOR_SYNC_ERROR, "Could not list containers",
-                        f"Failed to list Azure Blob containers: {containers_response.error}. "
-                        "Check the credentials and their List permission.",
-                    )
+                    if getattr(containers_response, "error_code", None) in _AUTH_ERROR_CODES:
+                        await self._notify_error(
+                            NotificationType.CONNECTOR_AUTH_ERROR, "Credentials rejected",
+                            f"Azure refused the connector's credentials while listing containers: "
+                            f"{containers_response.error}. Update the credentials or their permissions; "
+                            "nothing was removed.",
+                        )
+                    else:
+                        await self._notify_error(
+                            NotificationType.CONNECTOR_SYNC_ERROR, "Could not list containers",
+                            f"Failed to list Azure Blob containers: {containers_response.error}. "
+                            "Check the credentials and their List permission.",
+                        )
                     raise ConnectionError(f"Failed to list Azure Blob containers: {containers_response.error}")
                 containers_list_payload = containers_response.data or []
                 containers_to_sync = [
@@ -722,22 +754,38 @@ class AzureBlobConnector(BaseConnector):
             failed = await self._sync_containers(containers_to_sync)
             if failed:
                 self._sync_incomplete = True
+                names = ", ".join(sorted(failed))
+                if self._auth_error:
+                    await self._notify_error(
+                        NotificationType.CONNECTOR_AUTH_ERROR, "Credentials rejected",
+                        f"Azure refused the connector's credentials while syncing {names}: {self._auth_error}. "
+                        "Update the credentials or their permissions; nothing was removed.",
+                    )
+                else:
+                    first = min(failed)
+                    await self._notify_error(
+                        NotificationType.CONNECTOR_SYNC_ERROR, "Some containers failed to sync",
+                        f"Could not sync {len(failed)} container(s): {names}. {first}: {failed[first]}. "
+                        "The next sync retries them.",
+                    )
+                raise RuntimeError(f"Azure Blob sync failed for container(s): {names}")
+            if self._failed_blob_count:
                 await self._notify_error(
-                    NotificationType.CONNECTOR_SYNC_ERROR, "Some containers failed to sync",
-                    f"Could not sync {len(failed)} container(s): {', '.join(sorted(failed))}. The next sync retries them.",
+                    NotificationType.CONNECTOR_SYNC_ERROR, "Some files failed to sync",
+                    f"{self._failed_blob_count} file(s) could not be synced. The next sync retries them; "
+                    "the connector's log names each one.",
                 )
-                raise RuntimeError(f"Azure Blob sync failed for container(s): {', '.join(sorted(failed))}")
 
             self.logger.info("Azure Blob full sync completed.")
         except Exception as ex:
             self.logger.error(f"Error in Azure Blob connector run: {ex}", exc_info=True)
             raise
 
-    async def _sync_containers(self, container_names: list[str]) -> list[str]:
+    async def _sync_containers(self, container_names: list[str]) -> dict[str, str]:
         """Sync containers a few at a time, so one large container does not hold up the rest.
-        Returns the names of those that failed; the others are synced either way."""
+        Returns the reason each failed container failed; the others are synced either way."""
         semaphore = asyncio.Semaphore(_CONTAINER_CONCURRENCY)
-        failed: list[str] = []
+        failed: dict[str, str] = {}
 
         async def sync_one(container_name: str) -> None:
             async with semaphore:
@@ -745,8 +793,7 @@ class AzureBlobConnector(BaseConnector):
                     self.logger.info(f"Syncing container: {container_name}")
                     await self._sync_container(container_name)
                 except Exception as e:
-                    self.logger.error(f"Error syncing container {container_name}: {e}", exc_info=True)
-                    failed.append(container_name)
+                    failed[container_name] = self._log_failure(f"Error syncing container {container_name}", e)
 
         self._queued_removals = []
         try:
@@ -760,8 +807,7 @@ class AzureBlobConnector(BaseConnector):
                 try:
                     await remove(keep_unlisted=bool(failed))
                 except Exception as e:
-                    self.logger.error(f"Error removing unlisted records in {container_name}: {e}", exc_info=True)
-                    failed.append(container_name)
+                    failed[container_name] = self._log_failure(f"Error removing unlisted records in {container_name}", e)
         finally:
             self._queued_removals = None
         return failed
@@ -791,6 +837,7 @@ class AzureBlobConnector(BaseConnector):
                 container_ts_ms = _container_last_modified_epoch_ms_from_list(extra.data, target_names)
                 to_check = target_names - set(self._extract_container_names(extra.data))
             else:
+                self.logger.warning(f"Could not list containers to find deleted ones: {extra.error}")
                 to_check = set()
         else:
             to_check = target_names
@@ -800,6 +847,8 @@ class AzureBlobConnector(BaseConnector):
             if not prop.success:
                 if getattr(prop, "error_code", None) in _CONTAINER_GONE_CODES:
                     gone.add(cname)
+                else:
+                    self.logger.warning(f"Could not read container {cname}; keeping its records: {prop.error}")
                 continue
             lm = getattr(prop.data, "last_modified", None)
             if cname in target_names and lm is not None:
@@ -1204,7 +1253,7 @@ class AzureBlobConnector(BaseConnector):
 
                     if last_sync_time and not self._pass_date_filters(
                         blob_dict, modified_after_ms, modified_before_ms, created_after_ms, created_before_ms
-                    ):
+                    ) and not self._tier_changed_since(blob_dict, last_sync_time):
                         if f"{container_name}/{blob_name.lstrip('/')}" not in recorded:
                             # Its content may be held by another key's record; decided once every prefix is listed.
                             unrecorded.append(blob_dict)
@@ -1215,14 +1264,17 @@ class AzureBlobConnector(BaseConnector):
                     if last_modified:
                         if isinstance(last_modified, datetime):
                             obj_timestamp_ms = int(last_modified.timestamp() * 1000)
-                            max_timestamp = max(max_timestamp, obj_timestamp_ms)
                         elif isinstance(last_modified, str):
                             try:
                                 obj_dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
                                 obj_timestamp_ms = int(obj_dt.timestamp() * 1000)
-                                max_timestamp = max(max_timestamp, obj_timestamp_ms)
                             except ValueError:
                                 pass
+                    tier_changed = blob_dict.get("blob_tier_change_time")
+                    if isinstance(tier_changed, datetime):
+                        obj_timestamp_ms = max(obj_timestamp_ms or 0, datetime_to_epoch_ms(tier_changed))
+                    if obj_timestamp_ms:
+                        max_timestamp = max(max_timestamp, obj_timestamp_ms)
 
                     # Ensure folder hierarchy exists from blob path (Azure Blob has no folder objects)
                     path_segments = get_folder_path_segments_from_blob_name(blob_name)
@@ -1243,10 +1295,7 @@ class AzureBlobConnector(BaseConnector):
                         failed.add(obj_timestamp_ms)
                 except Exception as e:
                     error_blob_name = blob_dict.get("name", "unknown") if "blob_dict" in locals() else "unknown"
-                    self.logger.error(
-                        f"Error processing blob {error_blob_name}: {e}",
-                        exc_info=True,
-                    )
+                    self._log_failure(f"Error processing blob {error_blob_name} in container {container_name}", e)
                     failed.add(obj_timestamp_ms)
                     # An object that errored before it was judged may still be kept.
                     unjudged = unjudged or not judged
@@ -1255,9 +1304,7 @@ class AzureBlobConnector(BaseConnector):
             self.logger.info(f"Processed {blob_count} blobs from container {container_name}")
 
         except Exception as e:
-            self.logger.error(
-                f"Error during container sync for {container_name}: {e}", exc_info=True
-            )
+            self._log_failure(f"Error listing blobs in container {container_name}", e)
             listing_failed = e
 
         if batch_records:
@@ -1267,12 +1314,14 @@ class AzureBlobConnector(BaseConnector):
         # listing would skip the older blobs it never reached.
         if failed.count:
             self._sync_incomplete = True
+            self._failed_blob_count += failed.count
             self.logger.warning(
                 f"{failed.count} blobs in container {container_name} failed to process; "
                 "the next sync retries them"
             )
         if listing_failed:
-            raise ConnectionError(f"Listing blobs in {container_name} failed: {listing_failed}") from listing_failed
+            reason = azure_error_text(listing_failed) if isinstance(listing_failed, AzureError) else listing_failed
+            raise ConnectionError(f"Listing blobs in {container_name} failed: {reason}") from listing_failed
         checkpoint = listing_checkpoint(failed.checkpoint(max_timestamp), listing_started_at)
         if checkpoint and checkpoint > 0:
             await self.record_sync_point.update_sync_point(
@@ -1311,7 +1360,15 @@ class AzureBlobConnector(BaseConnector):
             "content_md5": content_md5,
             "metadata": getattr(blob, "metadata", None) or {},
             "blob_tier": getattr(blob, "blob_tier", None),
+            "blob_tier_change_time": getattr(blob, "blob_tier_change_time", None),
         }
+
+    @staticmethod
+    def _tier_changed_since(blob: dict, since_ms: int) -> bool:
+        """Whether the blob's tier changed after ``since_ms``. Setting a tier, as rehydrating
+        from Archive does, changes neither its Last-Modified nor its etag."""
+        changed = blob.get("blob_tier_change_time")
+        return isinstance(changed, datetime) and datetime_to_epoch_ms(changed) > since_ms
 
     @staticmethod
     def _is_folder_blob(blob: dict) -> bool:
@@ -1589,7 +1646,7 @@ class AzureBlobConnector(BaseConnector):
             return file_record, permissions
 
         except Exception as e:
-            self.logger.error(f"Error processing Azure blob: {e}", exc_info=True)
+            self._log_failure(f"Error processing blob {blob.get('name')} in container {container_name}", e)
             return None, []
 
     async def _paced(self, blobs: "AsyncItemPaged | AsyncIterator[dict]") -> AsyncIterator["BlobProperties | dict"]:
@@ -1628,7 +1685,8 @@ class AzureBlobConnector(BaseConnector):
                     return self._blob_properties_to_dict(blob).get("name") == blob_name
                 return False
         except Exception as e:
-            self.logger.warning(f"Could not check whether {container_name}/{blob_name} still exists: {e}")
+            reason = azure_error_text(e) if isinstance(e, AzureError) else e
+            self.logger.warning(f"Could not check whether {container_name}/{blob_name} still exists: {reason}")
             return True
 
     async def _create_azure_blob_permissions(
@@ -1639,17 +1697,18 @@ class AzureBlobConnector(BaseConnector):
 
     async def test_connection_and_access(self) -> bool:
         """Check what a sync needs: listing containers (unless the filter names them),
-        listing blobs, and producing a download link."""
+        listing blobs, and producing a download link. A problem raises ConnectorInitError
+        naming it, which the user sees instead of a generic failure."""
         if not self.data_source:
             return False
         try:
             problem = await self._connection_problem()
         except Exception as e:
-            problem = str(e)
+            problem = azure_error_text(e) if isinstance(e, AzureError) else str(e)
         if problem:
             self.logger.error(f"Azure Blob connection test failed: {problem}")
             await self._notify_error(NotificationType.CONNECTOR_AUTH_ERROR, "Connection test failed", problem)
-            return False
+            raise ConnectorInitError(f"{self.display_name}: {problem}")
         self.logger.info("Azure Blob connection test successful.")
         return True
 
@@ -1674,7 +1733,7 @@ class AzureBlobConnector(BaseConnector):
                 # A deleted container is not a credential problem; the next sync removes it.
                 if getattr(e, "error_code", None) in _CONTAINER_GONE_CODES:
                     continue
-                return f"Cannot list blobs in {container_name}: {e}"
+                return f"Cannot list blobs in {container_name}: {azure_error_text(e)}"
             break
         # Signing never fetches the blob, so any name will do.
         signed = await self.data_source.generate_blob_sas_url(
@@ -1862,8 +1921,11 @@ class AzureBlobConnector(BaseConnector):
                         updated_records.append((updated_record, permissions))
                     else:
                         non_updated_records.append(record)
+                except LookupError as e:
+                    self.logger.warning(f"Not reindexing record {record.id}: {e}")
+                    continue
                 except Exception as e:
-                    self.logger.error(f"Error checking record {record.id} at source: {e}")
+                    self.logger.error(f"Error checking record {record.id} at source: {e}", exc_info=True)
                     continue
 
             if updated_records:
@@ -1914,6 +1976,9 @@ class AzureBlobConnector(BaseConnector):
             if not response.data:
                 return None
             blob_metadata = self._blob_properties_to_dict(response.data)
+            if str(blob_metadata.get("blob_tier") or "").lower() == "archive":
+                # Raised like a missing blob: indexing could not read it until it is rehydrated.
+                raise LookupError(f"Blob {blob_name} in container {container_name} is in the Archive tier")
 
             # The same revision sync stores (Content-MD5, else etag).
             current_revision = self._get_azure_blob_revision_id(blob_metadata)
@@ -2013,7 +2078,7 @@ class AzureBlobConnector(BaseConnector):
         except LookupError:
             raise
         except Exception as e:
-            self.logger.error(f"Error checking record {record.id} at source: {e}")
+            self.logger.error(f"Error checking record {record.id} at source: {e}", exc_info=True)
             return None
 
     async def run_incremental_sync(self) -> None:
