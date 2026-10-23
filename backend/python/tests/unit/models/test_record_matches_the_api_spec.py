@@ -92,7 +92,6 @@ _UNDOCUMENTED_STORED_FIELDS = frozenset({
     "purgeLastError",
     "rateLimitedSince",
     "republishCount",
-    "restoredAtTimestamp",
     "retryNotBefore",
     "rowCount",
     "sourceTables",

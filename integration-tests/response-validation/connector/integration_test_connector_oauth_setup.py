@@ -39,12 +39,13 @@ from helper.clients.connectors_client import (  # noqa: E402
     ConnectorsClient,
 )
 from openapi_schema_validator import (  # noqa: E402
-    assert_operation_documents_response,
+    _operation_responses,
     assert_error_response_matches_openapi_operation,
     assert_operation_requires_authentication,
     assert_query_params_documented,
     assert_request_body_strictly_matches_openapi_operation,
     assert_response_strictly_matches_openapi_operation,
+    load_openapi_document,
     operation_oauth2_scopes,
     operation_request_examples,
     request_body_violations,
@@ -557,10 +558,32 @@ class TestCreateAndDeleteOAuthApp:
             resp = oauth_configs_api.delete_config("Jira", throwaway_jira_app["id"])
             assert resp.status_code == 200, resp.text
             assert_response_strictly_matches_openapi_operation(resp.json(), _DELETE_OAUTH_CONFIG)
-            with pytest.raises(AssertionError):
-                assert_operation_documents_response(_DELETE_OAUTH_CONFIG, "400")
+            # The only documented 400 is the app-wide markup filter, not "still in use".
+            documented = _operation_responses(_DELETE_OAUTH_CONFIG).get("400")
+            assert documented == {"$ref": "#/components/responses/XssRejected"}, documented
         finally:
             connectors_api.delete_instance(connector_id)
+
+    def test_delete_oauth_config_with_markup_in_a_query_value_is_400(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient
+    ) -> None:
+        """The app-wide XSS filter answers before authentication, as the XssRejected ref says."""
+        assert _operation_responses(_DELETE_OAUTH_CONFIG).get("400") == {
+            "$ref": "#/components/responses/XssRejected"
+        }
+        # The validator never reads descriptions, so the shared response's sentence is checked here.
+        xss = load_openapi_document()["components"]["responses"]["XssRejected"]["description"]
+        assert "HTML tags, scripts, and XSS content are not allowed" in xss, xss
+        resp = oauth_configs_api.delete_config(
+            "Jira", str(uuid4()), auth=False, params={"q": "<script>alert(1)</script>"}
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert_error_response_matches_openapi_operation(body, _DELETE_OAUTH_CONFIG, 400)
+        assert body["error"]["code"] == "HTTP_BAD_REQUEST", body
+        assert body["error"]["message"].startswith(
+            'HTML tags, scripts, and XSS content are not allowed in the query parameter "q".'
+        ), body
 
     def test_delete_oauth_config_unauthenticated_is_401(
         self, oauth_configs_api: ConnectorOAuthConfigsClient, throwaway_jira_app: dict[str, Any]
