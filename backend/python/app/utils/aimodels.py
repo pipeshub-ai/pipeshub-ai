@@ -1494,11 +1494,21 @@ def _reasoning_effort_kwargs(
         return {}
 
     effort_input = reasoning_effort or model_default_reasoning_effort(config) or DEFAULT_REASONING_EFFORT
-    if effort_input == "none":
+    if effort_input == "none" and not config.get("allowDisabledReasoning"):
         # "none" is no longer offered as a UI choice (see the docstring
         # above) — floor it unconditionally rather than only when a
         # REASONING_MANDATORY fact happens to be learned for this model.
+        # allowDisabledReasoning is for internal calls that want no reasoning at all.
         effort_input = REASONING_MANDATORY_FALLBACK_EFFORT
+
+    if effort_input == "none" and provider == LLMProvider.ANTHROPIC.value:
+        off = _claude_thinking_off(model_name)
+        if off == "omit":
+            # Any effort value would ask this model to think.
+            return {}
+        if off != "lowest":
+            return {"thinking": {"type": off}}
+        effort_input = "low"
 
     if provider == LLMProvider.OLLAMA.value:
         return {"reasoning": _OLLAMA_EFFORT_MAP.get(effort_input, effort_input)}
@@ -1697,6 +1707,33 @@ def _bedrock_anthropic_uses_adaptive_thinking(model_name: str | None) -> bool:
     return bool(re.search(r"claude.*4[-_.]([67]|[6-9]\d)", lowered))
 
 
+def _claude_thinking_off(model_name: str | None) -> str:
+    """How to ask a Claude model for no thinking.
+
+    ``omit``: it only thinks when asked (Claude 4.8 and older), so send no
+    thinking fields. ``disabled``: Claude 5 and Haiku 5.5 think adaptively when
+    the field is left out but accept ``thinking.type=disabled``.
+    ``between_tools``: Sonnet 5.5 rejects ``disabled`` and takes this instead.
+    ``lowest``: Opus 5.5 and later, Fable and Mythos always think; the lowest
+    effort is the closest they come.
+    """
+    lowered = (model_name or "").lower()
+    if any(token in lowered for token in ("fable", "mythos")):
+        return "lowest"
+    parsed = _parse_claude_version(model_name)
+    if parsed is None:
+        return "omit"
+    tier, major, minor = parsed
+    if major < 5:
+        return "omit"
+    at_least_5_5 = major > 5 or (minor or 0) >= 5
+    if tier == "opus" and at_least_5_5:
+        return "lowest"
+    if tier == "sonnet" and at_least_5_5:
+        return "between_tools"
+    return "disabled"
+
+
 def _resolve_bedrock_effort_input(reasoning_effort: str | None, config: dict[str, Any]) -> str:
     """Normalize UI effort for Bedrock, flooring explicit ``none`` to low.
 
@@ -1706,7 +1743,7 @@ def _resolve_bedrock_effort_input(reasoning_effort: str | None, config: dict[str
     model is flagged ``isReasoning``.
     """
     effort_input = reasoning_effort or model_default_reasoning_effort(config) or DEFAULT_REASONING_EFFORT
-    if effort_input == "none":
+    if effort_input == "none" and not config.get("allowDisabledReasoning"):
         return REASONING_MANDATORY_FALLBACK_EFFORT
     return effort_input
 
@@ -1744,6 +1781,13 @@ def _bedrock_additional_model_request_fields(
     if provider == LLMProvider.ANTHROPIC.value or (
         model_name and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
     ):
+        if effort_input == "none":
+            off = _claude_thinking_off(model_name)
+            if off == "omit":
+                return {}
+            if off != "lowest":
+                return {"thinking": {"type": off}}
+            effort_input = "low"
         if _bedrock_anthropic_uses_adaptive_thinking(model_name):
             effort = _ANTHROPIC_EFFORT_MAP.get(effort_input, effort_input)
             return {
@@ -1762,6 +1806,8 @@ def _bedrock_additional_model_request_fields(
         }
 
     if _bedrock_is_nova_2(model_name):
+        if effort_input == "none":
+            return {}
         effort = _BEDROCK_NOVA_EFFORT_MAP.get(effort_input, effort_input)
         return {
             "reasoningConfig": {

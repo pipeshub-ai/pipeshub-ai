@@ -19,6 +19,7 @@ from app.api.routes.records import router as records_router
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
+    ai_models_registry_router,
     authMiddleware,
     chatbot_router,
     ensure_org_context,
@@ -32,7 +33,6 @@ from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
-from app.api.routes.ai_models_registry import router as ai_models_registry_router
 from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.health import router as health_router
