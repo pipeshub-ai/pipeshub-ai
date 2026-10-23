@@ -18,6 +18,7 @@ type Spec = {
   paths: Record<string, Record<string, { tags?: string[]; security?: unknown[] }>>
 }
 
+/** The router under test, with authentication stubbed to pass. */
 function router(): any {
   const container: any = {
     get: sinon.stub().callsFake((key: string) =>
@@ -29,9 +30,11 @@ function router(): any {
   return createMcpServersRouter(container)
 }
 
+/** An Express route as `method /mcp-servers/{param}`, the spec's path form. */
 const routeId = (method: string, path: string) =>
   `${method} /mcp-servers${path.replace(/:(\w+)/g, '{$1}')}`
 
+/** Every `method /mcp-servers...` route the router serves, in spec path form. */
 function servedRoutes(): string[] {
   return router()
     .stack.filter((layer: any) => layer.route)
@@ -56,6 +59,7 @@ function gateScopes(): Record<string, string[]> {
   return out
 }
 
+/** Every `method path` the spec documents under `/mcp-servers`. */
 function documentedRoutes(spec: Spec): string[] {
   return Object.entries(spec.paths)
     .filter(([path]) => path.startsWith('/mcp-servers'))
