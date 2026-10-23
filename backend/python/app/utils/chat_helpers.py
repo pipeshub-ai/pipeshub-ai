@@ -1446,7 +1446,7 @@ async def _relations_per_record(
             if outgoing
             else graph_provider.get_child_record_ids_by_relation_type
         )
-        return await fetch(record_id, relation_type)
+        return await fetch(record_id, relation_type, limit=RELATION_FETCH_LIMIT_PER_DIRECTION)
 
     jobs = [
         (record_id, relation_type, outgoing)

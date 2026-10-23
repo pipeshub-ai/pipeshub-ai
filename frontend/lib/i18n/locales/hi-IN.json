@@ -622,7 +622,8 @@
       "pending": "लंबित"
     },
     "allRecordsBusy_one": "यह दृश्य अभी व्यस्त है। {{count}} सेकंड में फिर से कोशिश की जाएगी।",
-    "allRecordsBusy_other": "यह दृश्य अभी व्यस्त है। {{count}} सेकंड में फिर से कोशिश की जाएगी।"
+    "allRecordsBusy_other": "यह दृश्य अभी व्यस्त है। {{count}} सेकंड में फिर से कोशिश की जाएगी।",
+    "allRecordsLoadFailed": "रिकॉर्ड लोड नहीं हो सके"
   },
   "connectorTypes": {
     "slack": "Slack",

@@ -622,7 +622,8 @@
       "pending": "Pending"
     },
     "allRecordsBusy_one": "This view is busy right now. Retrying in {{count}} second.",
-    "allRecordsBusy_other": "This view is busy right now. Retrying in {{count}} seconds."
+    "allRecordsBusy_other": "This view is busy right now. Retrying in {{count}} seconds.",
+    "allRecordsLoadFailed": "Failed to load records"
   },
   "connectorTypes": {
     "slack": "Slack",

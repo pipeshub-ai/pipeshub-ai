@@ -1554,6 +1554,27 @@ class TestRecordRelationHelpers:
         assert result == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", [
+        "get_parent_record_ids_by_relation_type", "get_child_record_ids_by_relation_type",
+    ])
+    async def test_a_per_record_read_stops_each_scan_at_its_limit(self, connected_provider, method) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        await getattr(connected_provider, method)("r1", "ATTACHMENT", limit=5)
+        call = connected_provider.http_client.execute_aql.await_args
+        # Both edge scans and the union stop at the limit.
+        assert call.args[0].count("LIMIT @limit") == 3
+        assert call.kwargs["bind_vars"]["limit"] == 5
+
+    @pytest.mark.asyncio
+    async def test_the_relations_batch_stops_each_edge_scan_at_the_limit(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        await connected_provider.get_node_relations_batch(["r1"], ["ATTACHMENT"], limit_per_direction=5)
+        call = connected_provider.http_client.execute_aql.await_args
+        # Two scans per direction, plus the cut of each direction's union.
+        assert call.args[0].count("LIMIT @limit") == 6
+        assert call.kwargs["bind_vars"]["limit"] == 5
+
+    @pytest.mark.asyncio
     async def test_get_virtual_record_ids_for_record_ids_empty_input(self, connected_provider):
         result = await connected_provider.get_virtual_record_ids_for_record_ids([])
         assert result == {}

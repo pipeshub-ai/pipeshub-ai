@@ -602,7 +602,7 @@ function KnowledgeBasePageContent() {
   // A busy answer (503) is retried by itself, a few times, after the seconds the server asked for.
   const allRecordsBusyTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const allRecordsBusyTries = useRef(0);
-  const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number) => Promise<void>) | null>(null);
+  const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean) => Promise<void>) | null>(null);
   const collectionsFetchRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -614,8 +614,10 @@ function KnowledgeBasePageContent() {
   }, []);
 
   // All Records mode: Fetch table data (reusable callback)
-  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number) => {
+  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number, busyRetry = false) => {
     allRecordsFetchRef.current?.abort();
+    // Each request the user makes gets its own retries; only the timer's retries share them.
+    if (!busyRetry) allRecordsBusyTries.current = 0;
     const controller = new AbortController();
     allRecordsFetchRef.current = controller;
     if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
@@ -654,7 +656,7 @@ function KnowledgeBasePageContent() {
           nodeType as NodeType,
           nodeId,
           params,
-          { signal: controller.signal }
+          { signal: controller.signal, quietRefusals: true }
         );
       } else {
         // Root level - fetch all records
@@ -696,14 +698,14 @@ function KnowledgeBasePageContent() {
             return;
           }
           if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
-          void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page);
+          void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page, true);
         }, 1000);
         return;
       }
       // A view too large to list answers 422 with the sentence to show; asking again cannot change that.
       const refused = isProcessedError(error) && error.statusCode === 422;
       setAllRecordsRefused(refused);
-      setAllRecordsTableError(refused ? error.message : 'Failed to load records');
+      setAllRecordsTableError(refused ? error.message : t('kb.allRecordsLoadFailed'));
     } finally {
       if (
         allRecordsFetchRef.current === controller &&
@@ -734,8 +736,6 @@ function KnowledgeBasePageContent() {
   // All Records mode: Fetch data on initial load or when navigating to a different node
   useEffect(() => {
     if (!isAllRecordsMode) return;
-    // A busy answer in one view must not use up the retries of the next.
-    allRecordsBusyTries.current = 0;
 
     if (allRecordsNodeType && allRecordsNodeId) {
       // Drilling down into a specific node

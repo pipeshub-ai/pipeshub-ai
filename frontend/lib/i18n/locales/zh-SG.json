@@ -708,7 +708,8 @@
       "skipped": "已跳过",
       "pending": "待处理"
     },
-    "allRecordsBusy_other": "此视图当前繁忙，将在 {{count}} 秒后重试。"
+    "allRecordsBusy_other": "此视图当前繁忙，将在 {{count}} 秒后重试。",
+    "allRecordsLoadFailed": "加载记录失败"
   },
   "connectorTypes": {
     "slack": "Slack",

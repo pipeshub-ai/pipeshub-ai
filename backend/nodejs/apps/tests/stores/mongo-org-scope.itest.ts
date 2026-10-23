@@ -15,6 +15,7 @@ import * as U from '../../src/modules/enterprise_search/utils/utils';
 import { DocumentModel } from '../../src/modules/storage/schema/document.schema';
 import { UserController } from '../../src/modules/user_management/controller/users.controller';
 import { Users } from '../../src/modules/user_management/schema/users.schema';
+import { ForbiddenError } from '../../src/libs/errors/http.errors';
 
 const oid = () => new mongoose.Types.ObjectId();
 const A = oid(), B = oid(), uA = oid(), uB = oid();
@@ -57,9 +58,18 @@ describe('Org scoping against a real MongoDB', function () {
     };
     expect(await call({ email: 'a@x.com' }, 'a@x.com')).to.have.length(1);
     expect(await call({ email: 'A@X.com' }, 'a@x.com')).to.have.length(1);
-    expect(await call({ email: 'a@x.com' }, 'b@y.com')).to.have.length(0);
-    expect(await call({}, 'b@y.com')).to.have.length(0);
-    expect(await call({ email: '' }, 'b@y.com')).to.have.length(0);
+    // A token for another address, or with none, is refused before any lookup.
+    const refused = async (tokenPayload: any, email: string) => {
+      try {
+        await call(tokenPayload, email);
+      } catch (e) {
+        return e;
+      }
+      throw new Error('expected the lookup to be refused');
+    };
+    expect(await refused({ email: 'a@x.com' }, 'b@y.com')).to.be.instanceOf(ForbiddenError);
+    expect(await refused({}, 'b@y.com')).to.be.instanceOf(ForbiddenError);
+    expect(await refused({ email: '' }, 'b@y.com')).to.be.instanceOf(ForbiddenError);
     expect(await call({ email: 'a@x.com', orgId: B.toString() }, 'a@x.com')).to.have.length(0);
   });
 

@@ -622,7 +622,8 @@
       "pending": "Ausstehend"
     },
     "allRecordsBusy_one": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunde.",
-    "allRecordsBusy_other": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunden."
+    "allRecordsBusy_other": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunden.",
+    "allRecordsLoadFailed": "Datensätze konnten nicht geladen werden"
   },
   "connectorTypes": {
     "slack": "Slack",

@@ -3720,7 +3720,7 @@ class TestRecordRelationOperations:
             {"record_id": "c2", "childTable": "", "sourceColumn": "", "targetColumn": ""},
         ]
         child_kwargs = neo4j_provider.client.execute_query.await_args.kwargs
-        assert child_kwargs["parameters"] == {"record_id": "p1", "relation_type": "FOREIGN_KEY"}
+        assert child_kwargs["parameters"] == {"record_id": "p1", "relation_type": "FOREIGN_KEY", "limit": 2**31 - 1}
         assert child_kwargs["txn_id"] == "txn-child"
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("child fail"))
@@ -3773,7 +3773,7 @@ class TestRecordRelationOperations:
             {"record_id": "p2", "parentTable": "", "sourceColumn": "", "targetColumn": ""},
         ]
         parent_kwargs = neo4j_provider.client.execute_query.await_args.kwargs
-        assert parent_kwargs["parameters"] == {"record_id": "c1", "relation_type": "FOREIGN_KEY"}
+        assert parent_kwargs["parameters"] == {"record_id": "c1", "relation_type": "FOREIGN_KEY", "limit": 2**31 - 1}
         assert parent_kwargs["txn_id"] == "txn-parent"
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("parent fail"))
@@ -5138,6 +5138,22 @@ class TestExternalCollaboratorBrowse:
         query = provider.client.execute_query.await_args.args[0]
         assert ("{1,2}" in query and "{1,1}" in query and "NOT EXISTS" in query) is bounded
         assert ("[kh_x IN allNodes WHERE kh_x IN within] AS allNodes" in query) is bounded
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("max_depth", "precomputed"), [(2, False), (50, True)])
+    async def test_a_bounded_flatten_never_reads_the_precomputed_listing(
+        self, provider, max_depth, precomputed,
+    ) -> None:
+        """The precomputed listing holds the whole connector, so it cannot honour a depth."""
+        from app.services.graph_db.neo4j import kh_scope
+
+        provider._kh_scope_mode = AsyncMock(return_value="on")
+        provider._kh_listing_state_ready = AsyncMock(return_value=True)
+        with patch.object(kh_scope, "page_payload", AsyncMock(side_effect=kh_scope.Fallback("test"))) as payload:
+            await provider.get_knowledge_hub_connector_page_v3(
+                "app1", "org1", ["uk1"], ["app1"], ["r9"], flatten=True, max_depth=max_depth,
+            )
+        assert payload.await_count == int(precomputed)
 
     @pytest.mark.asyncio
     async def test_a_flatten_from_the_app_at_depth_one_has_no_zero_length_quantifier(self, provider) -> None:

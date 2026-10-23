@@ -630,7 +630,8 @@
     },
     "allRecordsBusy_one": "Esta vista está ocupada en este momento. Reintentando en {{count}} segundo.",
     "allRecordsBusy_many": "Esta vista está ocupada en este momento. Reintentando en {{count}} de segundos.",
-    "allRecordsBusy_other": "Esta vista está ocupada en este momento. Reintentando en {{count}} segundos."
+    "allRecordsBusy_other": "Esta vista está ocupada en este momento. Reintentando en {{count}} segundos.",
+    "allRecordsLoadFailed": "No se pudieron cargar los registros"
   },
   "connectorTypes": {
     "slack": "Slack",

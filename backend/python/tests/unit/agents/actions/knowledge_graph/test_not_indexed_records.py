@@ -199,9 +199,12 @@ class TestHttpRecordContent:
             body = await self._content(graph)
 
         assert body["truncated"] is True and body["totalChars"] == FETCH_MAX_CHARS * 3
-        assert body["content"].startswith("x" * FETCH_MAX_CHARS)
         assert "Content truncated" in body["content"] and "startBlock" in body["content"]
-        assert len(body["content"]) < FETCH_MAX_CHARS + 500
+        # The marker counts toward the cap, and says how much content precedes it.
+        assert len(body["content"]) <= FETCH_MAX_CHARS
+        shown = len(body["content"]) - len(body["content"].lstrip("x"))
+        assert shown > FETCH_MAX_CHARS - 500
+        assert f"showed {shown} of {FETCH_MAX_CHARS * 3} characters" in body["content"]
 
     async def test_access_is_one_check_that_the_fetch_reuses(self) -> None:
         graph = _graph(status=ProgressStatus.COMPLETED.value)

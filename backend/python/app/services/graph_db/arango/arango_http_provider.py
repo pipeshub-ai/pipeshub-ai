@@ -473,6 +473,11 @@ class _Visible:
     # A bounded flatten lists a group's or the App's records only when no
     # hierarchy edge places them (they count one below the container).
     unplaced_members_only: bool = False
+    # A bounded flatten's records the hierarchy places within the depth, listed
+    # when they belong to one of ``placed_groups`` (the declared scope's) or to
+    # the App's collection.
+    placed: list[str] = field(default_factory=list)
+    placed_groups: list[str] = field(default_factory=list)
 
 
 def _kh_v3_ordered(slim: list[list[Any]], *, descending: bool) -> list[tuple[str, str, str, Any]]:
@@ -5119,7 +5124,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that have an edge pointing TO this record
@@ -5139,10 +5145,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR edge IN UNION(
                     (FOR e IN {CollectionNames.RECORD_LINKS.value}
                         FILTER e._to == CONCAT("records/", @record_id) AND e.relationshipType == @relation_type
-                        RETURN e),
+                        LIMIT @limit RETURN e),
                     (FOR e IN {CollectionNames.NODE_RELATIONS.value}
                         FILTER e._to == CONCAT("records/", @record_id) AND e.relationshipType == @relation_type
-                        RETURN e))
+                        LIMIT @limit RETURN e))
+                LIMIT @limit
                 RETURN {{
                     record_id: PARSE_IDENTIFIER(edge._from).key,
                     childTable: edge.childTableName || "",
@@ -5152,7 +5159,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"record_id": record_id, "relation_type": relation_type},
+                bind_vars={
+                    "record_id": record_id, "relation_type": relation_type,
+                    "limit": limit if limit is not None else 2**31 - 1,
+                },
                 txn_id=transaction
             )
             return list(results) if results else []
@@ -5180,12 +5190,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return out
         try:
             # Both collections: a link waits in nodeRelations until it is migrated.
+            # Each scan stops at the limit, so a hit with 100k edges reads only that many.
             def edges(side: str) -> str:
                 return f"""UNION(
                     (FOR e IN {CollectionNames.RECORD_LINKS.value}
-                        FILTER e.{side} == handle AND e.relationshipType IN @relation_types RETURN e),
+                        FILTER e.{side} == handle AND e.relationshipType IN @relation_types LIMIT @limit RETURN e),
                     (FOR e IN {CollectionNames.NODE_RELATIONS.value}
-                        FILTER e.{side} == handle AND e.relationshipType IN @relation_types RETURN e))"""
+                        FILTER e.{side} == handle AND e.relationshipType IN @relation_types LIMIT @limit RETURN e))"""
 
             query = f"""
             FOR rid IN @record_ids
@@ -5241,7 +5252,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that this record has an edge pointing TO
@@ -5261,10 +5273,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR edge IN UNION(
                     (FOR e IN {CollectionNames.RECORD_LINKS.value}
                         FILTER e._from == CONCAT("records/", @record_id) AND e.relationshipType == @relation_type
-                        RETURN e),
+                        LIMIT @limit RETURN e),
                     (FOR e IN {CollectionNames.NODE_RELATIONS.value}
                         FILTER e._from == CONCAT("records/", @record_id) AND e.relationshipType == @relation_type
-                        RETURN e))
+                        LIMIT @limit RETURN e))
+                LIMIT @limit
                 RETURN {{
                     record_id: PARSE_IDENTIFIER(edge._to).key,
                     parentTable: edge.parentTableName || "",
@@ -5274,7 +5287,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"record_id": record_id, "relation_type": relation_type},
+                bind_vars={
+                    "record_id": record_id, "relation_type": relation_type,
+                    "limit": limit if limit is not None else 2**31 - 1,
+                },
                 txn_id=transaction
             )
             return list(results) if results else []
@@ -19081,8 +19097,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             seeds, "step_open", {"granted": bind["granted"]}, 50, transaction, within=within,
         ) if seeds else []
         nodes = list(dict.fromkeys([*region, *scope_handles, *seeds, *below]))
+        listed = set(matches or ())
         if matches is not None:
-            listed = set(matches)
             nodes = [h for h in nodes if h in listed]
         if max_depth < 50:
             # The declared, seed and collection arms do not start at the App, so the
@@ -19090,13 +19106,26 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # `max_depth` hops of the App (App -> group is 1). A record the hierarchy
             # does not place counts one below its group; one it places counts by its
             # hops. A node two arms reach is kept if either is near. Neo4j agrees.
-            near = set(await self._kh_v3_walk([app["handle"]], "step_hier", {}, max_depth, transaction))
+            near = await self._kh_v3_walk([app["handle"]], "step_hier", {}, max_depth, transaction)
             shorter = set(await self._kh_v3_walk([app["handle"]], "step_hier", {}, max_depth - 1, transaction))
-            nodes = [n for n in nodes if n in near]
+            near_set = set(near)
+            nodes = [n for n in nodes if n in near_set]
+            # The walk from the App stops at a declared group, so a record the
+            # hierarchy places below one is listed by the placed arm (Neo4j's
+            # byHierarchy), whichever declared group it belongs to.
+            listed_nodes = set(nodes)
+            placed = [
+                n for n in near if n.startswith(f"{CollectionNames.RECORDS.value}/") and n not in listed_nodes
+                and (matches is None or n in listed)
+            ]
+            placed_groups = member_groups
             member_groups = [g for g in member_groups if g in shorter]
+            return _Visible(
+                nodes=nodes, member_groups=member_groups, collection=bool(app["opens"]),
+                only=matches, unplaced_members_only=True, placed=placed, placed_groups=placed_groups,
+            )
         return _Visible(
-            nodes=nodes, member_groups=member_groups, collection=bool(app["opens"]),
-            only=matches, unplaced_members_only=max_depth < 50,
+            nodes=nodes, member_groups=member_groups, collection=bool(app["opens"]), only=matches,
         )
 
     async def _kh_v3_chain_top_groups(
@@ -19201,6 +19230,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     **params, "kh_nodes": visible.nodes, "kh_member_groups": visible.member_groups,
                     "kh_collection": visible.collection, "org_id": org_id, "app_id": app_id,
                     "kh_unplaced_only": visible.unplaced_members_only,
+                    "kh_placed": visible.placed, "kh_placed_groups": visible.placed_groups,
                     "kh_placeholders": lists_placeholders,
                     **({"kh_only": visible.only} if restricted else {}),
                 },
@@ -19426,12 +19456,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )"""
 
         # A bounded flatten counts a member by its hierarchy hops, so a record the
-        # hierarchy places is not listed here for belonging to a near group.
+        # hierarchy places is not listed here for belonging to a near group. An
+        # edge whose parent is gone places nothing: the walk cannot cross it.
         unplaced = (
             f"(NOT @kh_unplaced_only OR LENGTH(FOR kh_pe IN {CollectionNames.NODE_RELATIONS.value}"
             f" FILTER kh_pe._to == kh_be._from AND kh_pe.relationshipType IN {_HIERARCHY_AQL}"
-            f" LIMIT 1 RETURN 1) == 0)"
+            f" FILTER DOCUMENT(kh_pe._from) != null LIMIT 1 RETURN 1) == 0)"
         )
+        # A record a bounded flatten's hierarchy walk placed within the depth.
+        placed = f"""(FOR kh_h IN @kh_placed
+                    FILTER LENGTH(FOR kh_be IN {belongs}
+                        FILTER kh_be._from == kh_h
+                            AND (kh_be._to IN @kh_placed_groups OR (@kh_collection AND kh_be._to == kh_app._id))
+                        LIMIT 1 RETURN 1) > 0
+                    RETURN kh_h)"""
 
         if restricted:
             belonging = f"""(FOR kh_h IN @kh_only
@@ -19443,7 +19481,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         RETURN kh_be._from)"""
             return f"""
             LET kh_app = DOCUMENT("{apps}", @app_id)
-            LET kh_handles = UNION_DISTINCT(@kh_nodes, {belonging})
+            LET kh_handles = UNION_DISTINCT(@kh_nodes, {belonging}, {placed})
             FOR kh_row IN UNION({rows(records)}, {rows(groups)})
                 RETURN kh_row
         """
@@ -19459,7 +19497,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 (@kh_collection ? (FOR kh_be IN {belongs}
                     FILTER kh_be._to == kh_app._id AND STARTS_WITH(kh_be._from, "{records}/")
                     FILTER {unplaced}
-                    RETURN kh_be._from) : [])
+                    RETURN kh_be._from) : []),
+                {placed}
             )
             FOR kh_row IN UNION({rows(records)}, {rows(groups)})
                 RETURN kh_row

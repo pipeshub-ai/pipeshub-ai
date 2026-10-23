@@ -87,7 +87,10 @@ async def test_a_bounded_flatten_keeps_only_nodes_within_the_depth_whichever_arm
 
     async def walk(starts, step, bind, depth, transaction, within=None) -> list[str]:
         if step == "step_hier":
-            return ["recordGroups/g1", "records/r1", "recordGroups/dg"] if depth == 2 else ["recordGroups/g1", "recordGroups/dg"]
+            if depth == 2:
+                # m1: placed under the declared group dg, which the walk from the App does not enter.
+                return ["recordGroups/g1", "records/r1", "recordGroups/dg", "records/m1"]
+            return ["recordGroups/g1", "recordGroups/dg"]
         return ["recordGroups/g1", "records/r1"] if step == "step_app" else ["records/deep", "records/r1"]
 
     async def run(name, bind, transaction) -> list:
@@ -108,3 +111,6 @@ async def test_a_bounded_flatten_keeps_only_nodes_within_the_depth_whichever_arm
     # Members are listed only when the hierarchy does not place them, so belonging
     # to a near group never admits a deep record.
     assert visible.unplaced_members_only is True
+    # A placed record within the depth is listed if it belongs to any declared group.
+    assert visible.placed == ["records/m1"]
+    assert visible.placed_groups == ["recordGroups/dg", "recordGroups/dg2"]

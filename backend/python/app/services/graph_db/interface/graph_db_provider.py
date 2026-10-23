@@ -1777,7 +1777,8 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that have an edge pointing TO this record
@@ -1787,6 +1788,7 @@ class IGraphDBProvider(ABC):
             record_id (str): Record _key (vertex id)
             relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
             transaction (Optional[str]): Optional transaction context
+            limit (int | None): At most this many edges (all when None)
 
         Returns:
             List[Dict[str, Any]]: List of dicts with record_id and FK metadata (childTable, sourceColumn, targetColumn).
@@ -1798,7 +1800,8 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that this record has an edge pointing TO
@@ -1808,6 +1811,7 @@ class IGraphDBProvider(ABC):
             record_id (str): Record _key (vertex id)
             relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
             transaction (Optional[str]): Optional transaction context
+            limit (int | None): At most this many edges (all when None)
 
         Returns:
             List[Dict[str, Any]]: List of dicts with record_id and FK metadata (parentTable, sourceColumn, targetColumn).
@@ -1855,7 +1859,7 @@ class IGraphDBProvider(ABC):
                 if outgoing
                 else self.get_child_record_ids_by_relation_type
             )
-            return await call(record_id, relation_type, transaction)
+            return await call(record_id, relation_type, transaction, limit=limit_per_direction)
 
         results = await asyncio.gather(
             *[fetch(rid, rel, outgoing=out) for rid, rel, out in jobs],

@@ -747,7 +747,8 @@
     "allRecordsBusy_one": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekundu.",
     "allRecordsBusy_few": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekundy.",
     "allRecordsBusy_many": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekundy.",
-    "allRecordsBusy_other": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekund."
+    "allRecordsBusy_other": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekund.",
+    "allRecordsLoadFailed": "Záznamy se nepodařilo načíst"
   },
   "connectorTypes": {
     "slack": "Slack",

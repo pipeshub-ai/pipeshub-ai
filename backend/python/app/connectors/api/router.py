@@ -1936,11 +1936,13 @@ async def get_record_content(
 
     if len(content) > FETCH_MAX_CHARS:
         total = len(content)
-        content = (
-            content[:FETCH_MAX_CHARS]
-            + f"\n[Content truncated: showed {FETCH_MAX_CHARS} of {total} characters. "
+        notice = (
+            "\n[Content truncated: showed {shown} of {total} characters. "
             "Request the record again with startBlock and maxChars to read it in parts.]\n"
         )
+        # The notice counts toward the cap; it is longest with the cap itself as `shown`.
+        shown = FETCH_MAX_CHARS - len(notice.format(shown=FETCH_MAX_CHARS, total=total))
+        content = content[:shown] + notice.format(shown=shown, total=total)
         return {"content": content, "truncated": True, "totalChars": total}
     return {"content": content}
 

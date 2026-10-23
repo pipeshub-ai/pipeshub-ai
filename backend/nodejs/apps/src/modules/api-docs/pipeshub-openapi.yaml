@@ -5910,8 +5910,8 @@ components:
         truncated:
           type: boolean
           description: >-
-            Present and true only on an unbudgeted read whose content was cut at 140,000
-            characters. `totalChars` is then the length of the whole content.
+            Present and true only on an unbudgeted read whose content was cut to fit 140,000
+            characters, marker included. `totalChars` is then the length of the whole content.
         totalChars:
           type: integer
           description: Present only with `truncated`. The length of the record's whole content, in characters.
@@ -10523,9 +10523,11 @@ components:
           maximum: 100
           default: 10
           description: |
-            Maximum number of passages (entries of `searchResults`) the response holds, counted
-            after query expansion and section expansion, so it holds at any number of queries.
-            `records` lists only the records those passages come from.
+            For a ranked search, the maximum number of passages (entries of `searchResults`) the
+            response holds, counted after query expansion and section expansion, so it holds at
+            any number of queries. `records` lists only the records those passages come from. A
+            search run as a timeline is not cut to `limit` as a whole: `limit` is what each
+            period's own search asks for, and a period can hold more (see `timeline`).
         createdAfter:
           type: string
           maxLength: 64

@@ -124,6 +124,28 @@ class TestFailure:
         assert p.get_parent_record_ids_by_relation_type.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_a_bounded_batch_falls_back_to_bounded_per_record_reads(self) -> None:
+        p = _provider(RuntimeError("boom"))
+        p.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
+        p.get_child_record_ids_by_relation_type = AsyncMock(return_value=[])
+
+        await p.get_node_relations_batch(["a"], ["ATTACHMENT"], limit_per_direction=5)
+
+        assert p.get_parent_record_ids_by_relation_type.await_args.kwargs["limit"] == 5
+        assert p.get_child_record_ids_by_relation_type.await_args.kwargs["limit"] == 5
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", [
+        "get_parent_record_ids_by_relation_type", "get_child_record_ids_by_relation_type",
+    ])
+    async def test_a_per_record_read_stops_at_its_limit(self, method) -> None:
+        p = _provider([])
+        await getattr(p, method)("a", "ATTACHMENT", limit=5)
+        call = p.client.execute_query.await_args
+        assert "LIMIT $limit" in call.args[0]
+        assert call.kwargs["parameters"]["limit"] == 5
+
+    @pytest.mark.asyncio
     async def test_default_batch_skips_non_mapping_rows(self) -> None:
         from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 

@@ -7523,3 +7523,5 @@ async def test_the_per_record_fallback_is_bounded_like_the_batch() -> None:
     gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
     out = await _relations_per_record(gp, ["a"], ["PARENT_CHILD", "ATTACHMENT"])
     assert len(out["a"]["children"]) == RELATION_FETCH_LIMIT_PER_DIRECTION
+    # The reads themselves are bounded, not only what is kept of them.
+    assert gp.get_child_record_ids_by_relation_type.await_args.kwargs["limit"] == RELATION_FETCH_LIMIT_PER_DIRECTION

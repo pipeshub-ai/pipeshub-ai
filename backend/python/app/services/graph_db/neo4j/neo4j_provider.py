@@ -8731,7 +8731,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record IDs of all records that have an edge pointing TO this record
@@ -8753,11 +8754,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                    COALESCE(r.childTableName, '') AS childTable,
                    COALESCE(r.sourceColumn, '') AS sourceColumn,
                    COALESCE(r.targetColumn, '') AS targetColumn
+            LIMIT $limit
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"record_id": record_id, "relation_type": relation_type},
+                parameters={
+                    "record_id": record_id, "relation_type": relation_type,
+                    "limit": limit if limit is not None else 2**31 - 1,
+                },
                 txn_id=transaction
             )
 
@@ -8817,7 +8822,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record IDs of all records that this record has an edge pointing TO
@@ -8839,11 +8845,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                    COALESCE(r.parentTableName, '') AS parentTable,
                    COALESCE(r.sourceColumn, '') AS sourceColumn,
                    COALESCE(r.targetColumn, '') AS targetColumn
+            LIMIT $limit
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"record_id": record_id, "relation_type": relation_type},
+                parameters={
+                    "record_id": record_id, "relation_type": relation_type,
+                    "limit": limit if limit is not None else 2**31 - 1,
+                },
                 txn_id=transaction
             )
 
@@ -20326,6 +20336,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             reason = None
             if not state:
                 reason = "listing state not stamped yet"
+            elif max_depth < 50:
+                reason = "a depth bound (kh_scope holds the whole connector)"
             elif any(v for k, v in filters.items() if k not in ("origins", "connector_ids")):
                 reason = "a per-node filter"
             elif app_id in self._kh_scope_untrusted:
