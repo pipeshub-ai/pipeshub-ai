@@ -196,7 +196,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       expect(String(userLookups[0]?.orgId)).to.equal(String(ORG))
       expect(userLookups[0]?.isDeleted).to.equal(false)
       expect((userLookups[0]?._id.$in as unknown[]).map(String)).to.have.members([String(RECIPIENT), String(SECOND_RECIPIENT)])
-      expect(s.ai.calls.some((c) => c.url.startsWith('http://iam.test'))).to.equal(false)
+      expect(s.ai.calls.some((c) => new URL(c.url).hostname === 'iam.test')).to.equal(false)
     })
 
 
