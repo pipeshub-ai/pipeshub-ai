@@ -10554,6 +10554,31 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_id}: {str(e)}")
             raise
 
+    async def remove_user_access_to_connector(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups."""
+        query = """
+        FOR perm IN permission
+            FILTER perm._from == @user
+            FILTER PARSE_IDENTIFIER(perm._to).collection IN @targets
+            LET target = DOCUMENT(perm._to)
+            FILTER target != null AND target.connectorId == @connector_id
+            REMOVE perm IN permission
+            RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={"user": f"users/{user_id}", "connector_id": connector_id,
+                       "targets": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
+                                   CollectionNames.GROUPS.value]},
+            txn_id=transaction,
+        )
+        return len(result or [])
+
     async def _collect_connector_entities(
         self,
         connector_id: str,

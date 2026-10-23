@@ -99,13 +99,37 @@ SKIPPED_SHARED_FOLDERS = "skippedSharedFolders"
 HELD_REMOVED_CHANGES = "heldRemovedChanges"
 
 
+# google.rpc.ErrorInfo reasons Google's API front end sends for the same limits.
+QUOTA_403_REASONS |= {"RATE_LIMIT_EXCEEDED", "RESOURCE_EXHAUSTED"}
+
+
+def drive_error_reasons(error: HttpError) -> set:
+    """Every reason a Google error states.
+
+    googleapiclient fills ``error_details`` from the body's ``details`` when it has one and only otherwise
+    from ``errors``, so a quota error that carries both names its limit as RATE_LIMIT_EXCEEDED there and as
+    rateLimitExceeded only in ``errors``. Both are read.
+    """
+    import json
+
+    reasons: set = set()
+    details = getattr(error, "error_details", None) or []
+    if isinstance(details, list):
+        reasons |= {d.get("reason") for d in details if isinstance(d, dict) and d.get("reason")}
+    try:
+        body = json.loads((getattr(error, "content", b"") or b"").decode("utf-8"))
+        for entry in (body.get("error") or {}).get("errors") or []:
+            if isinstance(entry, dict) and entry.get("reason"):
+                reasons.add(entry["reason"])
+    except (ValueError, AttributeError, TypeError):
+        pass
+    return reasons
+
+
 def _403_reasons(error: HttpError) -> set:
     if error.resp.status != HttpStatusCode.FORBIDDEN.value:
         return set()
-    error_details = getattr(error, "error_details", None) or []
-    if not isinstance(error_details, list):
-        return set()
-    return {d.get("reason") for d in error_details if isinstance(d, dict)}
+    return drive_error_reasons(error)
 
 
 def is_retryable_403(error: HttpError) -> bool:

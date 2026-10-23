@@ -69,7 +69,9 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # ty
     build_drive_datasource,
     connector_filters,
     create_drive_blocks_fixtures,
+    create_drive_google_file,
     create_drive_ids_filter_fixtures,
+    create_drive_text_file,
     create_extension_filter_fixtures,
     create_folder_filter_fixtures,
     create_lifecycle_fixtures,
@@ -1041,6 +1043,84 @@ async def drive_workspace_sd_lifecycle_connector(
             await delete_shared_drive(
                 drive_workspace_datasource, fixtures.get("drive_id"), admin_drive=admin_drive
             )
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def drive_workspace_audit_connector(
+    drive_workspace_datasource: GoogleDriveDataSource,
+    pipeshub_client: PipeshubClient,
+    users_client: UsersClient,
+    graph_provider: GraphProviderProtocol,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Two fresh Shared Drives behind one ``drive_ids=[both]`` connector, for the audit fix ITs.
+
+    Drive A holds ``move-me.txt`` and a Google Doc; drive B is empty. Both drives are deleted in teardown.
+    """
+    sa_json, admin_email, test_user = require_drive_workspace_env()
+    second_user = os.getenv(ENV_SECOND_USER, "").strip()
+    state: dict[str, Any] = {"connector_id": None, "test_user_email": test_user,
+                             "second_user_email": second_user or None}
+    drive_ids: list[str] = []
+    admin_drive: Optional[GoogleDriveDataSource] = None
+    try:
+        ensure_pipeshub_user_exists(users_client, test_user)
+        await _wait_for_active_user_in_graph(graph_provider, test_user)
+        if second_user:
+            ensure_pipeshub_user_exists(users_client, second_user)
+            await _wait_for_active_user_in_graph(graph_provider, second_user)
+        suffix = uuid.uuid4().hex[:8]
+        try:
+            drive_a = await create_shared_drive(drive_workspace_datasource, f"pipeshub-it-audit-a-{suffix}")
+        except RefreshError as e:
+            raise RuntimeError(_dwd_failure_message(sa_json, admin_email, test_user, e)) from e
+        drive_ids.append(drive_a)
+        drive_b = await create_shared_drive(drive_workspace_datasource, f"pipeshub-it-audit-b-{suffix}")
+        drive_ids.append(drive_b)
+        state.update(drive_a=drive_a, drive_b=drive_b)
+        state["move_file_id"] = await create_drive_text_file(
+            drive_workspace_datasource, "move-me.txt", parent_id=drive_a, content=f"audit move {suffix}\n"
+        )
+        state["doc_id"] = await create_drive_google_file(
+            drive_workspace_datasource, "audit-doc", parent_id=drive_a, mime_type=MimeTypes.GOOGLE_DOCS.value
+        )
+        admin_drive = await build_drive_datasource(sa_json, admin_email, admin_email)
+        instance = pipeshub_client.create_connector(
+            connector_type="Drive Workspace",
+            instance_name=f"drive-ws-audit-{suffix}",
+            scope="team",
+            config={
+                "auth": _auth_config(admin_email, sa_json),
+                "filters": connector_filters(
+                    sync_values={"drive_ids": {"operator": "in", "type": "list", "value": drive_ids}}
+                ),
+            },
+            auth_type="CUSTOM",
+        )
+        connector_id = instance.connector_id
+        state["connector_id"] = connector_id
+        await wait_until_shared_drives_listed(drive_workspace_datasource, drive_ids)
+        await wait_until_shared_drive_files_listed(
+            drive_workspace_datasource, drive_a, [state["move_file_id"], state["doc_id"]]
+        )
+        pipeshub_client.toggle_sync(connector_id, enable=True)
+        await wait_for_sync_completion(
+            pipeshub_client, graph_provider, connector_id, min_records=1, timeout=_SYNC_TIMEOUT_SEC,
+        )
+
+        async def _present() -> bool:
+            for external_id in (state["move_file_id"], state["doc_id"]):
+                if await graph_provider.get_record_by_external_id(connector_id, external_id) is None:
+                    return False
+            return True
+
+        if not await _present():
+            await sync_until(pipeshub_client, graph_provider, connector_id, _present,
+                             description="audit fixture files in graph")
+        yield state
+    finally:
+        await _teardown_connector(pipeshub_client, graph_provider, state.get("connector_id"))
+        for drive_id in drive_ids:
+            await delete_shared_drive(drive_workspace_datasource, drive_id, admin_drive=admin_drive)
 
 
 PERMISSION_FIXTURE_KEYS = ("private", "shared", "revoke", "domain")

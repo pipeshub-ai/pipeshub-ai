@@ -45,6 +45,13 @@ class GoogleMailError(GoogleConnectorError):
     pass
 
 
+class DriveSyncIncomplete(GoogleDriveError):
+    """A Drive run that could not read part of Drive. Raised at its end, after everything else it could do,
+    so the run is recorded as failed and read again next time."""
+
+    pass
+
+
 class DriveOperationError(GoogleDriveError):
     """Raised when a Drive operation fails"""
 

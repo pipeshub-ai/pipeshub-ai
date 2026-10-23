@@ -5213,6 +5213,17 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def remove_user_access_to_connector(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups,
+        for a person the source no longer lets in (a suspended or deleted account). Grants through groups,
+        teams or the organization are left alone. Returns how many edges were deleted."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_uploaded_document_ids(
         self,

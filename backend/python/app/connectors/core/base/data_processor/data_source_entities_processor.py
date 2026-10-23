@@ -6382,6 +6382,19 @@ class DataSourceEntitiesProcessor:
             )
 
     @retry_on_deadlock()
+    async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
+        """Take away everything the user was granted directly on this connector's content and groups, for a
+        person the source no longer lets in. Returns how many grants were removed (0 for an unknown user)."""
+        async with self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True)
+            if not user:
+                return 0
+            removed = await tx_store.remove_user_access_to_connector(connector_id, user.id)
+        if removed:
+            await self._access_changed([connector_id])
+        return removed
+
+    @retry_on_deadlock()
     async def remove_user_access_to_record(
         self, connector_id: str, external_id: str, user_id: str
     ) -> None:

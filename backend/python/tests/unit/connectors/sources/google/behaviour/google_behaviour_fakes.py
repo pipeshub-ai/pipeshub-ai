@@ -574,6 +574,29 @@ class FakeEntitiesProcessor:
         for group, members in groups:
             self.user_groups[group.source_user_group_id] = (group, list(members))
 
+    async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
+        return [group for group, _ in self.user_groups.values()]
+
+    async def on_user_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
+        self.user_groups.pop(external_group_id, None)
+        self.deleted_groups.append(external_group_id)
+        return True
+
+    async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
+        """Drop the user's own grants on records and record groups, and their group memberships."""
+        removed = 0
+        email = user_email.lower()
+        for store in (self.permissions, self.record_group_permissions):
+            for key, perms in store.items():
+                kept = [p for p in perms if (getattr(p, "email", None) or "").lower() != email]
+                removed += len(perms) - len(kept)
+                store[key] = kept
+        for key, (group, members) in list(self.user_groups.items()):
+            kept_members = [m for m in members if (getattr(m, "email", None) or "").lower() != email]
+            removed += len(members) - len(kept_members)
+            self.user_groups[key] = (group, kept_members)
+        return removed
+
     async def reindex_existing_records(self, records: list[Any]) -> None:
         self.reindexed.extend(records)
 

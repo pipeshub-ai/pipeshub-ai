@@ -10387,6 +10387,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Remove user access to record failed: {str(e)}")
             raise
 
+    async def remove_user_access_to_connector(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups."""
+        query = """
+        MATCH (u:User {id: $user_id})-[p:PERMISSION]->(n)
+        WHERE (n:Record OR n:RecordGroup OR n:Group) AND n.connectorId = $connector_id
+        DELETE p
+        RETURN count(p) AS removed
+        """
+        results = await self.client.execute_query(
+            query, parameters={"user_id": user_id, "connector_id": connector_id}, txn_id=transaction
+        )
+        return int((results or [{}])[0].get("removed") or 0)
+
     # ==================== Connector Deletion Helper Methods ====================
 
     async def _collect_connector_entities(
