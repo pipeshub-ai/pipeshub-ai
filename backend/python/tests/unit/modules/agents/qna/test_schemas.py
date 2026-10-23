@@ -155,11 +155,16 @@ class TestAgentAnswerWithMetadataJSON:
         assert errors[0]["type"] == "missing"
 
     def test_missing_required_confidence_raises(self):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as exc_info:
             AgentAnswerWithMetadataJSON(
                 answer="x",
                 answerMatchType="Exact Match",
             )
+
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["loc"] == ("confidence",)
+        assert errors[0]["type"] == "missing"
 
     def test_serialization_to_dict(self):
         obj = AgentAnswerWithMetadataJSON(
