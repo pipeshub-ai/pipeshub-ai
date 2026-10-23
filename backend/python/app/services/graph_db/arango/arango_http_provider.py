@@ -2833,21 +2833,33 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [(str(row["key"]), [str(k) for k in row["records"]]) for row in rows]
 
     @override
-    async def get_record_content_revs(self, record_ids: list[str]) -> dict[str, str]:
+    async def get_record_content_revs(
+        self,
+        record_ids: list[str],
+        *,
+        status_field: str,
+        statuses: list[str],
+        exclude_indexing_statuses: list[str] | None = None,
+    ) -> dict[str, str | None]:
         keys = [rid for rid in dict.fromkeys(record_ids) if rid]
-        if not keys:
+        if not keys or not statuses:
             return {}
         if self.http_client is None:
             raise RuntimeError("ArangoDB client is not connected")
         rows = await self.http_client.execute_aql(
-            """
+            f"""
             FOR doc IN @@collection
-                FILTER doc._key IN @keys AND doc.contentRev != null
-                RETURN {key: doc._key, rev: doc.contentRev}
+                FILTER doc._key IN @keys AND doc[@field] IN @statuses
+                    AND doc.indexingStatus NOT IN @exclude
+                    AND {aql_record_visibility("doc", RecordVisibility.LIVE)}
+                RETURN {{key: doc._key, rev: doc.contentRev}}
             """,
-            {"@collection": CollectionNames.RECORDS.value, "keys": keys},
+            {
+                "@collection": CollectionNames.RECORDS.value, "keys": keys, "field": status_field,
+                "statuses": statuses, "exclude": exclude_indexing_statuses or [],
+            },
         )
-        return {str(row["key"]): str(row["rev"]) for row in rows}
+        return {str(row["key"]): (str(row["rev"]) if row.get("rev") else None) for row in rows}
 
     @override
     async def compare_and_set_record_fields(

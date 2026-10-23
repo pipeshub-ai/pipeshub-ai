@@ -479,6 +479,7 @@ PARAM_PROBES = {
 # tests/unit/services/graph_db/test_record_visibility_registry.py requires every one.
 EXERCISED_HERE: dict[str, str] = {
     "get_stage_states_with_records": "test_records_selected_by_their_stage_state",
+    "get_record_content_revs": "test_record_content_revisions",
     "check_access": "test_access_check",
     "check_record_access_with_details": "test_access_check",
     "get_accessible_virtual_record_ids": "test_public_search_permission_map",
@@ -666,13 +667,26 @@ async def test_records_selected_by_their_stage_state(world: _World) -> None:
         await g.stage_states_delete_for_virtual_records(vrids)
 
 async def test_record_content_revisions(world: _World) -> None:
-    """A classify retry binds each selected record to its revision; one with none is left out."""
+    """A classify retry re-checks its selection while it reads each record's revision: a record
+    trashed, being indexed or no longer failed since is left out; one with no revision has None."""
     g = world.graph
-    await g.update_node(world.ids["live"], CollectionNames.RECORDS.value, {"contentRev": "rev-7"})
-    await g.update_node(world.ids["live_failed"], CollectionNames.RECORDS.value, {"contentRev": None})
-    got = await g.get_record_content_revs([world.ids["live"], world.ids["live"], world.ids["live_failed"], "no-such-id"])
-    assert got == {world.ids["live"]: "rev-7"}
-    assert await g.get_record_content_revs([]) == {}
+    fields = {
+        "live": {"extractionStatus": "FAILED", "contentRev": "rev-7"},
+        "live_failed": {"extractionStatus": "FAILED", "contentRev": None},
+        "trashed_failed": {"extractionStatus": "FAILED", "contentRev": "rev-1"},
+        "live_shared": {"extractionStatus": "FAILED", "contentRev": "rev-1", "indexingStatus": "IN_PROGRESS"},
+        "queued_live": {"extractionStatus": "COMPLETED", "contentRev": "rev-1"},
+    }
+    for name, values in fields.items():
+        await g.update_node(world.ids[name], CollectionNames.RECORDS.value, values)
+
+    got = await g.get_record_content_revs(
+        [*(world.ids[name] for name in fields), world.ids["live"], "no-such-id"],
+        status_field="extractionStatus", statuses=["FAILED"], exclude_indexing_statuses=["IN_PROGRESS"],
+    )
+
+    assert got == {world.ids["live"]: "rev-7", world.ids["live_failed"]: None}
+    assert await g.get_record_content_revs([], status_field="extractionStatus", statuses=["FAILED"]) == {}
 
 
 async def test_failed_records(world: _World) -> None:

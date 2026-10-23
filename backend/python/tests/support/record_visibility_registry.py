@@ -68,6 +68,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_stage_states_with_records": (
         Rule.LIVE, "picks records to re-run a stage on; a trashed record is not re-run",
     ),
+    "get_record_content_revs": (
+        Rule.LIVE, "re-checks a stage retry's selection; a record trashed since is not re-run",
+    ),
     "find_duplicate_records": (Rule.LIVE, "a copy must not take COMPLETED from a record without vectors"),
     "find_next_queued_duplicate": (Rule.LIVE, "dedup never hands work to a trashed record"),
     "update_queued_duplicates_status": (Rule.LIVE, "dedup never copies status onto a trashed record"),
@@ -100,7 +103,6 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     # Returned whatever their state.
     "get_record_by_id": (Rule.ALL, _BY_KEY + "; content access is gated by TieredRecordAuthorizer"),
     "get_typed_records_batch": (Rule.ALL, _BY_KEY),
-    "get_record_content_revs": (Rule.ALL, _BY_KEY + "; binds records a reindex already selected to their revision"),
     "get_file_record_by_id": (Rule.ALL, _BY_KEY),
     "get_record_by_path": (Rule.ALL, _SYNC_LOOKUP),
     "get_records_by_file_path": (

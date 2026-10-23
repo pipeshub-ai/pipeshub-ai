@@ -557,8 +557,10 @@ class TestStageReruns:
         records = [_make_mock_record("r1"), _make_mock_record("r2")]
         service.graph_provider.get_records_by_status = AsyncMock(return_value=records)
         service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
-        # r2 has no revision yet (indexed before revisions existed): its event carries none.
-        service.graph_provider.get_record_content_revs = AsyncMock(return_value={"r1": "rev-a"})
+        # r2 has no revision (indexed before revisions existed), so its event carries none;
+        # r3 left the selection before its revision was read, so it is not re-run.
+        records.append(_make_mock_record("r3"))
+        service.graph_provider.get_record_content_revs = AsyncMock(return_value={"r1": "rev-a", "r2": None})
 
         await service._run_reindex(
             connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
@@ -568,13 +570,31 @@ class TestStageReruns:
 
         kwargs = service.graph_provider.get_records_by_status.call_args.kwargs
         assert (kwargs["status_field"], kwargs["status_filters"]) == ("extractionStatus", ["FAILED"])
-        service.graph_provider.get_record_content_revs.assert_awaited_once_with(["r1", "r2"])
-        # Each record carries the revision it was selected on, so a record re-indexed since is left alone.
+        service.graph_provider.get_record_content_revs.assert_awaited_once_with(
+            ["r1", "r2", "r3"], status_field="extractionStatus", statuses=["FAILED"],
+            exclude_indexing_statuses=[ProgressStatus.IN_PROGRESS.value],
+        )
+        # Each record carries the revision it holds while still selected, so one re-indexed since is left alone.
         connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with(
-            records, stages=["classify"], stage_revisions={"r1": "rev-a"}
+            records[:2], stages=["classify"], stage_revisions={"r1": "rev-a"}
         )
         connector.reindex_records.assert_not_awaited()
         service.graph_provider.update_indexing_status_for_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_left_the_selection_republishes_nothing(self, service) -> None:
+        connector = AsyncMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        service.graph_provider.get_records_by_status = AsyncMock(return_value=[_make_mock_record("r1")])
+        service.graph_provider.get_record_content_revs = AsyncMock(return_value={})
+
+        await service._run_reindex(
+            connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=["FAILED"], stages=["classify"],
+        )
+
+        connector.data_entities_processor.reindex_existing_records.assert_not_awaited()
 
     @staticmethod
     def _stage_rerun_graph(service, pages: list) -> None:

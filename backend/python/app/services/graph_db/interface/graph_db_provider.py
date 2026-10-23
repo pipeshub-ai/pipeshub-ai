@@ -2424,9 +2424,21 @@ class IGraphDBProvider(ABC):
         """
 
     @abstractmethod
-    async def get_record_content_revs(self, record_ids: list[str]) -> dict[str, str]:
-        """Record id -> its ``contentRev``, for the records that have one. Raises on
-        infrastructure errors."""
+    async def get_record_content_revs(
+        self,
+        record_ids: list[str],
+        *,
+        status_field: str,
+        statuses: list[str],
+        exclude_indexing_statuses: list[str] | None = None,
+    ) -> dict[str, str | None]:
+        """Record id -> its ``contentRev`` (None when it has none), for the given live records whose
+        ``status_field`` is still in ``statuses`` and whose ``indexingStatus`` is not in
+        ``exclude_indexing_statuses``.
+
+        Re-checks a selection and reads the revision in one statement, so a revision returned
+        is one the record holds while still selected. Raises on infrastructure errors.
+        """
 
     @abstractmethod
     async def compare_and_set_record_fields(

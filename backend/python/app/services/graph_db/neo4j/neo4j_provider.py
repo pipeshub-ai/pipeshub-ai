@@ -15501,19 +15501,28 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [(str(row["key"]), [str(k) for k in row["records"]]) for row in rows]
 
     @override
-    async def get_record_content_revs(self, record_ids: list[str]) -> dict[str, str]:
+    async def get_record_content_revs(
+        self,
+        record_ids: list[str],
+        *,
+        status_field: str,
+        statuses: list[str],
+        exclude_indexing_statuses: list[str] | None = None,
+    ) -> dict[str, str | None]:
         keys = [rid for rid in dict.fromkeys(record_ids) if rid]
-        if not keys:
+        if not keys or not statuses:
             return {}
         label = collection_to_label(CollectionNames.RECORDS.value)
         rows = await self._stage_cypher(
             f"""
-            MATCH (r:{label}) WHERE r.id IN $keys AND r.contentRev IS NOT NULL
+            MATCH (r:{label}) WHERE r.id IN $keys AND r[$field] IN $statuses
+              AND NOT coalesce(r.indexingStatus, '') IN $exclude
+              AND {cypher_record_visibility("r", RecordVisibility.LIVE)}
             RETURN r.id AS key, r.contentRev AS rev
             """,
-            {"keys": keys},
+            {"keys": keys, "field": status_field, "statuses": statuses, "exclude": exclude_indexing_statuses or []},
         )
-        return {str(row["key"]): str(row["rev"]) for row in rows}
+        return {str(row["key"]): (str(row["rev"]) if row.get("rev") else None) for row in rows}
 
     @override
     async def compare_and_set_record_fields(

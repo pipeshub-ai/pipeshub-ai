@@ -1425,12 +1425,19 @@ class EventService:
             if stages:
                 # Only the stages re-run: the record stays searchable and its indexing
                 # status is untouched, and the connector is not asked to re-fetch it.
-                # Bound to the revision selected now, so a record re-indexed before its event
-                # is handled is left to that revision's stages instead of reindexed again.
-                revisions = await self.graph_provider.get_record_content_revs([r.id for r in records])
-                await connector.data_entities_processor.reindex_existing_records(
-                    records, stages=stages, stage_revisions=revisions
+                # Each record is bound to its revision, so one re-indexed before its event is
+                # handled is left to that revision's stages. The revision is read together with
+                # a re-check of the selection: a record that left it since is not re-run.
+                revisions = await self.graph_provider.get_record_content_revs(
+                    [r.id for r in records], status_field=status_field.value,
+                    statuses=status_filters or [], exclude_indexing_statuses=exclude_statuses,
                 )
+                records = [r for r in records if r.id in revisions]
+                if records:
+                    await connector.data_entities_processor.reindex_existing_records(
+                        records, stages=stages,
+                        stage_revisions={k: rev for k, rev in revisions.items() if rev},
+                    )
                 total_processed += len(records)
                 if fetched_count < batch_size:
                     break
