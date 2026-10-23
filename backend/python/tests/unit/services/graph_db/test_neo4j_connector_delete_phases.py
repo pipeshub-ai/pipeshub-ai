@@ -14,7 +14,7 @@ def _provider() -> Neo4jProvider:
     p.logger = MagicMock()
     p.client = MagicMock(execute_query=AsyncMock(return_value=[]))
     # Every other coroutine the delete may call (cleanup steps added later) is a mock too.
-    for name, member in inspect.getmembers(Neo4jProvider, inspect.iscoroutinefunction):
+    for name, _ in inspect.getmembers(Neo4jProvider, inspect.iscoroutinefunction):
         if name != "_delete_connector_instance":
             setattr(p, name, AsyncMock())
     p.get_document = AsyncMock(return_value={"type": "Jira"})
