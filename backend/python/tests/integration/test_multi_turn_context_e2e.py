@@ -158,7 +158,7 @@ def _image_attachment() -> Iterator[None]:
     with (
         patch(
             "app.agents.chat_modes.bridge.resolve_attachments",
-            new=AsyncMock(return_value=ResolvedAttachments(context_text="", has_image_attachments=True)),
+            new=AsyncMock(return_value=ResolvedAttachments(has_image_attachments=True)),
         ),
         patch(
             "app.utils.attachment_utils.resolve_attachments",

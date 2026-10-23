@@ -211,7 +211,7 @@ class TestALargeEarlierAttachment:
         context = self._context()
         seeded = await _seed(self._rows(), context)
         hooks = PipesHubAgentFactory._build_hooks(
-            context, transport_registry=MagicMock(), model_name="m", supports_multipart_tool_result=True,
+            context, transport_registry=MagicMock(), model_name="m",
         )
         budget = ContextBudget.for_model("m", context_window=WINDOW, reserved_prompt_tokens=12_000)
         stored = [*seeded, UserMessage(content=CURRENT)]
@@ -259,7 +259,7 @@ class TestALargeCurrentAttachment:
         context = self._context()
         text, _ = await resolve_attachments_for_goal(context, logging.getLogger("t"))
         hooks = PipesHubAgentFactory._build_hooks(
-            context, transport_registry=MagicMock(), model_name="m", supports_multipart_tool_result=True,
+            context, transport_registry=MagicMock(), model_name="m",
         )
         budget = ContextBudget.for_model("m", context_window=WINDOW, reserved_prompt_tokens=12_000)
         request = f"{CURRENT}\n\n{text}"

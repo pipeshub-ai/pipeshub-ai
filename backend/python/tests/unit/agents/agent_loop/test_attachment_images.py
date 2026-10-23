@@ -114,7 +114,7 @@ class TestTheImageCapKeepsTheAttachment:
         attachment = {"type": "image_url", "image_url": {"url": _png(80, 80, (250, 0, 0))}, "user_attached": True}
         context.attachment_image_blocks = [attachment]
         hooks = PipesHubAgentFactory._build_hooks(
-            context, transport_registry=MagicMock(), model_name="m", supports_multipart_tool_result=True,
+            context, transport_registry=MagicMock(), model_name="m",
         )
         stored = [UserMessage(content="What does my screenshot show?"), *_retrieved_round(6)]
         budget = ContextBudget.for_model("m", context_window=200_000, reserved_prompt_tokens=10_000)
