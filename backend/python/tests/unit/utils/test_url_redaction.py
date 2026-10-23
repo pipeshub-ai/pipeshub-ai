@@ -525,9 +525,12 @@ class TestAdversarialInput:
             pytest.param(lambda: _ten_times(f"https://h.example/x?a={_PASSWORD_SHAPE}"), id="referer-password"),
         ],
     )
+    # Coverage tracing makes this pure-Python code ~3x slower but not the
+    # regex engine a quadratic pattern spends its time in, so under coverage
+    # the bound no longer separates the two. Fastest of three: a busy CI core
+    # can stall one run, but a quadratic regression is slow every time.
+    @pytest.mark.no_cover
     def test_finishes_in_linear_time(self, run) -> None:
-        # Fastest of three: a busy CI core can stall one run, but a quadratic
-        # regression is slow every time.
         assert min(_elapsed_ms(run) for _ in range(3)) < _BOUND_MS
 
     @pytest.mark.parametrize("key", ["..code..", "%00code", "__token__", "code\u212a"])
