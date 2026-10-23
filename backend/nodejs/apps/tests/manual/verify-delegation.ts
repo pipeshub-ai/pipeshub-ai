@@ -406,9 +406,10 @@ async function main(): Promise<void> {
   const ttl = eventIndexes.find((i) => i.expireAfterSeconds !== undefined);
   check('the log expires rather than growing forever', ttl !== undefined);
   check(
-    'and it is kept past the longest service-token lifetime',
+    'and it expires below the shortest Enterprise audit retention',
     (ttl?.expireAfterSeconds ?? 0) === DELEGATION_EVENT_RETENTION_DAYS * 86400 &&
-      DELEGATION_EVENT_RETENTION_DAYS > 365,
+      DELEGATION_EVENT_RETENTION_DAYS > 0 &&
+      DELEGATION_EVENT_RETENTION_DAYS < 90,
   );
   check(
     'the TTL counts from when the record was written, not when the token expired',
