@@ -20,6 +20,7 @@ from object_store_behaviour_fakes import (
     make_connector,
 )
 
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.sources.client.resilience import ResiliencePolicy
 
 SLOW_DOWN = (
@@ -65,7 +66,7 @@ async def serve() -> AsyncIterator:
         await server.close()
 
 
-def minio_connector_on(endpoint: str, max_retries: int):
+def minio_connector_on(endpoint: str, max_retries: int) -> BaseConnector:
     """A MinIO connector whose client talks to ``endpoint``, with ``max_retries`` as its declared budget."""
     from app.sources.client.minio.minio import MinIOClient, MinIORESTClientViaAccessKey
     from app.sources.external.minio.minio import MinIODataSource
@@ -124,7 +125,7 @@ class TestThrottling:
 
 class TestBucketOptions:
     @staticmethod
-    def connector_with(list_buckets: AsyncMock):
+    def connector_with(list_buckets: AsyncMock) -> BaseConnector:
         connector = make_connector("s3", FakeObjectStore(), FakeRecordsDb(), FakeCheckpointStore(), FakeConfigService())
         connector.data_source.list_buckets = list_buckets
         return connector

@@ -179,7 +179,7 @@ class TestVersion:
 
 class TestReindex:
     @pytest.fixture
-    def stored(self, connector, store, db):
+    def stored(self, connector, store, db) -> BaseConnector:
         connector.data_source.denied.clear()
         store.put("gone.txt")
         store.put("kept.txt")
@@ -263,7 +263,7 @@ class TestStaleListingPosition:
                 point["continuation_token"] = "stale"
         listing = connector.data_source.list_objects_v2
 
-        async def refuses_stale(**kwargs):
+        async def refuses_stale(**kwargs: object) -> Response:
             if kwargs.get("ContinuationToken") == "stale":
                 return Response(False, error="InvalidArgument: The continuation token provided is incorrect", status_code=400)
             return await listing(**kwargs)
