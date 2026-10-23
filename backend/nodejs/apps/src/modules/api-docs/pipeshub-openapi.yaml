@@ -74,9 +74,9 @@ tags:
       - Discovery endpoint for automatic configuration
 
       **Machine tokens (`client_credentials`) — gateway and downstream identity:**
-      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the application's **token identity**: the service account it is pointed at (**`tokenIdentityUserId`**), or its creator for an application registered before a service account was required and never bound. It reads the JWT **`createdBy`** claim when present, otherwise loads the OAuth app by **`client_id`** from the registry, and sets the authenticated session to that identity.
+      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the application's **token identity**: the service account it is pointed at (**`tokenIdentityUserId`**), or its creator for an application registered before a service account was required and never bound. It loads the application by **`client_id`** on every such token and takes the identity from that record, so the session always reflects the application as it stands now rather than as it stood when the token was minted.
 
-      Despite its name, **`createdBy`** carries the identity rather than who registered the application. The gateway rejects a token whose claim disagrees with the application record, so a token minted before the identity changed cannot be used afterwards — pointing an application at a different service account revokes the tokens it has already issued.
+      The JWT's **`createdBy`** claim is a cross-check rather than a source: despite its name it carries the identity, not who registered the application, and a token whose claim disagrees with the record is refused with **401**. Pointing an application at a different service account also revokes the tokens it has already issued, so a stale claim should not arrive in the first place.
 
       **Python services:** Validate `Authorization: Bearer` as today and use the JWT payload’s **`userId`** as-is for scopes and user-scoped logic. Where a machine token carries **`userId === client_id`** and a **`createdBy`** claim, Python copies that claim onto **`userId`** first, so both halves of the product agree on the identity.
 
@@ -19613,7 +19613,7 @@ paths:
           the cause is recorded in the delegation log, which only an
           administrator can read.
 
-        For **`client_credentials`**, access tokens represent the **service account the app is pointed at** (`tokenIdentityUserId`), or the **OAuth app creator** for an app registered before that was required and never bound. The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the identity (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
+        For **`client_credentials`**, access tokens represent the **service account the app is pointed at** (`tokenIdentityUserId`), or the **OAuth app creator** for an app registered before that was required and never bound. The JWT may encode **`userId === client_id`**; the **Node API gateway** loads the application record and resolves the identity from it, treating the **`createdBy`** claim as a cross-check — see **OAuth Provider** tag.
 
         **Client Authentication:**
         Can be provided via:
@@ -24314,10 +24314,13 @@ paths:
         - OAuth Apps
       summary: Choose whose identity this app's client_credentials tokens carry
       description: |
-        By default a `client_credentials` token acts as the person who created
-        the application, carrying their document access and their role, and it
-        stops working if their account is deleted. Pointing the application at
-        a service account instead means its tokens act as an identity that
+        An application registered before a service account was required, and
+        never pointed at one, has `client_credentials` tokens that act as the
+        person who created it, carrying their document access and their role,
+        and stopping when their account is deleted. Applications that allow
+        this grant must now name a service account, so this endpoint changes
+        which one rather than whether there is one. Pointing the application at
+        a service account means its tokens act as an identity that
         exists for the job, holds only what someone granted it, and survives
         any one person leaving.
 
@@ -24330,7 +24333,10 @@ paths:
         afterwards.
 
         Pass `serviceAccountId: null` to put the application back to acting as
-        its creator. That revokes outstanding tokens too.
+        its creator. That revokes outstanding tokens too. It is **refused with
+        `400` while the application allows `client_credentials`**, because
+        clearing the identity there would undo what creating the application
+        required; point it at a different service account instead.
 
         This does not change who manages the application. The creator still
         owns it in Developer Settings — moving that would leave the
@@ -24361,12 +24367,16 @@ paths:
                   type: string
                   nullable: true
                   pattern: '^[0-9a-fA-F]{24}$'
-                  description: The service account, or null to revert to the creator
+                  description: >-
+                    The service account, or null to revert to the creator. Null is refused
+                    while the application allows client_credentials.
       responses:
         '200':
           description: Identity changed
         '400':
-          description: The service account is disabled
+          description: >-
+            The service account is disabled, or null was passed for an application that
+            allows client_credentials, where clearing the identity is refused.
         '401':
           description: Not authenticated
         '403':
