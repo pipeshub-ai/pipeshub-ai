@@ -974,7 +974,9 @@ class TestConnectionAndAccess:
     @pytest.mark.asyncio
     async def test_failure(self, conn):
         conn.data_source = MagicMock()
-        conn.data_source.list_shares = AsyncMock(return_value=_make_response(False, error="denied"))
+        conn.data_source.list_shares = AsyncMock(return_value=_make_response(
+            False, error="denied", error_code="AuthorizationPermissionMismatch"
+        ))
         with pytest.raises(ConnectorInitError, match="needs the List"):
             await conn.test_connection_and_access()
 

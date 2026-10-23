@@ -128,6 +128,12 @@ _SHARE_GONE_CODES = frozenset({"ShareNotFound"})
 _NOT_FOUND_CODES = _SHARE_GONE_CODES | {"ResourceNotFound", "ParentNotFound"}
 # The credential itself was refused: a rotated account key, an expired SAS, a bad Entra ID secret.
 _CREDENTIALS_REJECTED_CODES = frozenset({"AuthenticationFailed", "InvalidAuthenticationInfo", CREDENTIALS_REJECTED})
+# Azure's answers for a credential that is valid but not allowed the call (a SAS or role
+# without a permission, service or resource type); other failures name no permission.
+_PERMISSION_CODES = frozenset({
+    "AuthorizationPermissionMismatch", "AuthorizationFailure",
+    "AuthorizationResourceTypeMismatch", "AuthorizationServiceMismatch",
+})
 
 
 async def _endpoint_problem(url: str) -> str | None:
@@ -769,7 +775,7 @@ class AzureFilesConnector(BaseConnector):
             if props.success:
                 last_modified = (props.data or {}).get("last_modified")
                 if isinstance(last_modified, datetime):
-                    timestamps[share_name] = int(last_modified.timestamp() * 1000)
+                    timestamps[share_name] = datetime_to_epoch_ms(last_modified)
             elif props.error_code in _SHARE_GONE_CODES:
                 self.logger.warning(f"Share {share_name} named in the share filter no longer exists")
                 gone.add(share_name)
@@ -947,7 +953,7 @@ class AzureFilesConnector(BaseConnector):
 
         # Parse datetime
         if isinstance(last_modified, datetime):
-            obj_timestamp_ms = int(last_modified.timestamp() * 1000)
+            obj_timestamp_ms = datetime_to_epoch_ms(last_modified)
         elif isinstance(last_modified, str):
             try:
                 obj_dt = datetime.fromisoformat(last_modified.replace("Z", "+00:00"))
@@ -973,7 +979,7 @@ class AzureFilesConnector(BaseConnector):
         creation_time = item.get("creation_time")
         if creation_time:
             if isinstance(creation_time, datetime):
-                created_timestamp_ms = int(creation_time.timestamp() * 1000)
+                created_timestamp_ms = datetime_to_epoch_ms(creation_time)
             elif isinstance(creation_time, str):
                 try:
                     created_dt = datetime.fromisoformat(
@@ -1276,9 +1282,7 @@ class AzureFilesConnector(BaseConnector):
                                 last_modified = item.get("last_modified")
                                 if last_modified:
                                     if isinstance(last_modified, datetime):
-                                        obj_timestamp_ms = int(
-                                            last_modified.timestamp() * 1000
-                                        )
+                                        obj_timestamp_ms = datetime_to_epoch_ms(last_modified)
                                         max_timestamp = max(max_timestamp, obj_timestamp_ms)
                                     elif isinstance(last_modified, str):
                                         try:
@@ -1537,7 +1541,7 @@ class AzureFilesConnector(BaseConnector):
             last_modified = item.get("last_modified")
             if last_modified:
                 if isinstance(last_modified, datetime):
-                    timestamp_ms = int(last_modified.timestamp() * 1000)
+                    timestamp_ms = datetime_to_epoch_ms(last_modified)
                 elif isinstance(last_modified, str):
                     try:
                         obj_dt = datetime.fromisoformat(
@@ -1555,7 +1559,7 @@ class AzureFilesConnector(BaseConnector):
             creation_time = item.get("creation_time")
             if creation_time:
                 if isinstance(creation_time, datetime):
-                    created_timestamp_ms = int(creation_time.timestamp() * 1000)
+                    created_timestamp_ms = datetime_to_epoch_ms(creation_time)
                 elif isinstance(creation_time, str):
                     try:
                         created_dt = datetime.fromisoformat(
@@ -1755,7 +1759,9 @@ class AzureFilesConnector(BaseConnector):
                 f"Azure rejected the credentials while trying to {action} ({response.error_code}). "
                 "Check the connection string or Entra ID details; a SAS may have expired or an account key been rotated."
             )
-        return f"Could not {action}: the credential needs the {missing} permission. Azure said: {response.error}"
+        if response.error_code in _PERMISSION_CODES:
+            return f"Could not {action}: the credential needs the {missing} permission. Azure said: {response.error}"
+        return f"Could not {action}. Azure said: {response.error}"
 
     async def _access_problem(self) -> str | None:
         """Why the credential cannot sync, or None."""
@@ -2134,7 +2140,7 @@ class AzureFilesConnector(BaseConnector):
             last_modified = item_metadata.get("last_modified")
             if last_modified:
                 if isinstance(last_modified, datetime):
-                    timestamp_ms = int(last_modified.timestamp() * 1000)
+                    timestamp_ms = datetime_to_epoch_ms(last_modified)
                 elif isinstance(last_modified, str):
                     try:
                         obj_dt = datetime.fromisoformat(

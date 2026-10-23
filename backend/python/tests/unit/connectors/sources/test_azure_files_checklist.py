@@ -7,6 +7,7 @@ earlier Azure Files review harness, so each test drives the code path it names.
 """
 
 import logging
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -530,6 +531,30 @@ class TestListingPages:
         assert set(proc.records) == before
         assert proc.deleted == []
         assert conn.full_sync_coverage().complete is False
+
+
+WRITTEN_UTC = datetime(2024, 5, 1, 10, 0, tzinfo=timezone.utc)
+
+
+class TestNaiveTimes:
+    async def test_share_time_without_zone_is_utc(self, monkeypatch) -> None:
+        """The SDK parses properties headers into naive datetimes; .timestamp() would read
+        them as host-local time and shift them by the host's offset."""
+        monkeypatch.setenv("TZ", "Asia/Kolkata")
+        time.tzset()
+        try:
+            ds = FakeDataSource({})
+            ds.add("s", "a.txt")
+            ds.get_share_properties = AsyncMock(
+                return_value=_ok({"name": "s", "last_modified": WRITTEN_UTC.replace(tzinfo=None)})
+            )
+            conn = _connector(ds, FakeProcessor())
+            timestamps, gone = await conn._selected_share_timestamps_and_gone(["s"])
+        finally:
+            monkeypatch.undo()
+            time.tzset()
+        assert gone == set()
+        assert timestamps["s"] == int(WRITTEN_UTC.timestamp() * 1000)
 
 
 class TestExtension:

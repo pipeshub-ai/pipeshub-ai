@@ -813,11 +813,25 @@ class TestO2ConnectionTest:
     async def test_directory_listing_refused_fails(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
-        ds.fail_dirs.add(("s", ""))
+        ds.list_directories_and_files = AsyncMock(return_value=_err(
+            "AuthorizationPermissionMismatch (HTTP 403): This request is not authorized.",
+            "AuthorizationPermissionMismatch",
+        ))
         conn = _connector(ds, FakeProcessor())
         conn.sync_filters = FilterCollection()
         with pytest.raises(ConnectorInitError, match="needs the List permission"):
             await conn.test_connection_and_access()
+
+    async def test_transient_failure_names_no_permission(self) -> None:
+        """A busy service is not a missing permission; telling the admin to change one misleads."""
+        ds = FakeDataSource({})
+        ds.add("s", "a.txt")
+        ds.fail_dirs.add(("s", ""))
+        conn = _connector(ds, FakeProcessor())
+        conn.sync_filters = FilterCollection()
+        with pytest.raises(ConnectorInitError, match="Could not list share s. Azure said: .*ServerBusy") as refused:
+            await conn.test_connection_and_access()
+        assert "permission" not in str(refused.value)
 
     async def test_share_sas_needs_no_list_shares(self) -> None:
         ds = FakeDataSource({})
