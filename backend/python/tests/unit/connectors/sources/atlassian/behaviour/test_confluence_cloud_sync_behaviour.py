@@ -1203,6 +1203,7 @@ class TestContentGoneFromSource:
         db.records["c2"] = comment.model_copy(update={"id": "reply-id", "external_record_id": "c2",
                                                       "parent_external_record_id": "c1"})
         api.on("GET", f"{V2}/spaces/77/pages", in_space("10", "12"))
+        api.on("GET", f"{V2}/folders/900", {"id": "900", "status": "current", "spaceId": "77", "title": "Specs"})
 
         await connector._sync_spaces_content([ENG])
 
