@@ -62,8 +62,12 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.github_teams.common.apps import GitHubTeamsApp
-from app.connectors.sources.github_teams.common.utils import updated_since_filter_field
+from app.connectors.sources.github_teams.common.utils import (
+    sync_window_start,
+    updated_since_filter_field,
+)
 from app.models.entities import Record
 from app.sources.client.github.github import GitHubClient
 from app.sources.external.github.github_async import GitHubAsyncDataSource
@@ -379,6 +383,14 @@ class GitHubTeamsConnector(BaseConnector):
         except Exception as e:
             self.logger.error("Error in GitHub Teams sync: %s", e, exc_info=True)
             raise
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """An issue or pull request last updated before the "updated since" window is not
+        listed, not gone: one created before the window keeps its links after a full
+        sync. A sync that skipped part of GitHub raises (``run_sync``), so a full sync
+        that returns read everything it was asked to."""
+        start = sync_window_start(self.sync_filters)
+        return FullSyncCoverage(window_start_ms=int(start.timestamp() * 1000) if start else None)
 
     def _require_scope_filter(self) -> None:
         """Refuse to sync without a repository or organization filter.

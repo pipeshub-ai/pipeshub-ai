@@ -289,6 +289,10 @@ class IssuesSync:
             self.logger.info(
                 "Synced %s issue(s) for %s across %s page(s)", processed, repo.full_name, page,
             )
+        if checkpoint.get(GitHubLiterals.ISSUE_TOTAL.value) is None:
+            # A full sync (its sync points are gone) or the first sync of this version.
+            await c.comments.settle_stored_attachments(group_id)
+            await c.comments.settle_stored_attachments(f"{repo.id}-pull-requests")
         new_checkpoint = dict(checkpoint)
         if watermarks.get(group_id):
             new_checkpoint[GitHubLiterals.LAST_SYNC_TIME.value] = watermarks[group_id]

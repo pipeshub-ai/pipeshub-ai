@@ -62,6 +62,7 @@ _MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 _GITHUB_ATTACHMENT_HOST = "github.com"
 _GITHUB_ATTACHMENT_PATH_PREFIX = "/user-attachments/"
+_STORED_PAGE = 500
 _GITHUB_ATTACHMENT_ASSET_PREFIX = "/user-attachments/assets/"
 
 _EXTENSION_TO_MIME: dict[str, str] = {
@@ -176,6 +177,14 @@ def _is_github_attachment_url(url: str, *, image_only: bool = False) -> bool:
         return parsed.path.startswith(prefix)
     except Exception:
         return False
+
+
+def _reuse_trashed_id(update: RecordUpdate, trashed: Record | None) -> None:
+    """An attachment linked again after it was removed is in the trash (with the trash
+    on). Written again under its own id, the processor brings it back and indexes it,
+    and the parent's blocks point at that id."""
+    if trashed is not None:  # a live one is reused as it is, never rewritten
+        update.record.id = trashed.id
 
 
 def attachment_key(url: str, parent_external_record_id: str) -> str:
@@ -501,7 +510,7 @@ class CommentsHelper:
             if seen_keys is not None:
                 seen_keys.add(key)
             existing_record = await c.data_entities_processor.get_record_by_external_id(c.connector_id, key)
-            if existing_record:
+            if existing_record and existing_record.is_deleted is not True:
                 child_records.append(ChildRecord(
                     child_id=existing_record.id, child_type=ChildType.RECORD, child_name=existing_record.record_name,
                 ))
@@ -510,6 +519,7 @@ class CommentsHelper:
                 # parent node id — no lookup needed.
                 new_record = self._attachment_file_update(attach, record, None, record.id)
                 if new_record is not None:
+                    _reuse_trashed_id(new_record, existing_record)
                     remaining.append(new_record)
                     child_records.append(ChildRecord(
                         child_id=new_record.record.id, child_type=ChildType.RECORD,
@@ -532,16 +542,59 @@ class CommentsHelper:
             if seen_keys is not None:
                 seen_keys.add(key)
             existing_record = await c.data_entities_processor.get_record_by_external_id(c.connector_id, key)
-            if existing_record:
+            if existing_record and existing_record.is_deleted is not True:
                 comment_attachments.append(CommentAttachment(name=existing_record.record_name, id=existing_record.id))
             else:
                 new_record = self._attachment_file_update(attach, record, None, record.id)
                 if new_record is not None:
+                    _reuse_trashed_id(new_record, existing_record)
                     remaining.append(new_record)
                     comment_attachments.append(CommentAttachment(
                         name=new_record.record.record_name, id=new_record.record.id,
                     ))
         return comment_attachments, remaining
+
+    async def settle_stored_attachments(self, external_group_id: str) -> None:
+        """Bring a group's stored attachment records in line on a full sync or the first
+        sync of this version.
+
+        Files linked from comments and reviews become records only when their issue or
+        pull request is streamed; no listing writes them again. A full sync unlinks what
+        it did not write, so they are noted as kept (an issue that left GitHub takes its
+        attachments with it through the deleted-issue check). Records keyed by the URL
+        alone, written before attachments were keyed per parent, are removed: no version
+        writes that id any more; their parents are streamed again to write the keyed ones.
+        """
+        c = self.c
+        processor = c.data_entities_processor
+        kept: list[Record] = []
+        legacy: list[Record] = []
+        by_external_id: dict[str, Record] = {}
+        after: str | None = None
+        while True:
+            page = await processor.get_records_in_record_group(
+                c.connector_id, external_group_id, _STORED_PAGE, after
+            )
+            for r in page:
+                key = str(r.external_record_id or "")
+                by_external_id[key] = r
+                if r.record_type == RecordType.FILE.value and _is_github_attachment_url(key.split("#", 1)[0]):
+                    (kept if "#" in key else legacy).append(r)
+            if len(page) < _STORED_PAGE:
+                break
+            after = page[-1].id
+        processor.note_kept_records(c.connector_id, [r.id for r in kept])
+        if not legacy:
+            return
+        # Their parents are streamed once more, which writes the keyed records (the ones
+        # linked from comments and reviews come from no listing). Queued before the
+        # removal, so a failure leaves both for the next sync.
+        parent_ids = dict.fromkeys(r.parent_external_record_id for r in legacy if r.parent_external_record_id)
+        parents = [by_external_id[p] for p in parent_ids if p in by_external_id]
+        await processor.reindex_existing_records([p for p in parents if type(p) is not Record])
+        await c.record_remover.remove_records(legacy)
+        self.logger.info("Replaced %s attachment record(s) keyed by URL alone in %s; re-reading %s parent(s)",
+                         len(legacy), external_group_id, len(parents))
 
     async def remove_unlinked_attachments(self, record: Record, linked_keys: set[str]) -> None:
         """Remove the attachment records of ``record`` that nothing links any more.

@@ -5,13 +5,19 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
 from app.connectors.core.registry.filters import FilterCollection
-from app.connectors.sources.github_teams.comments import CommentsHelper, attachment_key, attachment_url
+from app.connectors.sources.github_teams.comments import (
+    CommentsHelper,
+    attachment_key,
+    attachment_url,
+)
+from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 from app.connectors.sources.github_teams.issue_reconciler import IssueReconciler
 from app.connectors.sources.github_teams.issues import IssuesSync
 from app.connectors.sources.github_teams.projects import ProjectsSync
@@ -22,8 +28,15 @@ from app.connectors.sources.github_teams.runtime import RuntimeHelper
 from app.models.entities import RecordType
 from app.sources.client.github.github import GitHubResponse
 from app.sources.external.github.github_async import GitHubAsyncDataSource
+from tests.unit.connectors.sources.test_github_teams.conftest import (
+    failed_response,
+    make_mock_connector,
+    make_repo,
+    ok_response,
+)
 
-from tests.unit.connectors.sources.test_github_teams.conftest import failed_response, make_mock_connector, make_repo, ok_response
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 def _record(rid: str, external_id: str, record_type: str = RecordType.TICKET.value,
@@ -123,7 +136,7 @@ def _reconciler(responses: dict, stored: list) -> tuple[IssueReconciler, MagicMo
     ds = MagicMock()
     runtime = MagicMock()
 
-    async def ds_call(method, *args, **kwargs):
+    async def ds_call(method: object, *args: object, **kwargs: object) -> GitHubResponse:
         if method is ds.graphql_query:
             return responses["graphql"].pop(0)
         return responses["get_issue"][args[2]]
@@ -249,6 +262,67 @@ class TestIssuePaging:
         c.issue_reconciler.reconcile.assert_not_awaited()
 
 
+async def test_stored_attachments_are_kept_through_a_full_sync_and_url_keys_removed() -> None:
+    """A full sync unlinks what it did not write, and no listing writes a file linked from a
+    comment: those are noted as kept. Records keyed by the URL alone are removed."""
+    c = make_mock_connector()
+    url = "https://github.com/user-attachments/files/1/notes.txt"
+    keyed = _record("a1", f"{url}#1001/issues/5", RecordType.FILE.value)
+    legacy = _record("a2", url, RecordType.FILE.value)
+    other = _record("f1", "/1001/blob/README.md", RecordType.FILE.value)
+    ticket = _record("t1", "1001/issues/5")
+    legacy.parent_external_record_id = "1001/issues/5"
+    c.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[keyed, legacy, other, ticket])
+    c.data_entities_processor.note_kept_records = MagicMock()
+    order: list[str] = []
+    c.data_entities_processor.reindex_existing_records = AsyncMock(side_effect=lambda r: order.append("reindex"))
+    c.record_remover.remove_records = AsyncMock(side_effect=lambda r: order.append("remove"))
+    await CommentsHelper(c).settle_stored_attachments("1001-work-items")
+    c.data_entities_processor.note_kept_records.assert_called_once_with(c.connector_id, ["a1"])
+    c.record_remover.remove_records.assert_awaited_once_with([legacy])
+    # The parent is streamed again, which writes the keyed record; queued first, so a
+    # failure leaves the old record for the next sync to try again.
+    c.data_entities_processor.reindex_existing_records.assert_awaited_once_with([ticket])
+    assert order == ["reindex", "remove"]
+
+
+async def test_a_full_sync_or_the_first_sync_of_this_version_settles_attachments() -> None:
+    c = make_mock_connector()
+    c.runtime.ds_call = AsyncMock(return_value=ok_response([]))
+    c.issue_reconciler.source_total = AsyncMock(return_value=0)
+    sync = IssuesSync(c)
+    sync._read_checkpoint = AsyncMock(return_value={})  # no issue total: full sync or upgrade
+    sync._write_checkpoint = AsyncMock()
+    await sync.fetch_issues_batched(make_repo(repo_id=1001))
+    groups = [call.args[0] for call in c.comments.settle_stored_attachments.await_args_list]
+    assert groups == ["1001-work-items", "1001-pull-requests"]
+
+
+async def test_an_ordinary_incremental_sync_does_not_scan_attachments() -> None:
+    c = make_mock_connector()
+    c.runtime.ds_call = AsyncMock(return_value=ok_response([]))
+    c.issue_reconciler.source_total = AsyncMock(return_value=5)
+    sync = IssuesSync(c)
+    sync._read_checkpoint = AsyncMock(return_value={"last_sync_time": 1, "issue_total": 5})
+    sync._write_checkpoint = AsyncMock()
+    await sync.fetch_issues_batched(make_repo())
+    c.comments.settle_stored_attachments.assert_not_awaited()
+
+
+def test_full_sync_coverage_names_the_sync_window() -> None:
+    """An issue last updated before the window is not listed, not gone."""
+    from app.connectors.core.registry.filters import Filter, SyncFilterKey
+
+    c = GitHubTeamsConnector.__new__(GitHubTeamsConnector)
+    c.sync_filters = FilterCollection()
+    assert GitHubTeamsConnector.full_sync_coverage(c).window_start_ms is None
+    start = 1_790_000_000_000
+    c.sync_filters = FilterCollection(filters=[Filter(
+        key=SyncFilterKey.MODIFIED.value, type="datetime", operator="is_after", value={"start": start, "end": None})])
+    coverage = GitHubTeamsConnector.full_sync_coverage(c)
+    assert coverage.complete is True and coverage.window_start_ms == start
+
+
 async def test_issues_turned_off_hide_every_issue_without_failing_the_sync() -> None:
     """GitHub answers 410 for the listing of a repository with issues turned off."""
     c = make_mock_connector()
@@ -347,8 +421,7 @@ class TestScopeResolution:
 
 
 class TestConnectorGuards:
-    def _connector(self, filters: FilterCollection | None):
-        from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
+    def _connector(self, filters: FilterCollection | None) -> GitHubTeamsConnector:
         c = GitHubTeamsConnector.__new__(GitHubTeamsConnector)
         c.sync_filters = filters
         return c
@@ -408,7 +481,7 @@ def test_dropped_connections_are_retried() -> None:
 async def test_image_download_stops_at_the_limit(monkeypatch) -> None:
     sent = {"bytes": 0}
 
-    async def body():
+    async def body() -> AsyncIterator[bytes]:
         for _ in range(64):
             sent["bytes"] += 65536
             yield b"\x00" * 65536
@@ -457,7 +530,7 @@ async def test_large_pull_request_inlines_a_bounded_number_of_files() -> None:
              for n in range(PR_FILE_INLINE_MAX_FILES + 5)]
     content = SimpleNamespace(size=3, decoded_content=b"abc", path="x")
 
-    async def ds_call(method, *args, **kwargs):
+    async def ds_call(method: object, *args: object, **kwargs: object) -> GitHubResponse:
         if method is c.data_source.get_pull_file_changes:
             return ok_response(files)
         if method is c.data_source.get_file_contents:

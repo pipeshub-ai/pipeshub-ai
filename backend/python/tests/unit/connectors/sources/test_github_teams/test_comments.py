@@ -714,7 +714,7 @@ class TestAttachmentRecordBuilding:
 
     async def test_child_records_reuse_existing_and_create_new(self) -> None:
         c = make_mock_connector()
-        existing = SimpleNamespace(id="att-1", record_name="spec.pdf")
+        existing = SimpleNamespace(id="att-1", record_name="spec.pdf", is_deleted=False)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(
             side_effect=[existing, None]
         )
@@ -732,7 +732,7 @@ class TestAttachmentRecordBuilding:
 
     async def test_block_comment_attachments_reuse_existing(self) -> None:
         c = make_mock_connector()
-        existing = SimpleNamespace(id="att-1", record_name="spec.pdf")
+        existing = SimpleNamespace(id="att-1", record_name="spec.pdf", is_deleted=False)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         helper = CommentsHelper(c)
         text = "[spec.pdf](https://github.com/user-attachments/files/9/spec.pdf)"
@@ -741,6 +741,22 @@ class TestAttachmentRecordBuilding:
 
         assert attachments[0].id == "att-1"
         assert remaining == []
+
+
+    async def test_an_attachment_in_the_trash_is_written_again_under_its_own_id(self) -> None:
+        """Linked again after it was removed (trash on): written again so the processor
+        brings it back and indexes it, and the parent's blocks point at that record."""
+        c = make_mock_connector()
+        trashed = SimpleNamespace(id="att-1", record_name="spec.pdf", is_deleted=True)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=trashed)
+        helper = CommentsHelper(c)
+        text = "[spec.pdf](https://github.com/user-attachments/files/9/spec.pdf)"
+
+        children, remaining = await helper.make_child_records_of_attachments(text, _parent_ticket())
+        attachments, review_remaining = await helper.make_block_comment_of_attachments(text, _parent_ticket())
+
+        assert [u.record.id for u in remaining] == ["att-1"] and [ch.child_id for ch in children] == ["att-1"]
+        assert [u.record.id for u in review_remaining] == ["att-1"] and attachments[0].id == "att-1"
 
 
 class TestCommentBlockFailures:

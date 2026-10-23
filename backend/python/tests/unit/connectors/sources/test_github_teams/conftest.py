@@ -110,6 +110,7 @@ def make_mock_connector() -> MagicMock:
     c.pull_requests.process_pull_request = AsyncMock(return_value=None)
     c.pull_requests._prs_indexing_enabled = MagicMock(return_value=True)
     c.comments.remove_unlinked_attachments = AsyncMock()
+    c.comments.settle_stored_attachments = AsyncMock()
     c.projects.failures = []  # sync_all_repos fills it; any entry fails the sync
 
     # Removal of what left GitHub or the sync's scope (wired by the connector).
