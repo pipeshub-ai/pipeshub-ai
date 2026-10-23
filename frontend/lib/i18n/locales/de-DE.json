@@ -620,7 +620,9 @@
       "needsMultimodalModel": "Multimodales Modell erforderlich",
       "skipped": "Übersprungen",
       "pending": "Ausstehend"
-    }
+    },
+    "allRecordsBusy_one": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunde.",
+    "allRecordsBusy_other": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunden."
   },
   "connectorTypes": {
     "slack": "Slack",

@@ -473,6 +473,9 @@ async def _handle_get_nodes(
             if said and HTTP_CLIENT_ERROR_MIN <= code < HTTP_SERVER_ERROR_MIN:
                 status_code = code
                 error_detail = said
+            elif said and code == status.HTTP_503_SERVICE_UNAVAILABLE:
+                # Busy, not broken: the caller is told when to come back.
+                raise HTTPException(status_code=code, detail=said, headers={"Retry-After": "5"})
             else:
                 status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
                 error_detail = action_failed("open this collection")

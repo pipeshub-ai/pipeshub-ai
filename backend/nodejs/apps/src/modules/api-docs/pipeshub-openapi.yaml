@@ -30981,6 +30981,68 @@ paths:
                 error:
                   code: HTTP_FORBIDDEN
                   message: "Insufficient scope. Required: kb:read"
+        '422':
+          description: |
+            A listing that spans a whole connector (a flattened listing, a search or a filter) was too large for the
+            database to hold in memory, so it was refused instead of cut short. No page is returned. Open a folder
+            (`GET /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}`) to see its records, or add a search (`q`),
+            which keeps only matching records in memory. Choosing a connector, or a filter that keeps most records (such as
+            `nodeTypes`), does not help. Sorting by name with no filters is served from stored visibility where the
+            connector allows it and is not affected.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_UNPROCESSABLE_ENTITY]
+                        example: HTTP_UNPROCESSABLE_ENTITY
+                      message:
+                        type: string
+                        example: "This view has too many records to list at once. Open a folder, or narrow by search."
+                      requestId:
+                        type: string
+        '503':
+          description: |
+            The database could not give this listing the memory it needs right now, because other requests were using
+            it (nothing is wrong with the request). Retry after `Retry-After` seconds; the web app retries by itself.
+            The body is the gateway's own busy message, not the service's wording.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_SERVICE_UNAVAILABLE]
+                        example: HTTP_SERVICE_UNAVAILABLE
+                      message:
+                        type: string
+                        example: "This part of PipesHub is briefly unavailable. Please try again in 5 seconds."
+                      requestId:
+                        type: string
         '500':
           description: An unexpected error occurred on the server.
           content:
@@ -31519,6 +31581,68 @@ paths:
                 error:
                   code: HTTP_NOT_FOUND
                   message: "Parent node not found"
+        '422':
+          description: |
+            A listing that spans a whole connector (a flattened listing, a search or a filter) was too large for the
+            database to hold in memory, so it was refused instead of cut short. No page is returned. Open a folder
+            (`GET /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}`) to see its records, or add a search (`q`),
+            which keeps only matching records in memory. Choosing a connector, or a filter that keeps most records (such as
+            `nodeTypes`), does not help. Sorting by name with no filters is served from stored visibility where the
+            connector allows it and is not affected.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_UNPROCESSABLE_ENTITY]
+                        example: HTTP_UNPROCESSABLE_ENTITY
+                      message:
+                        type: string
+                        example: "This view has too many records to list at once. Open a folder, or narrow by search."
+                      requestId:
+                        type: string
+        '503':
+          description: |
+            The database could not give this listing the memory it needs right now, because other requests were using
+            it (nothing is wrong with the request). Retry after `Retry-After` seconds; the web app retries by itself.
+            The body is the gateway's own busy message, not the service's wording.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying (5).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: object
+                    required:
+                      - code
+                      - message
+                    properties:
+                      code:
+                        type: string
+                        enum: [HTTP_SERVICE_UNAVAILABLE]
+                        example: HTTP_SERVICE_UNAVAILABLE
+                      message:
+                        type: string
+                        example: "This part of PipesHub is briefly unavailable. Please try again in 5 seconds."
+                      requestId:
+                        type: string
         '500':
           description: An unexpected error occurred on the server.
           content:

@@ -336,7 +336,11 @@ export const KnowledgeHubApi = {
           ...params,
         },
         signal: options?.signal,
-        suppressErrorToast: quietRejectedCursor(params?.cursor),
+        // A 422 (view too large to list) and a 503 (busy, retried by the page) are explained in the table, not in a toast.
+        suppressErrorToast: (error) => {
+          const quiet = quietRejectedCursor(params?.cursor);
+          return error.statusCode === 422 || error.statusCode === 503 || (typeof quiet === 'function' ? quiet(error) : !!quiet);
+        },
       }
     );
     return data;

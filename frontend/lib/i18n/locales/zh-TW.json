@@ -707,7 +707,8 @@
       "needsMultimodalModel": "需要多模態模型",
       "skipped": "已略過",
       "pending": "待處理"
-    }
+    },
+    "allRecordsBusy_other": "此檢視目前忙碌中，將在 {{count}} 秒後重試。"
   },
   "connectorTypes": {
     "slack": "Slack",

@@ -67,7 +67,10 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphQueryError,
+    KnowledgeHubListingBusy,
+    KnowledgeHubListingTooLarge,
     PermissionVerificationUnavailableError,
+    is_out_of_memory,
 )
 from app.models.entities import (
     AppRole,
@@ -18941,7 +18944,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 **{k: v for k, v in parameters.items() if k not in names},
                 self._KH_LISTS: {k: parameters[k] for k in read},
             }
-        return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+        try:
+            return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+        except Exception as e:
+            # Transaction memory is one pool: any listing statement can be the one that finds it spent.
+            if self._kh_out_of_memory(e):
+                raise KnowledgeHubListingBusy(out_of_memory=True) from e
+            raise
 
     # The global flatten lets each connector's page read its own grants.
     kh_grants_per_connector = True
@@ -20362,9 +20371,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 use_scope = False
         if not use_scope:
             try:
-                rows = await self._kh_query(
-                    query, parameters=params, txn_id=transaction,
-                )
+                walk_started = time.monotonic()
+                rows = await self._kh_query(query, parameters=params, txn_id=transaction)
+            except KnowledgeHubListingBusy as busy:
+                if not (flatten and busy.out_of_memory):
+                    raise
+                elapsed = time.monotonic() - walk_started
+                self.logger.warning(f"kh listing for {app_id} ran out of transaction memory after {elapsed:.1f}s")
+                raise self._kh_walk_refusal(elapsed) from busy
             except Exception as e:
                 self.logger.error(
                     f"❌ get_knowledge_hub_connector_page_v3 failed: {str(e)}"
@@ -20504,6 +20518,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }}
         WITH app, allNodes
             """
+
+    @staticmethod
+    def _kh_out_of_memory(error: Exception) -> bool:
+        """Whether Neo4j gave up on a statement for want of transaction or heap memory."""
+        return is_out_of_memory(error)
+
+    @staticmethod
+    def _kh_walk_refusal(elapsed: float) -> Exception:
+        """What a whole-connector walk that ran out of memory after ``elapsed`` seconds is told. One that ran for a
+        while before the pool was spent was itself big: too large to list (422). One that failed at once only met a
+        pool that other requests had spent: busy, retry (503)."""
+        if elapsed >= 0.5:
+            return KnowledgeHubListingTooLarge()
+        return KnowledgeHubListingBusy(out_of_memory=True)
 
     async def _kh_scope_mode(self) -> str:
         """``on``, ``verify`` (run both, log any difference, answer with the full query) or ``off``.

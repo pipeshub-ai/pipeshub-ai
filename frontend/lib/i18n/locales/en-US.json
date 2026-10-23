@@ -707,7 +707,9 @@
       "needsMultimodalModel": "Needs Multimodal Model",
       "skipped": "Skipped",
       "pending": "Pending"
-    }
+    },
+    "allRecordsBusy_one": "This view is busy right now. Retrying in {{count}} second.",
+    "allRecordsBusy_other": "This view is busy right now. Retrying in {{count}} seconds."
   },
   "connectorTypes": {
     "slack": "Slack",

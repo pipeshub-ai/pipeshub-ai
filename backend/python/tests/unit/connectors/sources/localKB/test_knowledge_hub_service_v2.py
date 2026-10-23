@@ -24,6 +24,10 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     _MAX_PAGE_WALK,
     KnowledgeHubService,
 )
+from app.exceptions.graph_db_exceptions import (
+    KnowledgeHubListingBusy,
+    KnowledgeHubListingTooLarge,
+)
 from app.utils.kh_cursor import (
     Boundary,
     KnowledgeHubCursor,
@@ -406,6 +410,36 @@ async def test_an_inadmissible_node_is_a_404_that_names_nothing(service, provide
     assert result.error == "Node not found"
     assert "secret-1" not in result.error
     assert result.currentNode is None and result.items == []
+
+
+@pytest.mark.asyncio
+async def test_a_listing_too_large_to_walk_is_a_422_that_says_to_open_a_folder(service, provider) -> None:
+    """Not a 500: the reader gets the sentence the refusal was written with."""
+    provider.get_knowledge_hub_connector_page_v3.side_effect = KnowledgeHubListingTooLarge()
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True)
+
+    assert (result.success, result.errorCode) == (False, 422)
+    assert result.error == "This view has too many records to list at once. Open a folder, or narrow by search."
+    assert result.items == []
+
+
+@pytest.mark.asyncio
+async def test_a_busy_listing_is_a_503(service, provider) -> None:
+    provider.get_knowledge_hub_connector_page_v3.side_effect = KnowledgeHubListingBusy()
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True)
+
+    assert (result.success, result.errorCode) == (False, 503)
+
+
+@pytest.mark.asyncio
+async def test_any_statement_finding_the_memory_pool_spent_is_a_503_not_a_500(service, provider) -> None:
+    class PoolSpent(Exception):
+        code = "Neo.TransientError.General.MemoryPoolOutOfMemoryError"
+
+    provider.get_knowledge_hub_access_context_v2.side_effect = PoolSpent()
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True)
+
+    assert (result.success, result.errorCode) == (False, 503)
 
 
 @pytest.mark.asyncio

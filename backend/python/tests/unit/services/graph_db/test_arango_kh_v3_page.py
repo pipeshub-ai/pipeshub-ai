@@ -85,7 +85,7 @@ async def test_a_bounded_flatten_keeps_only_nodes_within_the_depth_whichever_arm
     provider = ArangoHTTPProvider.__new__(ArangoHTTPProvider)
     provider.logger = MagicMock()
 
-    async def walk(starts, step, bind, depth, transaction) -> list[str]:
+    async def walk(starts, step, bind, depth, transaction, within=None) -> list[str]:
         if step == "step_hier":
             return ["recordGroups/g1", "records/r1", "recordGroups/dg"] if depth == 2 else ["recordGroups/g1", "recordGroups/dg"]
         return ["recordGroups/g1", "records/r1"] if step == "step_app" else ["records/deep", "records/r1"]

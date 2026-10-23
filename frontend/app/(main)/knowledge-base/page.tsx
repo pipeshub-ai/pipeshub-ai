@@ -117,7 +117,7 @@ import { useDebouncedSearch } from './hooks/use-debounced-search';
 import { toPendingChatNode, useTickedRows } from './hooks/use-ticked-rows';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
-import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError } from '@/lib/api/api-error';
+import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError, parseRetryAfter } from '@/lib/api/api-error';
 import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
 import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
@@ -598,10 +598,16 @@ function KnowledgeBasePageContent() {
   // Superseded table fetches are aborted so a slower earlier response cannot
   // overwrite the latest one, or clear its loading flag.
   const allRecordsFetchRef = useRef<AbortController | null>(null);
+  const [allRecordsRefused, setAllRecordsRefused] = useState(false);
+  // A busy answer (503) is retried by itself, a few times, after the seconds the server asked for.
+  const allRecordsBusyTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const allRecordsBusyTries = useRef(0);
+  const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number) => Promise<void>) | null>(null);
   const collectionsFetchRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     return () => {
+      if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
       allRecordsFetchRef.current?.abort();
       collectionsFetchRef.current?.abort();
     };
@@ -612,11 +618,13 @@ function KnowledgeBasePageContent() {
     allRecordsFetchRef.current?.abort();
     const controller = new AbortController();
     allRecordsFetchRef.current = controller;
+    if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
     const fetchGeneration = ++allRecordsFetchGeneration;
     const stillSignedIn = kbSessionToken();
     try {
       setIsLoadingAllRecordsTable(true);
       setAllRecordsTableError(null);
+      setAllRecordsRefused(false);
 
       // Get fresh state from store to avoid stale closure
       const currentState = useKnowledgeBaseStore.getState();
@@ -654,6 +662,7 @@ function KnowledgeBasePageContent() {
       }
       if (controller.signal.aborted || !stillSignedIn()) return;
       setAllRecordsTableData(data);
+      allRecordsBusyTries.current = 0;
       // Sync what the response decided (totals, indices, the two cursors)
       // without touching the cursor the user asked for — overwriting that would
       // re-trigger the effect watching it.
@@ -672,7 +681,29 @@ function KnowledgeBasePageContent() {
         return;
       }
       console.error('Error fetching all records:', error);
-      setAllRecordsTableError('Failed to load records');
+      // Busy (503): say so, count down the seconds the server asked for, and ask again (at most 3 times).
+      if (isProcessedError(error) && error.statusCode === 503 && allRecordsBusyTries.current < 3) {
+        allRecordsBusyTries.current += 1;
+        const headers = (error.originalError as { response?: { headers?: Record<string, unknown> } } | undefined)?.response?.headers;
+        let left = parseRetryAfter(headers?.['retry-after']) ?? 5;
+        const say = () => setAllRecordsTableError(t('kb.allRecordsBusy', { count: left }));
+        setAllRecordsRefused(true);
+        say();
+        allRecordsBusyTimer.current = setInterval(() => {
+          left -= 1;
+          if (left > 0) {
+            say();
+            return;
+          }
+          if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
+          void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page);
+        }, 1000);
+        return;
+      }
+      // A view too large to list answers 422 with the sentence to show; asking again cannot change that.
+      const refused = isProcessedError(error) && error.statusCode === 422;
+      setAllRecordsRefused(refused);
+      setAllRecordsTableError(refused ? error.message : 'Failed to load records');
     } finally {
       if (
         allRecordsFetchRef.current === controller &&
@@ -691,7 +722,9 @@ function KnowledgeBasePageContent() {
     setAllRecordsTableError,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
+    t,
   ]);
+  fetchAllRecordsTableDataRef.current = fetchAllRecordsTableData;
 
   // Extract stable primitive values from URL to avoid re-firing effects
   // when router.replace() updates pagination/filter params in the URL.
@@ -701,6 +734,8 @@ function KnowledgeBasePageContent() {
   // All Records mode: Fetch data on initial load or when navigating to a different node
   useEffect(() => {
     if (!isAllRecordsMode) return;
+    // A busy answer in one view must not use up the retries of the next.
+    allRecordsBusyTries.current = 0;
 
     if (allRecordsNodeType && allRecordsNodeId) {
       // Drilling down into a specific node
@@ -3072,6 +3107,7 @@ function KnowledgeBasePageContent() {
           isLoading={isAllRecordsMode ? isLoadingAllRecordsTable : isLoadingTableData}
           isRefreshing={isRefreshing}
           error={isAllRecordsMode ? allRecordsTableError : tableDataError}
+          errorRetryable={!(isAllRecordsMode && allRecordsRefused)}
           pagination={isAllRecordsMode ? allRecordsTableData?.pagination : tableData?.pagination}
           permissions={isAllRecordsMode ? allRecordsTableData?.permissions : tableData?.permissions}
           currentNodeName={isAllRecordsMode ? currentTitle : tableData?.currentNode?.name}

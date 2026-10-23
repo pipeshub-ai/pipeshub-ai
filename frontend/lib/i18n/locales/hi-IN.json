@@ -620,7 +620,9 @@
       "needsMultimodalModel": "मल्टीमॉडल मॉडल आवश्यक",
       "skipped": "छोड़ा गया",
       "pending": "लंबित"
-    }
+    },
+    "allRecordsBusy_one": "यह दृश्य अभी व्यस्त है। {{count}} सेकंड में फिर से कोशिश की जाएगी।",
+    "allRecordsBusy_other": "यह दृश्य अभी व्यस्त है। {{count}} सेकंड में फिर से कोशिश की जाएगी।"
   },
   "connectorTypes": {
     "slack": "Slack",
