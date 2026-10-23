@@ -11,7 +11,6 @@ from app.api.connection_limit import (
     ids_outside_connection,
     named_inside_connection,
     refuse_outside_connection,
-    root_lists_what_the_limit_names,
 )
 from app.api.middlewares.auth import connection_limit, is_request_admin, require_scopes
 from app.config.constants.arangodb import ProgressStatus
@@ -591,12 +590,8 @@ async def _root_inside_connection(
         return await _search_inside_connection(
             request, service, query, whole | partial, seen=seen, position=position, by_cursor=bool(cursor),
         )
-    if root_lists_what_the_limit_names(limit_sources):
-        offset = seen if cursor else (query["page"] - 1) * query["limit"]
-        return await _named_root(request, service, query, whole | partial, offset=offset)
-    if cursor:
-        raise _bad_cursor()
-    return await service.get_nodes(**query, within_app_ids=whole)
+    offset = seen if cursor else (query["page"] - 1) * query["limit"]
+    return await _named_root(request, service, query, whole | partial, offset=offset)
 
 
 def _admits(item: NodeItem, query: dict[str, Any]) -> bool:

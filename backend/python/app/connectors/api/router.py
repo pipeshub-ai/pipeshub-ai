@@ -2133,8 +2133,9 @@ async def _named_root_view(
     updated_at: dict[str, int | None] | None,
 ) -> NavigationView:
     """The root of a connection limited below app level: what its limit names
-    that the user can read, the items it opens from. No app is wholly inside
-    such a limit, so the usual root, every record of the apps, would be empty."""
+    that the user can read, apps included, the items it opens from. The usual
+    root, every record of the apps wholly inside the limit, leaves out the
+    folders and files it names."""
     named = await named_inside_connection(request, graph_provider, org_id, user_id)
     rows = [
         NodeRow(

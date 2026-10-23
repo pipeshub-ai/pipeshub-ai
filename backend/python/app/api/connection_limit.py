@@ -65,10 +65,10 @@ async def named_inside_connection(
 
 
 def root_lists_what_the_limit_names(limit: dict[str, list[str]] | None) -> bool:
-    """Whether a browse of the root lists the items a limit names rather than
-    the apps it names: a limit to folders or files leaves no app wholly inside
-    it to list."""
-    return names_below_apps(limit) and not (limit or {}).get("apps")
+    """Whether a browse of the root lists the items a limit names: any limit
+    that names a folder or file. A limit beside whole apps lists those apps as
+    items too, as the chat agent's list_files does."""
+    return names_below_apps(limit)
 
 
 async def ids_outside_connection_on_restore(

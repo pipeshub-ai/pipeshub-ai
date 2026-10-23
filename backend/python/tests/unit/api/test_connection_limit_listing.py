@@ -213,6 +213,12 @@ class TestTheBrowseRootOfALimitBelowAppLevel:
         assert first.pagination.totalItems == second.pagination.totalItems == 2
         assert second.pagination.hasNext is False
 
+    async def test_a_mixed_limit_lists_its_apps_beside_its_folders(self) -> None:
+        result = await _nodes(_graph(), MIXED_LIMIT)
+
+        assert [item.id for item in result.items] == ["kb-other", FOLDER]
+        assert result.items[0].nodeType == "app" and result.pagination.totalItems == 2
+
     async def test_a_named_item_the_user_cannot_read_is_not_listed(self) -> None:
         limit = {"apps": [], "recordGroups": [], "records": [FOLDER, "gone"]}
 
@@ -282,6 +288,11 @@ class TestTheNavigateRoot:
         assert [row["id"] for row in result["rows"]] == [FOLDER]
         assert result["pagination"]["total"] == 1
         assert "shared folder" in result["text"] and "big-00" not in result["text"]
+
+    async def test_a_mixed_limit_lists_its_apps_beside_its_folders(self) -> None:
+        result = await self._navigate(_graph(), MIXED_LIMIT)
+
+        assert [row["id"] for row in result["rows"]] == ["kb-other", FOLDER]
 
     async def test_a_files_limit_lists_its_files(self) -> None:
         result = await self._navigate(_graph(), FILES_LIMIT)
