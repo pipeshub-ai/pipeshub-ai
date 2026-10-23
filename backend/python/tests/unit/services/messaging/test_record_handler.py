@@ -1278,7 +1278,9 @@ class TestVectorDbOnlyReindex:
         sink.index.assert_awaited_once()
         assert sink.index.await_args.args[0].settings["skip_blob"] is True
         # The stored extraction rebuilds the named entities on the same context.
-        sink.reproject_named_entities.assert_awaited_once_with(sink.index.await_args.args[0])
+        sink.reproject_named_entities.assert_awaited_once_with(
+            sink.index.await_args.args[0], content_rev=graph_doc.get("contentRev")
+        )
         handler._download_from_signed_url.assert_not_awaited()
         stream_call.assert_not_awaited()
         assert all(e.event != "start_parsing" for e in events)

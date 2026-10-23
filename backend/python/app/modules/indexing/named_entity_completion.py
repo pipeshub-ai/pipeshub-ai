@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import math
 import os
 from typing import TYPE_CHECKING, Any
@@ -39,6 +40,7 @@ from app.modules.indexing.named_entity_persist_retry import (
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
+from app.modules.named_entities.kept import keep_extraction
 from app.modules.named_entities.stage import REEXTRACT_MAX_WINDOWS
 from app.modules.named_entities.strategies.single_call import WINDOW_TIMEOUT_SECONDS
 from app.services.graph_db.common.record_visibility import is_live_record
@@ -69,6 +71,8 @@ STARTUP_GRACE_SECONDS = 300.0
 DEFAULT_INTERVAL_SECONDS = 60.0
 LEADER_KEY = "named_entity_completion:leader"
 _LEASE_MARGIN_SECONDS = 15 * 60
+
+logger = logging.getLogger(__name__)
 
 
 def llm_mostly_free() -> bool:
@@ -173,10 +177,21 @@ async def _complete_one(
         return "extract_failed"
     if extraction.status == "SKIPPED":
         return "gone"
-    return await _under_record_lease(
-        concurrency_manager, record_id,
-        lambda: sink.persist_named_entities(ctx, extraction, retry_due=due, retry_attempts=attempts),
-    )
+
+    async def persist_and_keep() -> str:
+        outcome = await sink.persist_named_entities(ctx, extraction, retry_due=due, retry_attempts=attempts)
+        if outcome == "written":
+            # Otherwise a later reprojection (a persist retry, a re-embed) would bring back
+            # the extraction that left text unread.
+            try:
+                await keep_extraction(graph_provider, record["virtualRecordId"], record.get("contentRev"), extraction)
+            except Exception as exc:
+                logger.warning(
+                    "Completed named entities of record %s written but not kept: %s", record_id, type(exc).__name__
+                )
+        return outcome
+
+    return await _under_record_lease(concurrency_manager, record_id, persist_and_keep)
 
 
 def _record_lease_manager(app_container: Any) -> Any:  # noqa: ANN401

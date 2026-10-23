@@ -2,9 +2,9 @@
 
 Extraction and the graph/vector writes are the indexing named-entity path
 (``SinkOrchestrator.extract_named_entities`` and ``persist_named_entities``, which also
-queue persist retries and re-extractions). The extraction is kept in the stored record's
-``named_entities`` section, written under the record lease without touching the
-classification beside it.
+queue persist retries and re-extractions), each record's under its lease. The extraction is
+kept in the stage state's output (``app.modules.named_entities.kept``), not in the stored
+record, which classification alone writes.
 """
 
 import logging
@@ -18,13 +18,7 @@ from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
 from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.stage import Deadline
-from app.modules.pipeline.stages.record_io import (
-    NAMED_ENTITIES_SECTION,
-    RecordFromDocument,
-    RecordStageIO,
-    StoredMetadata,
-    with_named_entities,
-)
+from app.modules.pipeline.stages.record_io import RecordFromDocument, RecordStageIO
 from app.services.featureflag.platform_settings import (
     is_named_entity_extraction_enabled,
 )
@@ -38,16 +32,6 @@ if TYPE_CHECKING:
     from app.services.extraction.client import ExtractionClient
 
 __all__ = ["GraphEntitiesIO"]
-
-
-def _stored_section(current: StoredMetadata | None, extraction: dict[str, Any]) -> StoredMetadata | None:
-    """What the stored record keeps of ``extraction``; None when there is nothing to keep.
-
-    As ``extraction_blob_holder`` decides: with no classification stored, a skipped
-    extraction with no entities is not worth a holder."""
-    if current or extraction.get("entities") or extraction.get("status") != "SKIPPED":
-        return with_named_entities(current, extraction)
-    return None
 
 
 class GraphEntitiesIO(RecordStageIO):
@@ -112,23 +96,10 @@ class GraphEntitiesIO(RecordStageIO):
         with stage("entities.extract"):
             return await self._sink.extract_named_entities(ctx, client=self._extraction_client)
 
-    async def stored_entities_present(self, job: StageJob) -> bool:
-        stored = await self._stored_record(job)
-        metadata = stored.get("semantic_metadata") if stored else None
-        return isinstance(metadata, dict) and metadata.get(NAMED_ENTITIES_SECTION) is not None
-
-    async def restore_stored_entities(
-        self, job: StageJob, extraction: dict[str, Any], *, still_current: Any = None  # noqa: ANN401
-    ) -> None:
-        await self._write_section(
-            job, job.record_ids[0], lambda current: _stored_section(current, extraction), still_current=still_current
-        )
-
     async def save(self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction) -> str:
-        """The stored section, then each record's entities in the graph and the entity points.
-        Returns the owner's persist outcome (``written``, ``kept``, ``disabled``, ...)."""
+        """Each record's entities in the graph and the entity points, under its lease. Returns
+        the owner's persist outcome (``written``, ``kept``, ``disabled``, ...)."""
         owner = record_ids[0]
-        section = extraction.model_dump(mode="json")
         outcomes: dict[str, str] = {}
 
         async def persist(record_id: str) -> None:
@@ -138,10 +109,10 @@ class GraphEntitiesIO(RecordStageIO):
             with stage("entities.persist"):
                 outcomes[record_id] = await self._sink.persist_named_entities(ctx, extraction)
 
-        # As for classification: each record's entities are written under its lease, on this revision.
-        await self._write_section(
-            job, owner, lambda current: _stored_section(current, section), then=lambda: persist(owner)
-        )
+        # Each record's entities are written under its lease, on this revision; the owner's
+        # moving on is the job's (RevisionSuperseded), a bound record's is skipped.
+        async with self._holding(job, owner):
+            await persist(owner)
         for record_id in record_ids[1:]:
             _ = await self._for_bound_record(job, record_id, lambda rid=record_id: persist(rid))
         outcome = outcomes.get(owner, "kept")

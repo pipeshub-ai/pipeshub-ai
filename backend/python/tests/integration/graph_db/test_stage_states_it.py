@@ -10,6 +10,7 @@ engine is not reachable.
 """
 
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -235,3 +236,52 @@ async def test_a_null_field_clears_the_stored_value(provider: IGraphDBProvider) 
     assert await provider.compare_and_set_record_fields([record_id], "rev-a", {"reason": "failed once"}) == [record_id]
     assert await provider.compare_and_set_record_fields([record_id], "rev-a", {"reason": None}) == [record_id]
     assert (await provider.get_document(record_id, RECORDS) or {}).get("reason") is None
+
+
+def _entities_state(vrid: str, status: ProgressStatus) -> dict[str, object]:
+    job = StageJob(
+        stage="entities", stage_version=1, org_id=ORG, virtual_record_id=vrid, rev="rev-a",
+        record_ids=("rec-1",), connector_id="conn-1", tier=ParseTier.LIGHT, priority=Priority.BULK, trigger="embed",
+        text_digest="t", blocks_digest="b", text_chars=10, has_tables=False, has_images=False,
+    )
+    document = StageState.from_job(job, status, 1).model_dump(mode="json", by_alias=True)
+    document["id"] = document.pop("key")
+    return document
+
+
+@pytest.mark.asyncio
+async def test_the_kept_extraction_round_trips_and_only_a_completed_state_takes_a_new_one(
+    provider: IGraphDBProvider,
+) -> None:
+    """The entities stage keeps its extraction in its state's output; a re-extraction replaces
+    it only on a COMPLETED state, never under a run in progress."""
+    from app.modules.named_entities.domain.models import NamedEntityExtraction
+    from app.modules.named_entities.kept import keep_extraction, read_kept_extraction
+
+    done, running = str(uuid.uuid4()), str(uuid.uuid4())
+    assert await provider.stage_state_create(_entities_state(done, ProgressStatus.COMPLETED))
+    assert await provider.stage_state_create(_entities_state(running, ProgressStatus.IN_PROGRESS))
+    extraction = NamedEntityExtraction(status="PARTIAL", strategy="single_call", termination_reason="single_call")
+
+    assert await keep_extraction(provider, done, "rev-a", extraction) is True
+    assert await keep_extraction(provider, running, "rev-a", extraction) is False
+
+    kept = await read_kept_extraction(provider, done, "rev-a")
+    assert kept is not None and kept.status == "PARTIAL"
+    assert await read_kept_extraction(provider, running, "rev-a", {"status": "COMPLETED"}) is None
+    # No state for the revision: the legacy section is the record's.
+    assert (await read_kept_extraction(provider, done, "rev-b", {"status": "COMPLETED"})).status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_a_large_kept_output_round_trips(provider: IGraphDBProvider) -> None:
+    vrid = str(uuid.uuid4())
+    assert await provider.stage_state_create(_entities_state(vrid, ProgressStatus.COMPLETED))
+    output = json.dumps({"status": "COMPLETED", "padding": "x" * (1 << 20)})
+    key = f"{vrid}:rev-a:entities"
+    completed = ProgressStatus.COMPLETED.value
+
+    assert await provider.stage_state_compare_and_set(key, completed, completed, {"output": output})
+
+    stored = await provider.stage_state_get(key)
+    assert stored is not None and stored["output"] == output
