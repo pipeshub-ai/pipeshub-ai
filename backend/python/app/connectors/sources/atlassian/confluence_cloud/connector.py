@@ -6195,10 +6195,15 @@ class ConfluenceConnector(BaseConnector):
         # 4. Process footer comments as COMMENT_THREAD/COMMENT BlockGroups
         comment_attachment_ids: set[str] = set()
 
-        if footer_comments:
-            sorted_threads = self._organize_confluence_comments_to_threads(footer_comments)
-
-            for thread_comments in sorted_threads:
+        # Inline threads are also anchored to their blocks above, but only block text is embedded,
+        # so they get comment groups too, as footer threads do, to be searchable.
+        comment_threads = [
+            (kind, thread)
+            for kind, comments in (("footer", footer_comments), ("inline", inline_comments))
+            for thread in self._organize_confluence_comments_to_threads(comments or [])
+        ]
+        if comment_threads:
+            for thread_comment_type, thread_comments in comment_threads:
                 if not thread_comments:
                     continue
 
@@ -6213,7 +6218,7 @@ class ConfluenceConnector(BaseConnector):
                 thread_group = parser.create_comment_thread_group(
                     thread_id=thread_id,
                     group_index=thread_group_index,
-                    comment_type="footer",
+                    comment_type=thread_comment_type,
                     page_title=page_title,
                     weburl=weburl,
                 )
