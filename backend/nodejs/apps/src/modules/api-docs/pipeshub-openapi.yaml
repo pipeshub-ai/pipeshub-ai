@@ -36863,11 +36863,15 @@ paths:
           stored as `forwarded`, the owner is notified and `sourceUrl` links to the
           record in its source system. Access arrives through the next permission sync.
 
-        A repeat request for the same record (or the same collection) returns the open one with `duplicate: true`.
+        Name the chat (`conversationId`) or the saved search (`searchId`) the source was redacted
+        in. Only a record shown to you as redacted there can be asked for. Any other id (unknown,
+        not in that chat or search, now readable, or in a chat you cannot open) gets the same `201`
+        answer as a first request for a native record, so the route says nothing about whether a
+        record exists. Such a request is stored as an internal row, so repeats and the hourly
+        limit behave as they do for a real one, but nobody is notified.
 
-        The answer never says whether the record exists: an id that does not exist, is not
-        visible to you, or has nobody who could approve it gets the same `201` and request
-        shape as an accepted request (nothing is stored and nobody is notified).
+        A repeat request for the same record (or the same collection) answers `201` with the
+        open request again, exactly as a first request does.
       operationId: createAccessRequest
       security:
         - bearerAuth: []
@@ -36883,22 +36887,17 @@ paths:
               properties:
                 recordId:
                   type: string
+                conversationId:
+                  type: string
+                  format: objectId
+                  description: The chat in which the record was shown as redacted. Send this or `searchId`.
+                searchId:
+                  type: string
+                  format: objectId
+                  description: The saved search in which the record was shown as redacted. Send this or `conversationId`.
       responses:
-        '200':
-          description: Already requested (`duplicate`), or you can already read the record (`alreadyAccessible`).
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  request:
-                    $ref: '#/components/schemas/AccessRequest'
-                  duplicate:
-                    type: boolean
-                  alreadyAccessible:
-                    type: boolean
         '201':
-          description: Request created (or accepted, see above).
+          description: Request created, or the open one again for a repeat (or accepted, see above).
           content:
             application/json:
               schema:
@@ -36911,7 +36910,7 @@ paths:
                     type: string
                     description: Connector records only.
         '400':
-          description: Invalid `recordId`.
+          description: Invalid `recordId`, or neither or both of `conversationId` and `searchId` sent.
         '401':
           description: Unauthorized — valid bearer token required.
         '429':

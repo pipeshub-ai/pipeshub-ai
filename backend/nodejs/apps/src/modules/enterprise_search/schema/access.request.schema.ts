@@ -5,6 +5,9 @@ export const ACCESS_REQUEST_STATUSES = [
   'approved',
   'denied',
   'forwarded',
+  // Internal: a request the server accepted without a record behind it (see createAccessRequest).
+  // Never listed, never decided, and shown to the requester as `pending`.
+  'void',
 ] as const;
 export type AccessRequestStatus = (typeof ACCESS_REQUEST_STATUSES)[number];
 

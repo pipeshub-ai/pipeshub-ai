@@ -15,7 +15,20 @@ import { Notifications } from '../../notification/schema/notification.schema';
 import { AccessRequest } from '../schema/access.request.schema';
 import { Users } from '../../user_management/schema/users.schema';
 import type { IAccessRequest } from '../schema/access.request.schema';
-import { callRecordAccess, readableRecordIds } from '../utils/viewer-redaction';
+import { ChatSession } from '../schema/chat.session.schema';
+import EnterpriseSemanticSearch from '../schema/search.schema';
+import { getMessages } from '../utils/utils';
+import { ProjectService } from '../../projects/services/project.service';
+import {
+  callRecordAccess,
+  collectMessageRecordIds,
+  collectSearchRecordIds,
+  messageAuthorId,
+  readableRecordIds,
+  redactedSearchCandidates,
+  redactedSourceCandidates,
+  type ViewerMessage,
+} from '../utils/viewer-redaction';
 
 const logger = Logger.getInstance({ service: 'Access Requests' });
 
@@ -90,15 +103,86 @@ const present = (
     ? {}
     : { recordName: r.recordName, collectionName: r.collectionName }),
   kind: r.kind,
-  status: r.status,
+  // `void` is internal: to the requester it reads as a request waiting for an owner.
+  status: r.status === 'void' ? 'pending' : r.status,
   requesterId: String(r.requesterId),
   createdAt: r.createdAt,
 });
 
 /**
- * POST /api/v1/access-requests  { recordId }
+ * The record ids this viewer was shown as redacted sources in the chat or search they name, or
+ * none when they cannot open it. Only these may be asked for, so the route says nothing about
+ * a record the viewer was never shown.
+ */
+const shownRedactedIds = async (
+  appConfig: AppConfig,
+  orgId: string,
+  userId: string,
+  from: { conversationId?: string; searchId?: string },
+): Promise<Set<string>> => {
+  const org = new mongoose.Types.ObjectId(orgId);
+  const user = new mongoose.Types.ObjectId(userId);
+  if (from.conversationId) {
+    const projects = await ProjectService.getAccessibleProjectIds(
+      orgId,
+      userId,
+    );
+    const session = await ChatSession.findOne({
+      _id: new mongoose.Types.ObjectId(from.conversationId),
+      orgId: org,
+      isDeleted: false,
+      $or: [
+        { userId: user },
+        { isShared: true, 'sharedWith.userId': user },
+        ...(projects.length > 0
+          ? [{ projectId: { $in: projects }, projectVisibility: 'project' }]
+          : []),
+      ],
+    }).lean();
+    if (!session) return new Set();
+    const messages = (await getMessages(session._id, {
+      orgId,
+      populateCitations: true,
+    })) as ViewerMessage[];
+    const initiator = (
+      session.initiator as { toString(): string } | undefined
+    )?.toString();
+    const others = messages.filter(
+      (m) => messageAuthorId(m, initiator) !== userId,
+    );
+    const readable = await readableRecordIds(
+      appConfig,
+      { userId, orgId },
+      collectMessageRecordIds(others),
+    );
+    return redactedSourceCandidates(messages, initiator, userId, readable);
+  }
+  const search = await EnterpriseSemanticSearch.findOne({
+    _id: new mongoose.Types.ObjectId(from.searchId),
+    orgId: org,
+    $or: [{ userId: user }, { isShared: true, 'sharedWith.userId': user }],
+  })
+    .populate({ path: 'citationIds', model: 'citation', select: '-__v' })
+    .lean();
+  if (!search) return new Set();
+  const readable = await readableRecordIds(
+    appConfig,
+    { userId, orgId },
+    collectSearchRecordIds(search),
+  );
+  return redactedSearchCandidates(search, userId, readable);
+};
+
+/**
+ * POST /api/v1/access-requests  { recordId, conversationId | searchId }
  * Org-scoped, rate-limited per user. The record's kind and owner come from the
  * graph, never from the client.
+ *
+ * The record must be one the viewer was shown as redacted in the named chat or search. Any
+ * other id (unknown, hidden, not in that chat, or readable) gets the same answer as a first
+ * request for a native record: `201` with a `pending` request. Nothing is notified for it, but
+ * it is stored as an internal `void` row, so repeats, the hourly quota and the request shape
+ * behave exactly as for a real one.
  */
 export const createAccessRequest =
   (appConfig: AppConfig) =>
@@ -109,124 +193,116 @@ export const createAccessRequest =
   ): Promise<void> => {
     try {
       const { userId, orgId } = req.user as { userId: string; orgId: string };
-      const { recordId } = req.body as { recordId: string };
+      const { recordId, conversationId, searchId } = req.body as {
+        recordId: string;
+        conversationId?: string;
+        searchId?: string;
+      };
       const requesterId = new mongoose.Types.ObjectId(userId);
       const org = new mongoose.Types.ObjectId(orgId);
 
-      // Recorded per scope: one open request per collection (or per record outside one).
-      const check = await callRecordAccess<{
-        accessible?: string[];
-        deniedDetails?: DeniedDetail[];
-      }>(appConfig, { userId, orgId }, 'access', {
-        recordIds: [recordId],
-        includeOwners: true,
+      const shown = await shownRedactedIds(appConfig, orgId, userId, {
+        conversationId,
+        searchId,
       });
-      if (check.accessible?.includes(recordId)) {
-        res.status(200).json({ alreadyAccessible: true });
-        return;
-      }
-      const detail = check.deniedDetails?.find((d) => d.recordId === recordId);
+      // The query service is asked about the record only when the viewer was shown it as
+      // redacted (it is then unreadable to them by construction). An id they were not shown
+      // is never looked up, so nothing about it is learned or revealed.
+      const isShown = shown.has(recordId);
+      const check = isShown
+        ? await callRecordAccess<{ deniedDetails?: DeniedDetail[] }>(
+            appConfig,
+            { userId, orgId },
+            'access',
+            { recordIds: [recordId], includeOwners: true },
+          )
+        : undefined;
+      const detail = check?.deniedDetails?.find((d) => d.recordId === recordId);
       const owners = [...new Set(detail?.ownerUserIds ?? [])].filter((id) =>
         mongoose.isValidObjectId(id),
       );
+      const genuine =
+        !!detail &&
+        detail.kind !== 'unknown' &&
+        (detail.kind !== 'native' || owners.length > 0);
+
+      // One open request per collection (or per record outside one), for every answer alike.
+      const scope =
+        genuine && detail.collection
+          ? { collectionId: detail.collection.id }
+          : { recordId };
+      const sourceUrl =
+        genuine && detail.kind === 'connector' && detail.webUrl
+          ? { sourceUrl: detail.webUrl }
+          : {};
+      const existing = await AccessRequest.findOne({
+        orgId: org,
+        requesterId,
+        ...scope,
+        // A real request matches only real rows and an unseen id only its own void row, so a
+        // void row never swallows a request that is later genuine.
+        status: { $in: genuine ? ['pending', 'forwarded'] : ['void'] },
+      }).lean();
+      if (existing) {
+        res
+          .status(201)
+          .json({ request: present(existing, true), ...sourceUrl });
+        return;
+      }
+
       const recent = await AccessRequest.countDocuments({
         orgId: org,
         requesterId,
         createdAt: { $gte: new Date(Date.now() - HOUR_MS) },
       });
-      // A record that does not exist, is not visible, or has nobody who could approve it
-      // is answered exactly like an accepted request (same status and shape, nothing stored,
-      // nobody notified), so this route cannot be used to ask whether a record id exists.
-      if (
-        !detail ||
-        detail.kind === 'unknown' ||
-        (detail.kind === 'native' && owners.length === 0)
-      ) {
-        if (recent >= ACCESS_REQUESTS_PER_HOUR) {
-          throw new TooManyRequestsError(
-            'Too many access requests. Try again later.',
-          );
-        }
-        res.status(201).json({
-          request: present(
-            {
-              _id: new mongoose.Types.ObjectId(),
-              recordId,
-              kind: 'native',
-              status: 'pending',
-              requesterId,
-              createdAt: new Date(),
-            },
-            true,
-          ),
-        });
-        return;
-      }
-
-      const scope = detail.collection
-        ? { collectionId: detail.collection.id }
-        : { recordId };
-      const existing = await AccessRequest.findOne({
-        orgId: org,
-        requesterId,
-        ...scope,
-        status: { $in: ['pending', 'forwarded'] },
-      }).lean();
-      if (existing) {
-        res
-          .status(200)
-          .json({ request: present(existing, true), duplicate: true });
-        return;
-      }
-
       if (recent >= ACCESS_REQUESTS_PER_HOUR) {
         throw new TooManyRequestsError(
           'Too many access requests. Try again later.',
         );
       }
 
-      const requester = await Users.findById(requesterId)
-        .select('fullName email')
-        .lean();
-      const requesterName =
-        requester?.fullName || requester?.email || 'A colleague';
       const created = await AccessRequest.create({
         orgId: org,
         requesterId,
         recordId,
-        recordName: detail.recordName,
-        collectionId: detail.collection?.id,
-        collectionName: detail.collection?.name,
-        kind: detail.kind,
-        ownerUserIds: owners.map((id) => new mongoose.Types.ObjectId(id)),
-        status: detail.kind === 'native' ? 'pending' : 'forwarded',
+        ...(genuine
+          ? {
+              recordName: detail.recordName,
+              collectionId: detail.collection?.id,
+              collectionName: detail.collection?.name,
+              kind: detail.kind,
+              ownerUserIds: owners.map((id) => new mongoose.Types.ObjectId(id)),
+              status: detail.kind === 'native' ? 'pending' : 'forwarded',
+            }
+          : { kind: 'native', ownerUserIds: [], status: 'void' }),
       });
-      const what = detail.collection
-        ? `the collection "${detail.collection.name ?? ''}"`
-        : `"${detail.recordName ?? 'a record'}"`;
-      for (const ownerId of owners) {
-        await notify(
-          orgId,
-          ownerId,
-          'accessRequest',
-          'Access requested',
-          detail.kind === 'connector'
-            ? `${requesterName} asked for access to ${what} in its source system.`
-            : `${requesterName} asked for read access to ${what}.`,
-          {
-            requestId: String(created._id),
-            requesterName,
-            collectionName: detail.collection?.name,
-          },
-        );
+      if (genuine) {
+        const requester = await Users.findById(requesterId)
+          .select('fullName email')
+          .lean();
+        const requesterName =
+          requester?.fullName || requester?.email || 'A colleague';
+        const what = detail.collection
+          ? `the collection "${detail.collection.name ?? ''}"`
+          : `"${detail.recordName ?? 'a record'}"`;
+        for (const ownerId of owners) {
+          await notify(
+            orgId,
+            ownerId,
+            'accessRequest',
+            'Access requested',
+            detail.kind === 'connector'
+              ? `${requesterName} asked for access to ${what} in its source system.`
+              : `${requesterName} asked for read access to ${what}.`,
+            {
+              requestId: String(created._id),
+              requesterName,
+              collectionName: detail.collection?.name,
+            },
+          );
+        }
       }
-      res.status(201).json({
-        request: present(created, true),
-        // Connector records: the viewer finishes at the source; nothing is granted here.
-        ...(detail.kind === 'connector' && detail.webUrl
-          ? { sourceUrl: detail.webUrl }
-          : {}),
-      });
+      res.status(201).json({ request: present(created, true), ...sourceUrl });
     } catch (error) {
       next(error);
     }

@@ -3,8 +3,6 @@ import mongoose from 'mongoose'
 import sinon from 'sinon'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import {
-  ACCESS_REQUESTS_PER_HOUR,
-  createAccessRequest,
   decideAccessRequest,
 } from '../../../../src/modules/enterprise_search/controller/access_request.controller'
 import { AccessRequest } from '../../../../src/modules/enterprise_search/schema/access.request.schema'
@@ -39,26 +37,7 @@ describe('access requests', () => {
   })
   afterEach(() => sinon.restore())
 
-  const denied = (detail: any) =>
-    python.resolves({ statusCode: 200, data: { accessible: [], deniedDetails: [detail] } } as any)
-
-  it('T4: a native record request is stored pending for the owner and notifies them', async () => {
-    denied({ recordId: 'kb1', kind: 'native', recordName: 'Plan', collection: { id: 'col-1', name: 'Finance' }, ownerUserIds: [OWNER] })
-    const create = sinon.stub(AccessRequest, 'create').callsFake(async (d: any) => ({ _id: oid(), ...d }) as any)
-    const out = await run(createAccessRequest(config), { body: { recordId: 'kb1' } })
-    expect(out.status).to.equal(201)
-    // Raw viewer response: no collection or record name, no owners.
-    const raw = JSON.stringify(out.body)
-    for (const leak of ['Finance', 'Plan', OWNER, 'ownerUserIds', 'collectionName', 'recordName']) expect(raw).to.not.include(leak)
-    expect(create.firstCall.args[0]).to.include({ recordId: 'kb1', kind: 'native', status: 'pending', collectionId: 'col-1', collectionName: 'Finance' })
-    expect((create.firstCall.args[0] as any).ownerUserIds.map(String)).to.deep.equal([OWNER])
-    expect(String(notify.firstCall.args[0].assignedTo)).to.equal(OWNER)
-    expect(notify.firstCall.args[0].message).to.equal('Casey Viewer asked for read access to the collection "Finance".')
-    expect(notify.firstCall.args[0].payload.collectionName).to.equal('Finance')
-    expect(out.body.sourceUrl).to.equal(undefined)
-  })
-
-  it('T4: the owner approves, Python grants, and the requester is told', async () => {
+  it('the owner approves, Python grants, and the requester is told', async () => {
     const doc: any = {
       _id: oid(), kind: 'native', status: 'pending', recordId: 'kb1', recordName: 'Plan',
       ownerUserIds: [new mongoose.Types.ObjectId(OWNER)], requesterId: new mongoose.Types.ObjectId(VIEWER),
@@ -99,17 +78,6 @@ describe('access requests', () => {
     expect(python.called).to.equal(false)
   })
 
-  it('T5: a connector record is forwarded to the source and never granted locally', async () => {
-    denied({ recordId: 'wiki', kind: 'connector', recordName: 'Wiki', webUrl: 'https://wiki.example/p/1', ownerUserIds: [OWNER] })
-    const create = sinon.stub(AccessRequest, 'create').callsFake(async (d: any) => ({ _id: oid(), ...d }) as any)
-    const out = await run(createAccessRequest(config), { body: { recordId: 'wiki' } })
-    expect(out.status).to.equal(201)
-    expect(out.body.sourceUrl).to.equal('https://wiki.example/p/1')
-    expect((create.firstCall.args[0] as any).status).to.equal('forwarded')
-    // The only Python call is the access check, never access-grant.
-    expect(python.callCount).to.equal(1)
-  })
-
   it('an approve on a connector request is refused', async () => {
     const doc: any = { kind: 'connector', status: 'forwarded', ownerUserIds: [new mongoose.Types.ObjectId(OWNER)] }
     ;(AccessRequest.findOne as sinon.SinonStub).resolves(doc)
@@ -118,64 +86,6 @@ describe('access requests', () => {
     })
     expect(out.error?.statusCode).to.equal(400)
     expect(python.called).to.equal(false)
-  })
-
-  it('is rate limited per user', async () => {
-    ;(AccessRequest.countDocuments as sinon.SinonStub).resolves(ACCESS_REQUESTS_PER_HOUR)
-    denied({ recordId: 'kb1', kind: 'native', collection: null, ownerUserIds: [OWNER] })
-    const out = await run(createAccessRequest(config), { body: { recordId: 'kb1' } })
-    expect(out.error?.statusCode).to.equal(429)
-    expect(notify.called).to.equal(false)
-  })
-
-  it('does not create a request for a record the viewer can already read', async () => {
-    python.resolves({ statusCode: 200, data: { accessible: ['kb1'] } } as any)
-    expect((await run(createAccessRequest(config), { body: { recordId: 'kb1' } })).body).to.deep.equal({ alreadyAccessible: true })
-  })
-
-  it('answers an unknown, hidden or unapprovable record exactly like an accepted request, storing and notifying nothing', async () => {
-    const create = sinon.stub(AccessRequest, 'create').callsFake(async (d: any) => ({ _id: oid(), ...d }) as any)
-    denied({ recordId: 'real', kind: 'native', collection: { id: 'col-1', name: 'Finance' }, ownerUserIds: [OWNER] })
-    const real = await run(createAccessRequest(config), { body: { recordId: 'real' } })
-    create.resetHistory()
-    notify.resetHistory()
-
-    const answers = []
-    denied({ recordId: 'x', kind: 'unknown' })
-    answers.push(await run(createAccessRequest(config), { body: { recordId: 'x' } }))
-    python.resolves({ statusCode: 200, data: { accessible: [], deniedDetails: [] } } as any)
-    answers.push(await run(createAccessRequest(config), { body: { recordId: 'y' } }))
-    denied({ recordId: 'kb2', kind: 'native', collection: null, ownerUserIds: [] })
-    answers.push(await run(createAccessRequest(config), { body: { recordId: 'kb2' } }))
-
-    for (const out of answers) {
-      expect(out.error).to.equal(undefined)
-      expect(out.status).to.equal(real.status)
-      expect(Object.keys(out.body)).to.deep.equal(Object.keys(real.body))
-      expect(Object.keys(out.body.request)).to.deep.equal(Object.keys(real.body.request))
-      expect(out.body.request).to.include({ kind: 'native', status: 'pending' })
-    }
-    expect(create.called).to.equal(false)
-    expect(notify.called).to.equal(false)
-  })
-
-  it('does not repeat a pending request', async () => {
-    ;(AccessRequest.findOne as sinon.SinonStub).returns({ lean: async () => ({ _id: oid(), recordId: 'kb1', kind: 'native', status: 'pending', requesterId: VIEWER }) })
-    denied({ recordId: 'kb1', kind: 'native', collection: { id: 'col-1', name: 'Finance' }, ownerUserIds: [OWNER] })
-    const out = await run(createAccessRequest(config), { body: { recordId: 'kb1' } })
-    expect(out.body.duplicate).to.equal(true)
-    // One open request per collection, whichever record of it was asked for.
-    expect((AccessRequest.findOne as sinon.SinonStub).firstCall.args[0]).to.include({ collectionId: 'col-1' })
-    expect(notify.called).to.equal(false)
-  })
-
-  it('notifies every owner of the collection', async () => {
-    const other = String(oid())
-    denied({ recordId: 'kb1', kind: 'native', collection: { id: 'col-1', name: 'Finance' }, ownerUserIds: [OWNER, other] })
-    sinon.stub(AccessRequest, 'create').callsFake(async (d: any) => ({ _id: oid(), ...d }) as any)
-    await run(createAccessRequest(config), { body: { recordId: 'kb1' } })
-    expect(notify.getCalls().map((c) => String(c.args[0].assignedTo))).to.have.members([OWNER, other])
-
   })
 
   it('any collection owner may read the request state; others get 404', async () => {

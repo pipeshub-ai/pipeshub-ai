@@ -867,8 +867,8 @@ export const redactSearchesFor = async (
   const withDocs = (s: ViewerSearch): ViewerSearch => ({
     ...s,
     // A hit whose document is gone or foreign stays a bare id: unreadable.
-    citationIds: (s.citationIds ?? []).map(
-      (c): SearchHit => (isCitationDoc(c) ? c : (byId.get(String(c)) ?? c)),
+    citationIds: (s.citationIds ?? []).map((c): SearchHit =>
+      isCitationDoc(c) ? c : (byId.get(String(c)) ?? c),
     ),
   });
 
@@ -885,4 +885,44 @@ export const redactSearchesFor = async (
   return hydrated.map((s) =>
     String(s.userId) === viewer.userId ? s : redactSearchForViewer(s, readable),
   );
+};
+
+/**
+ * The record ids the viewer was actually sent as redacted sources in these messages: what
+ * `redactMessagesForViewer` turns into `redacted` citations and attachments for the turns they
+ * did not author. `readable` is the set of ids the viewer may read.
+ */
+export const redactedSourceCandidates = (
+  messages: ViewerMessage[],
+  initiatorId: string | undefined,
+  viewerId: string,
+  readable: Set<string>,
+): Set<string> => {
+  const ids = new Set<string>();
+  const others = messages.filter(
+    (m) => messageAuthorId(m, initiatorId) !== viewerId,
+  );
+  for (const m of redactMessagesForViewer(others, readable)) {
+    for (const item of [...(m.citations ?? []), ...(m.attachments ?? [])]) {
+      if (item?.redacted) ids.add(item.requestAccess?.recordId ?? '');
+    }
+  }
+  ids.delete('');
+  return ids;
+};
+
+/** The record ids a viewer was actually sent as redacted hits of a search shared with them. */
+export const redactedSearchCandidates = (
+  search: ViewerSearch,
+  viewerId: string,
+  readable: Set<string>,
+): Set<string> => {
+  const ids = new Set<string>();
+  if (String(search.userId) === viewerId) return ids;
+  for (const hit of redactSearchForViewer(search, readable).citationIds ?? []) {
+    const sent = hit as Partial<RedactedItem> | null;
+    if (sent?.redacted && sent.requestAccess?.recordId)
+      ids.add(sent.requestAccess.recordId);
+  }
+  return ids;
 };

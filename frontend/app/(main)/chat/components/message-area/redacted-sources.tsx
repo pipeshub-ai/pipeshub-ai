@@ -36,7 +36,7 @@ export function RedactedInline() {
 
 type RequestState = 'idle' | 'sending' | 'sent' | 'already' | 'failed';
 
-function RedactedSourceRow({ source }: { source: RequestAccessInfo }) {
+function RedactedSourceRow({ source, conversationId }: { source: RequestAccessInfo; conversationId?: string }) {
   const { t } = useTranslation();
   const [state, setState] = useState<RequestState>('idle');
   // Sent back only once the request is made: a connector record's page, where the viewer finishes.
@@ -46,7 +46,7 @@ function RedactedSourceRow({ source }: { source: RequestAccessInfo }) {
   const request = async () => {
     setState('sending');
     try {
-      const out = await ChatApi.requestAccess(source.recordId);
+      const out = await ChatApi.requestAccess(source.recordId, { conversationId });
       setSourceUrl(out.sourceUrl);
       setState(out.alreadyAccessible ? 'already' : 'sent');
     } catch {
@@ -102,7 +102,7 @@ function RedactedSourceRow({ source }: { source: RequestAccessInfo }) {
 }
 
 /** The "partially based on sources you can't access" marker and one Request access row per hidden source. */
-export function RedactedSourcesNotice({ redaction }: { redaction: NonNullable<CitationMaps['redaction']> }) {
+export function RedactedSourcesNotice({ redaction, conversationId }: { redaction: NonNullable<CitationMaps['redaction']>; conversationId?: string }) {
   const { t } = useTranslation();
   return (
     <Box
@@ -119,18 +119,18 @@ export function RedactedSourcesNotice({ redaction }: { redaction: NonNullable<Ci
         {redaction.redacted ? t('chat.redaction.hidden') : t('chat.redaction.partial')}
       </Text>
       {redaction.sources.map((source) => (
-        <RedactedSourceRow key={source.recordId} source={source} />
+        <RedactedSourceRow key={source.recordId} source={source} conversationId={conversationId} />
       ))}
     </Box>
   );
 }
 
 /** Request access rows for attachments of a query that the viewer may not open. */
-export function RedactedAttachments({ sources }: { sources: RequestAccessInfo[] }) {
+export function RedactedAttachments({ sources, conversationId }: { sources: RequestAccessInfo[]; conversationId?: string }) {
   return (
     <Box data-testid="redacted-attachments" mb="2">
       {sources.map((source) => (
-        <RedactedSourceRow key={source.recordId} source={source} />
+        <RedactedSourceRow key={source.recordId} source={source} conversationId={conversationId} />
       ))}
     </Box>
   );

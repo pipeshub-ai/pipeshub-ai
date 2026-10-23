@@ -95,7 +95,7 @@ stream starts; anyone with no access gets 404.
 
 **Requesting access** (`POST /api/v1/access-requests`, `schema/access.request.schema.ts`,
 `controller/access_request.controller.ts`). Org-scoped, 20 per user per hour. Kind
-and owner come from the graph, never the client. A record that does not exist, is not visible or has nobody who could approve it is answered exactly like an accepted request (`201`, same shape; nothing stored, nobody notified), so the route cannot be used to test whether a record id exists.
+and owner come from the graph, never the client. The request names the chat or search (`conversationId` or `searchId`) the source was redacted in, and only a record shown as redacted there can be asked for. Any other id is answered exactly like a first request for a native record (`201`, `pending`; stored as an internal row so repeats and the hourly limit behave the same, nobody notified), so the route cannot be used to test whether a record id exists. A repeat of a real request answers `201` with the open request again.
 
 - Record of a collection (knowledge base): access exists only at the collection (no
   per-record owner, and a direct record grant inside a collection the user cannot enter

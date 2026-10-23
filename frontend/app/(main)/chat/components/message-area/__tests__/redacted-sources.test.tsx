@@ -49,15 +49,15 @@ describe('shared chat redaction UI', () => {
 
   it('shows the partial marker and requests access for a native source', async () => {
     api.requestAccess.mockResolvedValue({});
-    renderInTheme(<RedactedSourcesNotice redaction={{ ...partial, sources: [redactedCitation('r1', 'native').requestAccess] }} />);
+    renderInTheme(<RedactedSourcesNotice conversationId="conv-1" redaction={{ ...partial, sources: [redactedCitation('r1', 'native').requestAccess] }} />);
     expect(screen.getByText(/partially based on sources you can't access/i)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /request access/i }));
-    await waitFor(() => expect(api.requestAccess).toHaveBeenCalledWith('r1'));
+    await waitFor(() => expect(api.requestAccess).toHaveBeenCalledWith('r1', { conversationId: 'conv-1' }));
     await waitFor(() => expect(screen.getByRole('button', { name: /access requested/i }).hasAttribute('disabled')).toBe(true));
   });
 
   it('uses the all-hidden wording when the whole answer is redacted', () => {
-    renderInTheme(<RedactedSourcesNotice redaction={{ redacted: true, partial: false, sources: [] }} />);
+    renderInTheme(<RedactedSourcesNotice conversationId="conv-1" redaction={{ redacted: true, partial: false, sources: [] }} />);
     expect(screen.getByText(/^This answer is based on sources you can't access/i)).toBeTruthy();
   });
 
@@ -65,10 +65,10 @@ describe('shared chat redaction UI', () => {
     api.requestAccess.mockResolvedValue({ sourceUrl: 'https://wiki.example/p/1' });
     const item = redactedCitation('r2', 'connector');
     expect(JSON.stringify(item)).not.toContain('sourceUrl');
-    renderInTheme(<RedactedSourcesNotice redaction={{ ...partial, sources: [item.requestAccess] }} />);
+    renderInTheme(<RedactedSourcesNotice conversationId="conv-1" redaction={{ ...partial, sources: [item.requestAccess] }} />);
     expect(screen.queryByRole('link', { name: /open in source/i })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /request access/i }));
-    await waitFor(() => expect(api.requestAccess).toHaveBeenCalledWith('r2'));
+    await waitFor(() => expect(api.requestAccess).toHaveBeenCalledWith('r2', { conversationId: 'conv-1' }));
     const link = await screen.findByRole('link', { name: /open in source/i });
     expect(link.getAttribute('href')).toBe('https://wiki.example/p/1');
     expect(link.getAttribute('rel')).toContain('noopener');
@@ -76,7 +76,7 @@ describe('shared chat redaction UI', () => {
 
   it('shows an error when the request fails', async () => {
     api.requestAccess.mockRejectedValue(new Error('x'));
-    renderInTheme(<RedactedSourcesNotice redaction={{ ...partial, sources: [redactedCitation('r1', 'native').requestAccess] }} />);
+    renderInTheme(<RedactedSourcesNotice conversationId="conv-1" redaction={{ ...partial, sources: [redactedCitation('r1', 'native').requestAccess] }} />);
     fireEvent.click(screen.getByRole('button', { name: /request access/i }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/couldn't send/i));
   });
@@ -90,14 +90,14 @@ describe('shared chat redaction UI', () => {
 
   it('gives a redacted attachment the same Request access row', async () => {
     api.requestAccess.mockResolvedValue({});
-    renderInTheme(<RedactedAttachments sources={[redactedCitation('att1', 'native').requestAccess]} />);
+    renderInTheme(<RedactedAttachments conversationId="conv-1" sources={[redactedCitation('att1', 'native').requestAccess]} />);
     fireEvent.click(screen.getByRole('button', { name: /request access/i }));
-    await waitFor(() => expect(api.requestAccess).toHaveBeenCalledWith('att1'));
+    await waitFor(() => expect(api.requestAccess).toHaveBeenCalledWith('att1', { conversationId: 'conv-1' }));
   });
 
   it('words a collection record as a request for the whole collection', () => {
     renderInTheme(
-      <RedactedAttachments sources={[{ recordId: 'kb1', kind: 'native', collection: true, endpoint: '/x' }]} />,
+      <RedactedAttachments conversationId="conv-1" sources={[{ recordId: 'kb1', kind: 'native', collection: true, endpoint: '/x' }]} />,
     );
     expect(screen.getByText('Request access to the collection that contains this source')).toBeTruthy();
   });
