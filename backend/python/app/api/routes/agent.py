@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
@@ -66,6 +66,7 @@ from app.modules.agents.qna.router import (
 from app.modules.agents.qna.router import (
     build_prior_routing_messages as _build_prior_routing_messages,  # noqa: F401
 )
+from app.modules.retrieval.filter_schema import validate_request_filters
 from app.modules.retrieval.selection_scope import (
     CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
     SelectionNotReadyError,
@@ -222,6 +223,7 @@ class ChatQuery(BaseModel):
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
     _validate_run_id = field_validator("runId")(validate_run_id)
+    _validate_filters = field_validator("filters")(validate_request_filters)
 
 
 # ============================================================================
@@ -3891,7 +3893,14 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         timer.mark("services")
         body = _parse_request_body(await request.body())
-        chat_query = ChatQuery(**body)
+        try:
+            chat_query = ChatQuery(**body)
+        except ValidationError as exc:
+            # Say what is wrong (e.g. the unknown filter key and the allowed ones).
+            raise HTTPException(
+                status_code=400,
+                detail="; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors()),
+            ) from exc
         protocol = _resolve_protocol(chat_query, request)
         logger.debug("chat_stream: resolved protocol=%s (body.protocol=%r, query=%r)",
                      protocol, chat_query.protocol, request.query_params.get("protocol"))

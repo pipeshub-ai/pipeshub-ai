@@ -515,7 +515,7 @@ class TestSearchEndpoint:
             return_value={"searchResults": [], "status_code": 200}
         )
         mock_graph = MagicMock()
-        body = SearchQuery(query="q", limit=7, filters={"type": ["file"]})
+        body = SearchQuery(query="q", limit=7, filters={"records": ["file"]})
 
         with patch(
             "app.api.routes.search.setup_query_transformation"
@@ -537,7 +537,7 @@ class TestSearchEndpoint:
         assert call_kwargs["user_id"] == "u42"
         assert call_kwargs["limit"] == 7
         assert call_kwargs["knowledge_search"] is True
-        assert call_kwargs["filter_groups"] == {"type": ["file"]}
+        assert call_kwargs["filter_groups"] == {"records": ["file"]}
         assert call_kwargs["time_range"] is None
 
     async def _search_with(self, body: SearchQuery) -> MagicMock:

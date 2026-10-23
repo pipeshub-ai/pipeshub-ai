@@ -216,27 +216,47 @@ const entityFiltersSchema = z
 /** Most ids one request may select, across every filter key. */
 const MAX_FILTER_IDS = 200;
 
+const filtersShape = {
+  apps: z.array(appOrKbIdSchema).optional(),
+  kb: z.array(appOrKbIdSchema).optional(),
+  entityFilters: entityFiltersSchema.optional(),
+  // Reserved for the typed filter tree that will replace entityFilters.
+  where: z
+    .unknown()
+    .refine((value) => value === undefined, {
+      message: 'filters.where is not supported yet',
+    })
+    .optional(),
+  recordGroups: z.array(appOrKbIdSchema).optional(),
+  records: z.array(appOrKbIdSchema).optional(),
+  recordsExact: z.array(appOrKbIdSchema).optional(),
+};
+
+/** Keys a client may send in `filters` (`where` is reserved and always refused). */
+export const REQUEST_FILTER_KEYS = Object.keys(filtersShape).filter(
+  (key) => key !== 'where',
+);
+
 /**
  * Filter object reused across search/message/regenerate flows: whole apps
  * (`apps`, with `kb` as its older name for collections) and selections below
  * app level — record groups (with the groups nested in them), folders or
- * records (with everything under them) and single records — plus `entityFilters`.
+ * records (with everything under them) and single records — plus `entityFilters`. Classification
+ * names (departments, topics...) are internal-only for now. A key outside this list is refused with the allowed list.
  */
 const filtersSchema = z
-  .object({
-    apps: z.array(appOrKbIdSchema).optional(),
-    kb: z.array(appOrKbIdSchema).optional(),
-    entityFilters: entityFiltersSchema.optional(),
-    // Reserved for the typed filter tree that will replace entityFilters.
-    where: z
-      .unknown()
-      .refine((value) => value === undefined, {
-        message: 'filters.where is not supported yet',
-      })
-      .optional(),
-    recordGroups: z.array(appOrKbIdSchema).optional(),
-    records: z.array(appOrKbIdSchema).optional(),
-    recordsExact: z.array(appOrKbIdSchema).optional(),
+  .object(filtersShape)
+  .passthrough()
+  .superRefine((filters, ctx) => {
+    const unknown = Object.keys(filters).filter(
+      (key) => !Object.prototype.hasOwnProperty.call(filtersShape, key),
+    );
+    if (unknown.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Unknown filter key(s): ${unknown.join(', ')}. Allowed keys: ${REQUEST_FILTER_KEYS.join(', ')}`,
+      });
+    }
   })
   .refine(
     (filters) =>

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.agents.actions.knowledge_graph.ops.outside_dates import (
     OUTSIDE_DATES_SEARCH_LIMIT,
@@ -33,6 +33,7 @@ from app.api.middlewares.auth import (
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.edition_config import resolve_llm_for_search
+from app.modules.retrieval.filter_schema import validate_request_filters
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.retrieval.selection_scope import within_connection
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -87,6 +88,8 @@ class SearchQuery(BaseModel):
     # on that date, and a plain ranked search otherwise. "off" is always the
     # plain ranked search.
     timeline: Literal["created", "modified", "off"] | None = None
+
+    _validate_filters = field_validator("filters")(validate_request_filters)
 
 
 # The parser names the assistant tool's parameters; this route receives the
