@@ -175,15 +175,15 @@ class TestParseFile:
             parser.parse_file("/path/b.pptx")
             assert mock_converter.convert.call_count == 2
 
-    def test_different_status_values_fail(self):
+    @pytest.mark.parametrize("status_val", ["partial", "error", "timeout", "unknown"])
+    def test_different_status_values_fail(self, status_val):
         """Any status besides 'success' should raise ValueError."""
-        for status_val in ["partial", "error", "timeout", "unknown"]:
-            mock_converter = MagicMock()
-            mock_result = MagicMock()
-            mock_result.status.value = status_val
-            mock_converter.convert.return_value = mock_result
+        mock_converter = MagicMock()
+        mock_result = MagicMock()
+        mock_result.status.value = status_val
+        mock_converter.convert.return_value = mock_result
 
-            with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
-                parser = PPTXParser()
-                with pytest.raises(DocumentProcessingError):
-                    parser.parse_file("/path/to/file.pptx")
+        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
+            parser = PPTXParser()
+            with pytest.raises(DocumentProcessingError):
+                parser.parse_file("/path/to/file.pptx")
