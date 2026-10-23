@@ -139,10 +139,23 @@ _UNSAFE_EVENT_FIELD = re.compile(
     rf"(?!(?:number|base\.sha|conclusion)(?![\w.\[])|pull_requests{_ANY_INDEX})",
     re.IGNORECASE,
 )
+# The pull request is not the only part of the payload the author writes. On
+# `synchronize` the head and previous head SHAs arrive as `after` and `before`;
+# on `edited` the author's previous title and body arrive under `changes`; and
+# `workflow.name` is the triggering workflow's own name. Each is a string a
+# checkout can be pointed at, and none sits under `pull_request`.
+_UNSAFE_TOP_LEVEL_EVENT_FIELD = re.compile(
+    r"github\.event\.(?:after|before|changes\.|workflow\.)",
+    re.IGNORECASE,
+)
 
 
 def _reads_an_unsafe_event_field(text: str) -> bool:
-    return any(_UNSAFE_EVENT_FIELD.search(_dotted(e)) for e in _expressions(text))
+    return any(
+        _UNSAFE_EVENT_FIELD.search(_dotted(e))
+        or _UNSAFE_TOP_LEVEL_EVENT_FIELD.search(_dotted(e))
+        for e in _expressions(text)
+    )
 
 
 # A shell or github-script body can fetch PR code from the event file or a ref it builds,
@@ -154,6 +167,61 @@ REVIEWED_SCRIPTS = {
     "5ecb769ad73c21cabf679e16e9789e26703180160bf1f99c256550d611d66a27": "post-release-probe.yml: Open or update an alert issue",
     "8ea3df04f08a086a5bd673a77689303e2ebeca9cec5674345406b568089dcdd8": "post-release-probe.yml: Close the alert once healthy again",
 }
+
+
+# A `shell:` is the program the reviewed body is handed to, so overriding it runs
+# code the hash never covers — `bash -c '<anything>; bash {0}'` leaves every
+# reviewed body in place. Only GitHub's own shells keep the hash meaningful.
+_BUILT_IN_SHELLS = frozenset(
+    {"bash", "sh", "pwsh", "powershell", "python", "cmd"}
+)
+
+
+def _shells(value: Any) -> list[str]:
+    """Every `shell:` value, including `defaults.run.shell`."""
+    if isinstance(value, dict):
+        found = [v for k, v in value.items() if k == "shell" and isinstance(v, str)]
+        return found + [t for v in value.values() for t in _shells(v)]
+    if isinstance(value, list):
+        return [t for v in value for t in _shells(v)]
+    return []
+
+
+def _overridden_shells(workflow: Any) -> list[str]:
+    """Any `shell:` that is not one of GitHub's built-ins."""
+    return [t for t in _shells(workflow) if t.strip().lower() not in _BUILT_IN_SHELLS]
+
+
+def _uses(value: Any) -> list[str]:
+    """Every `uses:` value: step actions and reusable-workflow calls alike."""
+    if isinstance(value, dict):
+        found = [v for k, v in value.items() if k == "uses" and isinstance(v, str)]
+        return found + [u for v in value.values() for u in _uses(v)]
+    if isinstance(value, list):
+        return [u for v in value for u in _uses(v)]
+    return []
+
+
+# What a `uses:` may name in a privileged workflow. The body of an action is not
+# hashed here, so swapping the action runs unreviewed code while every reviewed
+# `script` stays byte for byte the same.
+# Pinned by commit SHA, never by tag: a tag can be moved onto other code without
+# this file changing. Add one with the same sign-off as REVIEWED_SCRIPTS.
+REVIEWED_USES = {
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b",
+}
+
+
+def _unreviewed_uses(workflow: Any) -> list[str]:
+    """Every `uses:` that is not an allowlisted pin. A trailing ` # v4` comment is
+    not part of the value. A local reusable workflow (`./.github/workflows/x.yml`)
+    never matches on purpose: its own steps are not scanned here, and
+    `secrets: inherit` would hand it the caller's secrets."""
+    return [
+        u for u in _uses(workflow)
+        if u.split("#", 1)[0].strip() not in REVIEWED_USES
+    ]
 
 
 def _scripts(value: Any) -> list[str]:
@@ -195,6 +263,8 @@ def _references_pr_head(text: str) -> bool:
     except yaml.YAMLError:
         return True
     strings = _strings(workflow) + _conditions(workflow)
+    if _overridden_shells(workflow) or _unreviewed_uses(workflow):
+        return True
     return bool(_unreviewed_scripts(workflow)) or any(
         _PR_HEAD_REF.search(_dotted(s))
         or _computes_an_index(s)
