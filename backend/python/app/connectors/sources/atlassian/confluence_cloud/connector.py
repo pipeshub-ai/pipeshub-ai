@@ -108,10 +108,13 @@ from app.connectors.sources.atlassian.core.quota import (
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.blocks import (
+    Block,
     BlockComment,
     BlockGroup,
     BlockGroupChildren,
     BlocksContainer,
+    BlockSubType,
+    BlockType,
     ChildRecord,
     ChildType,
     DataFormat,
@@ -6385,6 +6388,26 @@ class ConfluenceConnector(BaseConnector):
                     if not comment_blocks and not comment_block_groups:
                         continue
 
+                    # Who wrote it, and when (and what it is on, for an inline comment): without it
+                    # the model reads a comment as part of the page.
+                    header_index = len(blocks)
+                    author_id = (comment.get("version") or {}).get("authorId")
+                    blocks.append(Block(
+                        id=str(uuid.uuid4()),
+                        index=header_index,
+                        parent_index=None,
+                        type=BlockType.TEXT,
+                        sub_type=BlockSubType.PARAGRAPH,
+                        format=DataFormat.MARKDOWN,
+                        data=ConfluenceBlockParser.comment_header_text(
+                            user_display_names.get(author_id, "Unknown"),
+                            parser.comment_created_at(comment),
+                            (comment.get("properties") or {}).get("inlineOriginalSelection")
+                            if thread_comment_type == "inline" else None,
+                        ),
+                        weburl=weburl,
+                    ))
+
                     # Add comment blocks to main container (adjusting indices)
                     block_start_index = len(blocks)
                     block_group_index_offset = len(block_groups)
@@ -6467,13 +6490,13 @@ class ConfluenceConnector(BaseConnector):
                         parent_group_index=thread_group_index,
                         source_id=comment_id,
                         children_records=comment_children if comment_children else None,
-                        block_indices=(block_start_index, block_end_index),
+                        block_indices=(header_index, block_end_index),
                     )
                     block_groups.append(comment_group)
 
                     # Set parent_index on top-level comment blocks (those without a parent yet)
                     # Blocks belonging to nested BlockGroups already have their parent set
-                    for i in range(block_start_index, block_end_index + 1):
+                    for i in range(header_index, block_end_index + 1):
                         if blocks[i].parent_index is None:
                             blocks[i].parent_index = comment_group_index
 
