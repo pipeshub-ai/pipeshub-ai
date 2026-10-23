@@ -6,7 +6,14 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.agent_loop_lib.core.messages import AssistantMessage, Message, ToolMessage, UserMessage
+from app.agent_loop_lib.context.protection import current_request_text
+from app.agent_loop_lib.core.messages import (
+    AssistantMessage,
+    Message,
+    ToolMessage,
+    UserMessage,
+)
+from app.agent_loop_lib.core.types import Goal
 
 """Deterministic parent -> child data handoff.
 
@@ -35,7 +42,9 @@ __all__ = [
     "collect_parent_tool_results",
     "extract_dependency_results",
     "format_parent_results_digest",
+    "parent_request",
     "parent_results_as_json",
+    "with_user_request",
 ]
 
 logger = logging.getLogger(__name__)
@@ -47,6 +56,32 @@ DEFAULT_EXCLUDED_TOOL_NAMES: frozenset[str] = frozenset({
 _DEFAULT_PER_RESULT_CHAR_CAP = 8_000
 _DEFAULT_TOTAL_CHAR_CAP = 48_000
 _DEFAULT_JSON_MAX_BYTES = 2 * 1024 * 1024
+
+
+_USER_REQUEST_HEADER = "## The user's request (verbatim, for context: work only on your delegated task)"
+_DELEGATED_TASK_HEADER = "## Your delegated task"
+
+
+def with_user_request(goal: Goal, request: str) -> Goal:
+    """``goal`` with the person's request, verbatim, ahead of the delegated
+    task. The parent model's goal is a paraphrase; the child needs the
+    person's own words to resolve what the task refers to and to notice a
+    task that drifted from them."""
+    if request in goal.description:
+        return goal
+    return goal.model_copy(update={
+        "description": (
+            f"{_USER_REQUEST_HEADER}\n\n{request}\n\n{_DELEGATED_TASK_HEADER}\n\n{goal.description}"
+        ),
+    })
+
+
+async def parent_request(agent: Any) -> str | None:
+    """The spawning agent's current request: its last human message."""
+    context = getattr(agent, "context", None)
+    if context is None:
+        return None
+    return current_request_text(await context.messages())
 
 
 @dataclass(frozen=True)

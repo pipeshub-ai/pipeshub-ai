@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 
+from app.agent_loop_lib.context.compaction_memo import reapply_replacements
 from app.agent_loop_lib.core.messages import ToolMessage
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
@@ -60,25 +61,24 @@ def _compact_reference(msg: ToolMessage) -> str:
     return "\n".join(lines)
 
 
-def _swap_compact(messages: list, i: int, running_total: int) -> int:
-    """Replace ``messages[i]`` with its compact reference and return the
-    updated running token total (O(1) — no full rescan)."""
-    old_tokens = count_message_tokens(messages[i])
-    messages[i] = messages[i].model_copy(
-        update={"content": _compact_reference(messages[i])}
-    )
-    new_tokens = count_message_tokens(messages[i])
-    return running_total - old_tokens + new_tokens
+LAYER = "artifact_compaction"
+
+
+def _compact(msg: ToolMessage) -> ToolMessage:
+    return msg.model_copy(update={"content": _compact_reference(msg), "compacted_by": LAYER})
 
 
 def shape_artifact_compaction(
-    pin_first_n: int = 1,
     trigger_ratio: float = 0.5,
     keep_last_n_turns: int = 1,
 ):
     """PRE_MODEL middleware that compacts artifact-annotated tool messages.
 
-    Runs as Layer 2, right after ``budget_reduction``.
+    Runs as Layer 2, right after ``budget_reduction``. A result compacted on
+    an earlier call of the run is compacted again on every later call
+    (``context/compaction_memo.py``), so the sent prefix does not change as
+    each result ages past the window; new results are compacted only while
+    the context is still over the trigger.
 
     Parameters
     ----------
@@ -94,34 +94,44 @@ def shape_artifact_compaction(
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
-        messages = list(ctx.messages)
         budget = ctx.budget.effective_max_tokens
-        current_turn = ctx.turn_index
+        trigger = ctx.budget.trigger_tokens(trigger_ratio)
+        initial_total = count_tokens(ctx.messages)
+        # Recent artifacts are compacted only past the budget, which is never
+        # below the trigger, so nothing here acts at or under the trigger.
+        if initial_total <= trigger:
+            await next_fn()
+            return
+
+        memo = ctx.compaction_memo
+        messages, reused = reapply_replacements(memo, LAYER, ctx.messages)
+        total = count_tokens(messages)
+        prev_cutoff = ctx.turn_index - keep_last_n_turns
 
         prev_indices: list[int] = []
         curr_with_schema: list[int] = []
         curr_without_schema: list[int] = []
-
-        prev_cutoff = current_turn - keep_last_n_turns
-
         for i, msg in enumerate(messages):
-            if not isinstance(msg, ToolMessage) or msg.artifact_meta is None:
+            if not isinstance(msg, ToolMessage) or msg.artifact_meta is None or msg.compacted_by == LAYER:
                 continue
             if msg.artifact_meta.turn_index < prev_cutoff:
                 prev_indices.append(i)
+            elif msg.artifact_meta.result_schema is not None:
+                curr_with_schema.append(i)
             else:
-                if msg.artifact_meta.result_schema is not None:
-                    curr_with_schema.append(i)
-                else:
-                    curr_without_schema.append(i)
+                curr_without_schema.append(i)
 
-        total = count_tokens(messages)
-        initial_total = total
+        def swap(i: int, running_total: int) -> int:
+            original = messages[i]
+            messages[i] = _compact(original)
+            if memo is not None:
+                memo.remember(LAYER, [original], [messages[i]])
+            return running_total - count_message_tokens(original) + count_message_tokens(messages[i])
+
         compacted_count = 0
-
-        if total > ctx.budget.trigger_tokens(trigger_ratio):
+        if total > trigger:
             for i in prev_indices:
-                total = _swap_compact(messages, i, total)
+                total = swap(i, total)
                 compacted_count += 1
 
         overflow = total > budget
@@ -130,18 +140,21 @@ def shape_artifact_compaction(
                 break
             tier.sort(key=lambda i: count_message_tokens(messages[i]), reverse=True)
             for i in tier:
-                total = _swap_compact(messages, i, total)
+                total = swap(i, total)
                 compacted_count += 1
                 if total <= budget:
                     break
 
-        if compacted_count:
+        if compacted_count or reused:
             logger.info(
-                "artifact_compaction: compacted %d %s, %d→%d tokens (turn=%d, budget=%d)",
+                "artifact_compaction: compacted %d %s (%d again from earlier calls), %d→%d tokens "
+                "(run=%s, turn=%d, budget=%d)",
                 compacted_count,
                 "artifact(s) total (incl. recent-turn overflow)" if overflow else "prev-turn artifact(s)",
-                initial_total, total, current_turn, budget,
+                reused, initial_total, total, ctx.run_id, ctx.turn_index, budget,
             )
+        if memo is not None:
+            memo.log_stats(LAYER, ctx.run_id, ctx.turn_index)
         ctx.messages = messages
         await next_fn()
 

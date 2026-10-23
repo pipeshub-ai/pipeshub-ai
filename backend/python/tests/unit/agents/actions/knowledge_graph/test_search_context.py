@@ -523,16 +523,6 @@ class TestImages:
         assert state["image_budget"].used == 1
 
     @pytest.mark.asyncio
-    async def test_without_native_multipart_support_the_image_is_also_stashed(self) -> None:
-        records, units = _image_units()
-        state = _state(is_multimodal_llm=True, supports_multipart_tool_result=False)
-
-        result = await _search(state, records, units)
-
-        assert isinstance(result, list)
-        assert len(state["pending_tool_images"]) == 1
-
-    @pytest.mark.asyncio
     async def test_a_text_model_gets_text_only(self) -> None:
         records, units = _image_units()
         state = _state(is_multimodal_llm=False)
@@ -589,7 +579,6 @@ class TestSearchLeavesImageRoomForAFetch:
         budget = ImageBudget()
         return _state(
             is_multimodal_llm=True,
-            supports_multipart_tool_result=True,
             image_budget=budget,
             image_admission=ImageAdmission(resolve_image_policy(provider=provider, is_multimodal=True), budget=budget),
         )

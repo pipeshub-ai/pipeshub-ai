@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.agent_loop_lib.context.pipeline import ContextProfile
+from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import Summarizer
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     DEFAULT_MAX_RESULT_CHARS,
 )
@@ -26,9 +28,12 @@ class RetryHookConfig(BaseModel):
 class ContextEngineConfig(BaseModel):
     """Control-plane-level knobs for the context-shaper pipeline.
 
-    PRE_MODEL shapers run least lossy first, and every compaction layer
-    keeps context/protection.py's protected messages (the current request,
-    pinned messages) verbatim:
+    Mapped onto a ``ContextProfile`` (``context_profile_from_config``) and
+    built by ``context/pipeline.py::build_context_pipeline``, the same
+    definition the chat factory uses. PRE_MODEL shapers run least lossy
+    first, and every compaction layer keeps context/protection.py's
+    protected messages (the current request, pinned messages, protected
+    tool groups) verbatim:
         L1  budget_reduction
         L2  artifact_compaction  (turn-aware, replaces offload)
         L3  tool_result_clearing
@@ -58,7 +63,6 @@ class ContextEngineConfig(BaseModel):
     clearing_trigger_ratio: float = 0.5
 
     enable_loop_compaction: bool = True
-    loop_compact_every_n_turns: int = 5
     loop_compact_keep_recent: int = 6
     loop_compact_trigger_ratio: float = 0.6
 
@@ -79,6 +83,43 @@ class ContextEngineConfig(BaseModel):
 
     enable_synthesis_guard: bool = True
     synthesis_guard_keep_last_n: int = 2
+    #: Tool groups no layer summarises or shortens (``context/protection.py``).
+    protected_tools: frozenset[str] = frozenset()
+
+
+_LAYER_TOGGLES = {
+    "budget_reduction": "enable_budget_reduction",
+    "artifact_compaction": "enable_artifact_compaction",
+    "tool_result_clearing": "enable_tool_result_clearing",
+    "loop_compaction": "enable_loop_compaction",
+    "deterministic_compact": "enable_deterministic_compact",
+    "auto_compact": "enable_auto_compact",
+    "sliding_window": "enable_sliding_window",
+    "synthesis_guard": "enable_synthesis_guard",
+}
+
+
+def context_profile_from_config(ce: ContextEngineConfig, *, summarizer: Summarizer | None) -> ContextProfile:
+    """The ``ContextProfile`` these knobs describe."""
+    return ContextProfile(
+        protected_tools=ce.protected_tools,
+        summarizer=summarizer,
+        max_result_chars=ce.max_result_chars,
+        disabled=frozenset(layer for layer, toggle in _LAYER_TOGGLES.items() if not getattr(ce, toggle)),
+        artifact_trigger_ratio=ce.artifact_compaction_trigger_ratio,
+        clearing_keep_last_n_turns=ce.clearing_keep_last_n_turns,
+        clearing_trigger_ratio=ce.clearing_trigger_ratio,
+        loop_compact_keep_recent=ce.loop_compact_keep_recent,
+        loop_compact_trigger_ratio=ce.loop_compact_trigger_ratio,
+        offload_threshold_tokens=ce.offload_threshold_tokens if ce.enable_offload else None,
+        offload_preview_lines=ce.offload_preview_lines,
+        deterministic_compact_trigger_ratio=ce.deterministic_compact_trigger_ratio,
+        deterministic_compact_keep_last_n=ce.deterministic_compact_keep_last_n,
+        deterministic_compact_preview_chars=ce.deterministic_compact_preview_chars,
+        auto_compact_trigger_ratio=ce.auto_compact_trigger_ratio,
+        auto_compact_tail_ratios=(ce.auto_compact_max_tail_ratio,),
+        synthesis_guard_keep_last_n=ce.synthesis_guard_keep_last_n,
+    )
 
 
 class OSSandboxConfig(BaseModel):

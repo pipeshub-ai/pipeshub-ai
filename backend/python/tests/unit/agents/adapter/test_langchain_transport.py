@@ -1486,13 +1486,13 @@ class TestToolImageRelocationRespectsTheCap:
         from langchain_core.messages import HumanMessage
         from langchain_core.messages import ToolMessage as LCToolMessage
 
-        from app.agents.agent_loop.converters import _RELOCATED_IMAGES_PREFIX
+        from app.agent_loop_lib.transport.tool_images import RELOCATED_IMAGES_NOTE
 
         retry = self._retry(self._transport(2), RuntimeError(self.CONFLICT), self._messages())
 
         assert isinstance(retry[-1], HumanMessage)
         assert retry[-1].content[0]["type"] == "text"
-        assert _RELOCATED_IMAGES_PREFIX in retry[-1].content[0]["text"]
+        assert RELOCATED_IMAGES_NOTE in retry[-1].content[0]["text"]
         assert all(isinstance(m.content, str) for m in retry if isinstance(m, LCToolMessage))
 
     def test_no_retry_when_the_cap_already_removed_every_tool_image(self) -> None:

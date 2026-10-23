@@ -64,6 +64,7 @@ from app.agent_loop_lib.transport.provider_conflicts import (
     is_prompt_cache_param_conflict,
     is_reasoning_mandatory_conflict,
 )
+from app.agent_loop_lib.transport.tool_images import relocated_tool_images
 from app.utils.llm_api_mode_store import LLMApiMode, get_llm_api_mode_store
 
 # Uses `openai` SDK internally.
@@ -328,10 +329,7 @@ class OpenAITransport(LLMTransport):
                 # message outright ("Image URLs are only allowed for messages
                 # with role 'user', but this message with role 'tool' contains
                 # an image URL"), so images only survive here on the Responses
-                # API. The agent factory registers
-                # `shape_retrieved_image_injection` for exactly this case (see
-                # `_supports_multipart_tool_result`), which re-delivers the
-                # dropped images in a user message.
+                # API; `_format_messages` sends them in a user message instead.
                 keep_images = self._wants_responses()
                 blocks = [
                     self._format_tool_result_part(p)
@@ -412,6 +410,11 @@ class OpenAITransport(LLMTransport):
         if system:
             formatted.append({"role": "system", "content": system})
         formatted.extend(self._format_message(m) for m in messages)
+        # The images `_format_message` left out of tool results, sent the way
+        # the LangChain arm sends them, so this transport loses none.
+        relocated = relocated_tool_images(messages)
+        if relocated is not None:
+            formatted.append(self._format_message(relocated))
         return formatted
 
     # ------------------------------------------------------------------

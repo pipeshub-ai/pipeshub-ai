@@ -28,9 +28,14 @@ from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
-from app.agent_loop_lib.tools.builtin.sandbox.input_staging import PARENT_RESULTS_INPUT_PATH
+from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
+    PARENT_RESULTS_INPUT_PATH,
+)
 from app.agents.agent_loop.factory import PipesHubAgentFactory
-from app.agents.agent_loop.loops.plan_execute import PLANNING_TOOL_NAMES, PlanCritiqueExecuteLoop
+from app.agents.agent_loop.loops.plan_execute import (
+    PLANNING_TOOL_NAMES,
+    PlanCritiqueExecuteLoop,
+)
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
 
 
@@ -506,66 +511,20 @@ class TestSandboxUnavailableFailsClosed:
         assert "SANDBOX_MODE" in skipped[0].getMessage()
 
 
-class TestRetrievedImageInjectionHookWiring:
-    """`shape_retrieved_image_injection` (the Ollama PRE_MODEL fallback for
-    images stripped out of multipart `ToolMessage` content) must be
-    registered ONLY for chat models that don't support multipart tool
-    results — registering it unconditionally would double-deliver images
-    to providers (OpenAI/Anthropic) that already receive them natively."""
+class TestRetrievedImagesHaveOneDeliveryPath:
+    """Images a tool returns reach a provider that rejects them in a tool
+    result through the transport alone (CE-17): no model gets a PRE_MODEL
+    fallback that would deliver them a second time, and tools get no flag
+    telling them to stash a copy for one."""
 
-    def test_registered_when_model_lacks_multipart_tool_result_support(self) -> None:
-        context = make_context(llm=FakeChatModel())
-        hooks = PipesHubAgentFactory._build_hooks(context, supports_multipart_tool_result=False)
-        assert any(
-            "shape_retrieved_image_injection" in name for name in _pre_model_qualnames(hooks)
-        )
-        assert context.tool_state["supports_multipart_tool_result"] is False
-
-    def test_not_registered_when_model_supports_multipart_tool_result(self) -> None:
-        context = make_context(llm=FakeChatModel())
-        hooks = PipesHubAgentFactory._build_hooks(context, supports_multipart_tool_result=True)
-        assert not any(
-            "shape_retrieved_image_injection" in name for name in _pre_model_qualnames(hooks)
-        )
-        # retrieval.py/citations.py read this flag to skip stashing into
-        # `pending_tool_images` when no fallback hook exists to consume it.
-        assert context.tool_state["supports_multipart_tool_result"] is True
-
-    def test_defaults_to_supported_when_flag_omitted(self) -> None:
-        """Backward-compat default: callers that don't pass the new kwarg
-        get today's behavior (no fallback hook, i.e. every existing
-        `_build_hooks` call site outside `create()` is unaffected)."""
-        context = make_context(llm=FakeChatModel())
-        hooks = PipesHubAgentFactory._build_hooks(context)
-        assert not any(
-            "shape_retrieved_image_injection" in name for name in _pre_model_qualnames(hooks)
-        )
-
-    async def test_create_wires_fallback_hook_end_to_end_for_ollama_shaped_model(self) -> None:
+    async def test_no_fallback_hook_or_stash_flag_for_an_ollama_shaped_model(self) -> None:
         class ChatOllama(FakeChatModel):
             pass
 
         context = make_context(llm=ChatOllama())
-        factory = PipesHubAgentFactory()
-
-        _agent, runtime, _goal, _clarifying = await factory.create(
+        _agent, runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
             context, context.llm, "quick", query="hello",
         )
 
-        assert any(
-            "shape_retrieved_image_injection" in name
-            for name in _pre_model_qualnames(runtime.hooks)
-        )
-
-    async def test_create_skips_fallback_hook_for_non_ollama_model(self) -> None:
-        context = make_context(llm=FakeChatModel())
-        factory = PipesHubAgentFactory()
-
-        _agent, runtime, _goal, _clarifying = await factory.create(
-            context, context.llm, "quick", query="hello",
-        )
-
-        assert not any(
-            "shape_retrieved_image_injection" in name
-            for name in _pre_model_qualnames(runtime.hooks)
-        )
+        assert not any("retrieved_image" in name for name in _pre_model_qualnames(runtime.hooks))
+        assert "supports_multipart_tool_result" not in context.tool_state

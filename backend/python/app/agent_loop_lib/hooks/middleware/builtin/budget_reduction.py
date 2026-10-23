@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from app.agent_loop_lib.core.tokens import count_tokens
+from app.agent_loop_lib.core.tokens import CHARS_PER_TOKEN, count_tokens
 from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
@@ -12,8 +12,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+LAYER = "budget_reduction"
 _MARKER = "\n[…truncated"
-_OWN_SUFFIX = "by budget_reduction]"
 
 # A tool that can size its own output under this cap should, so what it drops
 # is its least useful part rather than a character range.
@@ -21,7 +21,7 @@ DEFAULT_MAX_RESULT_CHARS = 64_000
 
 
 def _marker(dropped: int) -> str:
-    return f"{_MARKER} {dropped} chars {_OWN_SUFFIX}\n"
+    return f"{_MARKER} {dropped} chars by budget_reduction]\n"
 
 
 def _cap_parts(msg, max_result_chars: int, truncate):
@@ -34,9 +34,7 @@ def _cap_parts(msg, max_result_chars: int, truncate):
         len(p.text) for p in msg.content
         if getattr(p, "type", None) == "text" and isinstance(getattr(p, "text", None), str)
     )
-    if total <= max_result_chars or _OWN_SUFFIX in str(
-        next((p.text for p in msg.content if getattr(p, "type", None) == "text"), "")
-    ):
+    if total <= max_result_chars:
         return msg
 
     capped = []
@@ -54,7 +52,7 @@ def _cap_parts(msg, max_result_chars: int, truncate):
         # is what let a multipart result reach twice the cap.
         capped.append(part.model_copy(update={"text": truncate(part.text, remaining)}))
         remaining = 0
-    return msg.model_copy(update={"content": capped})
+    return msg.model_copy(update={"content": capped, "compacted_by": LAYER})
 
 
 def shape_budget_reduction(
@@ -66,6 +64,7 @@ def shape_budget_reduction(
 
     `tool_caps` gives a named tool its own cap: a tool that sizes its output
     for the model's window (fetch_record) is capped at that size instead.
+    Neither cap lets one result exceed the whole message budget.
 
     Registered on `HookRegistry.on(HookEvent.PRE_MODEL)` — a pure reducer,
     runs unconditionally regardless of total context size, because a single
@@ -110,12 +109,15 @@ def shape_budget_reduction(
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
         caps = _caps_by_call_id(ctx.messages) if tool_caps else {}
+        # Later layers never shorten a protected result (context/protection.py),
+        # so this is what keeps the newest one able to fit a small window.
+        budget_cap = ctx.budget.effective_max_tokens * CHARS_PER_TOKEN
         shaped = []
         for msg in ctx.messages:
-            if msg.role != MessageRole.TOOL:
+            if msg.role != MessageRole.TOOL or getattr(msg, "compacted_by", None) == LAYER:
                 shaped.append(msg)
                 continue
-            limit = caps.get(getattr(msg, "tool_call_id", None) or "", max_result_chars)
+            limit = min(caps.get(getattr(msg, "tool_call_id", None) or "", max_result_chars), budget_cap)
             # Multipart content (a tool that returned images) used to skip this
             # cap entirely -- the one result shape most likely to be oversized.
             if isinstance(msg.content, list):
@@ -132,20 +134,13 @@ def shape_budget_reduction(
             if len(msg.content) <= limit:
                 shaped.append(msg)
                 continue
-            # Skip only messages already truncated by THIS shaper (avoid
-            # double-truncation on re-runs).  Foreign truncation markers
-            # (e.g. from retrieve_artifact_content) do NOT grant a pass —
-            # those messages can still be far over max_result_chars.
-            if _OWN_SUFFIX in msg.content:
-                shaped.append(msg)
-                continue
-            shaped.append(msg.model_copy(update={"content": _truncate(msg.content, limit)}))
+            shaped.append(msg.model_copy(update={"content": _truncate(msg.content, limit), "compacted_by": LAYER}))
         capped = sum(1 for old, new in zip(ctx.messages, shaped) if new is not old)
         if capped:
             logger.info(
-                "budget_reduction: capped %d tool result(s), %d→%d tokens (turn=%d, budget=%d)",
+                "budget_reduction: capped %d tool result(s), %d→%d tokens (run=%s, turn=%d, budget=%d)",
                 capped, count_tokens(ctx.messages), count_tokens(shaped),
-                ctx.turn_index, ctx.budget.effective_max_tokens,
+                ctx.run_id, ctx.turn_index, ctx.budget.effective_max_tokens,
             )
         ctx.messages = shaped
         await next_fn()

@@ -13,8 +13,7 @@ from app.agent_loop_lib.core.messages import (
     UserMessage,
 )
 from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
-    _TOOL_REF_PREFIX,
-    _is_already_compact,
+    LAYER,
     shape_tool_result_clearing,
 )
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
@@ -22,7 +21,7 @@ from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 def _is_compacted(msg) -> bool:
     """True when a ToolMessage has been replaced by a metadata reference."""
-    return isinstance(msg.content, str) and _is_already_compact(msg.content)
+    return msg.compacted_by == LAYER
 
 
 def _assistant_call(call_id: str, name: str, arguments: dict | None = None) -> AssistantMessage:
@@ -51,7 +50,7 @@ def _tool_result_with_artifact(call_id: str, artifact_id: str, content: str = "d
     )
 
 
-async def _run_clearing(messages, *, keep_last_n_turns=3, trigger_ratio=0.0, protected_tool_names=None):
+async def _run_clearing(messages, *, keep_last_n_turns=3, trigger_ratio=0.0, protected_tools=frozenset()):
     """Helper: runs the clearing middleware and returns the shaped messages.
 
     `trigger_ratio=0.0` means clearing always activates (no budget guard)
@@ -62,7 +61,7 @@ async def _run_clearing(messages, *, keep_last_n_turns=3, trigger_ratio=0.0, pro
     middleware = shape_tool_result_clearing(
         keep_last_n_turns=keep_last_n_turns,
         trigger_ratio=trigger_ratio,
-        protected_tool_names=protected_tool_names,
+        protected_tools=protected_tools,
     )
     await middleware(ctx, _noop_next)
     return ctx.messages
@@ -95,7 +94,7 @@ class TestToolResultClearing:
         assert result[8].content == "recent email data"
 
     @pytest.mark.asyncio
-    async def test_protected_tool_names_are_never_cleared(self) -> None:
+    async def test_protected_tools_are_never_cleared(self) -> None:
         messages = [
             UserMessage(content="go"),
             _assistant_call("c1", "create_plan"),
@@ -110,7 +109,7 @@ class TestToolResultClearing:
         result = await _run_clearing(
             messages,
             keep_last_n_turns=2,
-            protected_tool_names=frozenset({"create_plan", "critique_plan"}),
+            protected_tools=frozenset({"create_plan", "critique_plan"}),
         )
         assert result[2].content == "the plan"
         assert result[4].content == "critique feedback"
@@ -133,7 +132,7 @@ class TestToolResultClearing:
         result = await _run_clearing(
             messages,
             keep_last_n_turns=1,
-            protected_tool_names=frozenset({"create_plan", "critique_plan"}),
+            protected_tools=frozenset({"create_plan", "critique_plan"}),
         )
         assert result[2].content == "the plan"
         assert _is_compacted(result[4])
@@ -167,7 +166,7 @@ class TestToolResultClearing:
         result = await _run_clearing(
             messages,
             keep_last_n_turns=1,
-            protected_tool_names=frozenset({"create_plan"}),
+            protected_tools=frozenset({"create_plan"}),
         )
         assert result[2].content == "the plan"
         assert _is_compacted(result[3])

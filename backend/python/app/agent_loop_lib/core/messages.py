@@ -167,6 +167,10 @@ class UserMessage(BaseModel):
     # losing one of those degrades guidance; losing the plan itself
     # strands the executor with no plan to execute.
     pinned: bool = False
+    # The context layer that wrote this message (a compaction summary), on
+    # the per-call copy only. Layers read it instead of matching their own
+    # header text, which a person's question could contain too.
+    compacted_by: str | None = None
 
 
 class AssistantMessage(BaseModel):
@@ -184,6 +188,9 @@ class AssistantMessage(BaseModel):
     # message itself since `Agent.step()`'s truncation-recovery branch reads
     # the message, not the response, at the point it needs the flag.
     truncated: bool = False
+    # The context layer that shortened this message, on the per-call copy
+    # only (see `UserMessage.compacted_by`).
+    compacted_by: str | None = None
 
     @field_validator("content", mode="before")
     @classmethod
@@ -228,6 +235,10 @@ class ToolMessage(BaseModel):
     # but NOT included in .content, so consumers like parent_results.py
     # that read raw content see clean tool output.
     step_footer: str = ""
+    # The context layer that last shortened this result (capped, cleared,
+    # replaced by a reference), on the per-call copy only. Layers read it
+    # instead of matching marker text a tool's own output could contain.
+    compacted_by: str | None = None
 
     @property
     def text(self) -> str:
