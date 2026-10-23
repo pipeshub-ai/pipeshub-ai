@@ -6,9 +6,10 @@ This parser is designed to be extensible - new block types can be easily added.
 """
 
 import json
+import logging
 import re
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from app.models.blocks import (
@@ -34,6 +35,49 @@ from app.models.blocks import (
 
 # Type alias for relations and people tuple
 RelationsAndPeople = Tuple[List[str], List[str]]
+
+
+if TYPE_CHECKING:
+    from app.sources.external.notion.notion import NotionDataSource
+
+# Page objects show at most this many items of a list property; the property-item endpoint has the rest (D).
+_INLINE_CAP = 25
+_CAPPED_LIST_TYPES = ("title", "rich_text", "people", "relation")
+
+
+def property_items_fetcher(
+    datasource: "NotionDataSource", logger: Optional[logging.Logger] = None
+) -> Callable[[str, str], Awaitable[Optional[dict[str, Any]]]]:
+    """A ``property_items_fetcher`` for ``parse_data_source_to_blocks``: every page of
+    GET /pages/{page_id}/properties/{property_id}, merged into one list response (None on any failure, so the
+    caller keeps the value it already has)."""
+
+    async def fetch(page_id: str, property_id: str) -> Optional[dict[str, Any]]:
+        merged: Optional[dict[str, Any]] = None
+        cursor: Optional[str] = None
+        for _ in range(100):  # 10,000 items at most, as a query returns
+            response = await datasource.retrieve_page_property_item(
+                page_id, property_id, start_cursor=cursor, page_size=100
+            )
+            if not response.success or response.data is None:
+                if logger:
+                    logger.warning(f"Could not read property {property_id} of page {page_id}: {response.error}")
+                return None
+            data = response.data.json()
+            if data.get("object") != "list":
+                return {"results": [data], "property_item": data}
+            if merged is None:
+                merged = data
+            else:
+                merged["results"].extend(data.get("results", []))
+                merged["property_item"] = data.get("property_item", merged.get("property_item"))
+            if not data.get("has_more"):
+                return merged
+            cursor = data.get("next_cursor")
+        return merged
+
+    return fetch
+
 
 class NotionBlockParser:
     """
@@ -1616,6 +1660,9 @@ class NotionBlockParser:
         get_user_child_callback: Optional[
             Callable[[str], Awaitable[Optional[ChildRecord]]]
         ] = None,
+        property_items_fetcher: Optional[
+            Callable[[str, str], Awaitable[Optional[dict[str, Any]]]]
+        ] = None,
     ) -> Tuple[List[Block], List[BlockGroup]]:
         """
         Parse Notion data source metadata and rows into TABLE blocks.
@@ -1633,12 +1680,16 @@ class NotionBlockParser:
                                      Takes external_id (str) and returns Optional[ChildRecord]
             get_user_child_callback: Optional async callback to get ChildRecord for a user.
                                    Takes user_id (str) and returns Optional[ChildRecord]
+            property_items_fetcher: Optional async callback (page_id, property_id) -> every item of that
+                                   property (see ``property_items_fetcher``); used for values Notion cut at 25
 
         Returns:
             Tuple of (List[Block], List[BlockGroup])
         """
         blocks: List[Block] = []
         block_groups: List[BlockGroup] = []
+        if property_items_fetcher is not None:
+            await self.expand_truncated_properties(data_source_rows, property_items_fetcher)
 
         # Extract column definitions and description
         properties = data_source_metadata.get("properties", {})
@@ -1712,6 +1763,44 @@ class NotionBlockParser:
         self.logger.info(f"Parsed data source {data_source_id}: {len(column_names)} columns, {len(blocks)} rows")
 
         return blocks, block_groups
+
+    async def expand_truncated_properties(
+        self,
+        rows: list[dict[str, Any]],
+        fetch: Callable[[str, str], Awaitable[Optional[dict[str, Any]]]],
+    ) -> None:
+        """Replaces values Notion cut short in page objects with their full lists, in place.
+
+        A page object carries at most 25 items of a relation (then ``has_more``), and of a title, rich text or
+        people property (with no flag), and a rollup over many relations may be ``incomplete``. The
+        property-item endpoint pages through all of them.
+        """
+        for row in rows:
+            page_id = row.get("id")
+            for prop in (row.get("properties") or {}).values():
+                if not isinstance(prop, dict) or not page_id or not prop.get("id"):
+                    continue
+                kind = prop.get("type", "")
+                value = prop.get(kind)
+                cut = (
+                    (kind == "relation" and prop.get("has_more"))
+                    or (kind in _CAPPED_LIST_TYPES and isinstance(value, list) and len(value) >= _INLINE_CAP)
+                    or (kind == "rollup" and isinstance(value, dict) and value.get("type") == "incomplete")
+                )
+                if not cut:
+                    continue
+                full = await fetch(page_id, prop["id"])
+                if not full:
+                    continue  # keep what the page object had
+                if kind == "rollup":
+                    rollup = (full.get("property_item") or {}).get("rollup")
+                    if rollup:
+                        prop["rollup"] = rollup
+                    continue
+                items = [r.get(kind) for r in full.get("results", []) if isinstance(r, dict) and r.get(kind)]
+                if items:
+                    prop[kind] = items
+                    prop["has_more"] = False
 
     def _extract_relations_and_people(
         self,
@@ -2176,11 +2265,18 @@ class NotionBlockParser:
                 if rollup_type == "number":
                     num = rollup.get("number")
                     return str(num) if num is not None else ""
+                elif rollup_type == "date":
+                    date_obj = rollup.get("date")
+                    if date_obj:
+                        start, end = date_obj.get("start", ""), date_obj.get("end")
+                        return f"{start} - {end}" if end else start
+                    return ""
                 elif rollup_type == "array":
                     # For arrays, recursively extract values
                     arr = rollup.get("array", [])
                     values = [self._extract_property_value(item) for item in arr]
                     return ", ".join(filter(None, values))
+                # "incomplete" / "unsupported": Notion could not compute it, so there is no value to show
                 return ""
 
             elif prop_type == "created_time":
@@ -2204,9 +2300,24 @@ class NotionBlockParser:
                     file_names.append(f.get("name", "") or f.get("external", {}).get("url", ""))
                 return ", ".join(filter(None, file_names))
 
+            elif prop_type == "unique_id":
+                uid = prop.get("unique_id") or {}
+                number = uid.get("number")
+                if number is None:
+                    return ""
+                return f"{uid['prefix']}-{number}" if uid.get("prefix") else str(number)
+
+            elif prop_type == "verification":
+                verification = prop.get("verification") or {}
+                return verification.get("state", "") or ""
+
+            elif prop_type == "button":
+                return ""  # an action, not data
+
             else:
-                # Unknown type - try to stringify
-                return str(prop.get(prop_type, ""))
+                # Unknown type: only a plain scalar is shown; a structure would come out as a Python repr
+                value = prop.get(prop_type)
+                return str(value) if isinstance(value, (str, int, float)) and not isinstance(value, bool) else ""
 
         except Exception as e:
             self.logger.debug(f"Error extracting property value for type {prop_type}: {e}")
@@ -2791,7 +2902,8 @@ class NotionBlockParser:
         notion_comment: Dict[str, Any],
         author_name: Optional[str] = None,
         quoted_text: Optional[str] = None,
-        comment_attachments: Optional[List[CommentAttachment]] = None
+        comment_attachments: Optional[List[CommentAttachment]] = None,
+        page_url: Optional[str] = None,
     ) -> Optional[BlockComment]:
         """
         Parse Notion comment data into BlockComment object.
@@ -2804,6 +2916,7 @@ class NotionBlockParser:
             author_name: Author's display name (resolved by connector via async user lookup)
             quoted_text: The text that was commented on (for block-level comments)
             comment_attachments: List of CommentAttachment objects (created from FileRecords by connector)
+            page_url: The page's URL; the comment then links to its discussion there
 
         Returns:
             BlockComment object or None if parsing fails
@@ -2836,7 +2949,7 @@ class NotionBlockParser:
                 author_name=author_name,
                 thread_id=discussion_id,
                 resolution_status=None,  # Notion doesn't provide resolution status
-                weburl=None,  # Notion doesn't provide direct comment URLs
+                weburl=self.discussion_url(page_url, discussion_id),
                 created_at=created_at,
                 updated_at=updated_at,
                 attachments=comment_attachments,
@@ -2846,6 +2959,16 @@ class NotionBlockParser:
         except Exception as e:
             self.logger.warning(f"Failed to parse Notion comment: {e}")
             return None
+
+    @staticmethod
+    def discussion_url(page_url: Optional[str], discussion_id: Optional[str]) -> Optional[str]:
+        """A link that opens the page at the discussion: Notion's "Copy link to discussion" form,
+        ``<page url>?d=<discussion id without dashes>`` (not verified in a browser). None without a page URL."""
+        if not page_url or not discussion_id:
+            return None
+        base = page_url.split("#", 1)[0]
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}d={discussion_id.replace('-', '')}"
 
     def create_comment_group(
         self,

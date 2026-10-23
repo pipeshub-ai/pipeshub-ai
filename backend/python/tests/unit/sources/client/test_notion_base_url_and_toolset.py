@@ -87,9 +87,7 @@ def notion_tool() -> Iterator[tuple[Any, MagicMock]]:
     from app.agents.actions.notion import notion as actions
 
     with patch.object(actions, "NotionDataSource") as ds_cls:
-        tool = actions.Notion(MagicMock())
-        yield tool, ds_cls.return_value
-        tool.shutdown()
+        yield actions.Notion(MagicMock()), ds_cls.return_value
 
 
 class TestToolsetDataSources:

@@ -12,11 +12,17 @@
 Unlike the Jira / Outlook suites, nothing here is pre-provisioned beyond the permanent IT root
 page and the workspace-root database: the tests create every page, database, block, comment and
 attachment they assert on, and trash them at the end.
+
+With ``NOTION_TEST_SEED_MANIFEST`` set (the Notion simulator, ``connectors/notion_sim.env``), the
+fixture tree already exists: the manifest names every id, nothing is seeded, swept or trashed, and
+``NOTION_TEST_RESET_URL`` restores the source before the run so writes of an earlier run are gone.
 """
 
+import asyncio
 import logging
 import os
 import uuid
+import warnings
 from typing import Any, AsyncGenerator
 
 import pytest
@@ -179,7 +185,15 @@ async def notion_connector(
             reset_url = _env("NOTION_TEST_RESET_URL")
             if reset_url:
                 # Writes of an earlier run (the incremental cases) would otherwise still be in the tree.
-                requests.post(reset_url, timeout=60).raise_for_status()
+                response = await asyncio.to_thread(requests.post, reset_url, timeout=60)
+                response.raise_for_status()
+            else:
+                warnings.warn(
+                    "NOTION_TEST_SEED_MANIFEST is set without NOTION_TEST_RESET_URL: writes left by an "
+                    "earlier run stay in the pinned tree and the id-set checks may fail",
+                    stacklevel=1,
+                )
+                logger.warning("SETUP: pinned fixture tree used without a reset URL")
         else:
             swept = await sweep_stale_runs(notion_source_helper, root_page_id)
             if swept:

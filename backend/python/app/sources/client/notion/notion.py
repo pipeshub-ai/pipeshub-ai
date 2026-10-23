@@ -32,6 +32,8 @@ class NotionResponse:
     error: Optional[str] = None
     message: Optional[str] = None
     status_code: Optional[int] = None
+    # Notion's error ``code`` from the JSON body (``validation_error``, ``object_not_found``, ...), when it has one.
+    code: Optional[str] = None
 
     @classmethod
     def from_http(cls, response: HTTPResponse) -> "NotionResponse":
@@ -39,15 +41,22 @@ class NotionResponse:
         status = response.status
         if 200 <= status < 300:
             return cls(success=True, data=response, status_code=status)
-        body = ""
+        text = ""
         try:
-            body = (response.text() or "")[:200]
+            text = response.text() or ""
         except Exception:
-            body = ""
+            text = ""
+        code = None
+        try:
+            parsed = json.loads(text) if text else None
+            if isinstance(parsed, dict) and isinstance(parsed.get("code"), str):
+                code = parsed["code"]
+        except ValueError:
+            code = None
         error = f"HTTP {status}"
-        if body:
-            error = f"{error}: {body}"
-        return cls(success=False, data=response, error=error, status_code=status)
+        if text:
+            error = f"{error}: {text[:200]}"
+        return cls(success=False, data=response, error=error, status_code=status, code=code)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
@@ -135,46 +144,6 @@ class NotionRESTClientViaOAuth(HTTPClient):
             Token data from OAuth exchange
         """
         return await self._exchange_code_for_token(authorization_code)
-
-    async def refresh_token(self, refresh_token: str) -> Optional[str]:
-        """Refresh OAuth access token
-        Args:
-            refresh_token: The refresh token from previous OAuth flow
-        Returns:
-            New token data
-        """
-        credentials = f"{self.client_id}:{self.client_secret}"
-        encoded_credentials = base64.b64encode(credentials.encode()).decode()
-
-        headers = {
-            "Authorization": f"Basic {encoded_credentials}",
-            "Content-Type": "application/json",
-            "Notion-Version": self.version
-        }
-
-        data = {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token
-        }
-
-        request = HTTPRequest(
-            method="POST",
-            url=f"{self.oauth_base_url}/token",
-            headers=headers,
-            body=data
-        )
-
-        token_data: Dict[str, Any]
-        async with HTTPClient(token="") as client:
-            response = await client.execute(request)
-            token_data = await response.json()
-        self.access_token = token_data.get("access_token")
-
-        # Update headers with new token
-        if self.access_token:
-            self.headers["Authorization"] = f"Bearer {self.access_token}"
-
-        return token_data.get("access_token") if token_data.get("access_token") else None
 
     async def _exchange_code_for_token(self, code: str) -> Optional[str]:
         """Exchange authorization code for access token (internal method)

@@ -14,6 +14,8 @@ so a sync that drops records cannot also drop the expectation.
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -160,10 +162,8 @@ class NotionSeed:
 
 def load_seed_manifest(path: str) -> NotionSeed:
     """A :class:`NotionSeed` written by the simulator's fixture builder: the same fields, sets as sorted lists."""
-    import dataclasses
-    import json
-
-    raw = json.loads(open(path, encoding="utf-8").read())
+    with open(path, encoding="utf-8") as fh:
+        raw = json.load(fh)
     values: dict[str, Any] = {}
     for f in dataclasses.fields(NotionSeed):
         if f.name not in raw:

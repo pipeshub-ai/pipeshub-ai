@@ -1,4 +1,5 @@
 """Comprehensive coverage tests for Notion connector - additional untested methods."""
+from app.connectors.sources.notion.connector import _DatabaseUnavailable
 
 import logging
 from datetime import datetime, timezone
@@ -471,8 +472,8 @@ class TestResolveBlockParentRecursive:
         mock_ds.retrieve_block = AsyncMock(return_value=mock_response)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        parent_id, parent_type = await connector._resolve_block_parent_recursive("block-5")
-        assert parent_id is None
+        with pytest.raises(_DatabaseUnavailable):
+            await connector._resolve_block_parent_recursive("block-5")
 
     async def test_workspace_parent(self, connector):
         mock_ds = MagicMock()
@@ -489,8 +490,8 @@ class TestResolveBlockParentRecursive:
 
     async def test_exception_returns_none(self, connector):
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("Error"))
-        parent_id, parent_type = await connector._resolve_block_parent_recursive("block-7")
-        assert parent_id is None
+        with pytest.raises(_DatabaseUnavailable):
+            await connector._resolve_block_parent_recursive("block-7")
 
 
 # ===========================================================================
