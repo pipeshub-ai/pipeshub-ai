@@ -157,6 +157,7 @@ class ContentSearch:
         self.queries: list[dict[str, str]] = []
         self.folders: list[dict[str, Any]] | None = None
         self.blogposts: list[dict[str, Any]] | None = None
+        self.comments: list[dict[str, Any]] | httpx.Response | None = None
         self.indexed: dict[str, dict[str, Any]] | httpx.Response | None = None
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -167,6 +168,10 @@ class ContentSearch:
             return json_response(search_page(self.folders))
         if self.blogposts is not None and cql.startswith("type=blogpost"):
             return json_response(search_page(self.blogposts))
+        if cql.startswith("type=comment"):
+            if isinstance(self.comments, httpx.Response):
+                return self.comments
+            return json_response(search_page(self.comments or []))
         by_id = re.search(r"(?:^| AND )id in \(([^)]*)\)", cql)
         if self.indexed is not None and by_id:
             if isinstance(self.indexed, httpx.Response):
@@ -2326,3 +2331,55 @@ class TestUserSearchCap:
         await connector._sync_users()
 
         assert any("returns at most" in p for p in connector._sync_problems)
+
+
+def comment_on(page_id: str, when: str) -> dict[str, Any]:
+    return {"id": f"c-{page_id}-{when}", "type": "comment", "version": {"when": when},
+            "container": {"id": page_id, "type": "page"}}
+
+
+class TestCommentsReindexTheirPage:
+    """A comment changes neither its page's version nor its last modified time."""
+
+    async def _synced(self, api, db, checkpoints, search) -> ConfluenceConnector:
+        search.by_cursor[None] = search_page([v1_page("10"), v1_page("11")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        db.reindexed.clear()
+        search.by_cursor = {None: search_page([])}
+        return connector
+
+    async def test_a_page_whose_comments_changed_is_reindexed(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+        checkpoint = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+        after = (datetime.fromisoformat(checkpoint.replace("Z", "+00:00")) + timedelta(minutes=5)).isoformat()
+        long_before = "2020-01-01T00:00:00+00:00"
+        search.comments = [comment_on("10", after), comment_on("11", long_before)]
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert [r.external_record_id for r in db.reindexed] == ["10"], "only the page with a new comment"
+        assert any(q["cql"].startswith("type=comment") for q in search.queries)
+
+    async def test_a_failed_comment_search_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+        before = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+        search.comments = json_response({"message": "busy"}, status=503)
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert listing.complete is False
+        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] == before
+
+    async def test_comments_off_means_no_comment_search(self, api, db, checkpoints, search, monkeypatch) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+
+        async def off(_: object) -> bool:
+            return False
+
+        monkeypatch.setattr(connector, "_comments_indexed", off)
+        search.queries.clear()
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert not any(q["cql"].startswith("type=comment") for q in search.queries)
