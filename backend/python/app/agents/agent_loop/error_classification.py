@@ -71,6 +71,9 @@ _REQUEST_TOO_LARGE_HINTS = (
     "reduce your message size",
     "context length exceeded",
     "maximum context length",
+    # `Agent.step` ends the run with this when the shapers cannot fit the
+    # context into the model's window (see agent_loop_lib/context/errors.py).
+    "context could not be shaped",
 )
 # Checked BEFORE rate_limit: OpenAI reports a used-up balance as a 429 too, but
 # waiting a minute never fixes it.
