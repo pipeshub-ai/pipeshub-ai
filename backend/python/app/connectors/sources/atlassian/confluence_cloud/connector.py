@@ -12,6 +12,7 @@ Authentication: OAuth 2.0 (3-legged OAuth)
 import asyncio
 import base64
 import json
+import time
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -98,6 +99,13 @@ from app.connectors.sources.atlassian.core.confluence_html import (
     prepare_streaming_html,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
+from app.connectors.sources.atlassian.core.quota import (
+    API_TOKEN_REQUESTS_PER_SECOND,
+    OAUTH_REQUESTS_PER_SECOND,
+    AtlassianQuotaExhausted,
+    QuotaAwarePolicy,
+    quota_reset_text,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.blocks import (
     BlockComment,
@@ -280,7 +288,7 @@ def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
     .with_description("Sync pages, folders, spaces, and users from Confluence Cloud")\
     .with_categories(["Knowledge Management", "Collaboration"])\
     .with_scopes([ConnectorScope.TEAM.value])\
-    .with_resilience_config(rate_limit=10, max_retries=3)\
+    .with_resilience_config(rate_limit=API_TOKEN_REQUESTS_PER_SECOND, max_retries=3)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Confluence",
@@ -515,6 +523,10 @@ class ConfluenceConnector(BaseConnector):
         self._skipped_items: dict[tuple[str, str], int] = defaultdict(int)
         # Part of the source went unread, so a full sync must not unlink what it did not see.
         self._sync_read_incomplete = False
+        # The client's retry policy, one per request rate (see _client_resilience).
+        self._client_policies: dict[float, QuotaAwarePolicy] = {}
+        self._client_policy: QuotaAwarePolicy | None = None
+        self._run_started_at = 0.0
 
     async def _build_confluence_client(self):
         """EE override point: swap to EE ConfluenceClient for org-scoped OAuth inheritance."""
@@ -522,8 +534,38 @@ class ConfluenceConnector(BaseConnector):
             logger=self.logger,
             config_service=self.config_service,
             connector_instance_id=self.connector_id,
-            resilience=self.resilience,
+            resilience=await self._client_resilience(),
         )
+
+    async def _client_resilience(self) -> QuotaAwarePolicy:
+        """The rate limit and retry policy for this connector's client, by how it authenticates.
+
+        OAuth calls are paced lower than API-token calls to stay inside Atlassian's hourly
+        points quota. Kept across re-inits so a re-init does not reset a throttle or a spent quota.
+        """
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config") or {}
+        auth_type = str(((config.get("auth") or {}).get("authType") or "OAUTH")).upper()
+        rate = OAUTH_REQUESTS_PER_SECOND if auth_type == "OAUTH" else API_TOKEN_REQUESTS_PER_SECOND
+        policy = self._client_policies.get(rate)
+        if policy is None:
+            declared = self.resilience
+            policy = QuotaAwarePolicy(
+                rate_limit=rate,
+                max_retries=declared.max_retries if declared else 3,
+                base_delay=declared.base_delay if declared else 1.0,
+                max_delay=declared.max_delay if declared else 60.0,
+                name=str(self.connector_name),
+                logger=self.logger,
+            )
+            self._client_policies[rate] = policy
+        self._client_policy = policy
+        return policy
+
+    def _quota_spent_this_run(self) -> float | None:
+        """When Atlassian's quota resets, if it was used up during this run; else None."""
+        policy = self._client_policy
+        reset_at = policy.quota_reset_at if policy else None
+        return reset_at if reset_at and reset_at > self._run_started_at else None
 
     async def init(self) -> bool:
         """Initialize the Confluence connector with credentials and client."""
@@ -758,6 +800,7 @@ class ConfluenceConnector(BaseConnector):
         self._sync_problems = []
         self._skipped_items = defaultdict(int)
         self._sync_read_incomplete = False
+        self._run_started_at = time.time()
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Confluence Cloud sync for org: {org_id}")
@@ -800,6 +843,10 @@ class ConfluenceConnector(BaseConnector):
 
             self.logger.info("✅ Confluence sync completed successfully")
 
+        except AtlassianQuotaExhausted as e:
+            # Not a failure: the next sync resumes from the checkpoints this one kept.
+            self.logger.warning(f"⚠️ Confluence sync stopped: {e}")
+            self._sync_read_incomplete = True
         except Exception as e:
             self.logger.error(f"❌ Error during Confluence sync: {e}", exc_info=True)
             # init already sent its own notice for a multi-site OAuth app.
@@ -843,18 +890,29 @@ class ConfluenceConnector(BaseConnector):
             f"Space {space_key}: skipped {count} {what}"
             for (space_key, what), count in self._skipped_items.items()
         ]
+        quota_reset_at = self._quota_spent_this_run()
+        if quota_reset_at:
+            self._sync_read_incomplete = True
+            problems.insert(0, (
+                f"Atlassian's hourly API quota for this connector is used up until {quota_reset_text(quota_reset_at)}, "
+                "so the sync stopped early; the steps below did not finish because of it, and the next "
+                "sync after that time continues where this one stopped"
+            ))
         if not problems:
             return
         shown = problems[: self._MAX_PROBLEMS_SHOWN]
         lines = "\n".join(f"- {p}" for p in shown)
         if len(problems) > len(shown):
             lines += f"\n- and {len(problems) - len(shown)} more (see the connector logs)"
-        stopped = any(p.startswith("The sync stopped") for p in self._sync_problems)
+        stopped = bool(quota_reset_at) or any(p.startswith("The sync stopped") for p in self._sync_problems)
         try:
             outcome = await self.notify_and_wait(
                 type=NotificationType.CONNECTOR_SYNC_ERROR,
                 severity=NotificationSeverity.ERROR if stopped else NotificationSeverity.WARNING,
-                title=f"{self.display_name}: sync {'failed' if stopped else 'finished with problems'}",
+                title=(
+                    f"{self.display_name}: sync paused, Atlassian API quota used up" if quota_reset_at
+                    else f"{self.display_name}: sync {'failed' if stopped else 'finished with problems'}"
+                ),
                 message=(
                     f"{'The sync stopped before it finished' if stopped else 'The sync finished, but'} "
                     f"these steps did not complete:\n{lines}\n"

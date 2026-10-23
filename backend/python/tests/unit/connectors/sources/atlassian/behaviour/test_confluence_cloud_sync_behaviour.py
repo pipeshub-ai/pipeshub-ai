@@ -8,6 +8,7 @@ in-memory fakes.
 
 import logging
 import re
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -46,6 +47,7 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
+from app.connectors.sources.atlassian.core.quota import AtlassianQuotaExhausted, QuotaAwarePolicy
 from app.models.entities import (
     AppUser,
     CommentRecord,
@@ -1627,12 +1629,60 @@ class TestConnectionErrors:
 
 
 class TestRetriesAndRateLimit:
-    async def test_the_client_carries_the_connectors_retry_policy(self, api, db, checkpoints) -> None:
-        connector, _ = await ready_connector(db, checkpoints)
+    async def test_oauth_calls_are_paced_below_api_token_calls(self, api, db, checkpoints) -> None:
+        oauth, _ = await ready_connector(db, checkpoints)
+        token, _ = await ready_connector(db, checkpoints, {"auth": {
+            "authType": "API_TOKEN", "baseUrl": SITE, "email": "svc@acme.com", "apiToken": "tok"}, "filters": {}})
 
-        policy = connector.resilience
-        assert policy is not None and policy.max_retries == 3
-        assert connector.external_client.get_client().resilience is policy
+        oauth_policy = oauth.external_client.get_client().resilience
+        token_policy = token.external_client.get_client().resilience
+        assert isinstance(oauth_policy, QuotaAwarePolicy) and oauth_policy.rate_limit == 6
+        assert isinstance(token_policy, QuotaAwarePolicy) and token_policy.rate_limit == 10
+        assert oauth_policy.max_retries == 3
+
+    async def test_a_re_init_keeps_the_same_policy(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        first = connector.external_client.get_client().resilience
+
+        assert await connector.init() is True
+
+        assert connector.external_client.get_client().resilience is first, "a spent quota is not forgotten"
+
+    def test_a_wait_longer_than_the_policy_allows_marks_the_quota_spent(self) -> None:
+        policy = QuotaAwarePolicy(rate_limit=6, max_retries=3, max_delay=60.0)
+
+        assert policy.note_retry(0, 5.0) >= 5.0, "a short Retry-After is waited out"
+        with pytest.raises(AtlassianQuotaExhausted):
+            policy.note_retry(0, 1800.0)
+
+        assert policy.quota_reset_at is not None
+
+    async def test_a_spent_quota_fails_every_request_fast(self) -> None:
+        policy = QuotaAwarePolicy(rate_limit=6, max_retries=3, max_delay=60.0)
+        policy.quota_reset_at = time.time() + 600
+
+        with pytest.raises(AtlassianQuotaExhausted, match="UTC"):
+            await policy.acquire()
+
+    async def test_a_spent_quota_ends_the_sync_with_one_notice_and_keeps_its_place(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        for step in ("_sync_users", "_sync_user_groups", "_reconcile_inactive_app_users",
+                     "_remove_spaces_out_of_scope", "_sync_permission_changes_from_audit_log",
+                     "_sweep_placeholder_records", "register_authenticated_source_user"):
+            setattr(connector, step, AsyncMock())
+
+        async def quota_runs_out() -> list:
+            connector._client_policy.quota_reset_at = time.time() + 1800
+            raise AtlassianQuotaExhausted(connector._client_policy.quota_reset_at)
+
+        connector._sync_spaces = quota_runs_out
+
+        await connector.run_sync()  # not raised: the next sync resumes
+
+        (note,) = connector._notification_service.sent
+        assert "quota used up" in note["title"]
+        assert "Atlassian's hourly API quota" in note["message"] and "UTC" in note["message"]
+        assert connector.full_sync_coverage().complete is False, "a full sync stopped early unlinks nothing"
 
 
 class TestSyncProblemsNotice:
