@@ -545,7 +545,7 @@ class ControlPlane:
                     )
 
                     tool_registry.register_tool(
-                        RetrieveArtifactContentTool(store=artifact_store)
+                        RetrieveArtifactContentTool(store=artifact_store, max_result_chars=ce.max_result_chars)
                     )
 
                 profile = context_profile_from_config(

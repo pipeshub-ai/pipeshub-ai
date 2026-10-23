@@ -32,6 +32,7 @@ from app.agent_loop_lib.core.messages import (
     ToolMessage,
     UserMessage,
     add_loop_note,
+    dedupe_tool_call_ids,
 )
 from app.agent_loop_lib.core.responses import RunUsage, StopReason
 from app.agent_loop_lib.core.scope import RunScope, TurnScope
@@ -956,6 +957,19 @@ class Agent:
                 response.usage.cache_read_tokens, response.usage.cache_write_tokens,
             )
 
+        if isinstance(response_msg, AssistantMessage) and response_msg.tool_calls:
+            history_ids = {
+                call.id
+                for msg in await context.messages()
+                if isinstance(msg, AssistantMessage)
+                for call in msg.tool_calls or ()
+            }
+            renamed = dedupe_tool_call_ids([response_msg], history_ids)
+            if renamed:
+                logger.info(
+                    "agent %s turn %d: renamed %d of %d tool call id(s) that were empty or already in the conversation",
+                    self.spec.name, turn_index, renamed, len(response_msg.tool_calls),
+                )
         await context.add(response_msg)
 
         if response.stop_reason == StopReason.CANCELLED:

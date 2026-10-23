@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.agent_loop_lib.context.protection import current_request_text
+from app.agent_loop_lib.context.protection import current_request_index, current_request_text
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     Message,
@@ -152,7 +152,9 @@ def extract_dependency_results(
     messages: list[Message],
 ) -> list[ParentToolResult]:
     """Extract dependency data that ``spawn_scheduler._augment_goal``
-    injected into the first ``UserMessage`` of the conversation.
+    injected into the run's current request (its last human ``UserMessage``).
+    On a child that is its goal; on an agent seeded with chat history the
+    first ``UserMessage`` is the conversation's first question instead.
 
     When a sub-agent is spawned with ``depends_on``, the scheduler
     prepends the prerequisite agents' outputs to the goal in a known
@@ -174,12 +176,11 @@ def extract_dependency_results(
     grandchild agents (e.g. ``coding_agent``) via the existing digest +
     JSON file pipeline.
     """
-    for msg in messages:
-        if isinstance(msg, UserMessage):
-            goal_text = msg.content if isinstance(msg.content, str) else str(msg.content)
-            break
-    else:
+    index = current_request_index(messages)
+    if index is None:
         return []
+    request = messages[index]
+    goal_text = request.content if isinstance(request.content, str) else str(request.content)
 
     header_pos = goal_text.find(_DEPENDENCY_HEADER)
     if header_pos < 0:
