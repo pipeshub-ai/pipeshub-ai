@@ -528,7 +528,8 @@ class TestAdversarialInput:
     # Coverage tracing makes this pure-Python code ~3x slower but not the
     # regex engine a quadratic pattern spends its time in, so under coverage
     # the bound no longer separates the two. Fastest of three: a busy CI core
-    # can stall one run, but a quadratic regression is slow every time.
+    # only ever adds time, so the minimum is the truest measure, and quadratic
+    # code (~700 ms here) has no run under the bound to pick.
     @pytest.mark.no_cover
     def test_finishes_in_linear_time(self, run) -> None:
         assert min(_elapsed_ms(run) for _ in range(3)) < _BOUND_MS
