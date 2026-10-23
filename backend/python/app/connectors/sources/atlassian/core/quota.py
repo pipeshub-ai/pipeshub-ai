@@ -40,12 +40,18 @@ class QuotaAwarePolicy(ResiliencePolicy):
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self.quota_reset_at: float | None = None
+        self._last_status: int | None = None
+
+    def note_response_status(self, status: int) -> None:
+        """The status of the response the next ``note_retry`` is about (set by the transport)."""
+        self._last_status = status
 
     def _quota_spent(self) -> bool:
         return self.quota_reset_at is not None and time.time() < self.quota_reset_at
 
     def note_retry(self, attempt: int, retry_after: float | None = None) -> float:
-        if retry_after is not None and retry_after > self.max_delay:
+        # Only a 429 is the quota; Atlassian says a 503 may carry Retry-After and is not one.
+        if retry_after is not None and retry_after > self.max_delay and self._last_status == 429:
             self.quota_reset_at = time.time() + retry_after
             raise AtlassianQuotaExhausted(self.quota_reset_at)
         return super().note_retry(attempt, retry_after)

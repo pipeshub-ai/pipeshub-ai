@@ -550,6 +550,9 @@ class ConfluenceConnector(BaseConnector):
         self._client_policies: dict[float, QuotaAwarePolicy] = {}
         self._client_policy: QuotaAwarePolicy | None = None
         self._run_started_at = 0.0
+        self._persistent_problems: set[str] = set()
+        self._quota_hit_in_run = False
+        self._sync_running = False
 
     async def _build_confluence_client(self):
         """EE override point: swap to EE ConfluenceClient for org-scoped OAuth inheritance."""
@@ -587,10 +590,10 @@ class ConfluenceConnector(BaseConnector):
         return policy
 
     def _quota_spent_this_run(self) -> float | None:
-        """When Atlassian's quota resets, if it was used up during this run; else None."""
+        """When Atlassian's quota resets, if running out of it stopped part of this run; else None."""
         policy = self._client_policy
         reset_at = policy.quota_reset_at if policy else None
-        return reset_at if reset_at and reset_at > self._run_started_at else None
+        return reset_at if reset_at and self._quota_hit_in_run else None
 
     async def init(self) -> bool:
         """Initialize the Confluence connector with credentials and client."""
@@ -646,8 +649,11 @@ class ConfluenceConnector(BaseConnector):
             await self.notify_and_wait(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,
                 severity=NotificationSeverity.ERROR,
-                title=f"{self.display_name}: sync could not start",
-                message=f"The sync did not run: {reason}. Check the connector's settings and credentials.",
+                title=f"{self.display_name}: could not start",
+                message=(
+                    f"PipesHub could not start the Confluence connector: {reason}. Syncs and opening its "
+                    "records fail until this is fixed; check the connector's settings and credentials."
+                ),
                 recipient_user_ids=[self.created_by] if self.created_by else None,
                 recipient_roles=[NotificationRecipientRole.ADMIN],
                 suppress_repeats=False,
@@ -842,7 +848,10 @@ class ConfluenceConnector(BaseConnector):
         self._sync_problems = []
         self._skipped_items = defaultdict(int)
         self._sync_read_incomplete = False
+        self._persistent_problems = set()
+        self._quota_hit_in_run = False
         self._run_started_at = time.time()
+        self._sync_running = True
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Confluence Cloud sync for org: {org_id}")
@@ -895,6 +904,7 @@ class ConfluenceConnector(BaseConnector):
             # Not a failure: the next sync resumes from the checkpoints this one kept.
             self.logger.warning(f"⚠️ Confluence sync stopped: {e}")
             self._sync_read_incomplete = True
+            self._quota_hit_in_run = True
         except Exception as e:
             self.logger.error(f"❌ Error during Confluence sync: {e}", exc_info=True)
             # init already sent its own notice for a multi-site OAuth app.
@@ -902,27 +912,44 @@ class ConfluenceConnector(BaseConnector):
                 self._note_problem(f"The sync stopped: {str(e)[:200]}")
             raise
         finally:
+            self._sync_running = False
             await self._report_sync_problems()
+
+    # Per connector, across instances: the persistent conditions last reported, and the quota
+    # reset time last reported.
+    _persistent_noticed: dict[str, set[str]] = {}
+    _quota_noticed_reset: dict[str, float] = {}
 
     # Most lines one notification lists; the rest are counted.
     _MAX_PROBLEMS_SHOWN = 10
 
-    def _note_problem(self, problem: str, *, unread: bool = True) -> None:
+    def _note_problem(self, problem: str, *, unread: bool = True, persistent: bool = False) -> None:
         """Note a step this sync could not finish; all of them are reported once when the sync ends.
 
         ``unread``: part of the source was not read (or not saved), so a full sync must not
         unlink what it did not see. False for a problem that left nothing unread, such as a
-        removal that is retried next sync.
+        removal that is retried next sync. ``persistent``: a setting-like condition (no audit
+        log access, an access class with no group) reported when it first appears, not every run.
         """
         if problem not in self._sync_problems:
             self._sync_problems.append(problem)
+        if persistent:
+            self._persistent_problems.add(problem)
         if unread:
             self._sync_read_incomplete = True
+        self._note_quota_hit()
 
     def _note_skipped(self, space_key: str, what: str) -> None:
         """Count one item skipped this run, e.g. ("ENG", "pages whose restrictions could not be read")."""
         self._skipped_items[(space_key, what)] += 1
         self._sync_read_incomplete = True
+        self._note_quota_hit()
+
+    def _note_quota_hit(self) -> None:
+        """A problem noted while the quota is spent was most likely caused by it."""
+        policy = self._client_policy
+        if policy and policy.quota_reset_at and policy.quota_reset_at > time.time():
+            self._quota_hit_in_run = True
 
     def full_sync_coverage(self) -> FullSyncCoverage:
         """A full sync that left part of Confluence unread unlinks nothing it did not see."""
@@ -938,8 +965,16 @@ class ConfluenceConnector(BaseConnector):
             f"Space {space_key}: skipped {count} {what}"
             for (space_key, what), count in self._skipped_items.items()
         ]
+        # A persistent condition is shown when it first appears; it is shown again once it
+        # has gone away and come back.
+        noticed = ConfluenceConnector._persistent_noticed.get(self.connector_id, set())
+        ConfluenceConnector._persistent_noticed[self.connector_id] = set(self._persistent_problems)
+        problems = [p for p in problems if p not in self._persistent_problems or p not in noticed]
         quota_reset_at = self._quota_spent_this_run()
         if quota_reset_at:
+            if ConfluenceConnector._quota_noticed_reset.get(self.connector_id) == quota_reset_at:
+                return  # This quota stop was already reported; the next notice comes after the reset.
+            ConfluenceConnector._quota_noticed_reset[self.connector_id] = quota_reset_at
             self._sync_read_incomplete = True
             problems.insert(0, (
                 f"Atlassian's hourly API quota for this connector is used up until {quota_reset_text(quota_reset_at)}, "
@@ -1272,6 +1307,8 @@ class ConfluenceConnector(BaseConnector):
 
         datasource = await self._get_fresh_datasource()
         org_id = self.data_entities_processor.org_id
+        policy = self._client_policy
+        quota_already_spent = bool(policy and policy.quota_reset_at and policy.quota_reset_at > time.time())
 
         active_users = await self.data_entities_processor.get_all_active_users()
         linked_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
@@ -1319,7 +1356,14 @@ class ConfluenceConnector(BaseConnector):
             
             async with semaphore:
                 try:
-                    account_id = await datasource.find_user_account_id_by_email(email)
+                    try:
+                        account_id = await datasource.find_user_account_id_by_email(email)
+                    except AtlassianQuotaExhausted as quota_error:
+                        # Jira's quota, not Confluence's: undo the mark the shared policy just set
+                        # (unless Confluence's own quota was already spent) and stop linking.
+                        if policy is not None and not quota_already_spent:
+                            policy.quota_reset_at = None
+                        raise RuntimeError(f"Jira rate limit: {quota_error}") from quota_error
                     if not account_id:
                         not_found_count += 1
                         return None
@@ -3301,7 +3345,10 @@ class ConfluenceConnector(BaseConnector):
                         "Couldn't read the Confluence audit log (HTTP %s); restriction changes are read again "
                         "next sync" % (response.status if response else "no response")
                     )
-                self._note_problem(problem, unread=False)
+                refused = response is not None and response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value
+                )
+                self._note_problem(problem, unread=False, persistent=refused)
                 return None
 
             response_data = response.json()
@@ -3620,6 +3667,8 @@ class ConfluenceConnector(BaseConnector):
         """
         merged: dict[str, dict[str, Any]] = {}
         seen: set[tuple[str, str, str]] = set()
+        # How many users / groups each operation has in all, when Confluence says (totalSize).
+        expected: dict[tuple[str, str], int] = {}
         for page in range(self._RESTRICTION_MAX_PAGES):
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_page_permissions_v1(
@@ -3637,16 +3686,28 @@ class ConfluenceConnector(BaseConnector):
                     "restrictions": {"user": {"results": []}, "group": {"results": []}},
                 })
                 for kind in ("user", "group"):
-                    entries = ((restriction.get("restrictions") or {}).get(kind) or {}).get("results") or []
+                    listing = (restriction.get("restrictions") or {}).get(kind) or {}
+                    entries = listing.get("results") or []
+                    if isinstance(listing.get("totalSize"), int):
+                        expected[(str(operation), kind)] = listing["totalSize"]
                     for entry in entries:
                         key = (str(operation), kind, str(entry.get("accountId") or entry.get("id") or entry.get("name")))
                         if key not in seen:
                             seen.add(key)
                             new = True
                             target["restrictions"][kind]["results"].append(entry)
-                    more = more or len(entries) >= self._RESTRICTION_PAGE
+                    # The page size Confluence used, which a system limit may set below ours.
+                    page_size = listing.get("limit") if isinstance(listing.get("limit"), int) else self._RESTRICTION_PAGE
+                    more = more or (page_size > 0 and len(entries) >= page_size)
             # A full page may be followed by more; a page that adds nothing new ends it.
             if not more or not new:
+                read = {
+                    (str(op), kind): len(data["restrictions"][kind]["results"])
+                    for op, data in merged.items() for kind in ("user", "group")
+                }
+                if any(read.get(key, 0) < total for key, total in expected.items()):
+                    self.logger.warning(f"⚠️ Restrictions of {page_id} could not be read in full")
+                    return None
                 return list(merged.values())
         self.logger.warning(f"⚠️ Restrictions of {page_id} have more than {self._RESTRICTION_MAX_PAGES} pages")
         return None
@@ -3977,6 +4038,7 @@ class ConfluenceConnector(BaseConnector):
                 f"Space {space_name}: its {access_class.lower().replace('_', ' ')} grant matches no synced Confluence "
                 "group, so it gives no one access in PipesHub",
                 unread=False,
+                persistent=True,
             )
             return []
         return [Permission(entity_type=EntityType.GROUP, external_id=g, type=permission_type) for g in group_ids]
@@ -6943,6 +7005,10 @@ class ConfluenceConnector(BaseConnector):
     async def cleanup(self) -> None:
         """Close the HTTP client, so its pooled connections go when the connector does."""
         self.logger.info("Cleaning up Confluence connector resources")
+        if self._sync_running:
+            # The router evicts a cached instance on a settings change; a sync on it still needs the client.
+            self.logger.info("A sync is running on this connector; its HTTP client closes with the connector")
+            return
         client = self.external_client.get_client() if self.external_client else None
         if client is not None and hasattr(client, "close"):
             try:

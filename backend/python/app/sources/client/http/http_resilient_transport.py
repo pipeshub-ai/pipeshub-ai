@@ -60,6 +60,9 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
             if attempt >= policy.max_retries or not is_retryable_status(response.status_code):
                 return response
 
+            note_status = getattr(policy, "note_response_status", None)
+            if note_status is not None:
+                note_status(response.status_code)
             try:
                 delay = policy.note_retry(attempt, parse_retry_after(response.headers))
             except BaseException:
