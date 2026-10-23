@@ -2046,9 +2046,13 @@ async def knowledge_graph_navigate(
     # Inside an admitted node every row is inside too; the root spans every
     # app, so it is bounded before paging, or a page could come back empty.
     root_apps = None
-    if node_id is None and connection_limit(request.state.user) is not None:
-        outside_apps = await ids_outside_connection(request, graph_provider, org_id, user_id, connector_ids)
-        root_apps = [app_id for app_id in connector_ids if app_id not in outside_apps]
+    limit_sources = connection_limit(request.state.user)
+    if node_id is None and limit_sources is not None:
+        # The catalog leaves collections out, so the apps the limit names are
+        # candidates too; the access check keeps only those the user reaches.
+        candidates = list(dict.fromkeys([*connector_ids, *(limit_sources.get("apps") or ())]))
+        outside_apps = await ids_outside_connection(request, graph_provider, org_id, user_id, candidates)
+        root_apps = [app_id for app_id in candidates if app_id not in outside_apps]
         if not root_apps:
             view = NavigationView(
                 current=None, breadcrumbs=[], rows=[], related=[], pagination=None,

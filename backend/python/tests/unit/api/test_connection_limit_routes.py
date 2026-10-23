@@ -294,9 +294,33 @@ class TestBrowsing:
     @pytest.mark.asyncio
     async def test_a_root_with_no_app_inside_the_limit_is_empty(self) -> None:
         navigator = MagicMock()
-        result = await self._navigate(_request(), _graph(), apps=["app-out"], navigator=navigator)
+        unreachable = {"apps": ["app-gone"], "recordGroups": [], "records": []}
+        result = await self._navigate(_request(unreachable), _graph(), navigator=navigator)
         assert result["rows"] == []
         navigator.return_value.navigate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_root_lists_a_collection_the_limit_names(self) -> None:
+        """The real catalog leaves collections out (filter options skip type KB),
+        so a limit naming only a collection must still reach it at the root."""
+        graph = _graph()
+        graph.get_knowledge_hub_filter_options = AsyncMock(
+            return_value={"apps": [{"id": "app-out", "name": "Drive", "type": "DRIVE"}]},
+        )
+        with patch(f"{ROUTER}.GraphNavigator") as navigator:
+            navigator.return_value.navigate = AsyncMock(return_value=NavigationView(
+                current=None, breadcrumbs=[], related=[], pagination=None, web_url=None,
+                indexing_status=None, connector=None,
+                rows=[NodeRow(id="rec-in", name="rec-in", node_type="record", sub_type=None,
+                              is_record=True, has_children=False, detail=None)],
+            ))
+            result = await knowledge_graph_navigate(
+                request=_request(), graph_provider=graph, node_id=None, page=1, limit=50, depth=1,
+                node_types=None, created_after=None, created_before=None,
+                modified_after=None, modified_before=None,
+            )
+        assert navigator.return_value.navigate.call_args.kwargs["connector_ids"] == ["app-in"]
+        assert [row["id"] for row in result["rows"]] == ["rec-in"]
 
     @pytest.mark.asyncio
     async def test_opening_a_node_outside_the_limit_is_refused(self) -> None:
