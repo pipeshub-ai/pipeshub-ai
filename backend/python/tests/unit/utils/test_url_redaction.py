@@ -526,7 +526,9 @@ class TestAdversarialInput:
         ],
     )
     def test_finishes_in_linear_time(self, run) -> None:
-        assert _elapsed_ms(run) < _BOUND_MS
+        # Fastest of three: a busy CI core can stall one run, but a quadratic
+        # regression is slow every time.
+        assert min(_elapsed_ms(run) for _ in range(3)) < _BOUND_MS
 
     @pytest.mark.parametrize("key", ["..code..", "%00code", "__token__", "code\u212a"])
     def test_stray_characters_around_a_sensitive_name_are_trimmed(self, key: str) -> None:
