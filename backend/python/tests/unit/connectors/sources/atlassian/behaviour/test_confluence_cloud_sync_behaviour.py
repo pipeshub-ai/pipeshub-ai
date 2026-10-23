@@ -1894,7 +1894,8 @@ class TestUsersListing:
 class TestUsersGoneFromConfluence:
     @staticmethod
     def _users(*ids: int) -> dict[str, Any]:
-        return {"results": [{"user": {"accountId": f"acc-{i}"}, "email": f"user{i}@acme.com"} for i in ids],
+        return {"results": [{"user": {"accountId": f"acc-{i}", "displayName": f"User {i}"},
+                             "email": f"user{i}@acme.com"} for i in ids],
                 "_links": {"base": WIKI}}
 
     async def test_a_user_missing_from_a_complete_list_loses_access(self, api, db, checkpoints) -> None:

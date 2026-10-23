@@ -2679,7 +2679,16 @@ class ConfluenceConnector(BaseConnector):
             await self._sync_folders(space_key)
             await self._remove_folders_gone(space)
 
-            await self._reindex_pages_with_changed_comments(space_key)
+            try:
+                await self._reindex_pages_with_changed_comments(space_key)
+            except AtlassianQuotaExhausted:
+                raise
+            except Exception as e:
+                # The comment check keeps its clock, so the next sync looks at these comments again.
+                self.logger.warning(f"Could not check the comments of space {space_key}: {e}", exc_info=True)
+                self._note_problem(
+                    f"Space {space_key}: couldn't check for new comments; the next sync tries again", unread=False
+                )
 
             for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST):
                 self.logger.info(f"Syncing {record_type.value} records for space: {space.name} ({space_key})")
