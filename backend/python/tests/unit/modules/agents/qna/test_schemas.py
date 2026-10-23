@@ -117,12 +117,17 @@ class TestAgentAnswerWithMetadataJSON:
         assert obj.answerMatchType == match_type
 
     def test_invalid_confidence_raises(self):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as exc_info:
             AgentAnswerWithMetadataJSON(
                 answer="x",
                 confidence="Ultra",  # not a valid Literal
                 answerMatchType="Exact Match",
             )
+
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["loc"] == ("confidence",)
+        assert errors[0]["type"] == "literal_error"
 
     def test_invalid_answer_match_type_raises(self):
         with pytest.raises(ValidationError):
