@@ -488,24 +488,36 @@ class TestReindexAppliesTheLevel:
         assert record.source_updated_at == c._parse_jira_timestamp("2025-01-01T00:00:00.000+0000")
 
     @pytest.mark.asyncio
-    async def test_a_transient_scheme_read_leaves_the_issue_for_the_next_sync(self) -> None:
-        """The stored grants are kept, and the stored timestamp too, so the next sync rebuilds it."""
+    async def test_a_transient_scheme_read_leaves_the_stored_record_alone(self) -> None:
+        """Writing it would hide a project-open issue (RESTRICTED, no grant) and stamp its timestamp."""
         c = _reindex_connector(self.LEVELED, [_resp(503, {})])
-        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {})
-        assert (record.access_rule, perms, record.rewrite_permissions) == (AccessRule.RESTRICTED, [], False)
-        assert record.source_updated_at == 1
-        existing = MagicMock(id="rid", version=2, source_updated_at=record.source_updated_at, is_placeholder=False)
-        _, _, changed = await _build(c, self.LEVELED, _present(), existing)
-        assert changed is True  # not skipped as unchanged
+        assert await c._check_and_fetch_updated_issue(_stored_ticket(), {}) is None
 
     @pytest.mark.asyncio
-    async def test_an_application_role_holder_outside_a_sync_leaves_the_issue_for_the_next_sync(self) -> None:
-        """The reindex has no application-role map, so the sync must still grant those groups."""
+    @pytest.mark.parametrize("holders", [
+        [{"type": "applicationRole", "parameter": "jira-software"}],
+        [{"type": "applicationRole", "parameter": "jira-software"}, {"type": "group", "value": "group-1"}],
+    ])
+    async def test_an_application_role_holder_outside_a_sync_leaves_the_stored_record_alone(
+        self, holders: list,
+    ) -> None:
+        """The reindex has no application-role map: a write would replace the role's groups the
+        last sync granted with none, or with the other holders only."""
+        members = {"isLast": True, "values": [{"issueSecurityLevelId": "10102", "holder": h} for h in holders]}
+        c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, members)])
+        assert await c._check_and_fetch_updated_issue(_stored_ticket(), {}) is None
+
+    @pytest.mark.asyncio
+    async def test_a_role_list_read_in_part_leaves_the_stored_record_alone(self) -> None:
         members = {"isLast": True, "values": [{"issueSecurityLevelId": "10102", "holder": {
             "type": "applicationRole", "parameter": "jira-software"}}]}
         c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, members)])
-        record, _ = await c._check_and_fetch_updated_issue(_stored_ticket(), {})
-        assert record.access_rule == AccessRule.RESTRICTED and record.source_updated_at == 1
+        c._app_roles_mapping, c._app_roles_unread = {"jira-software": [{"groupId": "g-1"}]}, True
+        assert await c._check_and_fetch_updated_issue(_stored_ticket(), {}) is None
+        c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, members)])
+        c._app_roles_mapping = {"jira-software": [{"groupId": "g-1"}]}
+        _, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {})
+        assert {p.external_id for p in perms} == {"g-1"}
 
     @pytest.mark.asyncio
     async def test_a_reindex_reads_each_project_scheme_once(self) -> None:
@@ -541,6 +553,65 @@ class TestLevelPassAfterFailuresAndRemovals:
 
         _, _, calls, _ = await self._sync(stored_levels=saved)
         assert calls[1]["leveled_only"] is True and calls[1]["stored_only"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_marker_is_saved_before_the_walk(self) -> None:
+        """A page that fails after the cursor moved leaves issues written with their level
+        unapplied; only a marker saved up front re-reads them."""
+        saved_before: list = []
+
+        async def record_then_fail(c: JiraConnector, calls: list) -> None:
+            saved_before.extend(
+                json.loads(call.args[1]["security_levels"])
+                for call in c.issues_sync_point.update_sync_point.await_args_list
+                if "security_levels" in call.args[1])
+            raise JiraReadError(503, "later page")
+
+        for ctx in (IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, defer_checkpoint=True),
+                    IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, scheme_forbidden=True)):
+            saved_before.clear()
+            with pytest.raises(JiraReadError):
+                await self._sync(stored_levels={"10102": "d"}, ctx=ctx, fetch_fn=record_then_fail)
+            assert saved_before == [{"10102": "d", "*": "retry"}]
+
+    @pytest.mark.asyncio
+    async def test_a_settled_scheme_saves_nothing_before_the_walk(self) -> None:
+        """A readable scheme, and a 403 already recorded, need no marker ahead of the walk."""
+        saved_before: list = []
+
+        async def record(c: JiraConnector, calls: list) -> None:
+            if len(calls) == 1:
+                saved_before.extend(
+                    call for call in c.issues_sync_point.update_sync_point.await_args_list
+                    if "security_levels" in call.args[1])
+
+        forbidden = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, scheme_forbidden=True)
+        await self._sync(stored_levels={"10102": "old"}, fetch_fn=record)
+        await self._sync(stored_levels={"*": "unreadable"}, ctx=forbidden, fetch_fn=record)
+        await self._sync(stored_levels={"10102": "d"}, ctx=IssueSecurityContext(knowledge=SchemeKnowledge.NONE),
+                         fetch_fn=record)
+        assert saved_before == []
+
+    @pytest.mark.asyncio
+    async def test_a_level_naming_a_role_read_in_part_keeps_its_grants(self) -> None:
+        """The role's groups are unknown, not fewer: hold the level like a transient read."""
+        ctx = _present(members={"10102": [{"type": "applicationRole", "parameter": "jira-software"}]})
+        c = _connector()
+        c._app_roles_unread = True
+        c, ctx, calls, _ = await self._sync(stored_levels={"10102": "d"}, ctx=ctx, connector=c)
+        assert ctx.members_readable is False and ctx.defer_checkpoint is True
+        assert len(calls) == 1
+        saved = json.loads(c.issues_sync_point.update_sync_point.await_args.args[1]["security_levels"])
+        assert saved == {"10102": "d", "*": "retry"}
+        record, perms, _ = await _build(c, _issue({"id": "10102"}), ctx)
+        assert (perms, record.rewrite_permissions) == ([], False)
+
+    @pytest.mark.asyncio
+    async def test_a_role_read_in_part_does_not_hold_levels_without_roles(self) -> None:
+        c = _connector()
+        c._app_roles_unread = True
+        _, ctx, _, _ = await self._sync(stored_levels={"10102": "old"}, connector=c)
+        assert ctx.members_readable is True and ctx.defer_checkpoint is False
 
     @pytest.mark.asyncio
     async def test_a_transient_members_read_is_marked_too(self) -> None:

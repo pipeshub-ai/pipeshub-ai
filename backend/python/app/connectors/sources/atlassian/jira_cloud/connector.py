@@ -3633,7 +3633,7 @@ class JiraConnector(BaseConnector):
         # Issue security. No issue's `updated` moves when a level gains or loses a member, so
         # the members of each level are fingerprinted in the checkpoint and only the issues
         # in a level whose members changed are re-read (after the normal incremental pass).
-        security = await self._load_issue_security(project_key)
+        security = self._hold_levels_naming_unread_roles(await self._load_issue_security(project_key))
         self._issue_security[project_id] = security
         self._issue_build_failures = 0
         readable = security.knowledge == SchemeKnowledge.PRESENT and security.members_readable
@@ -3652,6 +3652,13 @@ class JiraConnector(BaseConnector):
         reread, changed_levels, levels_to_save = self._plan_level_reread(
             security, stored_levels, is_new_project=is_new_project
         )
+        unreadable = not readable and security.knowledge != SchemeKnowledge.NONE
+        if security.defer_checkpoint or (unreadable and reread):
+            # Saved before the walk: a page that fails later leaves issues written with their
+            # level unapplied behind the advanced cursor, and only this marker re-reads them.
+            retry = {**{k: v for k, v in (stored_levels or {}).items() if k != "*"}, "*": "retry"}
+            if retry != stored_levels:
+                await self._record_security_levels(project_key, retry, force=True)
 
         # Set project_last_sync_time for fallback in _fetch_issues_batched
         project_last_sync_time = project_sync_data.get("last_sync_time") or global_last_sync_time if not is_new_project else None
@@ -3753,6 +3760,17 @@ class JiraConnector(BaseConnector):
             # Any second pass rewrote leveled issues, so their stubs are re-secured too.
             "leveled_reread": reread is not None,
         }
+
+    def _hold_levels_naming_unread_roles(self, security: IssueSecurityContext) -> IssueSecurityContext:
+        """A level naming an application role is unknown, not narrower, while the role list
+        could not be read in full: its issues keep their stored grants until a sync reads it."""
+        if self._app_roles_unread and any(
+            isinstance(holder, dict) and holder.get("type") == "applicationRole"
+            for holders in security.members_by_level.values() for holder in holders
+        ):
+            security.members_readable = False
+            security.defer_checkpoint = True
+        return security
 
     def _plan_level_reread(
         self, security: IssueSecurityContext, stored: dict[str, str] | None, *, is_new_project: bool,
@@ -6083,7 +6101,9 @@ class JiraConnector(BaseConnector):
             project_ref = project.get("key") or project_id
             security = (security_by_project or {}).get(project_ref)
             if security is None:
-                security = await self._load_issue_security(project_ref, cached=False)
+                security = self._hold_levels_naming_unread_roles(
+                    await self._load_issue_security(project_ref, cached=False)
+                )
                 if security_by_project is not None:
                     security_by_project[project_ref] = security
 
@@ -6144,10 +6164,14 @@ class JiraConnector(BaseConnector):
             if security.defer_checkpoint or skipped_holders or (
                 issue_record.access_rule == AccessRule.RESTRICTED and not permissions
             ):
-                # Closed, or granted without holders this path cannot resolve (application
-                # roles are read by the sync): keep the stored timestamp so the next sync
-                # rebuilds the issue rather than skipping it as unchanged.
-                issue_record.source_updated_at = record.source_updated_at
+                # Not every holder resolved (application roles are read by the sync), or the
+                # level could not be read: writing would replace the stored audience with a
+                # partial one. The stored record stays as it is for the sync to rebuild.
+                self.logger.info(
+                    f"Issue {issue_id}: its security level cannot be applied outside a sync; "
+                    "leaving the stored record for the next sync"
+                )
+                return None
 
             return (issue_record, permissions)
 
