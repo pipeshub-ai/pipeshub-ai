@@ -192,10 +192,21 @@ class CodeGraph:
         self._user_id: str = state.get("user_id", "")
         self._blob_store = state.get("blob_store")
         self._scope_unknown = False
+        self._bounded = False
 
         try:
             from app.agents.actions.knowledge_graph.ops.scope import derive_scope
-            self._allowed_connector_ids: tuple[str, ...] = tuple(derive_scope(state).app_ids)
+            from app.modules.retrieval.selection_scope import allowed_filters
+
+            allowed = list(derive_scope(state).app_ids)
+            # The universal agent's apps are every app the user reads; a
+            # connected app's limit, a saved agent's or a project's sources
+            # admit only the repositories they name whole.
+            bounds = allowed_filters(state.get("filters") or {})
+            for bound in bounds:
+                allowed = [app_id for app_id in allowed if app_id in bound["apps"]]
+            self._allowed_connector_ids: tuple[str, ...] = tuple(allowed)
+            self._bounded = bool(bounds)
         except Exception:
             # Fails closed: an empty list means "every connector", and a scope
             # the agent was meant to have must not widen because it could not
@@ -294,7 +305,8 @@ class CodeGraph:
     def _in_scope(self, connector_id: str) -> dict[str, Any] | None:
         if self._scope_unknown:
             return {"error": "This agent's knowledge sources could not be read; try again."}
-        if self._allowed_connector_ids and connector_id not in self._allowed_connector_ids:
+        # An empty list means every connector, unless a bound emptied it.
+        if (self._allowed_connector_ids or self._bounded) and connector_id not in self._allowed_connector_ids:
             return {"error": (
                 f"connector_id {connector_id!r} is not one this agent can read. "
                 "Use a `Connector ID` from your own knowledge-search results."
