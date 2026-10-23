@@ -24,6 +24,7 @@ four message types polymorphic; the discriminated union is.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import Enum
 from typing import Annotated, Any, Literal
 
@@ -317,6 +318,40 @@ def as_sent(message: Message) -> Message:
     else:
         parts.append(TextPart(text=_CONTEXT_NOTE_CLOSE))
     return message.model_copy(update={"content": parts})
+
+
+def dedupe_tool_call_ids(messages: Sequence[Message], seen: set[str]) -> int:
+    """Rename, in place, each tool call whose id is empty or already in `seen`,
+    and the results that answer it; `seen` gains every id kept or given.
+
+    A provider rejects two calls sharing an id, or binds a result to the wrong
+    one. Ids repeat across turns: Node saves one fixed id for every
+    `ask_user_question`, and transports that number calls per response
+    (`call_0`, or LangChain's empty id) reissue ids history already holds.
+    Returns how many calls were renamed.
+    """
+    assigned: dict[str, list[str]] = {}
+    used: dict[str, int] = {}
+    renamed = 0
+    for msg in messages:
+        if isinstance(msg, AssistantMessage):
+            for call in msg.tool_calls or []:
+                original = call.id
+                if not original or original in seen:
+                    base = original or "call"
+                    n = 2
+                    while f"{base}_{n}" in seen:
+                        n += 1
+                    call.id = f"{base}_{n}"
+                    renamed += 1
+                seen.add(call.id)
+                assigned.setdefault(original, []).append(call.id)
+        elif isinstance(msg, ToolMessage) and msg.tool_call_id in assigned:
+            ids = assigned[msg.tool_call_id]
+            nth = used.get(msg.tool_call_id, 0)
+            used[msg.tool_call_id] = nth + 1
+            msg.tool_call_id = ids[min(nth, len(ids) - 1)]
+    return renamed
 
 
 def add_loop_note(messages: list[Message], note: str) -> str:

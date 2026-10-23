@@ -58,6 +58,7 @@ from app.agent_loop_lib.core.messages import (
     ToolMessage,
     ToolMessageMeta,
     UserMessage,
+    dedupe_tool_call_ids,
 )
 from app.agent_loop_lib.events.base import CompositeEmitter
 from app.agent_loop_lib.hooks.events import HookEvent
@@ -189,6 +190,7 @@ from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
 from app.services.featureflag.platform_settings import is_skills_enabled
+from app.utils.citations import rewrite_request_refs
 from app.utils.image_policy import resolve_image_policy
 from app.utils.render_budget import fetch_result_cap
 
@@ -1045,7 +1047,7 @@ class PipesHubAgentFactory:
             return None
         if context.protocol == "agui":
             emitter = AGUIEventEmitter(context.event_sink, thread_id=context.conversation_id or "")
-            collector = TranscriptCollector()
+            collector = TranscriptCollector(ref_to_url=context.citation_ref_to_url)
             context.transcript_collector = collector
             return CompositeEmitter([emitter, collector])
         return SSEEventEmitter(context.event_sink)
@@ -1254,7 +1256,7 @@ class PipesHubAgentFactory:
             unanswered += 1
 
         # After the fold: folding an approval answer relies on its repeated id.
-        _dedupe_tool_call_ids(history, set())
+        dedupe_tool_call_ids(history, set())
         for message in history:
             await ctx.add(message)
         agent.seed_context(ctx)
@@ -1575,32 +1577,6 @@ def _scrub_legacy_system_note(text: str) -> str:
     return text.replace(_V2_NOTE_HEADER, _NEUTRAL_NOTE_HEADER)
 
 
-def _dedupe_tool_call_ids(messages: list[Message], seen: set[str]) -> None:
-    """Rename a replayed call whose id an earlier turn already used.
-
-    Node falls back to one fixed id for every saved `ask_user_question`, and a
-    provider rejects two calls sharing an id. `seen` carries the ids across turns.
-    """
-    assigned: dict[str, list[str]] = {}
-    used: dict[str, int] = {}
-    for msg in messages:
-        if isinstance(msg, AssistantMessage):
-            for call in msg.tool_calls or []:
-                original = call.id
-                if original in seen:
-                    n = 2
-                    while f"{original}_{n}" in seen:
-                        n += 1
-                    call.id = f"{original}_{n}"
-                seen.add(call.id)
-                assigned.setdefault(original, []).append(call.id)
-        elif isinstance(msg, ToolMessage) and msg.tool_call_id in assigned:
-            ids = assigned[msg.tool_call_id]
-            nth = used.get(msg.tool_call_id, 0)
-            used[msg.tool_call_id] = nth + 1
-            msg.tool_call_id = ids[min(nth, len(ids) - 1)]
-
-
 def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:
     """One `previousConversations` entry -> zero or more agent-loop
     `Message`s. `user_query` is always a single `UserMessage`.
@@ -1640,11 +1616,16 @@ def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:
     tool_results = turn.get("tool_results") or []
     tool_calls: list[ToolCall] = []
     tool_messages: list[ToolMessage] = []
+    earlier_refs = 0
     for i, entry in enumerate(tool_results):
         if not isinstance(entry, dict):
             continue
         call_id = str(entry.get("tool_id") or f"history_{i}")
         args = entry.get("args")
+        if isinstance(args, dict):
+            args_json, _, found = rewrite_request_refs(json.dumps(args, default=str, ensure_ascii=False), None)
+            args = json.loads(args_json)
+            earlier_refs += found
         result = entry.get("result", "")
         tool_name = str(entry.get("tool_name") or "unknown_tool")
         tool_calls.append(ToolCall(
@@ -1653,7 +1634,9 @@ def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:
             arguments=args if isinstance(args, dict) else {},
         ))
         result_str = result if isinstance(result, str) else json.dumps(result, default=str)
-        summary_str = entry.get("result_summary") or ""
+        result_str, _, found = rewrite_request_refs(result_str, None)
+        summary_str, _, found_in_summary = rewrite_request_refs(entry.get("result_summary") or "", None)
+        earlier_refs += found + found_in_summary
 
         artifact_id = entry.get("artifact_id")
         artifact_meta = None
@@ -1692,6 +1675,13 @@ def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:
             artifact_meta=artifact_meta,
         ))
 
+    if earlier_refs:
+        # Saved before refs were stored as URLs. Left in, an old `ref1` would
+        # resolve to whatever this request numbers `ref1`.
+        logger.info(
+            "history: made %d citation ref(s) from an earlier request uncitable in %d replayed tool result(s)",
+            earlier_refs, len(tool_messages),
+        )
     if tool_calls:
         messages.append(AssistantMessage(content=[], tool_calls=tool_calls))
         messages.extend(tool_messages)
