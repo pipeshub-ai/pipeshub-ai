@@ -134,19 +134,20 @@ _BOUNDED_MAX_BATCHES = 6
 
 
 def _bound_as_selection(filters: dict[str, Any]) -> dict[str, Any]:
-    """``filters`` with the first bound below app level written as the turn's
-    selection, so ``list_selected_nodes`` lists what that bound names, and every
-    bound still admits each line."""
+    """``filters`` with what every bound below app level names written as the
+    turn's selection, so ``list_selected_nodes`` lists those nodes and keeps
+    each one every bound admits: a file one bound names inside a folder another
+    names is listed, and the folder is not. A bound of whole apps only adds
+    nothing, or it would list every app it names."""
     from app.modules.retrieval.selection_scope import allowed_filters
 
-    bounded = {key: filters[key] for key in ALLOWED_FILTER_KEYS if key in filters}
+    selection: dict[str, list[str]] = {"apps": [], "recordGroups": [], "records": []}
     for bound in allowed_filters(filters):
         if bound["recordGroups"] or bound["records"]:
-            return {
-                **bounded, "apps": bound["apps"], "kb": [],
-                "recordGroups": bound["recordGroups"], "records": bound["records"],
-            }
-    return bounded
+            for key, ids in selection.items():
+                ids.extend(i for i in bound[key] if i not in ids)
+    bounded = {key: filters[key] for key in ALLOWED_FILTER_KEYS if key in filters}
+    return {**bounded, **selection, "kb": []}
 
 
 async def _page_inside_bounds(

@@ -186,10 +186,10 @@ _BIG = {
         *(node(f"big-{i:02d}", f"budget {i:02d}", origin="COLLECTION") for i in range(60)),
         node("shared-folder", "shared folder", "folder", origin="COLLECTION"),
         node("shared-file", "zz budget shared", parent_id="shared-folder", origin="COLLECTION"),
+        node("folder-notes", "notes two", parent_id="shared-folder", origin="COLLECTION"),
     ],
     "kb-other": [node("other-1", "budget other", origin="COLLECTION")],
 }
-_UNDER_FOLDER = {"shared-folder", "shared-file"}
 
 
 class TestStaysInsideAFolderLimit:
@@ -203,10 +203,24 @@ class TestStaysInsideAFolderLimit:
         stub_listing(graph, USER_KEY, _BIG)
         owner = {row["id"]: app_id for app_id, rows in _BIG.items() for row in rows}
         owner |= {app_id: app_id for app_id in _BIG}
-        graph.get_selection_nodes.return_value = {
-            "groups": [],
-            "records": [{"id": i, "vrid": "", "connectorId": "kb-big"} for i in sorted(_UNDER_FOLDER)],
-        }
+        children: dict[str, list[str]] = {}
+        for rows in _BIG.values():
+            for row in rows:
+                if row.get("parentId"):
+                    children.setdefault(row["parentId"], []).append(row["id"])
+
+        def selection_nodes(_org_id: str, *, record_ids=(), **_: object) -> dict[str, Any]:
+            # A named record and everything under it, as the providers walk it.
+            found, todo = [], list(record_ids)
+            while todo:
+                node_id = todo.pop()
+                found.append(node_id)
+                todo.extend(children.get(node_id, []))
+            return {"groups": [], "records": [
+                {"id": i, "vrid": "", "connectorId": owner[i]} for i in sorted(found) if i in owner
+            ]}
+
+        graph.get_selection_nodes.side_effect = selection_nodes
 
         def check(_user_key: str, _org_id: str, node_ids=(), scopes=(), **_: object) -> AccessCheck:
             seen = frozenset(i for i in node_ids if i in owner)
@@ -255,7 +269,7 @@ class TestStaysInsideAFolderLimit:
         _, second = await execute_list_files(state, query="sh", limit=1, page=2)
 
         assert len(_ids(first)) == 1 and "page=2" in first
-        assert _ids(first) | _ids(second) == _UNDER_FOLDER
+        assert _ids(first) | _ids(second) == {"shared-folder", "shared-file"}
         assert "page=3" not in second
 
     async def test_a_root_listing_names_what_the_limit_shares(self) -> None:
@@ -263,3 +277,30 @@ class TestStaysInsideAFolderLimit:
 
         assert "shared-folder" in text
         assert "kb-big" not in text and "kb-other" not in text and "big-00" not in text
+
+    async def test_a_file_one_bound_names_inside_a_folder_another_names_is_listed(self) -> None:
+        """A project's sources name the folder; the connection names one file in it."""
+        state = self._state(self._graph())
+        state["filters"] = {
+            **within_connection(
+                {"apps": [], "kb": ["kb-big", "kb-other"]},
+                {"apps": [], "recordGroups": [], "records": ["shared-file"]},
+            ),
+            "projectApps": [], "projectRecordGroups": [], "projectRecords": ["shared-folder"],
+        }
+
+        _, text = await execute_list_files(state)
+
+        assert "id=shared-file" in text
+        assert "id=shared-folder" not in text and "folder-notes" not in text
+
+    async def test_a_whole_app_bound_beside_a_folder_bound_lists_only_the_folder(self) -> None:
+        state = self._state(self._graph())
+        state["filters"] = {
+            **state["filters"], "projectApps": ["kb-big", "kb-other"], "projectRecordGroups": [], "projectRecords": [],
+        }
+
+        _, text = await execute_list_files(state)
+
+        assert "id=shared-folder" in text
+        assert "kb-big" not in text and "kb-other" not in text
