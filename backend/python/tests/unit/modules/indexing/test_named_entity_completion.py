@@ -151,6 +151,21 @@ async def test_a_failed_keep_does_not_undo_the_written_completion() -> None:
         assert await completion._complete_one(graph, _sink(_BLOB, extraction), None, "r1", "o1", 100, 0) == "written"
 
 
+@pytest.mark.parametrize("keep", [AsyncMock(return_value=False), AsyncMock(side_effect=ConnectionError("graph down"))])
+async def test_a_completion_that_is_not_kept_is_not_queued_again(keep: AsyncMock) -> None:
+    """A record indexed before the stage has no state to keep it in: queuing it here would
+    extract it again on every pass. The re-projection that writes the older extraction
+    queues it instead."""
+    extraction = NamedEntityExtraction(status="COMPLETED", strategy="single_call", termination_reason="single_call")
+    graph = _graph([], _RECORD)
+    graph.stage_state_compare_and_set = keep
+    graph.schedule_named_entity_reextract = AsyncMock()
+    with patch("app.events.processor.convert_record_dict_to_record", return_value=SimpleNamespace(id="r1")), \
+            patch("app.modules.transformers.transformer.TransformContext", _context):
+        assert await completion._complete_one(graph, _sink(_BLOB, extraction), None, "r1", "o1", 100, 0) == "written"
+    graph.schedule_named_entity_reextract.assert_not_awaited()
+
+
 async def test_a_failed_extraction_writes_nothing() -> None:
     sink = _sink(_BLOB, NamedEntityExtraction(status="FAILED", termination_reason="llm_error", strategy="deterministic"))
     with patch("app.events.processor.convert_record_dict_to_record", return_value=SimpleNamespace(id="r1")), \

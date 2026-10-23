@@ -15,9 +15,11 @@ lands only while its job is still the one it read. A normal write of the record
 (it was indexed again meanwhile) drops the job in its own transaction, and that
 write extracted afresh.
 
-The blob keeps the extraction indexing stored. A persist retry that later
-re-projects it writes those entities again, and that write queues the record
-for a re-extraction once more, so the record settles on the complete set.
+A written completion replaces the extraction the ``entities`` stage kept for the
+revision. When it cannot (a record indexed before the stage, a newer run, an
+error), a later re-projection writes the older extraction again, and that
+write queues the record once more, so the record settles on the complete set.
+Queuing here instead would never settle a record the stage has no state for.
 """
 
 from __future__ import annotations
