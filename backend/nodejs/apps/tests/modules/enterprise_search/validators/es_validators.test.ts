@@ -678,6 +678,24 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    it('applies the documented default limit of 10 when none is sent', () => {
+      const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q' } })
+      expect(result.success && result.data.body.limit).to.equal(10)
+    })
+
+    for (const limit of [1, 10, 50, 100]) {
+      it(`keeps a limit of ${limit}`, () => {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', limit } })
+        expect(result.success && result.data.body.limit).to.equal(limit)
+      })
+    }
+
+    for (const limit of [0, 101, 2.5]) {
+      it(`rejects a limit of ${limit}`, () => {
+        expect(enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', limit } }).success).to.be.false
+      })
+    }
+
     it('keeps optional created and updated date bounds', () => {
       const data = {
         body: {

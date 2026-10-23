@@ -2895,6 +2895,25 @@ describe('Enterprise Search Controller', () => {
       expect(sent[1]).to.not.have.any.keys('createdAfter', 'createdBefore', 'modifiedAfter', 'modifiedBefore')
     })
 
+    it('forwards the limit to the AI service for limits 1, 10 and 50', async () => {
+      const handler = search(createMockAppConfig())
+      const sent: any[] = []
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        sent.push(JSON.parse(this.body))
+        return Promise.resolve({ statusCode: 200, data: { searchResults: [], records: [] } } as any)
+      })
+      sinon.stub(Citation, 'insertMany').resolves([] as any)
+      const saved = { _id: new mongoose.Types.ObjectId() }
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves(saved as any)
+
+      for (const limit of [1, 10, 50]) {
+        const req = createMockRequest({ body: { query: 'q', limit }, user: { userId: VALID_OID, orgId: VALID_OID2 } })
+        await handler(req, createMockResponse(), createMockNext())
+      }
+
+      expect(sent.map((b) => b.limit)).to.deep.equal([1, 10, 50])
+    })
+
     it('forwards rewriteQuery only when the caller set it', async () => {
       const handler = search(createMockAppConfig())
       const sent: any[] = []

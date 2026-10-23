@@ -28,7 +28,7 @@ const pageSchema = z.preprocess(
 
 const limitSchema = z.preprocess(
   (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
-  z.number().min(1).max(100).default(10),
+  z.number().int().min(1).max(100).default(10),
 );
 
 /** Limit preprocessor for conversation list endpoints (default 20). */
@@ -1233,7 +1233,8 @@ export const enterpriseSearchSearchSchema = z.object({
         message: 'Search query exceeds maximum length of 100000 characters',
       }),
     filters: filtersSchema,
-    limit: limitSchema.optional(),
+    // Default 10, as the OpenAPI spec says; `.optional()` would skip the default.
+    limit: limitSchema,
     // Optional bounds on the source's own created / last-updated date. The AI
     // service parses them (the assistant's search tool uses the same parser)
     // and answers 400 with the reason when one is not a date it accepts.
