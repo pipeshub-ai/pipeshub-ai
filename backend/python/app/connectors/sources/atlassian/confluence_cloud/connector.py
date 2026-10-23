@@ -543,8 +543,10 @@ class ConfluenceConnector(BaseConnector):
         OAuth calls are paced lower than API-token calls to stay inside Atlassian's hourly
         points quota. Kept across re-inits so a re-init does not reset a throttle or a spent quota.
         """
-        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config") or {}
-        auth_type = str(((config.get("auth") or {}).get("authType") or "OAUTH")).upper()
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+        auth = config.get("auth") if isinstance(config, dict) else None
+        # Unknown auth gets the lower OAuth pace.
+        auth_type = str((auth.get("authType") if isinstance(auth, dict) else None) or "OAUTH").upper()
         rate = OAUTH_REQUESTS_PER_SECOND if auth_type == "OAUTH" else API_TOKEN_REQUESTS_PER_SECOND
         policy = self._client_policies.get(rate)
         if policy is None:
