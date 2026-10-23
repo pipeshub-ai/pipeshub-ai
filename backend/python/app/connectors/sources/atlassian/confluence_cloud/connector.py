@@ -2017,6 +2017,8 @@ class ConfluenceConnector(BaseConnector):
             full_resume_after = None if last_sync_time else (last_sync_data or {}).get("full_resume_after")
             if full_resume_after:
                 self.logger.info(f"🔁 Resuming the full {content_type} listing after {full_resume_after}")
+                # What the earlier part read is not seen by this run, so a full sync must not unlink it.
+                self._sync_read_incomplete = True
             if last_sync_time:
                 self.logger.info(f"🔄 Incremental sync: Fetching {content_type}s modified after {last_sync_time}")
 
@@ -2612,7 +2614,8 @@ class ConfluenceConnector(BaseConnector):
                     )
                     self._note_problem(
                         f"Space {space_key}: couldn't check or remove some deleted items; the next sync tries again",
-                        unread=False,
+                        # After a full listing an unsettled check may hide items it missed: no unlink then.
+                        unread=listing.full,
                     )
 
     async def _remove_content_gone_from_source(
@@ -2641,6 +2644,12 @@ class ConfluenceConnector(BaseConnector):
         settled = True
         if not listing.full:
             settled = await self._sync_listed_but_not_stored(space, record_type, existing, stored, listing)
+        else:
+            # The content search leaves archived pages out; Confluence still shows them to those
+            # allowed, so a full sync keeps them as stored rather than unlinking them.
+            archived = [r.id for r in stored if existing.get(r.external_record_id) == "archived"]
+            if archived:
+                self.data_entities_processor.note_kept_records(self.connector_id, archived)
         doomed = [r for r in stored if r.external_record_id not in existing]
         if doomed:
             self.logger.info(
@@ -5205,6 +5214,8 @@ class ConfluenceConnector(BaseConnector):
                         "page" if record.record_type == RecordType.CONFLUENCE_PAGE else "blogpost",
                     )
                     self.logger.debug(f"Fetched {len(attachments_data)} attachment(s) for streaming")
+                except AtlassianQuotaExhausted:
+                    raise
                 except Exception as e:
                     self.logger.warning(f"Failed to fetch attachments for streaming: {e}", exc_info=True)
                     attachments_data = []
@@ -5285,14 +5296,19 @@ class ConfluenceConnector(BaseConnector):
         except HTTPException:
             raise  # Re-raise HTTP exceptions as-is
         except AtlassianQuotaExhausted as e:
-            raise HTTPException(
-                status_code=HttpStatusCode.TOO_MANY_REQUESTS.value,
-                detail=f"Confluence can't be read right now: {e}. Try again after that.",
-                headers={"Retry-After": str(max(1, int(e.reset_at - time.time())))},
-            ) from e
+            raise self._quota_http_error(e) from e
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
             raise to_stream_error(e, connector=self.display_name) from e
+
+    @staticmethod
+    def _quota_http_error(error: AtlassianQuotaExhausted) -> HTTPException:
+        """A 429 with Retry-After, so indexing defers the record instead of failing it."""
+        return HTTPException(
+            status_code=HttpStatusCode.TOO_MANY_REQUESTS.value,
+            detail=f"Confluence can't be read right now: {error}. Try again after that.",
+            headers={"Retry-After": str(max(1, int(error.reset_at - time.time())))},
+        )
 
     async def _fetch_page_content(self, page_id: str, record_type: RecordType) -> str:
         """
@@ -5492,6 +5508,8 @@ class ConfluenceConnector(BaseConnector):
                 meta_cache[attachment_id] = meta
                 return meta
             meta_cache[attachment_id] = None
+        except AtlassianQuotaExhausted:
+            raise
         except Exception as e:
             self.logger.debug(f"Attachment metadata lookup failed for {attachment_id}: {e}")
             meta_cache[attachment_id] = None
@@ -5607,6 +5625,8 @@ class ConfluenceConnector(BaseConnector):
                 if not content_bytes:
                     return None
                 return content_bytes, mime_type
+            except AtlassianQuotaExhausted:
+                raise
             except Exception as e:
                 self.logger.debug(
                     f"REST attachment download failed for {attachment_id} on page {page_id}: {e}"
@@ -5778,6 +5798,8 @@ class ConfluenceConnector(BaseConnector):
             base64_data = base64.b64encode(content_bytes).decode("utf-8")
             return f"data:{mime_type};base64,{base64_data}"
 
+        except AtlassianQuotaExhausted:
+            raise
         except Exception as e:
             self.logger.warning(
                 f"Error fetching media (id='{media_id}', alt='{media_alt}') for page {page_id}: {e}"
@@ -5903,7 +5925,7 @@ class ConfluenceConnector(BaseConnector):
                     raise CommentsUnreadable(f"{comment_type} comments of {page_id} could not be followed to the end")
                 followed.add(cursor)
 
-            except CommentsUnreadable:
+            except (CommentsUnreadable, AtlassianQuotaExhausted):
                 raise
             except Exception as e:
                 # Indexed without its comments the page would stay that way until it changes.
@@ -5990,7 +6012,7 @@ class ConfluenceConnector(BaseConnector):
                     raise CommentsUnreadable(f"replies to comment {comment_id} could not be followed to the end")
                 followed.add(cursor)
 
-            except CommentsUnreadable:
+            except (CommentsUnreadable, AtlassianQuotaExhausted):
                 raise
             except Exception as e:
                 raise CommentsUnreadable(f"replies to comment {comment_id} could not be read: {e}") from e
@@ -6592,6 +6614,8 @@ class ConfluenceConnector(BaseConnector):
 
         except HTTPException:
             raise
+        except AtlassianQuotaExhausted as e:
+            raise self._quota_http_error(e) from e
         except Exception as e:
             self.logger.error(f"Failed to download attachment {record.external_record_id}: {e}", exc_info=True)
             raise to_stream_error(e, connector=self.display_name) from e
