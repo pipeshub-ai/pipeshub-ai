@@ -384,10 +384,10 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     from app.utils.execute_query import connector_instances_have_sql, sql_connector_instance_ids
     from app.utils.fetch_slack_thread import connector_instances_have_slack
 
-    from app.utils.turn_memo import begin_turn
+    from app.utils.turn_memo import begin_turn, end_turn
 
     # Per-turn memo for lookups several stages repeat (knowledge-hub access).
-    begin_turn()
+    turn_lookups = begin_turn()
     policy = policy or resolve_chat_mode_policy(query_info.get("chatMode"))
     system_prompts_config = system_prompts_config or {}
 
@@ -778,6 +778,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         if heartbeat:
             tasks.append(heartbeat)
         await asyncio.gather(*tasks, return_exceptions=True)
+        await end_turn(turn_lookups)
 
 
 __all__ = ["run_chat_stream"]

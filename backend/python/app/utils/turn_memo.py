@@ -20,8 +20,18 @@ if TYPE_CHECKING:
 _turn: ContextVar[dict[Hashable, asyncio.Task] | None] = ContextVar("pipeshub_turn_memo", default=None)
 
 
-def begin_turn() -> None:
-    _turn.set({})
+def begin_turn() -> dict[Hashable, asyncio.Task]:
+    tasks: dict[Hashable, asyncio.Task] = {}
+    _turn.set(tasks)
+    return tasks
+
+
+async def end_turn(tasks: dict[Hashable, asyncio.Task]) -> None:
+    """Cancel lookups still running, so a closed stream does not leave a graph query holding a connection."""
+    pending = [t for t in tasks.values() if not t.done()]
+    for t in pending:
+        t.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def memo(key: Hashable, compute: Callable[[], Awaitable[Any]]) -> Any:  # noqa: ANN401

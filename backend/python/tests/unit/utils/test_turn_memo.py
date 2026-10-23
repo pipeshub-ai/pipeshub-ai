@@ -75,3 +75,28 @@ async def test_outside_a_turn_every_call_computes() -> None:
         return [await turn_memo.memo("k", compute), await turn_memo.memo("k", compute)]
 
     assert await asyncio.create_task(no_turn()) == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_ending_the_turn_stops_a_lookup_still_running() -> None:
+    started = asyncio.Event()
+    cancelled = False
+
+    async def compute() -> None:
+        nonlocal cancelled
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+
+    async def turn() -> None:
+        lookups = turn_memo.begin_turn()
+        waiter = asyncio.ensure_future(turn_memo.memo("k", compute))
+        await started.wait()
+        waiter.cancel()
+        await turn_memo.end_turn(lookups)
+
+    await asyncio.create_task(turn())
+    assert cancelled

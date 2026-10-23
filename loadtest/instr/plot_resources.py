@@ -22,13 +22,14 @@ import os
 import re
 import sys
 from collections import defaultdict
+from typing import Dict, List, Tuple
 
 W, PANEL_H, PAD_L, PAD_R, LEGEND_W, GAP = 1100, 210, 60, 20, 250, 46
 COLOURS = ["#2a6fdb", "#d9480f", "#2b8a3e", "#ae3ec9", "#e67700", "#0b7285",
            "#c2255c", "#5f3dc4", "#868e96", "#364fc7", "#a61e4d", "#087f5b"]
 PLOT_W = W - PAD_L - PAD_R - LEGEND_W
 
-Series = dict[str, list[tuple[float, float]]]
+Series = Dict[str, List[Tuple[float, float]]]
 
 
 def load_resources(path: str) -> tuple[Series, Series, Series, Series, Series]:

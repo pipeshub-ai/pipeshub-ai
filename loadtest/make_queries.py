@@ -36,12 +36,21 @@ TEMPLATES = {
 DEFAULT_TEMPLATE = ['What does the document "{n}" contain?']
 
 
+DOCKER_TIMEOUT_S = 60
+QUERY_TIMEOUT_S = 3600  # a graph with millions of records takes minutes to list
+
+
+def run(cmd: list[str], timeout: int, **kwargs: object) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired:
+        sys.exit(f"'{' '.join(cmd[:3])}' gave no answer within {timeout}s; is Docker or Neo4j hung?")
+
+
 def container(pattern: str, explicit: str | None) -> str:
     if explicit:
         return explicit
-    names = subprocess.run(
-        ["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True, check=True,
-    ).stdout.split()
+    names = run(["docker", "ps", "--format", "{{.Names}}"], DOCKER_TIMEOUT_S, check=True).stdout.split()
     hits = [n for n in names if pattern in n]
     if not hits:
         sys.exit(f"no running container matching '{pattern}'; pass it explicitly")
@@ -49,9 +58,9 @@ def container(pattern: str, explicit: str | None) -> str:
 
 
 def cypher(neo4j: str, password: str, query: str) -> list[list[str]]:
-    out = subprocess.run(
+    out = run(
         ["docker", "exec", "-e", "NEO4J_PASSWORD", neo4j, "cypher-shell", "-u", "neo4j", "--format", "plain", query],
-        capture_output=True, text=True, env={**os.environ, "NEO4J_PASSWORD": password},
+        QUERY_TIMEOUT_S, env={**os.environ, "NEO4J_PASSWORD": password},
     )
     if out.returncode != 0:
         sys.exit(f"cypher-shell failed: {out.stderr.strip()}")
@@ -76,9 +85,7 @@ def main() -> None:
     password = os.environ.get("NEO4J_PASSWORD")
     if not password:
         app = container("pipeshub-ai", args.app_container)
-        password = subprocess.run(
-            ["docker", "exec", app, "printenv", "NEO4J_PASSWORD"], capture_output=True, text=True,
-        ).stdout.strip()
+        password = run(["docker", "exec", app, "printenv", "NEO4J_PASSWORD"], DOCKER_TIMEOUT_S).stdout.strip()
     org = f' AND r.orgId = "{args.org}"' if args.org else ""
     rows = cypher(
         neo4j, password,
