@@ -7,6 +7,7 @@ those: a source the limit names whole as today, one it reaches through some
 of its folders or files without its id, and every other source not at all.
 """
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -25,7 +26,7 @@ LIMIT = {"apps": ["kb-whole"], "recordGroups": [], "records": ["folder-in-legal"
 
 
 @pytest.fixture(autouse=True)
-def _clear_memo():
+def _clear_memo() -> Iterator[None]:
     selection_scope._memo.clear()
     yield
     selection_scope._memo.clear()
