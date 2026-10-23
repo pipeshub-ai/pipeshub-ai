@@ -11,6 +11,7 @@ Runs on Neo4j (backend-matrix). Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import TYPE_CHECKING
@@ -183,3 +184,60 @@ async def test_connector_delete_keeps_a_label_it_never_linked(neo4j) -> None:
     assert result.get("success") is True, result
     assert await provider.get_document(linked, TOPICS) is None
     assert await provider.get_document(pending, TOPICS) is not None
+
+
+async def test_a_link_committed_while_the_label_delete_waits_keeps_the_label(neo4j, monkeypatch) -> None:
+    """A belongsTo that holds the node lock when the label delete reaches it survives its commit."""
+    provider, org_id = neo4j
+    conn_a = f"{org_id}-a"
+    rec_a = f"{org_id}-ra"
+    rec_b = f"{org_id}-rb"
+    topic = f"{org_id}-topic"
+    now = get_epoch_timestamp_in_ms()
+    await provider.batch_upsert_nodes([{
+        "id": conn_a, "name": "Notion", "type": "NOTION", "appGroup": "Notion",
+        "scope": "team", "isActive": True, "orgId": org_id,
+        "createdAtTimestamp": now, "updatedAtTimestamp": now,
+    }], APPS)
+    for record_key, connector_id in ((rec_a, conn_a), (rec_b, f"{org_id}-b")):
+        await provider.batch_upsert_nodes([{
+            "id": record_key, "orgId": org_id, "recordName": record_key,
+            "externalRecordId": record_key, "recordType": "FILE", "origin": "CONNECTOR",
+            "connectorId": connector_id, "connectorName": "NOTION",
+            "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        }], RECORDS)
+    await provider.batch_upsert_nodes([{"id": topic, "orgId": org_id, "name": "Shared"}], TOPICS)
+    await provider.batch_create_edges([{
+        "from_id": rec_a, "from_collection": RECORDS,
+        "to_id": topic, "to_collection": TOPICS,
+        "createdAtTimestamp": now, "updatedAtTimestamp": now,
+    }], BELONGS_TO_TOPIC)
+
+    rel = edge_collection_to_relationship(BELONGS_TO_TOPIC)
+    delete_labels = provider._delete_unlinked_taxonomy_nodes
+    waited = []
+
+    async def link_while_the_delete_runs(*args, **kwargs) -> int:
+        # rec_a's link is gone by now; rec_b's is written but not committed, so it holds the topic's lock.
+        async with provider.client.driver.session(database=provider.client.database) as session:
+            tx = await session.begin_transaction()
+            await tx.run(
+                f"""
+                MATCH (r:`{collection_to_label(RECORDS)}` {{id: $record}}), (t:`{collection_to_label(TOPICS)}` {{id: $topic}})
+                CREATE (r)-[:`{rel}` {{createdAtTimestamp: $now, updatedAtTimestamp: $now}}]->(t)
+                """,
+                record=rec_b, topic=topic, now=now,
+            )
+            task = asyncio.create_task(delete_labels(*args, **kwargs))
+            await asyncio.sleep(2)
+            waited.append(not task.done())
+            await tx.commit()
+        return await task
+
+    monkeypatch.setattr(provider, "_delete_unlinked_taxonomy_nodes", link_while_the_delete_runs)
+    result = await provider.delete_connector_instance(conn_a, org_id)
+    assert result.get("success") is True, result
+
+    assert waited == [True], "the label delete did not wait for the open link"
+    assert await provider.get_document(topic, TOPICS) is not None
+    assert await _edge_count(provider, rec_b, topic) == 1

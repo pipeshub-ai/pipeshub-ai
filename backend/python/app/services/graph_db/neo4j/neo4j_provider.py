@@ -10651,6 +10651,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                       AND NOT t.id IN merge_winners
                       AND t.mergedInto IS NULL
                       AND NOT EXISTS {{ MATCH (:Record)-[:{rel}]->(t) }}
+                    // A link written while this waited for the node's lock commits
+                    // before it gets the lock; look again so it is not detached too.
+                    SET t._LOCK_ = true
+                    REMOVE t._LOCK_
+                    WITH t
+                    WHERE NOT EXISTS {{ MATCH (:Record)-[:{rel}]->(t) }}
                     OPTIONAL MATCH (a:{TAXONOMY_ALIAS_LABEL})-[:{TAXONOMY_ALIAS_REL}]->(t)
                     WHERE NOT EXISTS {{
                         MATCH (a)-[:{TAXONOMY_ALIAS_REL}]->(other) WHERE other <> t
