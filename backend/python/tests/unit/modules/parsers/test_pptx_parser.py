@@ -185,5 +185,8 @@ class TestParseFile:
 
         with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
             parser = PPTXParser()
-            with pytest.raises(DocumentProcessingError):
+            with pytest.raises(DocumentProcessingError) as exc_info:
                 parser.parse_file("/path/to/file.pptx")
+
+        assert exc_info.value.message.startswith("Failed to parse PPTX")
+        assert exc_info.value.details == {"status": str(mock_result.status)}
