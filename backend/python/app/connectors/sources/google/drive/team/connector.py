@@ -814,7 +814,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         await self._user_status.save()
 
     def _is_inactive_email(self, email: str | None) -> bool:
-        return bool(email) and email.lower() in self._inactive_emails
+        # A connector built without init has no set. Nobody is known to be inactive until a user listing fills it.
+        inactive = getattr(self, "_inactive_emails", ())
+        return bool(email) and email.lower() in inactive
 
     def _track_external_collaborator(self, entity_type: EntityType, email: Optional[str]) -> None:
         """Note a user grant whose email is outside this Workspace domain.
