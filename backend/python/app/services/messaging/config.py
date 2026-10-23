@@ -694,7 +694,7 @@ class RedisStreamsConfig(RedisConfig):
             "XADD MAXLEN, which drops unconsumed events once a stream exceeds max_len."
         ),
     )
-    max_len: int = Field(default=500000, description="Max stream length for XADD; used only when retention_mode is maxlen")
+    max_len: int = Field(default=500000, description="Max stream length: caps streams with no consumer group; with retention_mode maxlen it caps every stream via XADD and drops unconsumed events")
     block_ms: int = Field(default=2000, description="XREADGROUP block timeout in ms")
     batch_size: int = Field(
         default=1,

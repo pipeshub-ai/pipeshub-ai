@@ -87,7 +87,10 @@ async def test_children_of_a_parent_are_read_through_the_index(graph: Neo4jProvi
         async with graph.client.driver.session(database=graph.client.database) as session:
             summary = await (await session.run(f"PROFILE {query}", parameters)).consume()
         seeks = [op for op in _operators(summary.profile) if "IndexSeek" in op["operatorType"]]
-        assert any("externalParentId" in op["args"].get("Details", "") for op in seeks), summary.profile
+        # Both properties in one seek: the composite index, not a single-field one.
+        assert any(
+            all(f in op["args"].get("Details", "") for f in ("externalParentId", "connectorId")) for op in seeks
+        ), summary.profile
         assert _db_hits(summary.profile) <= MAX_DB_HITS
     finally:
         await graph.client.execute_query("MATCH (r:Record {connectorId: $c}) DELETE r", {"c": connector})

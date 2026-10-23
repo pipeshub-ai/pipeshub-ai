@@ -838,7 +838,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         return await self.client.begin_transaction(read, write, explicit=explicit)
 
-    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:  # noqa: FBT001
         return self.client is not None and self.client.opens_explicit_transaction(explicit)
 
     async def commit_transaction(self, transaction: str) -> None:
@@ -11091,11 +11091,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Blocks are the bulk of a code connector. DETACH DELETE of the whole
             # set inside the write txn below hits dbms.memory.transaction.total.max
             # (~1.4 GiB on a 2G heap). Auto-committed batches free that memory
-            # before the rest of the delete opens; a later rollback leaves the
-            # connector intact so a retry finishes the leftover blocks.
+            # before the rest of the delete opens. The rest commits per batch too,
+            # not as one transaction: a connector this size outlasts the server's
+            # transaction timeout, and a rollback after the blocks are gone would
+            # strand the connector without them. A failure partway leaves the
+            # connector node in place (it is deleted last), so a retry re-collects
+            # and finishes what is left.
             deleted_blocks = await self.delete_blocks_by_connector_id(connector_id)
 
-            # Phase 2: Delete within a single transaction
+            # Phase 2: Delete in per-batch auto-commits (see above)
             node_collections = [
                 CollectionNames.RECORDS.value,
                 CollectionNames.RECORD_GROUPS.value,
@@ -11118,7 +11122,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if transaction is None:
                 transaction = await self.begin_transaction(
                     read=edge_collections + node_collections,
-                    write=edge_collections + node_collections
+                    write=edge_collections + node_collections,
+                    explicit=False,
                 )
                 created_transaction = True
 

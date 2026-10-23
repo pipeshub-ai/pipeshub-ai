@@ -22,10 +22,10 @@ DB_QUERY_SECONDS = METRICS_BACKEND.histogram(
     buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
 )
 
-# The task inside an outer port call. A port method calling another port method
-# on self is timed once, as the outer op; tasks it spawns are a different task
-# and are still timed.
-_in_call: ContextVar["asyncio.Task | None"] = ContextVar("pipeshub_db_in_call", default=None)
+# (task, store instance) pairs inside an outer port call. A port method calling
+# another port method on the same store is timed once, as the outer op; a call
+# to a different store, or from a task it spawned, is timed on its own.
+_in_call: ContextVar[frozenset] = ContextVar("pipeshub_db_in_call", default=frozenset())
 
 # Lifecycle and long-wait ops (connect, listeners, watches) would skew p95.
 _UNTIMED_OPS = frozenset({"connect", "disconnect", "close", "wait_for_connection", "watch_key"})
@@ -54,10 +54,11 @@ def instrument_store(store: T, name: str) -> T:
 def _timed(fn: Callable[..., Coroutine[Any, Any, Any]], store: str, op: str) -> Callable[..., Coroutine[Any, Any, Any]]:
     @wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        task = asyncio.current_task()
-        if task is not None and _in_call.get() is task:
+        key = (asyncio.current_task(), id(getattr(fn, "__self__", fn)))
+        active = _in_call.get()
+        if key in active:
             return await fn(*args, **kwargs)
-        token = _in_call.set(task)
+        token = _in_call.set(active | {key})
         start = time.perf_counter()
         try:
             return await fn(*args, **kwargs)

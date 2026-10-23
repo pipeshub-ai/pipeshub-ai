@@ -569,7 +569,7 @@ class IGraphDBProvider(ABC):
         """Roll back a database transaction."""
         pass
 
-    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:  # noqa: FBT001
         """Whether ``begin_transaction(explicit=...)`` yields a real,
         all-or-nothing transaction. True unless the caller asked for False;
         Neo4j also consults its own setting."""

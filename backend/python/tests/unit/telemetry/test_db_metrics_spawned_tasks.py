@@ -29,3 +29,23 @@ def test_spawned_long_lived_task_is_still_timed(hist) -> None:  # noqa: F811
         await s.task
     asyncio.run(run())
     assert _count(hist, "get_document") == 1
+
+
+def test_call_into_a_different_store_is_timed(hist) -> None:  # noqa: F811
+    class Graph:
+        def __init__(self, kv) -> None:
+            self.kv = kv
+
+        async def get_document(self, key) -> str:
+            return await self.kv.get_key(key)
+
+    class Kv:
+        async def get_key(self, key) -> str:
+            return key
+
+    async def run() -> None:
+        kv = db_metrics.instrument_store(Kv(), "kv")
+        await db_metrics.instrument_store(Graph(kv), "graph").get_document("k")
+    asyncio.run(run())
+    assert _count(hist, "get_document") == 1
+    assert _count(hist, "get_key") == 1

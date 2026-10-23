@@ -771,8 +771,8 @@ etcd:
 # Message broker: "kafka" or "redis" (uses Redis Streams, default)
 messageBroker:
   type: redis
-  # Applies only with REDIS_STREAMS_RETENTION_MODE=maxlen (legacy cap that drops unconsumed events);
-  # the default retention trims streams only behind their consumers.
+  # Caps streams that have no consumer group yet. With redisStreamsRetentionMode "maxlen" (legacy) it caps
+  # every stream and drops unconsumed events; the default retention trims other streams only behind their consumers.
   redisStreamsMaxLen: "500000"
   # "after_ack" (default) or "maxlen" (legacy cap using redisStreamsMaxLen)
   redisStreamsRetentionMode: "after_ack"
