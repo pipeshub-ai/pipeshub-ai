@@ -103,7 +103,7 @@ class OpenAPIToolProvider:
             # Reads run, writes ask first, deletes are refused unless a rule says otherwise.
             approvals[adapter.path] = ApprovalTarget(
                 source="toolset", instance_id=instance.id, tool_name=op.tool_name, owner=instance.name,
-                kind=op.kind, tool=adapter,
+                kind=op.kind, tool=adapter, defaults="mcp",
             )
             registered.append(adapter.name)
         if registered:

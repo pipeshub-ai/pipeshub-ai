@@ -54,7 +54,7 @@ class TestAcmeReferenceSpec:
         assert sign_in.type is AuthType.OAUTH2_AUTHORIZATION_CODE
         assert (sign_in.authorization_url, sign_in.token_url) == ("/oauth/authorize", "/oauth/token")
 
-    def test_the_public_operation_is_called_without_credentials(self, compiled: CompiledSpec) -> None:
+    def test_the_public_operation_needs_no_credentials(self, compiled: CompiledSpec) -> None:
         requires_auth = {op.tool_name: op.requires_auth for op in compiled.operations}
         assert requires_auth.pop("list_announcements") is False
         assert all(requires_auth.values())
@@ -101,6 +101,19 @@ class TestDocumentChecks:
     def test_json_is_accepted(self) -> None:
         spec = json.dumps({"openapi": "3.0.3", "info": {"title": "J"}, "paths": {"/a": {"get": {"operationId": "a"}}}})
         assert compile_spec(spec.encode()).operations[0].tool_name == "a"
+
+    def test_json_is_read_without_the_yaml_parser(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The pure-Python YAML parser takes seconds over a large JSON spec such as Jira's.
+        def no_yaml(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("a JSON spec was parsed as YAML")
+
+        monkeypatch.setattr(yaml, "load", no_yaml)
+        spec = json.dumps({"openapi": "3.0.3", "info": {"title": "J"}, "paths": {"/a": {"get": {"operationId": "a"}}}})
+        assert compile_spec(("﻿" + spec).encode()).operations[0].tool_name == "a"
+
+    def test_what_only_looks_like_json_is_read_as_yaml(self) -> None:
+        spec = b"{openapi: 3.0.3, info: {title: J}, paths: {/a: {get: {operationId: a}}}}  # flow style\n"
+        assert compile_spec(spec).operations[0].tool_name == "a"
 
     @pytest.mark.parametrize(
         ("raw", "message"),

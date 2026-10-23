@@ -9,6 +9,7 @@ fetch an address the spec chooses, so an operation that needs one is skipped.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any, Optional
 
@@ -85,9 +86,14 @@ def parse_document(raw: bytes) -> dict[str, Any]:
     if len(raw) > MAX_SPEC_BYTES:
         raise SpecError(f"The spec is larger than {MAX_SPEC_BYTES // (1024 * 1024)} MB.")
     try:
-        document = yaml.load(raw, Loader=_NoAliasLoader)  # a SafeLoader subclass, so no arbitrary objects
-    except yaml.YAMLError as e:
-        raise SpecError(_yaml_error_message(raw, e)) from e
+        # JSON first: large specs mostly ship as JSON, which the pure-Python YAML parser takes seconds
+        # over (Jira's 2.5 MB spec: ~10 s against 0.1 s). JSON has no aliases to expand.
+        document = json.loads(raw)
+    except ValueError:
+        try:
+            document = yaml.load(raw, Loader=_NoAliasLoader)  # a SafeLoader subclass, so no arbitrary objects
+        except yaml.YAMLError as e:
+            raise SpecError(_yaml_error_message(raw, e)) from e
     if not isinstance(document, dict):
         raise SpecError("The spec must be a JSON or YAML object.")
     if "swagger" in document:

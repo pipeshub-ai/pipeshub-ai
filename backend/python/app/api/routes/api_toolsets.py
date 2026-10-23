@@ -7,6 +7,7 @@ Business rules live in `app.agents.openapi.service`; this module only maps HTTP 
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -156,7 +157,8 @@ async def validate_api_toolset_spec(request: Request, body: SpecUpload) -> dict[
     _get_user_context(request)
     await _require_admin(request, "add API actions")
     try:
-        compiled = compile_spec(body.spec.encode())
+        # A big YAML spec takes seconds to parse; on a thread, the service keeps answering meanwhile.
+        compiled = await asyncio.to_thread(compile_spec, body.spec.encode())
     except SpecError as e:
         raise _bad_request(e) from e
     return compiled.model_dump(by_alias=True, mode="json")
@@ -218,7 +220,9 @@ async def _save(request: Request, body: InstanceRequest, instance_id: str, exist
     user_id, org_id = _get_user_context(request)
     store = _store(request)
     try:
-        instance = service.build_instance(body.to_input(), instance_id=instance_id, org_id=org_id, user_id=user_id, existing=existing)
+        instance = await asyncio.to_thread(  # it compiles the spec, as /validate does
+            service.build_instance, body.to_input(), instance_id=instance_id, org_id=org_id, user_id=user_id, existing=existing,
+        )
     except service.ApiToolsetError as e:
         raise _bad_request(e) from e
     oauth_app = service.oauth_client_from(body.oauth_client_id, body.oauth_client_secret)

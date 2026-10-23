@@ -85,6 +85,8 @@ class TestLoading:
         kinds = {target.tool_name: target.kind for target in approvals.values()}
         assert kinds == {"list_tickets": "read", "update_ticket": "write"}
         assert {t.source for t in approvals.values()} == {"toolset"}
+        # Reads run, writes ask first and deletes are refused, as for an MCP tool.
+        assert {t.defaults for t in approvals.values()} == {"mcp"}
         assert {t.owner for t in approvals.values()} == {"Acme Helpdesk"}
 
     async def test_nothing_loads_with_the_labs_flag_off(self, config: InMemoryConfigService) -> None:

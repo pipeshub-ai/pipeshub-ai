@@ -88,8 +88,10 @@ shows each of these:
 - **Keep shared schemas in `components/schemas` and use `$ref`.** Only references inside the
   file are followed; PipesHub never fetches remote references. Bundle multi-file specs first.
 - **Use JSON request bodies.** An operation that needs a form, multipart or file body is skipped.
-- **List every way the API accepts credentials in `securitySchemes`.** The admin picks one.
-  An operation with `security: []` is called without credentials.
+- **List every way the API accepts credentials in `securitySchemes`.** The admin picks one,
+  and every call carries it, also to an operation whose `security` allows anonymous calls (`[]`
+  or `{}`), since many APIs answer an anonymous caller with less. Such operations are the ones an
+  API action with no authentication can call.
 
 How the model's arguments become the request: path, query, header and cookie parameters are
 filled by name (OpenAPI `style`/`explode` rules apply), and the JSON body is the `body` argument.

@@ -7,6 +7,7 @@ swaps the guard for a plain transport.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import threading
@@ -144,6 +145,25 @@ class TestValidate:
     def test_bad_spec_says_why(self, api: Harness) -> None:
         resp = api.call("POST", "/validate", user=ADMIN, json={"spec": "swagger: '2.0'"})
         assert resp.status_code == 400 and "Swagger 2.0" in resp.json()["detail"]
+
+    def test_a_spec_is_compiled_off_the_event_loop(self, api: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A big YAML spec takes seconds to parse; on the loop, the service would stop answering meanwhile.
+        where: list[str] = []
+        real = service_module.compile_spec
+
+        def noting_where(raw: bytes) -> Any:  # noqa: ANN401
+            try:
+                asyncio.get_running_loop()
+                where.append("event loop")
+            except RuntimeError:
+                where.append("worker thread")
+            return real(raw)
+
+        monkeypatch.setattr(routes, "compile_spec", noting_where)
+        monkeypatch.setattr(service_module, "compile_spec", noting_where)
+        assert api.call("POST", "/validate", user=ADMIN, json={"spec": ACME_SPEC}).status_code == 200
+        api.create()
+        assert where == ["worker thread", "worker thread"]
 
 
 class TestInstances:

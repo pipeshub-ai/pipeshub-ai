@@ -10,7 +10,13 @@ import httpx
 import pytest
 
 from app.agents.mcp import oauth_client
-from app.agents.openapi.auth import AuthApplier, BearerAuth, NoAuth, build_auth
+from app.agents.openapi.auth import (
+    AuthApplier,
+    BasicAuth,
+    BearerAuth,
+    NoAuth,
+    build_auth,
+)
 from app.agents.openapi.executor import ApiCallError, OpenAPIHttpExecutor
 from app.agents.openapi.models import (
     ApiToolsetCredentials,
@@ -97,7 +103,7 @@ class TestAuthAndRetry:
         await _executor(handler, BearerAuth("t")).call(_op(), {})
         assert seen == ["Bearer t"]
 
-    async def test_anonymous_operation_gets_no_credentials(self) -> None:
+    async def test_an_operation_that_may_run_anonymously_still_carries_the_credential(self) -> None:
         seen: list[str | None] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -105,7 +111,37 @@ class TestAuthAndRetry:
             return httpx.Response(200, json={})
 
         await _executor(handler, BearerAuth("t")).call(_op(requires_auth=False), {})
-        assert seen == [None]
+        await _executor(handler).call(_op(requires_auth=False), {})
+        assert seen == ["Bearer t", None]
+
+    async def test_auth_that_the_spec_makes_optional_is_still_sent(self) -> None:
+        # Jira's shape: basic auth, OAuth, or `{}`. Without the credential Jira answers as nobody.
+        spec = {
+            "openapi": "3.0.1", "info": {"title": "Jira", "version": "1"},
+            "components": {"securitySchemes": {"basicAuth": {"type": "http", "scheme": "basic"}}},
+            "paths": {"/rest/api/3/project/search": {"get": {
+                "operationId": "searchProjects", "security": [{"basicAuth": []}, {}],
+                "responses": {"200": {"description": "ok"}},
+            }}},
+        }
+        (op,) = compile_spec(json.dumps(spec).encode()).operations
+        seen: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers.get("Authorization"))
+            return httpx.Response(200, json={"total": 13})
+
+        await _executor(handler, BasicAuth("me@acme.test", "token")).call(op, {})
+        assert seen == ["Basic bWVAYWNtZS50ZXN0OnRva2Vu"]
+
+    async def test_401_on_an_operation_that_may_run_anonymously_retries_with_fresh_credentials(self) -> None:
+        auth = _RefreshingAuth()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200 if request.headers["Authorization"] == "Bearer new" else 401, json={})
+
+        response = await _executor(handler, auth).call(_op(requires_auth=False), {})
+        assert response.status == 200 and auth.forced == [False, True]
 
     async def test_401_retries_once_with_fresh_credentials(self) -> None:
         auth = _RefreshingAuth()

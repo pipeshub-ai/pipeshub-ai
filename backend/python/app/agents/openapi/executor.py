@@ -71,14 +71,15 @@ class OpenAPIHttpExecutor:
 
     async def call(self, op: CompiledOperation, arguments: Mapping[str, Any]) -> ApiResponse:
         response = await self._send(op, arguments, force_refresh=False)
-        if response.status == 401 and op.requires_auth and self._auth.can_refresh:
+        if response.status == 401 and self._auth.can_refresh:
             response = await self._send(op, arguments, force_refresh=True)
         return response
 
     async def _send(self, op: CompiledOperation, arguments: Mapping[str, Any], *, force_refresh: bool) -> ApiResponse:
         request = build_request(op, arguments, self._base_url)
-        if op.requires_auth:
-            await self._auth.apply(request, force_refresh=force_refresh)
+        # Also when the spec lets the operation run anonymously (`{}` among its security options, as
+        # Jira's search does): the API then answers as nobody, with nothing in it.
+        await self._auth.apply(request, force_refresh=force_refresh)
         transport = self._transport or GuardedTransport(self._base_url, allow_private=self._allow_private)
         try:
             async with httpx.AsyncClient(
