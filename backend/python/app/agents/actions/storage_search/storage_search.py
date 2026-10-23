@@ -33,8 +33,8 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import regex
 from pydantic import BaseModel, Field
@@ -2104,6 +2104,7 @@ class StoragePatternMatch:
         max_stdout_bytes: int = 0,
         max_output_chars: int = _MAX_OUTPUT_CHARS,
         max_output_lines: int | None = None,
+        *,
         readable_only: bool = False,
     ) -> tuple[bool, str]:
         """Run a command and parse record file paths from output into structured metadata.

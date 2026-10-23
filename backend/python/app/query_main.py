@@ -183,7 +183,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app.container.logger()
     logger.debug("🚀 Starting retrieval application")
 
-    from app.agents.actions.storage_search.storage_search import sweep_orphan_views_at_startup
+    from app.agents.actions.storage_search.storage_search import (
+        sweep_orphan_views_at_startup,
+    )
 
     await sweep_orphan_views_at_startup(app_container.config_service())
 
