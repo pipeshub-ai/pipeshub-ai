@@ -58,6 +58,10 @@ async def test_a_passing_outage_sends_nothing() -> None:
     (RefreshError("unauthorized_client: x"), True, "domain-wide delegation"),
     (RefreshError("invalid_grant: Invalid JWT Signature."), True, "service account key"),
     (RefreshError("invalid_grant: Token has been expired or revoked."), False, "sign in to Google again"),
+    (RefreshError("invalid_grant: Token has been expired or revoked."), True, "service account key"),
+    (RefreshError("access_denied"), False, "sign in to Google again"),
+    (http_error(403, "insufficientPermissions"), False, "sign in to Google again"),
+    (http_error(403, "insufficientPermissions"), True, "domain-wide delegation"),
 ])
 async def test_problems_a_person_can_fix_are_sent_once_in_plain_words(error, workspace, words) -> None:
     health = GmailSyncHealth()
@@ -69,6 +73,15 @@ async def test_problems_a_person_can_fix_are_sent_once_in_plain_words(error, wor
     text = sent.notices[0]["title"] + " " + sent.notices[0]["message"]
     assert words in text
     assert not [w for w in INTERNALS if w in text], text
+
+
+@pytest.mark.asyncio
+async def test_a_personal_rejected_client_is_not_told_to_upload_a_service_account_key() -> None:
+    health = GmailSyncHealth()
+    health.record("a@x.example", RefreshError("invalid_client"), "mailbox")
+    gmail, sent = notices(workspace=False)
+    await gmail.report(health)
+    assert sent.notices == []
 
 
 @pytest.mark.asyncio

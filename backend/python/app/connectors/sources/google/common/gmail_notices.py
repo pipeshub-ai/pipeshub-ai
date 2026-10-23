@@ -28,19 +28,27 @@ class GmailNotices:
 
     async def report(self, health: GmailSyncHealth) -> None:
         attention = health.needs_attention()
-        if GmailFailure.RECONNECT in attention or (not self._workspace and GmailFailure.MISSING_SCOPE in attention):
+        # The same failure names come from both connectors. A personal access_denied is classified as delegation
+        # refused, and a Workspace 401 as reconnect, so each notice is sent only for the connector that can act on it.
+        if not self._workspace and (
+            GmailFailure.RECONNECT in attention
+            or GmailFailure.MISSING_SCOPE in attention
+            or GmailFailure.DELEGATION_REFUSED in attention
+        ):
             await self._send(NotificationType.CONNECTOR_AUTH_ERROR, NotificationSeverity.ERROR,
                              "Reconnect your Google account",
                              "Gmail stopped accepting this connection, so new mail is not being synced. Open the "
                              "connector and sign in to Google again.")
             return
-        if GmailFailure.KEY_REJECTED in attention:
+        if self._workspace and (GmailFailure.KEY_REJECTED in attention or GmailFailure.RECONNECT in attention):
             await self._send(NotificationType.CONNECTOR_AUTH_ERROR, NotificationSeverity.ERROR,
                              "Google did not accept the service account key",
                              "Mail is not being synced. The key may have been deleted or disabled in Google Cloud. "
                              "Upload a current service account key in the connector settings.")
             return
-        if GmailFailure.DELEGATION_REFUSED in attention or GmailFailure.MISSING_SCOPE in attention:
+        if self._workspace and (
+            GmailFailure.DELEGATION_REFUSED in attention or GmailFailure.MISSING_SCOPE in attention
+        ):
             await self._send(NotificationType.CONNECTOR_AUTH_ERROR, NotificationSeverity.ERROR,
                              "Google Workspace refused access to mail",
                              "Mail is not being synced. In the Google Admin console, check that domain-wide "

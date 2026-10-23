@@ -168,7 +168,10 @@ class GmailMailboxSync:
 
     async def run(self) -> None:
         state = await self._load()
-        if state.get("fullSyncHistoryId") or not state.get("historyId"):
+        # fullSyncReconcile stays set until a complete listing from the start has removed what it did not
+        # see. A resumed or partly failed read must not hand the mailbox to incremental sync, which never does
+        # that removal.
+        if state.get("fullSyncHistoryId") or state.get("fullSyncReconcile") or not state.get("historyId"):
             await self._full(state)
             return
         try:
@@ -189,7 +192,9 @@ class GmailMailboxSync:
         reconcile = bool(state.get("fullSyncReconcile"))
         listed_from_start = not state.get("fullSyncPageToken")
         seen: set[str] = set()
-        failed_threads: set[str] = set(state.get("retryThreads") or [])
+        # A listing from the start sees every thread that still exists. Keeping an older retry for a thread
+        # that is gone would block reconciliation forever.
+        failed_threads: set[str] = set() if listed_from_start else set(state.get("retryThreads") or [])
         page_token = state.get("fullSyncPageToken")
         saved_token = page_token
         while True:
@@ -199,7 +204,8 @@ class GmailMailboxSync:
                 if saved_token and page_token == saved_token and classify(error) is GmailFailure.OTHER:
                     # The page token an earlier sync saved is no longer accepted: list once more from the start.
                     self.logger.info(f"Gmail did not accept the saved page token for {self.mailbox}; restarting")
-                    page_token, saved_token, listed_from_start, seen = None, None, True, set()
+                    page_token, saved_token, listed_from_start, seen, failed_threads = (
+                        None, None, True, set(), set())
                     continue
                 raise
             for thread in response.get("threads") or []:
@@ -217,10 +223,11 @@ class GmailMailboxSync:
             state["fullSyncPageToken"] = page_token
             state["retryThreads"] = sorted(failed_threads)
             await self._save(state)
-        if reconcile and listed_from_start and not failed_threads:
+        reconciled = (not reconcile) or (listed_from_start and not failed_threads)
+        if reconcile and reconciled:
             await self._remove_unseen(seen)
         state.update({"historyId": state["fullSyncHistoryId"], "fullSyncHistoryId": None, "fullSyncPageToken": None,
-                      "fullSyncReconcile": False, "retryThreads": sorted(failed_threads)})
+                      "fullSyncReconcile": not reconciled, "retryThreads": sorted(failed_threads)})
         await self._save(state)
 
     async def _read_thread(self, thread_id: str, seen: set[str] | None = None) -> bool:

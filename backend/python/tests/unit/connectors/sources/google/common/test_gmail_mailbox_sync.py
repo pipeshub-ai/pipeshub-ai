@@ -280,6 +280,21 @@ async def test_a_failed_message_read_is_kept_and_read_again() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_failed_thread_keeps_reconciliation_until_the_next_full_read() -> None:
+    gmail, store, point = mailbox_of(3), FakeStore(), FakeSyncPoint()
+    await make(gmail, store, point).run()
+    gmail.delete("m0")
+    gmail.min_history = gmail.history_id + 1
+    gmail.fail["threads.get:t2"] = [http_error(400, "invalidArgument")]
+    await make(gmail, store, point).run()
+    assert "m0" in store.records, "a reconciliation that could not read a thread removes nothing"
+    assert point.data["k"]["fullSyncReconcile"] is True
+    await make(gmail, store, point).run()
+    assert "m0" not in store.records and "m2" in store.records
+    assert point.data["k"]["fullSyncReconcile"] is False
+
+
+@pytest.mark.asyncio
 async def test_expired_history_reads_again_and_removes_what_is_gone() -> None:
     gmail, store, point = mailbox_of(3), FakeStore(), FakeSyncPoint()
     await make(gmail, store, point).run()
