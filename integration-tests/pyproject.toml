@@ -101,7 +101,7 @@ dependencies = [
   "py-trello==0.20.1",
   "python-arango==8.1.5",
   "python-docx==1.2.0",
-  "neo4j>=5.0.0",
+  "neo4j==6.4.1",
   "pymongo>=4.5.0",
   "python-dotenv==1.2.2",
   "pyyaml>=6.0",
