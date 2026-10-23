@@ -69150,6 +69150,8 @@ paths:
         The code-graph tools (`pipeshub_code_repos`, `pipeshub_code_symbols`, `pipeshub_code_read`
         and the rest) are listed and callable only when the caller can read at least one indexed
         code repository and, for an OAuth access token or personal access token, holds `code:read`.
+        The repository check fails open: when the query service answers it with an error other
+        than `401` or `403`, times out or cannot be reached, the tools are listed anyway.
 
         The server runs in stateless mode: each request gets its own MCP server, so no
         `Mcp-Session-Id` is issued or needed. The body is one JSON-RPC message or a batch (array)
