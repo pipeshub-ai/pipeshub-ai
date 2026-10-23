@@ -15,6 +15,7 @@ here. ``README.md`` in this directory is the contract for adding tests.
 
   order 1  TC-SYNC-001        — full sync baseline vs fixture snapshot + live JQL
   order 2  TC-JIRA-001        — users / USER_APP_RELATION
+  order 2  TC-JIRA-AUTH-001   — the creator's link to the Jira account the API token belongs to
   order 3  TC-JIRA-002        — site groups count
   order 4  TC-JIRA-ROLE-001   — all primary-project AppRoles + synced User→Role members
   order 5  TC-JIRA-003        — project RecordGroup
@@ -58,6 +59,7 @@ from app.connectors.utils.value_mapper import map_relationship_type  # type: ign
 from app.models.entities import FileRecord, RecordType  # type: ignore[import-not-found]  # noqa: E402
 from app.sources.external.jira.jira import JiraDataSource  # type: ignore[import-not-found]  # noqa: E402
 from helper.assertions import ConnectorAssertions  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     apply_filter_full_sync,
@@ -72,6 +74,7 @@ from validation.graph_entity_validator import (  # noqa: E402
     assert_user_app_edge,
 )
 from connectors.jira.constants import (  # noqa: E402
+    connector_base_url,
     JIRA_FILTER_DATE_CUT_MS,
     JIRA_INDEXING_WAIT_SEC,
     JIRA_IT_ARTIFACT_PREFIX,
@@ -95,6 +98,7 @@ from connectors.jira.jira_test_utils import (  # noqa: E402
     count_jira_group_synced_members,
     count_jira_site_groups_bulk,
     count_jira_users_with_visible_email,
+    count_visible_jira_projects,
     fetch_ancestor_chain,
     get_jira_issue_updated_ms,
     issue_exists_in_project,
@@ -200,7 +204,7 @@ async def _delete_artifact_issue(
 
 def _jira_auth_config() -> dict[str, str]:
     """API-token auth block for a connector, from the suite's existing env vars."""
-    base_url = (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
+    base_url = connector_base_url()
     email = os.getenv("JIRA_TEST_EMAIL") or ""
     api_token = os.getenv("JIRA_TEST_API_TOKEN") or ""
     if not (base_url and email and api_token):
@@ -385,7 +389,7 @@ class TestJiraConnector:
         """
         mutation_key = jira_connector["mutation_key"]
         issue_type = jira_connector["mutation_issue_type"]
-        base_url = (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
+        base_url = connector_base_url()
 
         title = artifact_summary("IncrTest")
         new_id: str | None = None
@@ -563,6 +567,30 @@ class TestJiraValidation:
         await assert_user_app_edge(account_id, connector_id=connector_id, graph_provider=graph_provider)
         logger.info("TC-JIRA-001 passed: %d users", rel_count)
 
+    @pytest.mark.order(2)
+    async def test_tc_jira_auth_001_authenticated_identity(
+        self,
+        jira_connector: dict[str, Any],
+        jira_datasource: JiraDataSource,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-JIRA-AUTH-001: the creator is linked to the Jira account the API token belongs to.
+
+        That link is what lets a creator whose PipesHub email differs see the account's
+        permissions on this connector. Read from the same ``GET /myself`` the connector reads.
+        """
+        resp = await jira_api_call_with_retry(
+            jira_datasource.get_current_user, context="TC-JIRA-AUTH-001 get_current_user",
+        )
+        assert resp.status == 200, f"get_current_user failed: HTTP {resp.status}"
+        me = resp.json() or {}
+        await assert_authenticated_identity_link(
+            graph_provider, jira_connector["connector_id"],
+            (me.get("emailAddress") or "").strip() or None,
+            me.get("accountId"),
+        )
+        logger.info("TC-JIRA-AUTH-001 passed: Jira account %s", me.get("accountId"))
+
     @pytest.mark.order(3)
     async def test_tc_jira_002_group_properties(
         self,
@@ -713,7 +741,7 @@ class TestJiraValidation:
         if not target_key:
             pytest.skip("No reference issue discovered on primary — skipping")
         target_id = jira_connector["reference_issue_id"]
-        base_url = (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
+        base_url = connector_base_url()
 
         async def _live_and_graph() -> tuple[Any, Any]:
             live = await JiraExpected.ticket_record(
@@ -1107,10 +1135,11 @@ class TestJiraFilters:
     async def test_tc_filter_002_not_in_primary(
         self,
         jira_connector: dict[str, Any],
+        jira_datasource: JiraDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-FILTER-002: not_in [primary] → primary absent, other IT projects present."""
+        """TC-FILTER-002: not_in [primary] → primary absent, every other visible project present."""
         connector_id = jira_connector["connector_id"]
         keys = jira_connector["project_keys"]
         primary_key = jira_connector["primary_key"]
@@ -1123,9 +1152,11 @@ class TestJiraFilters:
             connector_id, project_id_by_key[primary_key],
         )
         # BELONGS_TO-guarded: primary lost its RG→App edge on the narrowing full sync.
+        # The site may hold projects beyond the IT ones; not_in keeps all of them.
+        expected = await count_visible_jira_projects(jira_datasource) - 1
         app_rg_edges = await graph_provider.count_app_record_group_edges(connector_id)
-        assert app_rg_edges == len(keys) - 1, (
-            f"expected {len(keys) - 1} in-scope RecordGroups, got {app_rg_edges}; primary_rg={primary_rg!r}"
+        assert app_rg_edges == expected, (
+            f"expected {expected} in-scope RecordGroups, got {app_rg_edges}; primary_rg={primary_rg!r}"
         )
         for key in keys:
             if key == primary_key:

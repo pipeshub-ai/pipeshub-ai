@@ -13,6 +13,7 @@ repeating that here would test the fixture, not the wiring.
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -58,6 +59,7 @@ def provider() -> AsyncMock:
         "gated_app_ids": ["app1", "kb-1"],
         "by_connector": {"app1": [], "kb-1": []},
     }
+    graph.get_hidden_app_ids.return_value = []
     return graph
 
 
@@ -131,6 +133,47 @@ async def test_a_root_listing_uses_the_root_query(service, provider) -> None:
     assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["user_app_ids"] == [
         "app1", "kb-1",
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_root_listing_leaves_out_a_hidden_collection(service, provider) -> None:
+    """A project's own file collection is not listed at the top level."""
+    provider.get_hidden_app_ids.return_value = ["kb-1"]
+    provider.get_knowledge_hub_root_nodes_v2.return_value = envelope(
+        [row("app1", "App One", node_type="app")]
+    )
+    await service.get_nodes(user_id="u1", org_id="o1")
+
+    provider.get_hidden_app_ids.assert_awaited_once_with(["app1", "kb-1"])
+    assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["user_app_ids"] == ["app1"]
+
+
+@pytest.mark.asyncio
+async def test_a_global_search_leaves_out_a_hidden_collection(service, provider) -> None:
+    provider.get_hidden_app_ids.return_value = ["kb-1"]
+    page = SearchPage(rows=[], total=0, counts_by_type={}, start_index=0, end_index=0,
+                      next_cursor=None, prev_cursor=None)
+    with patch(
+        "app.connectors.sources.localKB.handlers.knowledge_hub_service.search_page",
+        AsyncMock(return_value=page),
+    ) as searched:
+        await service.get_nodes(user_id="u1", org_id="o1", q="report")
+
+    access = searched.call_args.kwargs["access"]
+    assert access["gated_app_ids"] == ["app1"]
+    assert "kb-1" not in access.get("by_connector", {})
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_collection_is_still_browsed_by_id(service, provider) -> None:
+    """Its project opens it by id, so a browse inside it is not filtered."""
+    provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
+        [row("r1", "Record")], scope=admitted_scope("kb-1", "app")
+    )
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="kb-1", parent_type="app")
+
+    assert [item.id for item in result.items] == ["r1"]
+    provider.get_hidden_app_ids.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -510,6 +553,52 @@ async def test_the_page_walk_is_bounded_by_queries_not_items(service, provider) 
     assert provider.get_knowledge_hub_root_nodes_v2.await_count == _MAX_PAGE_WALK
 
 
+def _sorted_listing(names: list[str]) -> tuple[list[dict], Callable[..., Awaitable[dict]]]:
+    """A root listing over these rows that honours limit and the keyset, as the
+    provider does (limit + 1 rows read to tell whether more follow)."""
+    rows = [row(f"r{i:03d}", name) for i, name in enumerate(names)]
+    rows.sort(key=lambda r: (r["sortKey"], r["id"]))
+
+    async def listing(*, limit: int, after: dict | None, direction: str, **_kwargs: object) -> dict:
+        assert direction == "next"
+        start = 0
+        if after is not None:
+            start = next(i for i, r in enumerate(rows) if r["id"] == after["id"]) + 1
+        window = rows[start:start + limit + 1]
+        page = envelope(window[:limit], total=len(rows), has_more=len(window) > limit)
+        # Only the first page counts; later ones carry the total in the cursor.
+        if after is not None:
+            page["partitions"][0]["total"] = None
+        return page
+
+    return rows, listing
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [1, 3, 7])
+async def test_numbered_pages_cover_the_listing_once_in_order(service, provider, limit) -> None:
+    rows, listing = _sorted_listing([f"Name {n % 5} {n}" for n in range(20)])
+    provider.get_knowledge_hub_root_nodes_v2.side_effect = listing
+    seen: list[str] = []
+    for page in range(1, 20 // limit + 3):
+        provider.get_knowledge_hub_root_nodes_v2.reset_mock()
+        result = await service.get_nodes(user_id="u1", org_id="o1", page=page, limit=limit, sort_by="name",
+                                         sort_order="asc")
+        assert result.success is True
+        # One keyset step per page up to this one, stopping where the listing ends.
+        last_page = -(-len(rows) // limit)
+        assert provider.get_knowledge_hub_root_nodes_v2.await_count == min(page, last_page)
+        expected = rows[(page - 1) * limit:page * limit]
+        assert [i.id for i in result.items] == [r["id"] for r in expected]
+        assert result.pagination.totalItems == len(rows)
+        assert result.pagination.hasNext is (page * limit < len(rows))
+        if expected:
+            assert (result.pagination.startIndex, result.pagination.endIndex) == (
+                (page - 1) * limit + 1, (page - 1) * limit + len(expected))
+        seen.extend(i.id for i in result.items)
+    assert seen == [r["id"] for r in rows]
+
+
 @pytest.mark.asyncio
 async def test_a_page_past_the_end_is_empty(service, provider) -> None:
     """Not the last page it reached, served under the number asked for."""
@@ -550,7 +639,8 @@ async def test_a_cursor_issued_for_one_folder_is_refused_on_another(service, pro
 
 
 @pytest.mark.asyncio
-async def test_a_browse_cursor_is_refused_on_a_flatten_of_the_same_folder(service, provider) -> None:
+async def test_a_browse_cursor_stays_a_browse_when_the_request_asks_to_flatten(service, provider) -> None:
+    """The cursor chose browse. flattened=true on the next request does not retarget it."""
     provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
         [row("r1", "Record")], total=5, has_more=True, scope=admitted_scope()
     )
@@ -558,31 +648,48 @@ async def test_a_browse_cursor_is_refused_on_a_flatten_of_the_same_folder(servic
     first = await service.get_nodes(**browse)
 
     result = await service.get_nodes(**browse, flattened=True, cursor=first.pagination.nextCursor)
-    assert (result.success, result.errorCode) == (False, 400)
-    assert result.error == "Invalid cursor: issued for a different location"
+    assert result.success is True
+    assert provider.get_knowledge_hub_connector_page_v3.call_args.kwargs["flatten"] is False
 
 
 @pytest.mark.asyncio
-async def test_a_search_cursor_is_refused_on_a_listing(service, provider) -> None:
+async def test_a_search_cursor_pages_alone_and_is_refused_on_another_parent(service, provider) -> None:
+    """Sending nextCursor by itself continues the search. A different parent is another location."""
     provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
         [row("r1", "Report")], total=5, has_more=True, scope=admitted_scope()
     )
     searched = await service.get_nodes(user_id="u1", org_id="o1", q="report", limit=1)
     assert searched.pagination.nextCursor
-    asked = provider.get_knowledge_hub_connector_page_v3.await_count
 
-    for listing in ({}, {"parent_id": "p1", "parent_type": "recordGroup", "flattened": True}):
-        result = await service.get_nodes(
-            user_id="u1", org_id="o1", limit=1, cursor=searched.pagination.nextCursor, **listing
-        )
-        assert (result.success, result.errorCode) == (False, 400), listing
-        assert result.error == "Invalid cursor: issued for a different location"
+    alone = await service.get_nodes(
+        user_id="u1", org_id="o1", q="other", limit=1, cursor=searched.pagination.nextCursor,
+    )
+    assert alone.success is True
+    assert provider.get_knowledge_hub_connector_page_v3.call_args.kwargs["filters"]["search_query"] == "report"
+    assert alone.filters.applied.q == "report"
+    assert alone.filters.applied.sortBy == "updatedAt"
+    assert alone.filters.applied.sortOrder == "desc"
     provider.get_knowledge_hub_root_nodes_v2.assert_not_called()
-    assert provider.get_knowledge_hub_connector_page_v3.await_count == asked
+
+    bare = await service.get_nodes(
+        user_id="u1", org_id="o1", limit=1, cursor=searched.pagination.nextCursor, flattened=False,
+    )
+    assert bare.success is True
+    assert bare.filters.applied.q == "report"
+    assert provider.get_knowledge_hub_connector_page_v3.call_args.kwargs["flatten"] is True
+    assert provider.get_knowledge_hub_connector_page_v3.call_args.kwargs["filters"]["search_query"] == "report"
+
+    elsewhere = await service.get_nodes(
+        user_id="u1", org_id="o1", limit=1, cursor=searched.pagination.nextCursor,
+        parent_id="p1", parent_type="recordGroup", flattened=True,
+    )
+    assert (elsewhere.success, elsewhere.errorCode) == (False, 400)
+    assert elsewhere.error == "Invalid cursor: issued for a different location"
 
 
 @pytest.mark.asyncio
-async def test_a_listing_cursor_is_refused_on_a_search(service, provider) -> None:
+async def test_a_listing_cursor_stays_a_listing_when_the_request_has_a_query(service, provider) -> None:
+    """q on the next request does not turn a root listing into a search."""
     provider.get_knowledge_hub_root_nodes_v2.return_value = envelope(
         [row("app1", "App One", node_type="app")], total=5, has_more=True
     )
@@ -591,8 +698,8 @@ async def test_a_listing_cursor_is_refused_on_a_search(service, provider) -> Non
     result = await service.get_nodes(
         user_id="u1", org_id="o1", q="report", limit=1, cursor=first.pagination.nextCursor
     )
-    assert (result.success, result.errorCode) == (False, 400)
-    assert result.error == "Invalid cursor: issued for a different location"
+    assert result.success is True
+    assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["search_query"] is None
     provider.get_knowledge_hub_connector_page_v3.assert_not_called()
 
 

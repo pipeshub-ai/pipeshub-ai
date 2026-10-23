@@ -140,6 +140,18 @@ class TestIsRetryableError:
             GitHubResponse(success=False, error="boom", status_code=503)
         ) is True
 
+    def test_a_dropped_connection_is_retryable(self) -> None:
+        """B3: "Server disconnected without sending a response" made a sync a silent no-op."""
+        assert RuntimeHelper._is_retryable_error(GitHubResponse(
+            success=False, error="Server disconnected without sending a response.",
+            exception_type="RemoteProtocolError",
+        )) is True
+
+    def test_an_unknown_error_without_a_status_is_not_retried(self) -> None:
+        assert RuntimeHelper._is_retryable_error(GitHubResponse(
+            success=False, error="boom", exception_type="ValueError",
+        )) is False
+
     def test_404_is_not_retryable(self) -> None:
         assert RuntimeHelper._is_retryable_error(
             GitHubResponse(success=False, error="missing", status_code=404)

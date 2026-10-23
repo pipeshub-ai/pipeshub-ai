@@ -18,3 +18,13 @@ class StorageRequestRejectedError(aiohttp.ClientError):
         super().__init__(message)
         self.status = status
         self.too_large = too_large
+
+
+class StoredRecordTooLargeError(Exception):
+    """A stored record decodes to more than the reader will hold in memory.
+
+    Raised from the zstd frame header, before anything is decompressed. Readers
+    already skip a record whose fetch fails, so the record drops out of that one
+    request instead of risking the pod.
+    """
+

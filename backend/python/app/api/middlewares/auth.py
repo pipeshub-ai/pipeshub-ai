@@ -33,7 +33,12 @@ AUTH_POLICY_ATTR = "__auth_policy__"
 
 # Set only by the regular path from a verified OAuth access token; a service token that
 # arrives carrying them must not be able to pose as an OAuth client.
-_OAUTH_DERIVED_CLAIMS = ("isOAuth", "oauthScopes", "oauthClientId")
+_OAUTH_DERIVED_CLAIMS = ("isOAuth", "oauthScopes", "oauthClientId", "knowledgeLimit")
+
+#: What the user let a connected app see (``apps`` / ``recordGroups`` /
+#: ``records``), signed into the app's OAuth or personal access token by Node.
+KNOWLEDGE_LIMIT_CLAIM = "knowledgeLimit"
+_KNOWLEDGE_LIMIT_KEYS = ("apps", "recordGroups", "records")
 
 DEFAULT_SESSION_CHECK_TTL_SECONDS = 30.0
 
@@ -106,6 +111,7 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
     """Add metadata and normalize OAuth tokens for scope enforcement."""
     payload["user"] = token
     payload["token_type"] = AuthTokenType.REGULAR.value
+    limit = payload.pop(KNOWLEDGE_LIMIT_CLAIM, None)
     if payload.get("tokenType") == "oauth":
         # "".split(" ") is [""]. A token with no scope names is not a grant.
         scopes = str(payload.get("scope") or "").split()
@@ -118,6 +124,12 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
         payload["isOAuth"] = True
         payload["oauthScopes"] = scopes
         payload["oauthClientId"] = payload.get("client_id")
+        if isinstance(limit, dict):
+            payload[KNOWLEDGE_LIMIT_CLAIM] = {
+                key: [i for i in limit.get(key) or [] if isinstance(i, str) and i]
+                if isinstance(limit.get(key), list) else []
+                for key in _KNOWLEDGE_LIMIT_KEYS
+            }
         # A client_credentials token has no caller of its own: its userId is
         # the client id. The `createdBy` claim carries the identity it acts
         # as, which Node resolves when minting the token — the application's
@@ -132,6 +144,13 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
 
     payload["role"] = normalize_auth_role(payload.get("role"))
     return payload
+
+
+def connection_limit(user: Mapping[str, Any] | None) -> dict[str, list[str]] | None:
+    """What the connected app making this request may see, or None when it may
+    see everything its user can (a session, or an app given no limit)."""
+    limit = (user or {}).get(KNOWLEDGE_LIMIT_CLAIM)
+    return limit if isinstance(limit, dict) else None
 
 
 def _normalize_scoped_payload(payload: dict[str, Any], token: str) -> dict[str, Any]:

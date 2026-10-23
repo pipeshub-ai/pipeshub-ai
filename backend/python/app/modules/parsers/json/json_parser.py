@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from app.models.blocks import (
@@ -50,6 +51,25 @@ from app.utils.logger import create_logger
 
 logger = create_logger("json_parser")
 
+# A string literal (kept whole, so `//` inside one stays) or a `//` / `/* */` comment.
+_JSONC_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/', re.S)
+
+
+def _loads_allowing_comments(text: str) -> object:
+    """json.loads, retried with comments removed when the text does not parse.
+
+    JSON with comments is common in repositories: Kafka's protocol schemas start with a
+    `//` licence header, tsconfig.json and editor settings carry them. Plain JSON never
+    reaches the retry; text that is still not JSON raises as before.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        stripped = _JSONC_TOKEN.sub(lambda m: m.group(0) if m.group(0).startswith('"') else "", text)
+        if stripped == text:
+            raise
+        return json.loads(stripped)
+
 
 class JSONParser:
     """Parser for JSON bytes -> BlocksContainer."""
@@ -74,7 +94,7 @@ class JSONParser:
         try:
             # json.loads + the tree walk below are synchronous CPU work; keep
             # large payloads off the event loop.
-            data = await asyncio.to_thread(json.loads, decode_text(content))
+            data = await asyncio.to_thread(_loads_allowing_comments, decode_text(content))
         except Exception as e:
             raise ParseError(
                 ParseErrorCode.PARSE_FAILED,

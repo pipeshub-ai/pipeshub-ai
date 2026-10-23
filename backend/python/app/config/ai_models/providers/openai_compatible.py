@@ -8,7 +8,9 @@ from .common_fields import (
     API_KEY_OPTIONAL,
     EMBEDDING_COMMON_TAIL,
     FRIENDLY_NAME,
+    GATEWAY_CAPABILITIES,
     LLM_COMMON_TAIL,
+    add_identity_forwarding,
     model_field,
 )
 
@@ -55,7 +57,7 @@ _COMPAT_FORMAT = AIModelField(
 )
 
 
-@AIModelProviderBuilder("OpenAI Compatible", "openAICompatible") \
+@add_identity_forwarding(AIModelProviderBuilder("OpenAI Compatible", "openAICompatible") \
     .with_description("OpenAI-compatible models") \
     .with_capabilities([
         ModelCapability.TEXT_GENERATION,
@@ -93,6 +95,6 @@ _COMPAT_FORMAT = AIModelField(
     .add_field(API_KEY_OPTIONAL, ModelCapability.STT) \
     .add_field(model_field("e.g. whisper-1"), ModelCapability.STT) \
     .add_field(FRIENDLY_NAME, ModelCapability.STT) \
-    .build_decorator()
+    , GATEWAY_CAPABILITIES).build_decorator()
 class OpenAICompatibleProvider:
     pass

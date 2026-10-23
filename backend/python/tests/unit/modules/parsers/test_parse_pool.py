@@ -255,7 +255,8 @@ class TestParsersUseThePool:
         assert _shape(container) == _shape(MarkdownToBlocksConverter().convert(markdown))
 
     async def test_large_source_is_parsed_in_a_worker(self, governor: MagicMock) -> None:
-        source = b"def f():\n    return 1\n\n\n" * 14_000
+        # Large by size, under the parser's block cap.
+        source = (b"def f():\n" + b"    x = 1\n" * 30 + b"    return x\n\n\n") * 1_000
         assert len(source) >= LARGE
         parser = CodeFileParser()
 
@@ -368,6 +369,20 @@ class TestAbandonedJobs:
         monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "1800")
         assert await parse_pool.submit(len, b"abc") == len(b"abc")
 
+    async def test_a_job_with_its_own_deadline_is_stopped_at_it(
+        self, governor: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "1800")
+        await parse_pool.submit(os.getpid)
+
+        started = time.monotonic()
+        with pytest.raises(parse_pool.ParseWorkerError) as raised:
+            await parse_pool.submit(time.sleep, 600, label="slow.pdf", timeout=0.5)
+
+        assert raised.value.cause == "timed_out"
+        assert time.monotonic() - started < 10
+        assert await parse_pool.submit(len, b"abc", timeout=30) == len(b"abc")
+
     async def test_cancelling_the_caller_stops_its_running_parse(self, governor: MagicMock) -> None:
         busy_pid = await parse_pool.submit(os.getpid)
         task = asyncio.create_task(parse_pool.submit(time.sleep, 600))
@@ -470,6 +485,8 @@ class TestLifecycle:
         "app.modules.parsers.markdown.image_references",
         "app.modules.parsers.code_parser.code_file_parser",
         "app.modules.parsers.csv.table_detection",
+        "app.modules.parsers.pdf.pdf_inspection",
+        "app.modules.parsers.pdf.layout_pages",
     ],
 )
 def test_what_a_worker_imports_stays_light(module: str) -> None:
@@ -496,7 +513,8 @@ async def test_the_event_loop_keeps_ticking_while_a_worker_parses_a_large_file(
 ) -> None:
     """Ticks are counted, not timed, so a slow runner cannot make this flaky:
     a loop held by the parse gives zero ticks, a free one gives dozens."""
-    source = b"class A:\n    def run(self, n: int) -> int:\n        return n + 1\n\n\n" * 6_000
+    body = b"        n = n + 1\n" * 40
+    source = (b"class A:\n    def run(self, n: int) -> int:\n" + body + b"        return n\n\n\n") * 900
     assert len(source) >= LARGE
     parser = CodeFileParser()
     ticks = 0
@@ -515,5 +533,5 @@ async def test_the_event_loop_keeps_ticking_while_a_worker_parses_a_large_file(
         running = False
         await beat
 
-    assert len(container.block_groups) == 6_000
+    assert len(container.block_groups) == 900
     assert ticks >= 3

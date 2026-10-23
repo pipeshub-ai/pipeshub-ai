@@ -3,14 +3,12 @@ Extended tests for app.sources.client.azure.azure_files covering missing lines:
 - AzureFilesRESTClient.get_share_service_client (lines 254-262)
 - AzureFilesRESTClient.get_async_share_service_client (lines 266-276)
 - AzureFilesRESTClient.get_account_url for ConnectionStringConfig (line 299)
-- AzureFilesRESTClient.ensure_share_exists (lines 354-363)
 - AzureFilesClient delegates: get_share_name, get_credentials_info, etc.
 - AzureFilesClient.build_with_connection_string_config error
 - AzureFilesClient.build_with_account_key_config error
 """
 
-import logging
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,8 +18,6 @@ from app.sources.client.azure.azure_files import (
     AzureFilesConfigurationError,
     AzureFilesConnectionStringConfig,
     AzureFilesRESTClient,
-    AzureFilesResponse,
-    AzureFilesShareError,
 )
 
 
@@ -98,7 +94,9 @@ class TestAzureFilesRESTClientAsyncShareServiceClient:
 class TestAzureFilesRESTClientAccountUrl:
     def test_get_account_url_connection_string(self):
         config = MagicMock(spec=AzureFilesConnectionStringConfig)
-        config.get_account_name.return_value = "myaccount"
+        config.create_share_service_client.return_value.primary_endpoint = (
+            "https://myaccount.file.core.windows.net/?sv=1&sig=secret"
+        )
         # Remove get_account_url from spec
         del config.get_account_url
 
@@ -108,53 +106,12 @@ class TestAzureFilesRESTClientAccountUrl:
 
     def test_get_account_url_no_account_name(self):
         config = MagicMock(spec=AzureFilesConnectionStringConfig)
-        config.get_account_name.return_value = None
+        config.create_share_service_client.side_effect = ValueError("no endpoint")
         del config.get_account_url
 
         rest_client = AzureFilesRESTClient(config)
         with pytest.raises(AzureFilesConfigurationError):
             rest_client.get_account_url()
-
-
-class TestEnsureShareExists:
-    @pytest.mark.asyncio
-    async def test_share_already_exists(self):
-        config = MagicMock(spec=AzureFilesAccountKeyConfig)
-        mock_share_client = AsyncMock()
-        mock_share_client.exists = AsyncMock(return_value=True)
-
-        mock_async_client = MagicMock()
-        mock_async_client.get_share_client.return_value = mock_share_client
-
-        rest_client = AzureFilesRESTClient(config)
-        # Pre-set the async client to avoid creation
-        rest_client._async_share_service_client = mock_async_client
-
-        result = await rest_client.ensure_share_exists("myshare")
-        assert result.success is True
-        assert result.data["action"] == "exists"
-
-    @pytest.mark.asyncio
-    async def test_share_created(self):
-        config = MagicMock(spec=AzureFilesAccountKeyConfig)
-        mock_share_client = AsyncMock()
-        mock_share_client.exists = AsyncMock(return_value=False)
-        mock_share_client.create_share = AsyncMock()
-
-        mock_async_client = MagicMock()
-        mock_async_client.get_share_client.return_value = mock_share_client
-
-        rest_client = AzureFilesRESTClient(config)
-        rest_client._async_share_service_client = mock_async_client
-
-        result = await rest_client.ensure_share_exists("myshare")
-        assert result.success is True
-        assert result.data["action"] == "created"
-
-
-# ============================================================================
-# AzureFilesClient delegation methods
-# ============================================================================
 
 
 class TestAzureFilesClientDelegation:
@@ -194,15 +151,6 @@ class TestAzureFilesClientDelegation:
         client = AzureFilesClient(rest_client)
         assert client.get_authentication_method() == "account_key"
 
-    @pytest.mark.asyncio
-    async def test_ensure_share_exists(self):
-        rest_client = MagicMock()
-        rest_client.ensure_share_exists = AsyncMock(
-            return_value=AzureFilesResponse(success=True)
-        )
-        client = AzureFilesClient(rest_client)
-        result = await client.ensure_share_exists("share1")
-        assert result.success is True
 
     @pytest.mark.asyncio
     async def test_get_async_share_service_client(self):

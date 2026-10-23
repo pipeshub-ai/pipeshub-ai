@@ -26,7 +26,7 @@ from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.api.middlewares.token_policy import is_service_token
 from app.api.routes.chatbot import (
     get_llm_for_chat,
@@ -46,7 +46,10 @@ from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
 )
-from app.modules.agents.capability_summary import fetch_connector_configs
+from app.modules.agents.capability_summary import (
+    PARTLY_SHARED_KEY,
+    fetch_connector_configs,
+)
 from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
     UnreadableSourceLimitError,
@@ -64,12 +67,15 @@ from app.modules.agents.qna.router import (
     build_prior_routing_messages as _build_prior_routing_messages,  # noqa: F401
 )
 from app.modules.retrieval.selection_scope import (
+    CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
     SelectionNotReadyError,
     SelectionTooLargeError,
+    connection_coverage,
     has_selection,
     max_selection_nodes,
     prepare_turn_scope,
     selection_error,
+    within_connection,
 )
 from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
@@ -78,6 +84,9 @@ from app.services.graph_db.interface.graph_db_provider import (
     SELECTION_APPS_FILTER_KEY,
     IGraphDBProvider,
 )
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import assert_identity_allowed, call_scope
+from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import model_default_reasoning_effort
@@ -399,6 +408,25 @@ async def _resolve_service_account_caller_identity(
             enriched_user_info, caller_name, caller_email,
         )
     return enriched_user_info
+
+
+async def _service_account_artifact_owner(
+    user_context: dict[str, Any], graph_provider: IGraphDBProvider, org_id: str,
+) -> str | None:
+    """The caller who owns what a service-account agent makes in their chat.
+
+    The agent runs as its creator, but the conversation is the caller's, and so
+    are the files made in it. Only a signed-in user of the agent's org can own
+    them: a service JWT (the Slack bot's) has no user to grant them to, so
+    they stay the creator's, as do those of a caller who is not found.
+    """
+    if user_context.get("isServiceAccount"):
+        return None
+    caller_id = user_context.get("userId")
+    caller = await get_user_or_503(graph_provider, caller_id)
+    if not caller or str(caller.get("orgId") or "") != str(org_id or ""):
+        return None
+    return caller_id
 
 
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
@@ -791,6 +819,7 @@ async def _resolve_turn_filters(
     org_id: str,
     logger: Logger,
     project_sources: dict[str, list[str]] | None = None,
+    connection_sources: dict[str, list[str]] | None = None,
     retrieval_user_id: str | None = None,
     searches_knowledge: bool = True,
 ) -> dict[str, Any]:
@@ -839,8 +868,10 @@ async def _resolve_turn_filters(
         )
     # A turn with internal search switched off never uses the selection, so
     # one that cannot be searched must not fail it. A saved agent is bound to
-    # its sources even without a selection.
-    if searches_knowledge and (has_selection(filters) or not is_universal_agent):
+    # its sources even without a selection, and a connected app to its limit.
+    if searches_knowledge and (
+        has_selection(filters) or connection_sources is not None or not is_universal_agent
+    ):
         agent_sources = None
         if not is_universal_agent:
             # The caller's project collection was admitted above.
@@ -848,8 +879,40 @@ async def _resolve_turn_filters(
         filters = await prepare_turn_scope(
             graph_provider, retrieval_user_id or caller_user_id, org_id, filters,
             agent_sources=agent_sources, project_sources=project_sources,
+            connection_sources=connection_sources,
         )
+    elif connection_sources is not None:
+        filters = within_connection(filters, connection_sources)
     return filters
+
+
+async def _knowledge_within_connection(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    agent_knowledge: list[dict[str, Any]],
+    connection_sources: dict[str, list[str]] | None,
+) -> list[dict[str, Any]]:
+    """``agent_knowledge`` as a connected app limited to ``connection_sources``
+    may see it: a source the limit names whole as it is, one it reaches only
+    through some of its folders or files marked as partly shared, and every
+    other source left out. Unchanged without a limit.
+
+    Raises:
+        SelectionTooLargeError, PermissionVerificationUnavailableError: see
+            ``resolve_selection_scope``.
+    """
+    if connection_sources is None:
+        return agent_knowledge
+    whole, partial = await connection_coverage(graph_provider, user_id, org_id, connection_sources)
+    kept: list[dict[str, Any]] = []
+    for k in agent_knowledge:
+        connector_id = k.get("connectorId") if isinstance(k, dict) else None
+        if connector_id in whole:
+            kept.append(k)
+        elif connector_id in partial:
+            kept.append({**k, PARTLY_SHARED_KEY: True})
+    return kept
 
 
 def _filter_knowledge_by_enabled_sources(
@@ -3900,6 +3963,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             _apply_user_context_gate(enriched_user_info, enabled=user_context_enabled)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
             is_service_account = False
+            artifact_owner_user_id = None
 
         else:
             actions_enabled = mcp_enabled = None
@@ -3912,6 +3976,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             if not agent:
                 raise AgentNotFoundError(agent_id)
             is_service_account = agent.get("isServiceAccount", False)
+            artifact_owner_user_id = None
 
             if is_service_account:
                 enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
@@ -3919,6 +3984,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 )
                 enriched_user_info = await _resolve_service_account_caller_identity(
                     enriched_user_info, chat_query, user_context, graph_provider, logger,
+                )
+                artifact_owner_user_id = await _service_account_artifact_owner(
+                    user_context, graph_provider, org_key,
                 )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
                 logger.debug(f"loaded service account agent. enriched_user_info: {enriched_user_info}")
@@ -3935,7 +4003,15 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 enabled=bool(agent.get("sendUserContext", True)),
             )
 
-        async def _run() -> AsyncGenerator[str, None]:
+        caller_principal = principal_from_request_user(
+            user_context, agent_id=None if agent_id == "agentIdPlaceholder" else agent_id,
+        )
+        await assert_identity_allowed(
+            caller_principal, Workload.AGENT,
+            config_service=config_service, container=request.app.container,
+        )
+
+        async def _run_unbound() -> AsyncGenerator[str, None]:
             """Everything below the authorization checks. Runs after the
             response headers are already on the wire, so the client sees the
             stream open immediately instead of waiting out the config fan-out.
@@ -4314,6 +4390,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         org_id=org_key,
                         logger=logger,
                         project_sources=_project_sources(chat_query.allowedFilters),
+                        connection_sources=connection_limit(getattr(request.state, "user", None)),
                         retrieval_user_id=enriched_user_info.get("userId"),
                         searches_knowledge=caps.internal_search,
                     )
@@ -4341,6 +4418,23 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     filters["strictScope"] = True
 
                 agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
+                try:
+                    # The universal agent's knowledge is every source the user
+                    # reads, and the prompt names each one with its id. A turn
+                    # without internal search drops its knowledge below, so a
+                    # limit too large to check must not fail it.
+                    agent_knowledge = await _knowledge_within_connection(
+                        graph_provider,
+                        enriched_user_info.get("userId") or user_context.get("userId", ""),
+                        org_key,
+                        agent_knowledge,
+                        connection_limit(getattr(request.state, "user", None)) if caps.internal_search else None,
+                    )
+                except SelectionTooLargeError:
+                    yield _stream_error_frame(
+                        protocol, CONNECTION_LIMIT_TOO_LARGE_MESSAGE, code="selection_too_large",
+                    )
+                    return
 
                 logger.info(f"Filters: {filters}")
 
@@ -4411,6 +4505,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     attachments=chat_query.attachments,
                     previous_conversations=chat_query.previousConversations,
                     logger=logger,
+                    connection_sources=connection_limit(getattr(request.state, "user", None)),
                 )
                 # Build query info
                 query_info = {
@@ -4437,6 +4532,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "toolsetConfigs": toolset_configs,
                     "conversationId": chat_query.conversationId,
                     "is_service_account": is_service_account,
+                    "artifact_owner_user_id": artifact_owner_user_id,
                     "isPlaceholderAgent": is_placeholder,
                     "modelName": model_name,
                     "modelKey": model_key,
@@ -4502,6 +4598,20 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 logger.error(f"Error in chat_stream body: {exc}", exc_info=True)
                 error_code, user_message = classify_exception(exc)
                 yield _stream_error_frame(protocol, user_message, error_code)
+
+        async def _run() -> AsyncGenerator[str, None]:
+            # Bound in the task that iterates the stream; see the same wrapper in chatbot.py.
+            async with call_scope(
+                caller_principal, Workload.AGENT,
+                config_service=config_service, container=request.app.container,
+                agent_id=None if agent_id == "agentIdPlaceholder" else agent_id,
+                conversation_id=chat_query.conversationId,
+            ):
+                # Closed with this wrapper: a disconnect closes only the outer generator,
+                # and the inner one must stop its producer task now, not at GC.
+                async with aclosing(_run_unbound()) as inner:
+                    async for event in inner:
+                        yield event
 
         return StreamingResponse(
             _run(),

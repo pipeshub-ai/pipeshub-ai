@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent import hook_dispatch as hooks
@@ -19,7 +20,7 @@ from app.agent_loop_lib.agent.tool_loop import (
 )
 from app.agent_loop_lib.context.base import ContextBudget
 from app.agent_loop_lib.core.context import RunContext
-from app.agent_loop_lib.core.exceptions import AgentError, HookBlocked, RunCancelled
+from app.agent_loop_lib.core.exceptions import AgentError, HookBlocked, RunCancelled, TransportError
 from app.agent_loop_lib.core.tokens import count_schema_tokens, count_text_tokens
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
@@ -78,7 +79,13 @@ def _content_to_json(content: Any) -> str:
         return str(content)
 
 
+logger = logging.getLogger(__name__)
+
 _PART_TYPES = (TextPart, ImagePart, ThinkingPart)
+
+# Each retry after partial output re-streams the answer from the start, so a
+# connection that keeps dropping mid-answer is not retried indefinitely.
+_MAX_RETRIES_AFTER_PARTIAL_OUTPUT = 2
 
 _FINAL_ANSWER_NOTE = (
     "[loop: You have reached the maximum number of steps for this request. "
@@ -380,6 +387,24 @@ class Agent:
         alias = _AG_UI_ALIASES.get(event_type)
         if alias is not None:
             await emitter.emit(AgentEvent(event_type=alias, run_context=self._run_ctx, payload=payload))
+
+    async def _discard_streamed_attempt(self, turn_index: int, reasoning_open: bool) -> bool:
+        """Close a model call that raised mid-stream with `discarded: True`.
+
+        None of what it streamed reaches the conversation history, so
+        consumers drop this attempt's text and reasoning rather than leave a
+        fragment on screen, or show it twice when the call is retried.
+        Returns whether every consumer was told."""
+        discarded = {"turn_index": turn_index, "discarded": True}
+        try:
+            if reasoning_open:
+                await self.emit(EventType.REASONING_MESSAGE_END, discarded)
+            await self.emit(EventType.TEXT_MESSAGE_END, discarded)
+        except Exception:
+            # The model call's own error is the one the caller must see.
+            logger.warning("Could not discard the failed model call's streamed output", exc_info=True)
+            return False
+        return True
 
     # ---- composition primitives for LoopStrategy implementations ----
 
@@ -746,7 +771,10 @@ class Agent:
         if spec.model.effort is not None:
             llm_kwargs["effort"] = spec.model.effort
 
+        failures_after_partial_output = 0
+
         async def _call_llm() -> "ModelResponse":
+            nonlocal failures_after_partial_output
             if not self._streaming:
                 return await self._model.complete(
                     messages=messages, tools=tool_schemas or None, system=system_prompt,
@@ -781,53 +809,65 @@ class Agent:
             # ends. Any narration preceding it has already cleared the client's
             # status line, so re-assert "still working" once, on the first delta.
             tool_args_state_sent = False
-            async for event in self._model.stream(
-                messages=messages, tools=tool_schemas or None, system=system_prompt,
-                model=spec.model.model,
-                **({"system_blocks": system_blocks} if system_blocks else {}),
-                **llm_kwargs,
-            ):
-                if isinstance(event, ThinkingDeltaEvent):
-                    if not reasoning_open:
-                        await self.emit(EventType.REASONING_MESSAGE_START, {"turn_index": turn_index})
-                        reasoning_open = True
-                    await self.emit(EventType.REASONING_MESSAGE_CONTENT, {"delta": event.delta})
-                elif isinstance(event, TextDeltaEvent):
-                    if reasoning_open:
-                        await self.emit(EventType.REASONING_MESSAGE_END, {"turn_index": turn_index})
-                        reasoning_open = False
-                    await self.emit(EventType.TEXT_MESSAGE_CONTENT, {"delta": event.delta})
-                elif isinstance(event, ToolCallDeltaEvent):
-                    # Route argument deltas for final_answer into TEXT_MESSAGE_CONTENT
-                    # so TerminalAnswerStreamer and AG-UI receive them unchanged.
-                    # For all other tools the delta is intentionally dropped here —
-                    # the fully assembled call from StreamCompleteEvent is what matters.
-                    idx = event.index
-                    if idx not in _fa_extractors:
-                        # First delta for this index — decide whether it is final_answer.
-                        from app.agent_loop_lib.tools.builtin.planning.final_answer import (
-                            FinalAnswerTool, final_answer_enabled,
-                        )
-                        if final_answer_enabled() and event.name == FinalAnswerTool().name:
-                            from app.agent_loop_lib.core.json_stream import StreamingJsonStringExtractor
-                            _fa_extractors[idx] = StreamingJsonStringExtractor("answer_markdown")
-                        else:
-                            _fa_extractors[idx] = None  # not a final_answer call
-                    extractor = _fa_extractors.get(idx)
-                    if extractor is not None:
-                        decoded = extractor.feed(event.arguments_delta)
-                        if decoded:
-                            if reasoning_open:
-                                await self.emit(EventType.REASONING_MESSAGE_END, {"turn_index": turn_index})
-                                reasoning_open = False
-                            await self.emit(EventType.TEXT_MESSAGE_CONTENT, {"delta": decoded})
-                    elif not tool_args_state_sent:
-                        tool_args_state_sent = True
-                        await obs.write_state(
-                            self, goal, "calling_llm", turn_index=turn_index, started_at=self.started_at,
-                        )
-                elif isinstance(event, StreamCompleteEvent):
-                    final_response = event.response
+            try:
+                async for event in self._model.stream(
+                    messages=messages, tools=tool_schemas or None, system=system_prompt,
+                    model=spec.model.model,
+                    **({"system_blocks": system_blocks} if system_blocks else {}),
+                    **llm_kwargs,
+                ):
+                    if isinstance(event, ThinkingDeltaEvent):
+                        if not reasoning_open:
+                            await self.emit(EventType.REASONING_MESSAGE_START, {"turn_index": turn_index})
+                            reasoning_open = True
+                        await self.emit(EventType.REASONING_MESSAGE_CONTENT, {"delta": event.delta})
+                    elif isinstance(event, TextDeltaEvent):
+                        if reasoning_open:
+                            await self.emit(EventType.REASONING_MESSAGE_END, {"turn_index": turn_index})
+                            reasoning_open = False
+                        await self.emit(EventType.TEXT_MESSAGE_CONTENT, {"delta": event.delta})
+                    elif isinstance(event, ToolCallDeltaEvent):
+                        # Route argument deltas for final_answer into TEXT_MESSAGE_CONTENT
+                        # so TerminalAnswerStreamer and AG-UI receive them unchanged.
+                        # For all other tools the delta is intentionally dropped here —
+                        # the fully assembled call from StreamCompleteEvent is what matters.
+                        idx = event.index
+                        if idx not in _fa_extractors:
+                            # First delta for this index — decide whether it is final_answer.
+                            from app.agent_loop_lib.tools.builtin.planning.final_answer import (
+                                FinalAnswerTool, final_answer_enabled,
+                            )
+                            if final_answer_enabled() and event.name == FinalAnswerTool().name:
+                                from app.agent_loop_lib.core.json_stream import StreamingJsonStringExtractor
+                                _fa_extractors[idx] = StreamingJsonStringExtractor("answer_markdown")
+                            else:
+                                _fa_extractors[idx] = None  # not a final_answer call
+                        extractor = _fa_extractors.get(idx)
+                        if extractor is not None:
+                            decoded = extractor.feed(event.arguments_delta)
+                            if decoded:
+                                if reasoning_open:
+                                    await self.emit(EventType.REASONING_MESSAGE_END, {"turn_index": turn_index})
+                                    reasoning_open = False
+                                await self.emit(EventType.TEXT_MESSAGE_CONTENT, {"delta": decoded})
+                        elif not tool_args_state_sent:
+                            tool_args_state_sent = True
+                            await obs.write_state(
+                                self, goal, "calling_llm", turn_index=turn_index, started_at=self.started_at,
+                            )
+                    elif isinstance(event, StreamCompleteEvent):
+                        final_response = event.response
+            except Exception as exc:
+                discarded = await self._discard_streamed_attempt(turn_index, reasoning_open)
+                if isinstance(exc, TransportError) and exc.partial_output:
+                    failures_after_partial_output += 1
+                    if discarded and failures_after_partial_output <= _MAX_RETRIES_AFTER_PARTIAL_OUTPUT:
+                        exc.discard_partial_output()
+                    logger.warning(
+                        "Model stream failed after partial output (turn %d, failure %d, retryable=%s): %s",
+                        turn_index, failures_after_partial_output, exc.retryable, exc,
+                    )
+                raise
             if reasoning_open:
                 await self.emit(EventType.REASONING_MESSAGE_END, {"turn_index": turn_index})
             text_end: dict = {"turn_index": turn_index}

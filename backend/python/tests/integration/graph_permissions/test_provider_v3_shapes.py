@@ -500,9 +500,9 @@ async def test_browse_opens_and_lists_only_what_the_check_admits(shapes, browsed
     """Browse answers as the access check does: another org's node never
     opens, an inaccessible start does not open, and below a start the walk from
     the App does not reach, STRICT and RESTRICTED are skipped. Two accepted
-    exceptions: BROWSE_ONLY, and placeholders, which browse lists and opens so
-    the records under one stay reachable while the check, which hands out
-    content, refuses them."""
+    exceptions: BROWSE_ONLY, and placeholders the check still refuses. A
+    placeholder asked by id is admitted when the walk admits it; this union
+    covers a stub browse lists so the records under it stay reachable."""
     provider = request.getfixturevalue(f"{backend}_provider")
     placeholders = {n["id"] for n in shapes["nodes"] if n["props"].get("isPlaceholder")}
     admitted = await _check(provider, _ids_of(shapes, *BROWSED_APPS)) | placeholders

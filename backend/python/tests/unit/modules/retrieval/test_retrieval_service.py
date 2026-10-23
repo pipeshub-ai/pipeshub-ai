@@ -293,43 +293,6 @@ class TestToQdrantSparse:
 
 
 # ============================================================================
-# _preprocess_query
-# ============================================================================
-
-class TestPreprocessQuery:
-    @pytest.mark.asyncio
-    async def test_adds_bge_prefix(self, retrieval_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(
-            return_value="BAAI/bge-large-en-v1.5"
-        )
-        result = await retrieval_service._preprocess_query("  hello  ")
-        assert result.startswith("Represent this document for retrieval:")
-        assert "hello" in result
-
-    @pytest.mark.asyncio
-    async def test_no_prefix_for_non_bge(self, retrieval_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(
-            return_value="text-embedding-3-small"
-        )
-        result = await retrieval_service._preprocess_query("  hello  ")
-        assert result == "hello"
-
-    @pytest.mark.asyncio
-    async def test_strips_whitespace(self, retrieval_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(return_value=None)
-        result = await retrieval_service._preprocess_query("  query with spaces  ")
-        assert result == "query with spaces"
-
-    @pytest.mark.asyncio
-    async def test_error_returns_stripped_query(self, retrieval_service):
-        retrieval_service.get_current_embedding_model_name = AsyncMock(
-            side_effect=Exception("config error")
-        )
-        result = await retrieval_service._preprocess_query("  fallback  ")
-        assert result == "fallback"
-
-
-# ============================================================================
 # get_embedding_model_name
 # ============================================================================
 
@@ -3311,3 +3274,22 @@ class TestSearchWithFiltersGroupFlattening:
         assert result["status"] == "success", result.get("message")
         contents = [r["content"] for r in result["searchResults"]]
         assert sorted(contents) == ["def a(): pass", "def b(): pass"]
+
+
+# ============================================================================
+# query instruction
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_retrieval_embeds_instructed_query_only_for_bge(retrieval_service, monkeypatch):
+    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "true")
+    for model, expected in [("BAAI/bge-large-en-v1.5", "Represent this sentence for searching relevant passages: hi"), ("text-embedding-3-small", "hi")]:
+        emb = MagicMock()
+        emb.model = model
+        emb.aembed_query = AsyncMock(return_value=[0.0])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=emb)
+        retrieval_service._ensure_sparse_embedder = AsyncMock(return_value=None)
+        retrieval_service._run_searches = AsyncMock(return_value=[])
+        retrieval_service._cached_embedding_is_local = True
+        await retrieval_service._execute_parallel_searches(["hi"], None, 5, "org")
+        emb.aembed_query.assert_awaited_once_with(expected)

@@ -507,9 +507,11 @@
         "is_executable": false,
         "kind": null,
         "language": null,
+        "pending_edges": null,
         "qualified_name": null,
         "signature": null,
-        "start_line": null
+        "start_line": null,
+        "type_table": null
       },
       "comments": [],
       "data": " def handle(self, payload: dict) -> dict:",

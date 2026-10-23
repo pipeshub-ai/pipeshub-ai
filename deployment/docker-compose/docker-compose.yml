@@ -160,6 +160,8 @@ services:
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
       # false: agent, team and knowledge-base creates follow NEO4J_EXPLICIT_TRANSACTIONS
       # (one auto-commit per query while that is off)
+      # NEO4J_EXPLICIT_TRANSACTIONS defaults to true: a failed multi-statement write rolls back.
+      # Set it to false for one auto-commit per query.
       - NEO4J_CREATE_TRANSACTIONS=${NEO4J_CREATE_TRANSACTIONS:-true}
 
       # Key-value store: "redis" (default, no extra container) | "etcd"
@@ -173,6 +175,7 @@ services:
       # Message broker: "redis" (default, uses Redis Streams) | "kafka"
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      - REDIS_STREAMS_RETENTION_MODE=${REDIS_STREAMS_RETENTION_MODE:-after_ack}
       # Indexing lanes on Redis Streams: how many (every service must agree), and
       # how a connector is given one: "assigned" (the least busy lane, recorded
       # once) or "hash", which switches assigned lanes off.
@@ -249,7 +252,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # Auth / tokens
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read}
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
       - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
@@ -278,6 +281,7 @@ services:
       - GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=${GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU:-}
       - INDEXING_SPLIT_LEASE_POOLS=${INDEXING_SPLIT_LEASE_POOLS:-}
       - GOVERNOR_LIGHT_PARSE_MAX=${GOVERNOR_LIGHT_PARSE_MAX:-}
+      - PARSE_MAX_ORG_SHARE=${PARSE_MAX_ORG_SHARE:-}
       - GOVERNOR_INDEX_HEADROOM=${GOVERNOR_INDEX_HEADROOM:-}
       - GOVERNOR_INDEX_MAX=${GOVERNOR_INDEX_MAX:-}
       - GOVERNOR_INDEX_HEAVY_WORKING_SET_GB=${GOVERNOR_INDEX_HEAVY_WORKING_SET_GB:-}
@@ -325,9 +329,13 @@ services:
       - ENTITY_SEARCH_TOOL=${ENTITY_SEARCH_TOOL:-}
       # On unless set to false; HIGH_ACCURACY_MODE does not change it.
       - TIMELINE_SUMMARIES=${TIMELINE_SUMMARIES:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - DATE_FILTER_SAFETY_NET=${DATE_FILTER_SAFETY_NET:-}
       - FETCH_SIZE_BY_CHARS=${FETCH_SIZE_BY_CHARS:-}
       # On unless set to false; HIGH_ACCURACY_MODE does not change it.
       - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}
@@ -354,6 +362,21 @@ services:
       # text, in MB (default 5). Larger ones are marked "not supported" with
       # the reason; CSV, JSON and YAML files keep their own parsers' limits.
       - CODE_FILE_MAX_SIZE_MB=${CODE_FILE_MAX_SIZE_MB:-}
+      # Code graph (O-12). Empty keeps the default in brackets: sweep for owed
+      # edge builds every N s [600]; full rebuild of each repo every N s
+      # [604800]; builds at once per process [2] and per org [1]; largest repo
+      # one build loads, in blocks [300000]; failed attempts before a build is
+      # marked failed [6]. CODE_GRAPH_ENABLED=false turns the code graph off
+      # [true]; CODE_GRAPH_BACKFILL=true re-indexes repos indexed before the
+      # current code-graph version on the next start [false].
+      - CODE_GRAPH_ENABLED=${CODE_GRAPH_ENABLED:-true}
+      - CODE_GRAPH_BACKFILL=${CODE_GRAPH_BACKFILL:-false}
+      - CODE_EDGE_BUILD_RECONCILE_INTERVAL_SECONDS=${CODE_EDGE_BUILD_RECONCILE_INTERVAL_SECONDS:-}
+      - CODE_EDGE_FULL_REBUILD_INTERVAL_SECONDS=${CODE_EDGE_FULL_REBUILD_INTERVAL_SECONDS:-}
+      - CODE_EDGE_BUILD_MAX_CONCURRENT=${CODE_EDGE_BUILD_MAX_CONCURRENT:-}
+      - CODE_EDGE_BUILD_MAX_PER_ORG=${CODE_EDGE_BUILD_MAX_PER_ORG:-}
+      - CODE_EDGE_BUILD_MAX_BLOCKS=${CODE_EDGE_BUILD_MAX_BLOCKS:-}
+      - CODE_EDGE_BUILD_MAX_FAILURES=${CODE_EDGE_BUILD_MAX_FAILURES:-}
       # Worker processes that parse large text, code and CSV files off the
       # indexing event loop. Empty derives it from the CPU limit (1 on a
       # 4-CPU host, at most 4); 0 parses in threads instead.
@@ -405,8 +428,7 @@ services:
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       # Set to "true" to route indexing through the standalone parsing/extraction services
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
-      # Set to "true" to defer graph enrichment until after vectordb indexing completes
-      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
+      - CODE_FILE_CLASSIFICATION=${CODE_FILE_CLASSIFICATION:-true}
 
       - VECTOR_COLLECTION_STRATEGY=${VECTOR_COLLECTION_STRATEGY:-single}
 

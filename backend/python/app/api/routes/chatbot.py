@@ -27,7 +27,11 @@ from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protoco
 from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
-from app.api.middlewares.auth import require_scopes, require_service_token
+from app.api.middlewares.auth import (
+    connection_limit,
+    require_scopes,
+    require_service_token,
+)
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
@@ -60,6 +64,13 @@ from app.modules.transformers.transformer import (
 from app.services.artifact_registry.access import is_direct_share, reader_edge
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.model_identity.boundary import (
+    UNATTRIBUTED_SERVICE,
+    principal_from_request_user,
+)
+from app.services.model_identity.principal import Principal, service_principal
+from app.services.model_identity.runtime import assert_identity_allowed, call_scope
+from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import get_generator_model_async
@@ -1449,7 +1460,51 @@ async def load_system_prompts(
     return {}
 
 
+def _chat_principal(request: Request) -> Principal:
+    try:
+        return principal_from_request_user(getattr(request.state, "user", None))
+    except Exception:
+        logger.warning("could not derive the caller's identity for the model gateway", exc_info=True)
+        return service_principal(UNATTRIBUTED_SERVICE)
+
+
 async def _generate_chat_stream_via_agent_loop(
+    request: Request,
+    query_info: "ChatQuery",
+    retrieval_service: RetrievalService,
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
+    cancellation_registry: RunCancellationRegistry | None = None,
+) -> AsyncGenerator[str, None]:
+    """Run the chat stream with the caller bound as the identity for model calls.
+
+    Bound here, inside the generator, because the binding has to live in the
+    task that iterates it: ``StreamingResponse`` and ``collect_stream_outcome``
+    both drive it from one task, and work the stream spawns (tools, sub-agents)
+    copies the context at creation.
+    """
+    async with call_scope(
+        _chat_principal(request),
+        Workload.CHAT,
+        config_service=config_service,
+        container=getattr(request.app, "container", None),
+        conversation_id=query_info.conversationId,
+    ):
+        async with aclosing(
+            _stream_chat_via_agent_loop(
+                request=request,
+                query_info=query_info,
+                retrieval_service=retrieval_service,
+                graph_provider=graph_provider,
+                config_service=config_service,
+                cancellation_registry=cancellation_registry,
+            )
+        ) as inner:
+            async for event in inner:
+                yield event
+
+
+async def _stream_chat_via_agent_loop(
     request: Request,
     query_info: "ChatQuery",
     retrieval_service: RetrievalService,
@@ -1554,6 +1609,7 @@ async def _generate_chat_stream_via_agent_loop(
         attachments=query_info.attachments,
         previous_conversations=query_info.previousConversations,
         logger=logger_,
+        connection_sources=connection_limit(user),
     )
     query_dict = {
         "query": query_info.query,
@@ -1561,6 +1617,7 @@ async def _generate_chat_stream_via_agent_loop(
         "previous_conversations": previous_conversations,
         "filters": effective_filters,
         "allowedFilters": query_info.allowedFilters,
+        "connectionLimit": connection_limit(user),
         "retrievalMode": query_info.retrievalMode,
         "quickMode": query_info.quickMode,
         "chatMode": query_info.chatMode,
@@ -1698,6 +1755,12 @@ async def askAI(
     `POST /api/v1/conversations/:id/messages`.
     """
     query_info = await _parse_chat_query(request, cancellation_registry, streaming=False)
+    await assert_identity_allowed(
+        _chat_principal(request),
+        Workload.CHAT,
+        config_service=config_service,
+        container=getattr(request.app, "container", None),
+    )
     stream = _generate_chat_stream_via_agent_loop(
         request=request,
         query_info=query_info,
@@ -1726,6 +1789,12 @@ async def askAIStream(
     for the mode → tool/prefetch behavior.
     """
     query_info = await _parse_chat_query(request, cancellation_registry, streaming=True)
+    await assert_identity_allowed(
+        _chat_principal(request),
+        Workload.CHAT,
+        config_service=config_service,
+        container=getattr(request.app, "container", None),
+    )
 
     stream = _generate_chat_stream_via_agent_loop(
         request=request,

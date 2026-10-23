@@ -46,6 +46,14 @@ func TestHandwritten_RecordLifecycle(t *testing.T) {
 	require.NotEmpty(t, recordID, "upload did not succeed")
 	assert.Equal(t, map[string]any{"total": 1.0, "succeeded": 1.0, "failed": 0.0}, summary)
 
+	record, err := s.KnowledgeBase.GetRecordByID(ctx, recordID, nil)
+	require.NoError(t, err)
+	assert.Equal(t, recordID, record.GetRecordByIDResponseSchema.Record.ID)
+
+	content, err := s.Connector.GetRecordContent(ctx, operations.GetRecordContentRequest{RecordID: recordID})
+	require.NoError(t, err)
+	assert.Contains(t, content.GetRecordContentResponseSchema.Content, recordID)
+
 	buffer, err := s.KnowledgeBase.StreamRecordBuffer(ctx, recordID, nil, nil)
 	require.NoError(t, err)
 	defer buffer.ResponseStream.Close()

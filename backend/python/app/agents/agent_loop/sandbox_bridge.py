@@ -101,7 +101,6 @@ from app.sandbox.package_policy import (
     get_allowlist,
 )
 from app.sandbox.redact import redact_sandbox_paths
-from app.services.artifact_registry import Actor, ArtifactMetadata
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
 from app.utils.conversation_tasks import register_task
 
@@ -116,6 +115,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.registry import HookRegistry
     from app.agent_loop_lib.tools.registry import ToolRegistry
     from app.agents.agent_loop.context import AgentContext
+    from app.services.artifact_registry import ArtifactMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -644,7 +644,7 @@ async def _capture_code_artifact(context: "AgentContext", registry: Any, ctx: To
     language = ctx.tool_input.get("language") or "typescript"
     ext = _CODE_EXT_BY_LANGUAGE.get(language, "ts")
     logical_name = f"code_{_code_artifact_token(ctx.tool_use_id)}.{ext}"
-    actor = Actor(org_id=context.org_id, user_id=context.user_id)
+    actor = context.artifact_actor
     try:
         # STAGING: the captured program source never gets a download card
         # (it isn't SSE'd or marker-delivered anywhere in this module) — it
@@ -681,7 +681,7 @@ async def _resolve_input_artifacts(
     When `inmemory_store` is provided, refs are tried there FIRST (fast,
     in-process lookup for context-compacted tool results like ``artifact_4``)
     before falling back to ``ArtifactRegistryService`` (blob-backed)."""
-    actor = Actor(org_id=context.org_id, user_id=context.user_id)
+    actor = context.artifact_actor
     files: dict[str, bytes] = {}
     resolved: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -1074,7 +1074,7 @@ async def _register_and_deliver(
     `context.artifacts_registered_this_run` list — a rescued scratch file
     is indistinguishable, from every downstream consumer's point of view,
     from a normal `$OUTPUT_DIR` deliverable."""
-    actor = Actor(org_id=context.org_id, user_id=context.user_id)
+    actor = context.artifact_actor
     registered: list[ArtifactMetadata] = []
     model_blocks: list[dict[str, Any]] = []
     legacy_entries: list[dict[str, Any]] = []

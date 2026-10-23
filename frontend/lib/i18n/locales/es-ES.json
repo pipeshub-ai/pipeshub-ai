@@ -580,6 +580,13 @@
     "message": "Esto reindexa el documento desde cero y puede generar costos adicionales. Úselo cuando los resultados de búsqueda estén desactualizados o el documento no sea buscable incluso después de completar la indexación.",
     "confirm": "Confirmar"
   },
+  "reindexBlocked": {
+    "title": "Este registro no se puede reindexar por separado",
+    "message": "Los archivos de GitHub y GitLab se indexan juntos como un único grafo de código para todo el repositorio. Reindexar un solo archivo lo dejaría en una versión más reciente que el resto del repositorio y rompería los vínculos entre archivos. Para actualizarlo, vuelve a indexar el repositorio completo desde el centro de conocimiento: así se reindexan todos los archivos juntos. Una sincronización del conector solo recoge los archivos que cambiaron.",
+    "folderTitle": "Esta carpeta no se puede reindexar por separado",
+    "folderMessage": "Los archivos de GitHub y GitLab se indexan juntos como un único grafo de código para todo el repositorio. Reindexar una carpeta dejaría solo esos archivos en una versión más reciente que el resto del repositorio y rompería los vínculos entre archivos. Para actualizarlo, vuelve a indexar el repositorio completo desde el centro de conocimiento: así se reindexan todos los archivos juntos. Una sincronización del conector solo recoge los archivos que cambiaron.",
+    "goToConnectors": "Ir a conectores"
+  },
   "kb": {
     "viewToggle": "Alternar vista",
     "collectionsView": "Vista de colecciones",
@@ -606,7 +613,21 @@
     "chatSelectionLimit": "El chat admite hasta {{max}} elementos seleccionados. Desmarca algunos e inténtalo de nuevo.",
     "chatTooManyCollections": "El chat puede buscar en hasta {{max}} colecciones a la vez y tienes más. Abre una colección o marca las que quieras consultar.",
     "chatCollectionsLoadFailed": "No se pudieron cargar tus colecciones para el chat. Inténtalo de nuevo.",
-    "chatNoCollections": "Todavía no tienes colecciones sobre las que preguntar."
+    "chatNoCollections": "Todavía no tienes colecciones sobre las que preguntar.",
+    "indexingStatus": {
+      "completed": "Completado",
+      "inProgress": "En curso",
+      "failed": "Error",
+      "fileTypeNotSupported": "Tipo de archivo no compatible",
+      "notStarted": "No iniciado",
+      "queued": "En cola",
+      "manualIndexing": "Indexación manual",
+      "empty": "Vacío",
+      "paused": "En pausa",
+      "needsMultimodalModel": "Requiere un modelo multimodal",
+      "skipped": "Omitido",
+      "pending": "Pendiente"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -708,6 +729,7 @@
     "recents": "Recientes",
     "sharedChats": "Chats compartidos",
     "sharedBy": "Compartido por {{name}}",
+    "agentChat": "Chat de agente",
     "noSharedChats": "No hay chats compartidos",
     "yourChats": "Tus chats",
     "noChatsFound": "No se encontraron chats",
@@ -773,6 +795,7 @@
     "backToChatHome": "Todos los chats",
     "agentSidebarLabel": "Agente",
     "agentNameLoading": "Cargando…",
+    "sharedAgentChat": "Chat de agente compartido",
     "myAgents": "Mis agentes",
     "moreAgents": "Más agentes",
     "agentHeaderMenuAria": "Opciones del agente",
@@ -841,8 +864,6 @@
     "toasts": {
       "stopStreamTitle": "Deteniendo…",
       "stopStreamDescription": "La respuesta se detendrá en breve. Se conservará cualquier respuesta parcial.",
-      "editComingSoonTitle": "Próximamente",
-      "editComingSoonDescription": "Estamos desarrollando soporte para editar",
       "deprecatedTools": "Este agente tiene herramientas que ya no están disponibles. Abre el Agent Builder para eliminarlas.",
       "openAgentBuilder": "Abrir Agent Builder",
       "loadConversationFailed": "No pudimos abrir esta conversación. Recarga la página para intentarlo de nuevo.",
@@ -1754,6 +1775,7 @@
         "createDisabledScopesTooltip": "Select at least one permission scope to create the application.",
         "tabGeneral": "General",
         "tabPermissions": "Permissions & Scopes",
+        "tabGranular": "Permisos detallados",
         "appNameLabel": "App name",
         "appNamePlaceholder": "My Application",
         "descriptionLabel": "Description",
@@ -1950,6 +1972,59 @@
       "rotateCredentialsPlaceholder": "Nueva clave de API",
       "rotateCredentialsSave": "Actualizar clave",
       "rotateCredentialsFailed": "No se pudo actualizar la clave",
+      "identity": {
+        "menuItem": "Reenvío de identidad",
+        "title": "Reenvío de identidad",
+        "hint": "Indica al gateway quién consulta para que aplique presupuestos, límites y acceso a modelos por persona. Se aplica a todos los modelos de esta conexión.",
+        "enabled": "Reenviar la identidad del usuario",
+        "format": "Formato",
+        "formatHeaders": "Cabeceras de LiteLLM",
+        "formatTemplate": "Plantilla de cabeceras",
+        "formatSignedJwt": "Token firmado (enterprise)",
+        "preset": "Preajuste del gateway",
+        "presetCustom": "Cabeceras personalizadas",
+        "templates": "Plantillas de cabeceras",
+        "templatesHint": "Una por línea, como Nombre-Cabecera: valor. Usa {{placeholders}}.",
+        "serviceKey": "Clave para tareas en segundo plano",
+        "serviceKeyPlaceholder": "Clave del gateway para indexación y extracción",
+        "serviceKeySaved": "Hay una clave guardada. Escribe para sustituirla.",
+        "serviceKeyHint": "La indexación y la extracción no tienen una persona con sesión iniciada. Dales su propia clave del gateway para presupuestar su gasto aparte.",
+        "serviceKeyRemove": "Quitar la clave guardada",
+        "preview": "Vista previa",
+        "previewTitle": "Lo que se enviaría para ti",
+        "previewNone": "No se envía nada.",
+        "previewFailed": "No se pudo crear la vista previa",
+        "save": "Guardar",
+        "saved": "Reenvío de identidad guardado",
+        "saveFailed": "No se pudo guardar el reenvío de identidad"
+      },
+      "identityPolicy": {
+        "open": "Política de identidad",
+        "damaged": "No se pudo leer la política de identidad guardada, así que se muestran los valores predeterminados. Al guardar se reemplaza.",
+        "title": "Política de identidad",
+        "hint": "Lo que PipesHub puede decirle a un gateway de modelos sobre la persona que consulta. Se aplica a toda conexión que reenvía identidad.",
+        "subjectSource": "Identificar a las personas por",
+        "subjectUserId": "ID de usuario",
+        "subjectEmail": "Correo electrónico",
+        "subjectIdp": "ID de objeto del proveedor de identidad",
+        "includeEmail": "Incluir el correo electrónico",
+        "includeDisplayName": "Incluir el nombre visible",
+        "pseudonymize": "Ocultar las identidades tras un seudónimo estable",
+        "pseudonymizeHint": "El gateway ve un ID opaco en lugar del real. La correspondencia no es reversible.",
+        "groups": "Reenviar la pertenencia a grupos",
+        "groupsHint": "Permite al gateway aplicar acceso y presupuestos por grupo.",
+        "allowList": "Reenviar solo estos grupos",
+        "allowListHint": "Un ID de grupo por línea. Déjalo vacío para reenviar todos, hasta el límite de abajo.",
+        "maxGroups": "Máximo de grupos a reenviar",
+        "blockMissing": "Rechazar solicitudes sin una persona con sesión iniciada",
+        "blockMissingHint": "Si se reenvía la identidad, una llamada interactiva que no se pueda asociar a una persona se rechaza en lugar de enviarse como servicio.",
+        "embeddingAsService": "Atribuir los embeddings de búsqueda al servicio",
+        "embeddingAsServiceHint": "Desactivado: el presupuesto de la persona paga el embedding de su búsqueda.",
+        "servicePrefix": "Prefijo de la identidad de servicio",
+        "saved": "Política de identidad guardada",
+        "saveFailed": "No se pudo guardar la política de identidad",
+        "loadFailed": "No se pudo cargar la política de identidad"
+      },
       "batchStatus": {
         "pending": "En espera",
         "checking": "Comprobando",
@@ -2627,6 +2702,25 @@
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "VIGILANTE LOCAL",
         "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos",
+        "classification": "Clasificación",
+        "classificationSkipped": "Omitidos",
+        "retryFailedClassification": "Reintentar clasificación fallida",
+        "retryClassificationSuccess": "Reintento de clasificación en cola",
+        "retryClassificationError": "No se pudo reintentar la clasificación",
+        "codeGraph": {
+          "title": "Grafo de código",
+          "status": {
+            "never_built": "Aún no creado",
+            "building": "Creando",
+            "ready": "Listo",
+            "stale": "Actualizando",
+            "waiting_on_indexing": "Esperando la indexación",
+            "retrying": "Reintentando",
+            "failed": "Error",
+            "too_large": "Demasiado grande",
+            "unknown": "Desconocido"
+          }
+        },
         "lastRun": {
           "title": "Última sincronización",
           "outcome": {
@@ -4578,6 +4672,13 @@
       "noRecordMetadata": "No hay metadatos adicionales para este elemento."
     },
     "indexingReasonAria": "Detalles del error de indexación",
+    "stageTrackLabel": "Canalización",
+    "stageParsed": "Analizado",
+    "stageSearchable": "Buscable",
+    "stageClassified": "Clasificado",
+    "stageEntities": "Entidades",
+    "stageAttempt": "Intento {{n}}",
+    "stageDetailsAria": "Detalles de la etapa",
     "tabRecordInformation": "Información del registro",
     "tabDocumentDetails": "Detalles del documento",
     "chat": "Chat",
@@ -4853,6 +4954,8 @@
   },
   "collections": {
     "stats": {
+      "retryClassificationStart": "Reintento de clasificación en cola",
+      "retryClassificationError": "No se pudo reintentar la clasificación",
       "title": "Analíticas",
       "menuLabel": "Analíticas",
       "fetchError": "No se han podido cargar las estadísticas de indexación",
@@ -4958,6 +5061,33 @@
     "doneLine": "Puede volver al terminal. Ya puede cerrar esta ventana.",
     "deniedTitle": "Solicitud denegada",
     "deniedLine": "No se ha concedido acceso al dispositivo."
+  },
+  "knowledgeLimit": {
+    "title": "¿Qué puede ver {{appName}}?",
+    "help": "Solo puede buscar y leer lo que permitas aquí, y nunca más de lo que tú puedes ver.",
+    "everything": "Todo lo que puedo ver",
+    "everythingHint": "Incluye las fuentes que añadas más adelante.",
+    "only": "Solo lo que elija",
+    "onlyHint": "Elige fuentes completas, o abre una para elegir espacios, carpetas o archivos.",
+    "pickOne": "Elige al menos una fuente, espacio, carpeta o archivo.",
+    "tooMany": "Elige como máximo {{max}} elementos, o elige una fuente completa.",
+    "selectedCount_one": "{{count}} elemento elegido",
+    "selectedCount_other": "{{count}} elementos elegidos",
+    "selectedCount_many": "{{count}} de elementos elegidos",
+    "canSeeEverything": "Puede ver: todo lo que tú puedes",
+    "canSeeSome_one": "Puede ver: {{count}} elemento elegido",
+    "canSeeSome_other": "Puede ver: {{count}} elementos elegidos",
+    "canSeeSome_many": "Puede ver: {{count}} de elementos elegidos",
+    "thisToken": "este token",
+    "app": {
+      "thisApp": "esta aplicación",
+      "help": "Los usuarios que conecten esta aplicación solo pueden buscar y leer lo que elijas aquí, y nunca más de lo que ellos mismos pueden ver.",
+      "everything": "Todo lo que cada usuario puede ver",
+      "everythingHint": "Incluye las fuentes que se añadan después."
+    },
+    "appLimited_one": "{{appName}} solo puede ver {{count}} elemento elegido por su creador, y solo si tú puedes verlo.",
+    "appLimited_many": "{{appName}} solo puede ver {{count}} elementos elegidos por su creador, y solo los que tú puedes ver.",
+    "appLimited_other": "{{appName}} solo puede ver {{count}} elementos elegidos por su creador, y solo los que tú puedes ver."
   },
   "validation": {
     "password": {

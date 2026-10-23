@@ -266,6 +266,15 @@ class TestWhatTheProcessorNotes:
         processor._note_full_sync_seen("c1", RECORDS, "r1")
         assert not processor._first_full_sync_visit("c1", RECORDS, "r1")
 
+    def test_full_sync_running_follows_the_run(self) -> None:
+        processor = self._processor(self._transaction())
+        assert processor.full_sync_running("c1") is False
+        run = processor.begin_full_sync_run("c1")
+        assert processor.full_sync_running("c1") is True
+        assert processor.full_sync_running("other") is False
+        processor.end_full_sync_run("c1", run)
+        assert processor.full_sync_running("c1") is False
+
     def test_runs_of_two_connectors_on_one_shared_processor_stay_apart(self) -> None:
         processor = self._processor(self._transaction())
         a = processor.begin_full_sync_run("a")

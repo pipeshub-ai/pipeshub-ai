@@ -27,6 +27,16 @@ running it once per period would multiply the slowest step of a search.
 The search API's ``timeline`` option runs the same search for API callers,
 such as an agent over MCP (``timeline_search_response``).
 
+A search bounded on one date over more than ``AUTO_TIMELINE_MIN_DAYS`` days
+runs as a timeline without being asked (``auto_timeline_field``): through the
+search API when the caller leaves ``timeline`` out, and through
+knowledgegraph__search. Agents seldom choose the timeline themselves, and a
+plain search over months answers a summary from one part of the span.
+
+With date bounds, one plain search without them runs beside the period
+searches, and its best matches written outside the span are listed after the
+periods (``ops/outside_dates``): a write-up made after a span can be about it.
+
 The deployment switch ``TIMELINE_SUMMARIES`` offers the tool and the API
 option; it is on unless set to ``false``, and does not follow
 ``HIGH_ACCURACY_MODE``.
@@ -51,6 +61,15 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
     resolve_entity_virtual_ids,
 )
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
+from app.agents.actions.knowledge_graph.ops.outside_dates import (
+    OUTSIDE_DATES_SEARCH_LIMIT,
+    outside_dates_for_model,
+    outside_dates_pointer,
+    pick_outside_dates,
+    quietly,
+    shown_ids,
+    wants_outside_dates,
+)
 from app.agents.actions.knowledge_graph.ops.results import (
     _RECORD_NAME_RE,
     dedupe_append_final_results,
@@ -58,7 +77,7 @@ from app.agents.actions.knowledge_graph.ops.results import (
     search_result_summary,
     tool_output,
 )
-from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
+from app.agents.actions.knowledge_graph.ops.scope import search_scope
 from app.agents.actions.knowledge_graph.ops.search import (
     ENTITY_SCOPE_INCOMPLETE_MESSAGE,
     UNKNOWN_ENTITY_IDS_MESSAGE,
@@ -75,6 +94,7 @@ from app.modules.agents.qna.chat_state import (
 )
 from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.retrieval.provenance import note_retrieved_by
+from app.modules.retrieval.source_diversity import plain_ranking
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.env_utils import enabled_unless_off
 
@@ -113,9 +133,14 @@ _DATE_FIELDS = {
 }
 # A span this short is cut into weeks rather than months.
 _WEEKLY_SPAN_DAYS = 31
+# A span longer than this runs as a timeline when the caller did not choose.
+# The same as the cut into weeks, so an automatic timeline is always split into
+# calendar months: a span within one month is usually a lookup bounded to it.
+AUTO_TIMELINE_MIN_DAYS = _WEEKLY_SPAN_DAYS
 # Without a start, how far back from the end a timeline reaches at least.
 DEFAULT_LOOKBACK_DAYS = 365
 _DAY_MS = 24 * 60 * 60 * 1000
+_AUTO_NOTE = f"This date range covers more than {AUTO_TIMELINE_MIN_DAYS} days, so it was searched period by period."
 
 
 def timeline_summaries_enabled() -> bool:
@@ -125,6 +150,28 @@ def timeline_summaries_enabled() -> bool:
     empty keeps the default.
     """
     return enabled_unless_off(TIMELINE_SUMMARIES_ENV_VAR)
+
+
+def auto_timeline_field(time_range: dict[str, int] | None) -> str | None:
+    """The date a search bounded by ``time_range`` runs as a timeline by when
+    the caller did not choose, or None for a ranked search.
+
+    That is the first of created and modified whose bounds have a start and
+    cover more than ``AUTO_TIMELINE_MIN_DAYS`` days, counted in whole days as
+    the periods are, with a missing or future end read as today. A range with
+    only an end is unbounded, so it stays ranked. None while the switch is off.
+    """
+    if not time_range or not timeline_summaries_enabled():
+        return None
+    now = _now_ms()
+    for date_field, (_, _, after_key, before_key, _) in _DATE_FIELDS.items():
+        start_ms = time_range.get(after_key)
+        if start_ms is None:
+            continue
+        end_ms = min(time_range.get(before_key, now), now)
+        if end_ms >= start_ms and (_utc(end_ms).date() - _utc(start_ms).date()).days + 1 > AUTO_TIMELINE_MIN_DAYS:
+            return date_field
+    return None
 
 
 def without_timeline_unless_enabled(tools: list[Tool]) -> list[Tool]:
@@ -271,14 +318,9 @@ async def _resolve_scope(
     no per-source fan-out.
     """
     agent_filters = state.get("filters", {}) or {}
-    if state.get("is_placeholder_agent"):
-        raw_apps: list[str] = list(state.get("apps") or [])
-        raw_kbs: list[str] = list(state.get("kb") or [])
-    else:
-        raw_apps = list(agent_filters.get("apps") or [])
-        raw_kbs = list(agent_filters.get("kb") or [])
-    scope = KnowledgeScope(app_ids=tuple(raw_apps), kb_ids=_clean_kb(raw_kbs))
-    scope = scope.narrow_to(normalize_source_ids(source_ids))
+    # search_scope carries the turn's selection and the agent's or project's
+    # allow-list, which the retrieval service turns into its access check.
+    scope = search_scope(state).narrow_to(normalize_source_ids(source_ids))
 
     requested = [e for e in dict.fromkeys(entity_ids or []) if e]
     unknown = unresolved_entity_ids(state, requested)
@@ -484,6 +526,7 @@ async def execute_timeline_search(
     date_field: str | None = None,
     source_ids: list[str] | None = None,
     entity_ids: list[str] | None = None,
+    note: str | None = None,
 ) -> str | list[Part]:
     if not query or not query.strip():
         return _json("error", "No search query provided")
@@ -509,6 +552,7 @@ async def execute_timeline_search(
     if not retrieval_service or not state.get("graph_provider"):
         return _json("error", "Retrieval services not available")
 
+    outside_task: asyncio.Task[Any] | None = None
     try:
         scope = await _resolve_scope(state, source_ids, entity_ids)
         if isinstance(scope, str):
@@ -528,24 +572,47 @@ async def execute_timeline_search(
             return search
 
         with_entities = bool(scope.entity_filter_groups)
-        collected = await _collect(
-            searcher(scope.groups(with_entities=with_entities)), start_ms, end_ms, date_field, log,
-        )
-        notes = list(scope.notes)
+        search = searcher(scope.groups(with_entities=with_entities))
+        net = bool(bounds) and wants_outside_dates(bounds)
+        if net:
+            # One plain search without dates beside the timeline's, for the
+            # write-ups made outside the span (ops/outside_dates).
+            outside_task = asyncio.create_task(quietly(search(None, OUTSIDE_DATES_SEARCH_LIMIT), log))
+        collected = await _collect(search, start_ms, end_ms, date_field, log)
+        notes = [*([note] if note else []), *scope.notes]
         if with_entities and isinstance(collected, _Collected) and not any(h.results for h in collected.hits):
             # Entity filters are a hard AND at the graph layer; a missing edge
             # empties the scope although matching records exist.
-            retried = await _collect(
-                searcher(scope.groups(with_entities=False)), start_ms, end_ms, date_field, log,
-            )
+            unfiltered = searcher(scope.groups(with_entities=False))
+            retried = await _collect(unfiltered, start_ms, end_ms, date_field, log)
             if isinstance(retried, _Collected) and any(h.results for h in retried.hits):
                 collected = retried
+                if net:
+                    # The search without dates follows the results shown.
+                    if outside_task is not None and not outside_task.done():
+                        outside_task.cancel()
+                    outside_task = asyncio.create_task(
+                        quietly(unfiltered(None, OUTSIDE_DATES_SEARCH_LIMIT), log),
+                    )
                 notes.append(
                     "Note: nothing matched inside the requested department/category/topic/"
                     "language, so these results are NOT limited to it."
                 )
         if isinstance(collected, str):
             return collected
+        outside_text = ""
+        outside_count = 0
+        if outside_task is not None and bounds:
+            shown_virtual_ids, shown_record_ids = shown_ids(
+                [hit for h in collected.hits for hit in h.results],
+                {vrid: record for h in collected.hits for vrid, record in h.records.items()},
+            )
+            picked = pick_outside_dates(
+                await outside_task, bounds,
+                shown_virtual_ids=shown_virtual_ids, shown_record_ids=shown_record_ids,
+            )
+            outside_text = outside_dates_for_model(state, picked, FETCH_RECORD_TOOL_NAME)
+            outside_count = len(picked)
         if not any(h.results for h in collected.hits):
             message = "No results found in any period."
             if any(h.failed or h.incomplete for h in collected.hits):
@@ -557,16 +624,62 @@ async def execute_timeline_search(
                 " Before concluding it does not exist, search with knowledgegraph__search and no "
                 "date filters: a record's source date may fall outside this span."
             )
-            return _json("success", " ".join([message, *notes]))
+            return _json("success", " ".join([message, *notes]) + outside_text)
         if start_ms is None:
             notes.append(
                 f"No start was given, so this covers {_day(collected.start_ms)} on: a year before the "
                 "end, or the earliest of the best matches if that is older. Pass start to look further back."
             )
-        return await _render_timeline(state, query, date_field, "".join(f"{n}\n" for n in notes), collected)
+        if outside_text:
+            notes.append(outside_dates_pointer(outside_count).strip())
+        return await _render_timeline(
+            state, query, date_field, "".join(f"{n}\n" for n in notes), collected, tail=outside_text,
+        )
     except Exception as exc:
         log.error("knowledgegraph__search_timeline error: %s", exc, exc_info=True)
         return _json("error", f"Timeline search error: {exc}")
+    finally:
+        if outside_task is not None and not outside_task.done():
+            outside_task.cancel()
+
+
+async def automatic_timeline_search(
+    state: ChatState | None,
+    query: str | None,
+    *,
+    created_after: str | None = None,
+    created_before: str | None = None,
+    modified_after: str | None = None,
+    modified_before: str | None = None,
+    source_ids: list[str] | None = None,
+    entity_ids: list[str] | None = None,
+) -> str | list[Part] | None:
+    """knowledgegraph__search as this tool's search when its dates are bounds
+    on one date over a span ``auto_timeline_field`` picks, or None for the
+    ranked search. Bad dates are None too; the ranked search reports them."""
+    time_range, error = parse_time_range(
+        created_after=created_after, created_before=created_before,
+        modified_after=modified_after, modified_before=modified_before,
+    )
+    date_field = None if error is not None else auto_timeline_field(time_range)
+    if date_field is None:
+        return None
+    other = "modified" if date_field == "created" else "created"
+    # This tool bounds only the date it places records by.
+    if any(key in (time_range or {}) for key in _DATE_FIELDS[other][2:4]):
+        return None
+    after_arg, before_arg = _DATE_FIELDS[date_field][:2]
+    bounds = {"created_after": created_after, "created_before": created_before,
+              "modified_after": modified_after, "modified_before": modified_before}
+    return await execute_timeline_search(
+        state, query,
+        start=bounds[after_arg], end=bounds[before_arg], date_field=date_field,
+        source_ids=source_ids, entity_ids=entity_ids,
+        note=(
+            f"Note: {_AUTO_NOTE} For one ranked search instead, keep the dates to "
+            f"{AUTO_TIMELINE_MIN_DAYS} days or less."
+        ),
+    )
 
 
 async def timeline_search_response(
@@ -576,6 +689,7 @@ async def timeline_search_response(
     end_ms: int | None,
     date_field: str,
     period_limit: int = PERIOD_SEARCH_LIMIT,
+    automatic: bool = False,
     log: logging.Logger = logger,
 ) -> dict[str, Any] | None:
     """The search API's ``timeline`` option: this tool's period-by-period
@@ -595,7 +709,8 @@ async def timeline_search_response(
     preference to "no accessible records": the whole-span search's first,
     then any period's. Otherwise the whole-span search's own response, as a
     plain search would have returned it. None when every search raised and
-    none failed with a response.
+    none failed with a response. ``automatic`` is a timeline the caller did
+    not ask for, which ``timeline.automatic`` and a note say.
     """
     if end_ms is not None:
         end_ms = min(end_ms, _now_ms())
@@ -608,10 +723,13 @@ async def timeline_search_response(
         return result
 
     whole: list[Any] = []
-    collected = await _collect(
-        recorded, start_ms, end_ms, date_field, log,
-        period_limit=period_limit, on_whole_span=whole.append,
-    )
+    # The matches come back in date order, so a varied first page has no
+    # place here: each period keeps the plain ranking.
+    with plain_ranking():
+        collected = await _collect(
+            recorded, start_ms, end_ms, date_field, log,
+            period_limit=period_limit, on_whole_span=whole.append,
+        )
     span_answer = whole[0] if whole and isinstance(whole[0], dict) else None
     found = isinstance(collected, _Collected) and any(h.results for h in collected.hits)
     if not found and not any(r.get("status_code", 200) == 200 for r in responses):
@@ -633,7 +751,7 @@ async def timeline_search_response(
     whole_partial = span_answer is None or _failed(span_answer, log) or bool(span_answer.get("searchIncomplete"))
     return _api_response(
         collected, responses, date_field,
-        start_given=start_ms is not None, whole_partial=whole_partial,
+        start_given=start_ms is not None, whole_partial=whole_partial, automatic=automatic,
     )
 
 
@@ -644,6 +762,7 @@ def _api_response(
     *,
     start_given: bool,
     whole_partial: bool = False,
+    automatic: bool = False,
 ) -> dict[str, Any]:
     search_results: list[dict[str, Any]] = []
     record_map: dict[str, Any] = {}
@@ -691,6 +810,8 @@ def _api_response(
         incomplete = incomplete or response.get("searchIncomplete") or None
 
     notes: list[str] = []
+    if automatic:
+        notes.append(f'{_AUTO_NOTE} Send timeline "off" for one ranked search of the whole range.')
     caveat = None
     if not search_results and (whole_partial or any(h.failed or h.incomplete for h in collected.hits)):
         caveat = (
@@ -715,6 +836,7 @@ def _api_response(
         "virtual_to_record_map": record_map,
         "timeline": {
             "dateField": date_field,
+            "automatic": automatic,
             "start": _day(collected.start_ms),
             "end": _day(collected.end_ms),
             "periods": periods,
@@ -812,7 +934,10 @@ def _status_line(period_hits: _PeriodHits, has_matches: bool) -> str:  # noqa: F
 
 async def _render_timeline(
     state: ChatState, query: str, date_field: str, notes: str, collected: _Collected,
+    *, tail: str = "",
 ) -> str | list[Part]:
+    """The periods' best blocks within one search result's size; ``tail``,
+    sized in, closes it."""
     from app.modules.retrieval.context.renderer import KnowledgeRenderer
     from app.utils.chat_helpers import (
         CitationRefMapper,
@@ -848,7 +973,10 @@ async def _render_timeline(
     has_matches = [context is not None and bool(context.ranked) for context in contexts]
     headings = [f"\n### {h.label}\n" for h in hits]
     status = [_status_line(h, matched) for h, matched in zip(hits, has_matches)]
-    budget = TIMELINE_RESULT_CHARS - len(header) - len(footer) - sum(map(len, headings)) - sum(map(len, status))
+    budget = (
+        TIMELINE_RESULT_CHARS - len(header) - len(footer) - len(tail)
+        - sum(map(len, headings)) - sum(map(len, status))
+    )
     shares = _shares(budget, [h.weight if matched else None for h, matched in zip(hits, has_matches)])
 
     shown = _Shown(sections=[header])
@@ -871,7 +999,7 @@ async def _render_timeline(
         )
         used = _render_period(renderer, context, period_hits, date_field, max(share, 0), shown, shortener)
         carry = share - used
-    shown.sections.append(footer)
+    shown.sections.append(footer + tail)
 
     state["citation_ref_mapper"] = ref_mapper
     _remember_shown(state, shown)
@@ -999,10 +1127,13 @@ def timeline_result_summary(args: dict[str, Any], result: ToolResult) -> str | N
 
 
 __all__ = [
+    "AUTO_TIMELINE_MIN_DAYS",
     "MAX_PERIODS",
     "TIMELINE_SUMMARIES_ENV_VAR",
     "TIMELINE_TOOL_NAME",
     "Period",
+    "auto_timeline_field",
+    "automatic_timeline_search",
     "execute_timeline_search",
     "plan_periods",
     "record_date_ms",

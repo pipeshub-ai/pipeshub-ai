@@ -3,6 +3,7 @@ from app.sources.client.s3.s3 import (
     S3Client,
     S3Response,
     S3RESTClientViaAccessKey,
+    S3RESTClientViaAssumeRole,
 )
 
-__all__ = ["S3Client", "S3AccessKeyConfig", "S3RESTClientViaAccessKey", "S3Response"]
+__all__ = ["S3Client", "S3AccessKeyConfig", "S3RESTClientViaAccessKey", "S3RESTClientViaAssumeRole", "S3Response"]

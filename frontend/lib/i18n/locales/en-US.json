@@ -9,7 +9,9 @@
       "reindexFailedStart": "Reindexing failed records…",
       "reindexFailedError": "Failed to reindex failed records",
       "manualIndexStart": "Indexing manual-indexing records…",
-      "manualIndexError": "Failed to start manual indexing"
+      "manualIndexError": "Failed to start manual indexing",
+      "retryClassificationStart": "Classification retry queued",
+      "retryClassificationError": "Failed to retry classification"
     },
     "trash": {
       "menuLabel": "Recently deleted",
@@ -658,6 +660,13 @@
     "message": "This re-indexes the document from scratch and may incur extra cost. Use this when search results are stale, or the document is not searchable even after indexing is complete.",
     "confirm": "Confirm"
   },
+  "reindexBlocked": {
+    "title": "This record can't be reindexed on its own",
+    "message": "GitHub and GitLab files form one code graph for the whole repo. Reindexing a single file would put it ahead of the rest and break cross-file links. To refresh it, reindex the whole repository from the knowledge hub — that re-indexes every file together. A connector sync only picks up files that changed.",
+    "folderTitle": "This folder can't be reindexed on its own",
+    "folderMessage": "GitHub and GitLab files form one code graph for the whole repo. Reindexing a folder would update only those files and put them ahead of the rest, breaking cross-file links. To refresh it, reindex the whole repository from the knowledge hub — that re-indexes every file together. A connector sync only picks up files that changed.",
+    "goToConnectors": "Go to connectors"
+  },
   "kb": {
     "viewToggle": "View Toggle",
     "collectionsView": "Collections View",
@@ -684,7 +693,21 @@
     "chatSelectionLimit": "Chat can take up to {{max}} selected items. Untick some and try again.",
     "chatTooManyCollections": "Chat can search up to {{max}} collections at once, and you have more. Open a collection, or tick the ones to ask about.",
     "chatCollectionsLoadFailed": "Couldn't load your collections for chat. Try again.",
-    "chatNoCollections": "You have no collections to ask about yet."
+    "chatNoCollections": "You have no collections to ask about yet.",
+    "indexingStatus": {
+      "completed": "Completed",
+      "inProgress": "In Progress",
+      "failed": "Failed",
+      "fileTypeNotSupported": "File Type Not Supported",
+      "notStarted": "Not Started",
+      "queued": "Queued",
+      "manualIndexing": "Manual Indexing",
+      "empty": "Empty",
+      "paused": "Paused",
+      "needsMultimodalModel": "Needs Multimodal Model",
+      "skipped": "Skipped",
+      "pending": "Pending"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -785,6 +808,7 @@
     "recents": "Recents",
     "sharedChats": "Shared Chats",
     "sharedBy": "Shared by {{name}}",
+    "agentChat": "Agent chat",
     "noSharedChats": "No shared chats",
     "yourChats": "Your Chats",
     "noChatsFound": "No chats found",
@@ -849,6 +873,7 @@
     "backToChatHome": "All chats",
     "agentSidebarLabel": "Agent",
     "agentNameLoading": "Loading…",
+    "sharedAgentChat": "Shared agent chat",
     "myAgents": "My agents",
     "moreAgents": "More agents",
     "agentHeaderMenuAria": "Agent options",
@@ -953,8 +978,6 @@
     "toasts": {
       "stopStreamTitle": "Stopping…",
       "stopStreamDescription": "The response will stop shortly. Any partial answer will be kept.",
-      "editComingSoonTitle": "Coming Soon",
-      "editComingSoonDescription": "We're building out support for edit",
       "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
       "openAgentBuilder": "Open Agent Builder",
       "loadConversationFailed": "We couldn't open this conversation. Refresh the page to try again.",
@@ -1815,6 +1838,7 @@
         "createDisabledScopesTooltip": "Select at least one permission scope to create the application.",
         "tabGeneral": "General",
         "tabPermissions": "Permissions & Scopes",
+        "tabGranular": "Granular permissions",
         "appNameLabel": "App name",
         "appNamePlaceholder": "My Application",
         "descriptionLabel": "Description",
@@ -2072,6 +2096,59 @@
       "rotateCredentialsPlaceholder": "New API key",
       "rotateCredentialsSave": "Update key",
       "rotateCredentialsFailed": "Could not update the key",
+      "identity": {
+        "menuItem": "Identity forwarding",
+        "title": "Identity forwarding",
+        "hint": "Send who is asking to this gateway so it can apply per-user budgets, limits and model access. Applies to every model in this connection.",
+        "enabled": "Forward user identity",
+        "format": "Format",
+        "formatHeaders": "LiteLLM headers",
+        "formatTemplate": "Header template",
+        "formatSignedJwt": "Signed token (enterprise)",
+        "preset": "Gateway preset",
+        "presetCustom": "Custom headers",
+        "templates": "Header templates",
+        "templatesHint": "One per line, as Header-Name: value. Use {{placeholders}}.",
+        "serviceKey": "Key for background work",
+        "serviceKeyPlaceholder": "Gateway key for indexing and extraction",
+        "serviceKeySaved": "A key is saved. Type to replace it.",
+        "serviceKeyHint": "Indexing and extraction have no signed-in person. Give them their own gateway key so their spend is budgeted apart from people's.",
+        "serviceKeyRemove": "Remove the saved key",
+        "preview": "Preview",
+        "previewTitle": "What would be sent for you",
+        "previewNone": "Nothing is sent.",
+        "previewFailed": "Could not build the preview",
+        "save": "Save",
+        "saved": "Identity forwarding saved",
+        "saveFailed": "Could not save identity forwarding"
+      },
+      "identityPolicy": {
+        "open": "Identity policy",
+        "damaged": "The saved identity policy could not be read, so the defaults are shown. Saving replaces it.",
+        "title": "Identity policy",
+        "hint": "What PipesHub may tell a model gateway about the person asking. It applies to every connection that forwards identity.",
+        "subjectSource": "Identify people by",
+        "subjectUserId": "User ID",
+        "subjectEmail": "Email address",
+        "subjectIdp": "Identity provider object ID",
+        "includeEmail": "Include email address",
+        "includeDisplayName": "Include display name",
+        "pseudonymize": "Hide identities behind a stable pseudonym",
+        "pseudonymizeHint": "The gateway sees an opaque ID instead of the real one. The mapping is not reversible.",
+        "groups": "Forward group membership",
+        "groupsHint": "Lets the gateway apply per-group access and budgets.",
+        "allowList": "Only forward these groups",
+        "allowListHint": "One group ID per line. Leave empty to forward every group, up to the limit below.",
+        "maxGroups": "Most groups to forward",
+        "blockMissing": "Refuse requests with no signed-in person",
+        "blockMissingHint": "When identity is forwarded, an interactive call that cannot be tied to a person is refused instead of sent as the service.",
+        "embeddingAsService": "Attribute search embeddings to the service",
+        "embeddingAsServiceHint": "Off: the person's budget pays for embedding their search query.",
+        "servicePrefix": "Service identity prefix",
+        "saved": "Identity policy saved",
+        "saveFailed": "Could not save the identity policy",
+        "loadFailed": "Could not load the identity policy"
+      },
       "batchStatus": {
         "pending": "Waiting",
         "checking": "Checking",
@@ -2753,6 +2830,25 @@
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "LOCAL WATCHER",
         "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed",
+        "classification": "Classification",
+        "classificationSkipped": "Skipped",
+        "retryFailedClassification": "Retry failed classification",
+        "retryClassificationSuccess": "Classification retry queued",
+        "retryClassificationError": "Failed to retry classification",
+        "codeGraph": {
+          "title": "Code graph",
+          "status": {
+            "never_built": "Not built yet",
+            "building": "Building",
+            "ready": "Ready",
+            "stale": "Updating",
+            "waiting_on_indexing": "Waiting for indexing",
+            "retrying": "Retrying",
+            "failed": "Failed",
+            "too_large": "Too large",
+            "unknown": "Unknown"
+          }
+        },
         "lastRun": {
           "title": "Last sync",
           "outcome": {
@@ -4627,6 +4723,13 @@
       "noRecordMetadata": "No additional record metadata for this item."
     },
     "indexingReasonAria": "Indexing failure details",
+    "stageTrackLabel": "Pipeline",
+    "stageParsed": "Parsed",
+    "stageSearchable": "Searchable",
+    "stageClassified": "Classified",
+    "stageEntities": "Entities",
+    "stageAttempt": "Attempt {{n}}",
+    "stageDetailsAria": "Stage details",
     "tabRecordInformation": "Record Information",
     "tabDocumentDetails": "Document details",
     "chat": "Chat",
@@ -4769,6 +4872,30 @@
     "doneLine": "You can return to the terminal. This window can be closed.",
     "deniedTitle": "Request denied",
     "deniedLine": "The device was not granted access."
+  },
+  "knowledgeLimit": {
+    "title": "What can {{appName}} see?",
+    "help": "It can search and read only what you allow here, and never more than you can see.",
+    "everything": "Everything I can see",
+    "everythingHint": "Includes sources you add later.",
+    "only": "Only what I pick",
+    "onlyHint": "Pick whole sources, or open one to pick spaces, folders or files.",
+    "pickOne": "Pick at least one source, space, folder or file.",
+    "tooMany": "Pick at most {{max}} items, or pick a whole source instead.",
+    "selectedCount_one": "{{count}} item picked",
+    "selectedCount_other": "{{count}} items picked",
+    "canSeeEverything": "Can see: everything you can",
+    "canSeeSome_one": "Can see: {{count}} picked item",
+    "canSeeSome_other": "Can see: {{count}} picked items",
+    "thisToken": "this token",
+    "app": {
+      "thisApp": "this app",
+      "help": "Users who connect this app can search and read only what you pick here, and never more than they can see themselves.",
+      "everything": "Everything each user can see",
+      "everythingHint": "Includes sources added later."
+    },
+    "appLimited_one": "{{appName}} can see only {{count}} item its creator picked, and only if you can see it.",
+    "appLimited_other": "{{appName}} can see only {{count}} items its creator picked, and only the ones you can see."
   },
   "auth": {
     "titleSection": {

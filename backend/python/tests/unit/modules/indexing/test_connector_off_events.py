@@ -184,6 +184,7 @@ def _handler(graph: FakeConnectorGraph) -> tuple[RecordEventHandler, MagicMock]:
     event_processor.graph_provider = graph
     event_processor.processor.indexing_pipeline = AsyncMock()
     event_processor.sink_orchestrator = None
+    event_processor.stage_ingress = None
     handler = RecordEventHandler(
         logger=logging.getLogger("test"),
         config_service=AsyncMock(),

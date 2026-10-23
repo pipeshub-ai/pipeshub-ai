@@ -18,6 +18,7 @@ import {
   buildConversationResponse,
   addComputedFields,
   attachSharedBy,
+  findOrgUserIds,
   attachSharedByIfRecipient,
   buildFilter,
   initializeSSEResponse,
@@ -31,6 +32,8 @@ import {
   allocateSeq,
   appendMessages,
   updateMessageById,
+  updateUserQueryContent,
+  deleteMessagesById,
   getMessages,
   attachMessages,
   findSessionIdsMatchingContent,
@@ -872,6 +875,45 @@ describe('Enterprise Search Utils', () => {
     })
   })
 
+  describe('findOrgUserIds', () => {
+    const THIRD_OID = new mongoose.Types.ObjectId().toString()
+
+    const chain = (rows: unknown[]) => ({
+      select: sinon.stub().returnsThis(),
+      lean: sinon.stub().returnsThis(),
+      exec: sinon.stub().resolves(rows),
+    })
+
+    it('asks once, for active users of the organisation among the given ids', async () => {
+      const find = sinon.stub(Users, 'find').returns(chain([]) as any)
+
+      await findOrgUserIds(VALID_OID2, [VALID_OID, THIRD_OID])
+
+      expect(find.calledOnce).to.be.true
+      const filter = find.firstCall.args[0] as any
+      expect(String(filter.orgId)).to.equal(VALID_OID2)
+      expect(filter.isDeleted).to.equal(false)
+      expect((filter._id.$in as unknown[]).map(String)).to.deep.equal([VALID_OID, THIRD_OID])
+    })
+
+    it('answers with the ids that were found, as strings, and leaves out the rest', async () => {
+      sinon.stub(Users, 'find').returns(chain([{ _id: new mongoose.Types.ObjectId(VALID_OID) }]) as any)
+
+      const found = await findOrgUserIds(VALID_OID2, [VALID_OID, THIRD_OID])
+
+      expect([...found]).to.deep.equal([VALID_OID])
+      expect(found.has(THIRD_OID)).to.be.false
+    })
+
+    it('answers with nothing when nobody is a member', async () => {
+      sinon.stub(Users, 'find').returns(chain([]) as any)
+
+      const found = await findOrgUserIds(VALID_OID2, [VALID_OID])
+
+      expect(found.size).to.equal(0)
+    })
+  })
+
   describe('attachSharedByIfRecipient', () => {
     it('skips lookup for the owner', async () => {
       const conversation = {
@@ -1344,6 +1386,24 @@ describe('Enterprise Search Utils', () => {
       const longSearch = 'a'.repeat(1001)
       const req = createMockRequest({ query: { search: longSearch } })
       expect(() => buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')).to.throw('Search parameter too long')
+    })
+
+    it('does not grant shared-with-me access unless the caller opts in (fork, cancel and archive stay owner-only)', () => {
+      const req = createMockRequest()
+      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1')
+      expect(JSON.stringify(result.$or)).to.not.contain('sharedWith')
+    })
+
+    it('with includeShared, a recipient matches only when isShared AND they are in sharedWith', () => {
+      const req = createMockRequest()
+      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1', undefined, undefined, undefined, true)
+      const sharedBranch = result.$or.find((branch: any) => branch.$and)
+      expect(sharedBranch.$and).to.have.length(2)
+      expect(sharedBranch.$and[0]).to.deep.equal({ isShared: true })
+      expect(String(sharedBranch.$and[1]['sharedWith.userId'])).to.equal(VALID_OID)
+      expect(result).to.have.property('sessionType', 'agent')
+      expect(result).to.have.property('agentKey', 'agent-key-1')
+      expect(result).to.have.property('isDeleted', false)
     })
 
     it('should handle shared filter in agent conversations', () => {
@@ -4003,6 +4063,45 @@ describe('chatSessions helpers', () => {
     await updateMessageById(messageId, { messageType: 'bot_response', content: 'new' } as any)
     expect(replaceStub.firstCall.args[1].seq).to.equal(7)
     expect(replaceStub.firstCall.args[1].sessionId).to.equal(sessionId)
+  })
+
+  it('updateUserQueryContent rewrites only the text of a user_query row', async () => {
+    const messageId = new mongoose.Types.ObjectId()
+    const updateStub = sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves({ _id: messageId } as any)
+    const sessionId = new mongoose.Types.ObjectId()
+    await updateUserQueryContent(messageId, 'Edited question', sessionId)
+    expect(updateStub.firstCall.args[0]).to.deep.equal({ _id: messageId, sessionId, messageType: 'user_query' })
+    expect(updateStub.firstCall.args[1]).to.deep.equal({ $set: { content: 'Edited question' } })
+  })
+
+  it('deleteMessagesById only deletes rows of the conversation it was given', async () => {
+    const ids = [new mongoose.Types.ObjectId(), new mongoose.Types.ObjectId()]
+    const sessionId = new mongoose.Types.ObjectId()
+    const del = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({ deletedCount: 2 } as any)
+    await deleteMessagesById(ids, null, sessionId)
+    expect(del.firstCall.args[0]).to.deep.equal({ _id: { $in: ids }, sessionId })
+  })
+
+  it('updateUserQueryContent leaves the files alone unless the edit replaced them', async () => {
+    const updateStub = sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves({} as any)
+    const sessionId = new mongoose.Types.ObjectId()
+    await updateUserQueryContent(new mongoose.Types.ObjectId(), 'Edited question', sessionId)
+    expect(updateStub.firstCall.args[1]).to.deep.equal({ $set: { content: 'Edited question' } })
+  })
+
+  it('updateUserQueryContent replaces the files, and clears them for an empty list', async () => {
+    const updateStub = sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves({} as any)
+    const sessionId = new mongoose.Types.ObjectId()
+    const files = [{ recordId: 'rec-1', recordName: 'a.pdf' }]
+    await updateUserQueryContent(new mongoose.Types.ObjectId(), 'Edited question', sessionId, null, files)
+    await updateUserQueryContent(new mongoose.Types.ObjectId(), 'Edited question', sessionId, null, [])
+    expect(updateStub.firstCall.args[1]).to.deep.equal({ $set: { content: 'Edited question', attachments: files } })
+    expect(updateStub.secondCall.args[1]).to.deep.equal({ $set: { content: 'Edited question', attachments: [] } })
+  })
+
+  it('updateUserQueryContent returns null when the row is not a user_query', async () => {
+    sinon.stub(ChatSessionMessage, 'findOneAndUpdate').resolves(null as any)
+    expect(await updateUserQueryContent(new mongoose.Types.ObjectId(), 'Edited question', new mongoose.Types.ObjectId())).to.equal(null)
   })
 
   it('appendMessages is a no-op when given an empty list', async () => {

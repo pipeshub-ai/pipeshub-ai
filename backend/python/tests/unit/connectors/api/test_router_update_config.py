@@ -581,6 +581,21 @@ class TestUpdateConfigAuthTypeChange:
             await update_connector_instance_config("conn1", request)
         assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("auth", ["token", ["a"], 5, None])
+    @patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1234567890)
+    @patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock)
+    async def test_auth_that_is_not_an_object_is_a_400(self, mock_get_inst, mock_ts, auth) -> None:
+        mock_get_inst.return_value = _instance(auth_type="API_TOKEN")
+        config_service = _build_config_service()
+        request = _mock_request(container=_build_container(config_service), body={"auth": auth})
+
+        with pytest.raises(HTTPException) as exc:
+            await update_connector_instance_config("conn1", request)
+        assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert exc.value.detail == "Auth configuration must be an object."
+        config_service.set_config.assert_not_awaited()
+
 
 # ============================================================================
 # Filters/sync update only (no auth) -> connector stays as-is

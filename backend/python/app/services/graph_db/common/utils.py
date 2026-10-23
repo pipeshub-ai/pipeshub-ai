@@ -226,6 +226,16 @@ def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
     return names
 
 
+# Record-node status fields a query may select on (interpolated, so only these names).
+RECORD_STATUS_FIELDS = frozenset({"indexingStatus", "parsingStatus", "extractionStatus"})
+
+
+def record_status_field(name: str) -> str:
+    if name not in RECORD_STATUS_FIELDS:
+        raise ValueError(f"not a record status field: {name!r}")
+    return name
+
+
 def build_connector_stats_response(
     rows: List[Dict[str, Any]],
     statuses: List[str],
@@ -240,7 +250,7 @@ def build_connector_stats_response(
     get_connector_stats query results.
 
     Args:
-        rows: Query results with recordType, indexingStatus, cnt
+        rows: Query results with recordType, indexingStatus, extractionStatus, cnt
         statuses: List of valid indexing status values
         org_id: Organization ID
         connector_id: Connector ID
@@ -250,6 +260,7 @@ def build_connector_stats_response(
         Formatted stats response dictionary
     """
     indexing_status_counts = {s: 0 for s in statuses}
+    extraction_status_counts = dict.fromkeys(statuses, 0)
     record_type_counts: Dict[str, Dict[str, Any]] = {}
     total = 0
 
@@ -259,6 +270,9 @@ def build_connector_stats_response(
         st = row.get("indexingStatus")
         if st in indexing_status_counts:
             indexing_status_counts[st] += cnt
+        ex = row.get("extractionStatus")
+        if ex in extraction_status_counts:
+            extraction_status_counts[ex] += cnt
         rt = row.get("recordType")
         if rt:
             if rt not in record_type_counts:
@@ -266,10 +280,13 @@ def build_connector_stats_response(
                     "recordType": rt,
                     "total": 0,
                     "indexingStatus": {s: 0 for s in statuses},
+                    "extractionStatus": dict.fromkeys(statuses, 0),
                 }
             record_type_counts[rt]["total"] += cnt
             if st in statuses:
                 record_type_counts[rt]["indexingStatus"][st] += cnt
+            if ex in statuses:
+                record_type_counts[rt]["extractionStatus"][ex] += cnt
 
     return {
         "orgId": org_id,
@@ -278,6 +295,7 @@ def build_connector_stats_response(
         "stats": {
             "total": total,
             "indexingStatus": indexing_status_counts,
+            "extractionStatus": extraction_status_counts,
         },
         "byRecordType": list(record_type_counts.values()),
     }
@@ -297,6 +315,33 @@ TRASH_STATE_FIELDS = (
     "purgeLastError",
     "trashedExternalRecordId",
 )
+
+# Bookkeeping the services keep on a stored record for their own use: the trash
+# state (the record endpoint refuses a trashed record, and a restore clears it),
+# when a rate-limit wait began, the stranded sweep's re-sends and the duplicate
+# taxonomy copy. No client reads them, and the record endpoint's response
+# schema rejects fields it does not list, so the endpoint leaves these out.
+# `deletedByUserId` predates the trash and is documented, so it stays in.
+INTERNAL_RECORD_FIELDS = frozenset({
+    "deletedAtTimestamp",
+    "deleteSource",
+    "deleteBatchId",
+    "purgeAttempts",
+    "purgeLastError",
+    "trashedExternalRecordId",
+    "rateLimitedSince",
+    "lastRepublishedAt",
+    "republishCount",
+    "duplicateReconcilePending",
+    "duplicateReconcileAttempts",
+    "duplicateReconcileDueAt",
+})
+
+
+def api_record(record: dict[str, Any]) -> dict[str, Any]:
+    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``."""
+    return {key: value for key, value in record.items() if key not in INTERNAL_RECORD_FIELDS}
+
 
 # A Recently deleted row for a multi-select delete names this many of its other items.
 TRASH_LIST_OTHER_ROOT_NAMES = 3

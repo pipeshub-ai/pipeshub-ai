@@ -427,6 +427,7 @@ class DriveWorld:
         r("GET", f"{DRIVE_API}/drives", self._drives_list)
         r("GET", f"{DRIVE_API}/drives/([^/]+)", self._drives_get)
         r("GET", f"{ADMIN_API}/users", self._admin_users)
+        r("GET", f"{ADMIN_API}/users/([^/]+)", self._admin_user)
         r("GET", f"{ADMIN_API}/groups", self._admin_groups)
         r("GET", f"{ADMIN_API}/groups/([^/]+)/members", self._admin_members)
 
@@ -665,14 +666,27 @@ class DriveWorld:
             return google_error(403, "forbidden", "Not Authorized to access this resource/api")
         return None
 
+    @staticmethod
+    def _directory_user(u: DriveUser) -> dict[str, Any]:
+        return {"id": u.user_id, "primaryEmail": u.email, "name": {"fullName": u.name}, "suspended": u.suspended, "creationTime": "2023-01-01T00:00:00.000Z"}
+
     def _admin_users(self, req: ApiRequest) -> object:
         if denied := self._admin_guard(req):
             return denied
-        users = [
-            {"id": u.user_id, "primaryEmail": u.email, "name": {"fullName": u.name}, "suspended": u.suspended, "creationTime": "2023-01-01T00:00:00.000Z"}
-            for u in sorted(self.users.values(), key=lambda u: u.email)
-        ]
+        users = [self._directory_user(u) for u in sorted(self.users.values(), key=lambda u: u.email)]
         return paginate(users, req.query, default_size=self.admin_page_size, key="users")
+
+    def _admin_user(self, req: ApiRequest) -> object:
+        """users.get: the key may be the primary email, an alias or the user id."""
+        if denied := self._admin_guard(req):
+            return denied
+        key = req.path.rsplit("/", 1)[-1]
+        user = self.users.get(self.aliases.get(key, key)) or next(
+            (u for u in self.users.values() if u.user_id == key), None
+        )
+        if user is None:
+            return google_error(404, "notFound", "Resource Not Found: userKey")
+        return self._directory_user(user)
 
     def _admin_groups(self, req: ApiRequest) -> object:
         if denied := self._admin_guard(req):

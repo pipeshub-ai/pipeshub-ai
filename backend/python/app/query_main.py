@@ -24,19 +24,26 @@ from app.edition_config import (
     ensure_org_context,
     search_router,
 )
+from app.services.model_identity.principal import service_principal
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.utils.log_redaction import log_safe_validation_errors
 from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
+from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.health import router as health_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.edition_containers import QueryAppContainer
-from app.edition_services import configure_app, register_extra_toolsets  # noqa: E402 - like the imports around it, after set_service_suffix()
+from app.edition_services import (  # noqa: E402 - like the imports around it, after set_service_suffix()
+    configure_app,
+    register_extra_toolsets,
+)
 from app.health.health import Health
 from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
@@ -228,7 +235,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         async def _warmup_embedding_model() -> None:
             try:
                 logger.info("🔥 Warming up embedding model in background")
-                await retrieval_service.get_embedding_model_instance()
+                async with call_scope(
+                    service_principal("warmup"),
+                    Workload.SYSTEM,
+                    config_service=container.config_service(),
+                    container=container,
+                ):
+                    await retrieval_service.get_embedding_model_instance()
                 logger.info("✅ Embedding model warmup complete")
             except Exception as warmup_error:
                 logger.error(
@@ -292,12 +305,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # so it can be read back without re-probing the daemon on every health
     # check.
     async def _warmup_coding_sandbox() -> None:
+        from app.agent_loop_lib.sandbox.coding.base import SandboxContext
         from app.agent_loop_lib.sandbox.coding.registry import build_default_registry
         from app.agent_loop_lib.sandbox.coding.settings import (
             EnvSandboxSettingsLoader,
             SharedSandboxConfig,
         )
-        from app.agent_loop_lib.sandbox.coding.base import SandboxContext
 
         try:
             settings = await EnvSandboxSettingsLoader().load(SandboxContext())
@@ -516,6 +529,7 @@ app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
+app.include_router(code_graph_router, prefix="/api/v1")
 # These routes call whatever provider URL the body names, so only admins may reach them.
 app.include_router(health_router, prefix="/api/v1", dependencies=[Depends(require_admin_caller)])
 app.include_router(ai_models_registry_router, prefix="/api/v1")

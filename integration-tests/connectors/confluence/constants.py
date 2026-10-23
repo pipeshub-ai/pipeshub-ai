@@ -2,6 +2,7 @@
 
 import os
 import re
+from urllib.parse import urlsplit
 
 # Maximum timeout for Confluence API polling conditions (default 30 min).
 # Used as the ceiling for intelligent polling - tests poll Confluence API every 30s
@@ -18,3 +19,19 @@ _TEST_PAGE_TITLE = re.compile(
 
 def is_test_page(title: str) -> bool:
     return bool(_TEST_PAGE_TITLE.match(title))
+
+
+def connector_base_url() -> str | None:
+    """Site URL the connector is configured with.
+
+    The connector runs inside the compose network, so against the simulator it reaches the site
+    by service alias while the test process uses the published port (CONFLUENCE_TEST_BASE_URL).
+    Against a real site both are the same URL.
+    """
+    return os.getenv("CONFLUENCE_CONNECTOR_BASE_URL") or os.getenv("CONFLUENCE_TEST_BASE_URL")
+
+
+def connector_site_origin() -> str:
+    """Scheme and host of the connector's site URL, which every synced webUrl starts with."""
+    parts = urlsplit(connector_base_url() or "")
+    return f"{parts.scheme}://{parts.netloc}"

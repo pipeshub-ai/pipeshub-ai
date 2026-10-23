@@ -8,6 +8,8 @@ import {
   conversationIdParamsSchema,
   conversationTitleParamsSchema,
   conversationShareParamsSchema,
+  agentConversationShareParamsSchema,
+  agentConversationUnshareParamsSchema,
   forkConversationParamsSchema,
   forkAgentConversationParamsSchema,
   messageIdParamsSchema,
@@ -470,6 +472,58 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+  describe('agentConversationShareParamsSchema', () => {
+    const params = { agentKey: 'agent-1', conversationId: '507f1f77bcf86cd799439011' }
+    const user = '507f1f77bcf86cd799439012'
+
+    it('accepts userIds with no access level, or an explicit read', () => {
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user] } }).success).to.be.true
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user], accessLevel: 'read' } }).success).to.be.true
+    })
+
+    it('rejects write access instead of silently dropping it', () => {
+      const result = agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user], accessLevel: 'write' } })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects an unknown access level and unknown body fields', () => {
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user], accessLevel: 'admin' } }).success).to.be.false
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [user], isShared: true } }).success).to.be.false
+    })
+
+    it('rejects an empty list, a malformed id and a missing list', () => {
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: [] } }).success).to.be.false
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: ['nope'] } }).success).to.be.false
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: {} }).success).to.be.false
+    })
+
+    it('caps how many users one request may name', () => {
+      const ids = (n: number) => Array.from({ length: n }, (_, i) => user.slice(0, -2) + String(10 + (i % 90)))
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: ids(50) } }).success).to.be.true
+      expect(agentConversationShareParamsSchema.safeParse({ params, body: { userIds: ids(51) } }).success).to.be.false
+    })
+
+    it('requires a valid agent key and conversation id', () => {
+      expect(agentConversationShareParamsSchema.safeParse({ params: { ...params, conversationId: 'x' }, body: { userIds: [user] } }).success).to.be.false
+      expect(agentConversationShareParamsSchema.safeParse({ params: { conversationId: params.conversationId }, body: { userIds: [user] } }).success).to.be.false
+    })
+  })
+
+  describe('agentConversationUnshareParamsSchema', () => {
+    const params = { agentKey: 'agent-1', conversationId: '507f1f77bcf86cd799439011' }
+    const user = '507f1f77bcf86cd799439012'
+
+    it('accepts a list of user ids', () => {
+      expect(agentConversationUnshareParamsSchema.safeParse({ params, body: { userIds: [user] } }).success).to.be.true
+    })
+
+    it('rejects an empty list, a malformed id and unknown body fields', () => {
+      expect(agentConversationUnshareParamsSchema.safeParse({ params, body: { userIds: [] } }).success).to.be.false
+      expect(agentConversationUnshareParamsSchema.safeParse({ params, body: { userIds: ['nope'] } }).success).to.be.false
+      expect(agentConversationUnshareParamsSchema.safeParse({ params, body: { userIds: [user], accessLevel: 'read' } }).success).to.be.false
+    })
+  })
+
   describe('listAgentsQuerySchema', () => {
     it('should apply documented defaults for omitted sort params', () => {
       const result = listAgentsQuerySchema.safeParse({ query: {} })
@@ -659,7 +713,7 @@ describe('enterprise_search/validators/es_validators', () => {
     })
 
     it('keeps timeline when the caller sets it, and leaves it out otherwise', () => {
-      for (const timeline of ['created', 'modified']) {
+      for (const timeline of ['created', 'modified', 'off']) {
         const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', timeline } })
         expect(result.success).to.be.true
         expect(result.data!.body.timeline).to.equal(timeline)
@@ -669,8 +723,8 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(omitted.data!.body).to.not.have.property('timeline')
     })
 
-    it('rejects a timeline that is not created or modified', () => {
-      for (const timeline of ['updated', '', true, null, 1]) {
+    it('rejects a timeline that is not created, modified or off', () => {
+      for (const timeline of ['updated', '', 'none', true, false, null, 1]) {
         const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', timeline } })
         expect(result.success, JSON.stringify(timeline)).to.be.false
       }
@@ -916,6 +970,118 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = regenerateAnswersParamsSchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+
+    const regenParams = {
+      conversationId: '507f1f77bcf86cd799439011',
+      messageId: '507f1f77bcf86cd799439012',
+    }
+
+    it('keeps an edited question on the regenerate body', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { query: 'Edited question', filters: {} },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.query).to.equal('Edited question')
+      }
+    })
+
+    it('still accepts a regenerate body without a question', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({ params: regenParams, body: {} })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.query).to.be.undefined
+      }
+    })
+
+    it('rejects an empty edited question', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({ params: regenParams, body: { query: '' } })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects an edited question over the length limit', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { query: 'a'.repeat(100001) },
+      })
+      expect(result.success).to.be.false
+    })
+
+    const file = { recordId: 'rec-1', recordName: 'a.pdf', mimeType: 'application/pdf', extension: 'pdf', virtualRecordId: 'v-1' }
+
+    it('keeps the files of an edited question on the regenerate body', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { query: 'Edited question', attachments: [file] },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.attachments).to.deep.equal([file])
+      }
+    })
+
+    it('accepts an empty list of files, which removes them all', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({ params: regenParams, body: { attachments: [] } })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.attachments).to.deep.equal([])
+      }
+    })
+
+    it('leaves the files undefined when the body has none', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({ params: regenParams, body: { query: 'Edited question' } })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.attachments).to.be.undefined
+      }
+    })
+
+    it('rejects a file without a record id', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { attachments: [{ recordName: 'a.pdf' }] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects more files than a message can carry', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { attachments: Array.from({ length: 11 }, (_, i) => ({ ...file, recordId: 'rec-' + i })) },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('accepts ten files', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: regenParams,
+        body: { attachments: Array.from({ length: 10 }, (_, i) => ({ ...file, recordId: 'rec-' + i })) },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('accepts the files of an edited question on the agent regenerate body', () => {
+      const result = regenerateAgentAnswersParamsSchema.safeParse({
+        params: { agentKey: 'agent-1', ...regenParams },
+        body: { query: 'Edited question', chatMode: 'quick', attachments: [file] },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.attachments).to.deep.equal([file])
+      }
+    })
+
+    it('accepts an edited question on the agent regenerate body', () => {
+      const result = regenerateAgentAnswersParamsSchema.safeParse({
+        params: { agentKey: 'agent-1', ...regenParams },
+        body: { query: 'Edited question', chatMode: 'quick' },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.query).to.equal('Edited question')
+      }
     })
   })
 

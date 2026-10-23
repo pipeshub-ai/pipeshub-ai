@@ -478,6 +478,29 @@ class TestMrCommentAdditionalPaths:
         assert len(blocks) == 1
         assert "[New file]" in blocks[0].data
 
+    async def test_secrets_in_file_content_and_diff_are_redacted(self) -> None:
+        c, helper = self._make_mr_helper()
+        key = "AKIAIOSFODNN7EXAMPLA"
+        base = {"deleted_file": False, "generated_file": False, "renamed_file": False, "collapsed": False}
+        changes = [
+            {**base, "new_path": "cfg.py", "diff": f"+AWS_KEY = '{key}'", "new_file": True, "too_large": False},
+            # No diff: the file's text at the head is fetched and inlined instead.
+            {**base, "new_path": "big.py", "diff": "", "new_file": False, "too_large": True},
+        ]
+        file_obj = MagicMock()
+        file_obj.content = base64.b64encode(f"AWS_KEY = '{key}'\n".encode()).decode()
+        file_obj.size = 40
+        c.runtime.ds_call = AsyncMock(side_effect=[
+            _ok_res([]), _ok_res({"changes": changes}), _ok_res(MagicMock(sha="abc")), _ok_res(file_obj),
+        ])
+
+        blocks, _ = await helper.build_merge_request_comment_blocks(
+            "https://gitlab.com/ns/proj/-/merge_requests/1", 0, _make_record()
+        )
+        text = "".join(b.data for b in blocks)
+        assert key not in text
+        assert text.count("«REDACTED:aws-access-key»") == 2
+
 
 # ===========================================================================
 # build_merge_request_comment_blocks — what a changed file's group holds

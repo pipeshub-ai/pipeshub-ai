@@ -6,16 +6,19 @@ Covers:
 - Full sync fallback: truncated tree -> per-subtree walk (BFS).
 - Incremental sync: compare-commits classification (added/removed/modified/renamed).
 - SHA reconciliation: delete+add pair sharing a blob SHA promoted to a rename.
-- No-skip policy: every file gets a record; oversized files keep theirs with
+- Excluded trees: dependency/build/generated paths and .gitattributes
+  linguist-generated/vendored files get no record (P-1).
+- Every other file gets a record; oversized files keep theirs with
   content indexing off (AUTO_INDEX_OFF at full sync, 413 at stream time).
 - run(): checkpoint dispatch (no checkpoint -> full; unchanged HEAD -> skip;
   default-branch change -> re-baseline; incremental failure -> full fallback).
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -32,7 +35,9 @@ from app.connectors.sources.github_teams.timestamps import (
     aggregate_folder_timestamps as _aggregate_folder_timestamps,
 )
 from app.config.constants.arangodb import ProgressStatus
+from app.connectors.core.registry.filters import FilterCollection
 from app.models.entities import CodeFileRecord
+from app.modules.parsers.code_parser.path_policy import PathPolicy
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
 from tests.unit.connectors.sources.test_github_teams.conftest import (
@@ -316,6 +321,29 @@ class TestIncrementalTimestampStamping:
         assert persisted["src/a.py"].source_updated_at == 222
         assert persisted["src/b.py"].source_created_at is None
 
+    async def test_upserted_files_carry_a_fresh_updated_at(self) -> None:
+        """A content change must carry a fresh `updatedAtTimestamp`, or the code
+        edge build's watermark skips the file and keeps its removed CALLS edges.
+        The model's default_factory stamps it when the record is built."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        sync.timestamps.fetch_commit_dates = AsyncMock(return_value={})
+
+        before = int(time.time() * 1000)
+        ok = await sync._upsert_code_files(repo, {"src/a.py": "sha-a"})
+
+        assert ok is True
+        persisted = [
+            r
+            for call in c.data_entities_processor.on_new_records.call_args_list
+            for r, _perms in call.args[0]
+            if getattr(r, "file_path", None) == "src/a.py"
+        ]
+        assert len(persisted) == 1
+        assert persisted[0].updated_at >= before
+        assert persisted[0].to_arango_base_record()["updatedAtTimestamp"] >= before
+
 
 class TestFullSync:
     async def test_flat_tree_persists_folders_before_files(self) -> None:
@@ -340,6 +368,8 @@ class TestFullSync:
         assert folder_batch[0][0].record_name == "src"
         file_batch = calls[1].args[0]
         assert {r.record_name for r, _ in file_batch} == {"main.py", "README.md"}
+        # The size lets the stream fetch the blob in one call (P-2).
+        assert {r.record_name: r.size_in_bytes for r, _ in file_batch} == {"main.py": 100, "README.md": 50}
 
     async def test_folders_follow_the_code_file_indexing_flag(self) -> None:
         """Folders hold no content — the indexing consumer discards them on
@@ -347,7 +377,7 @@ class TestFullSync:
         stamped AUTO_INDEX_OFF published one event per folder purely for the
         consumer to throw away."""
         c = make_mock_connector()
-        c.indexing_filters = SimpleNamespace(is_enabled=lambda _key: False)
+        c.indexing_filters = SimpleNamespace(is_enabled=lambda _key, default=True: False)
         repo = make_repo(repo_id=1)
         c.runtime.ds_call.return_value = ok_response(make_git_tree([
             make_tree_element("src", entry_type="tree", sha="sha-src"),
@@ -364,6 +394,72 @@ class TestFullSync:
         ]
         assert {r.record_name for r in persisted} == {"src", "main.py"}
         assert all(r.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value for r in persisted)
+
+    async def test_test_files_sync_but_are_not_indexed_by_default(self) -> None:
+        """Test files must still become records — only their content indexing is
+        off, and only because the opt-in filter defaults to off."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.runtime.ds_call.return_value = ok_response(make_git_tree([
+            make_tree_element("src/main.py", entry_type="blob", sha="sha-main", size=10),
+            make_tree_element("tests/test_main.py", entry_type="blob", sha="sha-test", size=10),
+        ]))
+
+        sync = ReposSync(c)
+        assert await sync._full_sync(repo, "head-sha") is True
+
+        persisted = {
+            record.file_path: record
+            for call in c.data_entities_processor.on_new_records.call_args_list
+            for record, _perms in call.args[0]
+            if isinstance(record, CodeFileRecord)
+        }
+        assert set(persisted) == {"src/main.py", "tests/test_main.py"}
+        assert persisted["tests/test_main.py"].file_role == "test"
+        assert (
+            persisted["tests/test_main.py"].indexing_status
+            == ProgressStatus.AUTO_INDEX_OFF.value
+        )
+        assert persisted["src/main.py"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_test_files_stay_off_when_filters_exist_without_a_row(self) -> None:
+        """A pre-existing filter config with no ``test_files`` row must not
+        fall back to the generic default-True and start indexing tests."""
+        c = make_mock_connector()
+        c.indexing_filters = FilterCollection()
+        repo = make_repo(repo_id=1)
+        c.runtime.ds_call.return_value = ok_response(make_git_tree([
+            make_tree_element("src/main.py", entry_type="blob", sha="sha-main", size=10),
+            make_tree_element("tests/test_main.py", entry_type="blob", sha="sha-test", size=10),
+        ]))
+
+        sync = ReposSync(c)
+        assert sync._code_files_indexing_enabled() is True
+        assert sync._test_files_indexing_enabled() is False
+        assert await sync._full_sync(repo, "head-sha") is True
+
+        persisted = {
+            record.file_path: record
+            for call in c.data_entities_processor.on_new_records.call_args_list
+            for record, _perms in call.args[0]
+            if isinstance(record, CodeFileRecord)
+        }
+        assert persisted["tests/test_main.py"].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+        assert persisted["src/main.py"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_test_files_are_indexed_once_the_filter_is_on(self) -> None:
+        c = make_mock_connector()
+        c.indexing_filters = SimpleNamespace(is_enabled=lambda _key, default=True: True)
+        repo = make_repo(repo_id=1)
+        c.runtime.ds_call.return_value = ok_response(make_git_tree([
+            make_tree_element("tests/test_main.py", entry_type="blob", sha="sha-test", size=10),
+        ]))
+
+        sync = ReposSync(c)
+        assert await sync._full_sync(repo, "head-sha") is True
+
+        record, _perms = c.data_entities_processor.on_new_records.call_args_list[0].args[0][0]
+        assert record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
     async def test_folders_stay_indexable_when_code_files_are(self) -> None:
         c = make_mock_connector()
@@ -511,13 +607,16 @@ class TestFullSync:
         # buffered and written at the end.
         assert "persist" in events[: events.index(f"fetch:sha-b")], events
 
-    async def test_every_file_gets_a_record_including_dotfiles_and_oversized(self) -> None:
-        """No-skip policy: nothing in the tree is invisible. Oversized files get
-        a record with content indexing off + reason; dotfiles sync normally."""
+    async def test_oversized_files_and_dotfiles_keep_a_record_but_credentials_do_not(self) -> None:
+        """Oversized files get a record with content indexing off + reason, and
+        ordinary dotfiles sync normally. Credential files get no record (S-2)."""
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         tree = make_git_tree([
             make_tree_element(".env", entry_type="blob", sha="sha-env", size=10),
+            make_tree_element(".env.example", entry_type="blob", sha="sha-env-ex", size=10),
+            make_tree_element("deploy/server.pem", entry_type="blob", sha="sha-pem", size=10),
+            make_tree_element(".eslintrc.json", entry_type="blob", sha="sha-lint", size=10),
             make_tree_element("big.bin", entry_type="blob", sha="sha-big", size=999_999_999),
             make_tree_element("ok.py", entry_type="blob", sha="sha-ok", size=10),
         ])
@@ -528,11 +627,170 @@ class TestFullSync:
 
         file_batch = c.data_entities_processor.on_new_records.call_args_list[-1].args[0]
         by_name = {r.record_name: r for r, _ in file_batch}
-        assert set(by_name) == {".env", "big.bin", "ok.py"}
+        assert set(by_name) == {".env.example", ".eslintrc.json", "big.bin", "ok.py"}
         assert by_name["big.bin"].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
         assert "content-indexing limit" in (by_name["big.bin"].reason or "")
         assert by_name["ok.py"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
-        assert by_name[".env"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+        assert by_name["ok.py"].language == "python"
+        assert by_name[".eslintrc.json"].indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+
+
+def _persisted_paths(c) -> set[str]:
+    return {
+        getattr(r, "file_path", None) or r.record_name
+        for call in c.data_entities_processor.on_new_records.call_args_list
+        for r, _perms in call.args[0]
+    }
+
+
+def _gitattributes_response(text: str) -> MagicMock:
+    import base64
+
+    return ok_response(SimpleNamespace(content=base64.b64encode(text.encode()).decode(), encoding="base64"))
+
+
+class TestExcludedTrees:
+    """GitHub ingested node_modules, dist, lockfiles and minified bundles,
+    which GitLab already skipped (P-1)."""
+
+    async def test_dependency_build_and_generated_paths_get_no_record(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        tree = make_git_tree([
+            make_tree_element("src", entry_type="tree", sha="t-src"),
+            make_tree_element("src/app.ts", entry_type="blob", sha="s1", size=10),
+            make_tree_element("node_modules", entry_type="tree", sha="t-nm"),
+            make_tree_element("node_modules/lodash", entry_type="tree", sha="t-lo"),
+            make_tree_element("node_modules/lodash/index.js", entry_type="blob", sha="s2", size=10),
+            make_tree_element("dist", entry_type="tree", sha="t-dist"),
+            make_tree_element("dist/bundle.js", entry_type="blob", sha="s3", size=10),
+            make_tree_element("public/app.min.js", entry_type="blob", sha="s4", size=10),
+            make_tree_element("package-lock.json", entry_type="blob", sha="s5", size=10),
+            make_tree_element("proto/user_pb2.py", entry_type="blob", sha="s6", size=10),
+        ])
+        c.runtime.ds_call.return_value = ok_response(tree)
+        sync = ReposSync(c)
+        sync._prune_deleted_paths = AsyncMock()
+
+        assert await sync._full_sync(repo, "head-sha") is True
+
+        assert _persisted_paths(c) == {"src", "src/app.ts"}
+        walked = sync._prune_deleted_paths.call_args.args[1]
+        assert "node_modules/lodash/index.js" not in walked
+
+    async def test_an_excluded_subtree_is_never_walked(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        root = make_git_tree([
+            make_tree_element("src", entry_type="tree", sha="t-src"),
+            make_tree_element("vendor", entry_type="tree", sha="t-vendor"),
+        ])
+        fetched: list[str] = []
+
+        async def dispatch(_fn, _owner, _name, sha, recursive) -> MagicMock:
+            fetched.append(sha)
+            if sha == "head-sha":
+                return ok_response(root)
+            return ok_response(make_git_tree([make_tree_element("a.py", entry_type="blob", sha="s", size=1)]))
+
+        c.runtime.ds_call.side_effect = dispatch
+        sync = ReposSync(c)
+        sync._prune_deleted_paths = AsyncMock()
+
+        assert await sync._full_sync_untruncated(repo, "head-sha") is True
+        assert "t-vendor" not in fetched
+        assert "t-src" in fetched
+
+    async def test_gitattributes_linguist_rules_exclude_files(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        tree = make_git_tree([
+            make_tree_element("src/app.ts", entry_type="blob", sha="s1", size=10),
+            make_tree_element("src/schema.graphql.ts", entry_type="blob", sha="s2", size=10),
+            make_tree_element("assets/legacy/jquery.js", entry_type="blob", sha="s3", size=10),
+            make_tree_element("assets/legacy/keep.js", entry_type="blob", sha="s4", size=10),
+        ])
+        sync = ReposSync(c)
+        c.runtime.ds_call.return_value = _gitattributes_response(
+            "# linguist\n"
+            "*.graphql.ts linguist-generated\n"
+            "assets/legacy/** linguist-vendored=true\n"
+            "assets/legacy/keep.js -linguist-vendored\n"
+        )
+        sync._policy = PathPolicy(linguist=await sync._load_linguist_exclusions(repo, "head-sha"))
+        c.runtime.ds_call.return_value = ok_response(tree)
+        sync._prune_deleted_paths = AsyncMock()
+
+        await sync._full_sync(repo, "head-sha")
+
+        files = {p for p in _persisted_paths(c) if "." in p.rsplit("/", 1)[-1]}
+        assert files == {"src/app.ts", "assets/legacy/keep.js"}
+
+    async def test_a_missing_gitattributes_excludes_nothing_extra(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.runtime.ds_call.return_value = failed_response(status_code=404)
+
+        rules = await ReposSync(c)._load_linguist_exclusions(repo, "head-sha")
+
+        assert not rules
+        assert rules.excludes("src/app.ts") is False
+
+    async def test_incremental_changes_inside_excluded_trees_are_dropped(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        comparison = make_comparison([
+            make_compare_file(filename="src/a.py", status="added", sha="s-a"),
+            make_compare_file(filename="node_modules/x/index.js", status="added", sha="s-x"),
+            make_compare_file(filename="dist/out.js", status="modified", sha="s-d"),
+            make_compare_file(filename="vendor/lib.py", status="renamed", previous_filename="src/lib.py", sha="s-l"),
+            make_compare_file(filename="src/moved.py", status="renamed", previous_filename="build/moved.py", sha="s-m"),
+        ])
+        c.runtime.ds_call.return_value = ok_response(comparison)
+        c.data_entities_processor.get_record_by_external_id.return_value = None
+        sync = ReposSync(c)
+        sync._delete_code_files_by_paths = AsyncMock()
+        sync._upsert_code_files = AsyncMock(return_value=True)
+        sync._apply_code_renames = AsyncMock(return_value=True)
+        sync._cleanup_emptied_folders = AsyncMock()
+
+        assert await sync._incremental_sync(repo, "old", "new") is True
+
+        upserted = sync._upsert_code_files.call_args.args[1]
+        assert upserted == {"src/a.py": "s-a", "src/moved.py": "s-m"}
+        deleted = set(sync._delete_code_files_by_paths.call_args.args[1])
+        # Moved into vendor/: the old record goes. Moved out of build/: any
+        # record left from before the rules goes too.
+        assert deleted == {"src/lib.py", "build/moved.py"}
+        sync._apply_code_renames.assert_not_awaited()
+
+    async def test_records_left_from_before_the_rules_are_pruned_past_the_valve(self) -> None:
+        """An old sync may have stored thousands of node_modules records; they
+        must not trip the truncated-walk valve that guards real deletions."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        live = {"src": "rec-src", "src/a.py": "rec-a", "node_modules": "rec-nm"}
+        live.update({f"node_modules/pkg{i}/index.js": f"rec-nm-{i}" for i in range(50)})
+        sync._list_code_records_by_path = _inventory(live)
+
+        await sync._prune_deleted_paths(repo, {"src", "src/a.py"})
+
+        deleted = c.data_entities_processor.on_records_deleted_cascade.call_args.args[0]
+        assert len(deleted) == 51
+        assert "rec-a" not in deleted
+
+    async def test_the_valve_still_guards_real_source_files(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        live = {f"src/f{i}.py": f"rec-{i}" for i in range(20)}
+        live.update({f"node_modules/p{i}.js": f"rec-nm-{i}" for i in range(40)})
+        sync._list_code_records_by_path = _inventory(live)
+
+        await sync._prune_deleted_paths(repo, {"src/f0.py"})
+
+        c.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
 
 
 class TestIncrementalSyncClassification:
@@ -633,7 +891,7 @@ class TestIncrementalSyncEndToEnd:
             for i in range(COMPARE_COMMITS_FILES_LIMIT)
         ]
         comparison = make_comparison(many_files)
-        c.runtime.ds_call.return_value = ok_response(comparison)
+        c.runtime.ds_call.side_effect = [ok_response(comparison), failed_response(status_code=404)]
 
         sync = ReposSync(c)
         ok = await sync._incremental_sync(repo, "old-sha", "new-sha")
@@ -648,7 +906,8 @@ class TestIncrementalSyncEndToEnd:
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         comparison = make_comparison([], status=status)
-        c.runtime.ds_call.return_value = ok_response(comparison)
+        # The old commit is gone after a force-push, so there is no tree to diff against.
+        c.runtime.ds_call.side_effect = [ok_response(comparison), failed_response(status_code=404)]
 
         sync = ReposSync(c)
         ok = await sync._incremental_sync(repo, "old-sha", "new-sha")
@@ -840,6 +1099,40 @@ class TestFetchCodeFileContentSizeGuard:
 
         assert result == b"print(1)"
 
+    async def test_an_incremental_file_is_read_at_the_commit_it_was_synced_at(self) -> None:
+        """Not at the branch head, which may have moved on since (P-8)."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        record = CodeFileRecord(
+            id="rec-1", org_id="org-1", record_name="ok.py",
+            record_type="CODE_FILE", version=0, origin="CONNECTOR",
+            connector_name="GITHUB TEAMS", connector_id="github-conn-1",
+            external_record_id="/1/blob/ok.py", external_record_group_id="1-code-repository",
+            file_path="ok.py", commit_sha="c0ffee",
+        )
+        refs = []
+
+        def dispatch(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.get_repo_by_id:
+                return ok_response(repo)
+            if method is c.data_source.get_file_contents:
+                refs.append(args[-1])
+                return ok_response(SimpleNamespace(size=10, decoded_content=b"x = 1"))
+            raise AssertionError(f"unexpected ds_call for {method!r}")
+
+        c.runtime.ds_call.side_effect = dispatch
+        assert await ReposSync(c).fetch_code_file_content(record) == b"x = 1"
+        assert refs == ["c0ffee"]
+
+    async def test_a_record_built_at_a_commit_links_to_that_commit(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        record = ReposSync(c)._build_code_file_record(
+            repo, "src/a.py", "blob-1", True, True, commit_sha="c0ffee")
+        assert record.commit_sha == "c0ffee"
+        assert "/blob/c0ffee/src/a.py" in record.weburl
+        assert record.to_arango_record()["commitSha"] == "c0ffee"
+
 
 class TestLargeBlobFallback:
     """The Contents API returns empty content above 1 MB while the size guard
@@ -899,6 +1192,112 @@ class TestLargeBlobFallback:
         with pytest.raises(HTTPException) as exc:
             await sync.fetch_code_file_content(self._record())
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
+
+
+class TestStreamBudget:
+    """P-2: a full-sync record is one Git Blob call; the repository lookup is
+    shared by every file of a burst."""
+
+    def _record(self, path: str = "a.py", size: int | None = 3, sha: str | None = "blob-a") -> CodeFileRecord:
+        return CodeFileRecord(
+            id=f"rec-{path}", org_id="org-1", record_name=path,
+            record_type="CODE_FILE", version=0, origin="CONNECTOR",
+            connector_name="GITHUB TEAMS", connector_id="github-conn-1",
+            external_record_id=f"/1/blob/{path}", external_record_group_id="1-code-repository",
+            file_path=path, file_hash=sha, size_in_bytes=size,
+        )
+
+    def _wire(self, c: MagicMock, *, blob: object = None, contents: object = None) -> list[str]:
+        import base64
+
+        repo = make_repo(repo_id=1)
+        calls: list[str] = []
+        blob = blob or ok_response(SimpleNamespace(size=3, content=base64.b64encode(b"abc").decode(), encoding="base64"))
+        contents = contents or ok_response(SimpleNamespace(size=3, decoded_content=b"head", content=None))
+
+        def dispatch(method: object, *args: object, **kwargs: object) -> object:
+            calls.append(method._mock_name if hasattr(method, "_mock_name") else str(method))
+            if method is c.data_source.get_repo_by_id:
+                return ok_response(repo)
+            if method is c.data_source.get_git_blob:
+                return blob
+            if method is c.data_source.get_file_contents:
+                return contents
+            raise AssertionError(f"unexpected ds_call for {method!r}")
+
+        c.runtime.ds_call.side_effect = dispatch
+        looked_up: list[int] = []
+
+        # The runtime remembers a lookup per repository (its own tests cover that), so
+        # only the first one reaches GitHub.
+        async def get_repo_by_id(repo_id: int) -> object:
+            if repo_id not in looked_up:
+                looked_up.append(repo_id)
+                return dispatch(c.data_source.get_repo_by_id, repo_id)
+            return ok_response(repo)
+
+        async def forget_repo_lookup(repo_id: int) -> None:
+            looked_up.remove(repo_id)
+
+        c.runtime.get_repo_by_id = get_repo_by_id
+        c.runtime.forget_repo_lookup = forget_repo_lookup
+        return calls
+
+    async def test_full_sync_files_cost_one_call_each_after_the_first(self) -> None:
+        c = make_mock_connector()
+        calls = self._wire(c)
+        sync = ReposSync(c)
+
+        for path in ("a.py", "b.py", "c.py"):
+            assert await sync.fetch_code_file_content(self._record(path)) == b"abc"
+
+        assert calls == ["get_repo_by_id", "get_git_blob", "get_git_blob", "get_git_blob"]
+
+    async def test_a_known_oversized_file_is_refused_without_a_content_call(self) -> None:
+        c = make_mock_connector()
+        calls = self._wire(c)
+
+        with pytest.raises(HTTPException) as exc:
+            await ReposSync(c).fetch_code_file_content(self._record(size=CODE_FILE_MAX_SIZE_BYTES + 1))
+
+        assert exc.value.status_code == HttpStatusCode.PAYLOAD_TOO_LARGE.value
+        assert calls == ["get_repo_by_id"]
+
+    async def test_a_known_empty_file_needs_no_content_call(self) -> None:
+        c = make_mock_connector()
+        calls = self._wire(c)
+
+        assert await ReposSync(c).fetch_code_file_content(self._record(size=0)) == b""
+        assert calls == ["get_repo_by_id"]
+
+    async def test_a_record_of_unknown_size_reads_the_contents_api(self) -> None:
+        # Incremental records carry no size, and a blob is downloaded whole
+        # before its size can be checked.
+        c = make_mock_connector()
+        calls = self._wire(c)
+
+        assert await ReposSync(c).fetch_code_file_content(self._record(size=None)) == b"head"
+        assert calls == ["get_repo_by_id", "get_file_contents"]
+
+    async def test_a_blob_gone_from_github_falls_back_to_the_contents_api(self) -> None:
+        c = make_mock_connector()
+        calls = self._wire(c, blob=failed_response("gone", status_code=HttpStatusCode.NOT_FOUND.value))
+
+        assert await ReposSync(c).fetch_code_file_content(self._record()) == b"head"
+        # The lookup is refreshed only if the Contents API 404s too, which a rename also does.
+        assert calls == ["get_repo_by_id", "get_git_blob", "get_file_contents"]
+
+    async def test_a_rate_limited_blob_is_reported_as_429_not_retried_elsewhere(self) -> None:
+        c = make_mock_connector()
+        limited = failed_response("rate limited", status_code=429)
+        limited.retry_after_seconds = 1200
+        calls = self._wire(c, blob=limited)
+
+        with pytest.raises(HTTPException) as exc:
+            await ReposSync(c).fetch_code_file_content(self._record())
+
+        assert exc.value.status_code == 429
+        assert calls == ["get_repo_by_id", "get_git_blob"]
 
 
 def _inventory(live: dict[str, str], trashed: dict[str, str] | None = None) -> AsyncMock:
@@ -1159,17 +1558,48 @@ class TestIncrementalCompareLimits:
             make_compare_file(filename=f"f{i}.py", status="added", sha=f"s{i}")
             for i in range(COMPARE_COMMITS_FILES_LIMIT)
         ]
-        c.runtime.ds_call.return_value = ok_response(make_comparison(files, total_commits=1))
+        c.runtime.ds_call.side_effect = [ok_response(make_comparison(files, total_commits=1)),
+                                         failed_response(status_code=404)]
         assert await ReposSync(c)._incremental_sync(make_repo(repo_id=1), "old", "new") is False
 
     async def test_compare_commits_cap_returns_false(self) -> None:
         from app.connectors.sources.github_teams.constants import COMPARE_COMMITS_TOTAL_LIMIT
 
         c = make_mock_connector()
-        c.runtime.ds_call.return_value = ok_response(
+        truncated = make_git_tree([], truncated=True)
+        c.runtime.ds_call.side_effect = [ok_response(
             make_comparison([make_compare_file(filename="a.py", status="added")], total_commits=COMPARE_COMMITS_TOTAL_LIMIT)
-        )
+        ), ok_response(truncated)]
         assert await ReposSync(c)._incremental_sync(make_repo(repo_id=1), "old", "new") is False
+
+    async def test_a_capped_compare_is_replaced_by_a_tree_diff(self) -> None:
+        """Two tree calls give the exact delta, so a big push stays incremental (SC-11)."""
+        c = make_mock_connector()
+        before = make_git_tree([
+            make_tree_element("src", entry_type="tree", sha="t1"),
+            make_tree_element("src/same.py", entry_type="blob", sha="s1"),
+            make_tree_element("src/edit.py", entry_type="blob", sha="e1"),
+            make_tree_element("src/gone.py", entry_type="blob", sha="g1"),
+        ])
+        after = make_git_tree([
+            make_tree_element("src", entry_type="tree", sha="t2"),
+            make_tree_element("src/same.py", entry_type="blob", sha="s1"),
+            make_tree_element("src/edit.py", entry_type="blob", sha="e2"),
+            make_tree_element("src/new.py", entry_type="blob", sha="n1"),
+        ])
+        c.runtime.ds_call.side_effect = [
+            ok_response(make_comparison([], status="diverged")), ok_response(before), ok_response(after)]
+        sync = ReposSync(c)
+        sync._reconcile_sha_moves = AsyncMock(side_effect=lambda _r, d, a: (d, a, []))
+        sync._delete_code_files_by_paths = AsyncMock()
+        sync._upsert_code_files = AsyncMock(return_value=True)
+        sync._cleanup_emptied_folders = AsyncMock()
+
+        assert await sync._incremental_sync(make_repo(repo_id=1), "old", "new") is True
+
+        sync._delete_code_files_by_paths.assert_awaited_once_with(ANY, ["src/gone.py"])
+        assert sync._upsert_code_files.await_args.args[1] == {"src/new.py": "n1", "src/edit.py": "e2"}
+        assert [call.args[3] for call in c.runtime.ds_call.await_args_list[1:]] == ["old", "new"]
 
     def test_copied_is_classified_as_add(self) -> None:
         files = [make_compare_file(filename="copy.py", status="copied", sha="sha-c")]

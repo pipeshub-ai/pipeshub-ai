@@ -14,6 +14,10 @@ import {
   OAuthDeviceCodeStatus,
 } from '../schema/oauth.device_code.schema'
 import { OAuthGrantType } from '../schema/oauth.app.schema'
+import {
+  sameKnowledgeLimit,
+  toKnowledgeLimit,
+} from '../schema/knowledge_limit.schema';
 import { OAuthAppService } from './oauth.app.service'
 import { OAuthTokenService } from './oauth_token.service'
 import { ScopeValidatorService } from './scope.validator.service'
@@ -90,6 +94,7 @@ export class OAuthDeviceService {
       userCode,
       clientId,
       scopes: granted,
+      knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
       status: OAuthDeviceCodeStatus.PENDING,
       interval: POLL_INTERVAL_SECONDS,
       expiresAt,
@@ -124,6 +129,7 @@ export class OAuthDeviceService {
         homepageUrl: app.homepageUrl,
         privacyPolicyUrl: app.privacyPolicyUrl,
         isDynamic: app.isDynamic === true,
+        knowledgeLimit: toKnowledgeLimit(record.knowledgeLimit),
       },
       scopes: scopeDefinitions,
       user: { email: '', name: undefined },
@@ -147,6 +153,13 @@ export class OAuthDeviceService {
         userId,
       })
       return
+    }
+    // The consent screen showed the limit stored on the code; an edit since then voids it.
+    const app = await this.oauthAppService.getAppByClientId(record.clientId);
+    if (!sameKnowledgeLimit(record.knowledgeLimit, app.knowledgeLimit)) {
+      throw new InvalidGrantError(
+        "The application's permissions changed after this login started. Start it again.",
+      );
     }
     record.status = OAuthDeviceCodeStatus.APPROVED
     record.userId = new Types.ObjectId(userId)
@@ -224,6 +237,12 @@ export class OAuthDeviceService {
     })
     if (!claimed || !claimed.userId || !claimed.orgId) {
       throw new InvalidGrantError('device_code has already been used')
+    }
+
+    if (!sameKnowledgeLimit(claimed.knowledgeLimit, app.knowledgeLimit)) {
+      throw new InvalidGrantError(
+        "The application's permissions changed after you allowed it. Sign in again.",
+      );
     }
 
     const userId = claimed.userId.toString()

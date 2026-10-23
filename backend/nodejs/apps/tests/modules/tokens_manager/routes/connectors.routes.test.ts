@@ -5,6 +5,7 @@ import { Container } from 'inversify'
 import {
   createConnectorRouter,
   requireVectorStoreRebuild,
+  reindexConnectorSchema,
 } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
 import { ForbiddenError } from '../../../../src/libs/errors/http.errors'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
@@ -48,6 +49,8 @@ describe('Connector Routes', () => {
       scheduleJob: sinon.stub().resolves(),
       removeJob: sinon.stub().resolves(),
       getJobStatus: sinon.stub().resolves(null),
+      upsertRepeatingSchedule: sinon.stub().resolves('scheduled'),
+      removeConnectorSchedules: sinon.stub().resolves(false),
     }
 
     mockCrawlingContainer = {
@@ -1042,6 +1045,43 @@ describe('Connector Routes', () => {
       expect(next.firstCall.args[0]).to.be.instanceOf(Error)
     })
   })
+
+  describe('reindexConnectorSchema stages', () => {
+    const params = { connectorId: 'conn-1' }
+
+    it('accepts stages: ["classify"] and keeps it in the parsed body', () => {
+      const result = reindexConnectorSchema.safeParse({
+        params,
+        body: { statusFilters: ['FAILED'], stages: ['classify'] },
+      })
+      expect(result.success).to.be.true
+      expect(result.success && result.data.body?.stages).to.deep.equal(['classify'])
+    })
+
+    it('accepts stages: ["entities"], which has no record status of its own', () => {
+      const result = reindexConnectorSchema.safeParse({
+        params,
+        body: { statusFilters: ['FAILED'], stages: ['entities'] },
+      })
+      expect(result.success).to.be.true
+      expect(result.success && result.data.body?.stages).to.deep.equal(['entities'])
+    })
+
+    it('accepts a body without stages', () => {
+      const result = reindexConnectorSchema.safeParse({ params, body: { statusFilters: ['FAILED'] } })
+      expect(result.success).to.be.true
+    })
+
+    it('rejects an unknown stage name', () => {
+      const result = reindexConnectorSchema.safeParse({ params, body: { stages: ['embed'] } })
+      expect(result.success).to.be.false
+    })
+
+    it('rejects an empty stages array', () => {
+      const result = reindexConnectorSchema.safeParse({ params, body: { stages: [] } })
+      expect(result.success).to.be.false
+    })
+  })
 })
 
 describe('Connector Routes - handler coverage', () => {
@@ -1078,6 +1118,8 @@ describe('Connector Routes - handler coverage', () => {
       scheduleJob: sinon.stub().resolves(),
       removeJob: sinon.stub().resolves(),
       getJobStatus: sinon.stub().resolves(null),
+      upsertRepeatingSchedule: sinon.stub().resolves('scheduled'),
+      removeConnectorSchedules: sinon.stub().resolves(false),
     }
 
     const mockCrawlingContainer = {

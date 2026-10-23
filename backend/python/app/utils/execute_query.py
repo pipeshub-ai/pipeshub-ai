@@ -700,6 +700,7 @@ def create_execute_query_tool(
     user_id: str | None = None,
     *,
     allowed_connector_ids: Collection[str],
+    artifact_owner_user_id: str | None = None,
 ) -> Callable:
     """Factory function to create the execute_query tool with runtime dependencies.
     
@@ -710,11 +711,14 @@ def create_execute_query_tool(
         org_id: The caller's organization: scopes the connector check and the CSV export
         conversation_id: Optional conversation ID for background CSV export
         blob_store: Optional blob storage for saving full result CSVs
-        user_id: Optional owner of the CSV export; without it the export has
-            no artifact record and so no download link on local storage
+        user_id: Whose connector access is checked, and the CSV export's owner
+            unless ``artifact_owner_user_id`` is given; without either the
+            export has no artifact record and so no download link on local storage
         allowed_connector_ids: The only connector instance IDs the tool may
             query. The query runs with the connector's stored credentials, so
             any other ID (or none) is rejected before a client is built.
+        artifact_owner_user_id: Owner of the CSV export when it is not ``user_id``
+            (a service-account agent's run, owned by the person chatting).
         
     Returns:
         A langchain tool for executing SQL queries
@@ -837,7 +841,7 @@ def create_execute_query_tool(
                     blob_store=resolved_blob_store,
                     graph_provider=graph_provider,
                     org_id=org_id,
-                    user_id=user_id,
+                    user_id=artifact_owner_user_id or user_id,
                     conversation_id=conversation_id,
                     columns=raw_columns,
                     rows=raw_rows,

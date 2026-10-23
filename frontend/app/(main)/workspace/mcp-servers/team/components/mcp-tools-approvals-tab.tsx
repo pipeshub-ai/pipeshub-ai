@@ -7,7 +7,7 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { formatRelativeTime } from '@/lib/utils/formatters';
 import { McpDisabledCallout } from '../../components';
-import { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
+import { EnterpriseFeatureNotice } from '@/config';
 import { McpToolList, McpToolRulesList, type McpToolRulesEditor } from '../../components/mcp-tool-rules-editor';
 import { ruleToolsFromInfo } from '../../tool-rules';
 import { usesSharedCredential, type McpConnectionState } from '../../connection-state';

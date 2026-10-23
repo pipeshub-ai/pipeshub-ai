@@ -26,7 +26,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from app.agent_loop_lib.transport.openai import OpenAITransport, RequestDefaults
+from app.agent_loop_lib.transport.openai import (
+    OpenAITransport,
+    RequestDefaults,
+    client_timeout,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -59,6 +63,7 @@ class AzureOpenAITransport(OpenAITransport):
         model_key: str | None = None,
         cache_kwargs: dict[str, str] | None = None,
         on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> None:
         # Skip OpenAITransport.__init__ (it builds AsyncOpenAI) but keep the
         # LLMTransport base contract and the cumulative counters its callers read.
@@ -89,9 +94,11 @@ class AzureOpenAITransport(OpenAITransport):
         # Left unset the SDK applies its own (longer) default; LangChain pins
         # DEFAULT_LLM_TIMEOUT, so a slow turn must fail at the same point.
         if timeout is not None:
-            client_kwargs["timeout"] = timeout
+            client_kwargs["timeout"] = client_timeout(timeout)
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
         self._client = _openai.AsyncAzureOpenAI(**client_kwargs)
         self._init_prompt_cache(cache_kwargs, on_cache_rejected)
         self.total_input_tokens: int = 0
@@ -104,6 +111,7 @@ class AzureOpenAITransport(OpenAITransport):
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
         cache_kwargs: dict[str, str] | None = None, on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> "AzureOpenAITransport":
         """Build from an already-configured `AzureChatOpenAI`.
 
@@ -165,6 +173,7 @@ class AzureOpenAITransport(OpenAITransport):
             model_key=model_key,
             cache_kwargs=cache_kwargs,
             on_cache_rejected=on_cache_rejected,
+            http_client=http_client,
         )
 
     @property

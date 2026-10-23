@@ -18,6 +18,7 @@ Two invariants this suite depends on — do not "fix" either without reading the
 
   order 1  TC-SYNC-001    — full sync baseline vs the seed manifest
   order 2  TC-USER-001    — users / USER_APP_RELATION vs live /v1/users
+  order 2  TC-AUTH-001    — no creator link: an integration token's bot belongs to the workspace
   order 3  TC-WS-001      — workspace RecordGroup
   order 4  TC-WS-002      — workspace READ permissions
   order 5  TC-CONN-001    — connection test (positive + bad-token negative)
@@ -61,6 +62,7 @@ if str(_ROOT) not in sys.path:
 from app.config.constants.arangodb import CollectionNames, MimeTypes, ProgressStatus  # noqa: E402
 from app.models.blocks import BlockSubType, BlockType, GroupSubType  # noqa: E402
 from app.models.entities import RecordType  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from validation.graph_entity_validator import (  # noqa: E402
@@ -379,6 +381,24 @@ class TestNotionFullSync:
                 "TC-USER-001: no emailless member provisioned — that half of the case is inert"
             )
         logger.info("TC-USER-001 passed: %d users", rel_count)
+
+    @pytest.mark.order(2)
+    async def test_tc_auth_001_no_authenticated_identity(
+        self,
+        notion_connector: dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-AUTH-001: the creator is linked to no Notion account.
+
+        Only an OAuth bot is owned by the person who authorised it. This suite connects with
+        an integration token, whose bot belongs to the workspace, so there is no account to
+        link the creator to.
+        """
+        assert NOTION_AUTH_TYPE == "API_TOKEN", "an OAuth connection names its owner; expect a link"
+        await assert_authenticated_identity_link(
+            graph_provider, notion_connector["connector_id"], None, None,
+        )
+        logger.info("TC-AUTH-001 passed: integration token, no link")
 
     @pytest.mark.order(3)
     async def test_tc_ws_001_workspace_record_group(

@@ -67,8 +67,8 @@ vi.mock('@/app/(main)/workspace/connectors/demo-data/components', () => ({
 }));
 
 vi.mock('@/config', () => ({
-  AgentChatHeader: ({ displayName }: { displayName: string | null }) => (
-    <header aria-label="Agent header">{displayName ?? 'Agent'}</header>
+  AgentChatHeader: ({ displayName, readOnly }: { displayName: string | null; readOnly?: boolean }) => (
+    <header aria-label="Agent header" data-read-only={String(Boolean(readOnly))}>{displayName ?? 'Agent'}</header>
   ),
   ConversationHeaderOverlay: (props: { agentChip: React.ReactNode; shareGroup: React.ReactNode }) => (
     <>
@@ -538,6 +538,31 @@ describe('Chat page — opening a conversation', () => {
     expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
   });
 
+  it('shows no composer while an existing chat is still loading, so a recipient never sees it', async () => {
+    let finishLoading!: (detail: ReturnType<typeof conversationDetail>) => void;
+    fetchConversation.mockReturnValue(new Promise((resolve) => { finishLoading = resolve as typeof finishLoading; }));
+    renderPage('conversationId=conv-1');
+
+    await waitFor(() => expect(fetchConversation).toHaveBeenCalled());
+    expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
+
+    await act(async () => finishLoading(conversationDetail({ isOwner: false })));
+    await screen.findByText('You get 25 days a year.');
+    expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
+  });
+
+  it('shows the composer to the owner once their chat has loaded', async () => {
+    let finishLoading!: (detail: ReturnType<typeof conversationDetail>) => void;
+    fetchConversation.mockReturnValue(new Promise((resolve) => { finishLoading = resolve as typeof finishLoading; }));
+    renderPage('conversationId=conv-1');
+
+    await waitFor(() => expect(fetchConversation).toHaveBeenCalled());
+    expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
+
+    await act(async () => finishLoading(conversationDetail({ isOwner: true })));
+    expect(await screen.findByRole('textbox', { name: 'Message composer' })).toBeTruthy();
+  });
+
   it('lets the owner see who it is shared with and open sharing', async () => {
     fetchConversation.mockResolvedValue(conversationDetail({ isOwner: true }));
     getSharedMembers.mockResolvedValue([
@@ -705,7 +730,7 @@ describe('Chat page — agent chats', () => {
     expect(fetchModelsForContext).toHaveBeenCalledWith(expect.any(String), { force: true });
   });
 
-  it('opens an agent conversation through the agent API and never offers sharing', async () => {
+  it('opens an agent conversation through the agent API and offers sharing to its owner', async () => {
     getAgent.mockResolvedValue({ agent: { name: 'Support Bot', toolsets: [] }, toolFullNames: [] });
     fetchAgentConversation.mockResolvedValue(conversationDetail({ isOwner: true }));
 
@@ -714,7 +739,71 @@ describe('Chat page — agent chats', () => {
     expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
     expect(fetchAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1');
     expect(fetchConversation).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Share' })).toBeTruthy();
+  });
+
+  it('opens a shared agent conversation read-only: no Share button and no composer', async () => {
+    getAgent.mockResolvedValue({ agent: { name: 'Support Bot', toolsets: [] }, toolFullNames: [] });
+    fetchAgentConversation.mockResolvedValue(conversationDetail({ isOwner: false }));
+
+    renderPage('agentId=agent-7&conversationId=conv-1');
+
+    expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+    expect(fetchAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1');
+    expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+    expect(getSharedMembers).not.toHaveBeenCalled();
+  });
+
+  it('does not raise an error toast when the agent of an opened chat cannot be loaded', async () => {
+    getAgent.mockRejectedValue(new Error('Request failed with status code 404'));
+    fetchAgentConversation.mockResolvedValue(conversationDetail({ isOwner: false }));
+
+    renderPage('agentId=agent-7&conversationId=conv-1');
+
+    expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+    await waitFor(() => expect(getAgent).toHaveBeenCalledWith('agent-7', { quiet: true }));
+  });
+
+  it('still lets a new agent chat report an agent that cannot be loaded', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    getAgent.mockRejectedValue(new Error('Request failed with status code 404'));
+
+    renderPage('agentId=agent-7');
+
+    await waitFor(() => expect(getAgent).toHaveBeenCalledWith('agent-7', { quiet: false }));
+  });
+
+  it('marks the agent header read-only on a chat someone shared with the user', async () => {
+    getAgent.mockRejectedValue(new Error('Request failed with status code 404'));
+    fetchAgentConversation.mockResolvedValue(conversationDetail({ isOwner: false }));
+
+    renderPage('agentId=agent-7&conversationId=conv-1');
+
+    expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+    // Ownership is known only once the conversation has loaded; the header is up before that.
+    await waitFor(() => {
+      expect(screen.getByLabelText('Agent header').getAttribute('data-read-only')).toBe('true');
+    });
+  });
+
+  it('keeps the agent name and menu on a shared agent chat whose agent the user can open', async () => {
+    getAgent.mockResolvedValue({ agent: { name: 'Support Bot', toolsets: [] }, toolFullNames: [] });
+    fetchAgentConversation.mockResolvedValue(conversationDetail({ isOwner: false }));
+
+    renderPage('agentId=agent-7&conversationId=conv-1');
+
+    expect(await screen.findByText('Support Bot')).toBeTruthy();
+  });
+
+  it('leaves the agent header editable on the owner’s own agent chat', async () => {
+    getAgent.mockResolvedValue({ agent: { name: 'Support Bot', toolsets: [] }, toolFullNames: [] });
+    fetchAgentConversation.mockResolvedValue(conversationDetail({ isOwner: true }));
+
+    renderPage('agentId=agent-7&conversationId=conv-1');
+
+    expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
+    expect(screen.getByLabelText('Agent header').getAttribute('data-read-only')).toBe('false');
   });
 
   it('still opens the chat when the agent cannot be loaded', async () => {

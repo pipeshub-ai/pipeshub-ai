@@ -16,14 +16,17 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.api.middlewares.auth import require_scopes
+from app.api.connection_limit import refuse_outside_connection
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
 from app.modules.demo_data.access import is_hidden_demo_record
+from app.modules.retrieval.selection_scope import within_connection
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.fetch_slack_thread import (
     _fetch_thread_records_impl,
+    _resolve_slack_channel_record,
     _resolve_thread_record_group,
 )
 from app.utils.not_indexed import not_indexed_note
@@ -70,6 +73,7 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
             hidden = False
         if hidden:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+        await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
     except HTTPException:
         raise
     except Exception as exc:
@@ -89,7 +93,11 @@ async def read_record_content(
     request: Request,
     mode: Literal["record", "thread"] = Query(
         "record",
-        description="`record` reads this record; `thread` reads the whole Slack thread it belongs to.",
+        description=(
+            "`record` reads this record; `thread` reads the whole Slack thread it belongs to. "
+            "A Slack record in no single thread (several channel messages, or a message "
+            "without replies) reads as itself, then the threads its messages started."
+        ),
     ),
     query: str | None = Query(
         None, max_length=_MAX_QUERY_CHARS,
@@ -123,11 +131,16 @@ async def read_record_content(
     blob_store = await container.blob_store()
 
     if mode == "thread":
-        # Told apart before reading, so "not a thread" is the caller's 422
+        # Told apart before reading, so "not from Slack" is the caller's 422
         # rather than a failure of ours -- and a graph read that failed is
-        # ours, a 500, not a claim that the record has no thread.
+        # ours, a 500, not a claim that the record has no thread. Any Slack
+        # record reads: one in no single thread comes back as itself, followed
+        # by the threads its messages started.
         try:
             thread_group = await _resolve_thread_record_group(
+                record_id, graph_provider, raise_on_error=True,
+            )
+            channel_record = None if thread_group else await _resolve_slack_channel_record(
                 record_id, graph_provider, raise_on_error=True,
             )
         except Exception as exc:
@@ -136,14 +149,15 @@ async def read_record_content(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail="Failed to read the thread",
             ) from exc
-        if not thread_group:
+        if not thread_group and not channel_record:
             raise HTTPException(
                 status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
                 detail=(
-                    "This record is not part of a Slack thread. Pass a thread reply, "
-                    "or a channel message that has replies."
+                    "This record is not part of a Slack thread: thread mode reads Slack "
+                    "records only. Read this record without thread mode."
                 ),
             )
+        limit = connection_limit(request.state.user)
         try:
             result = await _fetch_thread_records_impl(
                 record_id=record_id,
@@ -153,6 +167,8 @@ async def read_record_content(
                 org_id=org_id,
                 config_service=container.config_service(),
                 user_id=user_id,
+                # Bounds the replies, and so the note, thread summaries and skipped ids.
+                scope_state=None if limit is None else {"filters": within_connection({}, limit)},
             )
         except Exception as exc:
             logger.error("Error reading the thread of %s: %s", record_id, exc, exc_info=True)
@@ -166,12 +182,32 @@ async def read_record_content(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail="Failed to read the thread",
             )
+        records = result.get("records") or []
+        # A record in no single thread says what it holds: which of its
+        # messages started threads, or that none has replies. Said once, at
+        # the start, inside the caller's budget.
+        note = result.get("note")
+        first_page = start_record == 0 and not start_block
+        lead = f"[{note}]\n\n" if note and first_page else ""
         response = await read_thread(
-            result.get("records") or [],
-            max_chars=max_chars,
+            records,
+            max_chars=max_chars - len(lead),
             start_record=start_record,
             start_block=start_block or 0,
         )
+        if lead:
+            response["content"] = lead + response["content"]
+            response["chars"] = len(response["content"])
+        response["maxChars"] = max_chars
+        if "threads" in result:
+            response["threads"] = [
+                {
+                    "threadRecordGroupId": t.get("thread_record_group_id"),
+                    "recordCount": t.get("record_count"),
+                }
+                for t in result.get("threads") or []
+            ]
+            response["threadsNotRead"] = result.get("threads_not_read") or 0
         # Replies the caller may see but whose content could not be loaded:
         # named, so a gap in the conversation is not read as silence.
         response["unreadableRecordIds"] = result.get("skipped_record_ids") or []

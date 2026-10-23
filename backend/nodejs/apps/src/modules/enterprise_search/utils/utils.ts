@@ -286,7 +286,27 @@ export const updateMessageById = async (
   );
 };
 
-const hasAskUserQuestionTool = (msg: IMessage | undefined): boolean =>
+/**
+ * Rewrite a stored `user_query` row, used when the user edits the last
+ * question and regenerates its answer. Only `content` changes, and
+ * `attachments` when the edit replaced them (omitted keeps the stored files);
+ * mentions and seq stay as they were. Scoped to the conversation, so an id
+ * from anywhere else matches nothing.
+ */
+export const updateUserQueryContent = async (
+  messageId: mongoose.Types.ObjectId | string,
+  content: string,
+  sessionId: mongoose.Types.ObjectId | string,
+  mongoSession?: ClientSession | null,
+  attachments?: IChatAttachmentRef[],
+): Promise<IChatSessionMessageDocument | null> =>
+  ChatSessionMessage.findOneAndUpdate(
+    { _id: messageId, sessionId, messageType: 'user_query' },
+    { $set: { content, ...(attachments ? { attachments } : {}) } },
+    { new: true, session: mongoSession || undefined },
+  );
+
+export const hasAskUserQuestionTool = (msg: IMessage | undefined): boolean =>
   Boolean(msg?.tools?.some((tool) => tool.toolName?.includes('ask_user_question')));
 
 /**
@@ -328,12 +348,13 @@ export const staleAskUserQuestionToolCallIds = (
 export const deleteMessagesById = async (
   messageIds: mongoose.Types.ObjectId[],
   mongoSession?: ClientSession | null,
+  sessionId?: mongoose.Types.ObjectId | string,
 ): Promise<number> => {
   if (messageIds.length === 0) {
     return 0;
   }
   const result = await ChatSessionMessage.deleteMany(
-    { _id: { $in: messageIds } },
+    { _id: { $in: messageIds }, ...(sessionId ? { sessionId } : {}) },
     mongoSession ? { session: mongoSession } : undefined,
   );
   return result.deletedCount ?? 0;
@@ -995,6 +1016,25 @@ export const attachSharedBy = async <
     };
     return { ...conversation, sharedBy };
   });
+};
+
+/**
+ * Which of `ids` (ObjectId strings) are active users of the organisation. One
+ * query, so a caller can check a whole list before it opens a transaction.
+ */
+export const findOrgUserIds = async (
+  orgId: string,
+  ids: string[],
+): Promise<Set<string>> => {
+  const users = await Users.find({
+    orgId: new mongoose.Types.ObjectId(orgId),
+    isDeleted: false,
+    _id: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) },
+  })
+    .select('_id')
+    .lean()
+    .exec();
+  return new Set(users.map((user) => user._id.toString()));
 };
 
 export const attachSharedByIfRecipient = async <
@@ -2137,6 +2177,10 @@ export const markAgentConversationFailed = async (
  * Build filter for agent conversations. `ONLY_AGENT` is applied here (in
  * addition to always requiring a concrete `agentKey`) as defense-in-depth
  * now that agent and plain-chat sessions share one collection.
+ *
+ * `includeShared` adds the read-only "shared with me" branch. It is off by
+ * default so owner-only actions built on this filter (fork, cancel, archive
+ * list) never widen to a recipient; only the read paths opt in.
  */
 export const buildAgentConversationFilter = (
   req: any,
@@ -2146,6 +2190,7 @@ export const buildAgentConversationFilter = (
   conversationId?: string,
   contentMatchIds?: mongoose.Types.ObjectId[],
   accessibleProjectIds?: mongoose.Types.ObjectId[],
+  includeShared: boolean = false,
 ) => {
   const filter: any = {
     ...ONLY_AGENT,
@@ -2153,6 +2198,16 @@ export const buildAgentConversationFilter = (
     orgId: new mongoose.Types.ObjectId(orgId),
     $or: [
       { userId: new mongoose.Types.ObjectId(userId) },
+      ...(includeShared
+        ? [
+            {
+              $and: [
+                { isShared: true },
+                { 'sharedWith.userId': new mongoose.Types.ObjectId(userId) },
+              ],
+            },
+          ]
+        : []),
       ...(accessibleProjectIds && accessibleProjectIds.length > 0
         ? [
             {
@@ -2736,9 +2791,13 @@ export const handleRegenerationSuccess = async (
   // already see must not fail on transcript housekeeping.
   if (staleAskToolCallIds?.length) {
     try {
-      await deleteMessagesById(staleAskToolCallIds, session);
+      await deleteMessagesById(
+        staleAskToolCallIds,
+        session,
+        existingConversation._id,
+      );
     } catch (cleanupErr: any) {
-      logger.warn('Failed to drop stale ask_user_question rows after regenerate', {
+      logger.warn('Failed to drop stale rows after regenerate', {
         conversationId: existingConversation._id,
         messageId,
         error: cleanupErr?.message,

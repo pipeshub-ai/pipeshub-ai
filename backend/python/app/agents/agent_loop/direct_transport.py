@@ -27,6 +27,7 @@ from app.agent_loop_lib.transport.prompt_cache import (
     openai_cache_kwargs,
 )
 from app.agents.agent_loop.prompt_cache import cache_target
+from app.services.model_identity.transport.instrument import identity_async_http_client
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.transport.base import LLMTransport
@@ -57,6 +58,11 @@ def build_direct_transport(
         target.model, target.base_url,
     )
 
+    # The LangChain model's own client when identity forwarding is enabled on its
+    # connection, so a direct request carries the same identity (and egress guard)
+    # a LangChain request does. Nothing is passed otherwise: the default is unchanged.
+    http = {"http_client": client} if (client := identity_async_http_client(llm)) is not None else {}
+
     def _openai_cache() -> dict[str, Any]:
         if cache_settings is None:
             return {}
@@ -83,17 +89,17 @@ def build_direct_transport(
         if class_name == "AzureChatOpenAI":
             from app.agent_loop_lib.transport.azure_openai import AzureOpenAITransport
             return AzureOpenAITransport.from_langchain_model(
-                llm, model_name=model_name, model_key=model_key, **_openai_cache(),
+                llm, model_name=model_name, model_key=model_key, **_openai_cache(), **http,
             )
         if class_name in ("ChatOpenAI", "BaseChatOpenAI"):
             from app.agent_loop_lib.transport.openai import OpenAITransport
             return OpenAITransport.from_langchain_model(
-                llm, model_name=model_name, model_key=model_key, **_openai_cache(),
+                llm, model_name=model_name, model_key=model_key, **_openai_cache(), **http,
             )
         if class_name == "ChatAnthropic":
             from app.agent_loop_lib.transport.anthropic import AnthropicTransport
             return AnthropicTransport.from_langchain_model(
-                llm, model_name=model_name, model_key=model_key, **_anthropic_cache(),
+                llm, model_name=model_name, model_key=model_key, **_anthropic_cache(), **http,
             )
         if class_name == "ChatGoogleGenerativeAI":
             from app.agent_loop_lib.transport.gemini import GeminiTransport

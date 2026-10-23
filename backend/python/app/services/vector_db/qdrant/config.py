@@ -9,6 +9,7 @@ class QdrantConfig:
     prefer_grpc: bool = True
     https: bool = False
     timeout: int = 300
+    grpc_port: int = 6334
 
     @property
     def qdrant_config(self) -> dict:
@@ -18,7 +19,8 @@ class QdrantConfig:
             "api_key": self.api_key,
             "prefer_grpc": self.prefer_grpc,
             "https": self.https,
-            "timeout": self.timeout
+            "timeout": self.timeout,
+            "grpc_port": self.grpc_port,
         }
 
     @classmethod
@@ -32,4 +34,6 @@ class QdrantConfig:
             prefer_grpc=bool(data.get("prefer_grpc", True)),
             https=bool(data.get("https", False)),
             timeout=int(data.get("timeout", 300)),
+            # `grpcPort` is the key the config service and the Node API store
+            grpc_port=int(data.get("grpc_port") or data.get("grpcPort") or 6334),
         )

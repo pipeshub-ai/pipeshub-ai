@@ -4,7 +4,7 @@ import math
 import os
 import time
 import traceback
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,8 +27,8 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import GroupType
-from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.models.entities import substitute_user_email
+from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
@@ -46,6 +46,11 @@ from app.modules.retrieval.record_cut import (
     hit_record_id,
     passages_per_record,
     point_record_id,
+)
+from app.modules.retrieval.source_diversity import (
+    SourceDiversity,
+    active_source_diversity,
+    record_source,
 )
 from app.modules.retrieval.selection_scope import (
     SELECTION_EMPTY_MESSAGE,
@@ -74,6 +79,8 @@ from app.services.graph_db.interface.graph_db_provider import (
     _unsupported_container_filters,
     requested_scope_ids,
 )
+from app.services.model_identity.call_context import narrow_workload
+from app.services.model_identity.workload import Workload
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -100,7 +107,6 @@ from app.utils.aimodels import (
     get_generator_model,
     is_local_cpu_embedding_provider,
 )
-from app.utils.embedding_retry import await_with_retry
 from app.utils.chat_helpers import (
     GRAPH_BATCH_CHUNK_SIZE,
     describe_search_records,
@@ -109,7 +115,10 @@ from app.utils.chat_helpers import (
     group_child_results,
     valid_group_labels,
 )
+from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.query_instruction import instruct_query
+from app.utils.text_fragments.cache import TtlCache
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
@@ -337,6 +346,70 @@ def _record_cut_for(scope_virtual_ids: list[str] | None) -> RecordCut | None:
     return record_cut
 
 
+def _vary_sources(
+    diversity: SourceDiversity,
+    hits: list[dict[str, Any]],
+    virtual_to_record_map: dict[str, Any],
+    plain_points: set[Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, int]]:
+    """The plain search's hits, first page varied across sources.
+
+    ``hits`` are the plain search's hits (point ids in ``plain_points``) and
+    the deeper candidates. Every record of the plain search is kept with the
+    hits it had; a candidate record is kept only when it fills a first-page
+    place a capped source gave up, and brings its own hits. Returns those hits
+    (in their order), the record map narrowed to the records kept, and each
+    kept record's place by record id.
+    """
+    ranked = sorted(
+        (hit for hit in hits if isinstance(hit, dict)),
+        key=lambda hit: hit.get("score") or 0.0,
+        reverse=True,
+    )
+    in_plain = {
+        id(hit) for hit in ranked
+        if (hit.get("metadata") or {}).get("point_id") in plain_points
+    }
+    plain_vids = {
+        vid for hit in ranked
+        if id(hit) in in_plain and (vid := hit_record_id(hit)) is not None
+        and virtual_to_record_map.get(vid)
+    }
+    # Records best first: a plain record placed by its plain hits only.
+    vids: list[str] = []
+    known: set[str] = set()
+    for hit in ranked:
+        vid = hit_record_id(hit)
+        if vid is None or vid in known or not virtual_to_record_map.get(vid):
+            continue
+        if vid in plain_vids and id(hit) not in in_plain:
+            continue
+        known.add(vid)
+        vids.append(vid)
+    order = diversity.order(
+        vids,
+        plain=plain_vids,
+        source_of=lambda vid: record_source(virtual_to_record_map[vid]),
+    )
+    brought_up = set(order) - plain_vids
+    plain_hit_vids = {hit_record_id(hit) for hit in ranked if id(hit) in in_plain}
+    dropped = {
+        hit_record_id(hit) for hit in ranked if id(hit) not in in_plain
+    } - plain_hit_vids - brought_up
+    kept_hits = [
+        hit for hit in hits
+        if not isinstance(hit, dict) or id(hit) in in_plain or hit_record_id(hit) in brought_up
+    ]
+    kept_map = {vid: record for vid, record in virtual_to_record_map.items() if vid not in dropped}
+    if order == [vid for vid in vids if vid in plain_vids]:
+        # No source over its share: the plain result, as it was.
+        return kept_hits, kept_map, {}
+    record_rank: dict[str, int] = {}
+    for vid in order:
+        record_rank.setdefault(virtual_to_record_map[vid].get("_key"), len(record_rank))
+    return kept_hits, kept_map, record_rank
+
+
 def _graph_filters(filter_groups: dict[str, Any] | None) -> dict[str, Any]:
     """``filter_groups`` in the shape ``get_accessible_virtual_record_ids`` expects."""
     filters: dict[str, Any] = {}
@@ -374,6 +447,11 @@ _SELECTION_REQUEST_KEYS = frozenset(
 
 # Connector names only label citations; a slow graph must not hold up the search.
 CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS = 2.0
+
+# Connector instance display names for citations. Each search looked up the App
+# of every connector in its results, one query each; a rename shows within a minute.
+_connector_name_cache = TtlCache(maxsize=10_000, ttl_seconds=60.0)
+
 
 class RetrievalService:
     # Local models may load or download on first use, so their queries get no deadline.
@@ -612,28 +690,6 @@ class RetrievalService:
             return sparse
         raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
 
-    async def _preprocess_query(self, query: str) -> str:
-        """
-        Preprocess the query text.
-
-        Args:
-            query: Raw query text
-
-        Returns:
-            Preprocessed query text
-        """
-        try:
-            # Get current model name from config
-            model_name = await self.get_current_embedding_model_name(use_cache=False)
-
-            # Check if using BGE model before adding the prefix
-            if model_name and "bge" in model_name.lower():
-                return f"Represent this document for retrieval: {query.strip()}"
-            return query.strip()
-        except Exception as e:
-            self.logger.error(f"Error in query preprocessing: {str(e)}")
-            return query.strip()
-
     def _format_results(self, results: list[tuple]) -> list[dict[str, Any]]:
         """Format search results into a consistent structure with flattened metadata."""
         formatted_results = []
@@ -814,6 +870,20 @@ class RetrievalService:
             filter, scope_virtual_ids = permission_filter
 
             record_cut = _record_cut_for(scope_virtual_ids)
+            # The search API's first page, varied across sources: the plain
+            # search runs as always, and a deeper read supplies candidates for
+            # the places a capped source gives up (SEARCH_SOURCE_DIVERSITY).
+            diversity = (
+                active_source_diversity(
+                    scope_ids=requested_scope_ids(filters),
+                    scope_virtual_ids=scope_virtual_ids,
+                )
+                if knowledge_search
+                else None
+            )
+            enumerated_map: dict[str, str] | None = None
+            # The narrow-access fallback replaced the container page.
+            replaced_by_record_ids = False
             if use_containers:
                 (
                     search_results,
@@ -894,6 +964,7 @@ class RetrievalService:
                     else:
                         search_results = replacement.results
                         accessible_virtual_id_to_record_id = replacement.accessible
+                        replaced_by_record_ids = True
                         narrow_access_memo.mark(memo_key)
                         self.logger.info(
                             "container search denied too much (user=%s org=%s); "
@@ -905,7 +976,7 @@ class RetrievalService:
                     queries, filter, limit, org_id, user_id, plan=plan, record_cut=record_cut
                 )
                 try:
-                    enumerated = accessible_virtual_id_to_record_id
+                    enumerated = enumerated_map = accessible_virtual_id_to_record_id
                     accessible_virtual_id_to_record_id = await self._keep_permitted_hits(
                         search_results, enumerated, user_key, org_id,
                         scope_connector_ids=requested_scope_ids(filters),
@@ -931,6 +1002,48 @@ class RetrievalService:
             if not search_results:
                 self.logger.debug("No search results found")
                 return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+
+            plain_points: set[Any] = set()
+            if diversity is not None:
+                plain_points = {
+                    (hit.get("metadata") or {}).get("point_id")
+                    for hit in search_results if isinstance(hit, dict)
+                }
+            candidates: list[dict[str, Any]] = []
+            candidate_map: dict[str, str] = {}
+            if diversity is not None and diversity.fetch_limit(limit) > limit:
+                # Read deeper only when the caller asked for less than the pool;
+                # otherwise the plain result is the pool.
+
+                async def read_by_record_ids(depth: int, candidate_plan: _QueryPlan) -> "_RecordIdSearch":
+                    return await self._search_by_record_ids(
+                        queries, depth, org_id, user_id, user_key, filters, time_range,
+                        virtual_record_ids_from_tool, selection, scopes, candidate_plan,
+                    )
+
+                candidates, candidate_map = await self._diversity_candidates(
+                    queries, filter, diversity.fetch_limit(limit), org_id, user_id, plan,
+                    containers=containers if use_containers else None,
+                    enumerated=enumerated_map,
+                    by_record_ids=read_by_record_ids,
+                    record_ids_first=replaced_by_record_ids,
+                    record_cut=record_cut,
+                    allow_requery=not virtual_record_ids_from_tool,
+                    user_key=user_key,
+                    scope_connector_ids=requested_scope_ids(filters),
+                    scopes=scopes,
+                )
+            if candidates:
+                search_results = [
+                    *search_results,
+                    *(
+                        hit for hit in candidates
+                        if (hit.get("metadata") or {}).get("point_id") not in plain_points
+                        and hit_record_id(hit) in candidate_map
+                    ),
+                ]
+                for vid, record_id in candidate_map.items():
+                    accessible_virtual_id_to_record_id.setdefault(vid, record_id)
 
             self.logger.debug(f"Search results count: {len(search_results) if search_results else 0}")
 
@@ -993,6 +1106,12 @@ class RetrievalService:
             except Exception as e:
                 self.logger.error("Error in _create_virtual_to_record_mapping: %s", e, exc_info=True)
                 raise
+
+            record_rank: dict[str, int] | None = None
+            if plain_points:
+                search_results, virtual_to_record_map, record_rank = _vary_sources(
+                    diversity, search_results, virtual_to_record_map, plain_points,
+                )
 
             unique_record_ids = {r.get("_key") for r in virtual_to_record_map.values() if r}
 
@@ -1275,6 +1394,13 @@ class RetrievalService:
                 key=lambda x: x.get("score") or 0,
                 reverse=True,
             )
+            if record_rank:
+                # The varied first page, then the records it demoted; each
+                # record's passages stay in score order.
+                last = len(record_rank)
+                final_search_results.sort(
+                    key=lambda x: record_rank.get((x.get("metadata") or {}).get("recordId"), last)
+                )
 
             # Filter out incomplete results to prevent citation validation failures
             required_fields = ['origin', 'recordName', 'recordId', 'mimeType', "orgId"]
@@ -1364,6 +1490,77 @@ class RetrievalService:
         except Exception as e:
             self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
+
+    async def _diversity_candidates(
+        self,
+        queries: list[str],
+        filter: Any,  # noqa: A002, ANN401
+        depth: int,
+        org_id: str,
+        user_id: str,
+        plan: "_QueryPlan",
+        *,
+        containers: "AccessibleContainers | None",
+        enumerated: dict[str, str] | None,
+        by_record_ids: "Callable[[int, _QueryPlan], Awaitable[_RecordIdSearch]]",
+        record_ids_first: bool,
+        record_cut: RecordCut | None,
+        allow_requery: bool,
+        user_key: str | None,
+        scope_connector_ids: "tuple[str, ...] | None",
+        scopes: Sequence[SelectionScope],
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        """Hits from a deeper read of the same search, checked the same way.
+
+        Candidates for the first page only: the plain result is not changed by
+        them. The read takes the path the page took (``record_ids_first`` when
+        the narrow-access fallback replaced a container page, or when this
+        read falls short the same way), with the same record cut and retry.
+        Reuses the plain search's embeddings. Returns the hits the user may
+        read and their ``{vrid: recordId}``; nothing when the read or its
+        check fails, so the plain result stands.
+        """
+        candidate_plan = _QueryPlan(
+            dense=plan.dense, sparse=plan.sparse, collections=plan.collections,
+        )
+        try:
+            if containers is None:
+                if enumerated is None:
+                    return [], {}
+                hits = await self._execute_parallel_searches(
+                    queries, filter, depth, org_id, user_id, plan=candidate_plan,
+                    record_cut=record_cut,
+                )
+                accessible = await self._keep_permitted_hits(
+                    hits, enumerated, user_key, org_id,
+                    scope_connector_ids=scope_connector_ids, scopes=scopes,
+                )
+            else:
+                if not record_ids_first:
+                    hits, accessible, degraded = await self._search_and_adjudicate(
+                        queries, filter, depth, org_id, user_id, containers,
+                        allow_requery=allow_requery,
+                        scope_connector_ids=containers.scope_connector_ids,
+                        record_cut=record_cut,
+                        plan=candidate_plan,
+                        user_key=user_key,
+                        scopes=scopes,
+                    )
+                    if degraded:
+                        return [], {}
+                    record_ids_first = candidate_plan.narrow_shortfall
+                if record_ids_first:
+                    # As for the page: the record-id search, with its own cut and check.
+                    found = await by_record_ids(depth, candidate_plan)
+                    hits, accessible = found.results, found.accessible
+        except Exception as exc:
+            self.logger.warning("source diversity: deeper read failed, keeping the plain result: %s", exc)
+            return [], {}
+        kept = [
+            hit for hit in hits
+            if isinstance(hit, dict) and hit_record_id(hit) in accessible
+        ]
+        return kept, {vid: accessible[vid] for vid in {hit_record_id(hit) for hit in kept}}
 
     async def _entity_filter_virtual_ids(
         self,
@@ -2212,10 +2409,14 @@ class RetrievalService:
             virtual_record_ids=hits.keys(), indexed_only=True,
             connector_ids=connector_ids,
         )
+        # A placeholder is in node_ids so navigate can open it. It is not a
+        # citation: a stub has no content, and a real copy of the same virtual
+        # record id is the one to name.
+        citable = check.node_ids - check.placeholder_ids
         return {
-            vrid: record_id if record_id in check.node_ids else check.records_by_vrid[vrid]
+            vrid: record_id if record_id in citable else check.records_by_vrid[vrid]
             for vrid, record_id in hits.items()
-            if record_id in check.node_ids or vrid in check.records_by_vrid
+            if record_id in citable or vrid in check.records_by_vrid
         }
 
     async def _get_accessible_virtual_ids_task(
@@ -2379,7 +2580,10 @@ class RetrievalService:
 
         dense_tasks = [
             await_with_retry(
-                lambda q=query: asyncio.wait_for(dense_embeddings.aembed_query(q), timeout=attempt_timeout),
+                lambda q=query: asyncio.wait_for(
+                    dense_embeddings.aembed_query(instruct_query(dense_embeddings, q)),
+                    timeout=attempt_timeout,
+                ),
                 max_retries=_RETRIEVAL_EMBED_MAX_RETRIES,
                 operation="aembed_query",
                 service_name="retrieval",
@@ -2388,16 +2592,19 @@ class RetrievalService:
         ]
         supports_sparse = self._capabilities.supports_sparse_vectors
 
-        if sparse_embedder is not None and supports_sparse:
-            # Parallelise dense and sparse embedding generation
-            sparse_tasks = [sparse_embedder.embed_query(query) for query in queries]
-            (dense_query_embeddings, sparse_query_embeddings) = await asyncio.gather(
-                asyncio.gather(*dense_tasks),
-                asyncio.gather(*sparse_tasks),
-            )
-        else:
-            dense_query_embeddings = await asyncio.gather(*dense_tasks)
-            sparse_query_embeddings = [None] * len(queries)
+        # The tasks gather() starts copy the context when they are created, so the
+        # scope has to be open across the awaits, not just where the coroutines are built.
+        with narrow_workload(Workload.QUERY_EMBEDDING):
+            if sparse_embedder is not None and supports_sparse:
+                # Parallelise dense and sparse embedding generation
+                sparse_tasks = [sparse_embedder.embed_query(query) for query in queries]
+                (dense_query_embeddings, sparse_query_embeddings) = await asyncio.gather(
+                    asyncio.gather(*dense_tasks),
+                    asyncio.gather(*sparse_tasks),
+                )
+            else:
+                dense_query_embeddings = await asyncio.gather(*dense_tasks)
+                sparse_query_embeddings = [None] * len(queries)
 
         if plan is not None:
             plan.dense = dense_query_embeddings
@@ -2615,23 +2822,33 @@ class RetrievalService:
         connector_ids = sorted({r["connectorId"] for r in records if r.get("connectorId")})
         if not connector_ids:
             return
-        try:
-            apps = await asyncio.wait_for(
-                asyncio.gather(
-                    *(self.graph_provider.get_document(cid, CollectionNames.APPS.value) for cid in connector_ids),
-                    return_exceptions=True,
-                ),
-                timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
-            )
-        except Exception as e:
-            # Labels only: search results stay correct, the UI shows the type code.
-            self.logger.warning("Could not resolve connector names for citations: %s", e)
-            return
-        apps_by_id = {cid: app for cid, app in zip(connector_ids, apps) if isinstance(app, dict)}
+        names: dict[str, str | None] = {}
+        for cid in connector_ids:
+            hit, name = _connector_name_cache.get(cid)
+            if hit:
+                names[cid] = name
+        to_fetch = [cid for cid in connector_ids if cid not in names]
+        if to_fetch:
+            try:
+                apps = await asyncio.wait_for(
+                    asyncio.gather(
+                        *(self.graph_provider.get_document(cid, CollectionNames.APPS.value) for cid in to_fetch),
+                        return_exceptions=True,
+                    ),
+                    timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
+                )
+            except Exception as e:
+                # Labels only: search results stay correct, the UI shows the type code.
+                self.logger.warning("Could not resolve connector names for citations: %s", e)
+                apps = []
+            for cid, app in zip(to_fetch, apps):
+                if isinstance(app, dict):
+                    names[cid] = app.get("name")
+                    _connector_name_cache.set(cid, app.get("name"))
         for r in records:
-            app = apps_by_id.get(r.get("connectorId"))
-            if app and app.get("name"):
-                r["connectorInstanceName"] = app["name"]
+            name = names.get(r.get("connectorId"))
+            if name:
+                r["connectorInstanceName"] = name
 
     def _create_virtual_to_record_mapping(
         self,

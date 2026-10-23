@@ -107,8 +107,9 @@ EDGE_DEFINITIONS = [
     {
         # Links between records, apart from the hierarchy.
         "edge_collection": CollectionNames.RECORD_LINKS.value,
-        "from_vertex_collections": [CollectionNames.RECORDS.value],
-        "to_vertex_collections": [CollectionNames.RECORDS.value],
+        # Code-graph edges are links too (record->block CONTAINS, block->block CALLS).
+        "from_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.BLOCKS.value],
+        "to_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.BLOCKS.value],
     },
     {
         "edge_collection": CollectionNames.USER_DRIVE_RELATION.value,

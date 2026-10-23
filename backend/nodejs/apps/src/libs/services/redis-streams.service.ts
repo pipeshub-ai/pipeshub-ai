@@ -138,14 +138,34 @@ export abstract class BaseRedisStreamsProducerConnection
 {
   protected redis: RedisClient;
   protected initialized = false;
-  protected maxLen: number;
+  /** Set only in legacy `maxlen` retention mode; otherwise nothing is trimmed on write. */
+  protected maxLen: number | undefined;
 
   constructor(
     @unmanaged() protected readonly config: RedisBrokerConfig,
     @unmanaged() protected readonly logger: Logger,
   ) {
-    this.maxLen = config.maxLen ?? REDIS_STREAMS_DEFAULTS.maxLen;
+    this.maxLen = config.maxLen;
     this.redis = createStreamsClient(config);
+  }
+
+  /**
+   * XADD trim arguments. By default nothing: MAXLEN ignores consumer progress
+   * and drops unconsumed events; the Python indexing service trims behind the
+   * consumer groups instead. The health-check stream has no consumer, so it
+   * keeps a small fixed cap.
+   */
+  protected trimArgs(topic: string): string[] {
+    if (topic === MESSAGING_HEALTH_TOPIC) {
+      return [
+        'MAXLEN',
+        REDIS_STREAM_MAXLEN_STRATEGY,
+        String(REDIS_STREAMS_DEFAULTS.healthMaxLen),
+      ];
+    }
+    return this.maxLen === undefined
+      ? []
+      : ['MAXLEN', REDIS_STREAM_MAXLEN_STRATEGY, String(this.maxLen)];
   }
 
   async connect(): Promise<void> {
@@ -154,6 +174,12 @@ export abstract class BaseRedisStreamsProducerConnection
         await this.redis.connect();
         this.initialized = true;
         this.logger.info('Successfully connected Redis Streams producer');
+        if (this.maxLen !== undefined) {
+          this.logger.warn(
+            'REDIS_STREAMS_RETENTION_MODE=maxlen: streams are capped and unconsumed events beyond the cap are dropped',
+            { maxLen: this.maxLen },
+          );
+        }
       }
     } catch (error) {
       this.initialized = false;
@@ -213,14 +239,7 @@ export abstract class BaseRedisStreamsProducerConnection
         );
       }
 
-      await this.redis.xadd(
-        topic,
-        'MAXLEN',
-        REDIS_STREAM_MAXLEN_STRATEGY,
-        String(this.maxLen),
-        '*',
-        ...fields,
-      );
+      await this.redis.xadd(topic, ...this.trimArgs(topic), '*', ...fields);
 
       this.logger.debug('Successfully published to Redis stream', {
         topic,
@@ -257,14 +276,7 @@ export abstract class BaseRedisStreamsProducerConnection
         );
       }
 
-      pipeline.xadd(
-        topic,
-        'MAXLEN',
-        REDIS_STREAM_MAXLEN_STRATEGY,
-        String(this.maxLen),
-        '*',
-        ...fields,
-      );
+      pipeline.xadd(topic, ...this.trimArgs(topic), '*', ...fields);
     }
 
     try {

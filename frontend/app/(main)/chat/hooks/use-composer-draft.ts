@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { clearDraft, loadDraft, saveDraft } from '../utils/composer-draft';
 
@@ -18,6 +18,13 @@ interface UseComposerDraftOptions {
   paused?: boolean;
 }
 
+interface ComposerDraftControls {
+  /** The text in the box has just been sent: drop its draft and stop saving it. */
+  markSent: () => void;
+  /** The send did not go through: keep `text` as the draft again. */
+  unmarkSent: (text: string) => void;
+}
+
 /**
  * Keeps what the reader has typed in the composer per conversation: restored
  * on return, saved shortly after typing stops, and flushed when they leave.
@@ -29,7 +36,7 @@ export function useComposerDraft({
   message,
   setMessage,
   paused = false,
-}: UseComposerDraftOptions): void {
+}: UseComposerDraftOptions): ComposerDraftControls {
   const messageRef = useRef(message);
   const pausedRef = useRef(paused);
   // Declared first so every effect below sees this commit's values.
@@ -41,6 +48,12 @@ export function useComposerDraft({
   // effect below, so a text change that lands in the same commit as a thread
   // switch can never be filed under the wrong conversation.
   const ownerKeyRef = useRef<string | null>(null);
+  // Set from the moment a message is sent until the reader types again. The box
+  // still holds the sent text for a while, and the first message of a new chat
+  // moves the composer to another place in the page, so the old composer is
+  // unmounted in that window. A ref, not state, so its last save already sees it.
+  const sentRef = useRef(false);
+  const canSave = useCallback(() => !pausedRef.current && !sentRef.current, []);
   const lastRef = useRef<{ key: string | null; slotId: string | null } | null>(null);
   // The last user seen, kept across a signed-out gap so A -> signed out -> B is
   // still a change of person.
@@ -60,11 +73,11 @@ export function useComposerDraft({
       // A new chat just got its real id: the text in the box moves with it.
       clearDraft(leavingKey);
       ownerKeyRef.current = draftKey;
-      if (!pausedRef.current) saveDraft(draftKey, messageRef.current);
+      if (canSave()) saveDraft(draftKey, messageRef.current);
       return;
     }
 
-    if (leavingKey && !pausedRef.current) saveDraft(leavingKey, messageRef.current);
+    if (leavingKey && canSave()) saveDraft(leavingKey, messageRef.current);
     ownerKeyRef.current = draftKey;
     if (!draftKey) return;
 
@@ -78,12 +91,18 @@ export function useComposerDraft({
       // First load, or the account became known: never overwrite text already there.
       setMessage((current) => (current === '' ? stored : current));
     }
-  }, [draftKey, userId, slotId, setMessage]);
+  }, [draftKey, userId, slotId, setMessage, canSave]);
+
+  useEffect(() => {
+    if (message !== '') sentRef.current = false;
+  }, [message]);
 
   useEffect(() => {
     const key = ownerKeyRef.current;
     if (!key || paused) return;
-    const timer = setTimeout(() => saveDraft(key, message), DRAFT_SAVE_DEBOUNCE_MS);
+    const timer = setTimeout(() => {
+      if (!sentRef.current) saveDraft(key, message);
+    }, DRAFT_SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
     // `draftKey` re-arms the timer when the owner changes, so a save queued
     // before a chat got its id cannot land under the new key.
@@ -92,12 +111,26 @@ export function useComposerDraft({
   useEffect(() => {
     const flush = () => {
       const key = ownerKeyRef.current;
-      if (key && !pausedRef.current) saveDraft(key, messageRef.current);
+      if (key && canSave()) saveDraft(key, messageRef.current);
     };
     window.addEventListener('pagehide', flush);
     return () => {
       window.removeEventListener('pagehide', flush);
       flush();
     };
+  }, [canSave]);
+
+  const markSent = useCallback(() => {
+    sentRef.current = true;
+    const key = ownerKeyRef.current;
+    if (key) clearDraft(key);
   }, []);
+
+  const unmarkSent = useCallback((text: string) => {
+    sentRef.current = false;
+    const key = ownerKeyRef.current;
+    if (key && !pausedRef.current) saveDraft(key, text);
+  }, []);
+
+  return { markSent, unmarkSent };
 }

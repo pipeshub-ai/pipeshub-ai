@@ -343,6 +343,15 @@ class TestGetEnvFallback:
         assert result["grpcPort"] == 6334
         assert result["apiKey"] == "qdrant"
 
+    def test_qdrant_fallback_blank_grpc_port_is_unset(self) -> None:
+        svc = _build_service()
+
+        env = {"QDRANT_HOST": "q", "QDRANT_GRPC_PORT": ""}
+        with patch("app.config.configuration_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
+            result = svc._get_env_fallback("/services/qdrant")
+
+        assert result["grpcPort"] == 6334
+
     def test_qdrant_fallback_no_host_returns_none(self):
         svc = _build_service()
 
@@ -630,6 +639,79 @@ class TestInvalidationCallback:
 
         # Should not raise
         svc._invalidation_callback("/a")
+
+
+class TestCacheLock:
+    """The LRU cache is shared by every event loop's thread and the watch thread, and even
+    a read reorders it, so every access must hold ``_cache_lock``."""
+
+    @staticmethod
+    def _spy_cache(svc, items) -> tuple[list[str], list[str]]:
+        from cachetools import LRUCache
+
+        lock = svc._cache_lock
+        seen: list[str] = []
+        unguarded: list[str] = []
+
+        class _Spy(LRUCache):
+            armed = False
+
+            def _check(self, op) -> None:
+                if self.armed:
+                    seen.append(op)
+                    if not lock.locked():
+                        unguarded.append(op)
+
+            def __contains__(self, key) -> bool:
+                self._check("contains")
+                return super().__contains__(key)
+
+            def __getitem__(self, key) -> object:
+                self._check("get")
+                return super().__getitem__(key)
+
+            def __setitem__(self, key, value) -> None:
+                self._check("set")
+                super().__setitem__(key, value)
+
+            def __delitem__(self, key) -> None:
+                self._check("del")
+                super().__delitem__(key)
+
+        spy = _Spy(maxsize=10)
+        for key, value in items.items():
+            spy[key] = value
+        spy.armed = True
+        svc.cache = spy
+        return seen, unguarded
+
+    @pytest.mark.asyncio
+    async def test_every_cache_access_holds_the_lock(self) -> None:
+        store = AsyncMock()
+        store.get_key = AsyncMock(return_value="stored")
+        store.create_key = AsyncMock(return_value=True)
+        store.delete_key = AsyncMock(return_value=True)
+        svc = _build_service(store)
+        seen, unguarded = self._spy_cache(svc, {"/hit": "cached"})
+
+        assert await svc.get_config("/hit", use_cache=True) == "cached"
+        assert await svc.get_config("/miss", use_cache=True) == "stored"
+        store.get_key.return_value = None
+        with patch.object(svc, "_get_env_fallback", return_value={"from": "env"}):
+            assert await svc.get_config("/env") == {"from": "env"}
+        store.get_key.return_value = "old"
+        assert await svc.set_config("/a", 1)
+        assert await svc.update_config("/a", 2)
+        assert await svc.delete_config("/a")
+        assert await svc.create_config_if_absent("/b", 1)
+        store.create_key.return_value = False
+        assert not await svc.create_config_if_absent("/b", 1)
+        svc._invalidation_callback("/hit")
+        svc._invalidation_callback("__CLEAR_ALL__")
+        svc.clear_cache()
+
+        assert {"contains", "get", "set", "del"} <= set(seen)
+        assert unguarded == []
 
 
 # =========================================================================

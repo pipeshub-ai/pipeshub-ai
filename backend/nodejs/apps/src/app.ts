@@ -10,6 +10,7 @@ import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
+import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
 import { registerOAuthTokenService } from './libs/services/oauth-token-service.provider';
@@ -128,6 +129,7 @@ import { ProjectsContainer } from './modules/projects/container/project.containe
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
+import { mcpJsonBodyParser } from './modules/mcp/middlewares/mcp-body.middleware';
 // Side-effect import: registers edition-specific Redis providers for this process.
 import './redisProviders';
 import {
@@ -516,7 +518,10 @@ export class Application {
       }),
     );
 
-    // Body parsing
+    // Body parsing. /mcp has its own, smaller limit, and it must come first:
+    // a JSON parser skips a body an earlier one has read, and one that came
+    // after the shared 10 MB parser would never get to apply its limit.
+    this.app.use('/mcp', ...mcpJsonBodyParser());
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(xssSanitizationMiddleware);
@@ -655,6 +660,12 @@ export class Application {
     this.app.use(
       '/api/v1/search',
       createSemanticSearchRouter(this.esAgentContainer),
+    );
+
+    // code-graph status for the dashboard (repos and their graph status)
+    this.app.use(
+      '/api/v1/code-graph',
+      createCodeGraphRouter(this.esAgentContainer),
     );
 
     // enterprise search connectors routes — pass the crawling container

@@ -7,6 +7,7 @@ Linear Connector – Integration Tests
 Test cases:
   TC-SYNC-001         — Full sync + strict graph baselines vs API snapshot
   TC-LINEAR-001       — User exists; USER_APP_RELATION == connector-style Linear user fetch
+  TC-LINEAR-AUTH-001  — The creator's link to the Linear account the token belongs to
   TC-LINEAR-002       — Filtered teams as UserGroups + member edges
   TC-LINEAR-003       — Primary team as RecordGroup; reference issue belongs to team
   TC-LINEAR-004       — Reference issue TICKET fields, webUrl, edges
@@ -52,6 +53,7 @@ from app.models.entities import (  # type: ignore[import-not-found]  # noqa: E40
 )
 from app.sources.external.linear.linear import LinearDataSource  # type: ignore[import-not-found]  # noqa: E402
 from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     apply_filter_full_sync,
@@ -504,6 +506,25 @@ class TestLinearValidation:
         )
 
         logger.info("TC-LINEAR-001 passed: %d users validated", rel_count)
+
+    @pytest.mark.order(2)
+    async def test_tc_linear_auth_001_authenticated_identity(
+        self,
+        linear_connector: Dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-LINEAR-AUTH-001: the creator is linked to the Linear account the token belongs to.
+
+        That link is what lets a creator whose PipesHub email differs see the account's
+        permissions on this connector. The fixture read the same ``viewer`` the connector reads.
+        """
+        email = linear_connector.get("viewer_email")
+        await assert_authenticated_identity_link(
+            graph_provider, linear_connector["connector_id"],
+            email.strip() if isinstance(email, str) else None,
+            linear_connector.get("viewer_id"),
+        )
+        logger.info("TC-LINEAR-AUTH-001 passed: Linear account %s", linear_connector.get("viewer_id"))
 
     @pytest.mark.order(3)
     async def test_tc_linear_002_team_as_user_group(

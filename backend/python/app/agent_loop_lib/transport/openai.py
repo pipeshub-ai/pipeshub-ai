@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -139,6 +140,30 @@ class RequestDefaults:
         return out
 
 
+def client_timeout(timeout: float | None) -> Any:
+    """`timeout` for the SDK client, with a shorter read timeout when
+    PIPESHUB_LLM_STALL_TIMEOUT_SECONDS is set.
+
+    The SDK applies one number to every phase, and on a stream the read phase
+    is the gap between chunks: a provider connection that stops responding
+    holds the turn for the whole of DEFAULT_LLM_TIMEOUT (6 minutes) before the
+    SDK's own retry runs. A per-phase limit bounds that stall; the retry then
+    usually succeeds in seconds.
+    """
+    raw = os.getenv("PIPESHUB_LLM_STALL_TIMEOUT_SECONDS", "").strip()
+    try:
+        stall = float(raw) if raw else 0.0
+    except ValueError:
+        stall = 0.0
+    if timeout is None or stall <= 0 or stall >= timeout:
+        return timeout
+    import httpx
+
+    # Write and pool too: a stall seen in production ran the full timeout with
+    # no read pending -- the large request body was still being sent.
+    return httpx.Timeout(timeout, connect=min(15.0, stall), read=stall, write=stall, pool=stall)
+
+
 class OpenAITransport(LLMTransport):
     """OpenAI Chat Completions API via the official SDK.
 
@@ -164,6 +189,7 @@ class OpenAITransport(LLMTransport):
         model_key: str | None = None,
         cache_kwargs: dict[str, str] | None = None,
         on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> None:
         super().__init__()
         try:
@@ -183,9 +209,13 @@ class OpenAITransport(LLMTransport):
         # Unset, the SDK applies its own (longer) default; LangChain pins
         # DEFAULT_LLM_TIMEOUT, so a slow turn has to fail at the same point.
         if timeout is not None:
-            client_kwargs["timeout"] = timeout
+            client_kwargs["timeout"] = client_timeout(timeout)
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
+        # A caller-supplied httpx client carries whatever it was configured with
+        # (an egress guard, request hooks); the SDK does not close it.
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
         self._client = _openai.AsyncOpenAI(**client_kwargs)
         self._init_prompt_cache(cache_kwargs, on_cache_rejected)
         # Cumulative usage across all calls on this transport instance —
@@ -201,6 +231,7 @@ class OpenAITransport(LLMTransport):
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
         cache_kwargs: dict[str, str] | None = None, on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> "OpenAITransport":
         """Build from an already-configured `ChatOpenAI`.
 
@@ -250,6 +281,7 @@ class OpenAITransport(LLMTransport):
             model_key=model_key,
             cache_kwargs=cache_kwargs,
             on_cache_rejected=on_cache_rejected,
+            http_client=http_client,
         )
 
     def _init_prompt_cache(

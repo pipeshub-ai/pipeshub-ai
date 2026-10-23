@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { mongoIdRegex } from './oauth.validators'
+import { knowledgeLimitSchema, mongoIdRegex } from './oauth.validators'
 
 export const createPatTokenSchema = z.object({
   body: z.object({
@@ -13,6 +13,7 @@ export const createPatTokenSchema = z.object({
         z.literal('never'),
       ])
       .optional(),
+    knowledgeLimit: knowledgeLimitSchema.optional(),
   }),
 })
 

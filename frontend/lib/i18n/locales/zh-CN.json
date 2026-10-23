@@ -9,7 +9,9 @@
       "reindexFailedStart": "正在重新索引失败的记录…",
       "reindexFailedError": "重新索引失败的记录时出错",
       "manualIndexStart": "正在索引手动索引记录…",
-      "manualIndexError": "启动手动索引失败"
+      "manualIndexError": "启动手动索引失败",
+      "retryClassificationStart": "分类重试已加入队列",
+      "retryClassificationError": "重试分类失败"
     },
     "trash": {
       "menuLabel": "最近删除",
@@ -658,6 +660,13 @@
     "message": "这将从头开始重新索引该文档，可能产生额外费用。当搜索结果过时，或索引完成后文档仍无法被搜索到时，请使用此功能。",
     "confirm": "确定"
   },
+  "reindexBlocked": {
+    "title": "此记录无法单独重新索引",
+    "message": "来自 GitHub 和 GitLab 的文件会作为整个仓库的同一个代码图谱一起索引。单独重新索引某个文件会使其版本比仓库其余部分更新,并破坏文件之间的关联。如需刷新，请在知识中心对整个仓库重新索引——这样所有文件会一起重新索引。连接器同步只会获取有变更的文件。",
+    "folderTitle": "此文件夹无法单独重新索引",
+    "folderMessage": "来自 GitHub 和 GitLab 的文件会作为整个仓库的同一个代码图谱一起索引。单独重新索引某个文件夹只会更新其中的文件，使其版本比仓库其余部分更新，并破坏文件之间的关联。如需刷新，请在知识中心对整个仓库重新索引——这样所有文件会一起重新索引。连接器同步只会获取有变更的文件。",
+    "goToConnectors": "前往连接器"
+  },
   "kb": {
     "viewToggle": "视图切换",
     "collectionsView": "集合视图",
@@ -684,7 +693,21 @@
     "chatSelectionLimit": "聊天最多可带入 {{max}} 个所选项目。请取消勾选部分项目后重试。",
     "chatTooManyCollections": "聊天一次最多可搜索 {{max}} 个集合，而您的集合更多。请打开一个集合，或勾选要提问的集合。",
     "chatCollectionsLoadFailed": "无法为聊天加载您的集合。请重试。",
-    "chatNoCollections": "您还没有可提问的集合。"
+    "chatNoCollections": "您还没有可提问的集合。",
+    "indexingStatus": {
+      "completed": "已完成",
+      "inProgress": "进行中",
+      "failed": "失败",
+      "fileTypeNotSupported": "不支持的文件类型",
+      "notStarted": "未开始",
+      "queued": "已排队",
+      "manualIndexing": "手动索引",
+      "empty": "空",
+      "paused": "已暂停",
+      "needsMultimodalModel": "需要多模态模型",
+      "skipped": "已跳过",
+      "pending": "待处理"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -786,6 +809,7 @@
     "recents": "最近",
     "sharedChats": "共享的聊天",
     "sharedBy": "由 {{name}} 共享",
+    "agentChat": "智能体聊天",
     "noSharedChats": "没有共享的聊天",
     "yourChats": "您的聊天",
     "noChatsFound": "未找到聊天",
@@ -850,6 +874,7 @@
     "backToChatHome": "所有聊天",
     "agentSidebarLabel": "智能体",
     "agentNameLoading": "正在加载…",
+    "sharedAgentChat": "共享的智能体聊天",
     "myAgents": "我的智能体",
     "moreAgents": "更多智能体",
     "agentHeaderMenuAria": "智能体选项",
@@ -954,8 +979,6 @@
     "toasts": {
       "stopStreamTitle": "正在停止…",
       "stopStreamDescription": "响应即将停止，已生成的部分内容将被保留。",
-      "editComingSoonTitle": "即将推出",
-      "editComingSoonDescription": "我们正在开发编辑功能",
       "deprecatedTools": "此智能体包含已不可用的工具。请打开智能体构建器将其移除。",
       "openAgentBuilder": "打开智能体构建器",
       "loadConversationFailed": "无法打开此对话。请刷新页面后重试。",
@@ -1806,6 +1829,7 @@
         "createDisabledScopesTooltip": "请至少选择一个权限范围才能创建应用。",
         "tabGeneral": "常规",
         "tabPermissions": "权限与范围",
+        "tabGranular": "细粒度权限",
         "appNameLabel": "应用名称",
         "appNamePlaceholder": "我的应用",
         "descriptionLabel": "描述",
@@ -2062,6 +2086,59 @@
       "rotateCredentialsPlaceholder": "新的 API 密钥",
       "rotateCredentialsSave": "更新密钥",
       "rotateCredentialsFailed": "无法更新密钥",
+      "identity": {
+        "menuItem": "身份转发",
+        "title": "身份转发",
+        "hint": "向网关告知请求者是谁，以便按个人应用预算、限额和模型访问权限。适用于此连接中的所有模型。",
+        "enabled": "转发用户身份",
+        "format": "格式",
+        "formatHeaders": "LiteLLM 请求头",
+        "formatTemplate": "请求头模板",
+        "formatSignedJwt": "签名令牌（企业版）",
+        "preset": "网关预设",
+        "presetCustom": "自定义请求头",
+        "templates": "请求头模板",
+        "templatesHint": "每行一个，格式为 Header-Name: value。可使用 {{placeholders}}。",
+        "serviceKey": "后台任务密钥",
+        "serviceKeyPlaceholder": "用于索引和提取的网关密钥",
+        "serviceKeySaved": "已保存密钥。输入新值可替换。",
+        "serviceKeyHint": "索引和提取没有已登录的用户。请为它们提供单独的网关密钥，以便将其支出与个人分开预算。",
+        "serviceKeyRemove": "移除已保存的密钥",
+        "preview": "预览",
+        "previewTitle": "将为你发送的内容",
+        "previewNone": "不会发送任何内容。",
+        "previewFailed": "无法生成预览",
+        "save": "保存",
+        "saved": "身份转发已保存",
+        "saveFailed": "无法保存身份转发"
+      },
+      "identityPolicy": {
+        "open": "身份策略",
+        "damaged": "无法读取已保存的身份策略，因此显示默认值。保存后将替换它。",
+        "title": "身份策略",
+        "hint": "PipesHub 可以向模型网关透露的请求者信息。适用于所有转发身份的连接。",
+        "subjectSource": "识别用户的依据",
+        "subjectUserId": "用户 ID",
+        "subjectEmail": "电子邮件地址",
+        "subjectIdp": "身份提供商对象 ID",
+        "includeEmail": "包含电子邮件地址",
+        "includeDisplayName": "包含显示名称",
+        "pseudonymize": "用稳定的假名隐藏身份",
+        "pseudonymizeHint": "网关看到的是不透明 ID，而不是真实 ID。该映射不可逆。",
+        "groups": "转发群组成员关系",
+        "groupsHint": "使网关可以按群组应用访问权限和预算。",
+        "allowList": "仅转发这些群组",
+        "allowListHint": "每行一个群组 ID。留空则转发所有群组，最多不超过下方限制。",
+        "maxGroups": "最多转发的群组数",
+        "blockMissing": "拒绝没有已登录用户的请求",
+        "blockMissingHint": "转发身份时，无法关联到个人的交互式调用将被拒绝，而不是以服务身份发送。",
+        "embeddingAsService": "将搜索嵌入归属于服务",
+        "embeddingAsServiceHint": "关闭：用户搜索查询的嵌入费用计入其个人预算。",
+        "servicePrefix": "服务身份前缀",
+        "saved": "身份策略已保存",
+        "saveFailed": "无法保存身份策略",
+        "loadFailed": "无法加载身份策略"
+      },
       "batchStatus": {
         "pending": "等待",
         "checking": "检查中",
@@ -2743,6 +2820,25 @@
         "noRecordTypes": "没有可用的记录类型",
         "localWatcherLabel": "本地监视器",
         "localWatcherStatus": "{{state}} · {{pending}} 个待处理 · {{failed}} 个失败",
+        "classification": "分类",
+        "classificationSkipped": "已跳过",
+        "retryFailedClassification": "重试失败的分类",
+        "retryClassificationSuccess": "分类重试已加入队列",
+        "retryClassificationError": "重试分类失败",
+        "codeGraph": {
+          "title": "代码图",
+          "status": {
+            "never_built": "尚未构建",
+            "building": "构建中",
+            "ready": "就绪",
+            "stale": "更新中",
+            "waiting_on_indexing": "等待索引",
+            "retrying": "重试中",
+            "failed": "失败",
+            "too_large": "过大",
+            "unknown": "未知"
+          }
+        },
         "lastRun": {
           "title": "上次同步",
           "outcome": {
@@ -4613,6 +4709,13 @@
       "noRecordMetadata": "此项目没有其他记录元数据。"
     },
     "indexingReasonAria": "索引失败详情",
+    "stageTrackLabel": "处理流程",
+    "stageParsed": "已解析",
+    "stageSearchable": "可搜索",
+    "stageClassified": "已分类",
+    "stageEntities": "实体",
+    "stageAttempt": "第 {{n}} 次尝试",
+    "stageDetailsAria": "阶段详情",
     "tabRecordInformation": "记录信息",
     "tabDocumentDetails": "文档详情",
     "chat": "聊天",
@@ -4897,6 +5000,27 @@
     "doneLine": "您可以返回终端。此窗口可以关闭。",
     "deniedTitle": "请求被拒绝",
     "deniedLine": "未授予该设备访问权限。"
+  },
+  "knowledgeLimit": {
+    "title": "{{appName}} 可以看到什么？",
+    "help": "它只能搜索和读取您在此处允许的内容，永远不会超出您自己能看到的范围。",
+    "everything": "我能看到的所有内容",
+    "everythingHint": "包括您以后添加的来源。",
+    "only": "仅我选择的内容",
+    "onlyHint": "选择整个来源，或打开一个来源以选择空间、文件夹或文件。",
+    "pickOne": "请至少选择一个来源、空间、文件夹或文件。",
+    "tooMany": "最多选择 {{max}} 项，或改为选择整个来源。",
+    "selectedCount_other": "已选择 {{count}} 项",
+    "canSeeEverything": "可查看：您能看到的所有内容",
+    "canSeeSome_other": "可查看：所选的 {{count}} 项",
+    "thisToken": "此令牌",
+    "app": {
+      "thisApp": "此应用",
+      "help": "连接此应用的用户只能搜索和阅读您在此处选择的内容，且绝不会超出他们自己可见的范围。",
+      "everything": "每位用户可见的全部内容",
+      "everythingHint": "包括之后添加的来源。"
+    },
+    "appLimited_other": "{{appName}} 只能查看其创建者选择的 {{count}} 个项目，且仅限您可见的部分。"
   },
   "validation": {
     "password": {

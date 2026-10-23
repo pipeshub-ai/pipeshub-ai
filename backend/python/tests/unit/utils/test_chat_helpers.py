@@ -14,6 +14,9 @@ from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelatio
 from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import (
     is_jira_ticket_record,
 )
+from app.exceptions.storage_exceptions import (
+    StoredRecordTooLargeError,
+)
 from app.models.blocks import BlockType, GroupType
 from app.models.entities import (
     FileRecord,
@@ -3016,6 +3019,33 @@ class TestGetFlattenedResults:
         results = await get_flattened_results(result_set, blob_store, "org-1", False, vr_map)
 
         assert vr_map["vr-missing"] is None
+        assert [r["virtual_record_id"] for r in results] == ["vr-ok"]
+
+    @pytest.mark.asyncio
+    async def test_a_record_refused_by_the_decode_guard_is_skipped(self) -> None:
+        """A record too large to decode drops out of this search; the rest still answers."""
+        refusal = StoredRecordTooLargeError("decodes to 300 MiB")
+        good = _make_record_blob()
+        good["block_containers"]["blocks"] = [_make_text_block(index=0, data="still here")]
+
+        async def fetch(virtual_record_id: str, **_kwargs: object) -> dict:
+            if virtual_record_id == "vr-huge":
+                raise refusal
+            return good
+
+        blob_store = self._make_blob_store()
+        blob_store.get_record_from_storage = AsyncMock(side_effect=fetch)
+        vr_map: dict = {}
+        result_set = [
+            {"content": "huge", "score": 0.9,
+             "metadata": {"virtualRecordId": "vr-huge", "blockIndex": 0, "isBlockGroup": False}},
+            {"content": "still here", "score": 0.8,
+             "metadata": {"virtualRecordId": "vr-ok", "blockIndex": 0, "isBlockGroup": False}},
+        ]
+
+        results = await get_flattened_results(result_set, blob_store, "org-1", False, vr_map)
+
+        assert vr_map["vr-huge"] is None
         assert [r["virtual_record_id"] for r in results] == ["vr-ok"]
 
     @pytest.mark.asyncio

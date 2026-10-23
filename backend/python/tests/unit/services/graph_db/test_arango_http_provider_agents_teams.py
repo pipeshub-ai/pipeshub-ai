@@ -299,8 +299,12 @@ class TestDeleteNodesAndEdges:
             await connected_provider.delete_nodes_and_edges(["k1"], "records")
         await connected_provider.delete_nodes_and_edges(["k1"], "records")
         assert connected_provider.http_client.get_graph.await_count == 2
-        assert [c.kwargs["bind_vars"]["@edge_collection"]
-                for c in connected_provider.http_client.execute_aql.await_args_list] == [
+        edge_calls = [
+            c.kwargs["bind_vars"]["@edge_collection"]
+            for c in connected_provider.http_client.execute_aql.await_args_list
+            if "@edge_collection" in c.kwargs.get("bind_vars", {})
+        ]
+        assert edge_calls == [
             "permission", "permission", "belongsToTopic", "belongsToTopic",
         ]
         connected_provider.delete_nodes.assert_awaited_once()
@@ -332,15 +336,18 @@ class TestDeleteNodesAndEdges:
         connected_provider.delete_nodes = AsyncMock()
         await connected_provider.delete_nodes_and_edges(["k1"], "records", transaction="txn-1")
 
-        calls = connected_provider.http_client.execute_aql.await_args_list
-        assert len(calls) == 4, "one _from and one _to statement per edge collection"
-        for call in calls:
+        edge_calls = [
+            c for c in connected_provider.http_client.execute_aql.await_args_list
+            if "@edge_collection" in c.kwargs.get("bind_vars", {})
+        ]
+        assert len(edge_calls) == 4, "one _from and one _to statement per edge collection"
+        for call in edge_calls:
             aql = call.args[0]
             assert " OR " not in aql, "an OR over _from and _to cannot use the edge index"
             assert ("edge._from IN @node_ids" in aql) != ("edge._to IN @node_ids" in aql)
             assert call.kwargs["bind_vars"]["node_ids"] == ["records/k1"]
             assert call.kwargs["txn_id"] == "txn-1"
-        assert [c.kwargs["bind_vars"]["@edge_collection"] for c in calls] == [
+        assert [c.kwargs["bind_vars"]["@edge_collection"] for c in edge_calls] == [
             "permission", "permission", "belongsTo", "belongsTo",
         ]
         connected_provider.delete_nodes.assert_awaited_once_with(["k1"], "records", "txn-1")
@@ -364,11 +371,16 @@ class TestDeleteNodesAndEdges:
     ) -> None:
         """Each statement commits on its own without a transaction id, so a failure
         after the permission edges were removed left the record with no owner. The
-        delete opens its own transaction over the vertex and edge collections."""
+        delete opens its own transaction over the vertex, edge and type collections."""
+        from app.config.constants.arangodb import RECORD_TYPE_COLLECTION_MAPPING
+
         connected_provider.http_client.get_graph = AsyncMock(return_value={
             "graph": {"edgeDefinitions": [{"collection": "permission"}, {"collection": "belongsTo"}]}
         })
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=[[], [], [], Exception("fail")])
+        # Collect isOfType targets, then four edge deletes; fail on the last edge.
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[[], [], [], [], Exception("fail")]
+        )
         connected_provider.begin_transaction = AsyncMock(return_value="own-txn")
         connected_provider.commit_transaction = AsyncMock()
         connected_provider.rollback_transaction = AsyncMock()
@@ -378,7 +390,9 @@ class TestDeleteNodesAndEdges:
             await connected_provider.delete_nodes_and_edges(["k1"], "records")
 
         began = connected_provider.begin_transaction.await_args.kwargs
-        assert set(began["write"]) == {"records", "permission", "belongsTo"}
+        assert set(began["write"]) == {
+            "records", "permission", "belongsTo", *RECORD_TYPE_COLLECTION_MAPPING.values()
+        }
         assert all(c.kwargs["txn_id"] == "own-txn" for c in connected_provider.http_client.execute_aql.await_args_list)
         connected_provider.rollback_transaction.assert_awaited_once_with("own-txn")
         connected_provider.commit_transaction.assert_not_awaited()

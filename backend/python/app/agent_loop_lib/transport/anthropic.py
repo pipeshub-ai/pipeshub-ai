@@ -86,6 +86,7 @@ class AnthropicTransport(LLMTransport):
         model_key: str | None = None,
         cache_ttl: str | None = "5m",
         on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> None:
         super().__init__()
         try:
@@ -110,6 +111,8 @@ class AnthropicTransport(LLMTransport):
             client_kwargs["timeout"] = timeout
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
         self._client = _anthropic.AsyncAnthropic(**client_kwargs)
         # One marker value for the tools, the stable system block and the
         # request's last block; None sends no cache markers at all.
@@ -133,6 +136,7 @@ class AnthropicTransport(LLMTransport):
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None, cache_ttl: str | None = "5m",
         on_cache_rejected: Callable[[], None] | None = None,
+        http_client: Any | None = None,
     ) -> "AnthropicTransport":
         """Build from an already-configured `ChatAnthropic`.
 
@@ -184,6 +188,7 @@ class AnthropicTransport(LLMTransport):
             model_key=model_key,
             cache_ttl=cache_ttl,
             on_cache_rejected=on_cache_rejected,
+            http_client=http_client,
         )
 
     @staticmethod

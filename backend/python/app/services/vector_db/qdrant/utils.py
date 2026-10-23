@@ -1,3 +1,5 @@
+import math
+import os
 from typing import Any, Dict, List
 
 from qdrant_client.http.models import (  # type: ignore
@@ -10,7 +12,9 @@ from qdrant_client.http.models import (  # type: ignore
     MatchValue,
     MinShould,
     Prefetch,
+    QuantizationSearchParams,
     QueryRequest,
+    SearchParams,
     SparseVector as QdrantSparseVector,
     ValuesCount,
 )
@@ -26,6 +30,54 @@ from app.services.vector_db.models import (
     SparseVector,
     VectorPoint,
 )
+from app.utils.logger import create_logger
+
+
+logger = create_logger("qdrant_utils")
+
+QDRANT_HNSW_EF_ENV = "QDRANT_HNSW_EF"
+QDRANT_OVERSAMPLING_ENV = "QDRANT_OVERSAMPLING"
+DEFAULT_HNSW_EF = 256
+DEFAULT_OVERSAMPLING = 1.5
+MAX_HNSW_EF = 4096
+MAX_OVERSAMPLING = 4.0
+MAX_HNSW_EF_CONSTRUCT = 4096
+# RRF gives many results the same score (a dense-only hit and a keyword-only hit
+# of the same rank tie). Qdrant orders ties differently on every call, so the
+# request asks for a little more than the caller wants and the provider re-sorts
+# with a fixed tie-break before cutting.
+TIE_MARGIN = 2
+
+
+def env_number(name: str, default: float, minimum: float, maximum: float, cast: type) -> float:
+    """Read a finite number in [minimum, maximum] from the environment, else warn and use ``default``."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = cast(raw)
+    except ValueError:
+        value = None
+    if value is None or not math.isfinite(value) or not minimum <= value <= maximum:
+        logger.warning("%s=%r is not a number in [%s, %s]; using %s", name, raw, minimum, maximum, default)
+        return default
+    return value
+
+
+def dense_search_params() -> SearchParams:
+    """Query-time knobs for the dense leg, read from the environment on each call.
+
+    ``QDRANT_HNSW_EF`` is the search beam; 0 leaves it to the collection default,
+    which is the ``ef_construct`` it was built with. ``QDRANT_OVERSAMPLING`` is
+    how many times the requested depth the INT8 scan hands to the full-precision
+    rescore; 1 rescores only the requested depth.
+    """
+    ef = int(env_number(QDRANT_HNSW_EF_ENV, DEFAULT_HNSW_EF, 0, MAX_HNSW_EF, int))
+    oversampling = float(env_number(QDRANT_OVERSAMPLING_ENV, DEFAULT_OVERSAMPLING, 1.0, MAX_OVERSAMPLING, float))
+    return SearchParams(
+        hnsw_ef=ef or None,
+        quantization=QuantizationSearchParams(rescore=True, oversampling=oversampling),
+    )
 
 
 class QdrantUtils:
@@ -209,7 +261,12 @@ class QdrantUtils:
         prefetch_list = []
         if req.dense_query is not None:
             prefetch_list.append(
-                Prefetch(query=req.dense_query, using="dense", limit=req.limit * 2)
+                Prefetch(
+                    query=req.dense_query,
+                    using="dense",
+                    limit=req.limit * 2,
+                    params=dense_search_params(),
+                )
             )
         if req.sparse_query is not None:
             prefetch_list.append(
@@ -236,9 +293,14 @@ class QdrantUtils:
             prefetch=prefetch_list,
             query=FusionQuery(fusion=fusion),
             with_payload=req.with_payload,
-            limit=req.limit,
+            limit=req.limit + TIE_MARGIN,
             filter=qdrant_filter,
         )
+
+    @staticmethod
+    def stable_top(points: list[Any], limit: int) -> list[Any]:
+        """Order by (-score, id) and keep ``limit``: equal scores come back in the same order every time."""
+        return sorted(points, key=lambda p: (-(p.score or 0.0), str(p.id)))[:limit]
 
     @staticmethod
     def qdrant_result_to_search_result(scored_point: Any) -> SearchResult:

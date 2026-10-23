@@ -516,6 +516,39 @@ export const agentConversationTitleParamsSchema =
     body: titleBodySchema,
   });
 
+/** Most people one request may share an agent conversation with; each id costs an IAM lookup. */
+const AGENT_SHARE_MAX_USERS = 50;
+
+/**
+ * Schema for POST /:agentKey/conversations/:conversationId/share — agent
+ * conversations are read-only for recipients, so the only access level a caller
+ * may name is 'read'. The strict body rejects `accessLevel: 'write'` outright
+ * instead of silently stripping it.
+ */
+export const agentConversationShareParamsSchema =
+  agentConversationParamsSchema.extend({
+    body: z
+      .object({
+        userIds: userIdsSchema.max(AGENT_SHARE_MAX_USERS, {
+          message: `At most ${AGENT_SHARE_MAX_USERS} users can be shared with at once`,
+        }),
+        accessLevel: z.literal('read').optional(),
+      })
+      .strict(),
+  });
+
+/** Schema for POST /:agentKey/conversations/:conversationId/unshare. */
+export const agentConversationUnshareParamsSchema =
+  agentConversationParamsSchema.extend({
+    body: z
+      .object({
+        userIds: userIdsSchema.max(AGENT_SHARE_MAX_USERS, {
+          message: `At most ${AGENT_SHARE_MAX_USERS} users can be unshared at once`,
+        }),
+      })
+      .strict(),
+  });
+
 /** Schema for POST /:agentKey/conversations/:conversationId/cancel — cooperatively stop an in-flight agent run. */
 export const cancelAgentConversationStreamParamsSchema =
   agentConversationParamsSchema.extend({
@@ -1032,7 +1065,19 @@ export const messageIdParamsSchema = z.object({
 // Regenerate answers (conversation + agent)
 // ---------------------------------------------------------------------------
 
+/** The composer's own limit on files per message (CHAT_ATTACHMENT_MAX_FILES in the frontend). */
+const REGENERATE_ATTACHMENTS_MAX = 10;
+
 const regenerateBodySchema = z.object({
+  // Present only when the user edited the question being regenerated.
+  query: chatQuerySchema.optional(),
+  // The edited question's files, replacing the stored ones; omitted keeps them.
+  attachments: z
+    .array(attachmentRefSchema)
+    .max(REGENERATE_ATTACHMENTS_MAX, {
+      message: `At most ${REGENERATE_ATTACHMENTS_MAX} attachments per message`,
+    })
+    .optional(),
   filters: filtersSchema,
   chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
   ...modelFieldsSchema,
@@ -1183,8 +1228,9 @@ export const enterpriseSearchSearchSchema = z.object({
     // Set, the AI service searches the span the matching date bounds give
     // period by period, as the assistant's timeline tool does, and returns
     // the matches in date order, each labelled with its period. The value is
-    // the date records are placed by. Left out, a plain ranked search.
-    timeline: z.enum(['created', 'modified']).optional(),
+    // the date records are placed by. Left out, bounds on one date over more
+    // than a month run as a timeline on it; 'off' is always a plain ranked search.
+    timeline: z.enum(['created', 'modified', 'off']).optional(),
   }),
 });
 
