@@ -171,7 +171,8 @@ jobs:
         run: |
           args=$(python3 ../../scripts/unit_shards.py args "$SHARD")
           mapfile -t shard_args <<< "$args"
-          pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15
+          pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15 \
+            --junitxml="junit-$SHARD.xml"
 
       # upload-artifact skips dotfiles unless told otherwise, and every coverage
       # data file is one. Not named python-coverage-report-*: weekly-coverage.yml
@@ -185,6 +186,17 @@ jobs:
           include-hidden-files: true
           retention-days: 1
           if-no-files-found: error
+
+      # Per-test times: scripts/unit_shards.py durations turns these into the
+      # per-file minutes the shard balance check reads.
+      - name: Upload test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: py-junit-${{ matrix.shard }}
+          path: backend/python/junit-${{ matrix.shard }}.xml
+          retention-days: 14
+          if-no-files-found: warn
 
   python-coverage:
     needs: python-unit
