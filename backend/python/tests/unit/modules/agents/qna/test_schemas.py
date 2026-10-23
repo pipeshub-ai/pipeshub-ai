@@ -98,21 +98,23 @@ class TestAgentAnswerWithMetadataJSON:
         )
         assert obj.confidence == level
 
-    def test_all_answer_match_types(self):
-        valid_types = [
+    @pytest.mark.parametrize(
+        "match_type",
+        [
             "Exact Match",
             "Derived From Blocks",
             "Derived From User Info",
             "Enhanced With Full Record",
             "Derived From Tool Execution",
-        ]
-        for match_type in valid_types:
-            obj = AgentAnswerWithMetadataJSON(
-                answer="x",
-                confidence="High",
-                answerMatchType=match_type,
-            )
-            assert obj.answerMatchType == match_type
+        ],
+    )
+    def test_all_answer_match_types(self, match_type):
+        obj = AgentAnswerWithMetadataJSON(
+            answer="x",
+            confidence="High",
+            answerMatchType=match_type,
+        )
+        assert obj.answerMatchType == match_type
 
     def test_invalid_confidence_raises(self):
         with pytest.raises(ValidationError):
