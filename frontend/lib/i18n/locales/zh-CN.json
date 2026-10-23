@@ -410,7 +410,8 @@
       "alreadyDecided": "此申请已处理。",
       "someone": "有人",
       "alreadyApproved": "已批准",
-      "alreadyDeclined": "已拒绝"
+      "alreadyDeclined": "已拒绝",
+      "forwarded": "此记录的访问权限在其源系统中授予。"
     }
   },
   "action": {

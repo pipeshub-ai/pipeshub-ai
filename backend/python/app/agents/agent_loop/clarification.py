@@ -77,14 +77,20 @@ async def emit_pre_run_clarification(
         for evt in context.formatter.ask_user_question(context, status="success", tool_data=tool_data):
             await event_sink.write(evt)
 
+    from app.agents.agent_loop.source_ids import OPAQUE_SOURCE
+
     clarifying_text = questions[0].question if questions else user_intent
+    # Nothing was retrieved, but the intent model read the turn's attachments, so the
+    # question can quote them; an attachment with no record id cannot be checked.
+    attachments = context.tool_state.get("attachments") or []
+    attached = sorted({str(a["recordId"]) for a in attachments if isinstance(a, dict) and a.get("recordId")})
+    unnamed = any(not (isinstance(a, dict) and a.get("recordId")) for a in attachments)
     completion_data: dict[str, Any] = {
         "answer": clarifying_text,
         "citations": [],
         "confidence": "Medium",
         "answerMatchType": "Clarification Needed",
-        # A question put before the agent ran: nothing was retrieved.
-        "sourceRecordIds": [],
+        "sourceRecordIds": [*attached, OPAQUE_SOURCE] if unnamed else attached,
     }
     for evt in context.formatter.answer_delta(
         context, chunk=clarifying_text, accumulated=clarifying_text, citations=[],

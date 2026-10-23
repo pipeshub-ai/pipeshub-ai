@@ -36,9 +36,10 @@ export const enumerate = (router: Router, prefix = ''): RouteInfo[] => {
   return out
 }
 
-const READS_MESSAGES = /ChatSessionMessage\.(?:find|findOne|aggregate)\b|getMessages\(|attachMessages\(/
-/** Helpers that read message rows but return neither their content nor anything derived from it (attachment record ids; one message to attach feedback to; the ids of the messages being deleted). */
-const INTERNAL_READS = new Set(['loadConversationChatAttachmentRecordIds', 'performFeedbackUpdate', 'deleteConversation'])
+// `\)?` also matches an imported call as CommonJS emits it: `(0, utils_1.getMessages)(...)`.
+const READS_MESSAGES = /ChatSessionMessage\.(?:find|findOne|aggregate)\b|getMessages\)?\s*\(|attachMessages\)?\s*\(/
+/** Helpers that read message rows but return neither their content nor anything derived from it (attachment record ids; one message to attach feedback to; the ids of the messages being deleted; the ids of the sessions whose own turns match a search). */
+const INTERNAL_READS = new Set(['loadConversationChatAttachmentRecordIds', 'performFeedbackUpdate', 'deleteConversation', 'findSessionIdsMatchingContent'])
 const REDACTS = /redact(?:MessagesFor|ConversationFor|SearchesFor)/
 const esSrc = (rel: string): string => fs.readFileSync(path.resolve(__dirname, '../../../../src/modules/enterprise_search', rel), 'utf8')
 const functionText = (file: string, fn: string): string => {
@@ -62,7 +63,7 @@ for (const file of ['controller/es_controller.ts', 'utils/utils.ts']) {
 /** Whether this code reads message rows itself or through any helper it calls. */
 const readsMessages = (code: string, seen = new Set<string>()): boolean =>
   READS_MESSAGES.test(code) ||
-  [...code.matchAll(/\b(\w+)\s*\(/g)].some(([, name]) => {
+  [...code.matchAll(/\b(\w+)\)?\s*\(/g)].some(([, name]) => {
     const helper = HELPERS.get(name!)
     if (!helper || seen.has(name!) || INTERNAL_READS.has(name!)) return false
     seen.add(name!)
@@ -194,8 +195,18 @@ describe('conversation routes and per-viewer redaction (runtime enumeration)', (
     it('a metadata-only route that reads message rows through a helper', () => {
       const r = Router()
       // Not executed: only the handler's source is read.
-      r.get('/h', (_q: any, s: any) => s.json((globalThis as any).findSessionIdsMatchingContent()))
+      r.get('/h', (_q: any, s: any) => s.json((globalThis as any).withTurnAttachments()))
       expect(audit(enumerate(r), { 'GET /h': 'M' })).to.deep.equal(['GET /h: classified metadata-only but reads message rows'])
+    })
+    it('a metadata-only route that calls an imported reader in CommonJS form', () => {
+      const r = Router()
+      // Not executed: compiled, these read `(0, globalThis.m.getMessages)()`, as an import would.
+      r.get('/c', (_q: any, s: any) => s.json((0, (globalThis as any).m.getMessages)()))
+      r.get('/d', (_q: any, s: any) => s.json((0, (globalThis as any).m.withTurnAttachments)()))
+      expect(audit(enumerate(r), { 'GET /c': 'M', 'GET /d': 'M' })).to.deep.equal([
+        'GET /c: classified metadata-only but reads message rows',
+        'GET /d: classified metadata-only but reads message rows',
+      ])
     })
     it('a returns-messages route that does not redact', () => {
       const r = Router()

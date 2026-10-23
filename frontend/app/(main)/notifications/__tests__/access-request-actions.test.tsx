@@ -54,6 +54,13 @@ describe('AccessRequestActions', () => {
     expect(screen.queryByTestId('access-request-actions')).toBeNull();
   });
 
+  it('shows a connector record’s request as handled in its source, with no buttons', async () => {
+    get.mockResolvedValue({ data: { request: { status: 'forwarded' } } });
+    renderActions();
+    await waitFor(() => expect(screen.getByTestId('access-request-result').textContent).toBe('notifications.accessRequest.forwarded'));
+    expect(screen.queryByTestId('access-request-actions')).toBeNull();
+  });
+
   it('says so when the server reports it was decided meanwhile', async () => {
     post.mockRejectedValue({ message: 'This request was already decided' });
     get.mockResolvedValueOnce({ data: { request: { status: 'pending' } } });

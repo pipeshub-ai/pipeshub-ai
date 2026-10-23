@@ -20,6 +20,10 @@ describe('chat share adapter levels', () => {
     expect(adapter.roleOptions?.roles).toEqual(['WRITER', 'READER']);
   });
 
+  it('offers Can view only for an agent conversation, which is shared read-only', () => {
+    expect(createChatShareAdapter('c1', { agentId: 'a1' }).roleOptions?.roles).toEqual(['READER']);
+  });
+
   it('shares with the chosen level', async () => {
     await adapter.share({ userIds: ['u1'], role: 'WRITER' } as never);
     await adapter.share({ userIds: ['u2'], role: 'READER' } as never);

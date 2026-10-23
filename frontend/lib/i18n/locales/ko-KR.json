@@ -410,7 +410,8 @@
       "alreadyDecided": "이미 처리된 요청입니다.",
       "someone": "누군가",
       "alreadyApproved": "이미 승인됨",
-      "alreadyDeclined": "이미 거부됨"
+      "alreadyDeclined": "이미 거부됨",
+      "forwarded": "이 레코드에 대한 액세스는 원본 시스템에서 부여됩니다."
     }
   },
   "action": {

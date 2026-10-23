@@ -88,6 +88,15 @@ export function AccessRequestActions({ requestId, requesterName, collectionName 
     );
   }
 
+  // A connector record's access is granted in its source system: nothing to decide here.
+  if (status === 'forwarded') {
+    return (
+      <Text size="1" color="gray" data-testid="access-request-result">
+        {t('notifications.accessRequest.forwarded')}
+      </Text>
+    );
+  }
+
   const who = requesterName || t('notifications.accessRequest.someone');
   return (
     <Flex gap="2" wrap="wrap" align="center" mt="1" data-testid="access-request-actions">

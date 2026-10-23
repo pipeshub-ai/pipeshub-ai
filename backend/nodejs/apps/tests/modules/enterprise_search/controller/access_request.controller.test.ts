@@ -34,6 +34,11 @@ describe('access requests', () => {
     sinon.stub(AccessRequest, 'findOne').returns({ lean: async () => null } as any)
     sinon.stub(AccessRequest, 'countDocuments').resolves(0 as any)
     sinon.stub(Users, 'findById').returns({ select: () => ({ lean: async () => ({ fullName: 'Casey Viewer' }) }) } as any)
+    // The decision is claimed on the stored row: a pending row becomes the decided one.
+    sinon.stub(AccessRequest, 'findOneAndUpdate').callsFake(((_filter: any, update: any) => ({
+      lean: async () => ({ _id: oid(), kind: 'native', requesterId: VIEWER, recordId: 'kb1', ...update.$set }),
+    })) as any)
+    sinon.stub(AccessRequest, 'updateOne').resolves({} as any)
   })
   afterEach(() => sinon.restore())
 
@@ -50,8 +55,28 @@ describe('access requests', () => {
       user: { userId: OWNER, orgId: ORG }, params: { requestId: String(doc._id) },
     })
     expect(out.status).to.equal(200)
-    expect(doc.status).to.equal('approved')
+    expect(out.body.request.status).to.equal('approved')
+    const [filter, update] = (AccessRequest.findOneAndUpdate as sinon.SinonStub).firstCall.args
+    expect(filter.status).to.equal('pending')
+    expect(update.$set.status).to.equal('approved')
+    // Once granted, the request is no longer open.
+    expect((AccessRequest.updateOne as sinon.SinonStub).lastCall.args[1]).to.deep.equal({ $unset: { openKey: 1 } })
     expect(String(notify.firstCall.args[0].assignedTo)).to.equal(VIEWER)
+  })
+
+  it('a request another owner already decided gets 409, and nothing is granted or sent', async () => {
+    const doc: any = {
+      _id: oid(), kind: 'native', status: 'pending', recordId: 'kb1',
+      ownerUserIds: [new mongoose.Types.ObjectId(OWNER)], requesterId: new mongoose.Types.ObjectId(VIEWER),
+    }
+    ;(AccessRequest.findOne as sinon.SinonStub).resolves(doc)
+    ;(AccessRequest.findOneAndUpdate as sinon.SinonStub).returns({ lean: async () => null } as any)
+    const out = await run(decideAccessRequest(config, 'approve'), {
+      user: { userId: OWNER, orgId: ORG }, params: { requestId: String(doc._id) },
+    })
+    expect(out.error?.statusCode).to.equal(409)
+    expect(python.called).to.equal(false)
+    expect(notify.called).to.equal(false)
   })
 
   it('does not mark approved when the grant did not take effect', async () => {
@@ -67,7 +92,11 @@ describe('access requests', () => {
       user: { userId: OWNER, orgId: ORG }, params: { requestId: String(doc._id) },
     })
     expect(out.error?.statusCode).to.equal(409)
-    expect(doc.save.called).to.equal(false)
+    // The claim is released, so the request is pending again and can be decided later.
+    const [filter, update] = (AccessRequest.updateOne as sinon.SinonStub).lastCall.args
+    expect(filter.status).to.equal('approved')
+    expect(update.$set.status).to.equal('pending')
+    expect(notify.called).to.equal(false)
   })
 
   it('only the owner may decide', async () => {

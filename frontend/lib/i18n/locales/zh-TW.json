@@ -410,7 +410,8 @@
       "alreadyDecided": "此申請已處理。",
       "someone": "有人",
       "alreadyApproved": "已核准",
-      "alreadyDeclined": "已拒絕"
+      "alreadyDeclined": "已拒絕",
+      "forwarded": "此記錄的存取權限在其來源系統中授予。"
     }
   },
   "action": {

@@ -410,7 +410,8 @@
       "alreadyDecided": "This request was already decided.",
       "someone": "Someone",
       "alreadyApproved": "Already approved",
-      "alreadyDeclined": "Already declined"
+      "alreadyDeclined": "Already declined",
+      "forwarded": "Access to this record is granted in its source system."
     }
   },
   "action": {

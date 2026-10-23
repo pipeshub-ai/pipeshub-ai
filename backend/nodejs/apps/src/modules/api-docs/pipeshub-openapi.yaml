@@ -9695,7 +9695,8 @@ components:
       additionalProperties: false
       description: |
         What a viewer needs to ask for a redacted source. For a `native` record
-        (uploaded to PipesHub) `POST {endpoint}` with `{ "recordId" }` asks the
+        (uploaded to PipesHub) `POST {endpoint}` with `{ "recordId" }` plus the
+        chat (`conversationId`) or saved search (`searchId`) it was shown in asks the
         owner. For a `connector` record nothing is granted in PipesHub: the reply
         to `POST {endpoint}` carries `sourceUrl`, the record's page in its source
         system, to ask there; the grant arrives through the next permission sync.
@@ -34059,6 +34060,16 @@ paths:
                                     format: objectId
                                   citationData:
                                     $ref: '#/components/schemas/Citation'
+                                  redacted:
+                                    type: boolean
+                                    enum: [true]
+                                    description: Present and true on a source the viewer may not read (shared chat). The item then carries only `citationId`, `reason` and `requestAccess`.
+                                  reason:
+                                    type: string
+                                    enum: [no_access]
+                                    description: Present with `redacted`.
+                                  requestAccess:
+                                    $ref: '#/components/schemas/RequestAccessInfo'
                             followUpQuestions:
                               type: array
                               items:
@@ -34109,6 +34120,21 @@ paths:
                                 `POST /conversations/attachments/upload`).
                               items:
                                 $ref: '#/components/schemas/ChatAttachmentRef'
+                            redaction:
+                              $ref: '#/components/schemas/MessageRedaction'
+                            detailsHidden:
+                              type: boolean
+                              description: Tool results, reasoning and the activity transcript were dropped because the viewer is not the user this message was generated for.
+                            askedBy:
+                              type: object
+                              description: On a `user_query` asked by someone other than the caller, who asked (`name` is empty when it cannot be resolved).
+                              properties:
+                                userId: {type: string, format: objectId}
+                                name: {type: string}
+                            authorUserId:
+                              type: string
+                              format: objectId
+                              description: The user this message was generated for; absent on messages that predate write-sharing (the initiator's).
                             tools:
                               type: array
                               description: Tool call results invoked during this message turn.
@@ -36884,6 +36910,9 @@ paths:
               type: object
               additionalProperties: false
               required: [recordId]
+              oneOf:
+                - required: [conversationId]
+                - required: [searchId]
               properties:
                 recordId:
                   type: string
@@ -38723,11 +38752,9 @@ paths:
         `chatMode: quick`; see `AgentMessageStreamSSEEvent` for the event
         vocabulary.
 
-        **Shared conversations.** A user the conversation is shared with for
-        writing can add messages (read-only users get 403). The turn runs as
-        the caller, including the agent's own access check; the new messages
-        carry the caller as `authorUserId`, and the model history and every
-        returned message are redacted for the caller.
+        **Shared conversations.** An agent conversation is shared read-only:
+        only its owner can add messages. A user it is shared with gets `404`
+        here, as for a conversation they cannot see.
       operationId: streamAgentConversationMessage
       x-pipeshub-sdk: true
       security:
@@ -39094,11 +39121,9 @@ paths:
         take minutes for agent runs. Allow a generous client and proxy
         timeout, or use the `/stream` variant for interactive clients.
 
-        **Shared conversations.** A user the conversation is shared with for
-        writing can add messages (read-only users get 403). The turn runs as
-        the caller, including the agent's own access check; the new messages
-        carry the caller as `authorUserId`, and the model history and every
-        returned message are redacted for the caller.
+        **Shared conversations.** An agent conversation is shared read-only:
+        only its owner can add messages. A user it is shared with gets `404`
+        here, as for a conversation they cannot see.
       operationId: addAgentConversationMessage
       x-pipeshub-sdk: true
       security:

@@ -328,7 +328,8 @@
       "alreadyDecided": "Diese Anfrage wurde bereits entschieden.",
       "someone": "Jemand",
       "alreadyApproved": "Bereits genehmigt",
-      "alreadyDeclined": "Bereits abgelehnt"
+      "alreadyDeclined": "Bereits abgelehnt",
+      "forwarded": "Der Zugriff auf diesen Datensatz wird im Quellsystem gewährt."
     }
   },
   "action": {

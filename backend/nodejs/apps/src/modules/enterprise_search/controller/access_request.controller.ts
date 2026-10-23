@@ -226,11 +226,14 @@ export const createAccessRequest =
         detail.kind !== 'unknown' &&
         (detail.kind !== 'native' || owners.length > 0);
 
-      // One open request per collection (or per record outside one), for every answer alike.
-      const scope =
+      // One open request per collection (or per record outside one), for every answer alike. A
+      // real request matches only real rows and an unseen id only its own void row, so a void
+      // row never swallows a request that is later genuine.
+      const openKey = `${genuine ? 'open' : 'void'}:${
         genuine && detail.collection
-          ? { collectionId: detail.collection.id }
-          : { recordId };
+          ? `collection:${detail.collection.id}`
+          : `record:${recordId}`
+      }`;
       const sourceUrl =
         genuine && detail.kind === 'connector' && detail.webUrl
           ? { sourceUrl: detail.webUrl }
@@ -238,10 +241,7 @@ export const createAccessRequest =
       const existing = await AccessRequest.findOne({
         orgId: org,
         requesterId,
-        ...scope,
-        // A real request matches only real rows and an unseen id only its own void row, so a
-        // void row never swallows a request that is later genuine.
-        status: { $in: genuine ? ['pending', 'forwarded'] : ['void'] },
+        openKey,
       }).lean();
       if (existing) {
         res
@@ -261,21 +261,38 @@ export const createAccessRequest =
         );
       }
 
-      const created = await AccessRequest.create({
-        orgId: org,
-        requesterId,
-        recordId,
-        ...(genuine
-          ? {
-              recordName: detail.recordName,
-              collectionId: detail.collection?.id,
-              collectionName: detail.collection?.name,
-              kind: detail.kind,
-              ownerUserIds: owners.map((id) => new mongoose.Types.ObjectId(id)),
-              status: detail.kind === 'native' ? 'pending' : 'forwarded',
-            }
-          : { kind: 'native', ownerUserIds: [], status: 'void' }),
-      });
+      let created;
+      try {
+        created = await AccessRequest.create({
+          orgId: org,
+          requesterId,
+          recordId,
+          openKey,
+          ...(genuine
+            ? {
+                recordName: detail.recordName,
+                collectionId: detail.collection?.id,
+                collectionName: detail.collection?.name,
+                kind: detail.kind,
+                ownerUserIds: owners.map(
+                  (id) => new mongoose.Types.ObjectId(id),
+                ),
+                status: detail.kind === 'native' ? 'pending' : 'forwarded',
+              }
+            : { kind: 'native', ownerUserIds: [], status: 'void' }),
+        });
+      } catch (error) {
+        // An identical request opened the row first (the unique open key): answer with it.
+        if ((error as { code?: number }).code !== 11000) throw error;
+        const winner = await AccessRequest.findOne({
+          orgId: org,
+          requesterId,
+          openKey,
+        }).lean();
+        if (!winner) throw error;
+        res.status(201).json({ request: present(winner, true), ...sourceUrl });
+        return;
+      }
       if (genuine) {
         const requester = await Users.findById(requesterId)
           .select('fullName email')
@@ -375,33 +392,60 @@ export const decideAccessRequest =
           'Access to a connector record is granted in its source system',
         );
       }
-      if (request.status !== 'pending') {
+
+      // Claim the decision before acting, so two owners deciding at once cannot both act.
+      const decidedBy = new mongoose.Types.ObjectId(userId);
+      const decided = await AccessRequest.findOneAndUpdate(
+        { _id: request._id, status: 'pending' },
+        {
+          $set: {
+            status: decision === 'approve' ? 'approved' : 'denied',
+            decidedBy,
+            decidedAt: new Date(),
+          },
+          ...(decision === 'deny' ? { $unset: { openKey: 1 } } : {}),
+        },
+        { new: true },
+      ).lean();
+      if (!decided) {
         throw new ConflictError('This request was already decided');
       }
 
       if (decision === 'approve') {
-        await callRecordAccess(appConfig, { userId, orgId }, 'access-grant', {
-          userId: String(request.requesterId),
-          recordIds: [request.recordId],
-        });
-        // Python grants only what the owner owns; confirm before saying yes.
-        const readable = await readableRecordIds(
-          appConfig,
-          { userId: String(request.requesterId), orgId },
-          [request.recordId],
-        );
-        if (!readable.has(request.recordId)) {
-          throw new ConflictError('Access could not be granted');
+        try {
+          await callRecordAccess(appConfig, { userId, orgId }, 'access-grant', {
+            userId: String(request.requesterId),
+            recordIds: [request.recordId],
+          });
+          // Python grants only what the owner owns; confirm before saying yes.
+          const readable = await readableRecordIds(
+            appConfig,
+            { userId: String(request.requesterId), orgId },
+            [request.recordId],
+          );
+          if (!readable.has(request.recordId)) {
+            throw new ConflictError('Access could not be granted');
+          }
+        } catch (error) {
+          // Release the claim so the request can be decided again.
+          await AccessRequest.updateOne(
+            { _id: request._id, status: 'approved', decidedBy },
+            {
+              $set: { status: 'pending' },
+              $unset: { decidedBy: 1, decidedAt: 1 },
+            },
+          );
+          throw error;
         }
+        await AccessRequest.updateOne(
+          { _id: request._id },
+          { $unset: { openKey: 1 } },
+        );
       }
 
       const target = request.collectionId
         ? `the collection "${request.collectionName ?? ''}"`
         : `"${request.recordName ?? 'the record'}"`;
-      request.status = decision === 'approve' ? 'approved' : 'denied';
-      request.decidedBy = new mongoose.Types.ObjectId(userId);
-      request.decidedAt = new Date();
-      await request.save();
 
       await notify(
         orgId,
@@ -413,7 +457,7 @@ export const decideAccessRequest =
           : `Your request for ${target} was declined.`,
         { requestId: String(request._id) },
       );
-      res.status(200).json({ request: present(request) });
+      res.status(200).json({ request: present(decided) });
     } catch (error) {
       next(error);
     }

@@ -328,7 +328,8 @@
       "alreadyDecided": "इस अनुरोध पर पहले ही निर्णय हो चुका है।",
       "someone": "कोई",
       "alreadyApproved": "पहले ही स्वीकृत",
-      "alreadyDeclined": "पहले ही अस्वीकृत"
+      "alreadyDeclined": "पहले ही अस्वीकृत",
+      "forwarded": "इस रिकॉर्ड की पहुँच उसके स्रोत सिस्टम में दी जाती है।"
     }
   },
   "action": {

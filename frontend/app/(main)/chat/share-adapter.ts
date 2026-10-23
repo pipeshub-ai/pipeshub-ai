@@ -37,9 +37,10 @@ export function createChatShareAdapter(
     sidebarTitle: 'Share Chat',
     supportsRoles: true,
     supportsTeams: false,
-    // The owner stays the owner: only Can view / Can edit are offered.
+    // The owner stays the owner: only Can view / Can edit are offered. An agent
+    // conversation is shared read-only, so it offers Can view alone.
     roleOptions: {
-      roles: ['WRITER', 'READER'],
+      roles: agentId ? ['READER'] : ['WRITER', 'READER'],
       labels: {
         OWNER: { label: i18next.t('shareSidebar.roles.owner.label'), description: '' },
         WRITER: {

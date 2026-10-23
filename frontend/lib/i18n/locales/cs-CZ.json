@@ -446,7 +446,8 @@
       "alreadyDecided": "O této žádosti již bylo rozhodnuto.",
       "someone": "Někdo",
       "alreadyApproved": "Již schváleno",
-      "alreadyDeclined": "Již zamítnuto"
+      "alreadyDeclined": "Již zamítnuto",
+      "forwarded": "Přístup k tomuto záznamu se uděluje v jeho zdrojovém systému."
     }
   },
   "action": {

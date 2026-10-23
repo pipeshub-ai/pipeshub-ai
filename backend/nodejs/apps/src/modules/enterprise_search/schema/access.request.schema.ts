@@ -34,6 +34,8 @@ export interface IAccessRequest extends Document {
   status: AccessRequestStatus;
   decidedBy?: mongoose.Types.ObjectId;
   decidedAt?: Date;
+  /** Set while the request is open: one open request per requester and record or collection. */
+  openKey?: string;
   createdAt: Date;
 }
 
@@ -50,6 +52,7 @@ const accessRequestSchema = new Schema<IAccessRequest>(
     status: { type: String, enum: ACCESS_REQUEST_STATUSES, default: 'pending' },
     decidedBy: { type: Schema.Types.ObjectId },
     decidedAt: { type: Date },
+    openKey: { type: String },
   },
   { timestamps: true },
 );
@@ -57,6 +60,11 @@ const accessRequestSchema = new Schema<IAccessRequest>(
 // Rate limit and duplicate lookups; owner inbox.
 accessRequestSchema.index({ orgId: 1, requesterId: 1, createdAt: -1 });
 accessRequestSchema.index({ orgId: 1, ownerUserIds: 1, status: 1 });
+// Two identical requests at once (a double click, a retry) cannot both open a row.
+accessRequestSchema.index(
+  { orgId: 1, requesterId: 1, openKey: 1 },
+  { unique: true, partialFilterExpression: { openKey: { $type: 'string' } } },
+);
 
 export const AccessRequest = mongoose.model<IAccessRequest>(
   'accessRequest',

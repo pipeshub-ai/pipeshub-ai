@@ -191,7 +191,6 @@ export const findSessionIdsMatchingContent = async (
         },
       },
     },
-    { $limit: limit },
     {
       $lookup: {
         from: ChatSession.collection.name,
@@ -201,6 +200,8 @@ export const findSessionIdsMatchingContent = async (
       },
     },
     { $match: { $or: [{ hasOwnTurn: 1 }, { 'session.initiator': author }] } },
+    // After the initiator filter, so other people's sessions never use up the cap.
+    { $limit: limit },
   ]);
   return rows.map((r) => r._id);
 };

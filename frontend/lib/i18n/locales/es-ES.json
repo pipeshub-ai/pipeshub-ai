@@ -335,7 +335,8 @@
       "alreadyDecided": "Esta solicitud ya se resolvió.",
       "someone": "Alguien",
       "alreadyApproved": "Ya aprobada",
-      "alreadyDeclined": "Ya rechazada"
+      "alreadyDeclined": "Ya rechazada",
+      "forwarded": "El acceso a este registro se concede en su sistema de origen."
     }
   },
   "action": {

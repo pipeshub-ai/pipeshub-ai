@@ -4151,10 +4151,11 @@ describe('chatSessions helpers', () => {
     const agg = sinon.stub(ChatSessionMessage, 'aggregate').resolves([{ _id: sid }])
     const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', VALID_OID, 10)
     expect(ids).to.deep.equal([sid])
-    expect(agg.firstCall.args[0][2]).to.deep.equal({ $limit: 10 })
+    // The cap applies to the searcher's sessions, after the initiator filter.
+    expect(agg.firstCall.args[0][4]).to.deep.equal({ $limit: 10 })
     // Only the searcher's own turns are searched (no oracle on text others' answers hold);
     // unstamped rows count for the initiator only.
-    const [match, , , , last] = agg.firstCall.args[0] as any[]
+    const [match, , , last] = agg.firstCall.args[0] as any[]
     expect(match.$match.$or.map((c: any) => Object.keys(c)[0])).to.deep.equal(['authorUserId', 'authorUserId'])
     expect(String(match.$match.$or[0].authorUserId)).to.equal(VALID_OID)
     expect(String(last.$match.$or[1]['session.initiator'])).to.equal(VALID_OID)

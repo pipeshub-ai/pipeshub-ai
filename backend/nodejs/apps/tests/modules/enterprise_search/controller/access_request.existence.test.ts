@@ -50,6 +50,10 @@ class RequestStore {
     sinon.stub(AccessRequest, 'countDocuments').callsFake((async (filter: any) =>
       this.rows.filter((r) => matchesFilter(r, filter)).length) as never)
     sinon.stub(AccessRequest, 'create').callsFake((async (doc: any) => {
+      // The partial unique index on open rows.
+      const taken = typeof doc.openKey === 'string' && this.rows.some((r) =>
+        String(r.orgId) === String(doc.orgId) && String(r.requesterId) === String(doc.requesterId) && r.openKey === doc.openKey)
+      if (taken) throw Object.assign(new Error('E11000 duplicate key'), { code: 11000 })
       const row = { _id: oid(), createdAt: new Date(), ...doc }
       this.rows.push(row)
       return row
@@ -299,6 +303,17 @@ describe('POST /access-requests does not say whether a record exists', () => {
     const other = await ask(w, VIEWER, 'native-shown-2', from)
     expect(w.requests.rows.map((r) => [r.recordId, r.status])).to.deep.equal([['native-shown', 'pending'], ['native-shown-2', 'void']])
     expect(shape(other)).to.deep.equal(shape(real))
+  })
+
+  it('two identical requests at once open one row, notify once, and both get it', async () => {
+    const w = world()
+    for (const id of ['native-shown', 'no-such-record']) {
+      const [a, b] = await Promise.all([ask(w, VIEWER, id), ask(w, VIEWER, id)])
+      expect([a.status, b.status], id).to.deep.equal([201, 201])
+      expect(a.body.request.id, id).to.equal(b.body.request.id)
+    }
+    expect(w.requests.rows.map((r) => r.status)).to.deep.equal(['pending', 'void'])
+    expect(w.notified.callCount).to.equal(1)
   })
 
   it('refuses a body that names neither a chat nor a search', async () => {
