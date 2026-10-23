@@ -833,16 +833,13 @@ class TestRestrictedPageFiles:
         (update,) = db.permission_updates
         assert [p.email for p in update[1]] == []
 
-    async def test_a_file_first_seen_while_opening_a_restricted_page_stays_restricted(self, api, db, checkpoints) -> None:
-        db.add_user("acc-ana", "ana@acme.com")
-        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+    async def test_a_file_first_seen_while_opening_a_page_is_left_to_the_sync(self, api, db, checkpoints) -> None:
+        """Opening a page creates no records: the sync stores files with the page's access and its filters."""
         connector, _ = await ready_connector(db, checkpoints)
 
-        await connector._process_page_attachments_for_children([SPEC], "10", "page-node-10", "77", None)
+        children = await connector._process_page_attachments_for_children([SPEC], "10", "page-node-10", "77", None)
 
-        file = db.records["att2"]
-        assert (file.inherit_permissions, file.parent_external_record_id) == (True, "10")
-        assert db.record_permissions["att2"] == []
+        assert children == {} and "att2" not in db.records
 
 
 class TestAuditLog:

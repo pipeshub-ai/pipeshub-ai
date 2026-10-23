@@ -9,6 +9,7 @@ from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from app.connectors.sources.atlassian.confluence_cloud.connector import CommentsUnreadable, GoneAtSource
 from app.config.constants.arangodb import (
     AccessRule,
     Connectors,
@@ -3046,8 +3047,9 @@ class TestCheckAndFetchUpdatedPage:
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         record = MagicMock()
         record.external_record_id = "p1"
-        result = await c._check_and_fetch_updated_page("org1", record)
-        assert result is None
+        # Gone at the source: not re-indexed, the next sync removes it.
+        with pytest.raises(GoneAtSource):
+            await c._check_and_fetch_updated_page("org1", record)
 
     @pytest.mark.asyncio
     async def test_no_version_change(self):
@@ -3108,8 +3110,9 @@ class TestCheckAndFetchUpdatedAttachmentNoUpdate:
         record = MagicMock()
         record.external_record_id = "att-1"
         record.parent_external_record_id = "p1"
-        result = await c._check_and_fetch_updated_attachment("org1", record)
-        assert result is None
+        # Gone at the source: not re-indexed, the next sync removes it.
+        with pytest.raises(GoneAtSource):
+            await c._check_and_fetch_updated_attachment("org1", record)
 
     @pytest.mark.asyncio
     async def test_version_unchanged(self):
@@ -5418,9 +5421,8 @@ class TestFetchPageCommentsRecursiveAdditional:
         c._fetch_comment_children_recursive = AsyncMock(return_value=[])
         c._extract_cursor_from_next_link = MagicMock(return_value=None)
 
-        await c._fetch_page_comments_recursive(
-            "100", RecordType.CONFLUENCE_PAGE, "footer"
-        )
+        with pytest.raises(CommentsUnreadable):
+            await c._fetch_page_comments_recursive("100", RecordType.CONFLUENCE_PAGE, "footer")
         assert ds.get_page_footer_comments.call_count == 1
 
 
@@ -5477,10 +5479,8 @@ class TestFetchCommentChildrenRecursiveAdditional:
         ds.get_footer_comment_children = AsyncMock(side_effect=RuntimeError("fail"))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        result = await c._fetch_comment_children_recursive(
-            "100", "footer", RecordType.CONFLUENCE_PAGE
-        )
-        assert result == []
+        with pytest.raises(CommentsUnreadable):
+            await c._fetch_comment_children_recursive("100", "footer", RecordType.CONFLUENCE_PAGE)
 
 
 # ===========================================================================
@@ -5583,8 +5583,9 @@ class TestCheckAndFetchUpdatedBlogpost:
         ds.get_blog_post_by_id = AsyncMock(return_value=_mk_resp(404))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         record = MagicMock(external_record_id="3001")
-        result = await c._check_and_fetch_updated_blogpost("org-1", record)
-        assert result is None
+        # Gone at the source: not re-indexed, the next sync removes it.
+        with pytest.raises(GoneAtSource):
+            await c._check_and_fetch_updated_blogpost("org-1", record)
 
     @pytest.mark.asyncio
     async def test_no_version_returns_none(self):
@@ -5671,8 +5672,9 @@ class TestCheckAndFetchUpdatedAttachment:
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         record = MagicMock(external_record_id="att-1", parent_external_record_id="p1")
-        result = await c._check_and_fetch_updated_attachment("org-1", record)
-        assert result is None
+        # Gone at the source: not re-indexed, the next sync removes it.
+        with pytest.raises(GoneAtSource):
+            await c._check_and_fetch_updated_attachment("org-1", record)
 
     @pytest.mark.asyncio
     async def test_no_version_returns_none(self):
@@ -6320,10 +6322,9 @@ class TestFetchPageCommentsRecursiveResponseFail:
         ds = MagicMock()
         ds.get_page_footer_comments = AsyncMock(return_value=_mk_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await c._fetch_page_comments_recursive(
-            "100", RecordType.CONFLUENCE_PAGE, "footer"
-        )
-        assert result == []
+        # Indexed without its comments the page would stay that way: the stream fails instead.
+        with pytest.raises(CommentsUnreadable):
+            await c._fetch_page_comments_recursive("100", RecordType.CONFLUENCE_PAGE, "footer")
 
     @pytest.mark.asyncio
     async def test_empty_results_returns_empty(self):
@@ -6348,10 +6349,8 @@ class TestFetchCommentChildrenResponseFail:
         ds = MagicMock()
         ds.get_footer_comment_children = AsyncMock(return_value=_mk_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await c._fetch_comment_children_recursive(
-            "100", "footer", RecordType.CONFLUENCE_PAGE
-        )
-        assert result == []
+        with pytest.raises(CommentsUnreadable):
+            await c._fetch_comment_children_recursive("100", "footer", RecordType.CONFLUENCE_PAGE)
 
     @pytest.mark.asyncio
     async def test_empty_results_returns_empty(self):
@@ -6402,9 +6401,10 @@ class TestFetchCommentChildrenResponseFail:
         from app.connectors.sources.atlassian.confluence_cloud.connector import (
             ConfluenceConnector,
         )
-        await ConfluenceConnector._fetch_comment_children_recursive(
-            c, "100", "footer", RecordType.CONFLUENCE_PAGE
-        )
+        with pytest.raises(CommentsUnreadable):
+            await ConfluenceConnector._fetch_comment_children_recursive(
+                c, "100", "footer", RecordType.CONFLUENCE_PAGE
+            )
         assert ds.get_footer_comment_children.call_count == 1
 
 
@@ -7299,8 +7299,9 @@ class TestCheckAndFetchUpdatedAttachmentAdditional:
             external_record_id="att-6",
             parent_external_record_id="p-6",
         )
-        result = await c._check_and_fetch_updated_attachment("org-1", record)
-        assert result is None
+        # Gone at the source: not re-indexed, the next sync removes it.
+        with pytest.raises(GoneAtSource):
+            await c._check_and_fetch_updated_attachment("org-1", record)
 
     @pytest.mark.asyncio
     async def test_no_version_returns_none(self):
@@ -8163,7 +8164,7 @@ class TestProcessPageAttachmentsForChildren:
         c.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_creates_new_file_record(self):
+    async def test_a_new_attachment_is_left_to_the_sync(self):
         c = _mk_connector()
         mock_tx = c.data_store_provider.transaction.return_value
         mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
@@ -8178,10 +8179,9 @@ class TestProcessPageAttachmentsForChildren:
         result = await c._process_page_attachments_for_children(
             attachments, "page-1", "node-1", "space-1", None,
         )
-        assert "att-new" in result
-        c.data_entities_processor.on_new_records.assert_awaited_once()
-        ((saved, _),) = c.data_entities_processor.on_new_records.call_args[0][0]
-        assert saved.inherit_permissions is True
+        # Streaming creates no records: the sync applies the attachment filters.
+        assert "att-new" not in result
+        c.data_entities_processor.on_new_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_attachment_without_id(self):
