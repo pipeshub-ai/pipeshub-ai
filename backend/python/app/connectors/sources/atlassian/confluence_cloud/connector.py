@@ -756,6 +756,7 @@ class ConfluenceConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "confluence", self.connector_id, self.logger
             )
+            await self._open_audit_window()
 
             # Step 1: Sync users
             await self._sync_users()
@@ -2721,6 +2722,24 @@ class ConfluenceConnector(BaseConnector):
             return False
         return True
 
+    def _audit_sync_key(self) -> str:
+        return generate_record_sync_point_key(RecordType.WEBPAGE.value, "permissions", "audit_log")
+
+    async def _open_audit_window(self) -> None:
+        """Start the audit log window when the sync starts, if none is open yet.
+
+        Without it the first sync opened the window only when it ended, so a restriction
+        changed while it ran (after its page was read) was never read again.
+        """
+        try:
+            if not await self.audit_log_sync_point.read_sync_point(self._audit_sync_key()):
+                await self.audit_log_sync_point.update_sync_point(
+                    self._audit_sync_key(), {"last_sync_time_ms": int(datetime.now(timezone.utc).timestamp() * 1000)}
+                )
+        except Exception as e:
+            # The window then opens when the sync ends, as before.
+            self.logger.warning(f"Could not open the audit log window: {e}")
+
     async def _sync_permission_changes_from_audit_log(self) -> None:
         """
         Sync permission changes for pages/blogs using Confluence Audit Log API.
@@ -2746,7 +2765,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.info("🔍 Starting permission sync from audit log...")
 
             # Sync point key for audit log
-            audit_sync_key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "permissions", "audit_log")
+            audit_sync_key = self._audit_sync_key()
 
             # Get last audit sync timestamp
             last_audit_sync = await self.audit_log_sync_point.read_sync_point(audit_sync_key)
@@ -2891,7 +2910,7 @@ class ConfluenceConnector(BaseConnector):
 
         Filters for:
         - category = "Permissions"
-        - Has a Page or Blog in associatedObjects (content-level permission)
+        - Has a Page, Blog or Folder in associatedObjects (content-level permission)
         - Has a Space in associatedObjects (confirms it's content, not global)
 
         Args:
@@ -2909,7 +2928,8 @@ class ConfluenceConnector(BaseConnector):
         # Check for content-level permission (must have both content AND space)
         has_space = any(obj.get("objectType") == "Space" for obj in associated_objects)
         content_obj = next(
-            (obj for obj in associated_objects if obj.get("objectType") in ["Page", "Blog"]),
+            # shortcut: "Folder" is assumed from the page and blog names; no real folder entry was seen yet.
+            (obj for obj in associated_objects if obj.get("objectType") in ["Page", "Blog", "Folder"]),
             None
         )
 
@@ -2989,6 +3009,8 @@ class ConfluenceConnector(BaseConnector):
                                 record_type = RecordType.CONFLUENCE_PAGE
                             elif item_type == "blogpost":
                                 record_type = RecordType.CONFLUENCE_BLOGPOST
+                            elif item_type == "folder":
+                                record_type = RecordType.FILE
                             else:
                                 self.logger.debug(f"Skipping unknown content type: {item_type}")
                                 continue
@@ -3010,8 +3032,12 @@ class ConfluenceConnector(BaseConnector):
 
                             self.logger.debug(f"Updating permissions for {item_type}: {item_title} ({item_id})")
 
-                            # Transform to WebpageRecord
-                            webpage_record = self._transform_to_webpage_record(item_data, record_type)
+                            # Transform to WebpageRecord (a folder is a FileRecord)
+                            webpage_record = (
+                                self._transform_to_folder_file_record(item_data, existing_record)
+                                if record_type == RecordType.FILE
+                                else self._transform_to_webpage_record(item_data, record_type)
+                            )
                             if not webpage_record:
                                 continue
 

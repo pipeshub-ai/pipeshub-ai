@@ -1795,3 +1795,41 @@ class TestUsersListing:
         assert [AtlassianApiStub.query(r)["start"] for r in api.calls("GET", f"{V1}/search/user")] == [
             "0", "100", "140", "200",
         ]
+
+
+def restriction_event(object_type: str, title: str) -> dict[str, Any]:
+    return {"results": [{"category": "Permissions", "summary": "Content restriction added",
+                         "associatedObjects": [{"objectType": object_type, "name": title},
+                                               {"objectType": "Space", "name": "Engineering"}]}],
+            "_links": {"base": WIKI}}
+
+
+class TestRestrictionChangesFromTheAuditLog:
+    async def test_the_first_sync_opens_the_audit_window_when_it_starts(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._open_audit_window()
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        # Restricted after the page was read, while the first sync still runs.
+        api.on("GET", f"{V1}/audit", restriction_event("Page", "Page 10"))
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+
+        await connector._sync_permission_changes_from_audit_log()
+
+        assert api.calls("GET", f"{V1}/audit"), "the window opened at the start is read at the end"
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
+
+    async def test_a_folder_restriction_change_is_applied(self, api, db, checkpoints, search) -> None:
+        folder = {**v1_page("500"), "type": "folder", "title": "Specs"}
+        search.folders = [folder]
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_folders("ENG")
+        assert db.records["500"].access_rule == AccessRule.STRICT
+        await connector._open_audit_window()
+        api.on("GET", f"{V1}/audit", restriction_event("Folder", "Specs"))
+        api.on("GET", f"{V1}/content/500/restriction", read_restricted_to("acc-ana"))
+        search.by_cursor[None] = search_page([folder])
+
+        await connector._sync_permission_changes_from_audit_log()
+
+        assert db.records["500"].access_rule == AccessRule.RESTRICTED
