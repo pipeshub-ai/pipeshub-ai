@@ -10,11 +10,7 @@ const MONGO_NAMESPACE_NOT_FOUND = 26;
 export const DELEGATION_TTL_KEY = { createdAt: 1 } as const;
 
 export type DelegationTtlStatus =
-  | 'already_correct'
-  | 'updated'
-  | 'no_collection'
-  | 'no_index'
-  | 'failed';
+  'already_correct' | 'updated' | 'no_collection' | 'no_index' | 'failed';
 
 export interface DelegationTtlResult {
   status: DelegationTtlStatus;
@@ -82,9 +78,15 @@ export class DelegationLogRetentionMigration {
             : 'records will now be kept longer',
       });
 
-      return { status: 'updated', previousSeconds: current, currentSeconds: wanted };
+      return {
+        status: 'updated',
+        previousSeconds: current,
+        currentSeconds: wanted,
+      };
     } catch (error) {
-      if ((error as { code?: unknown } | null)?.code === MONGO_NAMESPACE_NOT_FOUND) {
+      if (
+        (error as { code?: unknown } | null)?.code === MONGO_NAMESPACE_NOT_FOUND
+      ) {
         // No delegation has ever been recorded here.
         return { status: 'no_collection', currentSeconds: wanted };
       }
