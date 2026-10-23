@@ -17,7 +17,11 @@ pip3 install --user py-spy    # for the flame graph
 
 `PIPESHUB_USERS=email:password,…` gives each simulated user its own account,
 which is what you want. `./seed_users.py --count 8` creates test accounts and
-prints that line. py-spy has to attach as root, so run as root or with
+prints that line. Without passwords, `PIPESHUB_TOKENS=jwt1,jwt2,…` takes one
+already-issued bearer JWT per user (it can expire mid-run). A single `TOKEN=<jwt>`
+in `.env` (or `PIPESHUB_TOKEN`) is the fallback: every simulated user then shares
+that one account, so anything cached per user is not exercised. `.env.example`
+says where to copy a JWT from. py-spy has to attach as root, so run as root or with
 passwordless sudo, or pass `--flame off`.
 
 ## Run
