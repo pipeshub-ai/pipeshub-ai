@@ -5,6 +5,8 @@ The real SDK runs over an in-process transport that answers like the Azure Files
 REST API, so the error classes and codes are the ones the service would produce.
 """
 
+import time
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -13,9 +15,11 @@ from azure.core.pipeline.transport import AsyncHttpResponse, AsyncHttpTransport
 from azure.core.utils import CaseInsensitiveDict
 
 from app.sources.client.azure.azure_files import (
+    RETRY_AFTER_CAP_SECONDS,
     AzureFilesClient,
     AzureFilesConnectionStringConfig,
     AzureFilesRESTClient,
+    RetryAfterExponentialRetry,
 )
 from app.sources.external.azure.azure_files import (
     CREDENTIALS_REJECTED,
@@ -151,6 +155,61 @@ class TestErrorCodes:
         assert [i["name"] for i in response.data] == ["a.txt", "b.txt", "c.txt"]
         markers = [parse_qs(urlparse(r.url).query).get("marker", [""])[0] for r in service.requests]
         assert markers == ["", "tok-2"]
+
+
+class TestPagedListing:
+    async def test_one_page_and_the_marker_of_the_next(self) -> None:
+        ds = _data_source(_Service())
+        first = await ds.list_directories_and_files("s", "", results_per_page=2)
+        assert [i["name"] for i in first.data] == ["a.txt", "b.txt"]
+        assert first.continuation_token == "tok-2"
+
+        last = await ds.list_directories_and_files("s", "", results_per_page=2, continuation_token="tok-2")
+        assert [i["name"] for i in last.data] == ["c.txt"]
+        assert last.continuation_token is None
+
+
+class _BusyOnce(_Service):
+    """503 ServerBusy with Retry-After: 1 on the first request, then the listing."""
+
+    async def send(self, request: object, **kwargs: object) -> _Response:
+        self.status, self.code = (503, "ServerBusy") if not self.requests else (200, None)
+        return await super().send(request, **kwargs)
+
+
+class TestRetryAfter:
+    async def test_the_wait_the_service_asks_for_is_used(self) -> None:
+        """The SDK's own first wait is 15 s give or take 3; Retry-After says 1."""
+        service = _BusyOnce()
+        config = AzureFilesConnectionStringConfig(connectionString=KEY_CONNECTION_STRING)
+        from azure.storage.fileshare.aio import ShareServiceClient
+
+        async def create() -> object:
+            return ShareServiceClient.from_connection_string(
+                KEY_CONNECTION_STRING, transport=service, retry_policy=RetryAfterExponentialRetry()
+            )
+
+        config.create_async_share_service_client = create
+        ds = AzureFilesDataSource(AzureFilesClient(AzureFilesRESTClient(config)))
+        started = time.monotonic()
+        response = await ds.list_directories_and_files("s", "", results_per_page=2)
+        elapsed = time.monotonic() - started
+        assert response.success is True
+        assert len(service.requests) == 2
+        assert 1 <= elapsed < 5
+
+    def test_a_long_retry_after_is_capped(self) -> None:
+        settings = {"history": [SimpleNamespace(http_response=SimpleNamespace(headers={"Retry-After": "3600"}))]}
+        assert RetryAfterExponentialRetry().get_backoff_time(settings) == RETRY_AFTER_CAP_SECONDS
+
+    def test_without_retry_after_the_sdk_backoff_is_kept(self) -> None:
+        settings = {"history": [SimpleNamespace(http_response=SimpleNamespace(headers={}))], "count": 0}
+        assert 12 <= RetryAfterExponentialRetry().get_backoff_time(settings) <= 18
+
+    async def test_every_async_client_uses_it(self) -> None:
+        config = AzureFilesConnectionStringConfig(connectionString=KEY_CONNECTION_STRING)
+        client = await config.create_async_share_service_client()
+        assert any(isinstance(p, RetryAfterExponentialRetry) for p in client._pipeline._impl_policies)
 
 
 class TestEntraIdFailures:

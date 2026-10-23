@@ -23,14 +23,20 @@ connector, against the real storage account.
   TC-DISABLE-ENABLE   — disabling keeps the records; enabling again keeps their ids
   TC-RECREATE         — deleting the connector and adding the same share again gives a
                         clean sync with no leftovers from the first
+  TC-DELETE-SYNCING   — deleting while a sync runs: the connector shows as deleting, a
+                        second delete is refused, the sync stops and nothing is left
+  TC-DELETE-AGENT     — delete is refused while an agent uses the connector, naming the agent
+  TC-DELETE-MEMBER    — a member who did not create a team connector cannot delete it
 """
 
+import asyncio
 import logging
 import os
 import sys
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -48,13 +54,17 @@ from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from connectors.azure_files.azure_files_storage_helper import (  # type: ignore[import-not-found]
     AzureFilesStorageHelper,
 )
+from helper.clients.agents_client import AgentsClient
 from helper.graph_provider import GraphProviderProtocol
 from helper.graph_provider_utils import wait_until_graph_condition
+from helper.second_user import SecondUser
 
 logger = logging.getLogger("azure-files-checklist-test")
 
 SYNC_TIMEOUT = int(os.getenv("AZURE_FILES_CHECKLIST_SYNC_TIMEOUT", "240"))
 # Long enough for the first sync of a two-file share, short enough to wait out.
+# Enough files that the sync is still writing when the delete arrives.
+DELETE_DURING_SYNC_FILES = int(os.getenv("AZURE_FILES_CHECKLIST_DELETE_FILES", "600"))
 SAS_LIFETIME = timedelta(seconds=int(os.getenv("AZURE_FILES_CHECKLIST_SAS_SECONDS", "150")))
 
 
@@ -412,3 +422,84 @@ class TestAzureFilesChecklist:
         assert await graph_provider.count_records(second) == len(expected)
         assert not set(await _ids(graph_provider, second, *expected)) & set(first_ids)
         assert await graph_provider.count_any_nodes_with_connector_id(first) == 0
+
+    async def test_tc_delete_syncing(self, scratch, azure_files_storage, pipeshub_client, graph_provider) -> None:
+        make_share, make_connector, made = scratch
+        share = make_share("deleting")
+        names = [f"d{i % 10}/f{i}.txt" for i in range(DELETE_DURING_SYNC_FILES)]
+        with ThreadPoolExecutor(16) as pool:
+            list(pool.map(lambda n: azure_files_storage.upload_file(share, n, n.encode()), names))
+        connector_id, _ = make_connector([share], scope="team")
+
+        # Polled fast: the delete has to land while the sync is still writing.
+        deadline = time.monotonic() + SYNC_TIMEOUT
+        written = 0
+        while not written and time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
+            written = await graph_provider.count_records(connector_id)
+        assert written, "the sync wrote nothing"
+        assert written < len(names), f"the sync already wrote {written} records; nothing left to interrupt"
+
+        resp = pipeshub_client.request("DELETE", f"/api/v1/connectors/{connector_id}")
+        assert resp.status_code == 202, f"delete: HTTP {resp.status_code} {resp.text[:300]}"
+        made["connectors"].remove(connector_id)
+        again = pipeshub_client.request("DELETE", f"/api/v1/connectors/{connector_id}")
+        assert again.status_code == 409 and "already in progress" in again.text, (
+            f"a second delete must be refused while the first runs; got HTTP {again.status_code} {again.text[:300]}"
+        )
+        shown = pipeshub_client.request("GET", f"/api/v1/connectors/{connector_id}")
+        if shown.status_code == 200:
+            assert (shown.json().get("connector") or {}).get("status") == "DELETING", shown.text[:300]
+
+        await graph_provider.assert_all_records_cleaned(connector_id, timeout=300)
+        # A sync that kept going would write records again after the cleanup.
+        pipeshub_client.wait(30)
+        assert await graph_provider.count_any_nodes_with_connector_id(connector_id) == 0
+
+    async def test_tc_delete_agent(
+        self, scratch, azure_files_storage, pipeshub_client, graph_provider, agents_client: AgentsClient,
+    ) -> None:
+        make_share, make_connector, _ = scratch
+        share = make_share("agent")
+        azure_files_storage.upload_file(share, "a.txt", b"answers come from here")
+        connector_id, _ = make_connector([share], scope="team")
+
+        async def synced() -> bool:
+            return await _has(graph_provider, connector_id, f"{share}/a.txt")
+
+        await _wait(connector_id, synced, "the sync")
+        agent_name = f"azure-files-check-agent-{uuid.uuid4().hex[:6]}"
+        created = agents_client.create_agent(name=agent_name, knowledge=[{"connectorId": connector_id, "filters": {}}])
+        assert created.status_code in (200, 201), f"creating the agent: {created.status_code} {created.text[:300]}"
+        agent_key = (created.json().get("agent") or {}).get("_key")
+        try:
+            resp = pipeshub_client.request("DELETE", f"/api/v1/connectors/{connector_id}")
+            assert resp.status_code == 409, f"delete must be refused; got HTTP {resp.status_code} {resp.text[:300]}"
+            assert agent_name in resp.text, f"the refusal must name the agent: {resp.text[:300]}"
+            assert pipeshub_client.get_connector(connector_id).get("status") != "DELETING"
+            assert await _has(graph_provider, connector_id, f"{share}/a.txt")
+        finally:
+            agents_client.delete_agent(agent_key)
+
+    async def test_tc_delete_member(
+        self, scratch, azure_files_storage, pipeshub_client, graph_provider, second_user: SecondUser,
+    ) -> None:
+        make_share, make_connector, _ = scratch
+        share = make_share("member")
+        azure_files_storage.upload_file(share, "a.txt", b"a")
+        connector_id, _ = make_connector([share], scope="team")
+
+        async def synced() -> bool:
+            return await _has(graph_provider, connector_id, f"{share}/a.txt")
+
+        await _wait(connector_id, synced, "the sync")
+        resp = await asyncio.to_thread(
+            requests.delete,
+            f"{second_user.base_url}/api/v1/connectors/{connector_id}",
+            headers=second_user.headers, timeout=second_user.timeout,
+        )
+        assert resp.status_code in (403, 404), (
+            f"a member who did not create the connector must not delete it; got HTTP {resp.status_code} {resp.text[:300]}"
+        )
+        assert pipeshub_client.get_connector(connector_id).get("status") != "DELETING"
+        assert await _has(graph_provider, connector_id, f"{share}/a.txt")

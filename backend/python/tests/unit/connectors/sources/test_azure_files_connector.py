@@ -63,6 +63,7 @@ def _make_response(success=True, data=None, error=None, error_code=None):
     r.data = data
     r.error = error
     r.error_code = error_code
+    r.continuation_token = None
     return r
 
 
@@ -374,6 +375,7 @@ def _make_response(success=True, data=None, error=None, error_code=None):
     r.data = data
     r.error = error
     r.error_code = error_code
+    r.continuation_token = None
     return r
 
 
@@ -839,6 +841,7 @@ def _make_response(success=True, data=None, error=None, error_code=None):
     r.data = data
     r.error = error
     r.error_code = error_code
+    r.continuation_token = None
     return r
 
 
@@ -1344,7 +1347,7 @@ class TestSyncShare:
 
         call_count = 0
 
-        async def mock_list(share_name, directory_path):
+        async def mock_list(share_name, directory_path, **_):
             nonlocal call_count
             call_count += 1
             if directory_path == "":
@@ -2594,7 +2597,7 @@ class TestCreateConnector:
 class TestRemovingItemsThatAreGone:
     @staticmethod
     def _listing(conn, by_directory):
-        async def listing(share_name, directory_path=""):
+        async def listing(share_name, directory_path="", **_):
             result = by_directory.get(directory_path)
             if result is None:
                 return _make_response(False, error="listing failed")
@@ -2735,7 +2738,7 @@ class TestFolderFilter:
     def _prepare(conn, by_directory):
         visited = []
 
-        async def listing(share_name, directory_path=""):
+        async def listing(share_name, directory_path="", **_):
             visited.append(directory_path)
             result = by_directory.get(directory_path)
             if result is None:

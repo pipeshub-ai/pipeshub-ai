@@ -12,6 +12,9 @@ from urllib.parse import urlparse
 try:
     from azure.core.exceptions import AzureError  # type: ignore
     from azure.storage.fileshare import ShareServiceClient  # type: ignore
+    from azure.storage.fileshare._shared.policies_async import (  # type: ignore
+        ExponentialRetry,
+    )
     from azure.storage.fileshare.aio import (  # type: ignore
         ShareServiceClient as AsyncShareServiceClient,
     )
@@ -23,6 +26,23 @@ except ImportError:
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
+from app.sources.client.resilience import parse_retry_after
+
+# Longest Retry-After honoured, so one answer cannot park the sync.
+RETRY_AFTER_CAP_SECONDS = 60.0
+
+
+class RetryAfterExponentialRetry(ExponentialRetry):
+    """The SDK's default retry (the async clients build this class themselves when
+    given none), except that a Retry-After sent with a 5xx or 408 sets the wait."""
+
+    def get_backoff_time(self, settings: dict[str, Any]) -> float:
+        history = settings.get("history") or []
+        response = history[-1].http_response if history else None
+        retry_after = parse_retry_after(response.headers) if response is not None else None
+        if retry_after is not None:
+            return min(retry_after, RETRY_AFTER_CAP_SECONDS)
+        return super().get_backoff_time(settings)
 
 
 class AzureFilesConfigurationError(Exception):
@@ -57,6 +77,8 @@ class AzureFilesResponse:
     message: Optional[str] = None
     # Azure's x-ms-error-code (e.g. ShareNotFound), so callers can tell "gone" from any other failure.
     error_code: Optional[str] = None
+    # Marker for the next page of a paged listing; None after the last page.
+    continuation_token: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
@@ -103,7 +125,7 @@ class AzureFilesConnectionStringConfig:
         """Create AsyncShareServiceClient using connection string"""
         try:
             return AsyncShareServiceClient.from_connection_string(
-                conn_str=self.connectionString
+                conn_str=self.connectionString, retry_policy=RetryAfterExponentialRetry()
             )
         except (ValueError, AzureError) as e:
             raise AzureFilesConfigurationError(
@@ -201,7 +223,7 @@ class AzureFilesAccountKeyConfig:
         try:
             account_url = f"{self.endpointProtocol}://{self.accountName}.file.{self.endpointSuffix}"
             return AsyncShareServiceClient(
-                account_url=account_url, credential=self.accountKey
+                account_url=account_url, credential=self.accountKey, retry_policy=RetryAfterExponentialRetry()
             )
         except Exception as e:
             raise AzureFilesConfigurationError(
@@ -284,6 +306,7 @@ class AzureFilesEntraIdConfig:
             account_url=self.accountUrl,
             credential=ClientSecretCredential(self.tenantId, self.clientId, self.clientSecret),
             token_intent="backup",
+            retry_policy=RetryAfterExponentialRetry(),
         )
 
     def get_account_name(self) -> str | None:

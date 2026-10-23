@@ -25,7 +25,6 @@ from logging import Logger
 from typing import Any
 from urllib.parse import quote, urlparse
 
-from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -100,11 +99,13 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import Permission
+from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.azure.azure_files import AzureFilesClient, AzureFilesResponse
 from app.sources.external.azure.azure_files import (
     CREDENTIALS_REJECTED,
     AzureFilesDataSource,
+    describe_error,
     error_code_of,
 )
 from app.utils.streaming import create_stream_record_response
@@ -113,6 +114,8 @@ from app.utils.url_fetcher import FetchError, validate_public_http_url
 
 # Default connector endpoint for signed URL generation
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
+# Entries per directory listing page (the service's maximum).
+LISTING_PAGE_SIZE = 5000
 # Directories listed at once within a share, under the 50 requests/s limiter.
 DIRECTORY_CONCURRENCY = 8
 # Stale records removed per delete transaction.
@@ -165,8 +168,10 @@ def _file_url(base_url: str, share_name: str, path: str = "") -> str:
 
 def get_file_extension(file_path: str) -> str | None:
     """Extracts the extension from a file path."""
-    if "." in file_path:
-        parts = file_path.split(".")
+    # From the name only: a dot in a folder name ("reports.2024/README") is not an extension.
+    name = file_path.rsplit("/", 1)[-1]
+    if "." in name:
+        parts = name.split(".")
         if len(parts) > 1:
             return parts[-1].lower()
     return None
@@ -450,7 +455,6 @@ class AzureFilesConnector(BaseConnector):
 
         self.data_source: AzureFilesDataSource | None = None
         self.batch_size = 100
-        self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.share_name: str | None = None
         self.creator_email: str | None = None  # Cached to avoid repeated DB queries
         self.account_name: str | None = None
@@ -460,6 +464,8 @@ class AzureFilesConnector(BaseConnector):
         self._sync_incomplete = False
         # Shares whose root could not be listed in the current run.
         self._unread_shares: set[str] = set()
+        # Shares found deleted this run, whether before or during their walk.
+        self._gone_shares: set[str] = set()
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
@@ -515,10 +521,14 @@ class AzureFilesConnector(BaseConnector):
             )
             try:
                 self.account_name = client.get_account_name()
+            except Exception as e:
+                self.logger.warning(f"Could not read the account name from the credentials: {e}")
+            # Every request goes to this endpoint; an admin-supplied one must not reach internal hosts.
+            # Read outside the try above: an endpoint that cannot be read cannot be checked.
+            try:
                 self.account_url = client.get_account_url()
             except Exception as e:
-                self.logger.warning(f"Could not read the account name and endpoint from the credentials: {e}")
-            # Every request goes to this endpoint; an admin-supplied one must not reach internal hosts.
+                raise ConnectorInitError(f"{self.display_name}: could not read the file endpoint from the credentials") from e
             problem = await _endpoint_problem(self.account_url)
             if problem:
                 raise ConnectorInitError(f"{self.display_name}: {problem}")
@@ -596,6 +606,7 @@ class AzureFilesConnector(BaseConnector):
         """Runs a full synchronization from file shares."""
         self._sync_incomplete = False
         self._unread_shares = set()
+        self._gone_shares = set()
         try:
             self.logger.info("Starting Azure Files full sync.")
 
@@ -652,10 +663,9 @@ class AzureFilesConnector(BaseConnector):
             shares_to_sync: list[str] = []
             shares_list_payload: list[Any] | None = None
             share_ts_ms: dict[str, int] = {}
-            gone_shares: set[str] = set()
             if selected_shares:
-                share_ts_ms, gone_shares = await self._selected_share_timestamps_and_gone(selected_shares)
-                shares_to_sync = [n for n in selected_shares if n not in gone_shares]
+                share_ts_ms, self._gone_shares = await self._selected_share_timestamps_and_gone(selected_shares)
+                shares_to_sync = [n for n in selected_shares if n not in self._gone_shares]
                 self.logger.info(f"Using filtered shares: {shares_to_sync}")
             else:
                 self.logger.info("Listing all shares...")
@@ -708,8 +718,8 @@ class AzureFilesConnector(BaseConnector):
                 else:
                     failed_shares.append(share_name)
 
-            removed = await self._remove_unsynced_shares(target_names)
-            for share_name in sorted(removed & gone_shares):
+            removed = await self._remove_unsynced_shares(target_names - self._gone_shares)
+            for share_name in sorted(removed & self._gone_shares):
                 await self._notify_problem(
                     NotificationType.CONNECTOR_SYNC_ERROR, f"File share {share_name} not found",
                     f"The file share {share_name} selected in File Share Names no longer exists, so its "
@@ -1171,148 +1181,159 @@ class AzureFilesConnector(BaseConnector):
                     # Every further call would be refused the same way.
                     return
                 try:
-                    async with self.rate_limiter:
-                        response = await self.data_source.list_directories_and_files(
-                            share_name=share_name,
-                            directory_path=directory_path,
-                        )
-
-                    if not response.success:
-                        error_msg = response.error or "Unknown error"
-                        if response.error_code in _CREDENTIALS_REJECTED_CODES:
-                            rejected_code = response.error_code
-                            complete = False
-                            return
-                        if directory_path in list_roots and response.error_code in _NOT_FOUND_CODES:
-                            if await share_is_gone():
-                                share_gone = True
-                                return
-                            if directory_path in chosen_folders:
-                                # A chosen folder that doesn't exist has nothing to sync;
-                                # a typo must not block removal for the whole share.
-                                self.logger.warning(
-                                    f"Folder {share_name}/{directory_path} named in the folder filter does not exist"
-                                )
-                                return
-                        complete = False
-                        if directory_path in list_roots:
-                            self._unread_shares.add(share_name)
-                        self.logger.error(
-                            f"Failed to list items in {share_name}/{directory_path} ({response.error_code}): {error_msg}"
-                        )
-                        return
-
-                    if directory_path in chosen_folders:
-                        # With Include the walk starts inside each chosen folder, so that
-                        # folder and those above it are never listed. Only once it is known
-                        # to exist do they count as part of the tree.
-                        parts = directory_path.split("/")
-                        ancestors = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
-                        seen.update(f"{share_name}/{path}" for path in ancestors)
-                        # Claimed before any await: two chosen folders share their parents.
-                        to_write = [path for path in ancestors if path not in written_folders]
-                        written_folders.update(to_write)
-                        for path in to_write:
-                            await write_folder_above_the_walk(path)
-
-                    items = response.data or []
-                    listed.add(f"{share_name}/{directory_path}" if directory_path else share_name)
-                    self.logger.debug(
-                        f"Processing {len(items)} items from {share_name}/{directory_path or 'root'}"
-                    )
-
-                    for item in items:
-                        try:
-                            item_name = item.get("name", "")
-                            is_directory = item.get("is_directory", False)
-                            item_path = item.get("path", item_name)
-
-                            in_scope = (
-                                scope.includes_folder(item_path) if is_directory
-                                else scope.includes_file(item_path)
+                    token: str | None = None
+                    # Page by page, so a directory with millions of entries is never held whole.
+                    while True:
+                        first_page = token is None
+                        async with self.resilience.guard():
+                            response = await self.data_source.list_directories_and_files(
+                                share_name=share_name,
+                                directory_path=directory_path,
+                                results_per_page=LISTING_PAGE_SIZE,
+                                continuation_token=token,
                             )
-                            if not in_scope:
-                                continue
 
-                            # Check extension filter
-                            if not self._pass_extension_filter(item_path, is_directory=is_directory):
-                                self.logger.debug(
-                                    f"Skipping {item_path}: does not pass extension filter"
-                                )
-                                continue
-
-                            if not self._pass_date_filters(
-                                item,
-                                modified_after_ms,
-                                modified_before_ms,
-                                created_after_ms,
-                                created_before_ms,
-                            ):
-                                continue
-
-                            # Seen before processing: an item that fails to
-                            # process still exists and must not be removed.
-                            # Only slashes are trimmed: spaces are part of the name.
-                            external_record_id = f"{share_name}/{(item_path or item_name).strip('/')}"
-                            seen.add(external_record_id)
-
-                            # Track max timestamp for incremental sync
-                            last_modified = item.get("last_modified")
-                            if last_modified:
-                                if isinstance(last_modified, datetime):
-                                    obj_timestamp_ms = int(
-                                        last_modified.timestamp() * 1000
+                        if not response.success:
+                            error_msg = response.error or "Unknown error"
+                            if response.error_code in _CREDENTIALS_REJECTED_CODES:
+                                rejected_code = response.error_code
+                                complete = False
+                                return
+                            if first_page and directory_path in list_roots and response.error_code in _NOT_FOUND_CODES:
+                                if await share_is_gone():
+                                    share_gone = True
+                                    return
+                                if directory_path in chosen_folders:
+                                    # A chosen folder that doesn't exist has nothing to sync;
+                                    # a typo must not block removal for the whole share.
+                                    self.logger.warning(
+                                        f"Folder {share_name}/{directory_path} named in the folder filter does not exist"
                                     )
-                                    max_timestamp = max(max_timestamp, obj_timestamp_ms)
-                                elif isinstance(last_modified, str):
-                                    try:
-                                        obj_dt = datetime.fromisoformat(
-                                            last_modified.replace("Z", "+00:00")
-                                        )
-                                        obj_timestamp_ms = int(
-                                            obj_dt.timestamp() * 1000
-                                        )
-                                        max_timestamp = max(
-                                            max_timestamp, obj_timestamp_ms
-                                        )
-                                    except ValueError:
-                                        pass
-
-                            if is_directory:
-                                subdirectories.append(item_path)
-
-                            stored_revision = (stored_revisions or {}).get(external_record_id)
-                            if (
-                                not full_sync
-                                and stored_revision
-                                and stored_revision == self._get_azure_files_revision_id(item)
-                            ):
-                                continue
-
-                            # Per item: directories are walked concurrently.
-                            moved_from: dict[str, str] = {}
-                            record, permissions = await self._process_azure_files_item(
-                                item, share_name, moved_from, paths_by_revision
-                            )
-                            if not record:
-                                if item_name:
-                                    # Not written, so the unlink after a full sync would cut it off.
-                                    complete = False
-                                continue
-                            old_external_id = moved_from.get(record.id)
-                            if old_external_id:
-                                move_candidates.append((old_external_id, record, permissions))
-                                continue
-                            batch_records.append((record, permissions))
-                            await flush()
-
-                        except Exception as e:
+                                    return
                             complete = False
+                            if directory_path in list_roots:
+                                self._unread_shares.add(share_name)
                             self.logger.error(
-                                f"Error processing item {item.get('name', 'unknown')}: {e}",
-                                exc_info=True,
+                                f"Failed to list items in {share_name}/{directory_path} ({response.error_code}): {error_msg}"
                             )
-                            continue
+                            return
+
+                        if first_page and directory_path in chosen_folders:
+                            # With Include the walk starts inside each chosen folder, so that
+                            # folder and those above it are never listed. Only once it is known
+                            # to exist do they count as part of the tree.
+                            parts = directory_path.split("/")
+                            ancestors = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
+                            seen.update(f"{share_name}/{path}" for path in ancestors)
+                            # Claimed before any await: two chosen folders share their parents.
+                            to_write = [path for path in ancestors if path not in written_folders]
+                            written_folders.update(to_write)
+                            for path in to_write:
+                                await write_folder_above_the_walk(path)
+
+                        items = response.data or []
+                        listed.add(f"{share_name}/{directory_path}" if directory_path else share_name)
+                        self.logger.debug(
+                            f"Processing {len(items)} items from {share_name}/{directory_path or 'root'}"
+                        )
+
+                        for item in items:
+                            try:
+                                item_name = item.get("name", "")
+                                is_directory = item.get("is_directory", False)
+                                item_path = item.get("path", item_name)
+
+                                in_scope = (
+                                    scope.includes_folder(item_path) if is_directory
+                                    else scope.includes_file(item_path)
+                                )
+                                if not in_scope:
+                                    continue
+
+                                # Check extension filter
+                                if not self._pass_extension_filter(item_path, is_directory=is_directory):
+                                    self.logger.debug(
+                                        f"Skipping {item_path}: does not pass extension filter"
+                                    )
+                                    continue
+
+                                if not self._pass_date_filters(
+                                    item,
+                                    modified_after_ms,
+                                    modified_before_ms,
+                                    created_after_ms,
+                                    created_before_ms,
+                                ):
+                                    continue
+
+                                # Seen before processing: an item that fails to
+                                # process still exists and must not be removed.
+                                # Only slashes are trimmed: spaces are part of the name.
+                                external_record_id = f"{share_name}/{(item_path or item_name).strip('/')}"
+                                seen.add(external_record_id)
+
+                                # Track max timestamp for incremental sync
+                                last_modified = item.get("last_modified")
+                                if last_modified:
+                                    if isinstance(last_modified, datetime):
+                                        obj_timestamp_ms = int(
+                                            last_modified.timestamp() * 1000
+                                        )
+                                        max_timestamp = max(max_timestamp, obj_timestamp_ms)
+                                    elif isinstance(last_modified, str):
+                                        try:
+                                            obj_dt = datetime.fromisoformat(
+                                                last_modified.replace("Z", "+00:00")
+                                            )
+                                            obj_timestamp_ms = int(
+                                                obj_dt.timestamp() * 1000
+                                            )
+                                            max_timestamp = max(
+                                                max_timestamp, obj_timestamp_ms
+                                            )
+                                        except ValueError:
+                                            pass
+
+                                if is_directory:
+                                    subdirectories.append(item_path)
+
+                                stored_revision = (stored_revisions or {}).get(external_record_id)
+                                if (
+                                    not full_sync
+                                    and stored_revision
+                                    and stored_revision == self._get_azure_files_revision_id(item)
+                                ):
+                                    continue
+
+                                # Per item: directories are walked concurrently.
+                                moved_from: dict[str, str] = {}
+                                record, permissions = await self._process_azure_files_item(
+                                    item, share_name, moved_from, paths_by_revision
+                                )
+                                if not record:
+                                    if item_name:
+                                        # Not written, so the unlink after a full sync would cut it off.
+                                        complete = False
+                                    continue
+                                old_external_id = moved_from.get(record.id)
+                                if old_external_id:
+                                    move_candidates.append((old_external_id, record, permissions))
+                                    continue
+                                batch_records.append((record, permissions))
+                                await flush()
+
+                            except Exception as e:
+                                complete = False
+                                self.logger.error(
+                                    f"Error processing item {item.get('name', 'unknown')}: {e}",
+                                    exc_info=True,
+                                )
+                                continue
+
+
+                        token = response.continuation_token
+                        if not token:
+                            break
 
                 except Exception as e:
                     complete = False
@@ -1334,11 +1355,8 @@ class AzureFilesConnector(BaseConnector):
 
         if share_gone:
             self.logger.warning(f"Share {share_name} no longer exists; removing its records")
-            await self._notify_problem(
-                NotificationType.CONNECTOR_SYNC_ERROR, f"File share {share_name} not found",
-                f"The file share {share_name} selected in File Share Names no longer exists, so its "
-                "files were removed. Remove it from the filter if it is gone for good.",
-            )
+            # run_sync removes its group too and tells the owner once.
+            self._gone_shares.add(share_name)
             return set(), True
 
         try:
@@ -1591,6 +1609,9 @@ class AzureFilesConnector(BaseConnector):
                     existing_record = await self.data_entities_processor.get_record_by_external_revision_id(
                         self.connector_id, current_revision_id
                     )
+                    if existing_record is not None and not is_live_record(existing_record):
+                        # A trashed record is not moved, so its new path would get no record.
+                        existing_record = None
                 if existing_record and existing_record.external_record_group_id != share_name:
                     # FileIds are unique only within a share; new shares hand out the same ones.
                     existing_record = None
@@ -1874,10 +1895,8 @@ class AzureFilesConnector(BaseConnector):
         except HTTPException:
             raise
         except Exception as e:
-            self.logger.error(
-                f"Error downloading file for record {record.id}: {e}",
-                exc_info=True
-            )
+            # describe_error, and no traceback: str() of an Azure error carries the response body.
+            self.logger.error(f"Error downloading file for record {record.id}: {describe_error(e)}")
             raise self._stream_error(e) from e
 
         async def chunks() -> AsyncGenerator[bytes, None]:
@@ -1886,7 +1905,7 @@ class AzureFilesConnector(BaseConnector):
                     yield chunk
             except Exception as e:
                 # A later range request can fail too (a file deleted mid-download).
-                self.logger.error(f"Error streaming file for record {record.id}: {e}", exc_info=True)
+                self.logger.error(f"Error streaming file for record {record.id}: {describe_error(e)}")
                 raise self._stream_error(e) from e
 
         return create_stream_record_response(
@@ -2019,6 +2038,9 @@ class AzureFilesConnector(BaseConnector):
                         updated_records.append((updated_record, permissions))
                     else:
                         non_updated_records.append(record)
+                except FileNotFoundError as e:
+                    self.logger.warning(f"Not reindexing record {record.id}: {e}")
+                    continue
                 except Exception as e:
                     self.logger.error(
                         f"Error checking record {record.id} at source: {e}", exc_info=True
@@ -2077,6 +2099,9 @@ class AzureFilesConnector(BaseConnector):
                 )
 
             if not response.success:
+                if response.error_code in _NOT_FOUND_CODES:
+                    # Re-queueing it would only fail in indexing; the next sync removes the record.
+                    raise FileNotFoundError(f"{share_name}/{item_path} no longer exists")
                 self.logger.warning(
                     f"Could not read {share_name}/{item_path} to reindex record {record.id}: {response.error}"
                 )
@@ -2209,6 +2234,8 @@ class AzureFilesConnector(BaseConnector):
 
             return updated_record, permissions
 
+        except FileNotFoundError:
+            raise
         except Exception as e:
             self.logger.error(f"Error checking record {record.id} at source: {e}", exc_info=True)
             return None

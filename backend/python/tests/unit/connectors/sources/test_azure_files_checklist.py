@@ -24,9 +24,11 @@ from app.connectors.core.registry.filters import (
     ListOperator,
     MultiselectOperator,
 )
+from app.connectors.sources.azure_files import connector as connector_module
 from app.connectors.sources.azure_files.connector import (
     AzureFilesConnector,
     CredentialsRejectedError,
+    get_file_extension,
 )
 from app.models.entities import FileRecord
 from app.sources.external.azure.azure_files import CREDENTIALS_REJECTED
@@ -36,6 +38,7 @@ from tests.unit.connectors.sources.test_azure_files_pp341 import (
     FakeProcessor,
     _connector,
     _err,
+    _ok,
     _sync,
 )
 
@@ -136,6 +139,28 @@ class TestGoneSelectedShare:
         await _sync(conn)
         # Not written again, so no empty group comes back and nothing is announced again.
         assert proc.groups == {"keep"}
+        assert _titles(conn).count(f"{conn.display_name}: File share s not found") == 1
+
+    async def test_a_share_deleted_during_the_run_goes_in_that_run(self) -> None:
+        ds = _tree()
+        ds.add("keep", "k.txt")
+        proc = FakeProcessor()
+        conn = _connector(ds, proc, scope="team", shares=["s", "keep"])
+        await _sync(conn)
+
+        # Still there when the run checks the selected shares, gone by the time it walks it.
+        real = ds.get_share_properties
+        checked: list[str] = []
+
+        async def gone_after_first_check(share_name: str) -> object:
+            checked.append(share_name)
+            return _ok({"name": share_name}) if checked.count(share_name) == 1 else await real(share_name)
+
+        ds.get_share_properties = gone_after_first_check
+        del ds.shares["s"]
+        await _sync(conn)
+        assert proc.groups == {"keep"}
+        assert set(proc.records) == {"keep/k.txt"}
         assert _titles(conn).count(f"{conn.display_name}: File share s not found") == 1
 
     async def test_a_share_listed_by_name_is_not_walked_once_gone(self) -> None:
@@ -266,6 +291,22 @@ class TestEndpoint:
         with patch("app.connectors.sources.azure_files.connector.validate_public_http_url") as validate:
             assert await self._init(self._conn("https://acct.file.core.windows.net")) is True
         validate.assert_called_once_with("https://acct.file.core.windows.net")
+
+    async def test_endpoint_that_cannot_be_read_is_refused(self) -> None:
+        """A SAS connection string whose FileEndpoint is no Azure host has no account name;
+        that must not skip the endpoint check."""
+        conn = self._conn("")
+        conn._client.get_account_name.side_effect = ValueError("no account name")
+        conn._client.get_account_url.side_effect = ValueError("no endpoint")
+        with pytest.raises(ConnectorInitError, match="could not read the file endpoint"):
+            await self._init(conn)
+        assert isinstance(conn.data_source, FakeDataSource)
+
+    async def test_missing_account_name_still_checks_the_endpoint(self) -> None:
+        conn = self._conn("https://10.0.0.5")
+        conn._client.get_account_name.side_effect = ValueError("no account name")
+        with pytest.raises(ConnectorInitError, match="not a public address"):
+            await self._init(conn)
 
     async def test_unresolvable_endpoint_is_refused_with_the_reason(self) -> None:
         with patch(
@@ -444,6 +485,60 @@ class TestReindex:
             assert await conn._check_and_fetch_updated_record("org", self._record("a.txt")) is None
         assert "AuthenticationFailed (HTTP 403)" in caplog.text
         assert "not found" not in caplog.text
+
+
+    async def test_file_gone_at_source_is_not_requeued(self) -> None:
+        ds = FakeDataSource({})
+        proc = FakeProcessor()
+        proc.reindex_existing_records = AsyncMock()
+        conn = _connector(ds, proc)
+        await conn.reindex_records([self._record("gone.pdf")])
+        proc.reindex_existing_records.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# §6.11: each directory is listed page by page
+# ---------------------------------------------------------------------------
+class TestListingPages:
+    @pytest.fixture(autouse=True)
+    def _small_pages(self, monkeypatch) -> None:
+        monkeypatch.setattr(connector_module, "LISTING_PAGE_SIZE", 2)
+
+    async def test_every_page_is_synced(self) -> None:
+        ds = FakeDataSource({})
+        for name in ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]:
+            ds.add("s", name)
+        proc = FakeProcessor()
+        conn = _connector(ds, proc, shares=["s"])
+        await _sync(conn)
+        assert {f"s/{n}" for n in ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]} <= set(proc.records)
+        assert ds.listed.count(("s", "")) == 3
+
+    async def test_a_failed_later_page_deletes_nothing(self) -> None:
+        ds = FakeDataSource({})
+        ds.add("s", "docs", is_dir=True)
+        for name in ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]:
+            ds.add("s", f"docs/{name}")
+        proc = FakeProcessor()
+        conn = _connector(ds, proc, shares=["s"])
+        await _sync(conn)
+        before = set(proc.records)
+
+        del ds.shares["s"]["docs/a.txt"]
+        ds.fail_pages.add(("s", "docs", 2))
+        await _sync(conn)
+        assert set(proc.records) == before
+        assert proc.deleted == []
+        assert conn.full_sync_coverage().complete is False
+
+
+class TestExtension:
+    @pytest.mark.parametrize(
+        ("path", "extension"),
+        [("reports.2024/README", None), ("reports.2024/a.PDF", "pdf"), ("a.tar.gz", "gz"), ("Makefile", None)],
+    )
+    def test_extension_comes_from_the_name(self, path: str, extension: str | None) -> None:
+        assert get_file_extension(path) == extension
 
 
 class TestDocumentationLink:

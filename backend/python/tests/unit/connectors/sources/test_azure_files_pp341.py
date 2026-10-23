@@ -41,6 +41,8 @@ class FakeDataSource:
     def __init__(self, shares) -> None:
         self.shares = shares
         self.fail_dirs: set[tuple[str, str]] = set()
+        # (share, directory, page offset) whose page listing fails.
+        self.fail_pages: set[tuple[str, str, int]] = set()
         self.fail_list_shares = False
         self.listed: list[tuple[str, str]] = []
 
@@ -63,7 +65,12 @@ class FakeDataSource:
         return _ok([{"name": s, "last_modified": LIST_TIME} for s in self.shares])
 
     async def list_directories_and_files(
-        self, share_name: str, directory_path: str = "", name_starts_with: str | None = None
+        self,
+        share_name: str,
+        directory_path: str = "",
+        name_starts_with: str | None = None,
+        results_per_page: int | None = None,
+        continuation_token: str | None = None,
     ) -> AzureFilesResponse:
         self.listed.append((share_name, directory_path))
         if (share_name, directory_path) in self.fail_dirs:
@@ -78,7 +85,16 @@ class FakeDataSource:
             parent = path.rsplit("/", 1)[0] if "/" in path else ""
             if parent == directory_path:
                 items.append(dict(item))
-        return _ok(items)
+        if not results_per_page:
+            return _ok(items)
+        # The marker is the offset of the page, as opaque to the connector as Azure's.
+        start = int(continuation_token or 0)
+        if (share_name, directory_path, start) in self.fail_pages:
+            return _err("Azure Files API error: ServerBusy", "ServerBusy")
+        response = _ok(items[start:start + results_per_page])
+        if start + results_per_page < len(items):
+            response.continuation_token = str(start + results_per_page)
+        return response
 
     async def get_share_properties(self, share_name: str) -> AzureFilesResponse:
         if share_name not in self.shares:

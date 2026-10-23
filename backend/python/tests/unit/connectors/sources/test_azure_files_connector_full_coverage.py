@@ -33,6 +33,7 @@ def _make_response(success=True, data=None, error=None, error_code=None):
     r.data = data
     r.error = error
     r.error_code = error_code
+    r.continuation_token = None
     return r
 
 
@@ -487,7 +488,7 @@ class TestSyncShare:
 
         call_count = 0
 
-        async def mock_list(share_name, directory_path):
+        async def mock_list(share_name, directory_path, **_):
             nonlocal call_count
             call_count += 1
             if directory_path == "":
