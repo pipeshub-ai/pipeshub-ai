@@ -773,19 +773,38 @@ class TestCreateRecordGroup:
 
 class TestProcessEntryExtended:
     @pytest.mark.asyncio
-    async def test_no_link_returns_none(self):
+    async def test_entry_without_a_link_is_kept_with_the_feed_as_its_link(self):
         conn = _make_connector()
-        entry = {"title": "Test", "id": "1"}  # no link
+        conn.fetch_full_content = True
+        entry = {"title": "Test", "id": "urn:uuid:1", "link": "urn:uuid:1", "summary": "Body."}
+        with patch.object(conn, "_fetch_article_content", new_callable=AsyncMock) as crawl:
+            result = await conn._process_entry(entry, "https://feed.com/rss")
+        assert result is not None
+        assert result[0].weburl == "https://feed.com/rss"
+        crawl.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_entry_without_id_or_link_returns_none(self):
+        conn = _make_connector()
+        result = await conn._process_entry({"title": "Test"}, "https://feed.com/rss")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_duplicate_entry_skipped(self):
+        conn = _make_connector()
+        conn.processed_urls = {"https://feed.com/rss#1"}
+        entry = {"title": "Test", "link": "https://example.com/article-1", "id": "1"}
         result = await conn._process_entry(entry, "https://feed.com/rss")
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_duplicate_url_skipped(self):
+    async def test_entries_sharing_a_link_are_all_kept(self):
         conn = _make_connector()
-        conn.processed_urls = {"https://example.com/article-1"}
-        entry = {"title": "Test", "link": "https://example.com/article-1", "id": "1"}
-        result = await conn._process_entry(entry, "https://feed.com/rss")
-        assert result is None
+        conn.fetch_full_content = False
+        first = {"title": "Ep 1", "link": "https://show.example.com/", "id": "ep-1", "summary": "One."}
+        second = {"title": "Ep 2", "link": "https://show.example.com/", "id": "ep-2", "summary": "Two."}
+        assert await conn._process_entry(first, "https://feed.com/rss") is not None
+        assert await conn._process_entry(second, "https://feed.com/rss") is not None
 
     @pytest.mark.asyncio
     async def test_content_from_entry_content(self):

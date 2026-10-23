@@ -15,6 +15,7 @@ settings, and when a user asks for a full sync or a reindex.
     the same guid get two records.
   * Reindexing a feed re-reads its items, and none is left waiting.
   * Enabling the connector with a URL that is not a feed names that URL.
+  * A paged feed (RFC 5005) is read past its first page, up to the limit.
 
 Test cases:
   TC-FULL-001    — A full sync keeps items that left the feed and those of a failing feed
@@ -22,6 +23,7 @@ Test cases:
   TC-FEED-002    — A feed taken out of the settings is removed with its items
   TC-ID-001      — The same guid in two feeds makes two records
   TC-CONN-001    — A URL that is not a feed is named when the connector is enabled
+  TC-PAGE-001    — A paged feed is read past its first page
 """
 
 import logging
@@ -224,3 +226,59 @@ class TestRSSFeedLifecycle:
             pipeshub_client.update_connector_filters_sync_config(connector_id, sync={"feed_urls": news_url})
             pipeshub_client.toggle_sync(connector_id, enable=True)
         await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id)
+
+    @pytest.mark.order(5)
+    async def test_tc_page_001_a_paged_feed_is_read_past_its_first_page(
+        self,
+        rss_connector: dict[str, Any],
+        rss_fixtures: WebFixtures,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-PAGE-001: rel="next" pages are followed up to the per-feed limit (3)."""
+        connector_id = rss_connector["connector_id"]
+        await settle_record_baseline(pipeshub_client, graph_provider, connector_id)
+        news_url = rss_fixtures.url_for_connector(NEWS_FEED)
+        paged_url = rss_fixtures.url_for_connector(PAGED_FEED)
+        guids = [f"urn:fixture:paged:{n}" for n in range(1, 5)]
+        for n in range(1, 5):
+            rss_fixtures.put(f"feeds/paged/{n}.html", html_page(f"Paged item {n}", f"Marker paged-{n}."), HTML)
+        rss_fixtures.put(PAGED_FEED, _paged_feed(guids[:2], "paged-2.xml", [1, 2]), RSS)
+        rss_fixtures.put("feeds/paged-2.xml", _paged_feed(guids[2:], None, [3, 4]), RSS)
+
+        pipeshub_client.update_connector_filters_sync_safe(
+            connector_id, sync={"feed_urls": f"{news_url}\n{paged_url}"}
+        )
+        await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id)
+
+        async def _third_synced() -> bool:
+            return await graph_provider.get_record_by_external_id(connector_id, guids[2]) is not None
+
+        await wait_until_graph_condition(
+            connector_id, check=_third_synced, timeout=180, poll_interval=5,
+            description="the first item of the feed's second page",
+        )
+        for guid in guids[:3]:
+            assert await graph_provider.get_record_by_external_id(connector_id, guid) is not None, (
+                f"TC-PAGE-001: {guid} was not synced"
+            )
+        assert await graph_provider.get_record_by_external_id(connector_id, guids[3]) is None, (
+            "TC-PAGE-001: the item past the per-feed limit was synced"
+        )
+
+
+PAGED_FEED = "feeds/paged.xml"
+
+
+def _paged_feed(guids: list[str], next_href: str | None, numbers: list[int]) -> str:
+    """An RSS 2.0 page linking its next page the RFC 5005 way; ``{{BASE_URL}}`` is filled in by the service."""
+    items = "".join(
+        f'<item><guid isPermaLink="false">{guid}</guid><title>Paged item {n}</title>'
+        f"<link>{{{{BASE_URL}}}}/feeds/paged/{n}.html</link><description>Summary {n}.</description></item>"
+        for guid, n in zip(guids, numbers, strict=True)
+    )
+    nxt = f'<atom:link rel="next" href="{next_href}"/>' if next_href else ""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">'
+        f"<channel><title>Fixture Paged Feed</title><link>{{{{BASE_URL}}}}/feeds/</link>{nxt}{items}</channel></rss>"
+    )

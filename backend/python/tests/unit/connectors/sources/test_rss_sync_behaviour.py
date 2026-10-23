@@ -558,3 +558,147 @@ class TestManualIndexing:
         assert store.records[f"{FEED_A}#2"].indexing_status == "AUTO_INDEX_OFF"
         # Unchanged text: the indexed item is not rewritten, so it stays indexed.
         assert store.records[f"{FEED_A}#1"].indexing_status != "AUTO_INDEX_OFF"
+
+
+def _page(entries: list[dict], next_href: str | None = None) -> bytes:
+    items = "".join(
+        f"<item><guid>{e['id']}</guid><title>{e['title']}</title><link>{e['link']}</link>"
+        f"<description>{e['summary']}</description></item>"
+        for e in entries
+    )
+    nxt = f'<atom:link rel="next" href="{next_href}"/>' if next_href else ""
+    return (
+        '<?xml version="1.0"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">'
+        f"<channel><title>Paged</title>{nxt}{items}</channel></rss>"
+    ).encode()
+
+
+def _xml(body: bytes, status: int = 200) -> FetchResponse:
+    return FetchResponse(status_code=status, content_bytes=body, headers={"Content-Type": "application/rss+xml"},
+                         final_url="", strategy="aiohttp")
+
+
+def _entries(*numbers: int) -> list[dict]:
+    return [_entry(f"urn:p:{n}", f"Post {n}", f"https://a.example.com/{n}") for n in numbers]
+
+
+class TestPagedFeeds:
+    @pytest.mark.asyncio
+    async def test_next_pages_are_read_up_to_the_article_limit(self) -> None:
+        conn = _connector(FakeStore(), [FEED_A])
+        conn.max_articles_per_feed = 5
+        pages = {
+            FEED_A: _xml(_page(_entries(1, 2), "page2.xml")),
+            "https://a.example.com/page2.xml": _xml(_page(_entries(3, 4), "/page3.xml")),
+            "https://a.example.com/page3.xml": _xml(_page(_entries(5, 6), "page4.xml")),
+        }
+        fetch = AsyncMock(side_effect=lambda url, **_: pages[url])
+        with patch(FETCH, new=fetch):
+            feed = await conn._fetch_and_parse_feed(FEED_A)
+        assert [e["id"] for e in feed.entries] == [f"urn:p:{n}" for n in range(1, 7)]
+        # The limit was reached on the third page, so the fourth was never asked for.
+        assert [c.kwargs["url"] for c in fetch.await_args_list] == list(pages)
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_links_back_ends_the_walk(self) -> None:
+        conn = _connector(FakeStore(), [FEED_A])
+        pages = {
+            FEED_A: _xml(_page(_entries(1), "page2.xml")),
+            "https://a.example.com/page2.xml": _xml(_page(_entries(2), FEED_A)),
+        }
+        fetch = AsyncMock(side_effect=lambda url, **_: pages[url])
+        with patch(FETCH, new=fetch):
+            feed = await conn._fetch_and_parse_feed(FEED_A)
+        assert len(feed.entries) == 2
+        assert fetch.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_failing_page_keeps_what_was_read(self) -> None:
+        conn = _connector(FakeStore(), [FEED_A])
+        pages = {
+            FEED_A: _xml(_page(_entries(1, 2), "page2.xml")),
+            "https://a.example.com/page2.xml": _xml(b"", status=503),
+        }
+        with patch(FETCH, new=AsyncMock(side_effect=lambda url, **_: pages[url])):
+            feed = await conn._fetch_and_parse_feed(FEED_A)
+        assert [e["id"] for e in feed.entries] == ["urn:p:1", "urn:p:2"]
+
+    @pytest.mark.asyncio
+    async def test_the_sync_takes_entries_from_every_page(self) -> None:
+        store = FakeStore()
+        conn = _connector(store, [FEED_A])
+        pages = {
+            FEED_A: _xml(_page(_entries(1), "page2.xml")),
+            "https://a.example.com/page2.xml": _xml(_page(_entries(2))),
+        }
+        with patch(FETCH, new=AsyncMock(side_effect=lambda url, **_: pages[url])):
+            await conn.run_sync()
+        assert set(store.records) == {"urn:p:1", "urn:p:2"}
+
+
+class TestReviewFindings:
+    @pytest.mark.asyncio
+    async def test_well_formed_xml_that_is_not_a_feed_is_refused(self) -> None:
+        conn = _connector(FakeStore(), [FEED_A])
+        sitemap = b'<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://a.example.com/</loc></url></urlset>'
+        problems: list[str] = []
+        with patch(FETCH, new=AsyncMock(return_value=_xml(sitemap))):
+            assert await conn._fetch_and_parse_feed(FEED_A, problems=problems) is None
+        assert problems == ["not an RSS or Atom feed: no RSS or Atom root element"]
+
+    @pytest.mark.asyncio
+    async def test_streaming_reads_more_pages_only_when_the_entry_is_not_on_the_first(self) -> None:
+        conn = _connector(FakeStore(), [FEED_A])
+        pages = {
+            FEED_A: _xml(_page(_entries(1), "page2.xml")),
+            "https://a.example.com/page2.xml": _xml(_page(_entries(2))),
+        }
+        fetch = AsyncMock(side_effect=lambda url, **_: pages[url])
+
+        def record(external_id: str) -> FileRecord:
+            return FileRecord(
+                record_name="Post", external_record_id=external_id, external_record_group_id=FEED_A,
+                weburl="https://a.example.com/x", origin="CONNECTOR", connector_name="RSS",
+                connector_id="rss-conn-1", record_type="FILE", version=0, is_file=True, mime_type="text/plain",
+            )
+
+        with patch(FETCH, new=fetch):
+            await conn.stream_record(record("urn:p:1"))
+            assert fetch.await_count == 1
+            response = await conn.stream_record(record("urn:p:2"))
+        assert b"".join([c async for c in response.body_iterator]) == b"Feed summary."
+        assert fetch.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_yields_no_text_keeps_the_stored_article(self) -> None:
+        store = FakeStore()
+        conn = _connector(store, [FEED_A], fetch_full_content=True)
+        with patch(FETCH, new=AsyncMock(return_value=_html("The full article."))):
+            await _sync(conn, {FEED_A: _feed(_entry("1"))})
+        kept = store.records[f"{FEED_A}#1"].external_revision_id
+        store.content_writes.clear()
+
+        script_shell = FetchResponse(status_code=200, content_bytes=b"<html><body><div id='app'></div></body></html>",
+                                     headers={"Content-Type": "text/html"}, final_url="", strategy="aiohttp")
+        with patch(FETCH, new=AsyncMock(return_value=script_shell)):
+            await _sync(conn, {FEED_A: _feed(_entry("1"))})
+
+        assert store.content_writes == []
+        assert store.records[f"{FEED_A}#1"].external_revision_id == kept
+
+    @pytest.mark.asyncio
+    async def test_a_failed_batch_write_fails_the_feed_once(self) -> None:
+        store = FakeStore()
+        conn = _connector(store, [FEED_A, FEED_B])
+        conn.batch_size = 2
+        writes = AsyncMock(side_effect=RuntimeError("graph down"))
+        store.on_new_records = writes  # type: ignore[method-assign]
+
+        await _sync(conn, {
+            FEED_A: _feed(*[_entry(str(n), link=f"https://a.example.com/{n}") for n in range(6)]),
+            FEED_B: _feed(),
+        })
+
+        assert writes.await_count == 1
+        sent = conn.notify.await_args.kwargs
+        assert "1 of 2 feed(s)" in sent["message"] and "it could not be saved" in sent["message"]
