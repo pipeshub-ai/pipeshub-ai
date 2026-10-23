@@ -89,14 +89,14 @@ class TestAgentAnswerWithMetadataJSON:
         )
         assert obj.referenceData == ref
 
-    def test_all_confidence_values(self):
-        for level in ("Very High", "High", "Medium", "Low"):
-            obj = AgentAnswerWithMetadataJSON(
-                answer="x",
-                confidence=level,
-                answerMatchType="Exact Match",
-            )
-            assert obj.confidence == level
+    @pytest.mark.parametrize("level", ["Very High", "High", "Medium", "Low"])
+    def test_all_confidence_values(self, level):
+        obj = AgentAnswerWithMetadataJSON(
+            answer="x",
+            confidence=level,
+            answerMatchType="Exact Match",
+        )
+        assert obj.confidence == level
 
     def test_all_answer_match_types(self):
         valid_types = [
