@@ -1,12 +1,15 @@
 """GmailSyncHealth decides a run's outcome; GmailNotices what a person is told."""
 
 import pytest
+from _gmail_errors_fixtures import http_error
 from google.auth.exceptions import RefreshError
 
 from app.connectors.sources.google.common.gmail_errors import GmailFailure
 from app.connectors.sources.google.common.gmail_notices import GmailNotices
-from app.connectors.sources.google.common.gmail_sync_health import GmailSyncHealth, GmailSyncIncomplete
-from _gmail_errors_fixtures import http_error
+from app.connectors.sources.google.common.gmail_sync_health import (
+    GmailSyncHealth,
+    GmailSyncIncomplete,
+)
 
 INTERNALS = ("http", "googleapis", "invalid_grant", "unauthorized_client", "Error", "{", "403", "401", "@")
 

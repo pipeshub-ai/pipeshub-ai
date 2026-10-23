@@ -224,8 +224,14 @@ class GoogleClient(IClient):
                     scopes=credential_scopes,
                 )
 
-                # Create Google Drive service using the credentials
-                client = build(service_name, version, credentials=google_credentials, client_options=client_options)
+                # Create Google Drive service using the credentials. client_options is set only when a
+                # test origin replaces Google's hosts, so a production call stays the two-argument build.
+                client = build(
+                    service_name,
+                    version,
+                    credentials=google_credentials,
+                    **({"client_options": client_options} if client_options else {}),
+                )
             except Exception as e:
                 raise GoogleAuthError("Failed to get individual token: " + str(e)) from e
         else:
@@ -281,7 +287,7 @@ class GoogleClient(IClient):
                     version,
                     credentials=google_credentials,
                     cache_discovery=False,
-                    client_options=client_options,
+                    **({"client_options": client_options} if client_options else {}),
                 )
             except Exception as e:
                 raise AdminServiceError(

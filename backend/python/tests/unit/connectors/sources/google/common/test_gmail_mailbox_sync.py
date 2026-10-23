@@ -12,8 +12,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from _gmail_errors_fixtures import http_error
+from googleapiclient.errors import HttpError
+
 from app.connectors.sources.google.common.gmail_call_policy import GmailCallPolicy
 from app.connectors.sources.google.common.gmail_mailbox_sync import (
     GmailMailboxApi,
@@ -70,18 +71,20 @@ class FakeGmail:
             out["nextPageToken"] = str(start + self.page_size)
         return out
 
-    async def users_threads_get(self, userId: str, id: str, format: str) -> dict:
-        self._maybe_fail(f"threads.get:{id}")
-        msgs = [dict(m) for m in self.messages.values() if m["threadId"] == id]
+    async def users_threads_get(self, userId: str, **kwargs) -> dict:
+        thread_id = kwargs["id"]
+        self._maybe_fail(f"threads.get:{thread_id}")
+        msgs = [dict(m) for m in self.messages.values() if m["threadId"] == thread_id]
         if not msgs:
             raise http_error(404, "notFound")
-        return {"id": id, "messages": msgs}
+        return {"id": thread_id, "messages": msgs}
 
-    async def users_messages_get(self, userId: str, id: str, format: str) -> dict:
-        self._maybe_fail(f"messages.get:{id}")
-        if id not in self.messages:
+    async def users_messages_get(self, userId: str, **kwargs) -> dict:
+        message_id = kwargs["id"]
+        self._maybe_fail(f"messages.get:{message_id}")
+        if message_id not in self.messages:
             raise http_error(404, "notFound")
-        return dict(self.messages[id])
+        return dict(self.messages[message_id])
 
     async def users_history_list(self, userId: str, startHistoryId: str, historyTypes: list[str], maxResults: int,
                                  pageToken: str | None) -> dict:
@@ -101,7 +104,7 @@ class FakeStore:
         self.fail_writes = 0
         self.writes = 0
 
-    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> Any:
+    async def get_record_by_external_id(self, connector_id: str, external_id: str) -> SimpleNamespace | None:
         return self.records.get(external_id)
 
     async def on_new_records(self, batch: list, replace_permissions: bool = True) -> None:
@@ -112,7 +115,7 @@ class FakeStore:
         for record, _ in batch:
             self.records[record.external_record_id] = record
 
-    async def on_record_metadata_update(self, record: Any) -> None:
+    async def on_record_metadata_update(self, record: SimpleNamespace) -> None:
         self.records[record.external_record_id] = record
 
     async def create_record_relation(self, a: str, b: str, kind: str) -> None:
@@ -193,14 +196,14 @@ async def test_an_interrupted_full_read_resumes_without_skipping() -> None:
     calls = {"n": 0}
     original = gmail.users_threads_list
 
-    async def second_page_breaks(**kwargs: Any) -> dict:
+    async def second_page_breaks(**kwargs) -> dict:
         calls["n"] += 1
         if calls["n"] == 2:
             raise http_error(400, "invalidArgument", "Bad Request")
         return await original(**kwargs)
 
     gmail.users_threads_list = second_page_breaks  # type: ignore[method-assign]
-    with pytest.raises(Exception):
+    with pytest.raises(HttpError):
         await make(gmail, store, point).run()
     assert not point.data["k"].get("historyId"), "the cursor is not set while the read is unfinished"
     assert point.data["k"]["fullSyncPageToken"] == "2", "the read records the page it reached after storing it"
@@ -243,7 +246,7 @@ async def test_a_history_error_moves_nothing() -> None:
     cursor = point.data["k"]["historyId"]
     gmail.add("late", "t9", ["INBOX"], 3000)
     gmail.fail["history.list"] = [http_error(400, "invalidArgument")]
-    with pytest.raises(Exception):
+    with pytest.raises(HttpError):
         await make(gmail, store, point).run()
     assert point.data["k"]["historyId"] == cursor
     await make(gmail, store, point).run()
@@ -322,7 +325,7 @@ async def test_a_saved_page_token_gmail_refuses_restarts_the_read_once() -> None
     point.data["k"] = {"fullSyncHistoryId": "100", "fullSyncPageToken": "stale"}
     original = gmail.users_threads_list
 
-    async def refuses_stale(**kwargs: Any) -> dict:
+    async def refuses_stale(**kwargs) -> dict:
         if kwargs.get("pageToken") == "stale":
             raise http_error(400, "invalidArgument", "Invalid pageToken")
         return await original(**kwargs)
@@ -337,11 +340,11 @@ async def test_a_page_refused_mid_read_fails_the_mailbox_instead_of_looping() ->
     gmail, store, point = mailbox_of(6), FakeStore(), FakeSyncPoint()
     original = gmail.users_threads_list
 
-    async def page_two_always_refused(**kwargs: Any) -> dict:
+    async def page_two_always_refused(**kwargs) -> dict:
         if kwargs.get("pageToken"):
             raise http_error(400, "invalidArgument", "Bad Request")
         return await original(**kwargs)
 
     gmail.users_threads_list = page_two_always_refused  # type: ignore[method-assign]
-    with pytest.raises(Exception):
+    with pytest.raises(HttpError):
         await make(gmail, store, point).run()

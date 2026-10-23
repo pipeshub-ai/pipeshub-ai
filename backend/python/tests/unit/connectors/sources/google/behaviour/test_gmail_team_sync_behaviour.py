@@ -13,8 +13,6 @@ from types import SimpleNamespace
 from typing import Any, Optional
 
 import pytest
-
-from app.connectors.sources.google.common.gmail_sync_health import GmailSyncIncomplete
 from drive_world import DriveWorld
 from fastapi.responses import StreamingResponse
 from gmail_world import GmailWorld
@@ -25,6 +23,7 @@ from google_behaviour_fakes import (
     FakeSyncPointStore,
 )
 
+from app.connectors.sources.google.common.gmail_sync_health import GmailSyncIncomplete
 from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
 from app.models.entities import RecordType
 from app.models.permission import PermissionType

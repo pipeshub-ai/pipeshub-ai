@@ -1,11 +1,13 @@
 """GmailCallPolicy: waits through rate limits and brief outages, within its budgets."""
 
 import logging
+from collections.abc import Awaitable, Callable
 
 import pytest
+from _gmail_errors_fixtures import http_error
+from googleapiclient.errors import HttpError
 
 from app.connectors.sources.google.common.gmail_call_policy import GmailCallPolicy
-from _gmail_errors_fixtures import http_error
 
 
 class Clock:
@@ -25,7 +27,9 @@ def policy(clock: Clock, **kwargs) -> GmailCallPolicy:
     return GmailCallPolicy(logging.getLogger("t"), sleep=clock.sleep, clock=clock.time, jitter=lambda: 1.0, **kwargs)
 
 
-def failing(errors: list[BaseException], result: object = "ok"):
+def failing(
+    errors: list[BaseException], result: object = "ok"
+) -> tuple[Callable[[], Awaitable[object]], dict[str, int]]:
     calls = {"n": 0}
 
     async def call() -> object:
@@ -69,7 +73,7 @@ async def test_does_not_retry_what_waiting_cannot_fix() -> None:
 async def test_gives_up_on_an_outage_after_its_cap() -> None:
     clock = Clock()
     call, _ = failing([http_error(503)] * 50)
-    with pytest.raises(Exception):
+    with pytest.raises(HttpError):
         await policy(clock, max_outage_wait_s=10).run(call, "threads.get")
     assert sum(clock.slept) <= 10
 
@@ -80,10 +84,10 @@ async def test_total_budget_stops_all_waiting() -> None:
     # Backoff 2, 4, 8 s without jitter: 2 + 4 fit a 7 s budget, the 8 s wait does not.
     p = policy(clock, total_wait_s=7, max_outage_wait_s=100)
     call, _ = failing([http_error(503)] * 50)
-    with pytest.raises(Exception):
+    with pytest.raises(HttpError):
         await p.run(call, "a")
     second, calls = failing([http_error(503)])
-    with pytest.raises(Exception):
+    with pytest.raises(HttpError):
         await p.run(second, "b")
     assert calls["n"] == 1, "a spent budget is not waited on again"
     assert p.waited_s == 6

@@ -1,10 +1,14 @@
 """What a Gmail or Google sign-in failure means (gmail_errors.classify)."""
 
 import pytest
+from _gmail_errors_fixtures import http_error
 from google.auth.exceptions import RefreshError
 
-from app.connectors.sources.google.common.gmail_errors import GmailFailure, classify, retry_after_seconds
-from _gmail_errors_fixtures import http_error
+from app.connectors.sources.google.common.gmail_errors import (
+    GmailFailure,
+    classify,
+    retry_after_seconds,
+)
 
 
 @pytest.mark.parametrize(("error", "failure"), [
