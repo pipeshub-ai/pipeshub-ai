@@ -2340,12 +2340,18 @@ class ConfluenceConnector(BaseConnector):
                                     self.logger.debug(f"Error fetching v2 attachments: {v2_error}")
 
                                 attachment_mime_types: dict[str, str] = {}
+                                # Too big to inline into the page: kept as an attachment record instead,
+                                # or it would be in neither.
+                                oversized_image_ids: set[str] = set()
                                 for att in attachments:
                                     att_id = att.get("id")
                                     if att_id:
                                         mime_type = att.get("mediaType", "")
                                         if mime_type:
                                             attachment_mime_types[att_id] = mime_type
+                                        size = att.get("fileSize", (att.get("extensions") or {}).get("fileSize"))
+                                        if isinstance(size, int) and size > MAX_INLINE_IMAGE_BYTES:
+                                            oversized_image_ids.add(att_id)
                                 if content_type == "page":
                                     page_adf_response = await datasource.get_page_content_v2(
                                         page_id=item_id,
@@ -2373,7 +2379,7 @@ class ConfluenceConnector(BaseConnector):
                                         attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
                                         if attachment_id:
                                             mime_type = attachment_mime_types.get(attachment_id, "")
-                                            if mime_type.startswith("image/"):
+                                            if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
                                                 embedded_image_ids.add(attachment_id)
 
                                 try:
@@ -2407,7 +2413,7 @@ class ConfluenceConnector(BaseConnector):
                                                     attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
                                                     if attachment_id:
                                                         mime_type = attachment_mime_types.get(attachment_id, "")
-                                                        if mime_type.startswith("image/"):
+                                                        if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
                                                             embedded_image_ids.add(attachment_id)
                                 except Exception as comment_error:
                                     self.logger.debug(f"Failed to fetch footer comments for embedded image detection: {comment_error}", exc_info=True)
@@ -2443,7 +2449,7 @@ class ConfluenceConnector(BaseConnector):
                                                     attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
                                                     if attachment_id:
                                                         mime_type = attachment_mime_types.get(attachment_id, "")
-                                                        if mime_type.startswith("image/"):
+                                                        if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
                                                             embedded_image_ids.add(attachment_id)
                                 except Exception as comment_error:
                                     self.logger.debug(f"Failed to fetch inline comments for embedded image detection: {comment_error}", exc_info=True)

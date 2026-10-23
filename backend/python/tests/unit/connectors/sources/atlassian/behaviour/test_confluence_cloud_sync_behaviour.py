@@ -588,6 +588,19 @@ class TestPageSync:
         assert "att2" in db.records and "att1" not in db.records
         assert db.records["att2"].parent_node_id == db.records["10"].id
 
+    async def test_an_image_too_big_to_show_inside_the_page_stays_a_file(self, api, db, checkpoints, search) -> None:
+        poster = {"id": "att1", "title": "poster.png", "mediaType": "image/png", "fileId": "media-1",
+                  "fileSize": 50 * 1024 * 1024, "version": {"number": 1}}
+        search.by_cursor[None] = search_page([v1_page("10", attachments=[poster])])
+        api.on("GET", f"{V2}/pages/10/attachments", {"results": [poster], "_links": {"base": WIKI}})
+        adf = '{"type":"doc","content":[{"type":"mediaSingle","content":[{"type":"media","attrs":{"id":"media-1","type":"file"}}]}]}'
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": adf}}})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att1" in db.records, "the page body leaves it out, so it is kept as a file"
+
 
 class TestGroups:
     async def test_a_failed_member_read_does_not_empty_the_group(self, api, db, checkpoints) -> None:
