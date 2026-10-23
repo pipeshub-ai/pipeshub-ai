@@ -337,7 +337,7 @@ class TestMarkdownParserShim:
         from app.modules.parsers.markdown.markdown_parser import MarkdownParserProtocol
 
         class _Concrete(MarkdownParserProtocol):
-            pass
+            """Concrete subclass that keeps the protocol's default method bodies."""
 
         instance = _Concrete()
         result = instance.extract_and_replace_images("")
