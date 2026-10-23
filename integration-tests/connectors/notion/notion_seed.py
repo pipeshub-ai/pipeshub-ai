@@ -158,6 +158,21 @@ class NotionSeed:
         )
 
 
+def load_seed_manifest(path: str) -> NotionSeed:
+    """A :class:`NotionSeed` written by the simulator's fixture builder: the same fields, sets as sorted lists."""
+    import dataclasses
+    import json
+
+    raw = json.loads(open(path, encoding="utf-8").read())
+    values: dict[str, Any] = {}
+    for f in dataclasses.fields(NotionSeed):
+        if f.name not in raw:
+            raise ValueError(f"{path}: the seed manifest has no {f.name!r}; rebuild it with the current seeder")
+        value = raw[f.name]
+        values[f.name] = set(value) if "set[" in str(f.type) else value
+    return NotionSeed(**values)
+
+
 def _normalize_id(raw: str) -> str:
     """Notion returns dashed uuids everywhere; ids are compared as-is."""
     return str(raw)

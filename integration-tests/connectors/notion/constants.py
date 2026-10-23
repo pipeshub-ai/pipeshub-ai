@@ -100,3 +100,6 @@ COMMENT_ATTACHMENT_FILENAME = "report.pdf"
 ENV_TOKEN = "NOTION_TEST_API_TOKEN"
 ENV_ROOT_PAGE_ID = "NOTION_TEST_ROOT_PAGE_ID"
 ENV_ROOT_DATABASE_ID = "NOTION_TEST_ROOT_DATABASE_ID"
+# A manifest of a fixture tree that already exists (fixtures/notion_sim_seed.json for the Notion simulator's
+# content pack): the suite reads it instead of seeding, and leaves the tree in place at teardown.
+ENV_SEED_MANIFEST = "NOTION_TEST_SEED_MANIFEST"

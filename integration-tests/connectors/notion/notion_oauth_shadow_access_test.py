@@ -67,6 +67,9 @@ async def approved_notion_connector(pipeshub_client, graph_provider) -> AsyncGen
             secrets=[_CLIENT_ID, _CLIENT_SECRET, _REFRESH_TOKEN],
             required=False,
         )
+    if os.getenv("NOTION_API_BASE_URL"):
+        # The consent token belongs to the real workspace; the connector would take it to the other endpoint.
+        pytest.skip("NOTION_API_BASE_URL points the connector away from the Notion workspace this token is for")
 
     instance = pipeshub_client.create_connector(
         connector_type=NOTION_CONNECTOR_TYPE,
