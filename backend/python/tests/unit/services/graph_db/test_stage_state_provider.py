@@ -253,6 +253,10 @@ def _connector_delete_ready(provider: ArangoHTTPProvider | Neo4jProvider, *, sta
     provider.begin_transaction = AsyncMock(return_value="txn1")
     provider.commit_transaction = AsyncMock()
     provider.rollback_transaction = AsyncMock()
+    if isinstance(provider, Neo4jProvider):
+        # Auto-committed batches stash the ids the cleanup needs and drop the stash with the app.
+        provider._stash_connector_delete_handles = AsyncMock(side_effect=lambda _c, groups, vrids: (list(groups), vrids))
+        provider._delete_connector_with_its_delete_handles = AsyncMock(return_value=1)
 
 
 def _providers() -> list[ArangoHTTPProvider | Neo4jProvider]:

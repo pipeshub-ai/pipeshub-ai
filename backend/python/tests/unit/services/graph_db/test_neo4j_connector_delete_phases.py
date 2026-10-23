@@ -37,6 +37,8 @@ def _provider() -> Neo4jProvider:
     p._delete_nodes_by_connector_id = AsyncMock(return_value=(0, True))
     p._delete_stage_states_by_connector_id = AsyncMock(return_value=(0, True))
     p.remove_authenticated_as = AsyncMock()
+    p._stash_connector_delete_handles = AsyncMock(side_effect=lambda _c, groups, vrids: (list(groups), vrids))
+    p._delete_connector_with_its_delete_handles = AsyncMock(return_value=1)
     return p
 
 
@@ -59,3 +61,89 @@ async def test_failed_batch_keeps_the_app_node() -> None:
 
     assert result["success"] is False, result
     assert all(c.args[1] != ["c1"] for c in p._delete_nodes_by_keys.await_args_list)
+    p._delete_connector_with_its_delete_handles.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_reports_the_ids_an_earlier_attempt_already_deleted() -> None:
+    """An attempt that failed after its record-group batches committed leaves fewer groups to
+    collect; the stash still holds them, so the vector cleanup strips every one."""
+    p = _provider()
+    p._collect_connector_entities.return_value.update(record_group_keys=["g2"], virtual_record_ids=["v2"])
+    p._stash_connector_delete_handles.side_effect = None
+    p._stash_connector_delete_handles.return_value = (["g1", "g2"], ["v1", "v2"])
+
+    result = await p._delete_connector_instance("c1", "org")
+
+    assert result["success"] is True, result
+    assert result["record_group_ids"] == ["g1", "g2"]
+    # Without membership cleanup the explicit list is the only way to reach the points.
+    assert result["virtual_record_ids"] == ["v1", "v2"]
+    p._stash_connector_delete_handles.assert_awaited_once_with("c1", ["g2"], ["v2"])
+    p._delete_connector_with_its_delete_handles.assert_awaited_once_with("c1")
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_deleted_when_the_ids_cannot_be_stashed() -> None:
+    p = _provider()
+    p._stash_connector_delete_handles.side_effect = ConnectionError("graph down")
+
+    result = await p._delete_connector_instance("c1", "org")
+
+    assert result["success"] is False, result
+    p.delete_blocks_by_connector_id.assert_not_awaited()
+    p._delete_nodes_by_keys.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_caller_transaction_deletes_without_a_stash() -> None:
+    """One transaction commits or rolls back whole: nothing is left for a retry to miss."""
+    p = _provider()
+
+    result = await p._delete_connector_instance("c1", "org", transaction="caller-txn")
+
+    assert result["success"] is True, result
+    p._stash_connector_delete_handles.assert_not_awaited()
+    p._delete_connector_with_its_delete_handles.assert_not_awaited()
+    assert any(c.args[1] == ["c1"] for c in p._delete_nodes_by_keys.await_args_list)
+
+
+class TestStash:
+    @staticmethod
+    def _stash_provider(existing: list[dict]) -> Neo4jProvider:
+        p = Neo4jProvider.__new__(Neo4jProvider)
+        p.logger = MagicMock()
+        p.client = MagicMock(execute_query=AsyncMock(side_effect=lambda q, **_: existing if "RETURN" in q else []))
+        return p
+
+    @pytest.mark.asyncio
+    async def test_only_new_ids_are_written_and_all_are_returned(self) -> None:
+        p = self._stash_provider([{"kind": "recordGroup", "ids": ["g1"]}, {"kind": "virtualRecord", "ids": ["v1"]}])
+
+        groups, vrids = await p._stash_connector_delete_handles("c1", ["g1", "g2", "g2", ""], ["v2"])
+
+        assert (groups, vrids) == (["g1", "g2"], ["v1", "v2"])
+        writes = [c.kwargs["parameters"] for c in p.client.execute_query.await_args_list[1:]]
+        assert writes == [
+            {"connector_id": "c1", "kind": "recordGroup", "ids": ["g2"]},
+            {"connector_id": "c1", "kind": "virtualRecord", "ids": ["v2"]},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ids_are_written_in_chunks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import app.services.graph_db.neo4j.neo4j_provider as module
+
+        monkeypatch.setattr(module, "_CONNECTOR_DELETE_HANDLE_CHUNK", 2)
+        p = self._stash_provider([])
+
+        groups, vrids = await p._stash_connector_delete_handles("c1", ["a", "b", "c"], None)
+
+        assert (groups, vrids) == (["a", "b", "c"], None)
+        assert [c.kwargs["parameters"]["ids"] for c in p.client.execute_query.await_args_list[1:]] == [["a", "b"], ["c"]]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_raises(self) -> None:
+        p = self._stash_provider([])
+        p.client.execute_query.side_effect = [[], ConnectionError("graph down")]
+        with pytest.raises(ConnectionError):
+            await p._stash_connector_delete_handles("c1", ["g1"], None)

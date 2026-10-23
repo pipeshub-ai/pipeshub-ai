@@ -243,6 +243,10 @@ TAXONOMY_ALIAS_REL = "ALIAS_OF"
 TAXONOMY_ALIAS_HEAL_MARKER = "taxonomy_alias_nodes_v1"
 SCHEMA_MIGRATION_LABEL = "SchemaMigration"
 _ALIAS_HEAL_BATCH = 1000
+# Ids a connector delete must report, kept while its batches run; see
+# _stash_connector_delete_handles. Deleted with the connector node.
+_CONNECTOR_DELETE_HANDLE_LABEL = "ConnectorDeleteHandle"
+_CONNECTOR_DELETE_HANDLE_CHUNK = 5000
 
 # Quantified path pattern walking child -> canonical parent. The step predicate
 # sits inside the pattern so expansion stops at the first non-canonical edge
@@ -11021,9 +11025,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         transaction: str | None = None
     ) -> dict[str, Any]:
-        """
-        Delete a connector instance and all its related data with single-transaction atomicity.
-        Collects data first, then deletes within a single transaction for rollback capability.
+        """Delete a connector instance and all its related data.
+
+        Without a caller's transaction the nodes go in auto-committed batches, not one
+        transaction, and the connector node goes last, so a failed attempt leaves a
+        connector a retry finishes. The ids the vector cleanup needs are stashed before
+        anything is deleted, so the retry's result still names everything the connector
+        had, not only what the failed attempt left.
         """
         result = await self._delete_connector_instance(connector_id, org_id, transaction)
         if result.get("success"):
@@ -11087,6 +11095,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"RecordGroups: {len(collected['record_group_keys'])}, Roles: {len(collected['role_keys'])}, "
                 f"Groups: {len(collected['group_keys'])}, TypeNodes: {len(isoftype_targets)}"
             )
+
+            if transaction is None:
+                # Before the first delete: a retry re-collects only what an earlier
+                # attempt left, and the vector cleanup needs every id the connector had.
+                stashed_groups, stashed_vrids = await self._stash_connector_delete_handles(
+                    connector_id,
+                    collected["record_group_keys"],
+                    collected.get("virtual_record_ids") if needs_virtual_record_ids else None,
+                )
+                collected["record_group_keys"] = stashed_groups
+                if stashed_vrids is not None:
+                    collected["virtual_record_ids"] = stashed_vrids
 
             # Blocks are the bulk of a code connector. DETACH DELETE of the whole
             # set inside the write txn below hits dbms.memory.transaction.total.max
@@ -11196,11 +11216,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 await self.remove_authenticated_as(connector_id, transaction=transaction)
 
                 # Step 7: Delete the app itself
-                deleted_app, _ = await self._delete_nodes_by_keys(
-                    transaction,
-                    [connector_id],
-                    CollectionNames.APPS.value
-                )
+                if created_transaction:
+                    deleted_app = await self._delete_connector_with_its_delete_handles(connector_id)
+                else:
+                    deleted_app, _ = await self._delete_nodes_by_keys(
+                        transaction,
+                        [connector_id],
+                        CollectionNames.APPS.value
+                    )
                 if deleted_app == 0:
                     raise Exception(
                         f"CRITICAL: Failed to delete the connector app itself. Connector {connector_id} may still exist."
@@ -11307,6 +11330,63 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "success": False,
                 "error": f"Failed to delete connector instance: {str(e)}"
             }
+
+    async def _stash_connector_delete_handles(
+        self,
+        connector_id: str,
+        record_group_ids: list[str],
+        virtual_record_ids: list[str] | None,
+    ) -> tuple[list[str], list[str] | None]:
+        """Add the ids not yet stashed for this connector's delete and return everything
+        stashed: these ids plus those of earlier attempts, whose nodes may already be gone.
+
+        Written in chunks before anything is deleted; a failed write raises, so the delete
+        stops before it could lose ids. ``virtual_record_ids`` None: not collected.
+        """
+        label = _CONNECTOR_DELETE_HANDLE_LABEL
+        rows = await self.client.execute_query(
+            f"MATCH (h:{label} {{connectorId: $connector_id}}) RETURN h.kind AS kind, h.ids AS ids",
+            parameters={"connector_id": connector_id},
+        )
+        stashed: dict[str, list[str]] = {"recordGroup": [], "virtualRecord": []}
+        for row in rows or []:
+            stashed.setdefault(row["kind"], []).extend(row["ids"] or [])
+        kinds = [("recordGroup", record_group_ids)]
+        if virtual_record_ids is not None:
+            kinds.append(("virtualRecord", virtual_record_ids))
+        for kind, ids in kinds:
+            known = set(stashed[kind])
+            new = [i for i in dict.fromkeys(ids) if i and i not in known]
+            for start in range(0, len(new), _CONNECTOR_DELETE_HANDLE_CHUNK):
+                await self.client.execute_query(
+                    f"CREATE (:{label} {{connectorId: $connector_id, kind: $kind, ids: $ids}})",
+                    parameters={
+                        "connector_id": connector_id,
+                        "kind": kind,
+                        "ids": new[start:start + _CONNECTOR_DELETE_HANDLE_CHUNK],
+                    },
+                )
+            stashed[kind].extend(new)
+        groups = list(dict.fromkeys(stashed["recordGroup"]))
+        vrids = list(dict.fromkeys(stashed["virtualRecord"])) if virtual_record_ids is not None else None
+        return groups, vrids
+
+    async def _delete_connector_with_its_delete_handles(self, connector_id: str) -> int:
+        """Delete the connector node and its stashed delete ids in one statement, so the
+        ids never outlive the node and the node never outlives them. Returns 1 or 0."""
+        app_label = collection_to_label(CollectionNames.APPS.value)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (a:{app_label} {{id: $connector_id}})
+            OPTIONAL MATCH (h:{_CONNECTOR_DELETE_HANDLE_LABEL} {{connectorId: $connector_id}})
+            WITH a, collect(h) AS handles
+            FOREACH (h IN handles | DELETE h)
+            DETACH DELETE a
+            RETURN count(a) AS deleted
+            """,
+            parameters={"connector_id": connector_id},
+        )
+        return int(rows[0]["deleted"]) if rows else 0
 
     async def get_key_by_external_file_id(
         self,
