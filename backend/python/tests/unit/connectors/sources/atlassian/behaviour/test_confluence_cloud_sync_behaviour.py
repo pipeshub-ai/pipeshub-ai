@@ -1391,9 +1391,10 @@ class TestContentGoneFromSource:
         await connector._sync_spaces_content([ENG])
 
         assert "11" in db.records, "the listing skipped it, the filter did not exclude it"
-        assert self._checkpoint(checkpoints) is None
+        # Read again by id, it is seen, so the space settles and the full sync can finish.
+        assert self._checkpoint(checkpoints) is not None
 
-    async def test_with_no_content_filter_a_full_sync_never_removes_what_the_listing_skipped(
+    async def test_with_no_content_filter_a_full_sync_reads_again_what_the_listing_skipped(
         self, api, db, checkpoints, search
     ) -> None:
         connector = await self._two_pages_synced(api, db, checkpoints, search)
@@ -1403,7 +1404,7 @@ class TestContentGoneFromSource:
         await connector._sync_spaces_content([ENG])
 
         assert "11" in db.records
-        assert not any(re.search(r"(?:^| AND )id in \(", q.get("cql", "")) for q in search.queries)
+        assert any(re.search(r"(?:^| AND )id in \(11\)", q.get("cql", "")) for q in search.queries), "read again by id"
 
     @pytest.mark.parametrize("failure", ["search", "graph"])
     async def test_a_failed_filter_check_removes_nothing_and_keeps_the_full_sync_owed(

@@ -2064,11 +2064,12 @@ class TestCreatePermissionFromPrincipal:
         assert perm is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_a_failed_lookup_raises(self):
+        """Not "not found": a caller keeps what is stored instead of dropping the grant."""
         c = _conn()
-        c.data_store_provider.transaction.side_effect = Exception("DB error")
-        perm = await c._create_permission_from_principal("user", "acc-1", PermissionType.READ)
-        assert perm is None
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=Exception("DB error"))
+        with pytest.raises(Exception, match="DB error"):
+            await c._create_permission_from_principal("user", "acc-1", PermissionType.READ)
 
 
 # ===========================================================================
@@ -3781,6 +3782,7 @@ class TestCreatePermissionFromPrincipalFullCoverage:
     @pytest.mark.asyncio
     async def test_user_not_found_no_pseudo(self):
         c = _c()
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
         perm = await c._create_permission_from_principal("user", "u1", PermissionType.READ)
         assert perm is None
 
@@ -3805,6 +3807,7 @@ class TestCreatePermissionFromPrincipalFullCoverage:
     @pytest.mark.asyncio
     async def test_group_not_found(self):
         c = _c()
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
         perm = await c._create_permission_from_principal("group", "g1", PermissionType.READ)
         assert perm is None
 
@@ -8645,14 +8648,15 @@ class TestFixLegacyMimeTypes:
 
 class TestTransformSpacePermissionException:
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_is_raised_so_the_space_keeps_its_stored_access(self):
         c = _mk_connector()
         c._create_permission_from_principal = AsyncMock(side_effect=RuntimeError("boom"))
         perm_data = {
             "principal": {"type": "user", "id": "u1"},
             "operation": {"key": "read", "targetType": "space"},
         }
-        assert await c._transform_space_permission(perm_data) is None
+        with pytest.raises(RuntimeError):
+            await c._transform_space_permission(perm_data)
 
 
 class TestParseConfluencePageToBlocks:
