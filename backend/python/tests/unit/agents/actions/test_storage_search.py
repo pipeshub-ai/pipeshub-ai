@@ -1900,7 +1900,7 @@ class TestFindRecordsSaysWhenOutputWasCut:
             d.mkdir(parents=True)
             (d / f"record_{i:024x}.json").write_text("{}")
         tool = _make_perm_tool(str(root), {})
-        tool._check_accessible_vrids = AsyncMock(side_effect=lambda v: {x: "r" for x in v})
+        tool._check_accessible_vrids = AsyncMock(side_effect=lambda v: dict.fromkeys(v, "r"))
         views = os.path.join(os.path.dirname(os.path.dirname(str(root))), ".pattern_match_views")
         task = _aio.create_task(tool._build_accessible_view(str(root)))
         for _ in range(400):
