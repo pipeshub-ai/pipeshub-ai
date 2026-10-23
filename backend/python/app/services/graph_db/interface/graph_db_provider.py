@@ -1819,8 +1819,13 @@ class IGraphDBProvider(ABC):
         record_ids: list[str],
         relation_types: list[str],
         transaction: Optional[str] = None,
+        limit_per_direction: int | None = None,
     ) -> dict[str, dict[str, list[dict[str, Any]]]]:
         """Edges for many records and relation types at once.
+
+        ``limit_per_direction`` caps the parents and the children kept per record,
+        so a hit with thousands of attachments costs a bounded read. Which edges
+        survive the cap is unspecified.
 
         Returns {record_id: {"parents": [...], "children": [...]}} where the two
         lists hold what `get_parent_record_ids_by_relation_type` and
@@ -1868,6 +1873,8 @@ class IGraphDBProvider(ABC):
             for edge in edges or []:
                 if not isinstance(edge, Mapping):
                     continue
+                if limit_per_direction is not None and len(bucket) >= limit_per_direction:
+                    break
                 bucket.append({**edge, "relationType": relation_type})
         return out
 
@@ -7197,6 +7204,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         name_parents: bool = True,
         user_key: str | None = None,
+        max_depth: int = 50,
     ) -> dict[str, Any]:
         """One page of what the user may see under one start node: the App's
         direct children, a folder or group's (``include_scope`` adds the browse
@@ -7204,7 +7212,8 @@ class IGraphDBProvider(ABC):
         Returns ``{rows, hasMore, total, counts, scope}``; rows carry their own
         ``sortKey``/``nullRank`` for the partition merge. With neither
         ``granted_ids`` nor ``grants_by_connector``, ``user_key`` has the page read
-        the grants of its own connector alone (``get_knowledge_hub_connector_grants``)."""
+        the grants of its own connector alone (``get_knowledge_hub_connector_grants``).
+        ``max_depth`` bounds a flatten's walk below the start (hops)."""
         raise NotImplementedError
 
     async def _kh_v3_shared(self, key: tuple, compute: Callable[[], Awaitable[_T]]) -> _T:

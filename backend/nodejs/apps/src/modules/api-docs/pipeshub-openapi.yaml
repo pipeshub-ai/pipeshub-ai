@@ -5891,6 +5891,10 @@ components:
         an indexed record but its stored content could not be loaded. An id
         that does not exist, a record in the trash, and a record the caller
         may not read all answer `403` instead.
+
+        An unbudgeted read returns at most 140,000 characters of `content`. A
+        longer record is cut there, the content ends with a marker line, and
+        the response carries `truncated: true` and `totalChars`.
       required:
         - content
       properties:
@@ -5900,7 +5904,17 @@ components:
             The record's full parsed content as a single plain-text string;
             for a record whose content is not indexed yet, a description of
             the record and its indexing status instead (see above). In a
-            budgeted read, the part of the record (or thread) that fit.
+            budgeted read, the part of the record (or thread) that fit. An unbudgeted read
+            returns at most 140,000 characters; a longer record is cut there and the content
+            ends with a truncation marker (see `truncated`).
+        truncated:
+          type: boolean
+          description: >-
+            Present and true only on an unbudgeted read whose content was cut at 140,000
+            characters. `totalChars` is then the length of the whole content.
+        totalChars:
+          type: integer
+          description: Present only with `truncated`. The length of the record's whole content, in characters.
         mode:
           type: string
           enum: [record, thread]
@@ -39827,9 +39841,9 @@ paths:
 
         **Reading part of a long record, or a whole Slack thread:**
 
-        With no query parameters the whole record is returned, which for a
-        pull request with its diffs or a long document can run to hundreds of
-        thousands of characters. Pass any of `maxChars`, `startBlock`, `query`
+        With no query parameters the record is returned up to 140,000
+        characters (a longer one is cut and marked `truncated`), which for a
+        pull request with its diffs or a long document is a large response. Pass any of `maxChars`, `startBlock`, `query`
         or `mode` for a budgeted read instead: the response stays within
         `maxChars` and says how to continue (`nextStartBlock`, or
         `nextStartRecord` for a thread). `query` makes a record too large for

@@ -5535,7 +5535,7 @@ class TestEnrichRecordsWithGraphContext:
         gp.get_parent_record_ids_by_relation_type = AsyncMock(side_effect=_parent)
         gp.get_child_record_ids_by_relation_type = AsyncMock(side_effect=_child)
 
-        async def _relations_batch(record_ids, relation_types, transaction=None):
+        async def _relations_batch(record_ids, relation_types, transaction=None, limit_per_direction=None):
             return {
                 rid: {
                     "parents": [
@@ -5938,6 +5938,8 @@ class TestEnrichRecordsWithGraphContext:
         from app.utils.chat_helpers import NODE_RELATION_ENRICHMENT_TYPES
         requested = set(gp.get_node_relations_batch.await_args.args[1])
         assert requested == {rel.value for rel in NODE_RELATION_ENRICHMENT_TYPES}
+        from app.utils.chat_helpers import RELATION_FETCH_LIMIT_PER_DIRECTION
+        assert gp.get_node_relations_batch.await_args.kwargs["limit_per_direction"] == RELATION_FETCH_LIMIT_PER_DIRECTION
         assert gp.get_parent_record_ids_by_relation_type.await_count == 0
         assert gp.get_child_record_ids_by_relation_type.await_count == 0
 
@@ -7506,3 +7508,18 @@ class TestAccessibleNodeIds:
                 raise RuntimeError("graph down")
 
         assert await accessible_node_ids_for_enrichment(self._graph(lookup), {"r1"}, "u1", "o1") == set()
+
+
+@pytest.mark.asyncio
+async def test_the_per_record_fallback_is_bounded_like_the_batch() -> None:
+    from app.utils.chat_helpers import (
+        RELATION_FETCH_LIMIT_PER_DIRECTION,
+        _relations_per_record,
+    )
+
+    gp = MagicMock()
+    many = [{"record_id": f"c{i}"} for i in range(RELATION_FETCH_LIMIT_PER_DIRECTION * 4)]
+    gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=many)
+    gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
+    out = await _relations_per_record(gp, ["a"], ["PARENT_CHILD", "ATTACHMENT"])
+    assert len(out["a"]["children"]) == RELATION_FETCH_LIMIT_PER_DIRECTION

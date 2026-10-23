@@ -208,24 +208,8 @@ async def test_a_filtered_scoped_request_flattens(service, provider) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="depth is accepted by get_nodes and never read; "
-           "the connector page query has no depth parameter to receive it",
-)
 async def test_depth_bounds_a_flattened_request(service, provider) -> None:
-    """The agent navigator asks for a bounded flatten.
-
-    `navigator.py` clamps depth to its own maximum, passes it, and then computes
-    each row's nesting level from it — so it believes the bound was applied. v2
-    drops it and flattens the whole subtree up to `_KH_V2_MAX_DEPTH` (50), so an
-    agent asking for two levels can receive fifty. No error is raised anywhere,
-    which is why nothing caught it.
-
-    Marked xfail rather than fixed: the remedy is a product decision — bound the
-    traversal in the provider, clamp by level in the service after fetching, or
-    retire the parameter and update the navigator.
-    """
+    """The agent navigator asks for a bounded flatten: the provider walks at most `depth` levels."""
     provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
         [row("r1", "Record")], scope=admitted_scope()
     )
@@ -234,7 +218,7 @@ async def test_depth_bounds_a_flattened_request(service, provider) -> None:
         flattened=True, depth=2,
     )
     kwargs = provider.get_knowledge_hub_connector_page_v3.call_args.kwargs
-    assert kwargs.get("depth") == 2, sorted(kwargs)
+    assert kwargs["max_depth"] == 2
 
 
 @pytest.mark.asyncio

@@ -876,6 +876,10 @@ NODE_RELATION_ENRICHMENT_TYPES: frozenset[RecordRelations] = frozenset({
 
 # Related records listed (id + name) per hit, after the permission check.
 MAX_RELATED_RECORDS_PER_HIT = 50
+# Edges read per hit and direction, before the permission check: a hit with
+# thousands of attachments costs a bounded read. 3x oversamples so that
+# unreadable neighbours do not starve the kept 50.
+RELATION_FETCH_LIMIT_PER_DIRECTION = 3 * MAX_RELATED_RECORDS_PER_HIT
 # Of those, how many also get full graph metadata + summary (one blob fetch each).
 MAX_FULL_METADATA_RELATED_PER_HIT = 15
 
@@ -1467,6 +1471,8 @@ async def _relations_per_record(
             continue
         bucket = "parents" if outgoing else "children"
         for edge in result or []:
+            if len(out[record_id][bucket]) >= RELATION_FETCH_LIMIT_PER_DIRECTION:
+                break
             out[record_id][bucket].append({**edge, "relationType": relation_type})
     return out
 
@@ -1490,7 +1496,7 @@ async def _fetch_edges_for_records(
     by_value = {rel.value: rel for rel in NODE_RELATION_ENRICHMENT_TYPES}
     try:
         relations = await graph_provider.get_node_relations_batch(
-            record_ids, list(by_value),
+            record_ids, list(by_value), limit_per_direction=RELATION_FETCH_LIMIT_PER_DIRECTION,
         )
     except Exception as e:
         # Returning {} here drops linked-record context for every hit in the

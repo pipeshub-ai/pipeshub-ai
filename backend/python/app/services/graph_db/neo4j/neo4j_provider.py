@@ -8866,8 +8866,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         relation_types: list[str],
         transaction: Optional[str] = None,
+        limit_per_direction: int | None = None,
     ) -> dict[str, dict[str, list[dict[str, Any]]]]:
-        """Both edge directions for every record, in one query.
+        """Both edge directions for every record, in one query, at most
+        ``limit_per_direction`` edges per record and direction (all when None).
 
         The per-record methods cost one query each per relation type per
         direction; a turn enriching 30 hits over 2 relation types spent 120
@@ -8879,21 +8881,40 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not record_ids or not relation_types:
             return out
         try:
-            query = """
-            MATCH (a:Record)-[r:NODE_RELATION|RECORD_LINK]-(b:Record)
-            WHERE a.id IN $record_ids AND r.relationshipType IN $relation_types
-            RETURN a.id AS anchor_id,
-                   b.id AS record_id,
-                   startNode(r).id = a.id AS outgoing,
-                   r.relationshipType AS relationType,
-                   COALESCE(r.parentTableName, '') AS parentTable,
-                   COALESCE(r.childTableName, '') AS childTable,
-                   COALESCE(r.sourceColumn, '') AS sourceColumn,
-                   COALESCE(r.targetColumn, '') AS targetColumn
+            # One LIMIT per anchor and direction: a folder with 100k children is
+            # cut in the database, not after the rows are shipped.
+            def arm(pattern: str, outgoing: str, alias: str) -> str:
+                return f"""
+            CALL (rid) {{
+                MATCH {pattern}
+                WHERE r.relationshipType IN $relation_types
+                WITH r, b LIMIT $limit
+                RETURN collect({{
+                    record_id: b.id, outgoing: {outgoing}, relationType: r.relationshipType,
+                    parentTable: COALESCE(r.parentTableName, ''),
+                    childTable: COALESCE(r.childTableName, ''),
+                    sourceColumn: COALESCE(r.sourceColumn, ''),
+                    targetColumn: COALESCE(r.targetColumn, '')
+                }}) AS {alias}
+            }}"""
+            query = (
+                "UNWIND $record_ids AS rid"
+                + arm("(:Record {id: rid})-[r:NODE_RELATION|RECORD_LINK]->(b:Record)", "true", "outs")
+                + arm("(:Record {id: rid})<-[r:NODE_RELATION|RECORD_LINK]-(b:Record)", "false", "ins")
+                + """
+            UNWIND outs + ins AS e
+            RETURN rid AS anchor_id, e.record_id AS record_id, e.outgoing AS outgoing,
+                   e.relationType AS relationType, e.parentTable AS parentTable,
+                   e.childTable AS childTable, e.sourceColumn AS sourceColumn,
+                   e.targetColumn AS targetColumn
             """
+            )
             results = await self.client.execute_query(
                 query,
-                parameters={"record_ids": record_ids, "relation_types": relation_types},
+                parameters={
+                    "record_ids": record_ids, "relation_types": relation_types,
+                    "limit": limit_per_direction if limit_per_direction is not None else 2**31 - 1,
+                },
                 txn_id=transaction,
             )
             for record in results:
@@ -8922,7 +8943,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "Failed to batch record relations for %d records: %s", len(record_ids), str(e),
             )
             return await super().get_node_relations_batch(
-                record_ids, relation_types, transaction,
+                record_ids, relation_types, transaction, limit_per_direction,
             )
 
     async def batch_upsert_record_groups(
@@ -19026,8 +19047,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         group's records): the count is the stored degree, not a walk."""
         rows = await self.client.execute_query(
             """
-            MATCH (n {id: $id})
-            WHERE n:Record OR n:RecordGroup OR n:App
+            MATCH (n:Record|RecordGroup|App {id: $id})
             RETURN CASE WHEN n:App THEN n.id ELSE n.connectorId END AS connectorId,
                    COUNT { (n)<-[:BELONGS_TO]-() } AS belonging
             """,
@@ -19518,6 +19538,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         name_parents: bool = True,
         user_key: str | None = None,
         grants_out: dict[str, list[str]] | None = None,
+        max_depth: int = 50,
     ) -> dict[str, Any]:
         """One page of what is visible under one start node.
 
@@ -19670,7 +19691,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         hop = self._kh_v3_granted_hop("ca", "pa", state=state, grant_once=probe is not None and listing_by_probe)
         # NODE_RELATION also holds untyped edges and links not yet split off it.
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
-        depth = "{1,50}" if flatten else "{1}"
+        depth = f"{{1,{max_depth}}}" if flatten else "{1}"
         # The declared and seed arms exist only in the flatten from the App. A
         # folder or group start is admitted by a walk up to the app, then listed
         # from that start.
@@ -19812,6 +19833,40 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN collect(DISTINCT kh_x) AS extra
         }}
         WITH app, regionA + [kh_x IN extra WHERE NOT kh_x IN regionA] AS allNodes
+            """
+            if max_depth < 50:
+                # Depth is the number of hierarchy hops from the App (App -> group
+                # is 1). The declared, seed and collection arms do not start at the
+                # App, so the bound on the walk alone does not cover them: keep what
+                # lies within `max_depth` hops. A record the hierarchy does not place
+                # (it only BELONGS_TO a group or the App) counts one below that
+                # container; a record the hierarchy does place counts by its hops, so
+                # belonging to a near group never admits a deep record. A node two
+                # arms reach is kept if either is near. Arango applies the same rule.
+                shorter = (
+                    f"""OPTIONAL MATCH (app)
+                  ((sp)-[kh_sr:NODE_RELATION]->(sc) WHERE kh_sr.relationshipType {hierarchy}){{1,{max_depth - 1}}} (sw)
+            WITH app, byHierarchy, collect(DISTINCT sw) AS shorterWalk
+            WITH byHierarchy, [app] + shorterWalk AS shorter"""
+                    if max_depth > 1 else "WITH byHierarchy, [app] AS shorter"
+                )
+                scope += f"""
+        CALL (app) {{
+            OPTIONAL MATCH (app)
+                  ((wp)-[kh_wr:NODE_RELATION]->(wc) WHERE kh_wr.relationshipType {hierarchy}){{1,{max_depth}}} (ww)
+            WITH app, collect(DISTINCT ww) AS byHierarchy
+            {shorter}
+            CALL (shorter) {{
+                UNWIND shorter AS kh_g
+                MATCH (kh_m:Record)-[:BELONGS_TO]->(kh_g)
+                WHERE NOT EXISTS {{
+                    ()-[kh_pr:NODE_RELATION]->(kh_m) WHERE kh_pr.relationshipType {hierarchy}
+                }}
+                RETURN collect(DISTINCT kh_m) AS members
+            }}
+            RETURN byHierarchy + members AS within
+        }}
+        WITH app, [kh_x IN allNodes WHERE kh_x IN within] AS allNodes
             """
         elif start_is_app:
             direct_hop = self._kh_v3_granted_hop(
@@ -22046,8 +22101,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         and None for connector nodes.
         """
         query = """
-            MATCH (n {id: $node_id})
-            WHERE (n:Record OR n:RecordGroup OR n:App) AND n.orgId = $org_id
+            MATCH (n:Record|RecordGroup|App {id: $node_id})
+            WHERE n.orgId = $org_id
             OPTIONAL MATCH (kb:App {type: 'KB'})
             WHERE kb.id = CASE WHEN n:App THEN n.id ELSE n.connectorId END
             RETURN CASE

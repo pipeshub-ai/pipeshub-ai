@@ -386,6 +386,7 @@ class KnowledgeHubService:
         filters: dict[str, Any],
         flatten: bool,
         want_counts: bool,
+        max_depth: int = 50,
         access: dict[str, list[str]],
         excluded: frozenset[str] = frozenset(),
     ) -> tuple[SearchPage, dict[str, Any] | None]:
@@ -488,6 +489,7 @@ class KnowledgeHubService:
                     start_type=start_type,
                     include_scope=True,
                     via_parent_id=page_cursor.via_parent_id if page_cursor else None,
+                    max_depth=max_depth,
                 )
                 envelope = {
                     "partitions": [{
@@ -743,6 +745,7 @@ class KnowledgeHubService:
                 filters=filters,
                 flatten=use_search_mode,
                 want_counts=bool(include and 'counts' in include),
+                max_depth=max(1, depth) if depth else 50,
             )
 
             # The start node's own admission decides this, and the 404 body is

@@ -5125,6 +5125,40 @@ class TestExternalCollaboratorBrowse:
         assert call.kwargs["parameters"]["kh_lists"]["kh_placed"] == ["r9", "g9"]
 
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("max_depth", "bounded"), [(2, True), (50, False)])
+    async def test_a_bounded_flatten_from_the_app_keeps_every_arm_within_the_depth(
+        self, provider, max_depth, bounded,
+    ) -> None:
+        """The declared, seed and collection arms do not begin at the App; a bound
+        on the walk alone would let them return nodes deeper than the request."""
+        await provider.get_knowledge_hub_connector_page_v3(
+            "app1", "org1", ["uk1"], ["app1"], ["r9"], flatten=True, max_depth=max_depth,
+        )
+        query = provider.client.execute_query.await_args.args[0]
+        assert ("{1,2}" in query and "{1,1}" in query and "NOT EXISTS" in query) is bounded
+        assert ("[kh_x IN allNodes WHERE kh_x IN within] AS allNodes" in query) is bounded
+
+    @pytest.mark.asyncio
+    async def test_a_flatten_from_the_app_at_depth_one_has_no_zero_length_quantifier(self, provider) -> None:
+        await provider.get_knowledge_hub_connector_page_v3(
+            "app1", "org1", ["uk1"], ["app1"], ["r9"], flatten=True, max_depth=1,
+        )
+        query = provider.client.execute_query.await_args.args[0]
+        assert "{0,0}" not in query and "WITH byHierarchy, [app] AS shorter" in query
+
+    @pytest.mark.asyncio
+    async def test_a_flatten_from_a_folder_bounds_its_one_walk(self, provider) -> None:
+        provider._kh_v3_scoped_start_access = AsyncMock(return_value=(True, [], []))
+        provider._kh_v3_connector_and_size = AsyncMock(return_value=("app1", 1))
+        await provider.get_knowledge_hub_connector_page_v3(
+            "app1", "org1", ["uk1"], ["app1"], ["r9"], flatten=True, max_depth=2,
+            start_id="f1", start_type="record",
+        )
+        queries = [c.args[0] for c in provider.client.execute_query.await_args_list]
+        assert any("){1,2} (na)" in q for q in queries)
+
+
 class TestPersonMigrationAndReaper:
     """Phase 5 (Person -> User) and Phase 6 (reaping stale external membership)."""
 
