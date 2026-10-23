@@ -4420,13 +4420,15 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
                 try:
                     # The universal agent's knowledge is every source the user
-                    # reads, and the prompt names each one with its id.
+                    # reads, and the prompt names each one with its id. A turn
+                    # without internal search drops its knowledge below, so a
+                    # limit too large to check must not fail it.
                     agent_knowledge = await _knowledge_within_connection(
                         graph_provider,
                         enriched_user_info.get("userId") or user_context.get("userId", ""),
                         org_key,
                         agent_knowledge,
-                        connection_limit(getattr(request.state, "user", None)),
+                        connection_limit(getattr(request.state, "user", None)) if caps.internal_search else None,
                     )
                 except SelectionTooLargeError:
                     yield _stream_error_frame(

@@ -7,14 +7,21 @@ those: a source the limit names whole as today, one it reaches through some
 of its folders or files without its id, and every other source not at all.
 """
 
-from collections.abc import Iterator
-from unittest.mock import AsyncMock, MagicMock
+import json
+import logging
+from collections.abc import AsyncIterator, Iterator
+from contextlib import ExitStack
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import app.modules.retrieval.selection_scope as selection_scope
 from app.api.routes.agent import _knowledge_within_connection
 from app.modules.agents.context.source_catalog import SourceCatalog
+from app.modules.retrieval.selection_scope import (
+    CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
+    SelectionTooLargeError,
+)
 
 KNOWLEDGE = [
     {"connectorId": "kb-whole", "type": "KB", "name": "Finance"},
@@ -77,3 +84,70 @@ class TestKnowledgeSourcesUnderAConnectionLimit:
         graph.get_user_by_user_id = AsyncMock(return_value=None)
 
         assert await _knowledge_within_connection(graph, "user-1", "org-1", KNOWLEDGE, LIMIT) == []
+
+
+async def _stream_with_a_limit_too_large_to_check(capabilities: dict) -> tuple[str, dict]:
+    """Run the universal agent's chat_stream for a connected app whose limit
+    cannot be checked; return the streamed body and what the agent loop got."""
+    from app.api.routes.agent import chat_stream
+
+    captured: dict = {}
+
+    async def recording_loop(query_info: dict, *_args: object, **_kwargs: object) -> AsyncIterator[str]:
+        captured.update(query_info)
+        return
+        yield  # pragma: no cover - marks this an async generator
+
+    graph = AsyncMock()
+    graph.check_agent_permission = AsyncMock(return_value={"can_edit": False, "role": "viewer"})
+    services = {
+        "graph_provider": graph, "retrieval_service": MagicMock(), "reranker_service": MagicMock(),
+        "config_service": AsyncMock(), "logger": logging.getLogger("agent-knowledge-limit-test"),
+    }
+    request = MagicMock()
+    request.body = AsyncMock(return_value=json.dumps({"query": "q", "agentCapabilities": capabilities}).encode())
+    request.headers = {}
+    request.state.user = {"userId": "caller", "orgId": "o1", "knowledgeLimit": LIMIT}
+    assistant = {"_key": "agentIdPlaceholder", "name": "assistant", "knowledge": KNOWLEDGE, "toolsets": [],
+                 "models": [], "createdBy": "caller-key", "isServiceAccount": False}
+    route_patches = {
+        "get_services": {"new_callable": AsyncMock, "return_value": services},
+        "_get_user_context": {"return_value": {"userId": "caller", "orgId": "o1"}},
+        "_get_user_document": {"new_callable": AsyncMock, "return_value": {"email": "u@x.com", "_key": "caller-key"}},
+        "_get_org_info": {"new_callable": AsyncMock, "return_value": {"orgId": "o1", "accountType": "enterprise"}},
+        "get_llm_for_chat": {"new_callable": AsyncMock, "return_value": (MagicMock(), {}, {})},
+        "load_entity_vector_store": {"new_callable": AsyncMock, "return_value": None},
+        "get_assistant_agent": {"new_callable": AsyncMock, "return_value": (assistant, {})},
+        "resolve_web_search": {"new_callable": AsyncMock, "return_value": None},
+        "run_agent_loop_stream": {"new": recording_loop},
+        "connection_coverage": {"new_callable": AsyncMock, "side_effect": SelectionTooLargeError()},
+    }
+    with ExitStack() as stack:
+        for target, kwargs in route_patches.items():
+            stack.enter_context(patch(f"app.api.routes.agent.{target}", **kwargs))
+        for target in (
+            "app.services.featureflag.platform_settings.is_actions_enabled",
+            "app.services.featureflag.platform_settings.is_user_context_enabled",
+            "app.agents.mcp.service.is_mcp_enabled",
+        ):
+            stack.enter_context(patch(target, new_callable=AsyncMock, return_value=False))
+        response = await chat_stream(request, "agentIdPlaceholder")
+        chunks = [chunk async for chunk in response.body_iterator]
+    body = "".join(c.decode() if isinstance(c, bytes) else str(c) for c in chunks)
+    return body, captured
+
+
+@pytest.mark.asyncio
+class TestALimitTooLargeToCheck:
+    async def test_a_turn_with_internal_search_off_still_runs(self) -> None:
+        body, query_info = await _stream_with_a_limit_too_large_to_check({"internalSearch": False})
+
+        assert query_info, f"the agent loop never ran: {body[:500]}"
+        assert query_info["knowledge"] == []
+        assert CONNECTION_LIMIT_TOO_LARGE_MESSAGE not in body
+
+    async def test_a_turn_that_searches_says_the_limit_is_too_large(self) -> None:
+        body, query_info = await _stream_with_a_limit_too_large_to_check({"internalSearch": True})
+
+        assert not query_info
+        assert "selection_too_large" in body
