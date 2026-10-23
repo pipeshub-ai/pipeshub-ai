@@ -792,8 +792,9 @@ class AzureBlobConnector(BaseConnector):
         """Remove what a team connector synced once its Container Names are cleared, since the
         whole org could still read it. Returns how many containers were removed.
 
-        Only on a fresh read of the saved filters that names no container: a failed or empty
-        read, which ``load_connector_filters`` cannot tell from a cleared filter, removes nothing.
+        Only on a fresh read of the saved filters whose Container Names is unset or empty: a
+        failed or empty read, which ``load_connector_filters`` cannot tell from a cleared filter,
+        removes nothing, and neither does a Not in filter, which still names containers.
         """
         try:
             config = await self.config_service.get_config(
@@ -805,19 +806,23 @@ class AzureBlobConnector(BaseConnector):
         filters = config.get("filters") if isinstance(config, dict) else None
         sync = filters.get("sync") if isinstance(filters, dict) else None
         values = sync.get("values") if isinstance(sync, dict) else None
-        if not isinstance(values, dict) or included_names(FilterCollection.from_dict(values, self.logger), "containers"):
+        if not isinstance(values, dict):
+            return 0
+        containers = FilterCollection.from_dict(values, self.logger).get("containers")
+        if containers is not None and not containers.is_empty():
             return 0
         try:
             stored = await stored_containers(self.data_entities_processor, self.connector_id)
         except Exception as e:  # retried on the next sync
             self.logger.warning(f"Not removing synced containers: the stored ones could not be read: {e}")
             return 0
+        removed = 0
         for name in sorted(stored):
-            await remove_container(
+            removed += await remove_container(
                 self.data_entities_processor, self.connector_id, name,
                 "now that this team connector names no container", self.logger,
             )
-        return len(stored)
+        return removed
 
     async def _sync_containers(self, container_names: list[str]) -> dict[str, str]:
         """Sync containers a few at a time, so one large container does not hold up the rest.

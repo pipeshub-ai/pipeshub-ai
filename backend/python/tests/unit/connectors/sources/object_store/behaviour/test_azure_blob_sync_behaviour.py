@@ -610,6 +610,34 @@ class TestClearedTeamSelection:
         assert path("a.txt") in db.paths()
         assert BUCKET in db.record_groups
 
+    @pytest.mark.asyncio
+    async def test_a_not_in_filter_still_names_containers_and_removes_nothing(self, connector, store, db, config) -> None:
+        choose_containers(connector, config, [BUCKET])
+        store.put("a.txt")
+        await connector.run_sync()
+
+        config.set_selection("containers", [OTHER], "not_in")
+        with pytest.raises(ValueError, match="Container Names"):
+            await connector.run_sync()
+
+        assert path("a.txt") in db.paths()
+        assert BUCKET in db.record_groups
+
+    @pytest.mark.asyncio
+    async def test_the_notice_counts_only_containers_actually_removed(self, connector, store, other, db, config) -> None:
+        choose_containers(connector, config, [BUCKET, OTHER])
+        store.put("a.txt")
+        other.put("b.txt")
+        await connector.run_sync()
+        db.refused_group_deletes.add(OTHER)
+
+        config.set_selection("containers", [])
+        with pytest.raises(ValueError, match="Container Names"):
+            await connector.run_sync()
+
+        assert BUCKET not in db.record_groups and OTHER in db.record_groups
+        assert "The 1 container(s) it synced before were removed" in connector.notify.await_args.kwargs["message"]
+
 
 class TestFolderTimes:
     """Azure keeps no folder times: a new folder is dated by the blob that implies it, and a stored one keeps its dates."""
