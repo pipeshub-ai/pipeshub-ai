@@ -34,6 +34,7 @@ _PATH = "/api/v1/code-graph/repos"
 @pytest.mark.integration
 class TestCodeGraphRepos:
     def test_repos_match_spec(self, pipeshub_client: PipeshubClient) -> None:
+        """GET /code-graph/repos needs code:read and answers with the documented body."""
         assert operation_oauth2_scopes(_REPOS) == ["code:read"]
         resp = pipeshub_client.request("GET", _PATH)
         assert resp.status_code == 200, resp.text
@@ -42,6 +43,7 @@ class TestCodeGraphRepos:
         assert_response_strictly_matches_openapi_operation(body, _REPOS)
 
     def test_repos_unauthenticated_is_401(self, pipeshub_client: PipeshubClient) -> None:
+        """Without a token the route answers 401 with the documented error body."""
         resp = pipeshub_client.request("GET", _PATH, auth=False)
         assert resp.status_code == 401, resp.text
         assert_error_response_matches_openapi_operation(resp.json(), _REPOS, 401)
