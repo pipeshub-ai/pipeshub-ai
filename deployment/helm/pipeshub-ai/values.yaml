@@ -59,7 +59,7 @@ secretManagement:
 image:
   repository: pipeshubai/pipeshub-ai
   pullPolicy: IfNotPresent
-  tag: "latest"  # v0.3.0 is not available on Docker Hub
+  tag: "latest"  # or pin a release, e.g. "0.10.0"
 
 imagePullSecrets: []
 nameOverride: ""
