@@ -25,6 +25,7 @@ import base64
 import json
 import logging
 import os
+import re
 import uuid
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -103,6 +104,19 @@ def mcp(base_url: str, token: str, *calls: tuple[str, dict]) -> list[tuple[str, 
     return asyncio.run(_call_tools(mcp_url(base_url), token, list(calls)))
 
 
+def _tool_calls(base_url: str, user_jwt: str, answer: str) -> list[dict[str, Any]]:
+    """The tool calls a chat turn made, with their results, as the conversation stored them."""
+    found = re.search(r'"conversationId":\s*"([0-9a-f]{24})"', answer)
+    assert found, f"no conversationId in the chat answer: {answer[:500]}"
+    resp = requests.get(f"{base_url}/api/v1/conversations/{found.group(1)}", headers=_bearer(user_jwt), timeout=30)
+    assert resp.status_code == 200, f"reading the conversation: {resp.status_code} {resp.text[:300]}"
+    messages = resp.json()["conversation"]["messages"]
+    return [
+        part for message in messages if message.get("messageType") == "bot_response"
+        for part in message.get("parts") or [] if part.get("type") == "tool_call"
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -148,7 +162,7 @@ def corpus(kb_client: KBClient, ai_models_configured) -> Iterator[dict[str, str]
         final = asyncio.run(wait_until_finished(kb_client, list(records.values())))
         assert all(final.get(r) == "COMPLETED" for r in records.values()), final
         yield {
-            "kb_in": kb_in, "kb_out": kb_out, "picked_folder": picked, "other_folder": other,
+            "tag": tag, "kb_in": kb_in, "kb_out": kb_out, "picked_folder": picked, "other_folder": other,
             **{f"{k}_record": v for k, v in records.items()},
             **{f"{k}_needle": v for k, v in needles.items()},
         }
@@ -351,8 +365,13 @@ class TestMcp:
         assert corpus["kb_in"] in limited and corpus["kb_out"] not in limited, limited[:1500]
 
     @pytest.mark.slow
-    def test_chat_cites_only_what_is_shared(self, base_url, collection_pat, corpus) -> None:
-        """Chat goes through its own path (the turn scope), not the search route."""
+    def test_chat_cites_only_what_is_shared(self, base_url, user_jwt, collection_pat, corpus) -> None:
+        """Chat goes through its own path (the turn scope), not the search route.
+
+        The answer alone catches a leak only when the model repeats it, so every
+        tool result of the turn is checked too: a name search once listed the
+        outside file by name and id, and the answer mentioned it only sometimes.
+        """
         (answer, err), = mcp(
             base_url, collection_pat,
             ("pipeshub_chat", {"query": f"Who keeps the {corpus['outside_needle']}? Quote the document."}),
@@ -360,6 +379,18 @@ class TestMcp:
         assert not err, answer[:2000]
         assert corpus["outside_record"] not in answer, answer[:2000]
         assert "outside team closes its books" not in answer, answer[:2000]
+
+        calls = _tool_calls(base_url, user_jwt, answer)
+        assert calls, "the stored turn records no tool calls, so nothing below was checked"
+        outside_name = f"pp7-outside-{corpus['tag']}"
+        for call in calls:
+            result = f"{call.get('resultPreview') or ''}\n{call.get('resultSummary') or ''}"
+            seen = f"{call.get('toolName')}({call.get('args')}) -> {result[:1500]}"
+            assert corpus["outside_record"] not in result, seen
+            assert corpus["kb_out"] not in result, seen
+            # A result may echo what the model asked for; only a name it was not given is a leak.
+            if outside_name not in str(call.get("args") or ""):
+                assert outside_name not in result, seen
 
 
 # ---------------------------------------------------------------------------
