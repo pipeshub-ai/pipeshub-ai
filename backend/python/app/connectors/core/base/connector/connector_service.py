@@ -647,16 +647,19 @@ class BaseConnector(ABC):
         payload: dict[str, Any] | None = None,
         recipient_user_ids: list[str] | None = None,
         recipient_roles: list[NotificationRecipientRole] | None = None,
+        suppress_repeats: bool = True,
     ) -> NotificationOutcome:
         """Like ``notify``, but waits for the broker and says what happened.
 
         For a caller that records a notice as delivered: only SENT means it was.
         A notice that failed to publish does not hold back the next attempt.
+        ``suppress_repeats=False`` sends it even when the same notice went out recently.
         """
         key = self._notification_key(title, message)
         reservation_before = self._notification_cache.get(key)
         prepared = self._prepare_notification(
-            type, severity, title, message, payload, recipient_user_ids, recipient_roles
+            type, severity, title, message, payload, recipient_user_ids, recipient_roles,
+            suppress_repeats=suppress_repeats,
         )
         if isinstance(prepared, NotificationOutcome):
             return prepared
@@ -684,6 +687,7 @@ class BaseConnector(ABC):
         payload: dict[str, Any] | None,
         recipient_user_ids: list[str] | None,
         recipient_roles: list[NotificationRecipientRole] | None,
+        suppress_repeats: bool = True,
     ) -> NotificationOutcome | tuple[NotificationService, dict[str, Any]]:
         svc = self._notification_service
         if not svc or not self.created_by:
@@ -699,7 +703,7 @@ class BaseConnector(ABC):
             return NotificationOutcome.SKIPPED
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
 
-        if self._suppress_notification(title, message, severity):
+        if suppress_repeats and self._suppress_notification(title, message, severity):
             return NotificationOutcome.SUPPRESSED
 
         connector_type = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name

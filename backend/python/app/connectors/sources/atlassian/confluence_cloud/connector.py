@@ -54,6 +54,7 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.constants import OAuthConfigKeys
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -124,6 +125,7 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
+    NotificationOutcome,
     NotificationRecipientRole,
     NotificationSeverity,
     NotificationType,
@@ -275,6 +277,7 @@ def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
     .with_description("Sync pages, folders, spaces, and users from Confluence Cloud")\
     .with_categories(["Knowledge Management", "Collaboration"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_resilience_config(rate_limit=10, max_retries=3)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Confluence",
@@ -503,6 +506,12 @@ class ConfluenceConnector(BaseConnector):
         # Users _sync_users held back; saved if this sync's group read finds them active.
         self._held_back_users: list[AppUser] = []
         self._space_listing_complete = False
+        # What this run could not do, sent once as one notification when it ends.
+        self._sync_problems: list[str] = []
+        # (space key, what was skipped) -> count, shown as one line per pair.
+        self._skipped_items: dict[tuple[str, str], int] = defaultdict(int)
+        # Part of the source went unread, so a full sync must not unlink what it did not see.
+        self._sync_read_incomplete = False
 
     async def _build_confluence_client(self):
         """EE override point: swap to EE ConfluenceClient for org-scoped OAuth inheritance."""
@@ -510,6 +519,7 @@ class ConfluenceConnector(BaseConnector):
             logger=self.logger,
             config_service=self.config_service,
             connector_instance_id=self.connector_id,
+            resilience=self.resilience,
         )
 
     async def init(self) -> bool:
@@ -532,9 +542,13 @@ class ConfluenceConnector(BaseConnector):
             # generic "Failed to initialize connector" message.
             await self._notify_multi_site_ambiguity(e)
             raise ConnectorInitError(str(e)) from e
+        except ValueError as e:
+            # The client builder's own message names the missing or bad setting.
+            self.logger.error(f"❌ Failed to initialize Confluence connector: {e}")
+            raise ConnectorInitError(f"Confluence settings are incomplete: {e}") from e
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Confluence connector: {e}", exc_info=True)
-            return False
+            raise ConnectorInitError(f"Couldn't connect to Confluence: {str(e)[:300]}") from e
 
     async def _cache_authenticated_confluence_email(self) -> None:
         """Cache the email of the account the connector is authenticated as; never fails init."""
@@ -618,28 +632,89 @@ class ConfluenceConnector(BaseConnector):
         return ConfluenceDataSource(self.external_client)
 
     async def test_connection_and_access(self) -> bool:
-        """Test connection and access to Confluence API."""
-        try:
-            if not self.external_client:
-                self.logger.error("External client not initialized")
-                return False
+        """Test connection and access to Confluence API.
 
+        Raises ConnectorInitError with a message the admin can act on (bad credentials,
+        missing OAuth scope, wrong site URL, no Confluence access); the API shows it as is.
+        """
+        if not self.external_client:
+            self.logger.error("External client not initialized")
+            return False
+        try:
             # Test by fetching spaces with a limit of 1
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_spaces(
                 limit=1
             )
-
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.error(f"Connection test failed with status: {response.status if response else 'No response'}")
-                return False
-
-            self.logger.info("✅ Confluence connector connection test passed")
-            return True
-
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}", exc_info=True)
-            return False
+            raise ConnectorInitError(
+                f"Couldn't reach Confluence at {self._site_url_for_messages()}: {str(e)[:200]}. "
+                "Check the site URL and that it can be reached from PipesHub."
+            ) from e
+
+        status = response.status if response else None
+        if status == HttpStatusCode.SUCCESS.value:
+            self.logger.info("✅ Confluence connector connection test passed")
+            return True
+        self.logger.error(f"Connection test failed with status: {status if status else 'No response'}")
+        raise ConnectorInitError(await self._connection_error_message(status, response))
+
+    def _site_url_for_messages(self) -> str:
+        """The site this connector talks to, for error messages."""
+        try:
+            return self.external_client.get_client().get_base_url().split("/wiki/")[0]
+        except Exception:
+            return "the configured site"
+
+    async def _connection_error_message(self, status: int | None, response: Any) -> str:
+        """What a failed connection test means, by HTTP status."""
+        site = self._site_url_for_messages()
+        try:
+            body = (response.text() or "") if response is not None else ""
+        except Exception:
+            body = ""
+        if status == HttpStatusCode.UNAUTHORIZED.value and "scope" in body.lower():
+            missing = await self._missing_oauth_scopes()
+            named = f" Missing: {', '.join(missing)}." if missing else ""
+            return (
+                "The OAuth app was not granted every Confluence scope the connector needs."
+                f"{named} Add them to the app in the Atlassian Developer Console, then reconnect."
+            )
+        if status == HttpStatusCode.UNAUTHORIZED.value:
+            return (
+                f"Confluence at {site} rejected the credentials (HTTP 401). Check the email and API "
+                "token, or reconnect the OAuth app."
+            )
+        if status == HttpStatusCode.FORBIDDEN.value:
+            return (
+                f"The account signed in to {site} but can't read Confluence (HTTP 403). Give it "
+                "Confluence access and permission to view the spaces to sync."
+            )
+        if status == HttpStatusCode.NOT_FOUND.value:
+            return (
+                f"No Confluence site was found at {site} (HTTP 404). The site URL should look like "
+                "https://yourcompany.atlassian.net."
+            )
+        return (
+            f"Confluence at {site} did not answer the connection test (HTTP {status or 'no response'}). "
+            "Try again in a few minutes."
+        )
+
+    async def _missing_oauth_scopes(self) -> list[str]:
+        """The connector's OAuth scopes that the token was not granted; empty when unknown."""
+        try:
+            token = self.external_client.get_client().get_token()
+            resources = await ExternalConfluenceClient.get_accessible_resources(token)
+        except Exception as e:
+            self.logger.debug(f"Could not read the granted OAuth scopes: {e}")
+            return []
+        granted = {scope for resource in resources for scope in (getattr(resource, "scopes", None) or [])}
+        if not granted:
+            return []
+        return sorted(set(AtlassianScope.get_confluence_read_access()) - granted)
 
     async def run_sync(self) -> None:
         """
@@ -658,6 +733,9 @@ class ConfluenceConnector(BaseConnector):
             - Attachments
             - Comments (inline, footer)
         """
+        self._sync_problems = []
+        self._skipped_items = defaultdict(int)
+        self._sync_read_incomplete = False
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Confluence Cloud sync for org: {org_id}")
@@ -701,7 +779,72 @@ class ConfluenceConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error during Confluence sync: {e}", exc_info=True)
+            # init already sent its own notice for a multi-site OAuth app.
+            if not isinstance(e, ConnectorInitError):
+                self._note_problem(f"The sync stopped: {str(e)[:200]}")
             raise
+        finally:
+            await self._report_sync_problems()
+
+    # Most lines one notification lists; the rest are counted.
+    _MAX_PROBLEMS_SHOWN = 10
+
+    def _note_problem(self, problem: str, *, unread: bool = True) -> None:
+        """Note a step this sync could not finish; all of them are reported once when the sync ends.
+
+        ``unread``: part of the source was not read (or not saved), so a full sync must not
+        unlink what it did not see. False for a problem that left nothing unread, such as a
+        removal that is retried next sync.
+        """
+        if problem not in self._sync_problems:
+            self._sync_problems.append(problem)
+        if unread:
+            self._sync_read_incomplete = True
+
+    def _note_skipped(self, space_key: str, what: str) -> None:
+        """Count one item skipped this run, e.g. ("ENG", "pages whose restrictions could not be read")."""
+        self._skipped_items[(space_key, what)] += 1
+        self._sync_read_incomplete = True
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that left part of Confluence unread unlinks nothing it did not see."""
+        return FullSyncCoverage(complete=not self._sync_read_incomplete)
+
+    async def _report_sync_problems(self) -> None:
+        """Send one notification listing what this sync could not do, to the creator and org admins.
+
+        Nothing is sent for a sync with no problems. Every failing run sends it, even when
+        the previous run sent the same one. Never raises: it runs as the sync ends.
+        """
+        problems = list(self._sync_problems) + [
+            f"Space {space_key}: skipped {count} {what}"
+            for (space_key, what), count in self._skipped_items.items()
+        ]
+        if not problems:
+            return
+        shown = problems[: self._MAX_PROBLEMS_SHOWN]
+        lines = "\n".join(f"- {p}" for p in shown)
+        if len(problems) > len(shown):
+            lines += f"\n- and {len(problems) - len(shown)} more (see the connector logs)"
+        stopped = any(p.startswith("The sync stopped") for p in self._sync_problems)
+        try:
+            outcome = await self.notify_and_wait(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR if stopped else NotificationSeverity.WARNING,
+                title=f"{self.display_name}: sync {'failed' if stopped else 'finished with problems'}",
+                message=(
+                    f"{'The sync stopped before it finished' if stopped else 'The sync finished, but'} "
+                    f"these steps did not complete:\n{lines}\n"
+                    "What was not read is read again on the next sync."
+                ),
+                recipient_user_ids=[self.created_by] if self.created_by else None,
+                recipient_roles=[NotificationRecipientRole.ADMIN],
+                suppress_repeats=False,
+            )
+            if outcome != NotificationOutcome.SENT:
+                self.logger.warning(f"The sync problems notification was not sent ({outcome.value})")
+        except Exception as e:
+            self.logger.error(f"Could not send the sync problems notification: {e}")
 
     # Bound the per-level source fanout; Confluence is rate-limited.
     _PLACEHOLDER_SWEEP_CONCURRENCY = 5
@@ -882,6 +1025,7 @@ class ConfluenceConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch users: {response.status if response else 'No response'}")
+                    self._note_problem("Couldn't read the Confluence user list (HTTP %s)" % (response.status if response else "no response"))
                     break
 
                 response_data = response.json()
@@ -939,6 +1083,9 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.error(
                     f"Jira user linking fallback failed (user sync still complete): {link_err}",
                     exc_info=True,
+                )
+                self._note_problem(
+                    f"Couldn't match users who hide their email through Jira: {str(link_err)[:200]}", unread=False
                 )
 
         except Exception as e:
@@ -1078,6 +1225,11 @@ class ConfluenceConnector(BaseConnector):
                             "Consider reducing sync frequency or requesting higher rate limits from Atlassian."
                         )
                         rate_limit_hit = True
+                        self._note_problem(
+                            "Jira's rate limit stopped matching users who hide their email; "
+                            "the rest are tried next sync",
+                            unread=False,
+                        )
                         break
                     # Other exceptions already logged and counted in try_link_user
                     continue
@@ -1201,6 +1353,7 @@ class ConfluenceConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch groups: {response.status if response else 'No response'}")
+                    self._note_problem("Couldn't read the Confluence group list (HTTP %s)" % (response.status if response else "no response"))
                     every_member_list_read = False
                     break
 
@@ -1226,12 +1379,14 @@ class ConfluenceConnector(BaseConnector):
                             self.logger.warning(
                                 f"Keeping the stored members of group {group_name}: its member list could not be read"
                             )
+                            self._note_problem(f"Couldn't read the members of group {group_name}; its stored members were kept")
                             every_member_list_read = False
                             continue
                         read_groups.append((group_data, *members))
 
                     except Exception as group_error:
                         self.logger.error(f"❌ Failed to read group {group_data.get('name')}: {group_error}")
+                        self._note_problem(f"Couldn't read group {group_data.get('name')}: {str(group_error)[:200]}")
                         every_member_list_read = False
                         continue
 
@@ -1240,6 +1395,7 @@ class ConfluenceConnector(BaseConnector):
                 except ValueError as e:
                     # Groups are saved one by one, so the ones not reached keep what is stored.
                     self.logger.error(f"❌ Stopping the group list: {e}")
+                    self._note_problem("Couldn't follow the Confluence group list to its next page")
                     every_member_list_read = False
                     break
                 if next_start is None:
@@ -1272,6 +1428,7 @@ class ConfluenceConnector(BaseConnector):
                             f"Keeping the stored members of group {group_name}: "
                             f"its members could not be looked up ({lookup_error})"
                         )
+                        self._note_problem(f"Couldn't look up the members of group {group_name}; its stored members were kept")
                         continue
 
                     await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
@@ -1281,6 +1438,7 @@ class ConfluenceConnector(BaseConnector):
 
                 except Exception as group_error:
                     self.logger.error(f"❌ Failed to process group {group_name}: {group_error}")
+                    self._note_problem(f"Couldn't save group {group_name}: {str(group_error)[:200]}")
                     continue
 
             self.logger.info(f"✅ Group sync complete. Groups: {total_groups_synced}, Memberships: {total_memberships_synced}")
@@ -1342,6 +1500,9 @@ class ConfluenceConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch spaces: {response.status if response else 'No response'}")
+                    self._note_problem(
+                        "Couldn't read the Confluence space list (HTTP %s); no space was removed" % (response.status if response else "no response")
+                    )
                     listing_complete = False
                     break
 
@@ -1349,6 +1510,7 @@ class ConfluenceConnector(BaseConnector):
                 spaces_data = response_data.get("results") if isinstance(response_data, dict) else None
                 if not isinstance(spaces_data, list):
                     self.logger.error("❌ Space listing had no results list")
+                    self._note_problem("The Confluence space list came back without results; no space was removed")
                     listing_complete = False
                     break
 
@@ -1360,6 +1522,7 @@ class ConfluenceConnector(BaseConnector):
                 if not spaces_data:
                     if (response_data.get("_links") or {}).get("next"):
                         listing_complete = False
+                        self._note_problem("The Confluence space list stopped early; no space was removed")
                     break
 
                 # Apply client-side exclusion filter if NOT_IN
@@ -1382,6 +1545,7 @@ class ConfluenceConnector(BaseConnector):
 
                         if not space_id or not space_name:
                             listing_complete = False
+                            self._note_problem("A space came back without its id or name; no space was removed")
                             continue
 
                         self.logger.debug(f"Processing space: {space_name} ({space_id})")
@@ -1402,6 +1566,7 @@ class ConfluenceConnector(BaseConnector):
                             self.logger.warning(
                                 f"Keeping the stored access of space {space_name}: its permissions could not be read"
                             )
+                            self._note_problem(f"Couldn't read the permissions of space {space_name}; its stored access was kept")
                             continue
 
                         total_permissions_synced += len(permissions)
@@ -1410,6 +1575,7 @@ class ConfluenceConnector(BaseConnector):
 
                     except Exception as space_error:
                         self.logger.error(f"❌ Failed to process space {space_data.get('name')}: {space_error}")
+                        self._note_problem(f"Couldn't sync space {space_data.get('name')}: {str(space_error)[:200]}")
                         listing_complete = False
                         continue
 
@@ -1426,6 +1592,7 @@ class ConfluenceConnector(BaseConnector):
                 cursor = self._extract_cursor_from_next_link(next_url)
                 if not cursor:
                     listing_complete = False
+                    self._note_problem("Couldn't follow the Confluence space list to its next page; no space was removed")
                     break
 
             self.logger.info(f"✅ Space sync complete. Spaces: {total_spaces_synced}, Permissions: {total_permissions_synced}")
@@ -1517,6 +1684,7 @@ class ConfluenceConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch folders: {response.status if response else 'No response'}")
+                    self._note_problem(f"Space {space_key}: couldn't read the folder list (HTTP %s)" % (response.status if response else "no response"))
                     listing_complete = False
                     break
 
@@ -1550,6 +1718,7 @@ class ConfluenceConnector(BaseConnector):
                         permissions = await self._fetch_page_permissions(item_id)
                         if permissions is None:
                             self.logger.warning(f"Skipping folder {item_id} this run: its restrictions could not be read")
+                            self._note_skipped(space_key, "folders whose restrictions could not be read")
                             listing_complete = False
                             continue
                         total_permissions_synced += len(permissions)
@@ -1578,12 +1747,15 @@ class ConfluenceConnector(BaseConnector):
 
                     except Exception as item_error:
                         self.logger.error(f"❌ Failed to process folder {item_data.get('title')}: {item_error}")
+                        self._note_skipped(space_key, "folders that failed to sync")
+                        listing_complete = False
                         continue
 
                 # Save batch to database
                 if records_with_permissions:
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} folders")
+                await self._save_batch_checkpoint(sync_point_key, items_data, listing_complete)
 
                 # Extract next page token from _links.next
                 # May contain either start=N (offset) or cursor=<token> depending on API version
@@ -1593,6 +1765,8 @@ class ConfluenceConnector(BaseConnector):
 
                 pagination_token = self._extract_cursor_from_next_link(next_url)
                 if not pagination_token:
+                    listing_complete = False
+                    self._note_problem(f"Space {space_key}: couldn't follow the folder list to its next page")
                     break
 
             # Update sync checkpoint with current time (only if we synced something)
@@ -1763,6 +1937,7 @@ class ConfluenceConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch {content_type}s: {response.status if response else 'No response'}")
+                    self._note_problem(f"Space {space_key}: couldn't read the {content_type} list (HTTP %s)" % (response.status if response else "no response"))
                     listing_complete = False
                     break
 
@@ -1770,6 +1945,7 @@ class ConfluenceConnector(BaseConnector):
                 items_data = response_data.get("results") if isinstance(response_data, dict) else None
                 if not isinstance(items_data, list):
                     self.logger.error(f"❌ {content_type.capitalize()} listing for space {space_key} had no results list")
+                    self._note_problem(f"Space {space_key}: the {content_type} list came back without results")
                     listing_complete = False
                     break
 
@@ -1777,6 +1953,7 @@ class ConfluenceConnector(BaseConnector):
                     # Only a missing next link ends the listing; an empty page that points further is a failed read.
                     if (response_data.get("_links") or {}).get("next"):
                         listing_complete = False
+                        self._note_problem(f"Space {space_key}: the {content_type} list stopped early")
                     break
 
 
@@ -1807,6 +1984,7 @@ class ConfluenceConnector(BaseConnector):
                         permissions = await self._fetch_page_permissions(item_id)
                         if permissions is None:
                             self.logger.warning(f"Skipping {content_type} {item_id} this run: its restrictions could not be read")
+                            self._note_skipped(space_key, f"{content_type}s whose restrictions could not be read")
                             listing_complete = False
                             continue
                         total_permissions_synced += len(permissions)
@@ -1866,6 +2044,9 @@ class ConfluenceConnector(BaseConnector):
                                         v2_attachments_base_url = v2_base_url
                                     if attachments_cut_short:
                                         listing_complete = False
+                                        self._note_skipped(
+                                            space_key, f"{content_type}s whose attachment list could not be read in full"
+                                        )
                                 except Exception as v2_error:
                                     self.logger.debug(f"Error fetching v2 attachments: {v2_error}")
 
@@ -2015,16 +2196,22 @@ class ConfluenceConnector(BaseConnector):
 
                                 except Exception as att_error:
                                     self.logger.error(f"Failed to process attachment: {att_error}")
+                                    self._note_skipped(space_key, "attachments that failed to sync")
+                                    listing_complete = False
                                     continue
 
                     except Exception as item_error:
                         self.logger.error(f"Failed to process {content_type} {item_data.get('title')}: {item_error}")
+                        self._note_skipped(space_key, f"{content_type}s that failed to sync")
+                        listing_complete = False
                         continue
 
                 # Save batch to database
                 if records_with_permissions:
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments)")
+                if not within_ids:
+                    await self._save_batch_checkpoint(sync_point_key, items_data, listing_complete)
 
                 # Extract next page token from _links.next
                 # May contain either start=N (offset) or cursor=<token> depending on API version
@@ -2035,6 +2222,7 @@ class ConfluenceConnector(BaseConnector):
                 pagination_token = self._extract_cursor_from_next_link(next_url)
                 if not pagination_token:
                     listing_complete = False
+                    self._note_problem(f"Space {space_key}: couldn't follow the {content_type} list to its next page")
                     break
 
             # Update sync checkpoint with current time (only if we synced something)
@@ -2060,6 +2248,31 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ {content_type.capitalize()} sync failed: {e}", exc_info=True)
             raise
+
+    async def _save_batch_checkpoint(
+        self, sync_point_key: str, items: list[dict[str, Any]], nothing_skipped: bool
+    ) -> None:
+        """Move a listing's checkpoint to the latest change in a batch that was just saved.
+
+        The listing runs oldest change first, so a sync stopped later resumes after this
+        batch instead of from the start. Only while nothing so far in the listing was
+        skipped: the checkpoint never moves past an item that was not saved.
+        """
+        if not nothing_skipped or not items:
+            return
+        latest: datetime | None = None
+        for item in items:
+            when = ((item.get("history") or {}).get("lastUpdated") or {}).get("when")
+            try:
+                changed = datetime.fromisoformat(when.replace("Z", "+00:00")) if when else None
+            except ValueError:
+                changed = None
+            if changed is None or changed.tzinfo is None:
+                # Without every item's time the batch can't say how far it got.
+                return
+            latest = changed if latest is None or changed > latest else latest
+        checkpoint = latest.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": checkpoint})
 
     async def _sync_spaces_content(self, spaces: list[RecordGroup]) -> None:
         """Sync each space's folders, pages and blog posts, then remove what left the source.
@@ -2088,6 +2301,10 @@ class ConfluenceConnector(BaseConnector):
                     self.logger.warning(
                         f"Keeping the {record_type.value} checkpoint for space {space_key}: some removals "
                         "could not be checked or made, so the next sync repeats them"
+                    )
+                    self._note_problem(
+                        f"Space {space_key}: couldn't check or remove some deleted items; the next sync tries again",
+                        unread=False,
                     )
 
     async def _remove_content_gone_from_source(
@@ -2411,6 +2628,7 @@ class ConfluenceConnector(BaseConnector):
                 after_key = page[-1].id
         except Exception as e:
             self.logger.warning(f"Could not read the stored spaces; no space removed: {e}")
+            self._note_problem("Couldn't check for deleted spaces; the next sync tries again", unread=False)
             return
 
         unfinished: list[str] = []
@@ -2422,6 +2640,11 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.warning(f"Could not finish removing space {space_id}; retrying next sync: {e}")
             if not removed:
                 unfinished.append(space_id)
+                self._note_problem(
+                    f"Couldn't finish removing space {space_id}, which Confluence no longer lists; "
+                    "the next sync tries again",
+                    unread=False,
+                )
         # The store merges fields, so an empty list clears what an earlier run left pending.
         await self.pages_sync_point.update_sync_point(
             key, {"pending": unfinished} if unfinished else {"space_ids": in_scope, "pending": []}
@@ -2581,6 +2804,20 @@ class ConfluenceConnector(BaseConnector):
 
             if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"⚠️ Failed to fetch audit logs: {response.status if response else 'No response'}")
+                if response is not None and response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value
+                ):
+                    problem = (
+                        f"Couldn't read the Confluence audit log (HTTP {response.status}): it needs a Confluence "
+                        "administrator account and a paid plan. Restriction changes made without editing the "
+                        "page are not picked up until it can be read"
+                    )
+                else:
+                    problem = (
+                        "Couldn't read the Confluence audit log (HTTP %s); restriction changes are read again "
+                        "next sync" % (response.status if response else "no response")
+                    )
+                self._note_problem(problem, unread=False)
                 return None
 
             response_data = response.json()
@@ -2599,6 +2836,10 @@ class ConfluenceConnector(BaseConnector):
                 next_start = v1_next_start(response_data, start, len(audit_records), batch_size, use_link_offset=True)
             except ValueError as e:
                 self.logger.warning(f"⚠️ Failed to follow the audit log: {e}")
+                self._note_problem(
+                    "Couldn't follow the Confluence audit log to its next page; restriction changes are read again next sync",
+                    unread=False,
+                )
                 return None
             if next_start is None:
                 break
@@ -4112,6 +4353,10 @@ class ConfluenceConnector(BaseConnector):
             if held_back:
                 self.logger.warning(
                     f"Not saving {len(held_back)} Confluence user(s) this sync: their account status is unknown"
+                )
+                self._note_problem(
+                    f"Didn't save {len(held_back)} Confluence user(s): their account status is unknown "
+                    "until every group's member list can be read"
                 )
             return
         active = [u for u in held_back if u.source_user_id not in self._inactive_account_ids]
