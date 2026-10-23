@@ -6110,8 +6110,9 @@ components:
         node_type:
           type: string
           description: >-
-            One of `recordGroup`, `folder`, `record`. Listings never contain
-            `app` nodes.
+            One of `recordGroup`, `folder`, `record`, or `app`. A listing holds
+            `app` nodes only at the root of a connected app whose limit names
+            folders or files as well as whole apps: there it lists those apps.
         sub_type:
           type: string
           nullable: true
@@ -39719,9 +39720,10 @@ paths:
 
         Call it with no `nodeId` for a flat listing of every record group and
         record the caller can reach, newest first. This is a starting point to
-        pick a node from, not a roster of connected apps — app nodes are never
-        returned in a listing, though an app's `id` is accepted as a `nodeId`
-        and lists that app's record groups. Pass a node's `id` to descend:
+        pick a node from, not a roster of connected apps — app nodes are not
+        returned in a listing (except at the root of a limited connected app,
+        below), though an app's `id` is accepted as a `nodeId` and lists that
+        app's record groups. Pass a node's `id` to descend:
         record groups contain records and folders, and a record contains its
         own children — comments, attachments, sub-tasks — plus a `related`
         section of cross-referenced records, such as the Confluence page linked
