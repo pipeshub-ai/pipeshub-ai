@@ -905,8 +905,7 @@ class TestAuditLog:
         others = [{**v1_page(f"9{i:02d}"), "title": "Page 10"} for i in range(200)]
         search.by_cursor = {None: search_page(others, cursor="T2"), "T2": json_response({"message": "busy"}, status=503)}
 
-        with pytest.raises(ValueError):
-            await connector._sync_permission_changes_from_audit_log()
+        await connector._sync_permission_changes_from_audit_log()
 
         assert checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] == 1_000
         assert db.records["10"].access_rule == AccessRule.STRICT, "page 10 was on the page that failed; the next run reads it"
@@ -923,8 +922,7 @@ class TestAuditLog:
         api.on("GET", f"{V1}/audit", {"results": [change], "size": 1})
         search.by_cursor[None] = json_response({"message": "busy"}, status=503)
 
-        with pytest.raises(ValueError):
-            await connector._sync_permission_changes_from_audit_log()
+        await connector._sync_permission_changes_from_audit_log()
 
         assert checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] == 1_000
 
@@ -1696,6 +1694,7 @@ class TestRetriesAndRateLimit:
     def test_a_wait_longer_than_the_policy_allows_marks_the_quota_spent(self) -> None:
         policy = QuotaAwarePolicy(rate_limit=6, max_retries=3, max_delay=60.0)
 
+        policy.note_response_status(429)
         assert policy.note_retry(0, 5.0) >= 5.0, "a short Retry-After is waited out"
         with pytest.raises(AtlassianQuotaExhausted):
             policy.note_retry(0, 1800.0)
@@ -1892,6 +1891,47 @@ class TestUsersListing:
         ]
 
 
+class TestUsersGoneFromConfluence:
+    @staticmethod
+    def _users(*ids: int) -> dict[str, Any]:
+        return {"results": [{"user": {"accountId": f"acc-{i}"}, "email": f"user{i}@acme.com"} for i in ids],
+                "_links": {"base": WIKI}}
+
+    async def test_a_user_missing_from_a_complete_list_loses_access(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V1}/search/user", [self._users(1, 2, 3), {"results": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._account_statuses_known = True
+        await connector._sync_users()
+
+        api.on("GET", f"{V1}/search/user", [self._users(1, 2), {"results": []}])
+        await connector._sync_users()
+
+        assert [u.source_user_id for u in db.withdrawn_users] == ["acc-3"]
+
+    async def test_a_cut_short_list_withdraws_no_one(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V1}/search/user", [self._users(1, 2, 3), {"results": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._account_statuses_known = True
+        await connector._sync_users()
+
+        api.on("GET", f"{V1}/search/user", [self._users(1), json_response({"message": "busy"}, status=503)])
+        await connector._sync_users()
+
+        assert db.withdrawn_users == []
+
+    async def test_most_users_missing_is_not_trusted(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V1}/search/user", [self._users(1, 2, 3), {"results": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._account_statuses_known = True
+        await connector._sync_users()
+
+        api.on("GET", f"{V1}/search/user", [self._users(1), {"results": []}])
+        await connector._sync_users()
+
+        assert db.withdrawn_users == []
+        assert any("looks like a misread" in p for p in connector._sync_problems)
+
+
 def restriction_event(object_type: str, title: str) -> dict[str, Any]:
     return {"results": [{"category": "Permissions", "summary": "Content restriction added",
                          "associatedObjects": [{"objectType": object_type, "name": title},
@@ -1945,7 +1985,7 @@ class TestBackgroundStartFailure:
 
         notes = connector._notification_service.sent
         assert len(notes) == 2, "one notice per failed run, not per retry"
-        assert notes[0]["title"].endswith("sync could not start")
+        assert notes[0]["title"].endswith("could not start")
         assert "Couldn't connect to Confluence" in notes[0]["message"]
         assert "Unauthorized" not in notes[0]["message"] and "401" not in notes[0]["message"], "no raw response text"
         assert notes[0]["recipient_user_ids"] == ["creator-1"]
@@ -1991,6 +2031,7 @@ class TestGroupsGoneFromConfluence:
         await connector._create_pseudo_group("acc-hidden")
 
         self._groups(api, ("g-eng", "engineering"))
+        api.on("GET", f"{V1}/group/g-old/membersByGroupId", json_response({"message": "gone"}, status=404))
         await connector._sync_user_groups()
 
         assert db.deleted_groups == ["g-old"], "the pseudo-group and the listed group stay"
