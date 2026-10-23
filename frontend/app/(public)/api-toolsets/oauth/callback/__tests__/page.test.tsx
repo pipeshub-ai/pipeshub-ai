@@ -34,6 +34,18 @@ describe('API toolset OAuth callback page', () => {
     );
   });
 
+  it('hands a sign-in started from the desktop app back to the app as an API action sign-in', async () => {
+    window.history.replaceState(null, '', '/api-toolsets/oauth/callback/?code=c1&state=phd.s1');
+    renderInTheme(<ApiToolsetOAuthCallbackPage />);
+    const link = await waitFor(() => {
+      const found = document.querySelector('a[href*="integration/toolset/callback"]');
+      expect(found).toBeTruthy();
+      return found!;
+    });
+    expect(link.getAttribute('href')).toContain('state=phd.s1');
+    expect(api.completeOAuthCallback).not.toHaveBeenCalled();
+  });
+
   it("shows and forwards the backend's reason when the sign-in is refused", async () => {
     api.completeOAuthCallback.mockRejectedValue(new Error('This sign-in link has expired.'));
     renderInTheme(<ApiToolsetOAuthCallbackPage />);

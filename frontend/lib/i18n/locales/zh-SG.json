@@ -4339,6 +4339,7 @@
         "create": "添加 API 操作",
         "specLoadedHint": "此 API 操作所依据的规范。替换规范即可从较新版本中选择。",
         "replaceSpec": "替换规范",
+        "specUnread": "请先读取新规范，或取消替换。",
         "specSummary_other": "版本 {{version}} · OpenAPI {{openapi}} · {{count}} 个操作",
         "dropFile": "将规范文件拖放到此处，或点击选择文件",
         "dropFileHint": "JSON 或 YAML。您也可以在下方粘贴规范。",

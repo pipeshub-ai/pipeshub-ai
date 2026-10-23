@@ -29,6 +29,12 @@ if TYPE_CHECKING:
 EXPIRY_MARGIN_SECONDS = 30
 
 TokensSaver = Callable[[ApiToolsetCredentials], Awaitable[None]]
+TokensLoader = Callable[[], Awaitable[Optional[ApiToolsetCredentials]]]
+
+# One lock per stored credential, shared by every request in this process, so two chats on one
+# credential don't both spend its refresh token (many providers rotate it, and revoke both on reuse).
+# shortcut: per process; separate workers can still race, a store-level claim would close that.
+_REFRESH_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 class ApiToolsetAuthError(Exception):
@@ -99,6 +105,8 @@ class OAuthTokenSource:
         allow_private: bool,
         scopes: Optional[list[str]] = None,
         save: Optional[TokensSaver] = None,
+        load: Optional[TokensLoader] = None,
+        lock_key: Optional[str] = None,
     ) -> None:
         self._scheme = scheme
         self._credentials = credentials
@@ -106,13 +114,19 @@ class OAuthTokenSource:
         self._allow_private = allow_private
         self._scopes = scopes
         self._save = save
-        self._lock = asyncio.Lock()
+        self._load = load
+        self._lock = _REFRESH_LOCKS.setdefault(lock_key, asyncio.Lock()) if lock_key else asyncio.Lock()
 
     async def access_token(self, *, force_refresh: bool = False) -> str:
         async with self._lock:
             tokens = self._credentials.oauth
             if tokens is not None and not force_refresh and not _expires_soon(tokens):
                 return tokens.access_token
+            newer = await self._newer_stored_tokens(tokens)
+            if newer is not None:
+                # Another request refreshed while this one waited for the lock: use its token.
+                self._credentials = self._credentials.model_copy(update={"oauth": newer})
+                return newer.access_token
             try:
                 fresh = await self._obtain(tokens)
             except MCPOAuthError as e:
@@ -124,6 +138,15 @@ class OAuthTokenSource:
             if self._save is not None:
                 await self._save(self._credentials)
             return fresh.access_token
+
+    async def _newer_stored_tokens(self, held: Optional[OAuthTokens]) -> Optional[OAuthTokens]:
+        if self._load is None:
+            return None
+        stored = await self._load()
+        tokens = stored.oauth if stored is not None else None
+        if tokens is None or _expires_soon(tokens) or (held is not None and tokens.access_token == held.access_token):
+            return None
+        return tokens
 
     async def _obtain(self, tokens: Optional[OAuthTokens]) -> OAuthTokens:
         creds = self._credentials
@@ -164,6 +187,8 @@ def build_auth(
     allow_private: bool,
     scopes: Optional[list[str]] = None,
     save_tokens: Optional[TokensSaver] = None,
+    load_tokens: Optional[TokensLoader] = None,
+    lock_key: Optional[str] = None,
 ) -> AuthApplier:
     """The applier for `scheme`, holding `credentials`. Raises if a needed credential is missing."""
     if scheme.type is AuthType.NONE:
@@ -177,6 +202,7 @@ def build_auth(
     token_url = urljoin(base_url.rstrip("/") + "/", scheme.token_url or "")
     return OAuth2Auth(OAuthTokenSource(
         scheme, credentials, token_url=token_url, allow_private=allow_private, scopes=scopes, save=save_tokens,
+        load=load_tokens, lock_key=lock_key,
     ))
 
 

@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { desktopAuthorizeParams } from '@/lib/electron';
 import type {
   ApiCompiledSpec,
   ApiToolset,
@@ -62,7 +63,7 @@ export const ApiToolsetsApi = {
   async getAuthorizationUrl(id: string, shared: boolean): Promise<{ authorizationUrl: string }> {
     const { data } = await apiClient.get(
       instanceUrl(id, shared ? '/shared-credentials/oauth/authorize' : '/oauth/authorize'),
-      QUIET,
+      { ...QUIET, params: desktopAuthorizeParams() },
     );
     return data;
   },

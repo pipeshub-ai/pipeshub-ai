@@ -4265,6 +4265,7 @@
         "create": "API-Aktion hinzufügen",
         "specLoadedHint": "Die Spezifikation, auf der diese API-Aktion basiert. Ersetzen Sie sie, um aus einer neueren Version zu wählen.",
         "replaceSpec": "Spezifikation ersetzen",
+        "specUnread": "Lesen Sie zuerst die neue Spezifikation ein oder brechen Sie das Ersetzen ab.",
         "specSummary_one": "Version {{version}} · OpenAPI {{openapi}} · {{count}} Operation",
         "specSummary_other": "Version {{version}} · OpenAPI {{openapi}} · {{count}} Operationen",
         "dropFile": "Spezifikationsdatei hier ablegen oder klicken, um eine auszuwählen",

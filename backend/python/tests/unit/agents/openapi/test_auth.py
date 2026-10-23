@@ -170,3 +170,40 @@ class TestOAuth:
         with pytest.raises(ApiToolsetAuthError) as raised:
             await source.access_token()
         assert "abc" not in str(raised.value)
+
+
+class TestSharedCredentialRefresh:
+    """Two requests on one stored sign-in, each with its own token source, as two chats have."""
+
+    async def test_concurrent_requests_spend_the_refresh_token_once(self, endpoint: _FakeTokenEndpoint) -> None:
+        import asyncio
+
+        expired = ApiToolsetCredentials(client_id="app", oauth=_tokens("old", expires_in=60, refresh="r1", age=3600))
+        stored = {"creds": expired}
+
+        async def save(creds: ApiToolsetCredentials) -> None:
+            stored["creds"] = creds
+
+        async def load() -> ApiToolsetCredentials:
+            return stored["creds"]
+
+        sources = [
+            OAuthTokenSource(AUTH_CODE, expired, token_url="https://auth.acme.test/token", allow_private=True,
+                             save=save, load=load, lock_key="toolset-1/__shared__")
+            for _ in range(2)
+        ]
+        tokens = await asyncio.gather(*(s.access_token() for s in sources))
+
+        assert [kind for kind, _ in endpoint.calls] == ["refresh"]
+        assert tokens[0] == tokens[1] == stored["creds"].oauth.access_token
+
+    async def test_a_rejected_token_is_refreshed_when_the_store_has_nothing_newer(self, endpoint: _FakeTokenEndpoint) -> None:
+        held = ApiToolsetCredentials(client_id="app", oauth=_tokens("rejected", refresh="r1"))
+
+        async def load() -> ApiToolsetCredentials:
+            return held
+
+        source = OAuthTokenSource(AUTH_CODE, held, token_url="https://auth.acme.test/token", allow_private=True,
+                                  load=load, lock_key="toolset-2/u1")
+        assert await source.access_token(force_refresh=True) != "rejected"
+        assert len(endpoint.calls) == 1

@@ -4265,6 +4265,7 @@
         "create": "Add API action",
         "specLoadedHint": "The spec this API action is built from. Replace it to pick from a newer version.",
         "replaceSpec": "Replace spec",
+        "specUnread": "Read the new spec first, or cancel replacing it.",
         "specSummary_one": "Version {{version}} · OpenAPI {{openapi}} · {{count}} operation",
         "specSummary_other": "Version {{version}} · OpenAPI {{openapi}} · {{count}} operations",
         "dropFile": "Drop a spec file here, or click to choose one",

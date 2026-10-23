@@ -99,6 +99,8 @@ export function ApiToolsetEditorPanel({ open, editingId, onOpenChange, onSaved }
   const problems = form ? formProblems(form, authType) : [];
   const unreachable = form ? operationsNeedingAuth(operations, form.operations, authType) : [];
   const showSpecInput = !form || replacingSpec;
+  // Save sends the spec that was read; text typed after that must be read first, or it is lost.
+  const specUnread = replacingSpec && specText.trim() !== '' && specText !== preview?.spec;
 
   const update = (patch: Partial<ToolsetForm>) => setForm((f) => (f ? { ...f, ...patch } : f));
 
@@ -123,7 +125,7 @@ export function ApiToolsetEditorPanel({ open, editingId, onOpenChange, onSaved }
   };
 
   const handleSave = async () => {
-    if (!form || problems.length > 0) return;
+    if (!form || problems.length > 0 || specUnread) return;
     setSaving(true);
     setError(null);
     try {
@@ -156,8 +158,14 @@ export function ApiToolsetEditorPanel({ open, editingId, onOpenChange, onSaved }
       icon={<MaterialIcon name="api" size={20} color="var(--accent-11)" />}
       primaryLabel={t(editingId ? 'common.save' : 'workspace.apiToolsets.editor.create')}
       secondaryLabel={t('common.cancel')}
-      primaryDisabled={!form || problems.length > 0}
-      primaryTooltip={problems.length > 0 ? problemText(problems[0]) : undefined}
+      primaryDisabled={!form || problems.length > 0 || specUnread}
+      primaryTooltip={
+        specUnread
+          ? t('workspace.apiToolsets.editor.specUnread')
+          : problems.length > 0
+            ? problemText(problems[0])
+            : undefined
+      }
       primaryLoading={saving}
       onPrimaryClick={() => void handleSave()}
       onSecondaryClick={() => onOpenChange(false)}

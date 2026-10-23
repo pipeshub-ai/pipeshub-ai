@@ -4444,6 +4444,7 @@
         "create": "Přidat API akci",
         "specLoadedHint": "Specifikace, ze které tato API akce vychází. Nahraďte ji, chcete-li vybírat z novější verze.",
         "replaceSpec": "Nahradit specifikaci",
+        "specUnread": "Nejdřív načtěte novou specifikaci, nebo nahrazení zrušte.",
         "specSummary_one": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operace",
         "specSummary_few": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operace",
         "specSummary_many": "Verze {{version}} · OpenAPI {{openapi}} · {{count}} operace",

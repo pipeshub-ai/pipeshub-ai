@@ -439,6 +439,13 @@ components:
       description: The API toolset's id.
       schema:
         type: string
+    ApiToolsetDesktopSignIn:
+      name: desktop
+      in: query
+      required: false
+      description: Set by the desktop app. The callback page then hands the result back to the app.
+      schema:
+        type: boolean
     McpInstanceId:
       name: instanceId
       in: path
@@ -43968,6 +43975,7 @@ paths:
       operationId: validateApiToolsetSpec
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       requestBody:
         description: The spec to compile
         required: true
@@ -44004,6 +44012,7 @@ paths:
       operationId: listApiToolsets
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       responses:
         '200':
           description: API toolsets
@@ -44030,6 +44039,7 @@ paths:
       operationId: createApiToolset
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       requestBody:
         description: The toolset to add
         required: true
@@ -44065,6 +44075,7 @@ paths:
       operationId: getApiToolset
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       responses:
         '200':
           description: The toolset
@@ -44087,6 +44098,7 @@ paths:
       operationId: updateApiToolset
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       requestBody:
         description: The toolset's new settings
         required: true
@@ -44119,6 +44131,7 @@ paths:
       operationId: deleteApiToolset
       security:
         - bearerAuth: []
+        - oauth2: [connector:delete]
       responses:
         '200':
           description: Deleted
@@ -44145,6 +44158,7 @@ paths:
       operationId: getApiToolsetConfig
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       responses:
         '200':
           description: The toolset's settings
@@ -44172,6 +44186,7 @@ paths:
       operationId: saveApiToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       requestBody:
         description: The credential fields for the toolset's auth scheme
         required: true
@@ -44196,6 +44211,7 @@ paths:
       operationId: deleteApiToolsetCredentials
       security:
         - bearerAuth: []
+        - oauth2: [connector:delete]
       responses:
         '200':
           description: Disconnected
@@ -44216,6 +44232,7 @@ paths:
       operationId: saveApiToolsetSharedCredentials
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       requestBody:
         description: The credential fields for the toolset's auth scheme
         required: true
@@ -44242,6 +44259,7 @@ paths:
       operationId: deleteApiToolsetSharedCredentials
       security:
         - bearerAuth: []
+        - oauth2: [connector:delete]
       responses:
         '200':
           description: Removed
@@ -44256,6 +44274,7 @@ paths:
   /api-toolsets/instances/{instanceId}/shared-credentials/oauth/authorize:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
+      - $ref: '#/components/parameters/ApiToolsetDesktopSignIn'
     get:
       tags:
         - API Toolsets
@@ -44264,6 +44283,7 @@ paths:
       operationId: getApiToolsetSharedOAuthUrl
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       responses:
         '200':
           description: Authorization URL
@@ -44295,6 +44315,7 @@ paths:
       operationId: testApiToolset
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       requestBody:
         description: The operation to call and its arguments; both optional
         content:
@@ -44334,6 +44355,7 @@ paths:
   /api-toolsets/instances/{instanceId}/oauth/authorize:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
+      - $ref: '#/components/parameters/ApiToolsetDesktopSignIn'
     get:
       tags:
         - API Toolsets
@@ -44342,6 +44364,7 @@ paths:
       operationId: getApiToolsetOAuthUrl
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       responses:
         '200':
           description: Authorization URL
@@ -44367,6 +44390,7 @@ paths:
       operationId: handleApiToolsetOAuthCallback
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: code
           in: query

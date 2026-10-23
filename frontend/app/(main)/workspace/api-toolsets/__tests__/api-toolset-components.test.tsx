@@ -81,6 +81,22 @@ describe('ApiToolsetEditorPanel', () => {
     expect(checkbox(/^\/listOrders$/).getAttribute('aria-checked')).toBe('false');
   });
 
+  it('does not save a replacement spec until it has been read', async () => {
+    api.getConfig.mockResolvedValue(toolsetConfig());
+    api.validateSpec.mockResolvedValue(compiledSpec());
+    renderInTheme(<ApiToolsetEditorPanel open editingId={'a'.repeat(32)} onOpenChange={() => {}} onSaved={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Replace spec/ }));
+    fireEvent.change(screen.getByPlaceholderText(/openapi: 3.1.0/), { target: { value: 'openapi: 3.1.0 # v2' } });
+
+    const save = screen.getByRole('button', { name: 'Save' });
+    expect(save.hasAttribute('disabled')).toBe(true);
+    fireEvent.click(save);
+    expect(api.updateInstance).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /Read spec/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(false));
+  });
+
   it('offers the sample spec as YAML and JSON downloads', () => {
     renderInTheme(<ApiToolsetEditorPanel open editingId={null} onOpenChange={() => {}} onSaved={() => {}} />);
     const yaml = screen.getByRole('link', { name: /Sample YAML/ });

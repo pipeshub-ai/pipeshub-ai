@@ -52,6 +52,8 @@ export function ApiActionConnectionPanel({ toolset, isAdmin, onOpenChange, onCha
 
   const { startOAuthPopup, status: signInStatus } = useMcpOAuthPopup({
     getAuthorizationUrl: (id) => ApiToolsetsApi.getAuthorizationUrl(id, shared),
+    desktopFamily: 'toolset',
+    completeCallback: ApiToolsetsApi.completeOAuthCallback,
     verifyAuthenticated: async () =>
       Boolean((await ApiToolsetsApi.listInstances()).find((i) => i.id === toolsetId)?.isConnected),
     onVerified: () => {

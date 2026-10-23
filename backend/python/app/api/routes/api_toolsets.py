@@ -33,6 +33,7 @@ from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
 from app.services.featureflag.platform_settings import is_api_toolsets_enabled
+from app.utils.desktop_state import strip_desktop_state
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
@@ -325,10 +326,13 @@ async def _delete_credentials(store: ApiToolsetStore, instance: ApiToolsetInstan
     return {"success": True, "isConnected": instance.auth_scheme.type is AuthType.NONE}
 
 
-async def _start_sign_in(request: Request, store: ApiToolsetStore, instance: ApiToolsetInstance, user_id: str) -> dict[str, Any]:
+async def _start_sign_in(
+    request: Request, store: ApiToolsetStore, instance: ApiToolsetInstance, user_id: str, *, desktop: bool,
+) -> dict[str, Any]:
     try:
         url = await service.start_sign_in(
             store, instance, user_id=user_id, redirect_uri=await _oauth_redirect_uri(_get_config_service(request)),
+            desktop=desktop,
         )
     except service.ApiToolsetError as e:
         raise _bad_request(e) from e
@@ -346,8 +350,8 @@ async def delete_api_toolset_credentials(request: Request, instance_id: str) -> 
 
 
 @router.get("/instances/{instance_id}/oauth/authorize", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
-async def start_api_toolset_oauth(request: Request, instance_id: str) -> dict[str, Any]:
-    return await _start_sign_in(request, *await _own_credential_toolset(request, instance_id))
+async def start_api_toolset_oauth(request: Request, instance_id: str, desktop: bool = Query(False)) -> dict[str, Any]:
+    return await _start_sign_in(request, *await _own_credential_toolset(request, instance_id), desktop=desktop)
 
 
 @router.put("/instances/{instance_id}/shared-credentials", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
@@ -361,8 +365,8 @@ async def delete_api_toolset_shared_credentials(request: Request, instance_id: s
 
 
 @router.get("/instances/{instance_id}/shared-credentials/oauth/authorize", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
-async def start_api_toolset_shared_oauth(request: Request, instance_id: str) -> dict[str, Any]:
-    return await _start_sign_in(request, *await _shared_credential_toolset(request, instance_id))
+async def start_api_toolset_shared_oauth(request: Request, instance_id: str, desktop: bool = Query(False)) -> dict[str, Any]:
+    return await _start_sign_in(request, *await _shared_credential_toolset(request, instance_id), desktop=desktop)
 
 
 @router.get("/oauth/callback", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
@@ -370,7 +374,7 @@ async def finish_api_toolset_oauth(request: Request, code: str = Query(...), sta
     user_id, org_id = _get_user_context(request)
     try:
         instance = await service.finish_sign_in(
-            _store(request), state=state, code=code, user_id=user_id, org_id=org_id,
+            _store(request), state=strip_desktop_state(state) or "", code=code, user_id=user_id, org_id=org_id,
             redirect_uri=await _oauth_redirect_uri(_get_config_service(request)),
         )
     except service.ApiToolsetError as e:

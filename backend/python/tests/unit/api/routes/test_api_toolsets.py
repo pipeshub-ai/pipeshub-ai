@@ -24,6 +24,7 @@ from app.agents.mcp.models import OAuthTokens
 from app.agents.openapi import executor as executor_module
 from app.agents.openapi import service as service_module
 from app.api.routes import api_toolsets as routes
+from app.utils.desktop_state import DESKTOP_STATE_PREFIX
 from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
@@ -362,6 +363,21 @@ class TestOAuthSignIn:
 
         replay = api.call("GET", "/oauth/callback", params={"code": "the-code", "state": state})
         assert replay.status_code == 400 and "already used" in replay.json()["detail"]
+
+
+    def test_a_sign_in_from_the_desktop_app_is_marked_and_completes(self, api: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+        created = self._create(api)
+
+        async def exchange(*_a: Any, **_kw: Any) -> OAuthTokens:  # noqa: ANN401
+            return OAuthTokens(access_token="at", refresh_token="rt", expires_in=3600)
+
+        monkeypatch.setattr(service_module, "exchange_code_for_token", exchange)
+        url = api.call("GET", f"/instances/{created['id']}/oauth/authorize", params={"desktop": "true"}).json()["authorizationUrl"]
+        state = parse_qs(urlsplit(url).query)["state"][0]
+        # The callback page hands a marked state to the desktop app, which completes it here.
+        assert state.startswith(DESKTOP_STATE_PREFIX)
+        done = api.call("GET", "/oauth/callback", params={"code": "the-code", "state": state})
+        assert done.status_code == 200 and done.json()["instanceId"] == created["id"]
 
 
 def _load_acme_server() -> Any:  # noqa: ANN401

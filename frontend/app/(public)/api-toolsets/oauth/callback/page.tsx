@@ -8,5 +8,5 @@ import { ApiToolsetsApi } from '@/app/(main)/workspace/api-toolsets/api';
  * (`{publicFrontend}/api-toolsets/oauth/callback/`). Same popup flow as MCP sign-in.
  */
 export default function ApiToolsetOAuthCallbackPage() {
-  return <McpOAuthCallbackClient completeCallback={ApiToolsetsApi.completeOAuthCallback} />;
+  return <McpOAuthCallbackClient completeCallback={ApiToolsetsApi.completeOAuthCallback} desktopFamily="toolset" />;
 }

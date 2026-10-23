@@ -40,6 +40,7 @@ from app.agents.openapi.models import (
     OAuthClient,
 )
 from app.agents.openapi.spec_compiler import SpecError, compile_spec
+from app.utils.desktop_state import mark_desktop_state
 from app.utils.env_utils import env_bool
 
 if TYPE_CHECKING:
@@ -297,8 +298,12 @@ async def build_executor(
             updated = updated.model_copy(update={"client_id": None, "client_secret": None})
         await store.save_credentials(instance.id, owner_id, updated)
 
+    async def load_tokens() -> Optional[ApiToolsetCredentials]:
+        return await store.get_credentials(instance.id, owner_id)
+
     auth = build_auth(scheme, creds, base_url=instance.base_url, allow_private=private_network_allowed(),
-                      scopes=instance.scopes or None, save_tokens=save_tokens)
+                      scopes=instance.scopes or None, save_tokens=save_tokens, load_tokens=load_tokens,
+                      lock_key=f"{instance.id}/{owner_id}")
     return OpenAPIHttpExecutor(instance.base_url, auth, allow_private=private_network_allowed(),
                                timeout_seconds=instance.timeout_seconds, transport=transport)
 
@@ -337,8 +342,10 @@ async def start_sign_in(
     *,
     user_id: str,
     redirect_uri: str,
+    desktop: bool = False,
 ) -> str:
-    """The URL to send the browser to. The sign-in is remembered for 10 minutes."""
+    """The URL to send the browser to. The sign-in is remembered for 10 minutes. `desktop` marks
+    the state so the callback page hands the result back to the desktop app."""
     scheme = instance.auth_scheme
     if scheme.type is not AuthType.OAUTH2_AUTHORIZATION_CODE:
         raise ApiToolsetError("This API action doesn't use OAuth sign-in.")
@@ -359,7 +366,7 @@ async def start_sign_in(
         "response_type": "code",
         "client_id": oauth_app.client_id,
         "redirect_uri": redirect_uri,
-        "state": state,
+        "state": mark_desktop_state(state, desktop=desktop),
         "code_challenge": _pkce_challenge(verifier),
         "code_challenge_method": "S256",
     }

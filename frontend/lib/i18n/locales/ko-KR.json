@@ -4339,6 +4339,7 @@
         "create": "API 액션 추가",
         "specLoadedHint": "이 API 액션의 기반이 되는 명세입니다. 최신 버전에서 고르려면 명세를 교체하세요.",
         "replaceSpec": "명세 교체",
+        "specUnread": "먼저 새 명세를 읽거나 교체를 취소하세요.",
         "specSummary_other": "버전 {{version}} · OpenAPI {{openapi}} · 작업 {{count}}개",
         "dropFile": "명세 파일을 여기에 놓거나 클릭해서 선택하세요",
         "dropFileHint": "JSON 또는 YAML. 아래에 명세를 붙여 넣을 수도 있습니다.",

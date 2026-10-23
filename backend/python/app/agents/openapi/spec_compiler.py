@@ -217,6 +217,11 @@ def _compile_operations(document: dict[str, Any], resolver: _Resolver, warnings:
             except _SkipOperation as e:
                 warnings.append(f"{label}: skipped, {e}.")
                 continue
+            except (TypeError, AttributeError, ValueError):
+                # A field of the wrong type (a number where a name goes, a list where a map goes):
+                # one bad operation shouldn't fail the whole spec with a server error.
+                warnings.append(f"{label}: skipped, some of its fields have the wrong type.")
+                continue
             used_names.add(compiled.tool_name)
             operations.append(compiled)
     return operations

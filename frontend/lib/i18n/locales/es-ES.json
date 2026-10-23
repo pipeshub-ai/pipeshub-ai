@@ -4300,6 +4300,7 @@
         "create": "Añadir acción de API",
         "specLoadedHint": "La especificación en la que se basa esta acción de API. Reemplázala para elegir entre las operaciones de una versión más reciente.",
         "replaceSpec": "Reemplazar especificación",
+        "specUnread": "Lee primero la nueva especificación o cancela el reemplazo.",
         "specSummary_one": "Versión {{version}} · OpenAPI {{openapi}} · {{count}} operación",
         "specSummary_many": "Versión {{version}} · OpenAPI {{openapi}} · {{count}} operaciones",
         "specSummary_other": "Versión {{version}} · OpenAPI {{openapi}} · {{count}} operaciones",

@@ -4265,6 +4265,7 @@
         "create": "API कार्रवाई जोड़ें",
         "specLoadedHint": "वह स्पेक जिससे यह API कार्रवाई बनी है। नए संस्करण में से चुनने के लिए इसे बदलें।",
         "replaceSpec": "स्पेक बदलें",
+        "specUnread": "पहले नया स्पेक पढ़ें, या उसे बदलना रद्द करें।",
         "specSummary_one": "संस्करण {{version}} · OpenAPI {{openapi}} · {{count}} ऑपरेशन",
         "specSummary_other": "संस्करण {{version}} · OpenAPI {{openapi}} · {{count}} ऑपरेशन",
         "dropFile": "स्पेक फ़ाइल यहाँ छोड़ें, या चुनने के लिए क्लिक करें",
@@ -4329,12 +4330,12 @@
       },
       "sectionTitle": "API कार्रवाइयाँ",
       "kindCount": {
-        "read_one": "{{count}} पढ़ने वाला",
-        "read_other": "{{count}} पढ़ने वाले",
-        "write_one": "{{count}} लिखने वाला",
-        "write_other": "{{count}} लिखने वाले",
-        "destructive_one": "{{count}} हटाने वाला",
-        "destructive_other": "{{count}} हटाने वाले"
+        "read_one": "{{count}} रीड ऑपरेशन",
+        "read_other": "{{count}} रीड ऑपरेशन",
+        "write_one": "{{count}} राइट ऑपरेशन",
+        "write_other": "{{count}} राइट ऑपरेशन",
+        "destructive_one": "{{count}} डिलीट ऑपरेशन",
+        "destructive_other": "{{count}} डिलीट ऑपरेशन"
       },
       "kindPolicy": {
         "read": "तुरंत चलता है",
@@ -4706,7 +4707,7 @@
     "toolsetPersonalOnSharedAgentNotify": "{{name}} आपकी व्यक्तिगत कार्रवाई है। इसे आपके संगठन के साथ साझा किए गए या सेवा खाते के रूप में चलने वाले एजेंट में नहीं जोड़ा जा सकता।",
     "apiToolsets": {
       "section": "API कार्रवाइयाँ",
-      "connectTooltip": "इसे कार्रवाइयाँ में कनेक्ट करें",
+      "connectTooltip": "इसे कार्रवाइयों में कनेक्ट करें",
       "serviceAccountBlocked": "सर्विस-अकाउंट एजेंट केवल साझा क्रेडेंशियल वाली या बिना साइन-इन वाली API कार्रवाइयाँ इस्तेमाल कर सकते हैं।"
     }
   },

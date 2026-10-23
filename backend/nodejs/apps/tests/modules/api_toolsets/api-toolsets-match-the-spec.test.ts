@@ -65,8 +65,25 @@ describe('API Toolsets routes match the spec', () => {
       for (const [method, operation] of Object.entries(operations)) {
         if (!HTTP_METHODS.has(method)) continue
         expect(operation.tags, `${method} ${path}`).to.deep.equal(['API Toolsets'])
-        expect(operation.security, `${method} ${path}`).to.deep.equal([{ bearerAuth: [] }])
+        expect(operation.security, `${method} ${path}`).to.deep.equal([
+          { bearerAuth: [] },
+          { oauth2: [routeScopes()[`${method} ${path}`]] },
+        ])
       }
     }
   })
 })
+
+/** `"<method> <spec path>"` to the scope its route requires, read from the router's source. */
+function routeScopes(): Record<string, string> {
+  const source = readFileSync(
+    join(__dirname, '..', '..', '..', 'src', 'modules', 'api_toolsets', 'routes', 'api_toolsets.routes.ts'),
+    'utf8',
+  )
+  const scopes: Record<string, string> = { read: 'connector:read', write: 'connector:write', remove: 'connector:delete' }
+  const found: Record<string, string> = {}
+  for (const m of source.matchAll(/router\.(get|post|put|delete)\(\s*'([^']+)',\s*authenticate,\s*(read|write|remove)\b/g)) {
+    found[`${m[1]} /api-toolsets${m[2].replace(/:(\w+)/g, '{$1}')}`] = scopes[m[3]!]!
+  }
+  return found
+}

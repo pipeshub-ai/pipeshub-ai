@@ -58,10 +58,18 @@ function buildProxyHeaders(
   return headers;
 }
 
+/** `forwarded`: the query parameters passed on to the backend; any others are dropped. */
 const instancePath =
-  (suffix = '') =>
-  (req: AuthenticatedUserRequest) =>
-    `/instances/${encodeURIComponent(String(req.params.instanceId))}${suffix}`;
+  (suffix = '', forwarded: readonly string[] = []) =>
+  (req: AuthenticatedUserRequest) => {
+    const params = new URLSearchParams();
+    for (const key of forwarded) {
+      const value = req.query[key];
+      if (typeof value === 'string') params.append(key, value);
+    }
+    const query = params.toString();
+    return `/instances/${encodeURIComponent(String(req.params.instanceId))}${suffix}${query ? `?${query}` : ''}`;
+  };
 
 /** `sendsOnce`: never resent, because a repeat could create a second toolset or reuse a sign-in. */
 function proxy(
@@ -187,14 +195,14 @@ export const testApiToolset = proxy(
 // Starts a sign-in (stores its state), so it is sent once although it is a GET.
 export const getApiToolsetOAuthUrl = proxy(
   HttpMethod.GET,
-  instancePath('/oauth/authorize'),
+  instancePath('/oauth/authorize', ['desktop']),
   'Start API toolset sign-in',
   { sendsOnce: true },
 );
 
 export const getApiToolsetSharedOAuthUrl = proxy(
   HttpMethod.GET,
-  instancePath('/shared-credentials/oauth/authorize'),
+  instancePath('/shared-credentials/oauth/authorize', ['desktop']),
   'Start API toolset shared sign-in',
   { sendsOnce: true },
 );

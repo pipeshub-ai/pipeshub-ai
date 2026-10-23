@@ -39,6 +39,7 @@ from helper.admin_route_table import (
     TOOL_RULES_HANDLERS,
     AdminRoute,
 )
+from helper.feature_flags import feature_flag
 from helper.http.session_client import SessionClient
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser, create_second_user, delete_second_user
@@ -120,6 +121,13 @@ def _admin_request(route: AdminRoute) -> tuple[str, Any]:
     if route.admin == "admin_body":
         return ABSENT_ID, ADMIN_BODIES[route.key]
     return ABSENT_ID, route.member_body
+
+
+@pytest.fixture(scope="module", autouse=True)
+def api_actions_on(pipeshub_client: PipeshubClient) -> Iterator[None]:
+    """API actions are off by default, and while off their routes answer before the admin check."""
+    with feature_flag(pipeshub_client, "ENABLE_API_TOOLSETS", True):
+        yield
 
 
 @pytest.fixture(scope="module")

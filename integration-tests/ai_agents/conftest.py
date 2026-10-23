@@ -15,11 +15,13 @@ import asyncio
 import logging
 import os
 import uuid
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterator
+from typing import Any
 
 import pytest
 import requests
 from ai_models_setup import llm_configuration
+from pipeshub_client import PipeshubClient
 
 from ai_agents.support import (
     API_TOOLSETS,
@@ -35,17 +37,13 @@ from ai_agents.support import (
 )
 from helper.clients.agents_client import AgentsClient
 from helper.clients.kb_client import KBClient
+from helper.feature_flags import feature_flag
 from helper.indexing_progress import wait_until_finished
 from helper.local_auth import obtain_user_session_token
 from helper.mcp_fixture import ORDER_TOOL, McpFixture
 from helper.openapi_fixture import DEMO_API_KEY, OpenApiFixture
 from helper.source_credentials import secrets_required, source_unavailable
 from helper.stored_names import stored_name
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-
-    from pipeshub_client import PipeshubClient
 
 logger = logging.getLogger("ai-agents-it")
 
@@ -132,7 +130,7 @@ def it_document(kb_client: KBClient, ai_models_configured) -> Iterator[dict[str,
     finally:
         try:
             kb_client.delete_kb(kb_id)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - teardown must not mask test results
             logger.warning("could not delete KB %s: %s", kb_id, e)
 
 
@@ -149,44 +147,37 @@ def mcp_fixture() -> McpFixture:
     return fixture
 
 
-def _platform_flag_on(pipeshub_client: PipeshubClient, flag: str) -> Iterator[None]:
-    """Turns a Labs flag on for the run and back off afterwards, if it was off."""
+@pytest.fixture(scope="session")
+def mcp_feature_enabled(pipeshub_client: PipeshubClient) -> Iterator[None]:
+    """External MCP tests need ENABLE_MCP on. The Labs default is on; turn it on when a saved setting left it off."""
     resp = pipeshub_client.request("GET", PLATFORM_SETTINGS)
     assert resp.status_code == 200, f"reading platform settings: {resp.status_code} {resp.text[:300]}"
     before = json_body(resp)
     flags = dict(before.get("featureFlags") or {})
     max_bytes = before.get("fileUploadMaxSizeBytes") or 30 * 1024 * 1024
-    if flags.get(flag) is True:
+    if flags.get("ENABLE_MCP") is True:
         yield
         return
     # The POST replaces the whole settings object, so send back everything else unchanged.
     resp = pipeshub_client.request("POST", PLATFORM_SETTINGS, json={
-        "fileUploadMaxSizeBytes": max_bytes, "featureFlags": {**flags, flag: True},
+        "fileUploadMaxSizeBytes": max_bytes, "featureFlags": {**flags, "ENABLE_MCP": True},
     })
-    assert resp.status_code == 200, f"enabling {flag}: {resp.status_code} {resp.text[:300]}"
+    assert resp.status_code == 200, f"enabling MCP servers: {resp.status_code} {resp.text[:300]}"
     try:
         yield
     finally:
-        # Re-read, so a flag another fixture turned on meanwhile stays as it is.
-        current = dict(json_body(pipeshub_client.request("GET", PLATFORM_SETTINGS)).get("featureFlags") or {})
-        current[flag] = flags.get(flag, False)
         restore = pipeshub_client.request("POST", PLATFORM_SETTINGS, json={
-            "fileUploadMaxSizeBytes": max_bytes, "featureFlags": current,
+            "fileUploadMaxSizeBytes": max_bytes, "featureFlags": flags,
         })
         if restore.status_code != 200:
             logger.warning("could not restore platform settings: %s %s", restore.status_code, restore.text[:300])
 
 
 @pytest.fixture(scope="session")
-def mcp_feature_enabled(pipeshub_client: PipeshubClient) -> Iterator[None]:
-    """External MCP tests need ENABLE_MCP on. The Labs default is on; turn it on when a saved setting left it off."""
-    yield from _platform_flag_on(pipeshub_client, "ENABLE_MCP")
-
-
-@pytest.fixture(scope="session")
 def api_toolsets_enabled(pipeshub_client: PipeshubClient) -> Iterator[None]:
-    """API Toolsets are behind the ENABLE_API_TOOLSETS platform flag, off by default."""
-    yield from _platform_flag_on(pipeshub_client, "ENABLE_API_TOOLSETS")
+    """API actions are behind the ENABLE_API_TOOLSETS Labs flag, off by default."""
+    with feature_flag(pipeshub_client, "ENABLE_API_TOOLSETS", True):
+        yield
 
 
 @pytest.fixture(scope="session")
@@ -371,5 +362,5 @@ def personal_access_token(pipeshub_client: PipeshubClient) -> Iterator[str]:
             # 404: already revoked. Anything else unsuccessful leaves a 30-day token live.
             if revoked.status_code >= 300 and revoked.status_code != 404:
                 logger.warning("could not revoke personal access token %s: HTTP %s", token["id"], revoked.status_code)
-        except Exception:
+        except Exception:  # noqa: BLE001 - teardown must not mask test results
             logger.warning("could not revoke personal access token %s", token["id"])

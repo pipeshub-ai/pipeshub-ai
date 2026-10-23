@@ -4339,6 +4339,7 @@
         "create": "新增 API 動作",
         "specLoadedHint": "此 API 動作所依據的規格。取代規格即可從較新版本中選擇。",
         "replaceSpec": "取代規格",
+        "specUnread": "請先讀取新規格，或取消取代。",
         "specSummary_other": "版本 {{version}} · OpenAPI {{openapi}} · {{count}} 個操作",
         "dropFile": "將規格檔案拖放到這裡，或按一下選擇檔案",
         "dropFileHint": "JSON 或 YAML。您也可以在下方貼上規格。",

@@ -153,6 +153,15 @@ class TestOperations:
         assert [op.tool_name for op in compiled.operations] == ["a"]
         assert compiled.warnings == ["/b: skipped, its $ref doesn't point at a path item."]
 
+    def test_an_operation_with_fields_of_the_wrong_type_is_skipped(self) -> None:
+        spec = _spec({
+            "/a": {"post": {"operationId": "a", "requestBody": {"content": {1: {"schema": {}}}}}},
+            "/b": {"get": {"operationId": "b"}},
+        })
+        compiled = compile_spec(spec)
+        assert [op.tool_name for op in compiled.operations] == ["b"]
+        assert compiled.warnings == ["POST /a: skipped, some of its fields have the wrong type."]
+
     def test_remote_ref_inside_a_schema_skips_the_operation(self) -> None:
         spec = _spec({
             "/a": {"get": {"operationId": "a"}},

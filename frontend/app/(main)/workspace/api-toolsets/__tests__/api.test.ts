@@ -55,8 +55,9 @@ describe('ApiToolsetsApi', () => {
     await ApiToolsetsApi.getAuthorizationUrl(ID, true);
     await ApiToolsetsApi.completeOAuthCallback({ code: 'c', state: 's' });
     await ApiToolsetsApi.testConnection(ID);
-    expect(client.get).toHaveBeenNthCalledWith(1, `/api/v1/api-toolsets/instances/${ID}/oauth/authorize`, QUIET);
-    expect(client.get).toHaveBeenNthCalledWith(2, `/api/v1/api-toolsets/instances/${ID}/shared-credentials/oauth/authorize`, QUIET);
+    // In a browser there is no desktop marker to send.
+    expect(client.get).toHaveBeenNthCalledWith(1, `/api/v1/api-toolsets/instances/${ID}/oauth/authorize`, { ...QUIET, params: {} });
+    expect(client.get).toHaveBeenNthCalledWith(2, `/api/v1/api-toolsets/instances/${ID}/shared-credentials/oauth/authorize`, { ...QUIET, params: {} });
     expect(client.get).toHaveBeenNthCalledWith(3, '/api/v1/api-toolsets/oauth/callback', { params: { code: 'c', state: 's' }, ...QUIET });
     expect(client.post).toHaveBeenCalledWith(`/api/v1/api-toolsets/instances/${ID}/test`, {}, QUIET);
   });
