@@ -7928,17 +7928,20 @@ class TestFetchConfluenceMediaAsBase64:
         )
 
     @pytest.mark.asyncio
-    async def test_comment_media_fetcher_delegates(self):
+    async def test_media_fetcher_stops_inlining_past_the_page_budget(self):
+        from app.connectors.sources.atlassian.confluence_cloud.connector import MAX_INLINE_IMAGE_BYTES_PER_PAGE
+
         c = _mk_connector()
-        attachments = [{"id": "att-b", "title": "file.png"}]
-        c._fetch_page_attachments_list = AsyncMock(return_value=attachments)
-        c._fetch_confluence_media_as_base64 = AsyncMock(return_value="data:image/png;base64,xyz")
-        fetcher = c._create_comment_media_fetcher("page-2", "blogpost")
-        result = await fetcher("mid", "file.png")
-        assert result == "data:image/png;base64,xyz"
-        c._fetch_confluence_media_as_base64.assert_awaited_once_with(
-            "page-2", "mid", "file.png", "blogpost", attachments=attachments
-        )
+        c._fetch_page_attachments_list = AsyncMock(return_value=[])
+        # Each image decodes to about half the page budget.
+        half = "data:image/png;base64," + "A" * (MAX_INLINE_IMAGE_BYTES_PER_PAGE * 4 // 3 // 2 + 8)
+        c._fetch_confluence_media_as_base64 = AsyncMock(return_value=half)
+        fetcher = c._create_confluence_media_fetcher("page-2", "blogpost")
+
+        assert await fetcher("m1", "a.png") == half
+        assert await fetcher("m2", "b.png") == half
+        assert await fetcher("m3", "c.png") is None
+        assert c._fetch_confluence_media_as_base64.await_count == 2
 
     @pytest.mark.asyncio
     async def test_page_image_resolves_by_file_id(self):

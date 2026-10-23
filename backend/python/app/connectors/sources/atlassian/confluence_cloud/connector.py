@@ -253,6 +253,8 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
 # Largest image inlined into a page's content (10 MiB, as fetch_authenticated_binary allows).
 MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
+# Images inlined into one page in all; past it the rest stay as text references.
+MAX_INLINE_IMAGE_BYTES_PER_PAGE = 40 * 1024 * 1024
 
 # Most users /wiki/rest/api/search/user?cql=type=user returns (Atlassian's documented cap).
 USER_SEARCH_CAP = 10_000
@@ -5917,6 +5919,7 @@ class ConfluenceConnector(BaseConnector):
         captured_record_type = record_type
         page_meta_cache: dict[str, dict[str, Any] | None] = {}
         page_attachments: list[dict[str, Any]] | None = None
+        inlined_bytes = 0
 
         async def _ensure_page_attachments() -> list[dict[str, Any]]:
             nonlocal page_attachments
@@ -5983,7 +5986,11 @@ class ConfluenceConnector(BaseConnector):
             url: str,
             image_context: HtmlImageContext,
         ) -> tuple[bytes, str] | None:
+            nonlocal inlined_bytes
             if not is_cloud_attachment_download_url(url):
+                return None
+            if inlined_bytes >= MAX_INLINE_IMAGE_BYTES_PER_PAGE:
+                self.logger.debug(f"Page {page_id} already inlines {inlined_bytes} bytes of images; leaving the rest out")
                 return None
 
             url_filename = extract_attachment_filename_from_download_url(url)
@@ -6016,6 +6023,7 @@ class ConfluenceConnector(BaseConnector):
                 content_bytes = bytes(content)
                 if not content_bytes:
                     return None
+                inlined_bytes += len(content_bytes)
                 return content_bytes, mime_type
             except AtlassianQuotaExhausted:
                 raise
@@ -6086,8 +6094,15 @@ class ConfluenceConnector(BaseConnector):
             list(attachments_data) if attachments_data else None
         )
 
+        inlined_bytes = 0
+
         async def fetcher(media_id: str, alt_text: str) -> str | None:
-            nonlocal page_attachments
+            nonlocal page_attachments, inlined_bytes
+            if inlined_bytes >= MAX_INLINE_IMAGE_BYTES_PER_PAGE:
+                self.logger.debug(
+                    f"Page {captured_page_id} already inlines {inlined_bytes} bytes of images; leaving the rest out"
+                )
+                return None
             record_type = (
                 RecordType.CONFLUENCE_BLOGPOST
                 if captured_content_type == "blogpost"
@@ -6098,13 +6113,16 @@ class ConfluenceConnector(BaseConnector):
                     captured_page_id,
                     record_type,
                 )
-            return await self._fetch_confluence_media_as_base64(
+            data_uri = await self._fetch_confluence_media_as_base64(
                 captured_page_id,
                 media_id,
                 alt_text,
                 captured_content_type,
                 attachments=page_attachments,
             )
+            if data_uri:
+                inlined_bytes += len(data_uri) * 3 // 4  # base64 back to bytes
+            return data_uri
 
         return fetcher
 
@@ -6469,23 +6487,6 @@ class ConfluenceConnector(BaseConnector):
         )
 
 
-    def _create_comment_media_fetcher(
-        self,
-        page_id: str,
-        content_type: str = "page",
-        attachments_data: list[dict[str, Any]] | None = None,
-    ) -> Callable[[str, str], Awaitable[str | None]]:
-        """
-        Create a media fetcher callback for comments.
-        Comments use collection "comment-container-{pageId}" but attachments
-        are still accessible via page attachments API.
-        """
-        return self._create_confluence_media_fetcher(
-            page_id,
-            content_type,
-            attachments_data=attachments_data,
-        )
-
     async def _parse_confluence_page_to_blocks(
         self,
         page_data: dict[str, Any],
@@ -6540,15 +6541,14 @@ class ConfluenceConnector(BaseConnector):
         # Determine content_type for API calls
         content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
 
+        # One fetcher for the page and its comments, so the page's image budget covers both.
+        media_fetcher = self._create_confluence_media_fetcher(page_id, content_type, attachments_data=attachments_data)
+
         # 1. Parse ADF content to blocks (title prepended inside parse_adf as block 0)
         page_title_str = str(page_title).strip() if page_title and str(page_title).strip() else None
         blocks, block_groups = await parser.parse_adf(
             adf_content=adf_dict if adf_dict else {},
-            media_fetcher=self._create_confluence_media_fetcher(
-                page_id, content_type, attachments_data=attachments_data
-            )
-            if adf_dict
-            else None,
+            media_fetcher=media_fetcher if adf_dict else None,
             parent_page_url=weburl,
             page_id=page_id,
             page_title=page_title_str,
@@ -6632,9 +6632,7 @@ class ConfluenceConnector(BaseConnector):
             await parser.attach_inline_comments_to_blocks(
                 blocks=blocks,
                 inline_comments=inline_comments,
-                media_fetcher=self._create_comment_media_fetcher(
-                    page_id, content_type, attachments_data=attachments_data
-                ),
+                media_fetcher=media_fetcher,
                 parent_page_url=weburl,
                 user_display_names=user_display_names,
             )
@@ -6694,9 +6692,7 @@ class ConfluenceConnector(BaseConnector):
                     # Parse comment ADF directly to Blocks
                     comment_blocks, comment_block_groups = await parser.parse_adf(
                         adf_content=comment_body_adf,
-                        media_fetcher=self._create_comment_media_fetcher(
-                    page_id, content_type, attachments_data=attachments_data
-                ),
+                        media_fetcher=media_fetcher,
                         parent_page_url=weburl,
                         page_id=page_id,
                         page_title=None  # Don't add title for comments
