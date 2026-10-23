@@ -166,6 +166,7 @@ class ContentSearch:
         self.folders: list[dict[str, Any]] | None = None
         self.blogposts: list[dict[str, Any]] | None = None
         self.comments: list[dict[str, Any]] | httpx.Response | None = None
+        self.attachments: list[dict[str, Any]] = []
         self.indexed: dict[str, dict[str, Any]] | httpx.Response | None = None
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -176,6 +177,8 @@ class ContentSearch:
             return json_response(search_page(self.folders))
         if self.blogposts is not None and cql.startswith("type=blogpost"):
             return json_response(search_page(self.blogposts))
+        if cql.startswith("type=attachment"):
+            return json_response(search_page(self.attachments))
         if cql.startswith("type=comment"):
             if isinstance(self.comments, httpx.Response):
                 return self.comments
@@ -1162,6 +1165,30 @@ def in_space_under(parents: dict[str, str | None]) -> dict[str, Any]:
     items = [{"id": i, "status": "current", "title": f"Page {i}", **({"parentId": p} if p else {})}
              for i, p in parents.items()]
     return {"results": items, "_links": {"base": WIKI}}
+
+
+class TestAttachmentsChangedWithoutThePage:
+    """Uploading a file, or a new version of one, adds no page version."""
+
+    async def test_a_file_added_to_an_unchanged_page_is_synced(self, api, db, checkpoints, search) -> None:
+        search.folders = []
+        search.blogposts = []
+        search.by_cursor = {None: search_page([v1_page("10")])}
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
+        api.on("GET", f"{V2}/spaces/77/blogposts", in_space())
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+        assert "att2" not in db.records
+        checkpoints.values_for("confluence_attachments/ENG")["checked_at"] = "2024-01-01T00:00:00.000Z"
+
+        search.by_cursor = {None: search_page([])}  # the page itself did not change
+        search.attachments = [{"id": "att2", "type": "attachment", "version": {"when": "2024-06-01T10:00:00.000Z"},
+                               "container": {"id": "10", "type": "page"}}]
+        search.indexed = {"10": v1_page("10", attachments=[SPEC])}
+        await connector._sync_spaces_content([ENG])
+
+        assert "att2" in db.records
+        assert checkpoints.values_for("confluence_attachments/ENG")["checked_at"] > "2024-01-01T00:00:00.000Z"
 
 
 class TestMovedPages:

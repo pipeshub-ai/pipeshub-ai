@@ -3239,15 +3239,18 @@ class ConfluenceDataSource:
         limit: Optional[int] = None,
         time_offset_hours: int = 0,
         headers: Optional[Dict[str, Any]] = None,
+        content_type: str = "comment",
     ) -> HTTPResponse:
-        """Comments of a space changed after a time, with the page or blog post each is on.
+        """Comments (or attachments) of a space changed after a time, with the page or blog post each is on.
 
-        v1 ``GET .../rest/api/content/search`` with CQL ``type=comment``; ``container``
-        is expanded so each result names its page.
+        v1 ``GET .../rest/api/content/search`` with CQL ``type=comment`` (or ``content_type``);
+        ``container`` is expanded so each result names its page.
         """
         if self._client is None:
             raise ValueError("HTTP client is not initialized")
-        cql_parts = ["type=comment", f'space="{_escape_cql_literal(space_key)}"']
+        if content_type not in ("comment", "attachment"):
+            raise ValueError(f"Unsupported content type: {content_type}")
+        cql_parts = [f"type={content_type}", f'space="{_escape_cql_literal(space_key)}"']
         if modified_after:
             formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)
             cql_parts.append(f'lastModified > "{formatted_date}"')

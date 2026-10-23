@@ -2584,46 +2584,10 @@ class ConfluenceConnector(BaseConnector):
         if not checked_at:
             await self.pages_sync_point.update_sync_point(key, {"checked_at": searched_at})
             return
-        since = datetime.fromisoformat(checked_at.replace("Z", "+00:00")) - self._COMMENT_CHECK_OVERLAP
-        search_after = listing_modified_after(None, checked_at, TIME_OFFSET_HOURS)
-        page_ids: set[str] = set()
-        token: str | None = None
-        followed: set[str] = set()
-        while True:
-            offset, cursor = self._split_pagination_token(token)
-            try:
-                datasource = await self._get_fresh_datasource()
-                response = await datasource.get_comments_v1(
-                    space_key=space_key, modified_after=search_after, start=offset, cursor=cursor, limit=100,
-                )
-                data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
-            except AtlassianQuotaExhausted:
-                raise
-            except Exception as e:
-                self.logger.warning(f"Could not search the comments of space {space_key}: {e}")
-                data = None
-            results = data.get("results") if isinstance(data, dict) else None
-            if not isinstance(results, list):
-                self._note_problem(
-                    f"Space {space_key}: couldn't check for changed comments; the next sync tries again", unread=False
-                )
-                return
-            for item in results:
-                container = item.get("container") or {}
-                if not types.get(container.get("type")) or not container.get("id"):
-                    continue
-                if self._changed_since(item, since):
-                    page_ids.add(str(container["id"]))
-            next_url = (data.get("_links") or {}).get("next")
-            if not next_url:
-                break
-            token = self._extract_cursor_from_next_link(next_url)
-            if not results or not token or token in followed:
-                self._note_problem(
-                    f"Space {space_key}: couldn't check for changed comments; the next sync tries again", unread=False
-                )
-                return
-            followed.add(token)
+        containers = await self._containers_changed_since(space_key, "comment", checked_at)
+        if containers is None:
+            return
+        page_ids = {item_id for item_id, kind in containers.items() if types.get(kind)}
 
         records = []
         for page_id in sorted(page_ids):
@@ -2639,6 +2603,89 @@ class ConfluenceConnector(BaseConnector):
             await self._fix_legacy_mime_types(records)
             await self.data_entities_processor.reindex_existing_records(records)
         await self.pages_sync_point.update_sync_point(key, {"checked_at": searched_at})
+
+    async def _containers_changed_since(
+        self, space_key: str, content_type: str, checked_at: str
+    ) -> dict[str, str] | None:
+        """Pages and blog posts (id to type) whose comments or attachments changed since ``checked_at``.
+
+        None, with the problem noted, when the search could not be read to the end.
+        """
+        since = datetime.fromisoformat(checked_at.replace("Z", "+00:00")) - self._COMMENT_CHECK_OVERLAP
+        search_after = listing_modified_after(None, checked_at, TIME_OFFSET_HOURS)
+        problem = f"Space {space_key}: couldn't check for changed {content_type}s; the next sync tries again"
+        containers: dict[str, str] = {}
+        token: str | None = None
+        followed: set[str] = set()
+        while True:
+            offset, cursor = self._split_pagination_token(token)
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_comments_v1(
+                    space_key=space_key, modified_after=search_after, start=offset, cursor=cursor, limit=100,
+                    content_type=content_type,
+                )
+                data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
+            except AtlassianQuotaExhausted:
+                raise
+            except Exception as e:
+                self.logger.warning(f"Could not search the {content_type}s of space {space_key}: {e}")
+                data = None
+            results = data.get("results") if isinstance(data, dict) else None
+            if not isinstance(results, list):
+                self._note_problem(problem, unread=False)
+                return None
+            for item in results:
+                container = item.get("container") or {}
+                # An attachment on a comment names the comment; only pages and blog posts are synced.
+                if container.get("type") not in ("page", "blogpost") or not container.get("id"):
+                    continue
+                if self._changed_since(item, since):
+                    containers[str(container["id"])] = container["type"]
+            next_url = (data.get("_links") or {}).get("next")
+            if not next_url:
+                return containers
+            token = self._extract_cursor_from_next_link(next_url)
+            if not results or not token or token in followed:
+                self._note_problem(problem, unread=False)
+                return None
+            followed.add(token)
+
+    async def _resync_pages_with_changed_attachments(self, space_key: str) -> None:
+        """Sync again the pages and blog posts of a space whose attachments changed since the last check.
+
+        Uploading a file, or a new version of one, adds no page version, so the listing by
+        last change never brings the page back and the new file would not be synced. Its
+        own checkpoint moves only after every such page was synced again; the first sync
+        only sets it.
+        """
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_attachments", space_key)
+        stored = await self.pages_sync_point.read_sync_point(key) or {}
+        checked_at = stored.get("checked_at")
+        searched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        if not checked_at:
+            await self.pages_sync_point.update_sync_point(key, {"checked_at": searched_at})
+            return
+        containers = await self._containers_changed_since(space_key, "attachment", checked_at)
+        if containers is None:
+            return
+        complete = True
+        for record_type, kind in ((RecordType.CONFLUENCE_PAGE, "page"), (RecordType.CONFLUENCE_BLOGPOST, "blogpost")):
+            ids = sorted(item_id for item_id, item_kind in containers.items() if item_kind == kind)
+            for start in range(0, len(ids), ID_SEARCH_CHUNK):
+                result = await self._sync_content(
+                    space_key, record_type, defer_checkpoint=True, within_ids=ids[start:start + ID_SEARCH_CHUNK],
+                )
+                complete = complete and result.complete
+            if ids:
+                self.logger.info(f"Synced {len(ids)} {kind}s in space {space_key} again: their attachments changed")
+        if complete:
+            await self.pages_sync_point.update_sync_point(key, {"checked_at": searched_at})
+        else:
+            self._note_problem(
+                f"Space {space_key}: couldn't sync every page whose attachments changed; the next sync tries again",
+                unread=False,
+            )
 
     @staticmethod
     def _changed_since(item: dict[str, Any], since: datetime) -> bool:
@@ -2733,6 +2780,18 @@ class ConfluenceConnector(BaseConnector):
                         # After a full listing an unsettled check may hide items it missed: no unlink then.
                         unread=listing.full,
                     )
+
+            try:
+                await self._resync_pages_with_changed_attachments(space_key)
+            except AtlassianQuotaExhausted:
+                raise
+            except Exception as e:
+                # The attachment check keeps its clock, so the next sync looks at these files again.
+                self.logger.warning(f"Could not check the attachments of space {space_key}: {e}", exc_info=True)
+                self._note_problem(
+                    f"Space {space_key}: couldn't check for changed attachments; the next sync tries again",
+                    unread=False,
+                )
 
     async def _remove_content_gone_from_source(
         self, space: RecordGroup, record_type: RecordType, listing: ContentListing
