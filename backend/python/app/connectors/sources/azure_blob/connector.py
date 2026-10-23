@@ -123,6 +123,10 @@ _AUTH_ERROR_CODES = frozenset({
     "AuthorizationServiceMismatch", "AuthorizationProtocolMismatch", "AuthorizationSourceIPMismatch",
 })
 
+
+class _NotReindexable(Exception):
+    """The blob cannot be read now: gone, refused, or in the Archive tier."""
+
 _SETUP_INFO = (
     "The connection string under Access keys in the Azure portal holds the account key, which "
     "has full control of the whole storage account. Prefer a SAS with only Read and List "
@@ -1386,6 +1390,7 @@ class AzureBlobConnector(BaseConnector):
             content_type = getattr(content_settings, "content_type", None)
             content_md5 = getattr(content_settings, "content_md5", None)
 
+        blob_tier = getattr(blob, "blob_tier", None)
         # Convert BlobProperties to dict
         return {
             "name": getattr(blob, "name", ""),
@@ -1396,7 +1401,8 @@ class AzureBlobConnector(BaseConnector):
             "content_type": content_type,
             "content_md5": content_md5,
             "metadata": getattr(blob, "metadata", None) or {},
-            "blob_tier": getattr(blob, "blob_tier", None),
+            # The listing gives the generated AccessTier enum, whose str() is "AccessTier.ARCHIVE".
+            "blob_tier": getattr(blob_tier, "value", blob_tier),
             "blob_tier_change_time": getattr(blob, "blob_tier_change_time", None),
         }
 
@@ -1750,7 +1756,7 @@ class AzureBlobConnector(BaseConnector):
         try:
             problem = await self._connection_problem()
         except Exception as e:
-            problem = azure_error_text(e) if isinstance(e, AzureError) else str(e)
+            problem = azure_error_text(e)
         if problem:
             self.logger.error(f"Azure Blob connection test failed: {problem}")
             await self._notify_error(NotificationType.CONNECTOR_AUTH_ERROR, "Connection test failed", problem)
@@ -1967,7 +1973,7 @@ class AzureBlobConnector(BaseConnector):
                         updated_records.append((updated_record, permissions))
                     else:
                         non_updated_records.append(record)
-                except LookupError as e:
+                except _NotReindexable as e:
                     self.logger.warning(f"Not reindexing record {record.id}: {e}")
                     continue
                 except Exception as e:
@@ -2017,14 +2023,14 @@ class AzureBlobConnector(BaseConnector):
 
             if not response.success:
                 # Raised, so reindex_records publishes nothing for a blob that is gone or unreadable.
-                raise LookupError(f"Blob {blob_name} in container {container_name} cannot be read: {response.error}")
+                raise _NotReindexable(f"Blob {blob_name} in container {container_name} cannot be read: {response.error}")
 
             if not response.data:
                 return None
             blob_metadata = self._blob_properties_to_dict(response.data)
             if str(blob_metadata.get("blob_tier") or "").lower() == "archive":
                 # Raised like a missing blob: indexing could not read it until it is rehydrated.
-                raise LookupError(f"Blob {blob_name} in container {container_name} is in the Archive tier")
+                raise _NotReindexable(f"Blob {blob_name} in container {container_name} is in the Archive tier")
 
             # The same revision sync stores (Content-MD5, else etag).
             current_revision = self._get_azure_blob_revision_id(blob_metadata)
@@ -2121,7 +2127,7 @@ class AzureBlobConnector(BaseConnector):
 
             return updated_record, permissions
 
-        except LookupError:
+        except _NotReindexable:
             raise
         except Exception as e:
             self.logger.error(f"Error checking record {record.id} at source: {e}", exc_info=True)

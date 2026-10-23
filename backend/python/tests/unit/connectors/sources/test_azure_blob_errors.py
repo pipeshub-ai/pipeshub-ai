@@ -18,7 +18,7 @@ from azure.core.exceptions import (
     HttpResponseError,
     ServiceRequestError,
 )
-from azure.storage.blob._generated.models import StorageErrorCode
+from azure.storage.blob._generated.models import AccessTier, StorageErrorCode
 
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
@@ -173,6 +173,14 @@ class TestConnectionTest:
         with pytest.raises(ConnectorInitError, match="HTTP 403 AuthorizationPermissionMismatch: This request is not authorized"):
             await self.wired(error).test_connection_and_access()
 
+    @pytest.mark.asyncio
+    async def test_an_error_with_no_message_still_fails(self) -> None:
+        c = self.wired(auth_failure())
+        c.data_source.list_containers = AsyncMock(side_effect=TimeoutError())
+
+        with pytest.raises(ConnectorInitError, match="TimeoutError"):
+            await c.test_connection_and_access()
+
 
 def blob_record(name: str) -> FileRecord:
     return FileRecord(
@@ -202,3 +210,26 @@ class TestReindexArchive:
 
         c.data_entities_processor.on_new_records.assert_not_awaited()
         c.data_entities_processor.reindex_existing_records.assert_not_awaited()
+
+    def test_the_listing_tier_enum_reads_as_archive(self) -> None:
+        blob = SimpleNamespace(name="a.txt", blob_tier=AccessTier.ARCHIVE, content_settings=None)
+
+        assert connector()._blob_properties_to_dict(blob)["blob_tier"] == "Archive"
+
+    @pytest.mark.asyncio
+    async def test_an_unexpected_error_still_reindexes_the_stored_record(self) -> None:
+        c = connector()
+        c.data_entities_processor.on_new_records = AsyncMock()
+        c.data_entities_processor.reindex_existing_records = AsyncMock()
+        properties = SimpleNamespace(
+            name="a.txt", last_modified=None, creation_time=None, etag='"e"', size=1,
+            content_settings=None, metadata={}, blob_tier="Hot", blob_tier_change_time=None,
+        )
+        c.data_source = MagicMock()
+        c.data_source.get_blob_properties = AsyncMock(return_value=SimpleNamespace(success=True, data=properties))
+        record = blob_record("a.txt")
+
+        with patch.object(c, "_get_azure_blob_revision_id", side_effect=KeyError("md5")):
+            await c.reindex_records([record])
+
+        c.data_entities_processor.reindex_existing_records.assert_awaited_once_with([record])

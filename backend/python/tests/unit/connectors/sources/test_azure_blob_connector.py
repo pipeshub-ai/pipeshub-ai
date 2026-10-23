@@ -23,6 +23,7 @@ from app.connectors.core.registry.filters import FilterCollection, FilterOperato
 from app.connectors.sources.azure_blob.connector import (
     AzureBlobConnector,
     AzureBlobDataSourceEntitiesProcessor,
+    _NotReindexable,
     get_file_extension,
     get_folder_path_segments_from_blob_name,
     get_mimetype_for_azure_blob,
@@ -1190,7 +1191,7 @@ class TestCheckAndFetchUpdatedRecord:
             return_value=_make_response(False, error="not found")
         )
         # Raised so reindex_records publishes nothing for a blob that is gone.
-        with pytest.raises(LookupError):
+        with pytest.raises(_NotReindexable):
             await azure_connector._check_and_fetch_updated_record("org-1", record)
 
     @pytest.mark.asyncio
