@@ -1924,6 +1924,7 @@ class TestBackgroundStartFailure:
         assert len(notes) == 2, "every failed start is reported"
         assert notes[0]["title"].endswith("sync could not start")
         assert "Couldn't connect to Confluence" in notes[0]["message"]
+        assert "Unauthorized" not in notes[0]["message"] and "401" not in notes[0]["message"], "no raw response text"
         assert notes[0]["recipient_user_ids"] == ["creator-1"]
         assert [r.value for r in notes[0]["recipient_roles"]] == ["admin"]
 
@@ -2124,3 +2125,18 @@ class TestFullListingMisses:
         assert "11" in db.records
         assert connector.full_sync_coverage().complete is False, "the full sync must not unlink it"
         assert any("could not be read in this sync" in p for p in connector._sync_problems)
+
+
+class TestNoRawErrorTextForUsers:
+    async def test_an_unexpected_setup_error_does_not_show_its_text(self, api, db, checkpoints, monkeypatch) -> None:
+        connector, _ = await make_connector(db, checkpoints)
+
+        async def broken(*_: object, **__: object) -> None:
+            raise RuntimeError("connect to http://10.0.0.5:8090 failed")
+
+        monkeypatch.setattr(connector, "_build_confluence_client", broken)
+
+        with pytest.raises(ConnectorInitError) as err:
+            await connector.init()
+
+        assert "10.0.0.5" not in str(err.value)

@@ -602,7 +602,12 @@ class ConfluenceConnector(BaseConnector):
             raise ConnectorInitError(f"Confluence settings are incomplete: {e}") from e
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Confluence connector: {e}", exc_info=True)
-            raise ConnectorInitError(f"Couldn't connect to Confluence: {str(e)[:300]}") from e
+            # The message reaches any user who opens a record while the connector starts, so no raw
+            # error text (hosts, response bodies): that stays in the log.
+            raise ConnectorInitError(
+                "Couldn't connect to Confluence. Check the site URL and the credentials; "
+                "the connector's log has the details."
+            ) from e
 
     async def on_background_init_failed(self, error: Optional[Exception]) -> None:
         """A sync could not start: tell the creator and the org admins, on every failed start."""
@@ -724,7 +729,7 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}", exc_info=True)
             raise ConnectorInitError(
-                f"Couldn't reach Confluence at {self._site_url_for_messages()}: {str(e)[:200]}. "
+                f"Couldn't reach Confluence at {self._site_url_for_messages()}. "
                 "Check the site URL and that it can be reached from PipesHub."
             ) from e
 

@@ -4383,7 +4383,7 @@ class TestInit:
             new_callable=AsyncMock,
             side_effect=RuntimeError("build failed"),
         ):
-            with pytest.raises(ConnectorInitError, match="build failed"):
+            with pytest.raises(ConnectorInitError, match="Couldn't connect to Confluence"):
                 await c.init()
 
 
@@ -4513,7 +4513,7 @@ class TestConnectionAndAccess:
         c = _mk_connector()
         c.external_client = MagicMock()
         c._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("connection error"))
-        with pytest.raises(ConnectorInitError, match="connection error"):
+        with pytest.raises(ConnectorInitError, match="Couldn't reach Confluence"):
             await c.test_connection_and_access()
 
 
@@ -7372,7 +7372,7 @@ class TestInitAdditional:
             "app.connectors.sources.atlassian.confluence_cloud.connector.ExternalConfluenceClient.build_from_services",
             side_effect=RuntimeError("build fail"),
         ):
-            with pytest.raises(ConnectorInitError, match="build fail"):
+            with pytest.raises(ConnectorInitError, match="Couldn't connect to Confluence"):
                 await c.init()
 
     @pytest.mark.asyncio
