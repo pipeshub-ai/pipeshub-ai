@@ -1135,18 +1135,16 @@ class KnowledgeHubService:
         Apps are left out: the root listing reads them with their grants."""
         user = await self._shared(("user", user_id, org_id), lambda: self._resolve_user(user_id, org_id))
         user_email = (user or {}).get("email")
-        items: list[NodeItem] = []
+        rows: list[dict[str, Any]] = []
         for node in nodes:
             if node.node_type == "app":
                 continue
             doc = node.doc
-            group = node.node_type == "recordGroup"
-            origin = ("COLLECTION" if doc.get("connectorName") == "KB" else "CONNECTOR") if group else doc.get("origin")
-            item = self._doc_to_node_item({
+            rows.append({
                 "id": node.id,
                 "name": node.name,
                 "nodeType": node.node_type,
-                "origin": origin or "CONNECTOR",
+                "origin": "COLLECTION" if node.in_collection else "CONNECTOR",
                 "connector": doc.get("connectorName"),
                 "connectorId": doc.get("connectorId"),
                 "recordType": doc.get("recordType"),
@@ -1162,9 +1160,12 @@ class KnowledgeHubService:
                 # listed without the extra read that would tell.
                 "hasChildren": node.node_type in ("recordGroup", "folder"),
             })
+        if user and user.get("_key"):
+            await self._stamp_collection_roles(rows, user["_key"])
+        items = [self._doc_to_node_item(row) for row in rows]
+        for item in items:
             if item.webUrl:
                 item.webUrl = substitute_user_email(item.webUrl, user_email, item.connector)
-            items.append(item)
         return items
 
     def _doc_to_node_item(self, doc: dict[str, Any]) -> NodeItem:

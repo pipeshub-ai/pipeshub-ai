@@ -400,13 +400,29 @@ class NamedNode:
         return self.doc.get("name") or self.doc.get("groupName") or self.doc.get("recordName") or self.id
 
     @property
+    def in_collection(self) -> bool:
+        """Whether it is a collection or lies in one. Read from the node, not
+        its stored ``origin``, which is ``UPLOAD`` on a collection file."""
+        if self.node_type == "app":
+            return self.doc.get("type") == "KB"
+        return self.doc.get("connectorName") == "KB"
+
+    def _date(self, source: str, ingest: str) -> int | None:
+        # As the knowledge hub dates a node: a collection item's source date is
+        # the file's own, not when it was added.
+        if self.in_collection:
+            return self.doc.get(ingest) or None
+        return self.doc.get(source) or self.doc.get(ingest) or None
+
+    @property
     def created_at(self) -> int | None:
-        """When the source says it was made, else when it was synced; as listings date it."""
-        return self.doc.get("sourceCreatedAtTimestamp") or self.doc.get("createdAtTimestamp") or None
+        """When the source says it was made, else when it was synced; for a
+        collection item, when it was added."""
+        return self._date("sourceCreatedAtTimestamp", "createdAtTimestamp")
 
     @property
     def updated_at(self) -> int | None:
-        return self.doc.get("sourceLastModifiedTimestamp") or self.doc.get("updatedAtTimestamp") or None
+        return self._date("sourceLastModifiedTimestamp", "updatedAtTimestamp")
 
 
 _NAMED_COLLECTIONS = {

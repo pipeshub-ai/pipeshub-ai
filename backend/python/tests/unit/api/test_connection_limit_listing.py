@@ -9,6 +9,8 @@ providers do (see ``kh_listing_stub``).
 
 from __future__ import annotations
 
+import base64
+import json
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
@@ -17,8 +19,10 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes
 from app.connectors.api.router import knowledge_graph_navigate
+from app.connectors.sources.localKB.api import knowledge_hub_router
 from app.connectors.sources.localKB.api.knowledge_hub_router import _handle_get_nodes
 from app.connectors.sources.localKB.handlers.kh_bounded import (
+    BoundedCursor,
     Position,
     decode_bounded_cursor,
     encode_bounded_cursor,
@@ -53,6 +57,15 @@ CORPUS = {
         *(node(f"zz-{c}", f"zz budget {c}", parent_id=FOLDER, origin="COLLECTION") for c in "abc"),
     ],
     "kb-other": [node("other-1", "budget other", origin="COLLECTION")],
+}
+
+
+# Upload order is the reverse of the files' own modification order.
+DATES = {
+    "zz-a": {"createdAtTimestamp": 2_000, "updatedAtTimestamp": 2_000,
+             "sourceCreatedAtTimestamp": 100, "sourceLastModifiedTimestamp": 100},
+    "big-07": {"createdAtTimestamp": 1_000, "updatedAtTimestamp": 1_000,
+               "sourceCreatedAtTimestamp": 900, "sourceLastModifiedTimestamp": 900},
 }
 
 
@@ -95,9 +108,12 @@ def _graph() -> MagicMock:
 
     def by_ids(collection: str, _field: str, ids: list[str], **_: object) -> list[dict[str, Any]]:
         if collection == "apps":
-            return [{"id": i, "name": i} for i in ids if i in CORPUS]
+            return [{"id": i, "name": i, "type": "KB"} for i in ids if i in CORPUS]
+        # As a collection stores them: origin UPLOAD, and the file's own dates
+        # beside when it was added.
         return [
-            {"id": i, "recordName": rows[i]["name"], "connectorId": owner[i], "origin": "COLLECTION",
+            {"id": i, "recordName": rows[i]["name"], "connectorId": owner[i], "connectorName": "KB",
+             "origin": "UPLOAD", **DATES.get(i, {}),
              "mimeType": MimeTypes.FOLDER.value if rows[i]["nodeType"] == "folder" else "text/plain"}
             for i in ids if i in rows
         ]
@@ -168,6 +184,23 @@ class TestASearchInsideAFolderLimit:
         assert second.pagination.totalItems == 3
         assert second.pagination.startIndex == 3 and second.pagination.hasPrev is True
 
+    async def test_the_cursor_alone_resumes_the_same_search(self) -> None:
+        graph = _graph()
+        first = await _nodes(graph, FOLDER_LIMIT, q="budget", limit=2)
+
+        second = await _nodes(graph, FOLDER_LIMIT, limit=2, cursor=first.pagination.nextCursor)
+
+        assert [item.id for item in second.items] == ["zz-c"]
+        assert second.pagination.totalItems == 3
+
+    async def test_the_cursor_decides_the_search_over_what_the_request_asks(self) -> None:
+        graph = _graph()
+        first = await _nodes(graph, FOLDER_LIMIT, q="budget", limit=2)
+
+        second = await _nodes(graph, FOLDER_LIMIT, q="shared", limit=2, cursor=first.pagination.nextCursor)
+
+        assert [item.id for item in second.items] == ["zz-c"]
+
     async def test_a_page_number_reaches_the_same_page_as_the_cursor(self) -> None:
         second = await _nodes(_graph(), FOLDER_LIMIT, q="budget", limit=2, page=2)
 
@@ -218,6 +251,40 @@ class TestTheBrowseRootOfALimitBelowAppLevel:
 
         assert [item.id for item in result.items] == ["kb-other", FOLDER]
         assert result.items[0].nodeType == "app" and result.pagination.totalItems == 2
+
+    async def test_the_cursor_alone_keeps_the_sort(self) -> None:
+        graph = _graph()
+        first = await _nodes(graph, FILES_LIMIT, limit=1, sort_order="desc")
+
+        second = await _nodes(graph, FILES_LIMIT, limit=1, cursor=first.pagination.nextCursor)
+
+        assert [item.id for item in first.items] == ["zz-a"]
+        assert [item.id for item in second.items] == ["big-07"]
+
+    async def test_a_collection_folder_is_listed_as_collection_content(self) -> None:
+        result = await _nodes(_graph(), FOLDER_LIMIT, origins="COLLECTION", flattened=False)
+
+        assert [item.id for item in result.items] == [FOLDER]
+        assert result.items[0].origin == "COLLECTION"
+        # The collections page gates edit and delete on the caller's role in the collection.
+        assert result.items[0].permission is not None and result.items[0].permission.role == "READER"
+
+    async def test_a_collection_file_is_dated_by_its_upload(self) -> None:
+        graph = _graph()
+
+        result = await _nodes(graph, FILES_LIMIT, sort_by="updatedAt", sort_order="asc")
+        since = await _nodes(graph, FILES_LIMIT, updated_at="gte:1500", flattened=False)
+
+        assert [item.id for item in result.items] == ["big-07", "zz-a"]
+        assert [item.updatedAt for item in result.items] == [1_000, 2_000]
+        assert [item.id for item in since.items] == ["zz-a"]
+
+    async def test_a_named_app_past_the_first_page_of_apps_is_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(knowledge_hub_router, "_APP_BATCH", 1)
+
+        result = await _nodes(_graph(), MIXED_LIMIT)
+
+        assert [item.id for item in result.items] == ["kb-other", FOLDER]
 
     async def test_a_named_item_the_user_cannot_read_is_not_listed(self) -> None:
         limit = {"apps": [], "recordGroups": [], "records": [FOLDER, "gone"]}
@@ -299,14 +366,34 @@ class TestTheNavigateRoot:
 
         assert [row["id"] for row in result["rows"]] == ["zz-a", "big-07"]
         assert all(row["is_record"] for row in result["rows"])
+        assert [row["source_modified_at"] for row in result["rows"]] == [2_000, 1_000]
+
+
+def _raw_cursor(payload: dict[str, Any]) -> str:
+    return "lim1." + base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
 
 
 class TestTheBoundedCursor:
     def test_it_round_trips(self) -> None:
-        token = encode_bounded_cursor("search", 4, Position(cursor="abc", page=2, skip=3))
-        assert decode_bounded_cursor(token) == ("search", 4, Position(cursor="abc", page=2, skip=3))
+        params = {"q": "budget", "sort_by": "name", "only_containers": False, "flattened": None}
+        token = encode_bounded_cursor("search", 4, Position(cursor="abc", page=2, skip=3), params)
+        assert decode_bounded_cursor(token) == BoundedCursor(
+            "search", 4, Position(cursor="abc", page=2, skip=3), {"q": "budget", "sort_by": "name", "only_containers": False},
+        )
 
-    @pytest.mark.parametrize("token", ["abc", "lim1.!!!", "lim1.e30", encode_bounded_cursor("other", 1)])
+    @pytest.mark.parametrize("token", [
+        "abc", "lim1.!!!", "lim1.e30", encode_bounded_cursor("other", 1),
+        _raw_cursor({"m": "search", "n": 0, "f": {"q": 5}}),
+        _raw_cursor({"m": "search", "n": 0, "f": {"limit": "9"}}),
+        _raw_cursor({"m": "search", "n": 0, "f": {"flattened": "yes"}}),
+    ])
     def test_anything_else_is_refused(self, token: str) -> None:
         with pytest.raises(ValueError):
             decode_bounded_cursor(token)
+
+    async def test_what_it_carries_is_validated_as_a_request_is(self) -> None:
+        token = _raw_cursor({"m": "browse", "n": 0, "f": {"sort_by": "secret"}})
+
+        with pytest.raises(HTTPException) as exc:
+            await _nodes(_graph(), FOLDER_LIMIT, cursor=token)
+        assert exc.value.status_code == 400
