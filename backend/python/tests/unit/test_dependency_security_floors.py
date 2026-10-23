@@ -7,6 +7,8 @@ on the same pins as the backend one.
 """
 
 import importlib.metadata
+import site
+import sys
 import tomllib
 from pathlib import Path
 
@@ -28,6 +30,15 @@ SECURITY_FLOORS = {
     # GHSA-vfmq-68hx-4jfw
     "lxml": Version("6.1.0"),
 }
+
+# package -> malicious releases that must never resolve, whatever the floor.
+COMPROMISED_RELEASES = {
+    # 1.107.0 shipped cook.pth, which runs at every interpreter start and posts credentials out.
+    "litellm": (Version("1.107.0"),),
+}
+
+# Files those releases drop into site-packages; a .pth runs before any test does.
+COMPROMISED_FILES = ("cook.pth", "cook.py")
 
 
 def _specifiers(manifest: Path) -> dict[str, str]:
@@ -59,3 +70,24 @@ def test_integration_tests_manifest_carries_the_same_pin(package: str) -> None:
     if package not in integration:
         pytest.skip(f"integration-tests/ does not name {package}")
     assert integration[package] == _specifiers(BACKEND_MANIFEST)[package]
+
+
+@pytest.mark.parametrize("package", sorted(COMPROMISED_RELEASES))
+def test_installed_release_is_not_a_compromised_one(package: str) -> None:
+    assert Version(importlib.metadata.version(package)) not in COMPROMISED_RELEASES[package]
+
+
+@pytest.mark.parametrize("manifest", [BACKEND_MANIFEST, INTEGRATION_MANIFEST], ids=["backend", "integration-tests"])
+@pytest.mark.parametrize("package", sorted(COMPROMISED_RELEASES))
+def test_manifest_excludes_compromised_releases(package: str, manifest: Path) -> None:
+    if not manifest.exists():
+        pytest.skip(f"{manifest.parent.name}/ is not part of this checkout")
+    specifier = Requirement(f"{package}{_specifiers(manifest)[package]}").specifier
+    for release in COMPROMISED_RELEASES[package]:
+        assert not specifier.contains(release, prereleases=True), f"{manifest} admits {package} {release}"
+
+
+def test_no_compromised_file_in_site_packages() -> None:
+    directories = {Path(p) for p in [*site.getsitepackages(), site.getusersitepackages(), *sys.path] if p}
+    found = [str(d / name) for d in directories for name in COMPROMISED_FILES if (d / name).exists()]
+    assert not found, f"remove the environment and rebuild it: {found}"

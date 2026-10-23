@@ -89,6 +89,9 @@ dependencies = [
   "numpy==2.3.2",
   "opencv-python-headless==4.11.0.86",
   "openpyxl==3.1.5",
+  # litellm arrives through opik; 1.107.0 shipped a credential stealer (cook.pth), so keep below it.
+  # Same pin as backend/python/pyproject.toml.
+  "litellm>=1.79.2,<1.107",
   "opik==2.2.99",
   "pagerduty>=5.0.0",
   "pandas==2.2.3",
