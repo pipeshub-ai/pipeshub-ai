@@ -88,7 +88,7 @@ def load_requests(path: str) -> tuple[list[tuple[float, float]], list[float]]:
                 if r.get("http_code") == "200" and (r.get("curl_exit") or "0") == "0":
                     ends.append(b)
     except OSError:
-        pass
+        pass  # no request log: the plots simply have no in-flight series
     return spans, ends
 
 
