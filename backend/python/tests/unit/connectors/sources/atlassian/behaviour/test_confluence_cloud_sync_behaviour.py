@@ -39,6 +39,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import (
     AccessRule,
+    ProgressStatus,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -2345,31 +2346,39 @@ class TestCommentsReindexTheirPage:
         search.by_cursor[None] = search_page([v1_page("10"), v1_page("11")])
         connector, _ = await ready_connector(db, checkpoints)
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._reindex_pages_with_changed_comments("ENG")  # the first check only starts the clock
         db.reindexed.clear()
-        search.by_cursor = {None: search_page([])}
         return connector
 
-    async def test_a_page_whose_comments_changed_is_reindexed(self, api, db, checkpoints, search) -> None:
+    def _checked_at(self, checkpoints) -> str:
+        return checkpoints.values_for("confluence_comments/ENG")["checked_at"]
+
+    async def test_a_page_whose_comments_changed_is_reindexed_once(self, api, db, checkpoints, search) -> None:
         connector = await self._synced(api, db, checkpoints, search)
-        checkpoint = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
-        after = (datetime.fromisoformat(checkpoint.replace("Z", "+00:00")) + timedelta(minutes=5)).isoformat()
-        long_before = "2020-01-01T00:00:00+00:00"
-        search.comments = [comment_on("10", after), comment_on("11", long_before)]
+        after = (datetime.fromisoformat(self._checked_at(checkpoints).replace("Z", "+00:00"))
+                 + timedelta(minutes=5)).isoformat()
+        search.comments = [comment_on("10", after), comment_on("11", "2020-01-01T00:00:00+00:00")]
 
-        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
-
+        await connector._reindex_pages_with_changed_comments("ENG")
         assert [r.external_record_id for r in db.reindexed] == ["10"], "only the page with a new comment"
-        assert any(q["cql"].startswith("type=comment") for q in search.queries)
 
-    async def test_a_failed_comment_search_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
+        # A later run in a quiet space doesn't re-index it again: the check's clock moved.
+        db.reindexed.clear()
+        key = next(k for k in checkpoints.sync_points if k.endswith("confluence_comments/ENG"))
+        checkpoints.sync_points[key]["checked_at"] = (
+            datetime.fromisoformat(after) + timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        await connector._reindex_pages_with_changed_comments("ENG")
+        assert db.reindexed == []
+
+    async def test_a_failed_comment_search_keeps_the_clock(self, api, db, checkpoints, search) -> None:
         connector = await self._synced(api, db, checkpoints, search)
-        before = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+        before = self._checked_at(checkpoints)
         search.comments = json_response({"message": "busy"}, status=503)
 
-        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._reindex_pages_with_changed_comments("ENG")
 
-        assert listing.complete is False
-        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] == before
+        assert self._checked_at(checkpoints) == before
+        assert any("changed comments" in p for p in connector._sync_problems)
 
     async def test_comments_off_means_no_comment_search(self, api, db, checkpoints, search, monkeypatch) -> None:
         connector = await self._synced(api, db, checkpoints, search)
@@ -2380,10 +2389,20 @@ class TestCommentsReindexTheirPage:
         monkeypatch.setattr(connector, "_comments_indexed", off)
         search.queries.clear()
 
-        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._reindex_pages_with_changed_comments("ENG")
 
         assert not any(q["cql"].startswith("type=comment") for q in search.queries)
 
+    async def test_a_page_left_out_of_indexing_stays_out(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+        db.records["10"].indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        after = (datetime.fromisoformat(self._checked_at(checkpoints).replace("Z", "+00:00"))
+                 + timedelta(minutes=5)).isoformat()
+        search.comments = [comment_on("10", after)]
+
+        await connector._reindex_pages_with_changed_comments("ENG")
+
+        assert db.reindexed == []
 
 class TestFooterCommentThreads:
     async def test_a_reply_to_a_reply_stays_in_its_thread(self, api, db, checkpoints) -> None:
