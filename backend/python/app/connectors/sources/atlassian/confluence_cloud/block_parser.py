@@ -17,6 +17,7 @@ from uuid import uuid4
 from app.connectors.sources.atlassian.core.adf_markdown import (
     adf_to_markdown,
     apply_adf_marks,
+    media_reference,
 )
 from app.models.blocks import (
     Block,
@@ -50,12 +51,16 @@ class ConfluenceBlockParser:
 
     # Constants
     MAX_TABLE_ROWS_DISPLAY = 100
+    # Macros that only arrange or link the page; they carry no content of their own.
+    LAYOUT_ONLY_EXTENSIONS = frozenset({"toc", "children", "anchor"})
 
     def __init__(self, logger: logging.Logger) -> None:
         """Initialize the parser with a logger."""
         self.logger = logger
         self._block_counter = 0
         self._block_group_counter = 0
+        # Inline comment marker ref (ADF annotation mark id) -> block holding the marked text
+        self._annotation_blocks: dict[str, Block] = {}
 
     @staticmethod
     def _normalize_url(url: str | None) -> str | None:
@@ -253,6 +258,7 @@ class ConfluenceBlockParser:
             self._parse_unknown
         )
 
+        first_new_block = len(blocks)
         try:
             result = await parser_method(
                 node=node,
@@ -265,6 +271,8 @@ class ConfluenceBlockParser:
                 list_depth=list_depth,
                 parent_list_style=parent_list_style,
             )
+            if len(blocks) > first_new_block:
+                self._claim_annotations(node, blocks[first_new_block])
 
             return result if result else []
 
@@ -274,6 +282,63 @@ class ConfluenceBlockParser:
                 exc_info=True
             )
             return []
+
+    def _claim_annotations(self, node: dict[str, Any], block: Block) -> None:
+        """Map inline comment annotation marks under ``node`` to ``block``.
+
+        Nodes are claimed innermost first, so a mark maps to the block built from
+        its own paragraph rather than to an enclosing list, panel or table.
+        """
+        stack: list[Any] = [node]
+        while stack:
+            current = stack.pop()
+            if not isinstance(current, dict):
+                continue
+            for mark in current.get("marks") or []:
+                if not isinstance(mark, dict) or mark.get("type") != "annotation":
+                    continue
+                attrs = mark.get("attrs") or {}
+                if attrs.get("id") and attrs.get("annotationType", "inlineComment") == "inlineComment":
+                    self._annotation_blocks.setdefault(str(attrs["id"]), block)
+            stack.extend(current.get("content") or [])
+
+    @staticmethod
+    def _mention_text(attrs: dict[str, Any]) -> str:
+        """Mention display text; never the account id, which is not useful indexed text."""
+        text = str(attrs.get("text") or "").strip()
+        if not text:
+            return ""
+        return text if text.startswith("@") else f"@{text}"
+
+    @staticmethod
+    def _card_link(attrs: dict[str, Any]) -> tuple[str, str]:
+        """(text, url) of an inline/block/embed card; the text is the card's name when it has one."""
+        url = str(attrs.get("url") or "").strip()
+        data = attrs.get("data")
+        title = str(data.get("name") or "").strip() if isinstance(data, dict) else ""
+        return title or url, url
+
+    def _extension_text(self, attrs: dict[str, Any]) -> str:
+        """Text for a macro with no body: its title and parameter values, if any."""
+        extension_key = str(attrs.get("extensionKey") or "")
+        if extension_key.lower() in self.LAYOUT_ONLY_EXTENSIONS:
+            return ""
+        parameters = attrs.get("parameters") or {}
+        if not isinstance(parameters, dict):
+            parameters = {}
+        metadata = parameters.get("macroMetadata") or {}
+        title = str(metadata.get("title") or "").strip() if isinstance(metadata, dict) else ""
+        values: list[str] = []
+        macro_params = parameters.get("macroParams") or {}
+        if isinstance(macro_params, dict):
+            for name, param in macro_params.items():
+                value = param.get("value") if isinstance(param, dict) else None
+                # "_"-prefixed params are Confluence bookkeeping (e.g. _parentId), not content.
+                if value in (None, "") or str(name).startswith("_"):
+                    continue
+                values.append(f"{name}: {value}" if name else str(value))
+        label = title or f"Extension: {extension_key or attrs.get('extensionType', '')}"
+        return f"[{label}] " + "; ".join(values) if values else f"[{label}]"
 
     def _extract_text_from_content(
         self,
@@ -307,9 +372,7 @@ class ConfluenceBlockParser:
             elif node_type == "hardBreak":
                 text_parts.append("\n")
             elif node_type == "mention":
-                attrs = node.get("attrs", {})
-                mention_text = attrs.get("text", attrs.get("id", "mention"))
-                text_parts.append(f"@{mention_text}")
+                text_parts.append(self._mention_text(node.get("attrs") or {}))
             elif node_type == "emoji":
                 attrs = node.get("attrs", {})
                 short_name = attrs.get("shortName", "")
@@ -317,11 +380,14 @@ class ConfluenceBlockParser:
                     text_parts.append(f":{short_name}:")
                 else:
                     text_parts.append(attrs.get("text", ""))
-            elif node_type == "inlineCard":
-                attrs = node.get("attrs", {})
-                url = attrs.get("url", "")
+            elif node_type in ("inlineCard", "blockCard", "embedCard"):
+                link_text, url = self._card_link(node.get("attrs") or {})
                 if url:
-                    text_parts.append(f"[{url}]({url})")
+                    text_parts.append(f"[{link_text}]({url})")
+            elif node_type in ("inlineExtension", "extension"):
+                text_parts.append(self._extension_text(node.get("attrs") or {}))
+            elif node_type in ("media", "mediaInline"):
+                text_parts.append(media_reference(node.get("attrs") or {}))
             elif node_type == "status":
                 attrs = node.get("attrs", {})
                 status_text = attrs.get("text", "")
@@ -917,8 +983,9 @@ class ConfluenceBlockParser:
         """
         Parse media node into IMAGE block with base64 data.
 
-        Only creates blocks for images that are successfully fetched.
-        Non-image media (PDFs, etc.) are handled as attachments via ChildRecords.
+        Images that are fetched become IMAGE blocks. Anything else (non-image files,
+        failed downloads, external images) becomes a text reference; the files
+        themselves are handled as attachments via ChildRecords.
         """
         attrs = node.get("attrs", {})
         media_id = attrs.get("id", "")
@@ -938,10 +1005,25 @@ class ConfluenceBlockParser:
             except Exception as e:
                 self.logger.warning(f"Failed to fetch media {media_id}/{filename}: {e}")
 
-        # Only create IMAGE block if we successfully fetched the media as base64
-        # The media_fetcher will return None for non-image types or fetch failures
+        # The fetcher returns None for non-image files and for failed downloads; keep a
+        # text reference so the page still records what was embedded there.
         if not base64_data_url:
-            return []
+            reference = media_reference(attrs)
+            if not reference:
+                return []
+            block_index = len(blocks)
+            blocks.append(Block(
+                id=str(uuid4()),
+                index=block_index,
+                parent_index=parent_group_index,
+                type=BlockType.TEXT,
+                sub_type=BlockSubType.PARAGRAPH,
+                format=DataFormat.MARKDOWN,
+                data=reference,
+                source_id=attrs.get("localId"),
+                weburl=self._normalize_url(parent_page_url),
+            ))
+            return [BlockContainerIndex(block_index=block_index)]
 
         block_index = len(blocks)
         block = Block(
@@ -1075,7 +1157,8 @@ class ConfluenceBlockParser:
         table_markdown_lines: list[str] = []
         column_headers: list[str] = []
 
-        for row_idx, row_node in enumerate(content):
+        has_header = False
+        for row_node in content:
             if row_node.get("type") == "tableRow":
                 row_block_index, row_nested_groups = await self._parse_table_row_node(
                     node=row_node,
@@ -1087,6 +1170,8 @@ class ConfluenceBlockParser:
                     page_id=page_id,
                 )
                 if row_block_index is not None:
+                    is_first_row = not row_indices
+                    self._claim_annotations(row_node, blocks[row_block_index])
                     row_indices.append(row_block_index)
                     nested_block_group_indices.extend(row_nested_groups)  # Collect nested groups
 
@@ -1103,18 +1188,23 @@ class ConfluenceBlockParser:
                             else:
                                 cell_texts.append(str(cell))
 
-                        # Extract column headers from first row
-                        if row_idx == 0:
-                            column_headers = cell_texts
+                        escaped_cells = [cell.replace("|", "\\|") for cell in cell_texts]
+                        if is_first_row:
                             num_cols = len(cell_texts)
-                            # Header row
-                            escaped_headers = [col.replace("|", "\\|") for col in cell_texts]
-                            table_markdown_lines.append("| " + " | ".join(escaped_headers) + " |")
+                            details = row_block.data.get("cell_details") or []
+                            has_header = bool(details) and all(
+                                isinstance(d, dict) and d.get("is_header") for d in details
+                            )
+                            if has_header:
+                                column_headers = cell_texts
+                                table_markdown_lines.append("| " + " | ".join(escaped_cells) + " |")
+                            else:
+                                # Markdown tables need a header line; leave it blank rather than promote data.
+                                table_markdown_lines.append("|" + "|".join("   " for _ in cell_texts) + "|")
                             table_markdown_lines.append("|" + "|".join([" --- " for _ in cell_texts]) + "|")
-                        else:
-                            # Data row
-                            escaped_cells = [cell.replace("|", "\\|")[:200] for cell in cell_texts]
-                            table_markdown_lines.append("| " + " | ".join(escaped_cells) + " |")
+                            if has_header:
+                                continue
+                        table_markdown_lines.append("| " + " | ".join(escaped_cells) + " |")
 
         # Generate table markdown
         table_markdown = "\n".join(table_markdown_lines) if table_markdown_lines else ""
@@ -1125,9 +1215,7 @@ class ConfluenceBlockParser:
             table_group.table_metadata.num_of_cols = num_cols
             table_group.table_metadata.num_of_cells = len(row_indices) * num_cols
             table_group.table_metadata.column_names = column_headers
-            # First ADF row is always used for column_headers / markdown header row
-            if row_indices:
-                table_group.table_metadata.has_header = True
+            table_group.table_metadata.has_header = has_header
 
         if isinstance(table_group.data, dict):
             table_group.data["column_headers"] = column_headers
@@ -1543,8 +1631,6 @@ class ConfluenceBlockParser:
     ) -> list[BlockContainerIndex]:
         """Parse extension node - handle nested ADF or show extension info."""
         attrs = node.get("attrs", {})
-        extension_type = attrs.get("extensionType", "")
-        extension_key = attrs.get("extensionKey", "")
         parameters = attrs.get("parameters", {})
 
         # Handle nested ADF in extension parameters (e.g. migration nested-table)
@@ -1603,7 +1689,9 @@ class ConfluenceBlockParser:
                 child_indices.extend(child_result)
             return child_indices
 
-        # Show extension type as placeholder block
+        extension_text = self._extension_text(attrs)
+        if not extension_text:
+            return []
         block_index = len(blocks)
         block = Block(
             id=str(uuid4()),
@@ -1612,13 +1700,38 @@ class ConfluenceBlockParser:
             type=BlockType.TEXT,
             sub_type=BlockSubType.PARAGRAPH,
             format=DataFormat.TXT,
-            data=f"[Extension: {extension_key or extension_type}]",
+            data=extension_text,
             source_id=attrs.get("localId"),
             weburl=self._normalize_url(parent_page_url),
         )
         blocks.append(block)
 
         return [BlockContainerIndex(block_index=block_index)]
+
+    async def _parse_inlineExtension(
+        self,
+        node: dict[str, Any],
+        blocks: list[Block],
+        block_groups: list[BlockGroup],
+        parent_group_index: int | None,
+        media_fetcher: Callable | None,
+        parent_page_url: str | None,
+        page_id: str | None,
+        list_depth: int = 0,
+        parent_list_style: str | None = None,
+    ) -> list[BlockContainerIndex]:
+        """Parse a standalone inlineExtension like a body-less extension."""
+        return await self._parse_extension(
+            node=node,
+            blocks=blocks,
+            block_groups=block_groups,
+            parent_group_index=parent_group_index,
+            media_fetcher=media_fetcher,
+            parent_page_url=parent_page_url,
+            page_id=page_id,
+            list_depth=list_depth,
+            parent_list_style=parent_list_style,
+        )
 
     async def _parse_placeholder(
         self,
@@ -1667,9 +1780,9 @@ class ConfluenceBlockParser:
         list_depth: int = 0,
         parent_list_style: str | None = None,
     ) -> list[BlockContainerIndex]:
-        """Parse inlineCard node into TEXT block with LINK sub_type."""
+        """Parse inlineCard/blockCard/embedCard node into TEXT block with LINK sub_type."""
         attrs = node.get("attrs", {})
-        url = attrs.get("url", "")
+        link_text, url = self._card_link(attrs)
 
         if not url:
             return []
@@ -1682,9 +1795,9 @@ class ConfluenceBlockParser:
             type=BlockType.TEXT,
             sub_type=BlockSubType.LINK,
             format=DataFormat.MARKDOWN,
-            data=f"[{url}]({url})",
+            data=f"[{link_text}]({url})",
             link_metadata=LinkMetadata(
-                link_text=url,
+                link_text=link_text,
                 link_url=self._normalize_url(url),
                 link_type="external",
             ),
@@ -1694,6 +1807,9 @@ class ConfluenceBlockParser:
         blocks.append(block)
 
         return [BlockContainerIndex(block_index=block_index)]
+
+    _parse_blockCard = _parse_inlineCard
+    _parse_embedCard = _parse_inlineCard
 
     # ============================================================================
     # Additional Node Type Parsers
@@ -1766,7 +1882,9 @@ class ConfluenceBlockParser:
     ) -> list[BlockContainerIndex]:
         """Parse mention node - usually not standalone."""
         attrs = node.get("attrs", {})
-        mention_text = attrs.get("text", attrs.get("id", "mention"))
+        mention_text = self._mention_text(attrs)
+        if not mention_text:
+            return []
 
         block_index = len(blocks)
         block = Block(
@@ -1776,7 +1894,7 @@ class ConfluenceBlockParser:
             type=BlockType.TEXT,
             sub_type=BlockSubType.PARAGRAPH,
             format=DataFormat.TXT,
-            data=f"@{mention_text}",
+            data=mention_text,
             source_id=attrs.get("localId"),
             weburl=self._normalize_url(parent_page_url),
         )
@@ -2055,7 +2173,12 @@ class ConfluenceBlockParser:
         user_display_names: dict[str, str] | None = None,
     ) -> None:
         """
-        Attach inline comments to their target blocks based on quoted text.
+        Attach inline comment threads to the blocks they were placed on.
+
+        A thread is anchored by its root comment's ``inlineMarkerRef``, which matches the
+        id of an annotation mark in the page ADF (recorded by ``parse_adf``). Failing that,
+        the quoted selection is matched against block text. A thread that matches nothing
+        is attached to the page title block (or the first block) rather than dropped.
 
         Args:
             blocks: List of blocks to attach comments to
@@ -2067,61 +2190,82 @@ class ConfluenceBlockParser:
         if not inline_comments:
             return
 
-        # Group comments by thread
         from collections import defaultdict
+
+        comments_by_id = {str(c.get("id")): c for c in inline_comments if c.get("id")}
+
+        def root_id(comment: dict[str, Any]) -> str:
+            # Replies to replies point at their immediate parent; walk up to the thread root.
+            current = str(comment.get("id", ""))
+            seen = {current}
+            parent = comment.get("parentCommentId")
+            while parent and str(parent) not in seen:
+                current = str(parent)
+                seen.add(current)
+                parent_comment = comments_by_id.get(current)
+                if parent_comment is None:
+                    break
+                parent = parent_comment.get("parentCommentId")
+            return current
+
         comments_by_thread: dict[str, list[dict[str, Any]]] = defaultdict(list)
-
         for comment in inline_comments:
-            comment_id = str(comment.get("id", ""))
-            parent_comment_id = comment.get("parentCommentId")
-            thread_id = str(parent_comment_id) if parent_comment_id else comment_id
-            comments_by_thread[thread_id].append(comment)
+            comments_by_thread[root_id(comment)].append(comment)
 
-        # Sort each thread by creation time
-        for thread_id in comments_by_thread:
-            comments_by_thread[thread_id].sort(
-                key=lambda c: c.get("createdAt", ""),
-            )
-
-        # Process each thread
         for thread_id, thread_comments in comments_by_thread.items():
-            if not thread_comments:
-                continue
+            thread_comments.sort(
+                key=lambda c: (str(c.get("id", "")) != thread_id, self.comment_created_at(c) or ""),
+            )
+            root_comment = thread_comments[0]
+            properties = root_comment.get("properties") or {}
+            quoted_text = properties.get("inlineOriginalSelection") or ""
+            marker_ref = properties.get("inlineMarkerRef")
 
-            # Get quoted text from first comment (the one that was placed on the content)
-            first_comment = thread_comments[0]
-            properties = first_comment.get("properties", {})
-            quoted_text = properties.get("inlineOriginalSelection", "")
+            target_block = self._annotation_blocks.get(str(marker_ref)) if marker_ref else None
+            if target_block is not None and not any(b is target_block for b in blocks):
+                target_block = None
+            if target_block is None:
+                target_block = self._find_block_by_text(blocks, quoted_text)
+            if target_block is None:
+                if not blocks:
+                    self.logger.warning(f"No block to attach inline comment thread {thread_id} to")
+                    continue
+                self.logger.debug(
+                    f"Inline comment thread {thread_id} matched no block; attaching at page level"
+                )
+                target_block = next((b for b in blocks if self._is_title_block(b)), blocks[0])
 
-            # Find target block containing the quoted text
-            target_block = self._find_block_by_text(blocks, quoted_text)
+            thread_block_comments = []
+            for comment in thread_comments:
+                block_comment = await self._parse_confluence_comment_to_block_comment(
+                    comment,
+                    quoted_text=quoted_text if comment is root_comment else None,
+                    media_fetcher=media_fetcher,
+                    parent_page_url=parent_page_url,
+                    user_display_names=user_display_names,
+                )
+                if block_comment:
+                    thread_block_comments.append(block_comment)
 
-            if target_block:
-                # Parse all comments in thread to BlockComment objects
-                thread_block_comments = []
-                for comment in thread_comments:
-                    block_comment = await self._parse_confluence_comment_to_block_comment(
-                        comment,
-                        quoted_text=quoted_text if comment == first_comment else None,
-                        media_fetcher=media_fetcher,
-                        parent_page_url=parent_page_url,
-                        user_display_names=user_display_names,
-                    )
-                    if block_comment:
-                        thread_block_comments.append(block_comment)
+            if thread_block_comments:
+                target_block.comments.append(thread_block_comments)
 
-                # Add thread to block's comments (2D list structure)
-                if thread_block_comments:
-                    target_block.comments.append(thread_block_comments)
-            else:
-                self.logger.debug(f"Could not find target block for inline comment thread {thread_id}")
+    @staticmethod
+    def comment_created_at(comment: dict[str, Any]) -> str | None:
+        """Creation time of a v2 comment; v2 carries it in ``version.createdAt``."""
+        return comment.get("createdAt") or (comment.get("version") or {}).get("createdAt")
+
+    @staticmethod
+    def _is_title_block(block: Block) -> bool:
+        return bool(block.source_id) and str(block.source_id).endswith("_title")
 
     @staticmethod
     def _normalize_text_for_comment_match(text: str) -> str:
-        """Normalize block text for inline comment quoted-text matching."""
-        block_text_clean = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
-        block_text_clean = re.sub(r"[*_~`#>]", "", block_text_clean)
-        return block_text_clean.strip().lower()
+        """Normalize text for inline comment quoted-text matching (apply to both sides)."""
+        clean = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+        clean = re.sub(r"<[^>]+>", "", clean)
+        clean = re.sub(r"[*_~`#>\u200b|]", "", clean)
+        return re.sub(r"\s+", " ", clean).strip().lower()
 
     @staticmethod
     def _searchable_text_for_comment_match(block: Block) -> str:
@@ -2164,16 +2308,20 @@ class ConfluenceBlockParser:
         if not quoted_text or not quoted_text.strip():
             return None
 
-        quoted_text_normalized = quoted_text.strip().lower()
-
-        for block in blocks:
-            block_text = self._searchable_text_for_comment_match(block)
-            if not block_text:
+        # A selection that spans blocks is not inside any one block; its first line is.
+        candidates = [quoted_text, quoted_text.strip().splitlines()[0]]
+        normalized_blocks = [
+            (block, self._normalize_text_for_comment_match(self._searchable_text_for_comment_match(block)))
+            for block in blocks
+            if not self._is_title_block(block)
+        ]
+        for candidate in candidates:
+            needle = self._normalize_text_for_comment_match(candidate)
+            if not needle:
                 continue
-
-            block_text_clean = self._normalize_text_for_comment_match(block_text)
-            if quoted_text_normalized in block_text_clean:
-                return block
+            for block, block_text in normalized_blocks:
+                if needle in block_text:
+                    return block
 
         return None
 
@@ -2225,7 +2373,7 @@ class ConfluenceBlockParser:
             author_id = version.get("authorId", "")
 
             # Parse timestamps
-            created_at = self._parse_confluence_timestamp(comment.get("createdAt"))
+            created_at = self._parse_confluence_timestamp(self.comment_created_at(comment))
 
             # Extract weburl (v2 API returns site-relative webui paths)
             links = comment.get("_links", {})

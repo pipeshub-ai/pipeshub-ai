@@ -1191,10 +1191,15 @@ class TestExtractTextFromContent:
         content = [{"type": "mention", "attrs": {"text": "Alice"}}]
         assert parser._extract_text_from_content(content) == "@Alice"
 
-    def test_mention_fallback_to_id(self):
+    def test_mention_without_text_never_shows_account_id(self):
         parser = _parser()
         content = [{"type": "mention", "attrs": {"id": "user-42"}}]
-        assert parser._extract_text_from_content(content) == "@user-42"
+        assert parser._extract_text_from_content(content) == ""
+
+    def test_mention_text_already_prefixed(self):
+        parser = _parser()
+        content = [{"type": "mention", "attrs": {"id": "user-42", "text": "@Alice"}}]
+        assert parser._extract_text_from_content(content) == "@Alice"
 
     def test_emoji_short_name(self):
         parser = _parser()
@@ -1927,7 +1932,7 @@ class TestAttachInlineComments:
         await parser.attach_inline_comments_to_blocks(blocks, comments)
         assert len(blocks[0].comments[0]) == 2
 
-    async def test_target_block_not_found_leaves_blocks_unchanged(self):
+    async def test_unmatched_thread_attaches_at_page_level(self):
         parser = _parser()
         blocks = [Block(
             index=0,
@@ -1947,8 +1952,8 @@ class TestAttachInlineComments:
             },
         }]
         await parser.attach_inline_comments_to_blocks(blocks, comments)
-        assert blocks[0].comments == []
-        parser.logger.debug.assert_called()
+        assert len(blocks[0].comments) == 1
+        assert blocks[0].comments[0][0].quoted_text == "does not exist"
 
 
 @pytest.mark.asyncio
@@ -2885,3 +2890,255 @@ class TestInlineCodeTableAndLayoutParsing:
             }],
         }, page_id="p1")
         assert any("heading in item" in str(b.data) for b in blocks)
+
+
+def _comment(cid: str, text: str, **extra) -> dict:
+    body = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]}
+    return {
+        "id": cid,
+        "version": {"authorId": "u1", "createdAt": extra.pop("created", "2026-01-01T00:00:00.000Z")},
+        "body": {"atlas_doc_format": {"value": json.dumps(body)}},
+        **extra,
+    }
+
+
+def _annotated(text: str, ref: str) -> dict:
+    return {
+        "type": "text",
+        "text": text,
+        "marks": [{"type": "annotation", "attrs": {"annotationType": "inlineComment", "id": ref}}],
+    }
+
+
+@pytest.mark.asyncio
+class TestInlineCommentAnchoring:
+    async def test_marker_ref_anchors_to_annotated_block(self):
+        parser = _parser()
+        adf = {"type": "doc", "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "the same words"}]},
+            {"type": "bulletList", "content": [{"type": "listItem", "content": [
+                {"type": "paragraph", "content": [
+                    {"type": "text", "text": "the "},
+                    _annotated("same", "ref-1"),
+                    {"type": "text", "text": " words", "marks": [{"type": "strong"}]},
+                ]},
+            ]}]},
+        ]}
+        blocks, _ = await parser.parse_adf(adf, page_id="p1", page_title="Title")
+        comments = [_comment("c1", "Note", properties={
+            "inlineMarkerRef": "ref-1", "inlineOriginalSelection": "same",
+        })]
+        await parser.attach_inline_comments_to_blocks(blocks, comments)
+        commented = [b for b in blocks if b.comments]
+        assert len(commented) == 1
+        assert commented[0] is not blocks[1]
+        assert "same" in str(commented[0].data)
+
+    async def test_marker_ref_in_table_cell_anchors_to_row(self):
+        parser = _parser()
+        adf = {"type": "doc", "content": [{"type": "table", "content": [
+            {"type": "tableRow", "content": [
+                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+            ]},
+            {"type": "tableRow", "content": [
+                {"type": "tableCell", "content": [{"type": "paragraph", "content": [_annotated("b", "ref-t")]}]},
+            ]},
+        ]}]}
+        blocks, _ = await parser.parse_adf(adf, page_id="p1")
+        await parser.attach_inline_comments_to_blocks(
+            blocks, [_comment("c1", "Cell note", properties={"inlineMarkerRef": "ref-t"})]
+        )
+        commented = [b for b in blocks if b.comments]
+        assert len(commented) == 1
+        assert commented[0].data["cells"] == ["b"]
+
+    async def test_text_fallback_strips_markup_on_both_sides_and_skips_title(self):
+        parser = _parser()
+        adf = {"type": "doc", "content": [{"type": "paragraph", "content": [
+            {"type": "text", "text": "Plan", "marks": [{"type": "strong"}]},
+            {"type": "text", "text": " for "},
+            {"type": "text", "text": "Q3", "marks": [{"type": "link", "attrs": {"href": "https://x.test"}}]},
+        ]}]}
+        blocks, _ = await parser.parse_adf(adf, page_id="p1", page_title="Plan")
+        await parser.attach_inline_comments_to_blocks(
+            blocks, [_comment("c1", "Hi", properties={"inlineOriginalSelection": "Plan  for **Q3**"})]
+        )
+        assert blocks[0].comments == []
+        assert len(blocks[1].comments) == 1
+
+    async def test_selection_spanning_blocks_matches_first_line(self):
+        parser = _parser()
+        adf = {"type": "doc", "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "first paragraph end"}]},
+            {"type": "paragraph", "content": [{"type": "text", "text": "second start"}]},
+        ]}
+        blocks, _ = await parser.parse_adf(adf, page_id="p1")
+        await parser.attach_inline_comments_to_blocks(
+            blocks, [_comment("c1", "Hi", properties={"inlineOriginalSelection": "paragraph end\nsecond"})]
+        )
+        assert len(blocks[0].comments) == 1
+
+    async def test_unmatched_thread_goes_to_title_block(self):
+        parser = _parser()
+        adf = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "body"}]}]}
+        blocks, _ = await parser.parse_adf(adf, page_id="p1", page_title="T")
+        await parser.attach_inline_comments_to_blocks(
+            blocks, [_comment("c1", "Hi", properties={"inlineOriginalSelection": "gone", "inlineMarkerRef": "x"})]
+        )
+        assert len(blocks[0].comments) == 1
+        assert blocks[1].comments == []
+
+    async def test_reply_to_reply_stays_in_root_thread(self):
+        parser = _parser()
+        blocks = [Block(index=0, type=BlockType.TEXT, format=DataFormat.MARKDOWN, data="anchor text")]
+        comments = [
+            _comment("r2", "Reply 2", parentCommentId="r1", created="2026-01-03T00:00:00.000Z"),
+            _comment("root", "Root", properties={"inlineOriginalSelection": "anchor"}),
+            _comment("r1", "Reply 1", parentCommentId="root", created="2026-01-02T00:00:00.000Z"),
+        ]
+        await parser.attach_inline_comments_to_blocks(blocks, comments)
+        assert len(blocks[0].comments) == 1
+        thread = blocks[0].comments[0]
+        assert [c.text for c in thread] == ["Root", "Reply 1", "Reply 2"]
+        assert thread[0].quoted_text == "anchor"
+        assert thread[2].created_at is not None
+
+    async def test_comment_image_kept_as_text_reference(self):
+        parser = _parser()
+        blocks = [Block(index=0, type=BlockType.TEXT, format=DataFormat.MARKDOWN, data="anchor")]
+        body = {"type": "doc", "content": [
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "m", "__fileName": "shot.png"}}]},
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {
+                "type": "external", "url": "https://img.test/a.png",
+            }}]},
+        ]}
+        comment = _comment("c1", "", properties={"inlineOriginalSelection": "anchor"})
+        comment["body"]["atlas_doc_format"]["value"] = json.dumps(body)
+        await parser.attach_inline_comments_to_blocks(blocks, [comment])
+        text = blocks[0].comments[0][0].text
+        assert "shot.png" in text
+        assert "[https://img.test/a.png](https://img.test/a.png)" in text
+
+
+@pytest.mark.asyncio
+class TestCommentCreatedAt:
+    async def test_v2_version_created_at_is_used(self):
+        parser = _parser()
+        comment = _comment("c1", "x", created="2026-02-03T04:05:06.000Z")
+        assert "createdAt" not in comment
+        result = await parser._parse_confluence_comment_to_block_comment(comment)
+        assert result.created_at is not None
+        assert result.created_at.year == 2026 and result.created_at.month == 2
+
+    async def test_top_level_created_at_wins(self):
+        comment = {"createdAt": "a", "version": {"createdAt": "b"}}
+        assert ConfluenceBlockParser.comment_created_at(comment) == "a"
+        assert ConfluenceBlockParser.comment_created_at({}) is None
+
+
+@pytest.mark.asyncio
+class TestContentKeptFromCardsExtensionsMedia:
+    async def test_block_and_embed_cards_keep_url_and_title(self):
+        parser = _parser()
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "blockCard", "attrs": {"url": "https://a.test", "data": {"name": "Design doc"}}},
+            {"type": "embedCard", "attrs": {"url": "https://b.test"}},
+            {"type": "paragraph", "content": [{"type": "inlineCard", "attrs": {"url": "https://c.test"}}]},
+        ]}, page_id="p1")
+        assert [b.data for b in blocks] == [
+            "[Design doc](https://a.test)",
+            "[https://b.test](https://b.test)",
+            "[https://c.test](https://c.test)",
+        ]
+        assert blocks[0].link_metadata.link_text == "Design doc"
+
+    async def test_layout_only_macros_are_dropped_quietly(self):
+        parser = _parser()
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "extension", "attrs": {"extensionKey": "toc"}},
+            {"type": "extension", "attrs": {"extensionKey": "children"}},
+            {"type": "paragraph", "content": [
+                {"type": "text", "text": "see"},
+                {"type": "inlineExtension", "attrs": {"extensionKey": "anchor"}},
+            ]},
+        ]}, page_id="p1")
+        assert [b.data for b in blocks] == ["see"]
+
+    async def test_extension_keeps_title_and_params(self):
+        parser = _parser()
+        attrs = {
+            "extensionKey": "jira",
+            "parameters": {
+                "macroMetadata": {"title": "Jira"},
+                "macroParams": {"jqlQuery": {"value": "project = ABC"}, "_parentId": {"value": "9"}},
+            },
+        }
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "extension", "attrs": attrs},
+            {"type": "paragraph", "content": [
+                {"type": "text", "text": "x "},
+                {"type": "inlineExtension", "attrs": attrs},
+            ]},
+            {"type": "inlineExtension", "attrs": attrs},
+        ]}, page_id="p1")
+        assert blocks[0].data == "[Jira] jqlQuery: project = ABC"
+        assert blocks[1].data == "x [Jira] jqlQuery: project = ABC"
+        assert blocks[2].data == "[Jira] jqlQuery: project = ABC"
+
+    async def test_media_inline_kept_in_paragraph(self):
+        parser = _parser()
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [{"type": "paragraph", "content": [
+            {"type": "text", "text": "see "},
+            {"type": "mediaInline", "attrs": {"id": "m1", "alt": "spec.pdf"}},
+        ]}]}, page_id="p1")
+        assert blocks[0].data == "see spec.pdf"
+
+    async def test_failed_image_fetch_keeps_text_reference(self):
+        parser = _parser()
+
+        async def failing_fetcher(_mid: str, _fn: str) -> None:
+            raise RuntimeError("download failed")
+
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "m1", "alt": "diagram.png"}}]},
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {
+                "type": "external", "url": "https://img.test/x.png", "alt": "logo",
+            }}]},
+            {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "only-an-id"}}]},
+        ]}, page_id="p1", media_fetcher=failing_fetcher)
+        assert [b.data for b in blocks] == ["diagram.png", "[logo](https://img.test/x.png)"]
+        assert all(b.type == BlockType.TEXT for b in blocks)
+
+
+@pytest.mark.asyncio
+class TestTableHeaderAndCells:
+    async def test_first_row_of_plain_cells_is_not_a_header(self):
+        parser = _parser()
+        cell = lambda t: {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": t}]}]}  # noqa: E731
+        long_text = "y" * 500
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [{"type": "table", "content": [
+            {"type": "tableRow", "content": [cell("r1a"), cell("r1b")]},
+            {"type": "tableRow", "content": [cell(long_text), cell("r2b")]},
+        ]}]}, page_id="p1")
+        table = groups[0]
+        assert table.table_metadata.has_header is False
+        assert table.data["column_headers"] == []
+        lines = table.data["table_markdown"].splitlines()
+        assert lines[0].replace("|", "").strip() == ""
+        assert "r1a" in lines[2]
+        assert long_text in lines[3]
+
+    async def test_header_row_of_table_header_cells(self):
+        parser = _parser()
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [{"type": "table", "content": [
+            {"type": "tableRow", "content": [
+                {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "H"}]}]},
+            ]},
+            {"type": "tableRow", "content": [
+                {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "v"}]}]},
+            ]},
+        ]}]}, page_id="p1")
+        table = groups[0]
+        assert table.table_metadata.has_header is True
+        assert table.data["column_headers"] == ["H"]
+        assert table.data["table_markdown"].splitlines() == ["| H |", "| --- |", "| v |"]

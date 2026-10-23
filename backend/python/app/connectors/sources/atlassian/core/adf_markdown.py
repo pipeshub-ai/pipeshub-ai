@@ -5,7 +5,8 @@ connector (fallback when Jira's rendered HTML lost part of a description or comm
 
 The conversion is deliberately simple: it keeps every piece of text in the document,
 including code blocks, and applies basic inline marks. It does not try to reproduce the
-layout exactly: nested lists are flattened, and media nodes keep only their file name.
+layout exactly: nested lists are flattened, and media nodes keep only their file name
+(plus the URL of an external image).
 """
 from datetime import datetime, timezone
 from typing import Any
@@ -42,6 +43,16 @@ def apply_adf_marks(text: str, marks: list[dict[str, Any]]) -> str:
     return text
 
 
+def media_reference(attrs: dict[str, Any]) -> str:
+    """Text that stands in for an ADF media node: its file name, and its URL if external.
+
+    The media id is an opaque store id, not useful text, so it is never returned.
+    """
+    name = str(attrs.get("alt") or attrs.get("__fileName") or "").strip()
+    url = str(attrs.get("url") or "").strip() if attrs.get("type") == "external" else ""
+    return f"[{name or url}]({url})" if url else name
+
+
 def _inline_node_text(node_type: str, attrs: dict[str, Any]) -> str:
     """Text for ADF inline nodes that carry their text in ``attrs`` instead of ``content``.
 
@@ -58,8 +69,7 @@ def _inline_node_text(node_type: str, attrs: dict[str, Any]) -> str:
     if node_type == "status":
         return str(attrs.get("text") or "")
     if node_type in ("media", "mediaInline"):
-        # The file name; the media id is an opaque store id, not useful text.
-        return str(attrs.get("alt") or "").strip()
+        return media_reference(attrs)
     if node_type == "inlineCard":
         return str(attrs.get("url") or "")
     if node_type == "date":
