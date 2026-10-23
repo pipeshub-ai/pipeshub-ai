@@ -1419,6 +1419,9 @@ class ConfluenceConnector(BaseConnector):
             every_member_list_read = True
             # (group, member emails, member accountIds) of each group read in full.
             read_groups: list[tuple[dict, list[str], list[str]]] = []
+            # Every group id the listing returned, and whether it was read to the end.
+            listed_group_ids: set[str] = set()
+            group_list_complete = True
 
             # Pagination variables for groups
             batch_size = 50
@@ -1439,6 +1442,7 @@ class ConfluenceConnector(BaseConnector):
                     self.logger.error(f"❌ Failed to fetch groups: {response.status if response else 'No response'}")
                     self._note_problem("Couldn't read the Confluence group list (HTTP %s)" % (response.status if response else "no response"))
                     every_member_list_read = False
+                    group_list_complete = False
                     break
 
                 response_data = response.json()
@@ -1452,6 +1456,8 @@ class ConfluenceConnector(BaseConnector):
                         group_id = group_data.get("id")
                         group_name = group_data.get("name")
 
+                        if group_id:
+                            listed_group_ids.add(str(group_id))
                         if not group_id or not group_name:
                             continue
 
@@ -1481,6 +1487,7 @@ class ConfluenceConnector(BaseConnector):
                     self.logger.error(f"❌ Stopping the group list: {e}")
                     self._note_problem("Couldn't follow the Confluence group list to its next page")
                     every_member_list_read = False
+                    group_list_complete = False
                     break
                 if next_start is None:
                     break
@@ -1524,6 +1531,9 @@ class ConfluenceConnector(BaseConnector):
                     self.logger.error(f"❌ Failed to process group {group_name}: {group_error}")
                     self._note_problem(f"Couldn't save group {group_name}: {str(group_error)[:200]}")
                     continue
+
+            if group_list_complete:
+                await self._remove_groups_gone_from_source(listed_group_ids)
 
             self.logger.info(f"✅ Group sync complete. Groups: {total_groups_synced}, Memberships: {total_memberships_synced}")
 
@@ -4520,6 +4530,37 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
             return None
+
+    async def _remove_groups_gone_from_source(self, listed_group_ids: set[str]) -> None:
+        """Delete the stored groups a complete group listing no longer has, with their access.
+
+        Space grants are re-read every sync, but a page restricted to a deleted group is not,
+        so the group's former members kept that page until it was edited. Pseudo-groups are
+        the connector's own and stay. An empty listing removes nothing: that is the account
+        failing, not every group going.
+        """
+        if not listed_group_ids:
+            return
+        try:
+            stored = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
+        except Exception as e:
+            self.logger.warning(f"Could not read the stored groups; none removed: {e}")
+            self._note_problem("Couldn't check for deleted Confluence groups; the next sync tries again", unread=False)
+            return
+        for group in stored:
+            if (group.name or "").startswith(PSEUDO_USER_GROUP_PREFIX):
+                continue
+            if str(group.source_user_group_id) in listed_group_ids:
+                continue
+            try:
+                await self.data_entities_processor.on_user_group_deleted(group.source_user_group_id, self.connector_id)
+                self.logger.info(f"Removed group {group.name}: Confluence no longer has it")
+            except Exception as e:
+                self.logger.warning(f"Could not remove group {group.name}: {e}")
+                self._note_problem(
+                    f"Couldn't remove group {group.name}, which Confluence no longer has; the next sync tries again",
+                    unread=False,
+                )
 
     async def _restore_reactivated_users(self) -> None:
         """Save the users _sync_users held back whose account this sync's full group read

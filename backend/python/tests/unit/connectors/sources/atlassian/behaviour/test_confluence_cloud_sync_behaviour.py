@@ -1927,3 +1927,31 @@ class TestLongRestrictionLists:
         granted = {p.email for p in db.record_permissions["10"]}
         assert len(granted) == 150, "users past the first 100 keep their access"
         assert [AtlassianApiStub.query(r)["start"] for r in api.calls("GET", f"{V1}/content/10/restriction")] == ["0", "100"]
+
+
+class TestGroupsGoneFromConfluence:
+    def _groups(self, api: AtlassianApiStub, *groups: tuple[str, str]) -> None:
+        api.on("GET", f"{V1}/group", {"results": [{"id": gid, "name": name} for gid, name in groups],
+                                     "_links": {"base": WIKI}})
+        api.on_suffix("GET", "/membersByGroupId", {"results": [], "_links": {"base": WIKI}})
+
+    async def test_a_group_deleted_in_confluence_is_removed_with_its_access(self, api, db, checkpoints) -> None:
+        self._groups(api, ("g-eng", "engineering"), ("g-old", "old-team"))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        await connector._create_pseudo_group("acc-hidden")
+
+        self._groups(api, ("g-eng", "engineering"))
+        await connector._sync_user_groups()
+
+        assert db.deleted_groups == ["g-old"], "the pseudo-group and the listed group stay"
+
+    async def test_a_failed_group_listing_removes_nothing(self, api, db, checkpoints) -> None:
+        self._groups(api, ("g-eng", "engineering"), ("g-old", "old-team"))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+
+        api.on("GET", f"{V1}/group", json_response({"message": "busy"}, status=503))
+        await connector._sync_user_groups()
+
+        assert db.deleted_groups == []

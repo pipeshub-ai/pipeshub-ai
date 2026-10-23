@@ -148,6 +148,7 @@ class FakeRecordsDb:
         self.record_batches: list[list[Any]] = []
         self.app_users: list[Any] = []
         self.user_groups: list[tuple[Any, list[Any]]] = []
+        self.deleted_groups: list[str] = []
         self.deleted: list[str] = []
         self.content_updates: list[Any] = []
         self.permission_updates: list[tuple[Any, list[Any]]] = []
@@ -197,6 +198,11 @@ class FakeRecordsDb:
 
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         self.user_groups.extend(groups)
+
+    async def on_user_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
+        self.deleted_groups.append(external_group_id)
+        self.user_groups = [(g, m) for g, m in self.user_groups if g.source_user_group_id != external_group_id]
+        return True
 
     async def has_stored_permissions(
         self, entity: str, connector_id: str, external_id: str, *, keep: bool = False
