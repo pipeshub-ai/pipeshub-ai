@@ -2810,8 +2810,9 @@ class TestInlineCodeTableAndLayoutParsing:
                 }],
             }],
         }, page_id="p1")
-        columns = [g for g in groups if g.type == GroupType.COLUMN]
+        columns = [g for g in groups if g.parent_index is not None and groups[g.parent_index].type == GroupType.COLUMN_LIST]
         assert len(columns) == 1
+        assert columns[0].type == GroupType.TEXT_SECTION
         assert columns[0].children is not None
 
     async def test_group_list_items_flushes_before_table_cell_list(self):
@@ -3142,3 +3143,153 @@ class TestTableHeaderAndCells:
         assert table.table_metadata.has_header is True
         assert table.data["column_headers"] == ["H"]
         assert table.data["table_markdown"].splitlines() == ["| H |", "| --- |", "| v |"]
+
+
+def _p(text: str, **extra) -> dict:
+    return {"type": "paragraph", "content": [{"type": "text", "text": text, **extra}]}
+
+
+def _li(text: str, *nested: dict) -> dict:
+    return {"type": "listItem", "content": [_p(text), *nested]}
+
+
+@pytest.mark.asyncio
+class TestAnswerVisibleGroupsAndOrdering:
+    async def test_every_text_block_parent_is_answer_visible(self):
+        from app.utils.chat_helpers import valid_group_labels
+
+        parser = _parser()
+        cell = lambda *c: {"type": "tableCell", "content": list(c)}  # noqa: E731
+        adf = {"type": "doc", "content": [
+            {"type": "layoutSection", "content": [
+                {"type": "layoutColumn", "content": [_p("left col"), {"type": "bulletList", "content": [_li("a")]}]},
+                {"type": "layoutColumn", "content": [
+                    {"type": "panel", "attrs": {"panelType": "info"}, "content": [_p("in panel")]},
+                    {"type": "expand", "attrs": {"title": "More"}, "content": [_p("hidden")]},
+                ]},
+            ]},
+            {"type": "orderedList", "content": [_li("one", {"type": "bulletList", "content": [_li("one.a")]})]},
+            {"type": "table", "content": [{"type": "tableRow", "content": [
+                cell(_p("plain")),
+                cell({"type": "bulletList", "content": [_li("cell item")]}),
+            ]}]},
+        ]}
+        blocks, groups = await parser.parse_adf(adf, page_id="p1", page_title="T")
+        parser.post_process_blocks(blocks, groups)
+        texts = [b for b in blocks if b.type == BlockType.TEXT]
+        assert {"left col", "in panel", "hidden", "More"} <= {b.data for b in texts}
+        for b in texts:
+            if b.parent_index is None:
+                continue
+            group_type = groups[b.parent_index].type
+            assert group_type.value in valid_group_labels or group_type == GroupType.TABLE, (b.data, group_type)
+
+    async def test_expand_title_is_first_text_block(self):
+        parser = _parser()
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "expand", "attrs": {"title": "Rollback steps"}, "content": [_p("run it")]},
+        ]})
+        assert [b.data for b in blocks] == ["Rollback steps", "run it"]
+        assert blocks[0].sub_type == BlockSubType.HEADING
+        assert all(b.parent_index == 0 for b in blocks)
+        assert groups[0].children.block_ranges[0].start == 0
+
+    async def test_expand_without_title_adds_no_block(self):
+        parser = _parser()
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [{"type": "expand", "content": [_p("x")]}]})
+        assert [b.data for b in blocks] == ["x"]
+
+    async def test_list_item_precedes_nested_items_and_claims_its_annotation(self):
+        parser = _parser()
+        mark = {"marks": [{"type": "annotation", "attrs": {"id": "ann-1", "annotationType": "inlineComment"}}]}
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [{"type": "orderedList", "content": [
+            {"type": "listItem", "content": [
+                _p("parent", **mark),
+                {"type": "orderedList", "content": [_li("child")]},
+            ]},
+            _li("second"),
+        ]}]})
+        parser.post_process_blocks(blocks, groups)
+        assert [b.data for b in blocks] == ["1. parent", "1. child", "2. second"]
+        assert parser._annotation_blocks["ann-1"] is blocks[0]
+
+    async def test_lists_under_different_parents_are_not_merged(self):
+        parser = _parser()
+        blocks, groups = await parser.parse_adf({"type": "doc", "content": [
+            {"type": "panel", "content": [{"type": "bulletList", "content": [_li("in panel")]}]},
+            {"type": "bulletList", "content": [_li("outside")]},
+        ]})
+        parser.post_process_blocks(blocks, groups)
+        list_groups = [g for g in groups if g.type == GroupType.LIST]
+        assert len(list_groups) == 2
+        assert blocks[0].parent_index != blocks[1].parent_index
+        assert groups[blocks[0].parent_index].parent_index == 0
+        assert groups[blocks[1].parent_index].parent_index is None
+
+    def test_group_list_items_splits_on_parent_change(self):
+        parser = _parser()
+        meta = ListMetadata(list_style="bullet", indent_level=1)
+        groups = [
+            BlockGroup(index=0, type=GroupType.TEXT_SECTION, sub_type=GroupSubType.COMMENT),
+            BlockGroup(index=1, type=GroupType.TEXT_SECTION, sub_type=GroupSubType.COMMENT),
+        ]
+        blocks = [
+            Block(index=i, type=BlockType.TEXT, format=DataFormat.MARKDOWN, data=f"- {i}", parent_index=p, list_metadata=meta)
+            for i, p in enumerate([0, 0, 1])
+        ]
+        parser._group_list_items(blocks, groups)
+        assert blocks[0].parent_index == blocks[1].parent_index != blocks[2].parent_index
+        assert groups[blocks[2].parent_index].parent_index == 1
+
+    def test_block_children_are_space_separated(self):
+        parser = _parser()
+        content = [_p("alpha"), _p("beta"), {"type": "text", "text": "x"}, {"type": "text", "text": "y"}]
+        assert parser._extract_text_from_content(content) == "alpha beta xy"
+
+    def test_emoji_prefers_text_and_does_not_double_colons(self):
+        parser = _parser()
+        assert parser._extract_text_from_content(
+            [{"type": "emoji", "attrs": {"shortName": ":smile:", "text": "😄"}}]
+        ) == "😄"
+        assert parser._extract_text_from_content([{"type": "emoji", "attrs": {"shortName": ":smile:"}}]) == ":smile:"
+
+    async def test_header_column_rows_are_not_header_rows(self):
+        parser = _parser()
+        hdr = {"type": "tableHeader", "content": [_p("Name")]}
+        val = {"type": "tableCell", "content": [_p("Ana")]}
+        blocks, _ = await parser.parse_adf({"type": "doc", "content": [{"type": "table", "content": [
+            {"type": "tableRow", "content": [hdr, val]},
+            {"type": "tableRow", "content": [hdr, val]},
+        ]}]})
+        assert [b.table_row_metadata.is_header for b in blocks] == [False, False]
+
+    def test_comment_thread_group_is_top_level(self):
+        thread = _parser().create_comment_thread_group("t1", 3, "inline", "Page")
+        assert thread.parent_index is None
+
+
+class TestCommentHeaderText:
+    def test_footer_comment_with_iso_date(self):
+        assert ConfluenceBlockParser.comment_header_text(
+            "Ana Silva", "2024-05-01T10:00:00.000Z"
+        ) == "Comment by Ana Silva on 2024-05-01"
+
+    def test_inline_comment_with_epoch_ms_and_quote(self):
+        assert ConfluenceBlockParser.comment_header_text(
+            "Ana Silva", 1714557600000, " the  quoted\ntext "
+        ) == 'Comment by Ana Silva on 2024-05-01 on "the quoted text"'
+
+    def test_missing_author_and_bad_date(self):
+        assert ConfluenceBlockParser.comment_header_text(None, "not a date") == "Comment by Unknown"
+
+    def test_comment_group_spans_header_block(self):
+        from app.models.blocks import BlockComment
+
+        group = _parser().create_comment_group(
+            block_comment=BlockComment(text="", format=DataFormat.MARKDOWN, author_id="u1", author_name="Ana"),
+            group_index=4,
+            parent_group_index=None,
+            source_id="c1",
+            block_indices=(7, 9),
+        )
+        assert [(r.start, r.end) for r in group.children.block_ranges] == [(7, 9)]

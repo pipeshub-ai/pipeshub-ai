@@ -360,6 +360,7 @@ class ConfluenceBlockParser:
             return ""
 
         text_parts = []
+        block_part_indices: set[int] = set()
         for node in content:
             node_type = node.get("type", "")
 
@@ -375,11 +376,9 @@ class ConfluenceBlockParser:
                 text_parts.append(self._mention_text(node.get("attrs") or {}))
             elif node_type == "emoji":
                 attrs = node.get("attrs", {})
-                short_name = attrs.get("shortName", "")
-                if short_name:
-                    text_parts.append(f":{short_name}:")
-                else:
-                    text_parts.append(attrs.get("text", ""))
+                # shortName already carries its colons (":smile:"); prefer the rendered glyph.
+                short_name = str(attrs.get("shortName") or "").strip(":")
+                text_parts.append(attrs.get("text") or (f":{short_name}:" if short_name else ""))
             elif node_type in ("inlineCard", "blockCard", "embedCard"):
                 link_text, url = self._card_link(node.get("attrs") or {})
                 if url:
@@ -408,9 +407,27 @@ class ConfluenceBlockParser:
                     nested_text = self._extract_text_from_content(
                         node["content"], strip_marks=strip_marks
                     )
+                    block_part_indices.add(len(text_parts))
                     text_parts.append(nested_text)
 
-        return "".join(text_parts)
+        # Inline runs join as-is; a block-level child (paragraph, cell, ...) is
+        # space-separated from its neighbours so their words are not glued together.
+        joined = ""
+        prev_is_block = False
+        for i, part in enumerate(text_parts):
+            if not part:
+                continue
+            is_block = i in block_part_indices
+            if (
+                joined
+                and (is_block or prev_is_block)
+                and not joined[-1].isspace()
+                and not part[0].isspace()
+            ):
+                joined += " "
+            joined += part
+            prev_is_block = is_block
+        return joined
 
     def _is_inline_only_content(self, content: list[dict[str, Any]]) -> bool:
         """
@@ -764,80 +781,59 @@ class ConfluenceBlockParser:
         list_depth: int = 0,
         parent_list_style: str | None = None,
     ) -> list[BlockContainerIndex]:
-        """Parse listItem node into TEXT block with LIST_ITEM sub_type."""
+        """Parse listItem node into TEXT block with LIST_ITEM sub_type.
+
+        The item's own block comes first, then its nested lists and media, so readers
+        see the parent before its children and annotations claim the item's own block.
+        """
         content = node.get("content", [])
+        nested_types = ("bulletList", "orderedList", "taskList", "media", "mediaSingle")
 
         # Extract text from direct children (paragraph nodes)
         text_parts = []
-        nested_list_indices: list[BlockContainerIndex] = []
-
         for child_node in content:
-            child_type = child_node.get("type", "")
-
-            # Process nested lists separately
-            if child_type in ["bulletList", "orderedList", "taskList"]:
-                nested_result = await self._process_node_recursive(
-                    node=child_node,
-                    blocks=blocks,
-                    block_groups=block_groups,
-                    parent_group_index=parent_group_index,
-                    media_fetcher=media_fetcher,
-                    parent_page_url=parent_page_url,
-                    page_id=page_id,
-                    list_depth=list_depth,
-                    parent_list_style=parent_list_style,
-                )
-                nested_list_indices.extend(nested_result)
-            elif child_type in ["media", "mediaSingle"]:
-                media_result = await self._process_node_recursive(
-                    node=child_node,
-                    blocks=blocks,
-                    block_groups=block_groups,
-                    parent_group_index=parent_group_index,
-                    media_fetcher=media_fetcher,
-                    parent_page_url=parent_page_url,
-                    page_id=page_id,
-                    list_depth=list_depth,
-                    parent_list_style=parent_list_style,
-                )
-                nested_list_indices.extend(media_result)
-            else:
-                # Extract text from paragraphs and other inline content
-                # TODO: tables/panels in list items still need a wrapping BlockGroup
-                if "content" in child_node:
-                    child_text = self._extract_text_from_content(child_node["content"])
-                    if child_text:
-                        text_parts.append(child_text)
+            # TODO: tables/panels in list items still need a wrapping BlockGroup
+            if child_node.get("type", "") not in nested_types and "content" in child_node:
+                child_text = self._extract_text_from_content(child_node["content"])
+                if child_text:
+                    text_parts.append(child_text)
 
         text = " ".join(text_parts).strip()
+        result: list[BlockContainerIndex] = []
 
-        if not text:
-            return nested_list_indices
+        if text:
+            list_style = parent_list_style or "bullet"
+            block_index = len(blocks)
+            blocks.append(Block(
+                id=str(uuid4()),
+                index=block_index,
+                parent_index=parent_group_index,
+                type=BlockType.TEXT,
+                sub_type=BlockSubType.LIST_ITEM,
+                format=DataFormat.MARKDOWN,
+                data=f"1. {text}" if list_style == "numbered" else f"- {text}",
+                list_metadata=ListMetadata(
+                    list_style=list_style,
+                    indent_level=list_depth,
+                ),
+                source_id=node.get("attrs", {}).get("localId"),
+                weburl=self._normalize_url(parent_page_url),
+            ))
+            result.append(BlockContainerIndex(block_index=block_index))
 
-        # Determine list style
-        list_style = parent_list_style or "bullet"
-
-        # Create list item block
-        block_index = len(blocks)
-        block = Block(
-            id=str(uuid4()),
-            index=block_index,
-            parent_index=parent_group_index,
-            type=BlockType.TEXT,
-            sub_type=BlockSubType.LIST_ITEM,
-            format=DataFormat.MARKDOWN,
-            data=f"1. {text}" if list_style == "numbered" else f"- {text}",
-            list_metadata=ListMetadata(
-                list_style=list_style,
-                indent_level=list_depth,
-            ),
-            source_id=node.get("attrs", {}).get("localId"),
-            weburl=self._normalize_url(parent_page_url),
-        )
-        blocks.append(block)
-
-        result = [BlockContainerIndex(block_index=block_index)]
-        result.extend(nested_list_indices)
+        for child_node in content:
+            if child_node.get("type", "") in nested_types:
+                result.extend(await self._process_node_recursive(
+                    node=child_node,
+                    blocks=blocks,
+                    block_groups=block_groups,
+                    parent_group_index=parent_group_index,
+                    media_fetcher=media_fetcher,
+                    parent_page_url=parent_page_url,
+                    page_id=page_id,
+                    list_depth=list_depth,
+                    parent_list_style=parent_list_style,
+                ))
 
         return result
 
@@ -1343,7 +1339,7 @@ class ConfluenceBlockParser:
             data=row_data,
             table_row_metadata=TableRowMetadata(
                 row_number=0,  # Will be set in post-processing
-                is_header=any(cell["is_header"] for cell in cells_data),
+                is_header=all(cell["is_header"] for cell in cells_data),
             ),
             source_id=node.get("attrs", {}).get("localId"),
             weburl=self._normalize_url(parent_page_url),
@@ -1453,6 +1449,19 @@ class ConfluenceBlockParser:
 
         # Process child nodes
         child_indices: list[BlockContainerIndex] = []
+        # The title is only embedded if it is a block, so it opens the group as a heading.
+        if str(attrs.get("title") or "").strip():
+            child_indices.append(BlockContainerIndex(block_index=len(blocks)))
+            blocks.append(Block(
+                id=str(uuid4()),
+                index=len(blocks),
+                parent_index=group_index,
+                type=BlockType.TEXT,
+                sub_type=BlockSubType.HEADING,
+                format=DataFormat.MARKDOWN,
+                data=str(title).strip(),
+                weburl=self._normalize_url(parent_page_url),
+            ))
         for child_node in content:
             child_result = await self._process_node_recursive(
                 node=child_node,
@@ -1573,7 +1582,11 @@ class ConfluenceBlockParser:
         list_depth: int = 0,
         parent_list_style: str | None = None,
     ) -> list[BlockContainerIndex]:
-        """Parse layoutColumn node into COLUMN BlockGroup."""
+        """Parse layoutColumn node into a TEXT_SECTION BlockGroup.
+
+        Not GroupType.COLUMN: answer building only expands hits whose parent group type
+        is a text-like label, so column text would be dropped from chat answers.
+        """
         content = node.get("content", [])
 
         # Create column group
@@ -1582,7 +1595,7 @@ class ConfluenceBlockParser:
             id=str(uuid4()),
             index=group_index,
             parent_index=parent_group_index,
-            type=GroupType.COLUMN,
+            type=GroupType.TEXT_SECTION,
             source_group_id=node.get("attrs", {}).get("localId"),
             weburl=self._normalize_url(parent_page_url),
         )
@@ -2256,6 +2269,33 @@ class ConfluenceBlockParser:
         return comment.get("createdAt") or (comment.get("version") or {}).get("createdAt")
 
     @staticmethod
+    def comment_header_text(
+        author_name: str | None,
+        created_at: str | int | None,
+        quoted_text: str | None = None,
+    ) -> str:
+        """Header line for a comment group, so author, date and quoted text are embedded.
+
+        ``created_at`` is an ISO string (v2 API) or epoch milliseconds. Example:
+        ``Comment by Ana Silva on 2024-05-01 on "the quoted text"``.
+        """
+        header = f"Comment by {(author_name or '').strip() or 'Unknown'}"
+        day: str | None = None
+        try:
+            if isinstance(created_at, (int, float)) and not isinstance(created_at, bool):
+                day = datetime.fromtimestamp(created_at / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            elif isinstance(created_at, str) and created_at.strip():
+                day = datetime.fromisoformat(created_at.strip().replace("Z", "+00:00")).strftime("%Y-%m-%d")
+        except (ValueError, OverflowError, OSError):
+            day = None
+        if day:
+            header += f" on {day}"
+        quote = " ".join((quoted_text or "").split())
+        if quote:
+            header += f' on "{quote}"'
+        return header
+
+    @staticmethod
     def _is_title_block(block: Block) -> bool:
         return bool(block.source_id) and str(block.source_id).endswith("_title")
 
@@ -2698,10 +2738,12 @@ class ConfluenceBlockParser:
                 list_style = block.list_metadata.list_style
                 indent_level = block.list_metadata.indent_level or 0
 
-                # Check if this continues the current group
+                # Check if this continues the current group. Items under different parents
+                # (another panel, column or comment) are different lists.
                 if (current_group_start is not None and
                     current_indent == indent_level and
-                    current_list_style == list_style):
+                    current_list_style == list_style and
+                    blocks[group_blocks[-1]].parent_index == block.parent_index):
                     group_blocks.append(i)
                 else:
                     # Finish previous group
@@ -2837,7 +2879,7 @@ class ConfluenceBlockParser:
         return BlockGroup(
             id=str(uuid4()),
             index=group_index,
-            parent_index=0,  # Points to description/content group
+            parent_index=None,  # top level; group 0 is whatever the page body starts with
             type=GroupType.TEXT_SECTION,
             sub_type=GroupSubType.COMMENT_THREAD,
             source_group_id=f"thread_{comment_type}_{thread_id}",
