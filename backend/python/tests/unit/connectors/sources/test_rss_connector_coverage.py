@@ -18,7 +18,8 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
-from app.connectors.sources.rss.connector import RSSConnector
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.sources.rss.connector import FeedUnreadableError, RSSConnector
 from app.connectors.sources.web.fetch_strategy import FetchResponse
 from app.models.entities import FileRecord, RecordType, User
 
@@ -42,6 +43,8 @@ def _make_connector():
     dep.get_user_by_user_id = AsyncMock(return_value=_creator)
     dep.on_new_app_users = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_nodes_by_filters = AsyncMock(return_value=[])
     dep.on_new_records = AsyncMock()
     ds_provider = MagicMock()
     config_service = AsyncMock()
@@ -54,6 +57,13 @@ def _make_connector():
         scope="personal",
         created_by="test-user-id",
     )
+
+    # run_sync re-reads the saved settings: answer with whatever the test set on the connector.
+    conn.config_service.get_config = AsyncMock(side_effect=lambda *_a, **_k: {"sync": {
+        "feed_urls": "\n".join(conn.feed_urls),
+        "max_articles_per_feed": conn.max_articles_per_feed,
+        "fetch_full_content": conn.fetch_full_content,
+    }})
     # stream_record refuses to run without a live session (409).
     conn.session = MagicMock()
     return conn
@@ -296,13 +306,14 @@ class TestFetchArticleContent:
 class TestProcessFeed:
 
     @pytest.mark.asyncio
-    async def test_no_entries_returns_zero(self):
+    async def test_unreadable_feed_raises_and_writes_nothing(self):
         conn = _make_connector()
         conn.session = MagicMock()
-        with patch.object(conn, "create_record_group", new_callable=AsyncMock):
+        with patch.object(conn, "create_record_group", new_callable=AsyncMock) as create_group:
             with patch.object(conn, "_fetch_and_parse_feed", new_callable=AsyncMock, return_value=None):
-                result = await conn._process_feed("https://feed.com/rss", [])
-                assert result == 0
+                with pytest.raises(FeedUnreadableError):
+                    await conn._process_feed("https://feed.com/rss", [])
+        create_group.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_empty_entries_returns_zero(self):
@@ -669,29 +680,44 @@ class TestTestConnectionAndAccess:
     async def test_success(self):
         conn = _make_connector()
         conn.feed_urls = ["https://feed.com/rss"]
-        resp = _make_mock_response(status=200)
-        conn.session = _make_session(resp)
-        result = await conn.test_connection_and_access()
-        assert result is True
+        conn.session = MagicMock()
+        with _patch_fetch(content=b"<rss version='2.0'><channel><title>T</title><item><title>a</title><link>https://x.test/a</link></item></channel></rss>", headers={"Content-Type": "application/rss+xml"}):
+            assert await conn.test_connection_and_access() is True
 
     @pytest.mark.asyncio
-    async def test_bad_status(self):
+    async def test_bad_status_names_the_feed(self):
         conn = _make_connector()
-        conn.feed_urls = ["https://feed.com/rss"]
-        resp = _make_mock_response(status=404)
-        conn.session = _make_session(resp)
-        result = await conn.test_connection_and_access()
-        assert result is False
+        conn.feed_urls = ["https://feed.com/rss?token=s3cret"]
+        conn.session = MagicMock()
+        with _patch_fetch(status=404):
+            with pytest.raises(ConnectorInitError) as raised:
+                await conn.test_connection_and_access()
+        assert "https://feed.com/rss (HTTP 404)" in str(raised.value)
+        assert "s3cret" not in str(raised.value)
+
+    @pytest.mark.asyncio
+    async def test_page_that_is_not_a_feed_is_named(self):
+        conn = _make_connector()
+        conn.feed_urls = ["https://feed.com/rss", "https://feed.com/blog"]
+        conn.session = MagicMock()
+        answers = [
+            _make_fetch_response(content=b"<rss version='2.0'><channel><title>T</title><item><title>a</title><link>https://x.test/a</link></item></channel></rss>", headers={"Content-Type": "application/rss+xml"}),
+            _make_fetch_response(content=b"<html><body><p>not a feed</body>"),
+        ]
+        with patch("app.connectors.sources.rss.connector.fetch_url_with_fallback", new=AsyncMock(side_effect=answers)):
+            with pytest.raises(ConnectorInitError) as raised:
+                await conn.test_connection_and_access()
+        assert "https://feed.com/blog (not an RSS or Atom feed" in str(raised.value)
+        assert "https://feed.com/rss " not in str(raised.value)
 
     @pytest.mark.asyncio
     async def test_exception(self):
         conn = _make_connector()
         conn.feed_urls = ["https://feed.com/rss"]
-        session = MagicMock()
-        session.get = MagicMock(side_effect=Exception("network error"))
-        conn.session = session
-        result = await conn.test_connection_and_access()
-        assert result is False
+        conn.session = MagicMock()
+        with _patch_fetch_raises(Exception("network error")):
+            with pytest.raises(ConnectorInitError, match="network error"):
+                await conn.test_connection_and_access()
 
 
 # ===================================================================
