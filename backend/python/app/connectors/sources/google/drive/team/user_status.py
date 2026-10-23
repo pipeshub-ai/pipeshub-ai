@@ -52,7 +52,9 @@ class UserStatusTracker:
             restore=(was_inactive & known) - inactive,
             known=known,
         )
-        self._pending = {"inactive": sorted(inactive), "known": sorted(known)}
+        # A deleted account stays inactive until it is listed again, so undeleting it restores its grants.
+        still_away = (was_inactive - known) | gone
+        self._pending = {"inactive": sorted(inactive | still_away), "known": sorted(known)}
         return change
 
     async def save(self) -> None:

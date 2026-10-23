@@ -26,7 +26,10 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -106,7 +109,10 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
     GoogleDriveError,
 )
 from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS, hold_again, released
-from app.connectors.sources.google.drive.utils.drive_run_report import DriveRunReport
+from app.connectors.sources.google.drive.utils.drive_run_report import (
+    DriveRunReport,
+    message_for_connection_failure,
+)
 from app.connectors.sources.google.drive.utils.folder_removal import remove_folder_confirming_contents
 from app.connectors.sources.google.drive.utils.native_revisions import native_content_changed
 from app.connectors.sources.google.common.impersonation import (
@@ -551,8 +557,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             await self._run_sync_steps()
         except Exception as e:
             self._run_report.note_failure(e)
+            self._run_report.note_unreadable_folders(sorted(self._blocked_folder_ids))
             await self._run_report.finish(complete=False)
             raise
+        self._run_report.note_unreadable_folders(sorted(self._blocked_folder_ids))
         complete = not self._sync_ledger.has_gaps
         await self._run_report.finish(complete=complete)
         if not complete:
@@ -4427,7 +4435,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             await self.admin_data_source.users_get(userKey=admin_email)
             about = await self.drive_data_source.about_get(fields="user(emailAddress)")
         except Exception as e:
-            self.logger.error(f"❌ Google Workspace refused the connection test: {e}")
+            self.logger.error("Google Workspace refused the connection test: %s", e)
+            message = message_for_connection_failure(e, personal=False, admin_email=admin_email)
+            if message:
+                raise ConnectorInitError(message) from e
             return False
         if not (about or {}).get("user"):
             self.logger.error("❌ Google Drive connection test returned no account")

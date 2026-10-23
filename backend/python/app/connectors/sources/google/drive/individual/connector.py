@@ -67,7 +67,10 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
     GoogleDriveError,
 )
 from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS, hold_again, released
-from app.connectors.sources.google.drive.utils.drive_run_report import DriveRunReport
+from app.connectors.sources.google.drive.utils.drive_run_report import (
+    DriveRunReport,
+    message_for_connection_failure,
+)
 from app.connectors.sources.google.drive.utils.folder_removal import remove_folder_confirming_contents
 from app.connectors.sources.google.drive.utils.native_revisions import native_content_changed
 from app.connectors.sources.google.common.datasource_refresh import (
@@ -1625,7 +1628,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
             await self._get_fresh_datasource()
             about = await self.drive_data_source.about_get(fields="user(emailAddress)")
         except Exception as e:
-            self.logger.error(f"❌ Google Drive refused the connection test: {e}")
+            self.logger.error("Google Drive refused the connection test: %s", e)
+            message = message_for_connection_failure(e, personal=True)
+            if message:
+                raise ConnectorInitError(message) from e
             return False
 
         if not (about or {}).get("user"):
@@ -2264,8 +2270,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
             await self._run_sync_steps()
         except Exception as e:
             report.note_failure(e)
+            report.note_unreadable_folders(sorted(self._blocked_folder_ids))
             await report.finish(complete=False)
             raise
+        report.note_unreadable_folders(sorted(self._blocked_folder_ids))
         complete = not self._sync_ledger.has_gaps
         await report.finish(complete=complete)
         if not complete:

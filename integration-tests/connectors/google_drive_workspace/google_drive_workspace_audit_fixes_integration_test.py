@@ -116,7 +116,13 @@ class TestDriveWorkspaceAuditFixes:
 
         async def _renamed() -> bool:
             record = await graph_provider.get_record_by_external_id(connector_id, doc_id)
-            return record is not None and record.record_name == "audit-doc-renamed"
+            if record is None or record.record_name != "audit-doc-renamed":
+                return False
+            if not second_user:
+                return True
+            # The share can land after the rename. Waiting for it means a re-index caused by the share
+            # is still in front of the assertions.
+            return await graph_provider.user_has_direct_record_permission(connector_id, second_user, doc_id)
 
         await sync_until(pipeshub_client, graph_provider, connector_id, _renamed,
                          description="audit-doc renamed in the graph")

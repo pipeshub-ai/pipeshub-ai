@@ -43,6 +43,16 @@ class DriveNotice:
     message: str
 
 
+def message_for_connection_failure(error: BaseException, *, personal: bool, admin_email: str | None = None,
+                                   client_id: str | None = None) -> str | None:
+    """Words for a connection test Google refused, or None when the failure may pass on its own."""
+    problem = classify_access_problem(error, personal=personal)
+    if problem is None:
+        return None
+    notice = notice_for(problem, personal=personal, admin_email=admin_email, client_id=client_id)
+    return None if notice is None else notice.message
+
+
 def notice_for(problem: AccessProblem, *, personal: bool, admin_email: str | None = None,
                client_id: str | None = None) -> DriveNotice | None:
     """The notice for a setup problem, or None for one nobody needs to act on."""

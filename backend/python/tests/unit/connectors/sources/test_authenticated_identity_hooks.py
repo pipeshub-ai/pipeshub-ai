@@ -534,9 +534,13 @@ class TestGoogleDriveIndividual:
             GoogleDriveIndividualConnector,
             config_service=MagicMock(),
             drive_data_source=MagicMock(),
+            drive_delta_sync_point=AsyncMock(),
             _get_fresh_datasource=AsyncMock(),
             _create_app_user=AsyncMock(side_effect=_StopAfterRegistering),
         )
+        # run_sync now delegates to this. On a spec mock that would be an auto mock, so bind the
+        # real steps: the registration still happens before the sync is stopped.
+        conn._run_sync_steps = partial(GoogleDriveIndividualConnector._run_sync_steps, conn)
         conn.drive_data_source.about_get = AsyncMock(
             return_value={"user": {"emailAddress": "me@gmail.com", "permissionId": "09120187146347425491"}}
         )

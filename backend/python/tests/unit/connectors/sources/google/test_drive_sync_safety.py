@@ -12,6 +12,7 @@ import pytest
 from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.google.common.access_problems import (
     AccessProblem,
     classify_access_problem,
@@ -29,6 +30,7 @@ from app.connectors.sources.google.drive.utils.drive_full_sync_reconciler import
 from app.connectors.sources.google.drive.utils.drive_run_report import (
     PERSISTENT_RUNS,
     DriveRunReport,
+    message_for_connection_failure,
     notice_for,
 )
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
@@ -130,6 +132,34 @@ class TestRunReport:
         return DriveRunReport(personal=False, notify=notify, title=lambda e: f"Drive: {e}", sync_point=sync_point,
                               logger=LOGGER, admin_email="admin@acme.example", client_id="1234")
 
+    async def test_folders_nobody_can_open_are_named_once(self) -> None:
+        sent: list = []
+        report = self._report(sent, _SyncPoint())
+        report.note_unreadable_folders(["folder-b", "folder-a", "folder-a"])
+        await report.finish(complete=True)
+        assert len(sent) == 1 and "2 folders" in sent[0]["message"]
+
+    async def test_a_refused_connection_names_the_setup_problem(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from app.connectors.sources.google.drive.team.connector import (
+            GoogleDriveTeamConnector,
+        )
+
+        conn = object.__new__(GoogleDriveTeamConnector)
+        conn.logger = LOGGER
+        conn.drive_data_source = AsyncMock()
+        conn.admin_data_source = AsyncMock()
+        conn.drive_client = object()
+        conn.admin_client = object()
+        conn.config = {"credentials": {"auth": {"adminEmail": "admin@acme.example"}}}
+        conn.admin_data_source.users_get = AsyncMock(
+            side_effect=_refresh("unauthorized_client", "Client is unauthorized")
+        )
+        with pytest.raises(ConnectorInitError, match="Domain-wide delegation"):
+            await conn.test_connection_and_access()
+        assert message_for_connection_failure(_http_error(503, "backendError"), personal=False) is None
+
     async def test_a_setup_problem_is_reported_as_an_error(self) -> None:
         sent: list = []
         report = self._report(sent, _SyncPoint())
@@ -174,6 +204,17 @@ class TestUserStatus:
         await tracker.save()
         third = await tracker.compare([_user("a@x"), _user("b@x")])
         assert third.restore == {"b@x"} and not third.withdraw
+
+    async def test_a_deleted_account_is_restored_when_it_returns(self) -> None:
+        sync_point = _SyncPoint()
+        tracker = UserStatusTracker(sync_point)
+        await tracker.compare([_user("a@x")])
+        await tracker.save()
+        second = await tracker.compare([])
+        assert second.withdraw == {"a@x"}
+        await tracker.save()
+        third = await tracker.compare([_user("a@x")])
+        assert third.restore == {"a@x"} and not third.withdraw
 
     async def test_nothing_is_saved_until_asked(self) -> None:
         sync_point = _SyncPoint()
