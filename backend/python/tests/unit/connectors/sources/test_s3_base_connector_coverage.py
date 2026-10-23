@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
@@ -462,7 +464,8 @@ class TestProcessS3Object:
         record, perms = await s3_connector._process_s3_object(obj, "mybucket")
         assert record is not None
         assert record.id == "existing-id"
-        assert record.version == 2
+        # The processor bumps the stored version, and only when the revision changed.
+        assert record.version == 0
 
     @pytest.mark.asyncio
     async def test_move_detected(self, s3_connector):
@@ -582,8 +585,8 @@ class TestTestConnectionAndAccess:
     async def test_exception(self, s3_connector):
         s3_connector.data_source = MagicMock()
         s3_connector.data_source.list_buckets = AsyncMock(side_effect=Exception("err"))
-        result = await s3_connector.test_connection_and_access()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="err"):
+            await s3_connector.test_connection_and_access()
 
 
 # ===========================================================================
@@ -751,8 +754,9 @@ class TestRunSyncExtended:
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         s3_connector._create_record_groups_for_buckets = AsyncMock()
         s3_connector._sync_bucket = AsyncMock(side_effect=Exception("sync error"))
-        # Should not raise
-        await s3_connector.run_sync()
+        # Records may not have been saved, so the run fails once every bucket was tried.
+        with pytest.raises(RuntimeError, match="sync failed"):
+            await s3_connector.run_sync()
 
 
 # ===========================================================================
@@ -1085,7 +1089,8 @@ class TestCheckAndFetchUpdatedRecord:
         result = await s3_connector._check_and_fetch_updated_record("org-1", record)
         assert result is not None
         updated_record, perms = result
-        assert updated_record.version == 2
+        # The processor bumps the stored version, and only when the revision changed.
+        assert updated_record.version == 0
 
     @pytest.mark.asyncio
     async def test_exception(self, s3_connector):
@@ -1165,7 +1170,9 @@ class TestRunIncrementalSync:
         s3_connector.bucket_name = "mybucket"
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         s3_connector._sync_bucket = AsyncMock(side_effect=Exception("sync error"))
-        await s3_connector.run_incremental_sync()
+        # Records may not have been saved, so the run fails once every bucket was tried.
+        with pytest.raises(RuntimeError, match="sync failed"):
+            await s3_connector.run_incremental_sync()
 
 
 # ===========================================================================

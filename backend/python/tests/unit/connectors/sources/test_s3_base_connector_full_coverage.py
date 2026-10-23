@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
@@ -285,7 +287,8 @@ class TestTestConnectionAndAccess:
     async def test_exception(self, connector):
         connector.data_source = MagicMock()
         connector.data_source.list_buckets = AsyncMock(side_effect=Exception("timeout"))
-        assert await connector.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match="timeout"):
+            await connector.test_connection_and_access()
 
 
 class TestGetSignedUrl:
@@ -483,8 +486,9 @@ class TestGetBucketOptions:
             return_value=_resp(True, {"Buckets": [{"Name": "prod-data"}, {"Name": "staging-data"}, {"Name": "dev-logs"}]})
         )
         connector._get_bucket_region = AsyncMock(return_value="us-east-1")
-        result = await connector._get_bucket_options(1, 20, "data")
-        assert len(result.options) == 2
+        # Search is the store's own Prefix; a store that ignores it is filtered the same way here.
+        result = await connector._get_bucket_options(1, 20, "prod")
+        assert [o.id for o in result.options] == ["prod-data"]
 
     @pytest.mark.asyncio
     async def test_pagination(self, connector):
@@ -645,7 +649,8 @@ class TestCheckAndFetchUpdatedRecord:
         result = await connector._check_and_fetch_updated_record("org-1", rec)
         assert result is not None
         updated_rec, perms = result
-        assert updated_rec.version == 1
+        # The processor bumps the stored version, and only when the revision changed.
+        assert updated_rec.version == 0
 
     @pytest.mark.asyncio
     async def test_key_without_bucket_prefix(self, connector):
@@ -789,7 +794,9 @@ class TestRunIncrementalSync:
         connector.bucket_name = "mybucket"
         connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         connector._sync_bucket = AsyncMock(side_effect=Exception("sync failed"))
-        await connector.run_incremental_sync()
+        # Records may not have been saved, so the run fails once every bucket was tried.
+        with pytest.raises(RuntimeError, match="sync failed"):
+            await connector.run_incremental_sync()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.s3.base_connector.load_connector_filters", new_callable=AsyncMock)
@@ -1058,7 +1065,8 @@ class TestProcessS3ObjectAdvanced:
         record, perms = await connector._process_s3_object(obj, "mybucket")
         assert record is not None
         assert record.id == "existing-id"
-        assert record.version == 3
+        # The processor bumps the stored version, and only when the revision changed.
+        assert record.version == 0
 
     @pytest.mark.asyncio
     async def test_move_rename_detection(self, connector, mock_dsp):

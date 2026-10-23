@@ -19,6 +19,7 @@ from object_store_behaviour_fakes import (
 )
 
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.sources.s3.base_connector import S3CompatibleBaseConnector
 
 ALL = ["s3", "minio", "gcs", "azure_blob"]
 PAGED = ["s3", "minio", "gcs"]
@@ -230,7 +231,12 @@ class TestFailedListing:
         store.delete("a.txt")
         db.failing.add("get_records_in_record_group")
 
-        await sync_with_failed_listing(connector)
+        if isinstance(connector, S3CompatibleBaseConnector):
+            # Our own failure, not the source's: the run fails once every bucket was tried.
+            with pytest.raises(RuntimeError, match="sync failed"):
+                await connector.run_incremental_sync()
+        else:
+            await sync_with_failed_listing(connector)
 
         assert db.deleted == []
 
