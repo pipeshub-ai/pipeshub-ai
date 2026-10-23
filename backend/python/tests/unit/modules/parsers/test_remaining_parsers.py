@@ -66,8 +66,10 @@ class TestDocParser:
             output=b"", stderr=b"not found"
         )
 
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(subprocess.CalledProcessError) as exc_info:
             parser.convert_doc_to_docx(b"fake doc binary")
+
+        assert exc_info.value.returncode == 1
 
     @patch("app.modules.parsers.docx.docparser.subprocess.run")
     def test_conversion_file_not_found_raises(self, mock_run):
