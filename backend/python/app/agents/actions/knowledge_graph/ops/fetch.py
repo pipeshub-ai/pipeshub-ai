@@ -581,15 +581,10 @@ async def execute_fetch_record(
         if collected_images and context.is_multimodal_llm:
             # Mirrors `retrieval.py`'s matching branch: multipart `data`
             # flows through `ToolOutput` -> `ToolResult.content` ->
-            # `ToolMessage.content` unchanged. Only stash a fallback copy
-            # when the transport needs one — models with native multipart
-            # tool-result support already got the images above, and
-            # `shape_retrieved_image_injection` (the sole consumer of the
-            # stash) is never registered for them.
+            # `ToolMessage.content` unchanged; a transport that cannot carry
+            # images in a tool result relocates them itself.
             from app.agent_loop_lib.core.messages import TextPart
 
-            if not context.tool_state.get("supports_multipart_tool_result", True):
-                context.tool_state.setdefault("pending_tool_images", []).extend(collected_images)
             image_parts = [
                 part for img in collected_images
                 if (part := image_dict_to_part(img)) is not None

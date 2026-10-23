@@ -49,7 +49,6 @@ __all__ = [
     "resolve_attachments_for_goal",
     "resolve_history_attachments",
     "shape_image_injection",
-    "shape_retrieved_image_injection",
 ]
 
 
@@ -267,8 +266,7 @@ async def _rehydrate_citation_maps(
     these are the IDs the model should pass to ``dynamic_fetch_full_record``.
     """
     from app.modules.artifacts.reader import record_artifact_reader
-    from app.utils.chat_helpers import CitationRefMapper
-    from app.utils.chat_helpers import record_to_message_content
+    from app.utils.chat_helpers import CitationRefMapper, record_to_message_content
     from app.utils.record_access import caller_can_read_virtual_record
 
     state = context.tool_state
@@ -612,11 +610,18 @@ def shape_image_injection(context: "AgentContext") -> "Middleware[Any]":
     The check is deferred to dispatch time (not registration time) because
     ``_build_hooks`` runs before ``resolve_attachments_for_goal`` populates
     ``context.attachment_image_blocks``.
+
+    Sub-agents share this hook (one kernel per request) but not the user's
+    attachments: a child's request is its delegated task, so only the root
+    run's calls carry them.
     """
 
     _cached_parts: list[Any] = []
 
     async def _middleware(ctx: Any, next_fn: "Next") -> None:
+        if getattr(ctx, "is_child_run", False):
+            await next_fn()
+            return
         if not _cached_parts and context.attachment_image_blocks:
             parts = [_langchain_image_to_part(b) for b in context.attachment_image_blocks]
             _cached_parts.extend(p for p in parts if p is not None)
@@ -670,34 +675,3 @@ def _with_images_on_current_request(messages: list[Any], parts: list[Any]) -> li
     shaped = list(messages)
     shaped[index] = request.model_copy(update={"content": new_content})
     return shaped
-
-
-def shape_retrieved_image_injection(context: "AgentContext") -> "Middleware[Any]":
-    """PRE_MODEL fallback hook: delivers tool-sourced images (search/fetch
-    results) to providers whose tool-result messages have images stripped
-    before the request leaves (Ollama, OpenAI-family models on Chat
-    Completions — see `LangChainTransport._supports_multipart_tool_result` /
-    `converters.py`'s `strip_tool_images`).
-
-    Only registered by `factory.py` when the resolved chat model needs it,
-    so OpenAI/Anthropic (which deliver images natively via multipart
-    `ToolMessage` content) never see the same image injected twice.
-
-    Pops (not peeks) `context.tool_state["pending_tool_images"]` on every
-    dispatch — `retrieval.py`/`citations.py` repopulate it fresh on each
-    tool call within the turn — and puts the batch on a copy of the current
-    request, so each batch is delivered exactly once, on the very next model
-    call after the tool call that produced it.
-    """
-
-    async def _middleware(ctx: Any, next_fn: "Next") -> None:
-        pending = context.tool_state.pop("pending_tool_images", [])
-        if pending:
-            from app.utils.chat_helpers import image_dict_to_part
-
-            image_parts = [p for img in pending if (p := image_dict_to_part(img)) is not None]
-            if image_parts:
-                ctx.messages = _with_images_on_current_request(ctx.messages, image_parts)
-        await next_fn()
-
-    return _middleware

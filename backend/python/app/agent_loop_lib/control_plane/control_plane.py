@@ -77,16 +77,14 @@ class ControlPlane:
         self._started = False
 
     async def start(self) -> None:
+        from app.agent_loop_lib.context.pipeline import build_context_pipeline
+        from app.agent_loop_lib.control_plane.config import context_profile_from_config
         from app.agent_loop_lib.hooks.events import HookEvent
         from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import (
             make_llm_summarizer,
-            shape_auto_compact,
         )
         from app.agent_loop_lib.hooks.middleware.builtin.budget_guard import (
             require_budget,
-        )
-        from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
-            shape_budget_reduction,
         )
         from app.agent_loop_lib.hooks.middleware.builtin.coding_sandbox_safety import (
             coding_sandbox_safety,
@@ -101,23 +99,16 @@ class ControlPlane:
             audit_log_pre_tool,
         )
         from app.agent_loop_lib.hooks.middleware.builtin.mode import enforce_mode
-        from app.agent_loop_lib.hooks.middleware.builtin.offload import shape_offload
         from app.agent_loop_lib.hooks.middleware.builtin.permission import (
             require_permission,
         )
         from app.agent_loop_lib.hooks.middleware.builtin.retry import retry_model_call
-        from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import (
-            shape_sliding_window,
+        from app.agent_loop_lib.hooks.middleware.builtin.tool_safety import (
+            enforce_tool_safety,
         )
         from app.agent_loop_lib.hooks.middleware.builtin.turn_guards import (
             install_stall_detection,
             install_supervisor_confidence_gate,
-        )
-        from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
-            shape_tool_result_clearing,
-        )
-        from app.agent_loop_lib.hooks.middleware.builtin.tool_safety import (
-            enforce_tool_safety,
         )
         from app.agent_loop_lib.hooks.registry import HookRegistry
         from app.agent_loop_lib.modules.providers.budget.tracker import BudgetTracker
@@ -200,7 +191,10 @@ class ControlPlane:
         from app.agent_loop_lib.transport.base import RetryConfig
         from app.agent_loop_lib.transport.ollama import OllamaTransport
         from app.agent_loop_lib.transport.openai import OpenAITransport
-        from app.agent_loop_lib.transport.registry import LazyTransport, TransportRegistry
+        from app.agent_loop_lib.transport.registry import (
+            LazyTransport,
+            TransportRegistry,
+        )
 
         cfg = self._config
 
@@ -216,7 +210,10 @@ class ControlPlane:
         # ControlPlane's agents make is traced identically, regardless of
         # provider. `opik_active` also drives `AgentRuntime.opik_enabled`
         # further down, so `Agent.run()` knows to open a per-run trace.
-        from app.agent_loop_lib.transport.opik_tracing import resolve_opik_gate, traced_transport_factory
+        from app.agent_loop_lib.transport.opik_tracing import (
+            resolve_opik_gate,
+            traced_transport_factory,
+        )
 
         opik_active = resolve_opik_gate(cfg.opik.enabled)
 
@@ -508,24 +505,9 @@ class ControlPlane:
                     e2b_sandbox_guard(max_timeout=float(ebc.e2b_timeout)),
                 )
             elif hook_name == "context_engine":
-                from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import (
-                    shape_artifact_compaction,
-                )
                 from app.agent_loop_lib.hooks.middleware.builtin.artifact_registration import (
                     InMemoryArtifactStore,
                     shape_artifact_registration,
-                )
-                from app.agent_loop_lib.hooks.middleware.builtin.context_invariants import (
-                    shape_context_invariants,
-                )
-                from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import (
-                    shape_deterministic_compact,
-                )
-                from app.agent_loop_lib.hooks.middleware.builtin.loop_compaction import (
-                    shape_loop_compaction,
-                )
-                from app.agent_loop_lib.hooks.middleware.builtin.synthesis_guard import (
-                    shape_synthesis_guard,
                 )
 
                 ce = cfg.context_engine
@@ -566,47 +548,15 @@ class ControlPlane:
                         RetrieveArtifactContentTool(store=artifact_store)
                     )
 
-                if ce.enable_budget_reduction:
-                    kernel.on(HookEvent.PRE_MODEL).use(shape_budget_reduction(max_result_chars=ce.max_result_chars))
-                if ce.enable_artifact_compaction:
-                    kernel.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(
-                        trigger_ratio=ce.artifact_compaction_trigger_ratio,
-                    ))
-                if ce.enable_tool_result_clearing:
-                    kernel.on(HookEvent.PRE_MODEL).use(shape_tool_result_clearing(
-                        keep_last_n_turns=ce.clearing_keep_last_n_turns,
-                        trigger_ratio=ce.clearing_trigger_ratio,
-                    ))
-                if ce.enable_loop_compaction:
-                    kernel.on(HookEvent.PRE_MODEL).use(shape_loop_compaction(
-                        compact_every_n_turns=ce.loop_compact_every_n_turns,
-                        keep_recent=ce.loop_compact_keep_recent,
-                        trigger_ratio=ce.loop_compact_trigger_ratio,
-                    ))
-                if ce.enable_offload:
-                    kernel.on(HookEvent.PRE_MODEL).use(shape_offload(
-                        threshold_tokens=ce.offload_threshold_tokens,
-                        preview_lines=ce.offload_preview_lines,
-                    ))
-                if ce.enable_deterministic_compact:
-                    kernel.on(HookEvent.PRE_MODEL).use(shape_deterministic_compact(
-                        trigger_ratio=ce.deterministic_compact_trigger_ratio,
-                        keep_last_n_messages=ce.deterministic_compact_keep_last_n,
-                        preview_chars=ce.deterministic_compact_preview_chars,
-                    ))
-                if ce.enable_auto_compact:
-                    kernel.on(HookEvent.PRE_MODEL).use(shape_auto_compact(
-                        summarizer=make_llm_summarizer(transport_registry, cfg.transport, model),
-                        trigger_ratio=ce.auto_compact_trigger_ratio,
-                        max_tail_ratio=ce.auto_compact_max_tail_ratio,
-                    ))
-                if ce.enable_sliding_window:
-                    kernel.on(HookEvent.PRE_MODEL).use(shape_sliding_window())
-                if ce.enable_synthesis_guard:
-                    kernel.on(HookEvent.PRE_MODEL).use(shape_synthesis_guard(
-                        keep_last_n_tool_results=ce.synthesis_guard_keep_last_n,
-                    ))
-                kernel.on(HookEvent.PRE_MODEL).use(shape_context_invariants())
+                profile = context_profile_from_config(
+                    ce,
+                    summarizer=(
+                        make_llm_summarizer(transport_registry, cfg.transport, model)
+                        if ce.enable_auto_compact else None
+                    ),
+                )
+                for layer in build_context_pipeline(profile):
+                    kernel.on(HookEvent.PRE_MODEL).use(layer)
             elif hook_name == "skill_learning":
                 # Deferred: needs the SkillManager + timeline store, both
                 # built below at step 8b/8 — wired onto this same `kernel`

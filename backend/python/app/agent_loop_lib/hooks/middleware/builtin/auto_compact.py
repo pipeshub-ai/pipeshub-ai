@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 
+from app.agent_loop_lib.context.compaction_memo import assemble, plan_runs
 from app.agent_loop_lib.context.protection import protected_indices
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.core.types import Message, MessageRole, UserMessage
@@ -12,6 +13,8 @@ from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 Summarizer = Callable[[list[Message]], Awaitable[str]]
 
 logger = logging.getLogger(__name__)
+
+LAYER = "auto_compact"
 
 _TOOL_RESULT_CHARS = 4_000
 _TEXT_MSG_CHARS = 2_000
@@ -229,6 +232,7 @@ def shape_auto_compact(
     summarizer: Summarizer | None = None,
     trigger_ratio: float = 0.85,
     max_tail_ratio: float = 0.6,
+    protected_tools: frozenset[str] = frozenset(),
 ):
     """PRE_MODEL middleware: budget-aware context compaction.
 
@@ -239,13 +243,18 @@ def shape_auto_compact(
        ``max_tail_ratio × budget`` tokens. Groups are never split: an
        ``AssistantMessage`` and its ``ToolMessage``s move together.
     2. **Protected** messages before the tail (the current request, pinned
-       messages, see ``context/protection.py``) stay verbatim, in place.
+       messages, tool groups that called one of ``protected_tools``, see
+       ``context/protection.py``) and summaries another layer already wrote
+       stay verbatim, in place.
     3. Every run of other groups before the tail is replaced by one
        injected summary message.
 
-    This approach adapts to any message-size distribution: a conversation
-    with 50 small turns keeps most of them; a conversation with 3 huge
-    retrieve results protects only what fits the budget.
+    A run summarised on an earlier call of the run is sent as the same
+    summary on every later call (``context/compaction_memo.py``); the
+    summariser is called only for messages no earlier call summarised, and
+    only while the context is still over the trigger. Two instances (a
+    gentle and an aggressive tail) share the memo and never summarise each
+    other's summaries, so no run is summarised twice.
 
     Parameters
     ----------
@@ -256,14 +265,16 @@ def shape_auto_compact(
         Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``.
     max_tail_ratio:
         Maximum fraction of the budget the tail may consume.
+    protected_tools:
+        Tool groups that called one of these are kept verbatim.
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
         messages = ctx.messages
         budget = ctx.budget.effective_max_tokens
         total = count_tokens(messages)
-
-        if total <= ctx.budget.trigger_tokens(trigger_ratio):
+        trigger = ctx.budget.trigger_tokens(trigger_ratio)
+        if total <= trigger:
             await next_fn()
             return
 
@@ -273,53 +284,74 @@ def shape_auto_compact(
             return
 
         tail_start_group = _find_tail_start(messages, groups, budget, max_tail_ratio)
-        protected = protected_indices(messages)
-
-        # Runs of consecutive unprotected groups before the tail.
-        runs: list[list[int]] = []
-        current: list[int] = []
-        for group in groups[:tail_start_group]:
-            if any(idx in protected for idx in group):
-                if current:
-                    runs.append(current)
-                current = []
-            else:
-                current.extend(group)
-        if current:
-            runs.append(current)
+        protected = protected_indices(messages, protected_tools=protected_tools)
+        runs = _summarisable_runs(messages, groups[:tail_start_group], protected)
         if not runs:
             await next_fn()
             return
 
-        summary_for: dict[int, UserMessage] = {}
-        for run in runs:
-            run_messages = [messages[i] for i in run]
-            summary_text = (
-                await summarizer(run_messages) if summarizer is not None else _naive_summary(run_messages)
-            )
-            summary_for[run[0]] = UserMessage(
-                content=f"[Auto-compacted summary of {len(run)} earlier message(s)]\n{summary_text}",
-                injected=True,
-            )
-        summarised = {i for run in runs for i in run}
+        memo = ctx.compaction_memo
+        plans = plan_runs(memo, LAYER, messages, runs)
+        reused = sum(len(plan.hits) for plan in plans)
+        shaped = assemble(messages, plans)
 
-        shaped: list[Message] = []
-        for i, msg in enumerate(messages):
-            if i in summary_for:
-                shaped.append(summary_for[i])
-            elif i not in summarised:
-                shaped.append(msg)
+        new_summaries: dict[int, list[Message]] = {}
+        summarised = 0
+        if count_tokens(shaped) > trigger:
+            for plan in plans:
+                if not plan.rest:
+                    continue
+                rest = list(messages[plan.rest.start:plan.rest.stop])
+                summary_text = await summarizer(rest) if summarizer is not None else _naive_summary(rest)
+                summary = UserMessage(
+                    content=f"[Auto-compacted summary of {len(rest)} earlier message(s)]\n{summary_text}",
+                    injected=True,
+                    compacted_by=LAYER,
+                )
+                new_summaries[plan.rest.start] = [summary]
+                summarised += len(rest)
+                if memo is not None:
+                    memo.remember(LAYER, rest, [summary])
+            shaped = assemble(messages, plans, new_summaries)
 
+        if memo is not None:
+            memo.log_stats(LAYER, ctx.run_id, ctx.turn_index)
+        if not new_summaries and not reused:
+            await next_fn()
+            return
         ctx.messages = shaped
         logger.info(
-            "auto_compact: summarized %d messages into %d summaries (tail=%d groups), "
-            "%d→%d tokens (turn=%d, budget=%d)",
-            len(summarised), len(runs), len(groups) - tail_start_group,
-            total, count_tokens(ctx.messages), ctx.turn_index, budget,
+            "auto_compact: summarized %d messages into %d new summaries (%d reused from earlier calls, "
+            "tail=%d groups), %d→%d tokens (run=%s, turn=%d, budget=%d)",
+            summarised, len(new_summaries), reused, len(groups) - tail_start_group,
+            total, count_tokens(shaped), ctx.run_id, ctx.turn_index, budget,
         )
         await next_fn()
 
     return _middleware
+
+
+def _summarisable_runs(
+    messages: list[Message], groups: list[list[int]], protected: frozenset[int],
+) -> list[range]:
+    """Index ranges of consecutive groups that hold no protected message and
+    no summary another compaction layer wrote."""
+    runs: list[range] = []
+    current: list[int] = []
+    for group in groups:
+        first = messages[group[0]]
+        keep = any(idx in protected for idx in group) or (
+            isinstance(first, UserMessage) and first.compacted_by is not None
+        )
+        if keep:
+            if current:
+                runs.append(range(current[0], current[-1] + 1))
+            current = []
+        else:
+            current.extend(group)
+    if current:
+        runs.append(range(current[0], current[-1] + 1))
+    return runs
 
 
 def _find_tail_start(

@@ -42,6 +42,7 @@ from app.agent_loop_lib.core.messages import (
     as_sent,
 )
 from app.agent_loop_lib.core.responses import TokenUsage
+from app.agent_loop_lib.transport.tool_images import relocated_tool_images
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -187,10 +188,8 @@ def convert_message_to_langchain(
     OpenAI-family models on Chat Completions — see
     `LangChainTransport._supports_multipart_tool_result`). Providers that
     do accept multipart tool results (Anthropic, Gemini, Bedrock, ...) keep
-    images inline here; the stripped images are recovered from
-    `context.tool_state["pending_tool_images"]` and re-injected into a
-    `UserMessage` by the `shape_retrieved_image_injection` PRE_MODEL
-    fallback hook (`attachment_resolver.py`).
+    images inline here; `convert_messages_to_langchain`'s
+    `relocate_tool_images` sends the stripped images in a user message.
     """
     if message.role == MessageRole.SYSTEM:
         return LCSystemMessage(content=message.content)
@@ -239,11 +238,6 @@ def convert_message_to_langchain(
     raise ValueError(f"Unsupported agent-loop message role: {message.role!r}")
 
 
-# Prefix for the user message `relocate_tool_images` parks tool-sourced images
-# under, so the model can tell them apart from what the user itself attached.
-_RELOCATED_IMAGES_PREFIX = "Images returned by the tool results above:"
-
-
 def convert_messages_to_langchain(
     messages: list[Message],
     system: str | None = None,
@@ -256,14 +250,11 @@ def convert_messages_to_langchain(
     contract: `system` arrives as a separate kwarg, not inside `messages`).
 
     `relocate_tool_images`: strip images out of tool results (as
-    `strip_tool_images` does) but re-attach them to a trailing `HumanMessage`
-    instead of dropping them. Used by `LangChainTransport`'s runtime recovery
-    from a provider that rejects images in a tool-result message
-    (`is_tool_result_image_conflict`) — that path has no
-    `shape_retrieved_image_injection` hook registered to recover the images
-    from `pending_tool_images`, since the factory registers that hook only for
-    providers `_supports_multipart_tool_result` rejects up front, so without
-    re-attaching them here the retry would answer about images it never saw.
+    `strip_tool_images` does) but send them once in a loop-added user message
+    after the results (`agent_loop_lib/transport/tool_images.py`), the one
+    delivery path for providers that reject images in a tool result: always
+    on for those, and `LangChainTransport`'s recovery when a provider rejects
+    one at runtime.
     """
     converted = [
         convert_message_to_langchain(
@@ -272,31 +263,12 @@ def convert_messages_to_langchain(
         for m in messages
     ]
     if relocate_tool_images:
-        images: list[Part] = [
-            part
-            for m in messages
-            if m.role == MessageRole.TOOL and isinstance(m.content, list)
-            for part in m.content
-            if isinstance(part, ImagePart)
-        ]
-        if images:
-            converted.append(convert_message_to_langchain(UserMessage(
-                content=[TextPart(text=_RELOCATED_IMAGES_PREFIX), *images], injected=True,
-            )))
+        relocated = relocated_tool_images(messages)
+        if relocated is not None:
+            converted.append(convert_message_to_langchain(relocated))
     if system:
         return [LCSystemMessage(content=system), *converted]
     return converted
-
-
-def has_tool_result_images(messages: list[Message]) -> bool:
-    """Whether any tool result carries an `ImagePart` — i.e. whether
-    `relocate_tool_images` has anything to move."""
-    return any(
-        m.role == MessageRole.TOOL
-        and isinstance(m.content, list)
-        and any(isinstance(part, ImagePart) for part in m.content)
-        for m in messages
-    )
 
 
 # OpenAI's Chat Completions/Responses APIs hard-reject any tool/function

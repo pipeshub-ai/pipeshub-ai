@@ -68,11 +68,11 @@ from app.agent_loop_lib.transport.provider_conflicts import (
     is_reasoning_mandatory_conflict,
     is_tool_result_image_conflict,
 )
+from app.agent_loop_lib.transport.tool_images import has_tool_result_images
 from app.agents.agent_loop.converters import (
     convert_assistant_message_from_langchain,
     convert_messages_to_langchain,
     convert_tool_schemas_to_langchain,
-    has_tool_result_images,
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
@@ -473,8 +473,8 @@ class LangChainTransport(LLMTransport):
             messages,
             system,
             strip_tool_images=not self._supports_multipart_tool_result,
-            # The cap may keep a tool copy and discard its injected user copy.
-            # Move surviving tool images instead of silently stripping them.
+            # A provider that rejects images in a tool result gets them in one
+            # user message after the results, its only delivery path.
             relocate_tool_images=(
                 not self._supports_multipart_tool_result or self._tool_images_relocated
             ) if relocate is None else relocate,
@@ -528,10 +528,10 @@ class LangChainTransport(LLMTransport):
         provider rejected an image inside a tool result.
 
         The images move to a trailing user message rather than being dropped
-        (`convert_messages_to_langchain`'s `relocate_tool_images`): a run that
-        got here has no `shape_retrieved_image_injection` hook registered to
-        re-deliver them, since the factory registers that hook only for
-        providers `_supports_multipart_tool_result` already rejects. Returns
+        (`convert_messages_to_langchain`'s `relocate_tool_images`): this
+        provider was expected to take images in a tool result
+        (`_supports_multipart_tool_result`), so nothing else delivers them.
+        Returns
         False once the shape is pinned, so a rejection that merely repeats
         the same marker can't retry forever.
         """

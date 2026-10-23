@@ -239,7 +239,7 @@ class TestTheSharedCapDoesNotCutFetch:
         switch(value)
         context = make_context(llm=FakeChatModel(), context_length=1_000_000)
         with patch(
-            "app.agents.agent_loop.factory.shape_budget_reduction", wraps=shape_budget_reduction,
+            "app.agent_loop_lib.context.pipeline.shape_budget_reduction", wraps=shape_budget_reduction,
         ) as shaper:
             PipesHubAgentFactory._build_hooks(context)
 

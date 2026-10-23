@@ -56,7 +56,9 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.agent import observability as obs
 from app.agent_loop_lib.core.scope import StateSlot
 from app.agent_loop_lib.core.types import AgentResult, Artifact, Goal, ToolCall
-from app.agent_loop_lib.tools.builtin.coordination.graph_utils import find_cycle as _shared_find_cycle
+from app.agent_loop_lib.tools.builtin.coordination.graph_utils import (
+    find_cycle as _shared_find_cycle,
+)
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import stage_input_files
 
 if TYPE_CHECKING:
@@ -455,6 +457,9 @@ async def _run_dependent_spawn(
             prereq_sections.append(_format_dependency_section(dep_id, completed.result))
             artifact_files.update(_artifact_files(dep_id, completed.result.artifacts))
 
+        from app.agent_loop_lib.tools.builtin.coordination.parent_results import (
+            parent_request,
+        )
         from app.agent_loop_lib.tools.builtin.coordination.spawn_agent import (
             build_spawn_child,
             run_spawned_child,
@@ -469,6 +474,7 @@ async def _run_dependent_spawn(
             result = await run_spawned_child(
                 runtime, child_spec, goal, agent.run_ctx, team_id=team_id,
                 session_id=agent.session_id, parent_scope=agent.scope,
+                user_request=await parent_request(agent),
             )
         run_scope.get(SPAWN_RESULTS_SLOT)[task_id] = _CompletedSpawn(task_id=task_id, result=result)
         return result

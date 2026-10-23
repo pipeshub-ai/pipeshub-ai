@@ -58,12 +58,6 @@ def restore_current_request(messages: list[Message], request: CurrentRequest) ->
     return [*kept[:insert_at], request.message, *after]
 
 
-def _run_id(ctx: ModelCallContext) -> str | None:
-    if ctx.scope is None:
-        return None
-    return ctx.scope.run.identity.run_id
-
-
 def shape_context_invariants():
     """Last PRE_MODEL middleware; see the module docstring."""
 
@@ -73,7 +67,7 @@ def shape_context_invariants():
             logger.warning(
                 "context_invariants: dropped/stripped %d orphaned tool message(s)/call(s) — "
                 "a context shaper broke pairing (run=%s, turn=%d)",
-                repairs, _run_id(ctx), ctx.turn_index,
+                repairs, ctx.run_id, ctx.turn_index,
             )
 
         request = ctx.request
@@ -82,7 +76,7 @@ def shape_context_invariants():
             logger.error(
                 "context_invariant_repaired: the shapers lost the current request; restored it "
                 "(run=%s, session=%s, turn=%d, messages=%d)",
-                _run_id(ctx), ctx.session_id, ctx.turn_index, len(messages),
+                ctx.run_id, ctx.session_id, ctx.turn_index, len(messages),
             )
 
         total = count_tokens(messages)
@@ -90,7 +84,7 @@ def shape_context_invariants():
             logger.error(
                 "context_budget_exceeded: %d tokens > %d limit after every shaper "
                 "(run=%s, turn=%d, budget=%d)",
-                total, ctx.budget.hard_limit_tokens, _run_id(ctx), ctx.turn_index,
+                total, ctx.budget.hard_limit_tokens, ctx.run_id, ctx.turn_index,
                 ctx.budget.effective_max_tokens,
             )
             raise ContextBudgetExceeded(total, ctx.budget.hard_limit_tokens)
