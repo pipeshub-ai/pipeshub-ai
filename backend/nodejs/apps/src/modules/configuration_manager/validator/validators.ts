@@ -577,6 +577,12 @@ const batchModelSchema = z.object({
   isMultimodal: z.boolean().default(false),
   isReasoning: z.boolean().default(false),
   contextLength: z.number().optional().nullable(),
+  configuration: z
+    .record(z.string().max(64), z.unknown())
+    .optional()
+    .describe(
+      'Non-secret configuration keys that differ for this model, applied over the shared ones',
+    ),
 });
 
 /** Drop a shared friendly name before the single-model refine. Each batch model carries its own. */

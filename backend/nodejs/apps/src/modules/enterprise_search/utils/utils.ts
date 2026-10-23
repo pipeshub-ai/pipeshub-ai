@@ -29,7 +29,10 @@ import {
   BadRequestError,
   InternalServerError,
 } from '../../../libs/errors/http.errors';
-import { CONVERSATION_STATUS } from '../constants/constants';
+import {
+  CONVERSATION_STATUS,
+  REASONING_EFFORT_VALUES,
+} from '../constants/constants';
 import { Logger } from '../../../libs/services/logger.service';
 import { Response } from 'express';
 import { getUserRepository } from '../../../libs/repositories/user';
@@ -558,6 +561,38 @@ export const classifiedFailureChange = (
   };
 };
 
+/**
+ * The model an answer came from: the one the AI service reports, else the
+ * request's. The request's `modelInfo` is kept for the conversation, never
+ * mutated here.
+ */
+export const answeredModelInfo = (
+  requested: IAIModel | undefined,
+  // From the AI service's JSON, so any field can be missing.
+  answered: Partial<IAIModel> | undefined,
+): IAIModel | undefined => {
+  if (!answered?.modelKey) {
+    return requested;
+  }
+  const effort = answered.reasoningEffort;
+  return {
+    modelKey: answered.modelKey,
+    modelName: answered.modelName ?? '',
+    // The request's provider belongs to the requested model, which may not be this one.
+    modelProvider: answered.modelProvider ?? '',
+    chatMode: requested?.chatMode ?? 'quick',
+    ...(answered.modelFriendlyName && {
+      modelFriendlyName: answered.modelFriendlyName,
+    }),
+    ...(effort &&
+      (REASONING_EFFORT_VALUES as readonly string[]).includes(effort) && {
+        reasoningEffort: effort,
+      }),
+    ...(typeof answered.modelNote === 'string' &&
+      answered.modelNote && { modelNote: answered.modelNote.slice(0, 200) }),
+  };
+};
+
 export const buildAIResponseMessage = (
   aiResponse: AIServiceResponse<IAIResponse>,
   citations: CitationDto[] = [],
@@ -596,7 +631,7 @@ export const buildAIResponseMessage = (
       aiTransactionId: data.metadata?.aiTransactionId,
       reason: data.reason,
     },
-    modelInfo: modelInfo,
+    modelInfo: answeredModelInfo(modelInfo, data.modelInfo),
   };
 
   // Include referenceData if present (IDs for follow-up queries)
@@ -846,6 +881,18 @@ export const formatPreviousConversations = (messages: IMessage[]) => {
       // A reply the user stopped did not finish its card's work, so the card can be answered again.
       ...(msg.messageType === 'bot_response' &&
         msg.status === 'stopped' && { status: 'stopped' }),
+      // Which model wrote each answer, for the AI service.
+      ...(msg.messageType === 'bot_response' &&
+        msg.modelInfo?.modelKey && {
+          modelKey: msg.modelInfo.modelKey,
+          modelName: msg.modelInfo.modelName,
+          ...(msg.modelInfo.reasoningEffort && {
+            reasoningEffort: msg.modelInfo.reasoningEffort,
+          }),
+          ...(msg.modelInfo.modelNote && {
+            modelNote: msg.modelInfo.modelNote,
+          }),
+        }),
     });
   }
   return result;

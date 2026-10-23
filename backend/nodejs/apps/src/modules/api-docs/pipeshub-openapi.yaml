@@ -10346,6 +10346,10 @@ components:
           type: string
           enum: [none, low, medium, high, max]
           description: Reasoning effort requested for the turn, when one was set.
+        modelNote:
+          type: string
+          description: On an answer, a short note the AI service added about the model that answered.
+
     FollowUpQuestion:
       type: object
       additionalProperties: false
@@ -65985,6 +65989,14 @@ paths:
                       contextLength:
                         type: number
                         nullable: true
+                      configuration:
+                        type: object
+                        additionalProperties: true
+                        description: |
+                          Non-secret settings that differ for this model, applied over the shared `configuration`.
+                          Only the model's public settings apply (those reads return as stored, such as
+                          `defaultReasoningEffort`); credentials, the endpoint, `model` and `modelFriendlyName`
+                          stay shared, and any other key is ignored. `contextLength` goes in the field of its own.
       responses:
         '200':
           description: |

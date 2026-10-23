@@ -1,12 +1,12 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { MobileBottomSheet } from '@/app/components/ui/mobile-bottom-sheet';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
-import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from '@/chat/store';
 import type { ModelOverride, QueryMode } from '@/chat/types';
 import { CollectionsTab } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/collections-tab';
 import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-panel';
@@ -46,8 +46,12 @@ export function MobileQueryOptionsSheet({
   const setSelectedModelForCtx = useChatStore((s) => s.setSelectedModelForCtx);
 
   const modelCtxKey = ctxKeyFromAgent(agentId);
-  const contextSelectedModel = settings.selectedModels[modelCtxKey] ?? null;
-  const contextDefaultModel = settings.defaultModels[modelCtxKey] ?? null;
+  const openedProjectId = useChatStore((s) => s.projectScope?.projectId ?? null);
+  const displayModel = useMemo(
+    () => getEffectiveModel(modelCtxKey),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getEffectiveModel reads these from the store
+    [modelCtxKey, openedProjectId, settings.newChatDefaultModel, settings.selectedModels, settings.defaultModels],
+  );
   const handleModelSelect = (model: ModelOverride | null) =>
     setSelectedModelForCtx(modelCtxKey, model);
 
@@ -88,7 +92,7 @@ export function MobileQueryOptionsSheet({
       )}
       {activePanel === 'models' && (
         <ModelSelectorPanel
-          selectedModel={contextSelectedModel ?? contextDefaultModel}
+          selectedModel={displayModel}
           onModelSelect={handleModelSelect}
           hideHeader
           agentId={agentId}

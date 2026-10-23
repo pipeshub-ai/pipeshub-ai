@@ -10,6 +10,7 @@ import {
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
   WorkspaceRightPanelBodyPortalContext,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
+import { aiModelFormOptions } from '@/config';
 import type { DiscoveredModel } from '../types';
 
 const MAX_VISIBLE_OPTIONS = 200;
@@ -364,6 +365,7 @@ function ModelMeta({ model }: { model: DiscoveredModel }) {
       : null,
     model.isMultimodal ? t('workspace.aiModels.badgeVision') : null,
     model.isReasoning ? t('workspace.aiModels.badgeReasoning') : null,
+    ...aiModelFormOptions.discoveredModelBadges(t, model),
     model.deprecated ? t('workspace.aiModels.badgeDeprecated') : null,
   ].filter(Boolean);
   if (parts.length === 0) return null;

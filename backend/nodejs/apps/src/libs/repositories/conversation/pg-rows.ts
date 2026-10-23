@@ -190,11 +190,15 @@ export const MODEL_FIELDS = [
   'reasoningEffort',
 ] as const;
 
+/** An answer also keeps the note the AI service added about the model that wrote it. */
+export const MESSAGE_MODEL_FIELDS = [...MODEL_FIELDS, 'modelNote'] as const;
+
 export function storedModelInfo(
   m: Record<string, unknown> | undefined,
+  fields: readonly string[] = MODEL_FIELDS,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const f of MODEL_FIELDS)
+  for (const f of fields)
     if (m?.[f] !== undefined && m[f] !== null) out[f] = m[f];
   out.chatMode ??= 'quick';
   return out;
@@ -244,6 +248,7 @@ export function storedMessage(m: NewMessage): StoredMessage {
     metadata: clean(shapeMessageMetadata(m.metadata)),
     modelInfo: storedModelInfo(
       m.modelInfo as unknown as Record<string, unknown> | undefined,
+      MESSAGE_MODEL_FIELDS,
     ),
     appliedFilters: clean(shapeAppliedFilters(m.appliedFilters)),
     attachments: each(m.attachments, shapeAttachment),
