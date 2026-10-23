@@ -306,7 +306,7 @@ class TestFetchArticleContent:
 class TestProcessFeed:
 
     @pytest.mark.asyncio
-    async def test_unreadable_feed_raises_and_writes_nothing(self):
+    async def test_unreadable_feed_raises_and_writes_nothing(self) -> None:
         conn = _make_connector()
         conn.session = MagicMock()
         with patch.object(conn, "create_record_group", new_callable=AsyncMock) as create_group:
@@ -685,7 +685,7 @@ class TestTestConnectionAndAccess:
             assert await conn.test_connection_and_access() is True
 
     @pytest.mark.asyncio
-    async def test_bad_status_names_the_feed(self):
+    async def test_bad_status_names_the_feed(self) -> None:
         conn = _make_connector()
         conn.feed_urls = ["https://feed.com/rss?token=s3cret"]
         conn.session = MagicMock()
@@ -696,7 +696,7 @@ class TestTestConnectionAndAccess:
         assert "s3cret" not in str(raised.value)
 
     @pytest.mark.asyncio
-    async def test_page_that_is_not_a_feed_is_named(self):
+    async def test_page_that_is_not_a_feed_is_named(self) -> None:
         conn = _make_connector()
         conn.feed_urls = ["https://feed.com/rss", "https://feed.com/blog"]
         conn.session = MagicMock()
@@ -773,7 +773,7 @@ class TestCreateRecordGroup:
 
 class TestProcessEntryExtended:
     @pytest.mark.asyncio
-    async def test_entry_without_a_link_is_kept_with_the_feed_as_its_link(self):
+    async def test_entry_without_a_link_is_kept_with_the_feed_as_its_link(self) -> None:
         conn = _make_connector()
         conn.fetch_full_content = True
         entry = {"title": "Test", "id": "urn:uuid:1", "link": "urn:uuid:1", "summary": "Body."}
@@ -784,13 +784,13 @@ class TestProcessEntryExtended:
         crawl.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_entry_without_id_or_link_returns_none(self):
+    async def test_entry_without_id_or_link_returns_none(self) -> None:
         conn = _make_connector()
         result = await conn._process_entry({"title": "Test"}, "https://feed.com/rss")
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_duplicate_entry_skipped(self):
+    async def test_duplicate_entry_skipped(self) -> None:
         conn = _make_connector()
         conn.processed_urls = {"https://feed.com/rss#1"}
         entry = {"title": "Test", "link": "https://example.com/article-1", "id": "1"}
@@ -798,7 +798,7 @@ class TestProcessEntryExtended:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_entries_sharing_a_link_are_all_kept(self):
+    async def test_entries_sharing_a_link_are_all_kept(self) -> None:
         conn = _make_connector()
         conn.fetch_full_content = False
         first = {"title": "Ep 1", "link": "https://show.example.com/", "id": "ep-1", "summary": "One."}
