@@ -44784,7 +44784,7 @@ paths:
                           description: Subdocument identifier auto-assigned by MongoDB.
                   unsharedUsers:
                     type: array
-                    description: Echo of the `userIds` from the request body.
+                    description: The `userIds` from the request body, lowercased.
                     items:
                       type: string
                       format: objectId
