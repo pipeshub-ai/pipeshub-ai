@@ -881,6 +881,8 @@
     "sharedChats": "공유된 채팅",
     "sharedBy": "{{name}}님이 공유함",
     "agentChat": "에이전트 채팅",
+    "askedBy": "{{name}}님이 질문함",
+    "askedByUnknown": "다른 사용자가 질문함",
     "noSharedChats": "공유된 채팅이 없습니다",
     "yourChats": "내 채팅",
     "noChatsFound": "채팅을 찾을 수 없습니다",
@@ -5379,6 +5381,10 @@
         "label": "보기 가능",
         "description": "보기 권한만"
       }
+    },
+    "chatRoles": {
+      "writer": "대화를 보고 메시지를 보낼 수 있습니다. 답변은 본인의 접근 권한을 사용합니다.",
+      "reader": "대화를 보기만 할 수 있습니다."
     },
     "team": "팀",
     "teamsNoRoles": "팀에는 역할이 없습니다",

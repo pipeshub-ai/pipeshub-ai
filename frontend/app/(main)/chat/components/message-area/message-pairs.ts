@@ -7,6 +7,8 @@ export interface MessagePair {
   key: string;
   /** Backend _id of the bot_response message (used for regenerate) */
   messageId?: string;
+  /** Who this answer was generated for; absent = the chat owner. */
+  authorUserId?: string;
   question: string;
   answer: string;
   citationMaps: CitationMaps;
@@ -23,6 +25,8 @@ export interface MessagePair {
   attachments?: AttachmentRef[];
   /** Attachments of this query the viewer may not read (shared chats). */
   redactedAttachments?: RequestAccessInfo[];
+  /** Who asked, when it was not the viewer. */
+  askedBy?: { userId: string; name: string };
   /** Persisted ask_user_question payload from a historical tool_call (read-only display) */
   persistedAskUserQuestion?: AskUserQuestionPayload;
   persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
@@ -47,6 +51,7 @@ interface PairMessage {
 
 type AssistantCustom = {
   messageId?: string;
+  authorUserId?: string;
   citationMaps?: CitationMaps;
   confidence?: ConfidenceLevel;
   modelInfo?: ModelInfo;
@@ -64,6 +69,7 @@ type UserCustom = {
   createdAt?: string;
   attachments?: AttachmentRef[];
   redactedAttachments?: RequestAccessInfo[];
+  askedBy?: { userId: string; name: string };
 };
 
 export interface BuildMessagePairsOptions {
@@ -171,6 +177,7 @@ export function buildMessagePairs(
       pairs.push({
         key: msg.id ?? `asst-${i}`,
         messageId: metadata?.messageId,
+        authorUserId: metadata?.authorUserId,
         question,
         answer: isBeingRegenerated ? '' : content,
         citationMaps: (isCurrentlyStreaming || isBeingRegenerated)
@@ -187,6 +194,7 @@ export function buildMessagePairs(
         createdAt: userMsgCustom?.createdAt,
         attachments: userMsgCustom?.attachments,
         redactedAttachments: userMsgCustom?.redactedAttachments,
+        askedBy: userMsgCustom?.askedBy,
         persistedAskUserQuestion: metadata?.persistedAskUserQuestion,
         persistedAskUserQuestionAnswers: metadata?.persistedAskUserQuestionAnswers,
         persistedParts: metadata?.persistedParts,

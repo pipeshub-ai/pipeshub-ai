@@ -18,7 +18,9 @@ import {
   IChatSessionDocument,
   IMessage,
 } from '../types/conversation.interfaces';
+import type { AppConfig } from '../../tokens_manager/config/config';
 import { AiChatRequest, ChatTarget } from './ai-chat-payload';
+import { redactConversationFor, redactMessagesFor } from './viewer-redaction';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingAIResponseError,
@@ -97,9 +99,17 @@ export interface ContinuedConversation {
   previousConversations: ReturnType<typeof formatPreviousConversations>;
 }
 
+/** Who is asking, so what they read and write is theirs: history redacted, turns stamped. */
+export interface TurnViewer {
+  appConfig: AppConfig;
+  userId: string;
+  orgId: string;
+}
+
 export const continueConversation = (
   filter: Record<string, unknown>,
   userMessage: IMessage,
+  viewer: TurnViewer,
 ): Promise<ContinuedConversation> =>
   inShortTransaction(async (session) => {
     const conversation = await ChatSession.findOne(
@@ -110,16 +120,29 @@ export const continueConversation = (
     if (!conversation) {
       throw new NotFoundError('Conversation not found');
     }
-    const history = await getMessages(
+    // Other users' turns reach the model only as this requester may read them.
+    const rows = (await getMessages(
       conversation._id as mongoose.Types.ObjectId,
-      { orgId: conversation.orgId },
+      {
+        orgId: conversation.orgId,
+        populateCitations: !!conversation.isShared,
+      },
       session,
+    )) as Array<Record<string, unknown>>;
+    const initiator = conversation.initiator as
+      mongoose.Types.ObjectId | undefined;
+    const history = await redactMessagesFor(
+      viewer.appConfig,
+      rows,
+      initiator?.toString(),
+      { userId: viewer.userId, orgId: viewer.orgId },
     );
     await appendMessages(
       conversation._id as mongoose.Types.ObjectId,
       conversation.orgId,
       [userMessage],
       session,
+      viewer.userId,
     );
     conversation.status = CONVERSATION_STATUS.INPROGRESS;
     conversation.failReason = undefined;
@@ -191,6 +214,7 @@ export interface CompleteTurnOptions {
   headers: Record<string, string>;
   modelInfo: IAIModel;
   requestId?: string;
+  viewer: TurnViewer;
 }
 
 export interface CompletedTurn {
@@ -275,9 +299,14 @@ export const completeTurn = async (
       String(conversation.orgId),
       null,
       options.modelInfo,
+      options.viewer.userId,
     )) as Record<string, unknown>;
     return {
-      conversation: saved,
+      conversation: await redactConversationFor(
+        options.viewer.appConfig,
+        saved,
+        { userId: options.viewer.userId, orgId: options.viewer.orgId },
+      ),
       // Python omits `citations` on some agent answers despite the type.
       recordsUsed: Array.isArray(response.data.citations)
         ? response.data.citations.length

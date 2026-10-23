@@ -80,6 +80,10 @@ const matchesCondition = (candidates: unknown[], condition: unknown): boolean =>
         const pattern = new RegExp(String(argument), flags)
         return candidates.some((c) => typeof c === 'string' && pattern.test(c))
       }
+      case '$elemMatch':
+        return candidates.some(
+          (c) => Array.isArray(c) && c.some((item) => isPlainObject(item) && matchesFilter(item, argument as Filter)),
+        )
       case '$options':
         return true
       default:
@@ -102,6 +106,7 @@ interface QueryState {
   skip?: number
   limit?: number
   lean: boolean
+  populate?: boolean
   session?: unknown
   exclude?: string[]
 }
@@ -137,6 +142,7 @@ class FakeQuery<T> implements PromiseLike<T> {
     return this
   }
   populate(): this {
+    this.state.populate = true
     return this
   }
   session(session: unknown): this {
@@ -229,6 +235,8 @@ const applyUpdate = (doc: SessionDoc | MessageDoc, update: Doc): void => {
 export class InMemoryChatStore {
   readonly sessions: SessionDoc[] = []
   readonly messages: MessageDoc[] = []
+  /** Every citation the controller saved, so `populate` can resolve message citations. */
+  readonly citations: Array<InstanceType<typeof Citation>> = []
   /** One entry per write the controller performed, so a test can prove nothing was written. */
   readonly writes: string[] = []
 
@@ -259,6 +267,22 @@ export class InMemoryChatStore {
 
   private findSessions(filter: Filter): SessionDoc[] {
     return this.sessions.filter((s) => matchesFilter(plain(s), filter))
+  }
+
+  /** What `populate('citations.citationId')` does to a lean message row. */
+  populated(rows: unknown[], state: QueryState): unknown[] {
+    if (!state.populate || !state.lean) return rows
+    return rows.map((row) => {
+      const message = row as Doc
+      if (!Array.isArray(message.citations)) return row
+      return {
+        ...message,
+        citations: (message.citations as Doc[]).map((c) => {
+          const doc = this.citations.find((x) => String(x._id) === String(c.citationId))
+          return doc ? { ...c, citationId: doc.toObject() } : c
+        }),
+      }
+    })
   }
 
   private findMessages(filter: Filter): MessageDoc[] {
@@ -319,7 +343,11 @@ export class InMemoryChatStore {
         applyUpdate(doc, update)
         store.writes.push(update.$inc ? 'chatSession.allocateSeq' : 'chatSession.update')
       }
-      return new FakeQuery((state) => (options?.new === true ? one(doc, state) : (before ?? null)))
+      // An atomic $inc returns the counter as this call left it, even if another call runs before the await.
+      const after = doc && update.$inc ? doc.toObject() : undefined
+      return new FakeQuery((state) =>
+        options?.new === true ? (after ?? one(doc, state)) : (before ?? null),
+      )
     }) as never)
 
     sinon.stub(ChatSessionMessage, 'insertMany').callsFake(((docs: Doc[], options?: SessionOption) => {
@@ -331,7 +359,10 @@ export class InMemoryChatStore {
     }) as never)
     sinon.stub(ChatSessionMessage, 'find').callsFake(((filter: Filter, _projection?: unknown, options?: SessionOption) => {
       assertSessionUsable(options)
-      return withSession(new FakeQuery((state) => shape(store.findMessages(filter), state)), options)
+      return withSession(
+        new FakeQuery((state) => store.populated(shape(store.findMessages(filter), state), state)),
+        options,
+      )
     }) as never)
     sinon.stub(ChatSessionMessage, 'countDocuments').callsFake(((filter: Filter) =>
       new FakeQuery(() => store.findMessages(filter).length)) as never)
@@ -362,6 +393,7 @@ export class InMemoryChatStore {
     const realCitationSave = Citation.prototype.save
     sinon.stub(Citation.prototype, 'save').callsFake(function (this: InstanceType<typeof Citation>, options?: SessionOption) {
       store.writes.push('citation.save')
+      store.citations.push(this)
       return realCitationSave.call(this, options as never)
     } as never)
     sinon.stub(Citation, 'updateMany').callsFake((() => {
@@ -489,14 +521,17 @@ export class FakeSSEResponse extends EventEmitter {
   }
 }
 
-interface RecordedCall {
+export interface RecordedCall {
   url: string
   method: string
   headers: Record<string, string>
   body: Record<string, unknown>
 }
 
-type Reply = { kind: 'json'; status: number; body: unknown } | { kind: 'reject'; error: Error }
+type Reply =
+  | { kind: 'json'; status: number; body: unknown }
+  | { kind: 'reject'; error: Error }
+  | { kind: 'fn'; build: (call: RecordedCall) => { status: number; body: unknown } }
 
 /**
  * The Python AI service, reached through the global `fetch` the controller's
@@ -518,6 +553,12 @@ export class FakeAIBackend {
       const headers = Object.fromEntries(new Headers(init?.headers).entries())
       this.calls.push({ url, method: init?.method ?? 'GET', headers, body: JSON.parse(rawBody) as Record<string, unknown> })
       const registered = this.replies.find((r) => r.path.test(url))
+      if (registered?.reply.kind === 'fn') {
+        const { status, body } = registered.reply.build(this.calls[this.calls.length - 1] as RecordedCall)
+        return Promise.resolve(
+          new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }),
+        )
+      }
       const isStream = /\/stream(\?|$)/.test(url)
       if (isStream && this.stallStreamOpen) {
         return new Promise<Response>((_resolve, reject) => {
@@ -549,6 +590,11 @@ export class FakeAIBackend {
   /** Answer any request whose URL matches `path` with this JSON status and body. */
   reply(path: RegExp, status: number, body: unknown): void {
     this.replies.push({ path, reply: { kind: 'json', status, body } })
+  }
+
+  /** Answer matching requests by looking at each one (for example, by who is asking). */
+  replyWith(path: RegExp, build: (call: RecordedCall) => { status: number; body: unknown }): void {
+    this.replies.push({ path, reply: { kind: 'fn', build } })
   }
 
   /** Forget every registered reply, so the next turn of a multi-turn test can answer differently. */

@@ -19,6 +19,7 @@ import {
   ConflictError,
   InternalServerError,
   NotFoundError,
+  ForbiddenError,
 } from '../../../libs/errors/http.errors';
 import Citation, { ICitation } from '../schema/citation.schema';
 import { CONVERSATION_STATUS, ONLY_AGENT } from '../constants/constants';
@@ -42,7 +43,7 @@ import {
   SSEProtocol,
 } from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
-import { conversationForAuthorOnly } from './viewer-redaction';
+import { conversationForAuthorOnly, userDisplayName } from './viewer-redaction';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
@@ -168,6 +169,7 @@ export const findSessionIdsMatchingContent = async (
   authorUserId: string,
   limit = 10000,
 ): Promise<mongoose.Types.ObjectId[]> => {
+  const author = new mongoose.Types.ObjectId(authorUserId);
   const rows = await ChatSessionMessage.aggregate<{
     _id: mongoose.Types.ObjectId;
   }>([
@@ -175,12 +177,19 @@ export const findSessionIdsMatchingContent = async (
       $match: {
         orgId: new mongoose.Types.ObjectId(orgId),
         content: { $regex: escapedSearch, $options: 'i' },
+        // Only text the searcher's own turns produced is searched: a match in
+        // someone else's turn would reveal text the searcher may not be allowed
+        // to read. Unstamped rows are the initiator's (checked after the lookup).
+        $or: [{ authorUserId: author }, { authorUserId: { $exists: false } }],
       },
     },
-    { $group: { _id: '$sessionId' } },
+    {
+      $group: {
+        _id: '$sessionId',
+        hasOwnTurn: { $max: { $cond: [{ $eq: ['$authorUserId', author] }, 1, 0] } },
+      },
+    },
     { $limit: limit },
-    // Only the author's own chats are searched by content: for a shared viewer a
-    // match would reveal text in answers they may not be allowed to read.
     {
       $lookup: {
         from: ChatSession.collection?.name ?? 'chatsessions',
@@ -189,7 +198,7 @@ export const findSessionIdsMatchingContent = async (
         as: 'session',
       },
     },
-    { $match: { 'session.initiator': new mongoose.Types.ObjectId(authorUserId) } },
+    { $match: { $or: [{ hasOwnTurn: 1 }, { 'session.initiator': author }] } },
   ]);
   return rows.map((r) => r._id);
 };
@@ -243,13 +252,16 @@ export const allocateSeq = async (
  * section for why (a crash between the two leaves nothing inconsistent: no
  * message row exists yet). Returns the inserted documents (not `.lean()`)
  * so callers can `.toObject()` them for `attachPopulatedCitations` fallback
- * without a second query.
+ * without a second query. `authorUserId` stamps who the messages were generated
+ * for; leave it out for the conversation initiator's own turns on a chat that was
+ * never write-shared (readers treat an unstamped message as the initiator's).
  */
 export const appendMessages = async (
   sessionId: mongoose.Types.ObjectId | string,
   orgId: mongoose.Types.ObjectId | string,
   messages: IMessage[],
   mongoSession?: ClientSession | null,
+  authorUserId?: mongoose.Types.ObjectId | string,
 ): Promise<IChatSessionMessageDocument[]> => {
   if (messages.length === 0) {
     return [];
@@ -258,6 +270,7 @@ export const appendMessages = async (
   const startSeq = endSeq - messages.length + 1;
   const toInsert = messages.map((message, i) => ({
     ...message,
+    ...(authorUserId ? { authorUserId } : {}),
     sessionId,
     orgId,
     seq: startSeq + i,
@@ -294,6 +307,8 @@ export const updateMessageById = async (
     { _id: messageId, orgId },
     {
       ...newContent,
+      // A regenerated answer is still the same turn's author's.
+      ...(existing.authorUserId ? { authorUserId: existing.authorUserId } : {}),
       sessionId: existing.sessionId,
       orgId: existing.orgId,
       seq: existing.seq,
@@ -958,21 +973,7 @@ export type SharedByInfo = {
   name: string;
 };
 
-function sharedByDisplayName(user: {
-  fullName?: string;
-  firstName?: string;
-  lastName?: string;
-  email?: string;
-}): string {
-  const fullName = user.fullName?.trim();
-  if (fullName) return fullName;
-  const parts = [user.firstName, user.lastName]
-    .filter((part): part is string => Boolean(part?.trim()))
-    .join(' ')
-    .trim();
-  if (parts) return parts;
-  return user.email?.trim() || '';
-}
+const sharedByDisplayName = userDisplayName;
 
 function conversationIsOwnedByCaller(conversation: {
   isOwner?: boolean;
@@ -1596,6 +1597,7 @@ export const saveCompleteConversation = async (
   orgId: string,
   session?: ClientSession | null,
   modelInfo?: IAIModel,
+  authorUserId?: string,
 ): Promise<any> => {
   try {
     // Save citations first
@@ -1629,6 +1631,7 @@ export const saveCompleteConversation = async (
       conversation.orgId,
       [aiResponseMessage],
       session,
+      authorUserId,
     );
 
     if (modelInfo) {
@@ -1715,6 +1718,48 @@ const RUN_HEARTBEAT_MS = 60 * 1000;
 /** Covers Stop followed straight by a new message: the old run is still winding down after the cancel. */
 const ACTIVE_RUN_SETTLE_MS = 15_000;
 const ACTIVE_RUN_POLL_MS = 250;
+
+/**
+ * Filter fragment for "may add a message": the owner, or a user the chat is shared
+ * with for writing. `$elemMatch` so one entry must carry both the user and the
+ * write level (separate dotted paths would match a reader plus someone else's write).
+ */
+export const ownerOrWriterFilter = (
+  userId: unknown,
+): FilterQuery<IChatSessionDocument> => ({
+  $or: [
+    { userId },
+    {
+      isShared: true,
+      sharedWith: { $elemMatch: { userId, accessLevel: 'write' } },
+    },
+  ],
+});
+
+/**
+ * 403 for a user the chat is shared with read-only who tries to add a message.
+ * Anyone without access falls through to the caller's own 404.
+ */
+export const assertNotReadOnlyViewer = async (
+  base: FilterQuery<IChatSessionDocument>,
+  userId: unknown,
+  action = 'add messages',
+): Promise<void> => {
+  const session = await ChatSession.findOne({
+    ...base,
+    isShared: true,
+    'sharedWith.userId': userId,
+  });
+  if (!session || String(session.userId) === String(userId)) return;
+  const entry = (session.sharedWith ?? []).find(
+    (s: { userId?: unknown }) => String(s.userId) === String(userId),
+  );
+  if (entry && entry.accessLevel !== 'write') {
+    throw new ForbiddenError(
+      `This conversation is shared with you as read-only, so you cannot ${action}.`,
+    );
+  }
+};
 
 export interface RunReservation {
   sessionId: mongoose.Types.ObjectId;
@@ -1930,6 +1975,8 @@ export const savePartialConversation = async (
   options?: {
     replaceMessageId?: mongoose.Types.ObjectId | string;
     parts?: IMessagePart[];
+    /** Whose turn this was, when it is not the initiator's. */
+    authorUserId?: string;
   },
 ): Promise<void> => {
   try {
@@ -1962,6 +2009,7 @@ export const savePartialConversation = async (
         conversation.orgId,
         [partialMessage],
         session,
+        options?.authorUserId,
       );
     }
 
@@ -2213,7 +2261,7 @@ export const markAgentConversationFailed = async (
  * addition to always requiring a concrete `agentKey`) as defense-in-depth
  * now that agent and plain-chat sessions share one collection.
  *
- * `includeShared` adds the read-only "shared with me" branch. It is off by
+ * `sharedAccess` adds the "shared with me" branch (at least read, or write). It is off by
  * default so owner-only actions built on this filter (fork, cancel, archive
  * list) never widen to a recipient; only the read paths opt in.
  */
@@ -2225,7 +2273,8 @@ export const buildAgentConversationFilter = (
   conversationId?: string,
   contentMatchIds?: mongoose.Types.ObjectId[],
   accessibleProjectIds?: mongoose.Types.ObjectId[],
-  includeShared: boolean = false,
+  /** Also match chats shared with the user at least at this level (own chats always match). */
+  sharedAccess?: 'read' | 'write',
 ) => {
   const filter: any = {
     ...ONLY_AGENT,
@@ -2233,13 +2282,16 @@ export const buildAgentConversationFilter = (
     orgId: new mongoose.Types.ObjectId(orgId),
     $or: [
       { userId: new mongoose.Types.ObjectId(userId) },
-      ...(includeShared
+      ...(sharedAccess
         ? [
             {
-              $and: [
-                { isShared: true },
-                { 'sharedWith.userId': new mongoose.Types.ObjectId(userId) },
-              ],
+              isShared: true,
+              sharedWith: {
+                $elemMatch: {
+                  userId: new mongoose.Types.ObjectId(userId),
+                  ...(sharedAccess === 'write' && { accessLevel: 'write' }),
+                },
+              },
             },
           ]
         : []),
@@ -2375,8 +2427,13 @@ export const validateAgentConversationAccess = async (
         { userId }, // Owner
         {
           isShared: true,
-          'sharedWith.userId': userId,
-          ...(accessLevel === 'write' && { 'sharedWith.accessLevel': 'write' }),
+          // One entry must carry both the user and the level (separate dotted paths match across entries).
+          sharedWith: {
+            $elemMatch: {
+              userId,
+              ...(accessLevel === 'write' && { accessLevel: 'write' }),
+            },
+          },
         },
       ],
     });

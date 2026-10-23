@@ -38,7 +38,7 @@ export function McpSignInCard({ servers }: McpSignInCardProps) {
   const { t } = useTranslation();
   const access = useChatStore((s) => s.agentContextAccess);
   // Someone viewing a conversation shared with them can't send in it.
-  const canSend = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null)) !== false;
+  const canSend = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.canWrite ?? null : null)) !== false;
   const [signedIn, setSignedIn] = useState<ReadonlySet<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});

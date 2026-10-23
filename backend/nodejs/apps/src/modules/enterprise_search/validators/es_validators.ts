@@ -478,7 +478,11 @@ export const conversationTitleParamsSchema = conversationIdParamsSchema.extend({
 });
 
 export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
-  body: z.object({ userIds: userIdsSchema }),
+  // `accessLevel` defaults to read for a new share and leaves an existing entry's level alone when omitted.
+  body: z.object({
+    userIds: userIdsSchema,
+    accessLevel: z.enum(['read', 'write']).optional(),
+  }),
 });
 
 /** Schema for POST /:conversationId/cancel — cooperatively stop an in-flight assistant run. */

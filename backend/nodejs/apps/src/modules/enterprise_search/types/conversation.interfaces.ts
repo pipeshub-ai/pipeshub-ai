@@ -198,6 +198,11 @@ export interface IMessage {
   reasoning?: IReasoningTurn[];
   /** Ordered agent-activity transcript for this bot_response turn — see IMessagePart. */
   parts?: IMessagePart[];
+  /**
+   * The user this message was generated for (their access produced it). Absent on
+   * messages from before write-sharing: those belong to the conversation's initiator.
+   */
+  authorUserId?: Types.ObjectId;
 }
 
 export interface IConversation {

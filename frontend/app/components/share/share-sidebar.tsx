@@ -262,6 +262,8 @@ export function ShareSidebar({
 
       setSelectedItems([]);
       updateSearchQuery('');
+      // Least privilege: the next person starts at the default level, not the last pick.
+      setSelectedRole('READER');
 
       onShareSuccess?.();
     } catch (error) {
@@ -293,7 +295,7 @@ export function ShareSidebar({
         toast.success(t('shareSidebar.roleUpdated'), {
           description: t('shareSidebar.roleUpdatedDescription', {
             name: member?.name ?? t('shareSidebar.member'),
-            role: t(`recordView.permission${newRole.charAt(0)}${newRole.slice(1).toLowerCase()}`),
+            role: (adapter.roleOptions?.labels ?? getShareRoleLabels(t))[newRole].label,
           }),
         });
       } catch (error) {
@@ -507,6 +509,7 @@ export function ShareSidebar({
                 searchQuery={searchQueryInput}
                 selectedRole={selectedRole}
                 supportsRoles={adapter.supportsRoles}
+                roleOptions={adapter.roleOptions}
                 onSearchChange={updateSearchQuery}
                 onRemoveSelection={handleRemoveSelection}
                 onRoleChange={setSelectedRole}
@@ -652,6 +655,7 @@ export function ShareSidebar({
                           isOwner={member.isOwner}
                           role={member.role}
                           showRoleDropdown={!member.isCurrentUser}
+                          roleOptions={adapter.roleOptions}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
                               ? { title: roleLabels[member.role]?.label ?? roleLabels.READER.label, description: roleLabels[member.role]?.description ?? '' }

@@ -22,7 +22,9 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { Logger } from '../../../libs/services/logger.service';
 import type { AppConfig } from '../../tokens_manager/config/config';
+import mongoose from 'mongoose';
 import Citation from '../schema/citation.schema';
+import { Users } from '../../user_management/schema/users.schema';
 
 const logger = Logger.getInstance({ service: 'Viewer Redaction' });
 
@@ -122,6 +124,37 @@ export const readableRecordIds = async (
   }
 };
 
+/**
+ * Which markers are real citations of a message: the number is one of its
+ * citations' chunk indexes and, written as a link, the target is that citation's
+ * own record URL (or web URL). Citations without a populated document resolve
+ * nothing, so their text stays uncited (the message then has no readable source).
+ */
+interface CitedDoc {
+  chunkIndex?: number;
+  metadata?: { recordId?: string; webUrl?: string };
+}
+
+const citationResolver = (citations: Json[]): CitationResolver => {
+  const byIndex = new Map<number, CitedDoc>();
+  for (const c of citations) {
+    const doc = citationDoc(c) as CitedDoc | undefined;
+    if (typeof doc?.chunkIndex === 'number') byIndex.set(doc.chunkIndex, doc);
+  }
+  return (n, target) => {
+    const doc = byIndex.get(n);
+    if (!doc) return false;
+    // Only the link form is canonical; a bare `[2]` or `[[2]]` is not trusted as a citation.
+    if (target === undefined) return 'unreadable';
+    const recordId = doc.metadata?.recordId;
+    const web = doc.metadata?.webUrl;
+    const own =
+      (!!recordId && target.includes(`/record/${recordId}/`)) ||
+      (!!web && target.split('#')[0] === web.split('#')[0]);
+    return own ? true : 'unreadable';
+  };
+};
+
 /** The populated citation document, whichever way the message was shaped. */
 const citationDoc = (citation: Json): Json | undefined => {
   const doc = citation?.citationData ?? citation?.citationId;
@@ -160,68 +193,276 @@ const redactedItem = (
   requestAccess: info,
 });
 
-const SENTENCE =
-  /[^\n]+?(?:[.!?。！？]+["')\]]*(?:\s*\[{1,2}\d+\]{1,2})*(?=\s|$)|$)\s*/g;
-const MARKER = /\[{1,2}(\d+)\]{1,2}/g;
+/** A citation as stored: `[N]`, `[[N]]`, or a markdown link `[N](url)`. */
+const CITE = /\[{1,2}(\d+)\]{1,2}(?:\(([^)\s]*)\))?/g;
 const LINE_PREFIX = /^(\s*(?:[-*+]|\d+\.|#{1,6}|>)\s+)/;
+/** Only separators between the citations of one group. */
+const GROUP_SEPARATOR = /^[\s,;]*$/;
+/** Punctuation written right after a citation group belongs to its span. */
+const TRAILING_PUNCTUATION = /^[.!?。！？…,;:)"'”’」』]*/;
 
-const markersOf = (text: string): number[] =>
-  [...text.matchAll(MARKER)].map((m) => Number(m[1]));
+/**
+ * Classifies `[n]` (with link target `target`, when written as a link):
+ *   - `true`: the canonical form, `[n](own record or web URL)`, a real citation;
+ *   - `'unreadable'`: the number is one of the message's citations but the form is
+ *     not canonical (bare `[2]`, `[[2]]`, a foreign or wrong URL). It ends a span
+ *     as an UNREADABLE group, so the span is redacted;
+ *   - `false`: the number is none of its citations (`arr[9]`): plain text.
+ * A marker inside code is always `'unreadable'` when its number resolves.
+ */
+export type CitationResolver = (
+  n: number,
+  target?: string,
+) => boolean | 'unreadable';
+const anyMarker: CitationResolver = (_n, target) =>
+  target === undefined ? 'unreadable' : true;
 
-const redactUnit = (unit: string, unreadable: Set<number>): string => {
-  const nums = markersOf(unit);
-  if (nums.length === 0) return unit;
-  if (nums.every((n) => unreadable.has(n)))
-    return REDACTED_TOKEN + (/\s$/.test(unit) ? ' ' : '');
-  return unit.replace(MARKER, (m, n) => (unreadable.has(Number(n)) ? '' : m));
-};
+interface Cite {
+  start: number;
+  end: number;
+  n: number;
+  /** Counts as an unreadable citation whatever the viewer may read. */
+  bad: boolean;
+}
 
-const redactLine = (line: string, unreadable: Set<number>): string => {
-  if (line.trimStart().startsWith('|')) {
-    return markersOf(line).length > 0 &&
-      markersOf(line).every((n) => unreadable.has(n))
-      ? `| ${REDACTED_TOKEN} |`
-      : line.replace(MARKER, (m, n) => (unreadable.has(Number(n)) ? '' : m));
+const INLINE_CODE = /`[^`\n]*`/g;
+
+const citesIn = (text: string, resolves: CitationResolver): Cite[] => {
+  const code = [...text.matchAll(INLINE_CODE)].map((m): [number, number] => [
+    m.index,
+    m.index + m[0].length,
+  ]);
+  const cites: Cite[] = [];
+  for (const m of text.matchAll(new RegExp(CITE.source, 'g'))) {
+    const verdict = resolves(Number(m[1]), m[2]);
+    if (verdict === false) continue;
+    const inCode = code.some(([a, b]) => m.index >= a && m.index < b);
+    // `[[2]](url)` and `[2]` are not the canonical `[N](url)`.
+    const canonical = /^\[\d+\]\(/.test(m[0]);
+    cites.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      n: Number(m[1]),
+      bad: verdict === 'unreadable' || inCode || !canonical,
+    });
   }
-  const prefix = LINE_PREFIX.exec(line)?.[1] ?? '';
-  const body = line.slice(prefix.length);
-  return (
-    prefix +
-    (body.match(SENTENCE) ?? [body])
-      .map((u) => redactUnit(u, unreadable))
-      .join('')
-  );
+  return cites;
 };
 
-/** Redacts answer text per the sentence rule above. Fenced code is one unit. */
+/**
+ * Fail-closed attribution by citation spans (D-22 refinement 2). In a turn that
+ * used any source the viewer cannot read, only spans whose group has a readable
+ * citation survive. A span is the text from the end of the previous citation
+ * group (or the block start) up to and including the next group, plus the
+ * punctuation right after it; a group is citations separated only by whitespace,
+ * commas or semicolons. A mixed group keeps its text and shows only its readable
+ * citations. Everything else, uncited text, all-unreadable groups, is replaced by
+ * the redacted notice.
+ */
+const redactSpans = (
+  text: string,
+  unreadable: Set<number>,
+  resolves: CitationResolver,
+): string => {
+  const isBad = (c: Cite): boolean => c.bad || unreadable.has(c.n);
+  const groups: Cite[][] = [];
+  for (const c of citesIn(text, resolves)) {
+    const last = groups[groups.length - 1];
+    const tail = last?.[last.length - 1];
+    if (last && tail && GROUP_SEPARATOR.test(text.slice(tail.end, c.start))) {
+      last.push(c);
+    } else {
+      groups.push([c]);
+    }
+  }
+  /** The notice for a dropped stretch, keeping the whitespace or list marker that opened its last line. */
+  const notice = (dropped: string): string => {
+    const lastLine = dropped.slice(dropped.lastIndexOf('\n') + 1);
+    const marker = dropped.includes('\n')
+      ? (LINE_PREFIX.exec(lastLine)?.[1] ?? '')
+      : '';
+    const space = /^\s*/.exec(dropped)?.[0] ?? '';
+    return (marker ? `\n${marker}` : space) + REDACTED_TOKEN;
+  };
+  let out = '';
+  let pos = 0;
+  for (const group of groups) {
+    const first = group[0];
+    const final = group[group.length - 1];
+    if (!first || !final) continue;
+    const start = first.start;
+    const groupEnd = final.end;
+    const end =
+      groupEnd +
+      (TRAILING_PUNCTUATION.exec(text.slice(groupEnd))?.[0].length ?? 0);
+    const lead = text.slice(pos, start);
+    if (group.every(isBad)) {
+      out += notice(lead);
+    } else {
+      out += lead;
+      let p = start;
+      for (const c of group) {
+        if (!isBad(c)) out += text.slice(p, c.end);
+        p = c.end;
+      }
+      out += text.slice(groupEnd, end);
+    }
+    pos = end;
+  }
+  // Text after the last group is uncited.
+  const rest = text.slice(pos);
+  return out + (rest.trim() === '' ? rest : notice(rest));
+};
+
+/** Only notices (and the list, quote or heading marks that carried them) are left. */
+const isHidden = (text: string): boolean =>
+  text.trim() !== '' &&
+  text
+    .split('\n')
+    .every(
+      (l) =>
+        /^(\s*([-*+]|\d+\.|#{1,6}|>)\s+)?(\{\{redacted\}\}\s*)+$/.test(l) ||
+        l.trim() === '',
+    );
+
+const isTableRow = (line: string): boolean => line.trimStart().startsWith('|');
+const isSeparatorRow = (line: string): boolean =>
+  /^\s*\|?(\s*:?-{3,}:?\s*\|?)+\s*$/.test(line);
+
+/** A contiguous run of plain lines, a heading, or a list item: spans may reach back across its line breaks. */
+const redactRun = (
+  run: string,
+  unreadable: Set<number>,
+  resolves: CitationResolver,
+): string => {
+  const prefix = LINE_PREFIX.exec(run)?.[1] ?? '';
+  return prefix + redactSpans(run.slice(prefix.length), unreadable, resolves);
+};
+
+/**
+ * Each cell is its own block: it keeps only what a readable citation in that cell
+ * covers. A table with nothing visible left is one hidden block (the caller merges
+ * it), so its rows and columns are not revealed.
+ */
+const redactTable = (
+  rows: string[],
+  unreadable: Set<number>,
+  resolves: CitationResolver,
+): string => {
+  const shown = rows
+    .map((row) =>
+      isSeparatorRow(row)
+        ? row
+        : row
+            .split('|')
+            .map((cell) =>
+              cell.trim() === ''
+                ? cell
+                : ` ${redactSpans(cell.trim(), unreadable, resolves)} `,
+            )
+            .join('|'),
+    )
+    .join('\n');
+  const cells = shown
+    .split('\n')
+    .filter((row) => !isSeparatorRow(row))
+    .flatMap((row) => row.split('|'))
+    .map((cell) => cell.trim())
+    .filter(Boolean);
+  return cells.every((cell) => cell === REDACTED_TOKEN)
+    ? REDACTED_TOKEN
+    : shown;
+};
+
+type Unit = {
+  kind: 'blank' | 'heading' | 'run' | 'table' | 'fence';
+  lines: string[];
+};
+
+interface Part {
+  text: string;
+  kind: 'blank' | 'hidden' | 'shown';
+}
+
+const toUnits = (content: string): Unit[] => {
+  const units: Unit[] = [];
+  let fence: string[] | null = null;
+  const push = (kind: Unit['kind'], line: string): void => {
+    const last = units[units.length - 1];
+    if (
+      last &&
+      last.kind === kind &&
+      (kind === 'run' || kind === 'table' || kind === 'blank')
+    )
+      last.lines.push(line);
+    else units.push({ kind, lines: [line] });
+  };
+  for (const line of content.split('\n')) {
+    const isFence = /^\s*```/.test(line);
+    if (fence) {
+      fence.push(line);
+      if (isFence) {
+        units.push({ kind: 'fence', lines: fence });
+        fence = null;
+      }
+    } else if (isFence) fence = [line];
+    else if (line.trim() === '') push('blank', line);
+    else if (/^\s*#{1,6}\s/.test(line))
+      units.push({ kind: 'heading', lines: [line] });
+    else if (isTableRow(line)) push('table', line);
+    else push('run', line);
+  }
+  if (fence) units.push({ kind: 'fence', lines: fence });
+  return units;
+};
+
+/**
+ * Redacts answer text for a viewer who cannot read every source of the turn
+ * (`unreadable` is the set of their unreadable citation numbers). Blocks are never
+ * crossed: blank lines, headings, table cells and fenced code. Inside one
+ * contiguous run of lines a span reaches back across line breaks and list items to
+ * the previous citation group. Fenced code is dropped whole: markers inside code
+ * never count as citations. A turn the viewer can read in full is returned as is.
+ * One function for the viewer response, the model history and the SSE complete
+ * frame; tokens only ever stream to the person the turn belongs to.
+ */
 export const redactAnswerText = (
   content: string,
   unreadable: Set<number>,
+  resolves: CitationResolver = anyMarker,
 ): string => {
   if (unreadable.size === 0) return content;
-  let inFence = false;
-  let fenceUnits: string[] = [];
+  const parts = toUnits(content).map((unit): Part => {
+    if (unit.kind === 'blank')
+      return { text: unit.lines.join('\n'), kind: 'blank' };
+    if (unit.kind === 'fence') return { text: REDACTED_TOKEN, kind: 'hidden' };
+    const text =
+      unit.kind === 'table'
+        ? redactTable(unit.lines, unreadable, resolves)
+        : redactRun(unit.lines.join('\n'), unreadable, resolves);
+    return isHidden(text)
+      ? { text: REDACTED_TOKEN, kind: 'hidden' }
+      : { text, kind: 'shown' };
+  });
+  // Hidden blocks with nothing visible between them become one notice.
   const out: string[] = [];
-  for (const line of content.split('\n')) {
-    if (/^\s*```/.test(line)) {
-      fenceUnits.push(line);
-      inFence = !inFence;
-      if (!inFence) {
-        const block = fenceUnits.join('\n');
-        out.push(redactUnit(block, unreadable));
-        fenceUnits = [];
-      }
-    } else if (inFence) {
-      fenceUnits.push(line);
-    } else {
-      out.push(redactLine(line, unreadable));
-    }
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i];
+    if (!part) continue;
+    if (part.kind === 'hidden') {
+      let k = i;
+      while (parts[k + 1]?.kind === 'blank' && parts[k + 2]?.kind === 'hidden')
+        k += 2;
+      out.push(REDACTED_TOKEN);
+      i = k;
+    } else out.push(part.text);
   }
-  if (fenceUnits.length > 0)
-    out.push(redactUnit(fenceUnits.join('\n'), unreadable));
   return out
     .join('\n')
-    .replace(/(\{\{redacted\}\}\s*){2,}/g, `${REDACTED_TOKEN} `);
+    .replace(
+      /(\{\{redacted\}\}\s*){2,}/g,
+      (m) => REDACTED_TOKEN + (/\s$/.test(m) ? ' ' : ''),
+    );
 };
 
 /** Every record id a page of messages points at (citations and attachments). */
@@ -238,7 +479,7 @@ export const collectMessageRecordIds = (messages: Json[]): string[] => {
 };
 
 /**
- * Redacts messages for a viewer who is not the conversation's author. Besides
+ * Redacts messages for a viewer who is not their author. Besides
  * unreadable sources, tool results, reasoning and the activity transcript are
  * always dropped (`detailsHidden`): tool output can carry record content that no
  * citation lets us verify per viewer.
@@ -300,13 +541,11 @@ export const redactMessagesForViewer = (
       return { ...base, citations: newCitations, attachments: newAttachments };
     }
 
+    // A citation with no populated document cannot be judged: nothing of the answer is shown.
     const everyCitationUnreadable =
-      citations.length > 0 && newCitations.every((c) => c.redacted);
-    // A marker with no matching citation cannot be vouched for.
-    for (const n of markersOf(message.content ?? '')) {
-      if (!citations.some((c) => citationDoc(c)?.chunkIndex === n))
-        unreadable.add(n);
-    }
+      citations.length > 0 &&
+      (newCitations.every((c) => c.redacted) ||
+        citations.some((c) => !citationDoc(c)));
     const redaction: MessageRedaction = {
       redacted: everyCitationUnreadable,
       partial: !everyCitationUnreadable,
@@ -316,18 +555,33 @@ export const redactMessagesForViewer = (
       ...base,
       content: everyCitationUnreadable
         ? ''
-        : redactAnswerText(message.content ?? '', unreadable),
+        : redactAnswerText(
+            message.content ?? '',
+            unreadable,
+            citationResolver(citations),
+          ),
       citations: newCitations,
       attachments: newAttachments,
       redaction,
     };
   });
 
+/** Who a message was generated for: its stamp, else the conversation's initiator. */
+export const messageAuthorId = (
+  message: Json,
+  initiatorId: string | undefined,
+): string | undefined => {
+  const stamp = message.authorUserId as { toString(): string } | undefined;
+  return stamp?.toString() ?? initiatorId;
+};
+
 /**
- * THE choke point for messages leaving for someone other than the author: the
- * author gets them as they are; anyone else gets them checked against their own
- * access (one batched call) and redacted. Every response, stream frame and model
- * history that carries a shared conversation's messages goes through this.
+ * THE choke point for messages leaving for a viewer. Redaction is per turn: a
+ * message the viewer authored is theirs, in full, tool results and reasoning
+ * included; every other message, the conversation owner's view of someone else's
+ * turn included, is checked against the viewer's own access (one batched call)
+ * and redacted. Every response, stream frame and model history that carries a
+ * shared conversation's messages goes through this.
  */
 export const redactMessagesFor = async (
   appConfig: AppConfig,
@@ -335,11 +589,76 @@ export const redactMessagesFor = async (
   initiatorId: string | undefined,
   viewer: { userId: string; orgId: string },
 ): Promise<Json[]> => {
-  if (!initiatorId || initiatorId === viewer.userId) return messages;
-  return redactMessagesForViewer(
-    messages,
-    await readableRecordIds(appConfig, viewer, collectMessageRecordIds(messages)),
+  const isOthers = (m: Json): boolean => {
+    const author = messageAuthorId(m, initiatorId);
+    // Callers may hand over an ObjectId where a string is typed.
+    const viewerId: unknown = viewer.userId;
+    return !!author && author !== String(viewerId);
+  };
+  const others = messages.filter(isOthers);
+  if (others.length === 0) return messages;
+  const readable = await readableRecordIds(
+    appConfig,
+    viewer,
+    collectMessageRecordIds(others),
   );
+  const askers = await askerNames(
+    others.filter((m) => m.messageType === 'user_query'),
+    initiatorId,
+    viewer.orgId,
+  );
+  return messages.map((m) => {
+    if (!isOthers(m)) return m;
+    const [redacted] = redactMessagesForViewer([m], readable);
+    if (!redacted || m.messageType !== 'user_query') return redacted ?? m;
+    const userId = messageAuthorId(m, initiatorId) ?? '';
+    return { ...redacted, askedBy: { userId, name: askers.get(userId) ?? '' } };
+  });
+};
+
+export const userDisplayName = (user: {
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+}): string => {
+  const fullName = user.fullName?.trim();
+  if (fullName) return fullName;
+  const parts = [user.firstName, user.lastName]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join(' ')
+    .trim();
+  return parts || user.email?.trim() || '';
+};
+
+/** Display names of the users who asked these questions, looked up in the viewer's own org only. */
+const askerNames = async (
+  questions: Json[],
+  initiatorId: string | undefined,
+  orgId: string,
+): Promise<Map<string, string>> => {
+  const ids = [
+    ...new Set(
+      questions.map((m) => messageAuthorId(m, initiatorId)).filter(Boolean),
+    ),
+  ] as string[];
+  if (ids.length === 0 || !mongoose.isValidObjectId(orgId)) return new Map();
+  try {
+    const users = await Users.find({
+      orgId: new mongoose.Types.ObjectId(orgId),
+      isDeleted: false,
+      _id: { $in: ids.filter((id) => mongoose.isValidObjectId(id)) },
+    })
+      .select('fullName firstName lastName email')
+      .lean()
+      .exec();
+    return new Map(users.map((u) => [String(u._id), userDisplayName(u)]));
+  } catch (error: unknown) {
+    logger.warn('Could not resolve who asked', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return new Map();
+  }
 };
 
 /** A conversation object `{ initiator, messages, ... }` for the viewer. */
@@ -349,29 +668,37 @@ export const redactConversationFor = async <T extends Json>(
   viewer: { userId: string; orgId: string },
 ): Promise<T> => {
   const initiator = conversation?.initiator?.toString();
-  if (!initiator || initiator === viewer.userId) return conversation;
-  return {
-    ...conversation,
-    messages: await redactMessagesFor(
-      appConfig,
-      conversation.messages ?? [],
-      initiator,
-      viewer,
-    ),
-  };
+  if (!initiator) return conversation;
+  const messages = await redactMessagesFor(
+    appConfig,
+    conversation.messages ?? [],
+    initiator,
+    viewer,
+  );
+  return messages === conversation.messages
+    ? conversation
+    : { ...conversation, messages };
 };
 
 /**
- * Error frames carry a whole conversation only for its author. A viewer's
- * client refetches through the redacted GET instead.
+ * Error frames carry a whole conversation only when every message in it is the
+ * receiving user's own. Anyone else's client refetches through the redacted GET.
  */
 export const conversationForAuthorOnly = <T extends Json>(
   conversation: T,
   userId: string | undefined,
-): T | undefined =>
-  userId && conversation?.initiator?.toString() === userId
+): T | undefined => {
+  const initiator = (
+    conversation.initiator as { toString(): string } | undefined
+  )?.toString();
+  return userId &&
+    initiator &&
+    ((conversation.messages as Json[] | undefined) ?? []).every(
+      (m) => messageAuthorId(m, initiator) === userId,
+    )
     ? conversation
     : undefined;
+};
 
 /** A search's stored hits: unreadable citations lose their text, name and URL. */
 export const redactSearchForViewer = (

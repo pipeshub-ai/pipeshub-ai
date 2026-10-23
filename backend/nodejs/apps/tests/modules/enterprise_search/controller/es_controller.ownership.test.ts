@@ -174,12 +174,13 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
   }
 
   for (const c of chatCases.filter((x) => x.name !== 'getConversationById' && x.name !== 'updateFeedback')) {
-    it(`${c.name}: a read-only recipient of a shared conversation gets 404 and nothing is written`, async () => {
+    it(`${c.name}: a read-only recipient of a shared conversation gets ${c.name === 'addMessage' ? 403 : 404} and nothing is written`, async () => {
       const s = setup()
 
       const out = await callJson(c.handler(), request(recipient, c.params(s), c.body))
 
-      expect(out.error?.statusCode).to.equal(404)
+      // Adding a message is the one action a reader is told they may not do (403, T3).
+      expect(out.error?.statusCode).to.equal(c.name === 'addMessage' ? 403 : 404)
       expect(s.store.writes).to.deep.equal([])
     })
   }
@@ -336,8 +337,15 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
 
   for (const c of streamCases) {
     for (const [who, user] of [['another user', stranger], ['a read-only recipient', recipient]] as const) {
-      it(`${c.name}: ${who} is told the conversation was not found, and no answer is generated or saved`, async () => {
+      it(`${c.name}: ${who} is told the conversation was not found, and no answer is generated or saved`, async function () {
         const s = setup()
+        if (who === 'a read-only recipient' && c.name === 'addMessageStream') {
+          const err = await callStream(c.handler(), request(user, c.params(s), c.body)).catch((e) => e)
+          expect(err.statusCode, 'a reader is refused before any stream starts').to.equal(403)
+          expect(s.ai.streamCalls).to.deep.equal([])
+          expect(s.store.messagesOf(s.chatId)).to.have.length(2)
+          return
+        }
 
         const res = await callStream(c.handler(), request(user, c.params(s), c.body))
 

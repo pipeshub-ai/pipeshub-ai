@@ -881,6 +881,8 @@
     "sharedChats": "共享的對話",
     "sharedBy": "由 {{name}} 分享",
     "agentChat": "智能體聊天",
+    "askedBy": "{{name}} 提問",
+    "askedByUnknown": "其他使用者提問",
     "noSharedChats": "沒有共享的對話",
     "yourChats": "您的對話",
     "noChatsFound": "找不到任何對話",
@@ -5379,6 +5381,10 @@
         "label": "可檢視",
         "description": "僅有檢視權限"
       }
+    },
+    "chatRoles": {
+      "writer": "可檢視並傳送訊息。其回答使用其自身的存取權限。",
+      "reader": "只能檢視聊天。"
     },
     "team": "團隊",
     "teamsNoRoles": "團隊沒有角色",

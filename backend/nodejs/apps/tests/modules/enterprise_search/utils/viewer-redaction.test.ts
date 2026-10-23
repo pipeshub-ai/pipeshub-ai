@@ -33,10 +33,19 @@ const cite = (n: number, recordId: string, extra: Record<string, any> = {}) => (
   excerpt: `excerpt of ${recordId}`,
   context: `context of ${recordId}`,
 })
+/** The canonical stored form of citation n: a link to its own record. */
+const K = (n: number, recordId = `r${n}`) => `[${n}](https://app/record/${recordId})`
+/** Test content is written with bare markers; the stored form is the canonical link. */
+const linkify = (content: string, citations: any[]) =>
+  content.replace(/\[{1,2}(\d+)\]{1,2}(?!\()/g, (m, n) => {
+    const hit = citations.find((c) => (c.citationData ?? c.citationId)?.chunkIndex === Number(n))
+    const id = (hit?.citationData ?? hit?.citationId)?.metadata?.recordId
+    return id ? K(Number(n), id) : m
+  })
 const answer = (content: string, citations: any[], extra: Record<string, any> = {}) => ({
   _id: 'm1',
   messageType: 'bot_response',
-  content,
+  content: linkify(content, citations),
   citations,
   tools: [{ toolName: 't', toolResult: SECRET }],
   reasoning: [{ content: SECRET }],
@@ -46,40 +55,38 @@ const answer = (content: string, citations: any[], extra: Record<string, any> = 
 
 describe('viewer redaction (shared chats)', () => {
   describe('redactAnswerText', () => {
-    it('replaces a sentence whose citations are all unreadable', () => {
-      const out = redactAnswerText('Revenue grew 4%. [1] Costs fell. [2]', new Set([1]))
-      expect(out).to.equal(`${REDACTED_TOKEN} Costs fell. [2]`)
+    it('replaces a span whose citations are all unreadable', () => {
+      const out = redactAnswerText(`Revenue grew 4%. ${K(1)} Costs fell. ${K(2)}`, new Set([1]))
+      expect(out).to.equal(`${REDACTED_TOKEN} Costs fell. ${K(2)}`)
     })
 
-    it('keeps a mixed sentence and drops only the unreadable marker', () => {
-      expect(redactAnswerText('Both agree [1][2].', new Set([1]))).to.equal('Both agree [2].')
-    })
-
-    it('handles markers before the period and double brackets', () => {
-      const out = redactAnswerText('Secret fact [[1]]. Public fact [[2]].', new Set([1]))
-      expect(out).to.equal(`${REDACTED_TOKEN} Public fact [[2]].`)
+    it('keeps a mixed group and drops only the unreadable citation', () => {
+      expect(redactAnswerText(`Both agree ${K(1)}${K(2)}.`, new Set([1]))).to.equal(`Both agree ${K(2)}.`)
     })
 
     it('keeps list markers and redacts per bullet', () => {
-      const out = redactAnswerText('- hidden [1]\n- shown [2]', new Set([1]))
-      expect(out).to.equal(`- ${REDACTED_TOKEN}\n- shown [2]`)
+      const out = redactAnswerText(`- hidden ${K(1)}\n- shown ${K(2)}`, new Set([1]))
+      expect(out).to.equal(`- ${REDACTED_TOKEN}\n- shown ${K(2)}`)
     })
 
-    it('redacts a table row and a fenced block cited only by unreadable sources', () => {
-      const text = '| a | b [1] |\n|---|---|\n```\ncode [1]\n```'
-      const out = redactAnswerText(text, new Set([1]))
-      expect(out).to.not.include('code')
-      expect(out).to.include(`| ${REDACTED_TOKEN} |`)
+    it('redacts a table cell without a readable citation and every code block, as one notice', () => {
+      const text = `| a | b ${K(1)} |\n|---|---|\n\`\`\`\ncode ${K(2)}\n\`\`\``
+      expect(redactAnswerText(text, new Set([1]))).to.equal(REDACTED_TOKEN)
     })
 
     it('collapses neighbouring redactions', () => {
-      expect(redactAnswerText('One [1]. Two [1]. Three [2].', new Set([1]))).to.equal(
-        `${REDACTED_TOKEN} Three [2].`,
+      expect(redactAnswerText(`One ${K(1)}. Two ${K(1)}. Three ${K(2)}.`, new Set([1]))).to.equal(
+        `${REDACTED_TOKEN} Three ${K(2)}.`,
       )
     })
 
     it('does not split decimals', () => {
-      expect(redactAnswerText('Margin is 4.5 percent [1].', new Set([1]))).to.equal(REDACTED_TOKEN)
+      expect(redactAnswerText(`Margin is 4.5 percent ${K(1)}.`, new Set([1]))).to.equal(REDACTED_TOKEN)
+    })
+
+    it('returns a turn the viewer can read in full unchanged', () => {
+      const text = `Anything at all.\n\n| a |\n\n\`\`\`\ncode\n\`\`\`\nuncited ${K(2)}`
+      expect(redactAnswerText(text, new Set())).to.equal(text)
     })
   })
 
@@ -98,7 +105,7 @@ describe('viewer redaction (shared chats)', () => {
     it('T2: redacts one unreadable citation and its sentence, keeps the rest, marks partial', () => {
       const msg = answer(`${SECRET} [1]. Public fact [2]. A closing remark.`, [cite(1, 'r1'), cite(2, 'r2')])
       const [out] = redactMessagesForViewer([msg], new Set(['r2']))
-      expect(out.content).to.equal(`${REDACTED_TOKEN} Public fact [2]. A closing remark.`)
+      expect(out.content).to.equal(`${REDACTED_TOKEN} Public fact ${K(2)}. ${REDACTED_TOKEN}`)
       expect(out.citations[0]).to.deep.equal({
         citationId: 'cit-1',
         redacted: true,
@@ -158,10 +165,13 @@ describe('viewer redaction (shared chats)', () => {
       expect(other.citations[0].requestAccess.collection).to.equal(undefined)
     })
 
-    it('fails closed for a marker with no matching citation', () => {
+    it('treats a marker with no matching citation as plain text, never as a source', () => {
       const msg = answer('Ghost claim [9]. Real [1].', [cite(1, 'r1'), cite(2, 'r2')])
       const [out] = redactMessagesForViewer([msg], new Set(['r1']))
-      expect(out.content).to.equal(`${REDACTED_TOKEN} Real [1].`)
+      expect(out.content).to.equal(`Ghost claim [9]. Real ${K(1)}.`)
+      expect(out.redaction.partial).to.equal(true)
+      const [hidden] = redactMessagesForViewer([answer('Private fact [9] more [2].', [cite(1, 'r1'), cite(2, 'r2')])], new Set(['r1']))
+      expect(hidden.content).to.equal(REDACTED_TOKEN)
     })
 
     it('redacts an unreadable attachment without its name, and flags no partial answer on a question', () => {

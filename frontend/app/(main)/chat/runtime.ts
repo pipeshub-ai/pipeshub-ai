@@ -749,6 +749,7 @@ export function loadHistoricalMessages(
               custom: {
                 ...prevCustomRest,
                 messageId: msg._id,
+                ...(msg.authorUserId ? { authorUserId: msg.authorUserId } : {}),
                 citationMaps: buildCitationMapsFromApi(msg.citations || [], msg.redaction, msg.detailsHidden),
                 confidence: msg.confidence,
                 modelInfo: msg.modelInfo,
@@ -769,6 +770,7 @@ export function loadHistoricalMessages(
         metadata: {
           custom: {
             messageId: msg._id,
+            ...(msg.authorUserId ? { authorUserId: msg.authorUserId } : {}),
             citationMaps: buildCitationMapsFromApi(msg.citations || [], msg.redaction, msg.detailsHidden),
             confidence: msg.confidence,
             modelInfo: msg.modelInfo,
@@ -849,6 +851,7 @@ export function loadHistoricalMessages(
       metadata: {
         custom: {
           createdAt: msg.createdAt,
+          ...(msg.askedBy ? { askedBy: msg.askedBy } : {}),
           ...(msg.appliedFilters ? { appliedFilters: msg.appliedFilters } : {}),
           ...(readableAttachments(msg).length ? { attachments: readableAttachments(msg) } : {}),
           ...(redactedAttachmentSources(msg).length ? { redactedAttachments: redactedAttachmentSources(msg) } : {}),

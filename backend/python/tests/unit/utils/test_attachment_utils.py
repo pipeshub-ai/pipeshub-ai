@@ -869,6 +869,33 @@ class TestKeepAccessibleAttachments:
         }
 
     @pytest.mark.asyncio
+    async def test_a_shared_chat_turn_is_checked_against_the_requester_not_the_author(self) -> None:
+        """A write-shared user's turn carries earlier turns by other users: the
+        attachments they may not read are dropped before the model sees them."""
+        keys = {"owner": "key-owner", "writer": "key-writer"}
+        readable = {"key-owner": {"owner-file", "shared-file"}, "key-writer": {"writer-file", "shared-file"}}
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(side_effect=lambda uid: {"id": keys[uid]})
+        graph.check_access = AsyncMock(
+            side_effect=lambda key, _org, virtual_record_ids=(), **_: AccessCheck(
+                records_by_vrid={v: f"rec-{v}" for v in virtual_record_ids if v in readable[key]},
+            ),
+        )
+        history = [
+            {"role": "user_query", "attachments": [{"virtualRecordId": "owner-file"}, {"virtualRecordId": "shared-file"}]},
+            {"role": "user_query", "attachments": [{"virtualRecordId": "writer-file"}]},
+        ]
+
+        _, for_writer = await self._keep(graph, [], history, user_id="writer")
+        _, for_owner = await self._keep(graph, [], history, user_id="owner")
+
+        assert [a["virtualRecordId"] for a in for_writer[0]["attachments"]] == ["shared-file"]
+        assert [a["virtualRecordId"] for a in for_writer[1]["attachments"]] == ["writer-file"]
+        assert [a["virtualRecordId"] for a in for_owner[0]["attachments"]] == ["owner-file", "shared-file"]
+        assert for_owner[1].get("attachments") in (None, [])
+        assert [c.args[0] for c in graph.check_access.await_args_list] == ["key-writer", "key-owner"]
+
+    @pytest.mark.asyncio
     async def test_a_failed_check_raises_instead_of_dropping_them(self) -> None:
         """Answering as if nothing were attached would hide the outage."""
         graph = self._graph(set())

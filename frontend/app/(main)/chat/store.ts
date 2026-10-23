@@ -308,6 +308,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     rawMessages: null,
     lastAccessedAt: Date.now(),
     isOwner: isNew ? true : null,
+    canWrite: isNew ? true : null,
   };
 }
 

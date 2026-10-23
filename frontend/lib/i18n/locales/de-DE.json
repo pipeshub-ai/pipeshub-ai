@@ -794,6 +794,8 @@
     "sharedChats": "Geteilte Chats",
     "sharedBy": "Geteilt von {{name}}",
     "agentChat": "Agent-Chat",
+    "askedBy": "{{name}} hat gefragt",
+    "askedByUnknown": "Ein anderer Nutzer hat gefragt",
     "noSharedChats": "Keine geteilten Chats",
     "yourChats": "Ihre Chats",
     "noChatsFound": "Keine Chats gefunden",
@@ -5407,6 +5409,10 @@
         "label": "Kann ansehen",
         "description": "Nur Lesezugriff"
       }
+    },
+    "chatRoles": {
+      "writer": "Kann ansehen und Nachrichten senden. Antworten nutzen den eigenen Zugriff.",
+      "reader": "Kann den Chat nur ansehen."
     },
     "team": "Team",
     "teamsNoRoles": "Teams haben keine Rollen",

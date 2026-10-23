@@ -674,8 +674,6 @@ export interface RequestAccessInfo {
   recordId: string;
   /** native: the owner approves in PipesHub. connector: ask at the source. */
   kind: 'native' | 'connector';
-  /** Connector only: the record's page in its source system. */
-  sourceUrl?: string;
   /** Collection record: asking is asking for the whole collection that contains it. */
   collection?: boolean;
   endpoint: string;
@@ -881,6 +879,10 @@ export interface ConversationMessage {
   redaction?: MessageRedaction;
   /** Tool results, reasoning and the activity transcript were dropped for this shared viewer. */
   detailsHidden?: boolean;
+  /** Present on a question asked by someone other than the viewer; `name` is empty when unknown. */
+  askedBy?: { userId: string; name: string };
+  /** The user this message was generated for. Absent on messages that predate write-sharing: the chat owner's. */
+  authorUserId?: string;
   confidence?: 'Very High' | 'High' | 'Medium' | 'Low';
   followUpQuestions: string[];
   referenceData: ReferenceData[];
@@ -1265,6 +1267,11 @@ export interface ChatSlot {
    * `null` until the first fetch completes; `false` for chats opened from Shared Chats (hide share UI).
    */
   isOwner: boolean | null;
+  /**
+   * Whether this user may send messages here: the owner, or a user the chat is
+   * shared with for writing. `null` until the first fetch completes.
+   */
+  canWrite: boolean | null;
   /**
    * Last known API `modelInfo` for this thread (from list/detail/SSE), used
    * to restore model + mode in the input when the user returns to this tab.

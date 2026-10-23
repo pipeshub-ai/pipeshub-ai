@@ -15,6 +15,7 @@ interface ShareSearchInputProps {
   selectedRole: ShareRole;
   /** Whether to show the role picker on chips */
   supportsRoles: boolean;
+  roleOptions?: { roles: ShareRole[]; labels?: Record<ShareRole, { label: string; description: string }> };
   /** Callback when search query changes */
   onSearchChange: (query: string) => void;
   /** Callback when a selection is removed */
@@ -32,6 +33,7 @@ export function ShareSearchInput({
   searchQuery,
   selectedRole,
   supportsRoles,
+  roleOptions,
   onSearchChange,
   onRemoveSelection,
   onRoleChange,
@@ -39,7 +41,6 @@ export function ShareSearchInput({
   onEmailSubmit,
 }: ShareSearchInputProps) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const roleAnchorRef = useRef<HTMLDivElement>(null);
   const hasUserSelection = selections.some((s) => s.type === 'user');
 
   return (
@@ -82,9 +83,22 @@ export function ShareSearchInput({
               borderRadius: 'var(--radius-2)',
               padding: '4px 8px',
               flexShrink: 0,
+              // A long address must not push the chip wider than the box (it clipped at 375px).
+              maxWidth: 'calc(100% - 8px)',
+              minWidth: 0,
             }}
           >
-            <Text size="2" style={{ color: selection.isInvalid ? 'var(--red-11)' : 'var(--accent-11)', whiteSpace: 'nowrap' }}>
+            <Text
+              size="2"
+              title={selection.email || selection.name}
+              style={{
+                color: selection.isInvalid ? 'var(--red-11)' : 'var(--accent-11)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: 0,
+              }}
+            >
               {selection.email || selection.name}
             </Text>
             <Box
@@ -136,11 +150,12 @@ export function ShareSearchInput({
 
       {/* Role picker — users only; teams do not have share roles */}
       {hasUserSelection && supportsRoles && (
-        <Box ref={roleAnchorRef} style={{ flexShrink: 0, paddingRight: 4 }}>
+        <Box style={{ flexShrink: 0, paddingRight: 4 }}>
           <RoleDropdownMenu
             role={selectedRole}
             onRoleChange={onRoleChange}
-            anchorRef={roleAnchorRef}
+            roles={roleOptions?.roles}
+            labels={roleOptions?.labels}
           />
         </Box>
       )}

@@ -8,7 +8,7 @@ import type { ToolApprovalDetails } from '../../../types';
 const chat = vi.hoisted(() => ({
   streamMessageForSlot: vi.fn(),
   buildStreamChatRequestForSlot: vi.fn((slotId: string, query: string) => ({ slotId, query })),
-  state: { activeSlotId: 'slot-1', slots: { 'slot-1': { isOwner: true as boolean | null, isStreaming: false } } },
+  state: { activeSlotId: 'slot-1', slots: { 'slot-1': { canWrite: true as boolean | null, isStreaming: false } } },
 }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
@@ -41,7 +41,7 @@ function approval(overrides: Partial<ToolApprovalDetails> = {}): ToolApprovalDet
 
 beforeEach(() => {
   installBrowserShims();
-  chat.state.slots['slot-1'].isOwner = true;
+  chat.state.slots['slot-1'].canWrite = true;
   chat.state.slots['slot-1'].isStreaming = false;
 });
 
@@ -122,7 +122,7 @@ describe('ToolApprovalCard', () => {
     expect(screen.getByTestId('tool-approval-card').textContent).toBe("Create an issue on Jira wasn't approved, so it didn't run.");
     cleanup();
 
-    chat.state.slots['slot-1'].isOwner = false;
+    chat.state.slots['slot-1'].canWrite = false;
     renderInTheme(<ToolApprovalCard approval={approval()} isLatest />);
     expect(screen.queryByRole('button')).toBeNull();
     expect(screen.getByTestId('tool-approval-card').textContent).toBe(

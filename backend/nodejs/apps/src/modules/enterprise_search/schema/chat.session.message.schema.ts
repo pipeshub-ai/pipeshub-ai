@@ -164,6 +164,10 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     // `nextSeq` counter. Gaps are legal; never treat this as a count or index.
     seq: { type: Number, required: true },
 
+    // The user this message was generated for. Redaction is per turn: only this
+    // user sees it in full. Absent = the session's initiator (pre-write-sharing rows).
+    authorUserId: { type: Schema.Types.ObjectId },
+
     messageType: {
       type: String,
       enum: [
