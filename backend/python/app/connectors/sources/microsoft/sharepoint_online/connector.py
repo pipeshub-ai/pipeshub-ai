@@ -1295,8 +1295,7 @@ class SharePointConnector(BaseConnector):
 
     async def _graph_read(self, call: Callable[[], Awaitable[T]]) -> T:
         """A Graph read, tried again after a transient server error or a dropped connection."""
-        attempt = 1
-        while True:
+        for attempt in range(1, GRAPH_READ_ATTEMPTS + 1):
             try:
                 async with self.rate_limiter:
                     return await call()
@@ -1305,10 +1304,11 @@ class SharePointConnector(BaseConnector):
                 transient = status in GRAPH_TRANSIENT_STATUSES or (
                     status is None and isinstance(e, (httpx.TransportError, asyncio.TimeoutError))
                 )
-                if not transient or attempt >= GRAPH_READ_ATTEMPTS:
+                if not transient or attempt == GRAPH_READ_ATTEMPTS:
                     raise
                 await asyncio.sleep(attempt)
-                attempt += 1
+        # Reached only when a context manager swallowed the error: the read gave no answer.
+        raise RuntimeError(f"Graph read gave no answer after {GRAPH_READ_ATTEMPTS} attempts")
 
     async def _graph_says_gone(self, call: Callable[[], Any]) -> bool:
         """Whether Graph answers 404 for a container: the one answer that lets a missing container be removed."""
