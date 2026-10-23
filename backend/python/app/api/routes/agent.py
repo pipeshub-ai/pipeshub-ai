@@ -46,7 +46,10 @@ from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
 )
-from app.modules.agents.capability_summary import fetch_connector_configs
+from app.modules.agents.capability_summary import (
+    PARTLY_SHARED_KEY,
+    fetch_connector_configs,
+)
 from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
     UnreadableSourceLimitError,
@@ -64,8 +67,10 @@ from app.modules.agents.qna.router import (
     build_prior_routing_messages as _build_prior_routing_messages,  # noqa: F401
 )
 from app.modules.retrieval.selection_scope import (
+    CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
     SelectionNotReadyError,
     SelectionTooLargeError,
+    connection_coverage,
     has_selection,
     max_selection_nodes,
     prepare_turn_scope,
@@ -879,6 +884,35 @@ async def _resolve_turn_filters(
     elif connection_sources is not None:
         filters = within_connection(filters, connection_sources)
     return filters
+
+
+async def _knowledge_within_connection(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    agent_knowledge: list[dict[str, Any]],
+    connection_sources: dict[str, list[str]] | None,
+) -> list[dict[str, Any]]:
+    """``agent_knowledge`` as a connected app limited to ``connection_sources``
+    may see it: a source the limit names whole as it is, one it reaches only
+    through some of its folders or files marked as partly shared, and every
+    other source left out. Unchanged without a limit.
+
+    Raises:
+        SelectionTooLargeError, PermissionVerificationUnavailableError: see
+            ``resolve_selection_scope``.
+    """
+    if connection_sources is None:
+        return agent_knowledge
+    whole, partial = await connection_coverage(graph_provider, user_id, org_id, connection_sources)
+    kept: list[dict[str, Any]] = []
+    for k in agent_knowledge:
+        connector_id = k.get("connectorId") if isinstance(k, dict) else None
+        if connector_id in whole:
+            kept.append(k)
+        elif connector_id in partial:
+            kept.append({**k, PARTLY_SHARED_KEY: True})
+    return kept
 
 
 def _filter_knowledge_by_enabled_sources(
@@ -4384,6 +4418,21 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     filters["strictScope"] = True
 
                 agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
+                try:
+                    # The universal agent's knowledge is every source the user
+                    # reads, and the prompt names each one with its id.
+                    agent_knowledge = await _knowledge_within_connection(
+                        graph_provider,
+                        enriched_user_info.get("userId") or user_context.get("userId", ""),
+                        org_key,
+                        agent_knowledge,
+                        connection_limit(getattr(request.state, "user", None)),
+                    )
+                except SelectionTooLargeError:
+                    yield _stream_error_frame(
+                        protocol, CONNECTION_LIMIT_TOO_LARGE_MESSAGE, code="selection_too_large",
+                    )
+                    return
 
                 logger.info(f"Filters: {filters}")
 

@@ -76,6 +76,8 @@ class KnowledgeSource:
     app: str          # connector type key (e.g. "confluence"); "" for KB
     source_id: str    # connector_id / record_group_id; "" when no id (KB-no-id case)
     scope_lines: tuple[str, ...] = field(default_factory=tuple)  # type: ignore[assignment]
+    #: A connected app's limit reaches only some of its folders or files.
+    partly_shared: bool = False
 
     @property
     def list_files_param(self) -> str:
@@ -142,6 +144,7 @@ class SourceCatalog:
                     app=s.get("type_key", "") if kind == SourceKind.APP else "",
                     source_id=s.get("connector_id", ""),
                     scope_lines=tuple(scope),
+                    partly_shared=bool(s.get("partly_shared")),
                 ))
             return cls(
                 sources=tuple(sources),
@@ -365,6 +368,17 @@ class SourceCatalog:
             if not self.ids_actionable:
                 # Chat route: no UUIDs — just name the type
                 lines.append(f"- {s.label}")
+                continue
+
+            if s.partly_shared:
+                # Without the id: passed as a source id, it would reach the
+                # parts this connection was not given.
+                kind = "KB collection" if s.kind == SourceKind.KB else f"app: {s.app}"
+                lines.append(
+                    f"- **{s.label}** — {kind} — only part of it is shared through this "
+                    f"connection; find that part with `{retrieval}` or `{list_files}` "
+                    "without source_ids"
+                )
                 continue
 
             if s.kind == SourceKind.KB:

@@ -347,6 +347,30 @@ async def outside_connection(
     return set(ids) - set(access.node_ids_in_scope)
 
 
+async def connection_coverage(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    connection_sources: Mapping[str, Iterable[str]],
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The apps and collections a connected app's limit names whole, and those
+    it reaches only in part, through the folders and files it names in them.
+    Both empty when the user is unknown.
+
+    Raises:
+        SelectionTooLargeError, PermissionVerificationUnavailableError: see
+            ``resolve_selection_scope``.
+    """
+    user = await graph_provider.get_user_by_user_id(user_id=user_id)
+    user_key = (user.get("_key") or user.get("id")) if user else None
+    if not user_key:
+        return frozenset(), frozenset()
+    bound: dict[str, Any] = {}
+    _set_bound(bound, CONNECTION_BOUND_FILTER_KEYS, connection_sources)
+    _, (scope,) = await resolve_request_scopes(graph_provider, user_key, org_id, bound)
+    return scope.app_ids, scope.connector_ids - scope.app_ids
+
+
 async def prepare_turn_scope(
     graph_provider: IGraphDBProvider,
     user_id: str,
