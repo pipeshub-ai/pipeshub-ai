@@ -929,7 +929,7 @@ class BlobStorage(Transformer):
         it instead of queueing for another.
         """
         size = _compressed_content_size(data)
-        if size is None or size <= LARGE_DECODE_BYTES:
+        if size is None:
             return self._process_downloaded_record(data)
         # Unknown size (a streamed frame) still takes the gate, but has no size to check.
         ceiling = max_decoded_record_bytes()
@@ -937,6 +937,8 @@ class BlobStorage(Transformer):
             raise StoredRecordTooLargeError(
                 f"record decodes to {size} bytes, over the {ceiling}-byte limit ({_MAX_DECODED_BYTES_ENV})"
             )
+        if size <= LARGE_DECODE_BYTES:
+            return self._process_downloaded_record(data)
         if lease is not None and not lease.handed_off:
             slot = lease.hand_off()
         else:

@@ -280,6 +280,28 @@ class TestCeiling:
             await storage._decode_record(_envelope(record))
         assert not _slot_taken()
 
+    async def test_a_record_under_the_gate_is_still_held_to_the_ceiling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ceiling caps every record, not only the ones big enough to take the decode gate."""
+        record = _record(100)
+        assert _msgpack_len(record) < LARGE
+        monkeypatch.setenv(bs_mod._MAX_DECODED_BYTES_ENV, str(_msgpack_len(record) - 1))
+        storage = _bs()
+        with (
+            patch.object(storage, "_decompressed_payload", side_effect=AssertionError("decoded")),
+            pytest.raises(StoredRecordTooLargeError, match=str(_msgpack_len(record))),
+        ):
+            await storage._decode_record(_envelope(record))
+
+    async def test_a_record_under_the_gate_and_the_ceiling_decodes_inline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        record = _record(100)
+        monkeypatch.setenv(bs_mod._MAX_DECODED_BYTES_ENV, str(_msgpack_len(record)))
+        assert await _bs()._decode_record(_envelope(record)) == record
+        assert not _slot_taken()
+
     async def test_exactly_the_ceiling_is_decoded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         record = _record(5000)
         monkeypatch.setenv(bs_mod._MAX_DECODED_BYTES_ENV, str(_msgpack_len(record)))
