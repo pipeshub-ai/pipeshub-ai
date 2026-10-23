@@ -1,4 +1,5 @@
 import logging
+import os
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 from urllib.parse import urlparse
@@ -38,6 +39,45 @@ def atlassian_site_hostname(site_url: str) -> str:
     if not s.startswith(("http://", "https://")):
         s = f"https://{s}"
     return (urlparse(s).hostname or "").lower()
+
+
+# Hosts an Atlassian Cloud site lives on. An API token is sent to the site URL itself, so any
+# other host would receive the token and make the connector a probe into the local network.
+ATLASSIAN_CLOUD_SITE_SUFFIXES = (".atlassian.net", ".jira.com")
+# Server-wide opt-in: extra hosts (comma-separated, exact) allowed as a Cloud site, for a
+# simulator or a test double on a network the operator trusts. Empty by default.
+ALLOWED_SITE_HOSTS_ENV = "PIPESHUB_ATLASSIAN_ALLOWED_SITE_HOSTS"
+
+
+def require_atlassian_cloud_site_url(site_url: str) -> None:
+    """Refuse a Cloud API-token site URL that is not ``https://<site>.atlassian.net``.
+
+    Raises ``ValueError`` with a message the admin can act on. Only the site root is
+    accepted: the client appends ``/rest/api/...`` to it.
+    """
+    parsed = urlparse((site_url or "").strip())
+    host = (parsed.hostname or "").lower()
+    allowed = {h.strip().lower() for h in os.getenv(ALLOWED_SITE_HOSTS_ENV, "").split(",") if h.strip()}
+    if host and host in allowed and parsed.scheme in ("http", "https"):
+        return
+    try:
+        port = parsed.port
+    except ValueError:
+        port = -1
+    if (
+        parsed.scheme != "https"
+        or not host.endswith(ATLASSIAN_CLOUD_SITE_SUFFIXES)
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "The Jira Cloud site URL must be your Atlassian site, like "
+            "https://your-company.atlassian.net, with nothing after the host name"
+        )
 
 
 def dedupe_atlassian_cloud_resources(

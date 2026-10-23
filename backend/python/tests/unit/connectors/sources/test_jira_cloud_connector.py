@@ -282,6 +282,33 @@ class TestInitCoverage:
             connector.notify.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("base_url", ["http://169.254.169.254", "https://jira.corp.internal", "http://acme.atlassian.net"])
+    async def test_init_refuses_an_api_token_site_that_is_not_atlassian_cloud(self, base_url):
+        """PP-205: the email + API token goes to the configured URL itself, so it must be the Atlassian site."""
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+        from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
+
+        connector = _make_connector()
+        client = JiraClient(JiraRESTClientViaApiKey(base_url, "sync@acme.com", "token"))
+        with patch.object(connector, "_build_jira_client", AsyncMock(return_value=client)), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as data_source:
+            with pytest.raises(ConnectorInitError, match="your-company.atlassian.net"):
+                await connector.init()
+        data_source.assert_not_called()  # nothing was sent to that host
+        assert connector.data_source is None
+
+    @pytest.mark.asyncio
+    async def test_init_accepts_an_api_token_on_an_atlassian_site(self):
+        from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
+
+        connector = _make_connector()
+        client = JiraClient(JiraRESTClientViaApiKey("https://acme.atlassian.net", "sync@acme.com", "token"))
+        with patch.object(connector, "_build_jira_client", AsyncMock(return_value=client)), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as data_source:
+            data_source.return_value.get_current_user = AsyncMock(side_effect=Exception("offline"))
+            assert await connector.init() is True
+
+    @pytest.mark.asyncio
     async def test_init_multi_site_raises_connector_init_error(self):
         """Multi-site OAuth token → init() propagates ConnectorInitError with the
         actionable message (so the API surfaces it), not a generic False."""

@@ -130,8 +130,11 @@ from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
 )
-from app.sources.client.jira.jira import JiraClient
-from app.sources.external.common.atlassian import AtlassianMultiSiteError
+from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
+from app.sources.external.common.atlassian import (
+    AtlassianMultiSiteError,
+    require_atlassian_cloud_site_url,
+)
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.streaming import create_stream_record_response
@@ -612,6 +615,10 @@ class JiraConnector(BaseConnector):
         """Initialize Jira client and DataSource from connector auth config."""
         try:
             client = await self._build_jira_client()
+            rest_client = client.get_client()
+            if isinstance(rest_client, JiraRESTClientViaApiKey):
+                # Email + API token goes straight to the configured URL (OAuth goes to api.atlassian.com).
+                require_atlassian_cloud_site_url(rest_client.get_base_url())
             self.external_client = client
             self.data_source = JiraDataSource(client)
             # Site already resolved in build_from_services (multi-site OAuth rejected there)

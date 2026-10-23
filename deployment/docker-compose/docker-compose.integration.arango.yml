@@ -58,6 +58,8 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       # The Web and RSS connectors crawl the web-fixtures service, which is on the private Docker network.
       - WEB_CONNECTOR_ALLOWED_HOSTS=web-fixtures
+      # The Jira Cloud API-token connector only talks to Atlassian sites; jira-sim stands in for one.
+      - PIPESHUB_ATLASSIAN_ALLOWED_SITE_HOSTS=jira-sim.internal
       - STRICT_MODE=${STRICT_MODE:-false}
       # The session-revocation checks look within seconds of a sign-out; the product default is 30s.
       - SESSION_CHECK_CACHE_SECONDS=${SESSION_CHECK_CACHE_SECONDS:-2}

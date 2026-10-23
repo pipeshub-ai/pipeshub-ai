@@ -185,6 +185,43 @@ class TestJiraFactory:
                 )
 
 
+class TestJiraSiteUrlCheck:
+    """PP-205: an email + API token is sent to the toolset's base URL itself."""
+
+    @staticmethod
+    def _client(base_url):
+        from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
+        return JiraClient(JiraRESTClientViaApiKey(base_url, "me@acme.com", "token"))
+
+    @pytest.mark.asyncio
+    async def test_the_cloud_toolset_refuses_a_site_that_is_not_atlassian_cloud(self):
+        from app.agents.tools.factories.jira import JiraClientFactory
+        with patch("app.agents.tools.factories.jira.JiraClient.build_from_toolset",
+                   AsyncMock(return_value=self._client("http://10.0.0.5:8080"))):
+            with pytest.raises(ValueError, match="your-company.atlassian.net"):
+                await JiraClientFactory().create_client(
+                    config_service=MagicMock(), logger=MagicMock(), toolset_config={"authType": "API_TOKEN"}, state=None,
+                )
+
+    @pytest.mark.asyncio
+    async def test_the_cloud_toolset_accepts_an_atlassian_site(self):
+        from app.agents.tools.factories.jira import JiraClientFactory
+        client = self._client("https://acme.atlassian.net")
+        with patch("app.agents.tools.factories.jira.JiraClient.build_from_toolset", AsyncMock(return_value=client)):
+            assert await JiraClientFactory().create_client(
+                config_service=MagicMock(), logger=MagicMock(), toolset_config={"authType": "API_TOKEN"}, state=None,
+            ) is client
+
+    @pytest.mark.asyncio
+    async def test_the_data_center_toolset_keeps_its_private_address(self):
+        from app.agents.tools.factories.jira import JiraDataCenterClientFactory
+        client = self._client("http://jira.corp.internal:8080")
+        with patch("app.agents.tools.factories.jira.JiraClient.build_from_toolset", AsyncMock(return_value=client)):
+            assert await JiraDataCenterClientFactory().create_client(
+                config_service=MagicMock(), logger=MagicMock(), toolset_config={"authType": "API_TOKEN"}, state=None,
+            ) is client
+
+
 class TestJiraDataCenterFactory:
     """The DC factory adds an auth-type guardrail before delegating to the shared
     JiraClient.build_from_toolset: only API_TOKEN / BASIC_AUTH may reach it, so a
