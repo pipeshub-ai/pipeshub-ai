@@ -214,6 +214,18 @@ def test_request_too_large_without_extractable_message_uses_canned_text() -> Non
     )
 
 
+def test_context_that_cannot_fit_the_window_is_request_too_large() -> None:
+    """The agent stops before the model call when the shapers cannot fit the
+    context; the user is told the conversation is too long, not that
+    something went wrong."""
+    error_code, message = classify_error(
+        "Context could not be shaped: Context (250000 tokens) exceeds budget "
+        "(200000 tokens) after all compaction attempts"
+    )
+    assert error_code == "request_too_large"
+    assert message.startswith("This conversation is too long for the selected model")
+
+
 def test_provider_account_metadata_is_redacted_from_surfaced_messages() -> None:
     """Provider messages carry the provider account's own identifiers and
     account links; the user sees the explanation, not the tenant metadata."""
