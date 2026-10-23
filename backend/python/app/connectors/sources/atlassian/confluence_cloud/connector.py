@@ -1503,6 +1503,10 @@ class ConfluenceConnector(BaseConnector):
                 groups_data = response_data.get("results", [])
 
                 if not groups_data:
+                    if (response_data.get("_links") or {}).get("next"):
+                        # Only a missing next link ends the list; removal must not see a gap as deletions.
+                        group_list_complete = False
+                        self._note_problem("The Confluence group list stopped early")
                     break
 
                 for group_data in groups_data:
@@ -3188,10 +3192,12 @@ class ConfluenceConnector(BaseConnector):
                 )
                 return
 
-            self.logger.info(f"🔄 Fetching audit logs from {last_sync_time_ms} to {current_time_ms}")
+            # Events can reach the log a little late; reading them twice is harmless.
+            window_start_ms = last_sync_time_ms - self._AUDIT_OVERLAP_MS
+            self.logger.info(f"🔄 Fetching audit logs from {window_start_ms} to {current_time_ms}")
 
             # Fetch audit logs and extract content titles that had permission changes
-            content_titles = await self._fetch_permission_audit_logs(last_sync_time_ms, current_time_ms)
+            content_titles = await self._fetch_permission_audit_logs(window_start_ms, current_time_ms)
 
             if content_titles is None:
                 self.logger.warning(
@@ -3212,7 +3218,16 @@ class ConfluenceConnector(BaseConnector):
             self.logger.info(f"📋 Found {len(content_titles)} content items with permission changes")
 
             # Search for content by titles and sync their permissions (only if exists in DB)
-            await self._sync_content_permissions_by_titles(content_titles)
+            try:
+                await self._sync_content_permissions_by_titles(content_titles)
+            except AtlassianQuotaExhausted:
+                raise
+            except Exception as e:
+                self.logger.warning(f"Keeping the audit log window: some restriction changes could not be applied: {e}")
+                self._note_problem(
+                    "Couldn't apply some restriction changes from the audit log; the next sync tries again"
+                )
+                return
 
             # Update audit log sync point with current time
             await self.audit_log_sync_point.update_sync_point(
@@ -3225,6 +3240,9 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Permission sync from audit log failed: {e}", exc_info=True)
             raise
+
+    # Overlap of each audit log read with the last one.
+    _AUDIT_OVERLAP_MS = 15 * 60 * 1000
 
     async def _fetch_permission_audit_logs(
         self,
@@ -4900,6 +4918,9 @@ class ConfluenceConnector(BaseConnector):
                 continue
             if str(group.source_user_group_id) in listed_group_ids:
                 continue
+            # An offset list can skip a group that shifted between pages: only a 404 says it is gone.
+            if not await self._group_is_gone(group.source_user_group_id):
+                continue
             try:
                 await self.data_entities_processor.on_user_group_deleted(group.source_user_group_id, self.connector_id)
                 self.logger.info(f"Removed group {group.name}: Confluence no longer has it")
@@ -4909,6 +4930,18 @@ class ConfluenceConnector(BaseConnector):
                     f"Couldn't remove group {group.name}, which Confluence no longer has; the next sync tries again",
                     unread=False,
                 )
+
+    async def _group_is_gone(self, group_id: str) -> bool:
+        """True only when Confluence answers 404 for the group; any other answer keeps it."""
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_group_members(group_id=group_id, start=0, limit=1)
+        except AtlassianQuotaExhausted:
+            raise
+        except Exception as e:
+            self.logger.debug(f"Could not look up group {group_id}: {e}")
+            return False
+        return response is not None and response.status == HttpStatusCode.NOT_FOUND.value
 
     async def _restore_reactivated_users(self) -> None:
         """Save the users _sync_users held back whose account this sync's full group read
@@ -6639,7 +6672,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
-    ) -> tuple[Record, list[Permission]] | None:
+    ) -> tuple[Record, list[Permission]] | None:  # raises GoneAtSource for a 404
         """Fetch record from source and return data for reindexing.
 
         Supports: pages, blogposts, attachments, and comments.
@@ -6664,6 +6697,8 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.warning(f"Unsupported record type for reindex: {record.record_type}")
                 return None
 
+        except GoneAtSource:
+            raise
         except Exception as e:
             self.logger.error(f"Error checking record {record.id} at source: {e}")
             return None
