@@ -48,7 +48,11 @@ from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.modules.parsers.code_parser.secret_scan import redact_secrets
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-from .constants import ATTACHMENT_MAX_SIZE_BYTES, PR_FILE_INLINE_CONTENT_MAX_BYTES
+from .constants import (
+    ATTACHMENT_MAX_SIZE_BYTES,
+    PR_FILE_INLINE_CONTENT_MAX_BYTES,
+    PR_FILE_INLINE_MAX_FILES,
+)
 from .models import GitHubLiterals, RecordUpdate
 
 if TYPE_CHECKING:
@@ -174,6 +178,22 @@ def _is_github_attachment_url(url: str, *, image_only: bool = False) -> bool:
         return False
 
 
+def attachment_key(url: str, parent_external_record_id: str) -> str:
+    """External id of an attachment: the upload URL *and* the issue or PR linking it.
+
+    The same upload is often linked from several issues, in several repositories.
+    Keyed by URL alone, all of them shared one record whose parent and record group
+    were whichever issue was written last, so it changed hands, and access, between
+    repositories on every sync.
+    """
+    return f"{url}#{parent_external_record_id}"
+
+
+def attachment_url(external_record_id: str) -> str:
+    """The upload URL inside an attachment's external id (old records are the URL alone)."""
+    return external_record_id.split("#", 1)[0]
+
+
 def _file_type_from_url(url: str, filename: str = "") -> str:
     if filename:
         ext = os.path.splitext(filename)[1].lower()
@@ -266,9 +286,8 @@ class CommentsHelper:
         every image after the prose reorders the content and divorces each
         screenshot from the sentence describing it.
 
-        Fetching here rather than leaving the URL for the indexing pipeline is
-        deliberate — ``user-attachments`` assets on private repos need the
-        connector's token, which the pipeline does not have.
+        Fetching here rather than leaving the URL for the indexing pipeline keeps
+        the image in place in the text the pipeline receives.
         """
         if not body_content:
             return ""
@@ -287,7 +306,7 @@ class CommentsHelper:
             replacement = alt  # every path must consume the token, or it leaks into the index
             if url and _is_github_attachment_url(url, image_only=True):
                 try:
-                    res = await c.runtime.ds_call(c.data_source.get_img_bytes, url)
+                    res = await c.runtime.ds_call(c.data_source.get_img_bytes, url, max_bytes=_MAX_IMAGE_BYTES)
                     if not res.success or not res.data:
                         self.logger.debug(
                             "Failed to fetch image %s: %s", url, getattr(res, "error", "unknown")
@@ -326,7 +345,7 @@ class CommentsHelper:
         calls ``refresh_token_if_needed`` before dispatching, which covers it.
         """
         c = self.c
-        source_url = record.external_record_id
+        source_url = attachment_url(record.external_record_id or "")
         if not source_url:
             raise not_downloadable(
                 "This attachment has no stored source URL.", connector=c.display_name
@@ -397,7 +416,7 @@ class CommentsHelper:
             org_id=self.c.data_entities_processor.org_id,
             record_name=attachment_name,
             record_type=RecordType.FILE.value,
-            external_record_id=str(attachment_url),
+            external_record_id=attachment_key(str(attachment_url), str(record.external_record_id)),
             connector_name=self.c.connector_name,
             connector_id=self.c.connector_id,
             origin=OriginTypes.CONNECTOR,
@@ -429,7 +448,8 @@ class CommentsHelper:
         return RecordUpdate(
             record=filerecord, is_new=existing_record is None, is_updated=existing_record is not None,
             is_deleted=False, metadata_changed=False, content_changed=False, permissions_changed=False,
-            old_permissions=[], new_permissions=[], external_record_id=str(attachment_url),
+            old_permissions=[], new_permissions=[],
+            external_record_id=attachment_key(str(attachment_url), str(record.external_record_id)),
         )
 
     async def make_file_records_from_list(
@@ -456,7 +476,7 @@ class CommentsHelper:
                 )
                 parent_node_id = existing_parent.id if existing_parent else record.id
             existing_record = await c.data_entities_processor.get_record_by_external_id(
-                c.connector_id, str(attachment_url),
+                c.connector_id, attachment_key(str(attachment_url), str(record.external_record_id)),
             )
             record_update = self._attachment_file_update(attach, record, existing_record, parent_node_id)
             if record_update is not None:
@@ -464,20 +484,23 @@ class CommentsHelper:
         return list_records_new
 
     async def make_child_records_of_attachments(
-        self, markdown_raw: str, record: Record
+        self, markdown_raw: str, record: Record, seen_keys: set[str] | None = None,
     ) -> tuple[list[ChildRecord], list[RecordUpdate]]:
-        """Build ChildRecord list and remaining file RecordUpdates from markdown body."""
+        """Build ChildRecord list and remaining file RecordUpdates from markdown body.
+
+        Every attachment key met is added to ``seen_keys`` when one is given.
+        """
         c = self.c
         _, attachments = await self.clean_github_content(markdown_raw)
         child_records: list[ChildRecord] = []
         remaining: list[RecordUpdate] = []
         for attach in attachments:
-            if attach.get("type") == GitHubLiterals.IMAGE.value:
+            if attach.get("type") == GitHubLiterals.IMAGE.value or not attach.get("href"):
                 continue
-            attachment_url = attach.get("href")
-            existing_record = await c.data_entities_processor.get_record_by_external_id(
-                c.connector_id, str(attachment_url),
-            )
+            key = attachment_key(str(attach.get("href")), str(record.external_record_id))
+            if seen_keys is not None:
+                seen_keys.add(key)
+            existing_record = await c.data_entities_processor.get_record_by_external_id(c.connector_id, key)
             if existing_record:
                 child_records.append(ChildRecord(
                     child_id=existing_record.id, child_type=ChildType.RECORD, child_name=existing_record.record_name,
@@ -495,7 +518,7 @@ class CommentsHelper:
         return child_records, remaining
 
     async def make_block_comment_of_attachments(
-        self, markdown_raw: str, record: Record
+        self, markdown_raw: str, record: Record, seen_keys: set[str] | None = None,
     ) -> tuple[list[CommentAttachment], list[RecordUpdate]]:
         """Build CommentAttachment list and remaining file RecordUpdates for PR review comments."""
         c = self.c
@@ -503,12 +526,12 @@ class CommentsHelper:
         comment_attachments: list[CommentAttachment] = []
         remaining: list[RecordUpdate] = []
         for attach in attachments:
-            if attach.get("type") == GitHubLiterals.IMAGE.value:
+            if attach.get("type") == GitHubLiterals.IMAGE.value or not attach.get("href"):
                 continue
-            attachment_url = attach.get("href")
-            existing_record = await c.data_entities_processor.get_record_by_external_id(
-                c.connector_id, str(attachment_url),
-            )
+            key = attachment_key(str(attach.get("href")), str(record.external_record_id))
+            if seen_keys is not None:
+                seen_keys.add(key)
+            existing_record = await c.data_entities_processor.get_record_by_external_id(c.connector_id, key)
             if existing_record:
                 comment_attachments.append(CommentAttachment(name=existing_record.record_name, id=existing_record.id))
             else:
@@ -520,12 +543,34 @@ class CommentsHelper:
                     ))
         return comment_attachments, remaining
 
+    async def remove_unlinked_attachments(self, record: Record, linked_keys: set[str]) -> None:
+        """Remove the attachment records of ``record`` that nothing links any more.
+
+        Only called after the record's body and every comment were read in full, so
+        ``linked_keys`` is the complete set. Records keyed by URL alone (written
+        before attachments were keyed per parent) are replaced by the same stream
+        and removed here too.
+        """
+        c = self.c
+        children = await c.data_entities_processor.get_records_by_parent(
+            c.connector_id, str(record.external_record_id)
+        )
+        unlinked = [
+            r for r in children
+            if r.record_type == RecordType.FILE.value
+            and str(r.external_record_id or "").startswith("https://")
+            and r.external_record_id not in linked_keys
+        ]
+        if unlinked:
+            await c.record_remover.remove_records(unlinked)
+
     # ------------------------------------------------------------------
     # Issue comment blocks
     # ------------------------------------------------------------------
 
     async def build_issue_comment_blocks(
-        self, owner: str, repo: str, issue_number: int, parent_index: int, record: Record
+        self, owner: str, repo: str, issue_number: int, parent_index: int, record: Record,
+        seen_keys: set[str] | None = None,
     ) -> tuple[list[BlockGroup], list[RecordUpdate]]:
         """Build one BlockGroup per issue comment."""
         c = self.c
@@ -547,7 +592,7 @@ class CommentsHelper:
         # flat list, so chronological order is the only structure to preserve.
         for comment in _by_created_at(comments_res.data or []):
             raw_body: str = getattr(comment, "body", "") or ""
-            child_records, new_remaining = await self.make_child_records_of_attachments(raw_body, record)
+            child_records, new_remaining = await self.make_child_records_of_attachments(raw_body, record, seen_keys)
             remaining.extend(new_remaining)
             body_with_images = await self.embed_images_as_base64(raw_body)
             author = getattr(comment, "user", None)
@@ -579,7 +624,7 @@ class CommentsHelper:
 
     async def build_pr_comment_and_diff_blocks(
         self, owner: str, repo: str, pr_number: int, pull_request: Any, parent_index: int, record: Record,
-        start_index: int | None = None,
+        start_index: int | None = None, seen_keys: set[str] | None = None,
     ) -> tuple[list[BlockGroup], list[RecordUpdate]]:
         """Build conversation-comment BlockGroups, then one TEXT_SECTION BlockGroup
         per changed file with that file's review comments attached.
@@ -622,6 +667,17 @@ class CommentsHelper:
                 message=conversation_res.error,
             )
         reviews_res = await c.runtime.ds_call(c.data_source.get_pull_reviews, owner, repo, pr_number)
+        if not reviews_res.success:
+            # Review bodies are part of the indexed text; without them the PR would be
+            # indexed as complete and, its revision unchanged, never read again.
+            raise_for_stream_fetch(
+                success=reviews_res.success,
+                has_payload=bool(reviews_res.data),
+                connector=c.display_name,
+                status=reviews_res.status_code,
+                retry_after=reviews_res.retry_after_seconds,
+                message=reviews_res.error,
+            )
 
         # Conversation comments and review bodies come from two endpoints but are
         # one conversation. Emitting all of one before the other puts a reply
@@ -642,7 +698,7 @@ class CommentsHelper:
 
         for _, label, item in timeline:
             raw_body: str = getattr(item, "body", "") or ""
-            child_records, new_remaining = await self.make_child_records_of_attachments(raw_body, record)
+            child_records, new_remaining = await self.make_child_records_of_attachments(raw_body, record, seen_keys)
             remaining.extend(new_remaining)
             body_with_images = await self.embed_images_as_base64(raw_body)
             author = getattr(item, "user", None)
@@ -667,9 +723,6 @@ class CommentsHelper:
             block_groups.append(bg)
             block_group_number += 1
 
-        if not reviews_res.success:
-            self.logger.warning("Failed to fetch reviews for PR #%s: %s", pr_number, reviews_res.error)
-
         # path -> thread root id -> that thread's comments, in arrival order.
         review_comments_map: dict[str, dict[Any, list[BlockComment]]] = {}
         # path -> markdown section per comment, same order. `comments` above is
@@ -677,6 +730,15 @@ class CommentsHelper:
         # without these sections inline review text is unsearchable.
         review_comment_sections: dict[str, list[str]] = {}
         rc_res = await c.runtime.ds_call(c.data_source.get_pull_review_comments, owner, repo, pr_number)
+        if not rc_res.success:
+            raise_for_stream_fetch(
+                success=rc_res.success,
+                has_payload=bool(rc_res.data),
+                connector=c.display_name,
+                status=rc_res.status_code,
+                retry_after=rc_res.retry_after_seconds,
+                message=rc_res.error,
+            )
         if rc_res.success:
             # Sorting the flat listing up front puts each thread's replies in
             # order and seeds threads in root order, since dicts keep insertion order.
@@ -688,7 +750,9 @@ class CommentsHelper:
                 if not path:
                     continue
                 raw_body = getattr(rc, "body", "") or ""
-                comment_attachments, new_remaining = await self.make_block_comment_of_attachments(raw_body, record)
+                comment_attachments, new_remaining = await self.make_block_comment_of_attachments(
+                    raw_body, record, seen_keys,
+                )
                 remaining.extend(new_remaining)
                 body_with_images = await self.embed_images_as_base64(raw_body)
                 author = getattr(rc, "user", None)
@@ -723,8 +787,6 @@ class CommentsHelper:
                         body_with_images,
                     )
                 )
-        else:
-            self.logger.warning("Failed to fetch review comments for PR #%s: %s", pr_number, rc_res.error)
 
         files_res = await c.runtime.ds_call(
             c.data_source.get_pull_file_changes, owner, repo, pr_number, False,
@@ -743,7 +805,9 @@ class CommentsHelper:
         head_sha = getattr(head_sha, "sha", None) if head_sha else None
         changes_url = f"{getattr(pull_request, 'html_url', '')}/files"
 
-        for file in files_res.data or []:
+        changed_files = list(files_res.data or [])
+        fetched = 0
+        for file in changed_files:
             filename = getattr(file, "filename", None)
             if not filename:
                 continue
@@ -761,7 +825,12 @@ class CommentsHelper:
             # fetched: any text it has is the same file indexed once more.
             line_changes = (getattr(file, "additions", 0) or 0) + (getattr(file, "deletions", 0) or 0)
             changed = line_changes > 0 or status in ("added", "modified")
-            if not diff and changed and status != "removed" and head_sha:
+            # Each fetch is one API call, so a PR of many binary or huge files
+            # stops inlining after PR_FILE_INLINE_MAX_FILES of them.
+            needs_content = not diff and changed and status != "removed" and head_sha
+            beyond_inline_limit = bool(needs_content) and fetched >= PR_FILE_INLINE_MAX_FILES
+            if needs_content and not beyond_inline_limit:
+                fetched += 1
                 content_res = await c.runtime.ds_call(
                     c.data_source.get_file_contents, owner, repo, filename, head_sha,
                 )
@@ -776,7 +845,12 @@ class CommentsHelper:
             previous = getattr(file, "previous_filename", None)
             if previous and status in ("renamed", "copied"):
                 data_parts.append(f"{status.capitalize()} from {previous}.")
-            if oversized:
+            if beyond_inline_limit:
+                data_parts.append(
+                    f"Full File Content: omitted (the pull request has more than "
+                    f"{PR_FILE_INLINE_MAX_FILES} changed files without a diff)"
+                )
+            elif oversized:
                 data_parts.append(
                     f"Full File Content: omitted ({content_bytes} bytes exceeds the "
                     f"{PR_FILE_INLINE_CONTENT_MAX_BYTES}-byte inline limit)"
@@ -875,8 +949,14 @@ class CommentsHelper:
         c = self.c
         commits_res = await c.runtime.ds_call(c.data_source.get_pull_commits, owner, repo, pr_number)
         if not commits_res.success:
-            self.logger.warning("Failed to fetch commits for PR #%s: %s", pr_number, commits_res.error)
-            return [], None
+            raise_for_stream_fetch(
+                success=commits_res.success,
+                has_payload=bool(commits_res.data),
+                connector=c.display_name,
+                status=commits_res.status_code,
+                retry_after=commits_res.retry_after_seconds,
+                message=commits_res.error,
+            )
 
         blocks: list[Block] = []
         for i, commit in enumerate(commits_res.data or []):

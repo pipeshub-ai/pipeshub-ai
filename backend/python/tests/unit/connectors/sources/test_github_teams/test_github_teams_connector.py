@@ -37,6 +37,7 @@ def _runnable_connector() -> object:
     c.repos.timestamps.schedule = lambda: None
     c.users.sync_users = AsyncMock()
     c.projects.sync_all_repos = AsyncMock()
+    c.projects.failures = []
     return c
 
 
@@ -197,6 +198,7 @@ class TestRunSyncAndIncremental:
         order: list[str] = []
         c.users.sync_users = AsyncMock(side_effect=lambda: order.append("users"))
         c.projects.sync_all_repos = AsyncMock(side_effect=lambda: order.append("projects"))
+        c.projects.failures = []
         monkeypatch.setattr(
             connector_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
         )

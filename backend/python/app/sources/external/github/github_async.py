@@ -59,6 +59,13 @@ _RESERVED_RESOURCES = frozenset({"core", "graphql"})
 _DEFAULT_RESERVE_PERCENT = 10
 _RESERVE_PERCENT_ENV = "GITHUB_RATE_LIMIT_RESERVE_PERCENT"
 
+# github.com/user-attachments is the web host, not the API: it answers an API token
+# with 404 (verified against github.com, public repository included) and an
+# anonymous request with a redirect to signed storage. The token is therefore never
+# sent there; it would only make every download fail, and it has no business on a
+# host other than the API.
+_ATTACHMENT_HEADERS = {"Accept": "*/*"}
+
 # Set while a record is streamed to a person who opened it: one request they
 # asked for, which the reserve would refuse although GitHub would grant it.
 # Those calls stop only once the pool is actually spent. Streaming to indexing
@@ -800,13 +807,29 @@ class GitHubAsyncDataSource:
     # Attachment / image streaming (direct downloads, not the REST API)
     # ------------------------------------------------------------------
 
-    async def get_img_bytes(self, image_url: str) -> GitHubResponse:
-        headers = {"Authorization": f"Bearer {self._rest.token}", "Accept": "*/*"}
+    async def get_img_bytes(self, image_url: str, max_bytes: int | None = None) -> GitHubResponse:
+        """Download an image, refusing (success=False) one over ``max_bytes``.
+
+        Streamed, so an oversized body is abandoned at the limit instead of being
+        read whole into memory first: any upload can be embedded with image
+        syntax, a 100 MB video included.
+
+        Sent without the token: see ``_ATTACHMENT_HEADERS``.
+        """
+        headers = dict(_ATTACHMENT_HEADERS)
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT_SECONDS) as client:
-                resp = await client.get(image_url, headers=headers)
-                resp.raise_for_status()
-                return GitHubResponse(success=True, data=resp.content)
+                async with client.stream("GET", image_url, headers=headers) as resp:
+                    resp.raise_for_status()
+                    declared = resp.headers.get("Content-Length")
+                    if max_bytes is not None and declared and declared.isdigit() and int(declared) > max_bytes:
+                        return GitHubResponse(success=False, error=f"Image at {image_url} is over {max_bytes} bytes")
+                    body = bytearray()
+                    async for chunk in resp.aiter_bytes(chunk_size=65536):
+                        body.extend(chunk)
+                        if max_bytes is not None and len(body) > max_bytes:
+                            return GitHubResponse(success=False, error=f"Image at {image_url} is over {max_bytes} bytes")
+                    return GitHubResponse(success=True, data=bytes(body))
         except httpx.HTTPStatusError as e:
             return GitHubResponse(
                 success=False,
@@ -831,12 +854,8 @@ class GitHubAsyncDataSource:
         on non-2xx rather than returning a response envelope, so the caller's
         eager-first-chunk wrapper can surface it as a clean HTTP error.
         """
-        headers = {
-            "Authorization": f"Bearer {self._rest.token}",
-            "Accept": "application/vnd.github+json",
-        }
         async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT_SECONDS) as client:
-            async with client.stream("GET", weburl, headers=headers) as response:
+            async with client.stream("GET", weburl, headers=dict(_ATTACHMENT_HEADERS)) as response:
                 response.raise_for_status()
                 if max_bytes is not None:
                     declared = response.headers.get("Content-Length")

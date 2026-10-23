@@ -145,12 +145,12 @@ class TestFetchIssuesBatched:
         c.data_entities_processor.on_new_records = AsyncMock(side_effect=[Exception("boom"), None])
 
         sync = IssuesSync(c)
-        sync._get_sync_checkpoint = AsyncMock(return_value=None)
-        sync._update_sync_checkpoint = AsyncMock()
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
 
         await sync.fetch_issues_batched(repo)
 
-        sync._update_sync_checkpoint.assert_not_awaited()
+        sync._write_checkpoint.assert_not_awaited()
 
     async def test_checkpoint_advances_once_when_all_batches_succeed(self) -> None:
         c = make_mock_connector()
@@ -163,13 +163,13 @@ class TestFetchIssuesBatched:
         c.indexing_filters = None
 
         sync = IssuesSync(c)
-        sync._get_sync_checkpoint = AsyncMock(return_value=None)
-        sync._update_sync_checkpoint = AsyncMock()
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
 
         await sync.fetch_issues_batched(repo)
 
         # One commit per record group, at the end — not one per batch.
-        sync._update_sync_checkpoint.assert_awaited_once()
+        sync._write_checkpoint.assert_awaited_once()
 
     async def test_pages_and_persists_each_page_as_one_batch(self) -> None:
         """The page IS the batch: one build, one persist call, one transaction.
@@ -186,8 +186,8 @@ class TestFetchIssuesBatched:
         c.indexing_filters = None
 
         sync = IssuesSync(c)
-        sync._get_sync_checkpoint = AsyncMock(return_value=None)
-        sync._update_sync_checkpoint = AsyncMock()
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
         # Second page short -> listing exhausted.
         pages = [ok_response(full_page), ok_response([_issue(number=999)])]
         c.runtime.ds_call.side_effect = lambda m, *a, **k: pages.pop(0) if not pages == [] else None
@@ -207,12 +207,12 @@ class TestFetchIssuesBatched:
         })
 
         sync = IssuesSync(c)
-        sync._get_sync_checkpoint = AsyncMock(return_value=None)
-        sync._update_sync_checkpoint = AsyncMock()
+        sync._read_checkpoint = AsyncMock(return_value={})
+        sync._write_checkpoint = AsyncMock()
 
         await sync.fetch_issues_batched(repo)
 
-        sync._update_sync_checkpoint.assert_not_awaited()
+        sync._write_checkpoint.assert_not_awaited()
 
     async def test_no_issues_is_noop(self) -> None:
         c = make_mock_connector()

@@ -564,7 +564,7 @@ class TestFullSync:
         c.runtime.ds_call.return_value = ok_response(always_truncated)
 
         sync = ReposSync(c)
-        sync._prune_deleted_paths = AsyncMock()
+        sync._prune_deleted_paths = AsyncMock(return_value=True)
 
         assert await sync._full_sync(repo, "head-sha") is False
         sync._prune_deleted_paths.assert_not_awaited()
@@ -670,7 +670,7 @@ class TestExcludedTrees:
         ])
         c.runtime.ds_call.return_value = ok_response(tree)
         sync = ReposSync(c)
-        sync._prune_deleted_paths = AsyncMock()
+        sync._prune_deleted_paths = AsyncMock(return_value=True)
 
         assert await sync._full_sync(repo, "head-sha") is True
 
@@ -695,7 +695,7 @@ class TestExcludedTrees:
 
         c.runtime.ds_call.side_effect = dispatch
         sync = ReposSync(c)
-        sync._prune_deleted_paths = AsyncMock()
+        sync._prune_deleted_paths = AsyncMock(return_value=True)
 
         assert await sync._full_sync_untruncated(repo, "head-sha") is True
         assert "t-vendor" not in fetched
@@ -719,7 +719,7 @@ class TestExcludedTrees:
         )
         sync._policy = PathPolicy(linguist=await sync._load_linguist_exclusions(repo, "head-sha"))
         c.runtime.ds_call.return_value = ok_response(tree)
-        sync._prune_deleted_paths = AsyncMock()
+        sync._prune_deleted_paths = AsyncMock(return_value=True)
 
         await sync._full_sync(repo, "head-sha")
 
@@ -780,7 +780,7 @@ class TestExcludedTrees:
         assert len(deleted) == 51
         assert "rec-a" not in deleted
 
-    async def test_the_valve_still_guards_real_source_files(self) -> None:
+    async def test_an_empty_walk_still_never_prunes_real_source_files(self) -> None:
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
@@ -788,7 +788,7 @@ class TestExcludedTrees:
         live.update({f"node_modules/p{i}.js": f"rec-nm-{i}" for i in range(40)})
         sync._list_code_records_by_path = _inventory(live)
 
-        await sync._prune_deleted_paths(repo, {"src/f0.py"})
+        await sync._prune_deleted_paths(repo, set())
 
         c.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
 
@@ -1382,14 +1382,26 @@ class TestPruneDeletedPaths:
         deleted = c.data_entities_processor.on_records_deleted_cascade.call_args.args[0]
         assert deleted == ["rec-c", "rec-sub", "rec-src"]
 
-    async def test_refuses_a_suspiciously_large_prune(self) -> None:
-        """A truncated tree walk would otherwise delete most of a repo."""
+    async def test_a_complete_walk_prunes_even_most_of_a_repo(self) -> None:
+        """A force push or a default-branch switch can drop most files; a complete,
+        untruncated walk is GitHub's definite answer and must be applied."""
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
         sync._list_code_records_by_path = _inventory({f"f{i}.py": f"rec-{i}" for i in range(20)})
 
         await sync._prune_deleted_paths(repo, {"f0.py"})
+
+        deleted = c.data_entities_processor.on_records_deleted_cascade.call_args.args[0]
+        assert sorted(deleted) == sorted(f"rec-{i}" for i in range(1, 20))
+
+    async def test_refuses_to_prune_everything_on_an_empty_walk(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        sync._list_code_records_by_path = _inventory({f"f{i}.py": f"rec-{i}" for i in range(20)})
+
+        await sync._prune_deleted_paths(repo, set())
 
         c.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
 
@@ -1541,7 +1553,7 @@ class TestFullSyncFailures:
         c.runtime.ds_call.return_value = failed_response("500")
         sync = ReposSync(c)
         sync._persist_tree_entries = AsyncMock(return_value=(True, 0, 0))
-        sync._prune_deleted_paths = AsyncMock()
+        sync._prune_deleted_paths = AsyncMock(return_value=True)
 
         ok = await sync._full_sync_untruncated(repo, "head-sha")
 

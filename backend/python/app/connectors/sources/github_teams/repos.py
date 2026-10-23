@@ -90,8 +90,6 @@ from .constants import (
     COMPARE_COMMITS_TOTAL_LIMIT,
     GIT_TREE_TRUNCATION_ENTRY_HINT,
     PREVIEW_RENDERABLE_EXTENSIONS,
-    REPO_DELETE_VALVE_MAX_FRACTION,
-    REPO_DELETE_VALVE_MIN_ABSOLUTE,
 )
 from .models import (
     GitHubLiterals,
@@ -148,27 +146,28 @@ class ReposSync:
     # 1. Entry point: dispatch + checkpoints
     # ------------------------------------------------------------------
 
-    async def run(self, repo: GhObject) -> None:
+    async def run(self, repo: GhObject) -> bool:
         """Sync a repo's code: incremental when a checkpoint exists and the
-        default branch hasn't changed, full sync (re-baseline) otherwise."""
+        default branch hasn't changed, full sync (re-baseline) otherwise.
+        Returns False when the code could not be brought up to date."""
         c = self.c
         owner, name = repo.owner.login, repo.name
         default_branch = repo.default_branch
         if not default_branch:
             self.logger.warning("Repo %s has no default branch (empty repo?); skipping code sync", repo.full_name)
-            return
+            return True
 
         branch_res = await c.runtime.ds_call(c.data_source.get_branch, owner, name, default_branch)
         if not branch_res.success or not branch_res.data:
             self.logger.error(
                 "Failed to fetch branch %s for %s: %s", default_branch, repo.full_name, branch_res.error
             )
-            return
+            return False
         commit = getattr(branch_res.data, "commit", None)
         current_sha = getattr(commit, "sha", None) if commit else None
         if not current_sha:
             self.logger.error("No HEAD commit SHA on branch %s for %s", default_branch, repo.full_name)
-            return
+            return False
 
         self._policy = PathPolicy(
             linguist=await self._load_linguist_exclusions(repo, current_sha),
@@ -186,7 +185,7 @@ class ReposSync:
                 await self._update_checkpoint(repo, current_sha, default_branch)
             else:
                 self.logger.warning("Full code sync for %s completed with errors; checkpoint not advanced", repo.full_name)
-            return
+            return ok
 
         if last_branch and last_branch != default_branch:
             self.logger.info(
@@ -196,16 +195,16 @@ class ReposSync:
             ok = await self._full_sync(repo, current_sha)
             if ok:
                 await self._update_checkpoint(repo, current_sha, default_branch)
-            return
+            return ok
 
         if last_sha == current_sha:
             self.logger.debug("Code repo unchanged for %s (HEAD %s); skipping", repo.full_name, current_sha[:8])
-            return
+            return True
 
         ok = await self._incremental_sync(repo, last_sha, current_sha)
         if ok:
             await self._update_checkpoint(repo, current_sha, default_branch)
-            return
+            return True
 
         self.logger.warning("Incremental code sync failed for %s; falling back to full sync", repo.full_name)
         ok = await self._full_sync(repo, current_sha)
@@ -213,6 +212,7 @@ class ReposSync:
             await self._update_checkpoint(repo, current_sha, default_branch)
         else:
             self.logger.warning("Full sync fallback for %s completed with errors; checkpoint not advanced", repo.full_name)
+        return ok
 
     # ------------------------------------------------------------------
     # Which paths get records
@@ -340,9 +340,8 @@ class ReposSync:
             "(%s excluded as dependency/build/generated)",
             repo.full_name, folders, blobs, len(all_entries) - len(entries),
         )
-        if persisted_ok:
-            await self._prune_deleted_paths(repo, {path for path, *_ in entries})
-        return persisted_ok
+        # A failed prune holds the checkpoint back, so the next sync walks and prunes again.
+        return persisted_ok and await self._prune_deleted_paths(repo, {path for path, *_ in entries})
 
     async def _full_sync_untruncated(self, repo: GhObject, head_sha: str) -> bool:
         """Subtree walk for a repo whose recursive Git Tree came back truncated.
@@ -453,9 +452,7 @@ class ReposSync:
         )
         # Deliberately no pruning after a partial walk: anything "missing" may
         # simply not have been walked.
-        if all_ok:
-            await self._prune_deleted_paths(repo, walked_paths)
-        return all_ok
+        return all_ok and await self._prune_deleted_paths(repo, walked_paths)
 
     async def _persist_tree_entries(
         self, repo: GhObject, entries: list[tuple[str, str, str, int | None]],
@@ -502,16 +499,20 @@ class ReposSync:
 
         return all_ok, len(folders), len(blobs)
 
-    async def _prune_deleted_paths(self, repo: GhObject, walked_paths: set[str]) -> None:
-        """Delete code records whose path is absent from a complete tree walk.
+    async def _prune_deleted_paths(self, repo: GhObject, walked_paths: set[str]) -> bool:
+        """Delete code records whose path is absent from a complete tree walk;
+        return False when the records could not be listed or removed.
 
         Full sync is the recovery path for a diverged history, a Compare Commits
         overflow, and a default-branch change — exactly the cases where the
         incremental path never sees the deletions. Without this, upserts alone
         leave those records permanently.
 
-        Only ever called with a complete, successfully-persisted walk; the same
-        fraction valve as repo deletion guards against a truncated one.
+        Only ever called with a complete, successfully-persisted walk: the
+        recursive tree reports truncation itself, and a truncated walk never gets
+        here. A fraction valve used to refuse any prune above half the records,
+        which left the files of a force push or a default-branch switch to a small
+        branch in PipesHub for good, with the checkpoint already advanced.
         """
         c = self.c
         external_group_id = f"{repo.id}-code-repository"
@@ -524,29 +525,24 @@ class ReposSync:
             )
         except Exception as e:
             self.logger.error("Could not list code records for pruning in %s: %s", repo.full_name, e, exc_info=True)
-            return
+            return False
 
         stale = {path: rec_id for path, rec_id in existing.items() if path not in walked_paths}
         stale_trashed = {path: rec_id for path, rec_id in trashed.items() if path not in walked_paths}
         if not stale and not stale_trashed:
-            return
+            return True
         # Records the rules now exclude (a node_modules ingested before them)
-        # are deliberate removals, so they don't count toward the truncation
-        # valve: they can be most of an old repo's records.
+        # are deliberate removals, whatever the walk returned.
         missing = [path for path in stale if not self._is_excluded_path(path)]
-        judged = len(existing) - (len(stale) - len(missing))
-        if (
-            len(missing) > REPO_DELETE_VALVE_MIN_ABSOLUTE
-            and judged
-            and len(missing) / judged >= REPO_DELETE_VALVE_MAX_FRACTION
-        ):
+        if not walked_paths and missing:
+            # A complete walk that found nothing at all is the one answer not trusted
+            # on its own; every other complete, untruncated tree is GitHub's
+            # definite list of what exists.
             self.logger.error(
-                "Refusing to prune %s of %s code records (%.0f%%) in %s on a single walk — "
-                "this looks like a truncated tree rather than real deletions.",
-                len(missing), judged, len(missing) / judged * 100, repo.full_name,
+                "Refusing to prune %s code records in %s on an empty tree walk.",
+                len(missing), repo.full_name,
             )
-            return
-
+            return True
         self.logger.info(
             "Pruning %s deleted code record(s) from %s", len(stale) + len(stale_trashed), repo.full_name
         )
@@ -560,7 +556,7 @@ class ReposSync:
             )
         except Exception as e:
             self.logger.error("Failed to prune deleted code records in %s: %s", repo.full_name, e, exc_info=True)
-            return
+            return False
         # With the trash on, a record already in it stays there for the purge.
         already_trashed = set(stale_trashed.values()) if (result or {}).get("softDeleted") else set()
         failed = [
@@ -573,6 +569,8 @@ class ReposSync:
                 len(failed) or len(ordered_ids), len(ordered_ids), repo.full_name,
                 failed[:20] or (result or {}).get("reason"),
             )
+            return False
+        return True
 
     async def _list_code_records_by_path(
         self, external_group_id: str, visibility: RecordVisibility = RecordVisibility.LIVE

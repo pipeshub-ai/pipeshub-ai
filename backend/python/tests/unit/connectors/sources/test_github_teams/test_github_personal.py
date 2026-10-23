@@ -276,6 +276,26 @@ class TestPersonalConnectorLifecycle:
         with pytest.raises(RuntimeError, match="api down"):
             await GithubConnector.run_sync(c)
 
+    async def test_run_sync_that_did_not_complete_reports_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = make_mock_connector()
+        c.creator_email = "me@example.com"
+        c.repos.timestamps.cancel = AsyncMock()
+        c.repos.timestamps.schedule = MagicMock()
+        c.ensure_creator_user_app_relation = AsyncMock()
+
+        async def sync_all_repos() -> None:
+            c.projects.failures = ["me/widgets did not sync completely"]
+
+        c.projects.sync_all_repos = AsyncMock(side_effect=sync_all_repos)
+        monkeypatch.setattr(
+            personal_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
+        )
+
+        with pytest.raises(RuntimeError, match="did not complete"):
+            await GithubConnector.run_sync(c)
+
     async def test_run_incremental_sync_delegates(self) -> None:
         c = make_mock_connector()
         c.run_sync = AsyncMock()

@@ -70,9 +70,12 @@ from app.sources.external.github.github_async import GitHubAsyncDataSource
 
 from .comments import CommentsHelper
 from .filters import FiltersHelper
+from .issue_reconciler import IssueReconciler
 from .issues import IssuesSync
 from .projects import ProjectsSync
 from .pull_requests import PullRequestsSync
+from .record_removal import RecordRemover
+from .repo_scope import RepoScopeReconciler
 from .repos import ReposSync
 from .runtime import RuntimeHelper
 from .streaming import StreamingHelper
@@ -230,8 +233,18 @@ class GitHubTeamsConnector(BaseConnector):
             data_store_provider=data_store_provider,
         )
 
+        # Removal of records that left GitHub or the sync's scope
+        self.record_remover = RecordRemover(data_entities_processor, connector_id, logger)
+        self.repo_scope = RepoScopeReconciler(
+            data_entities_processor, self.record_remover, self.record_sync_point, connector_id, logger,
+        )
+
         # Helper modules — instantiated once, hold a reference back to self
         self.runtime = RuntimeHelper(self)
+        self.issue_reconciler = IssueReconciler(
+            self.runtime, lambda: self.data_source, data_entities_processor,
+            self.record_remover, connector_id, logger,
+        )
         self.users = UsersSync(self)
         self.projects = ProjectsSync(self)
         self.repos = ReposSync(self)
@@ -319,7 +332,11 @@ class GitHubTeamsConnector(BaseConnector):
 
     async def _register_authenticated_identity(self) -> None:
         """Record which source account this connector is authenticated as, so a creator whose
-        PipesHub email differs still resolves that account's permissions for this connector."""
+        PipesHub email differs still resolves that account's permissions for this connector.
+
+        Runs after user sync: the email that sync bound the account to is the one its grants
+        carry. ``GET /user`` gives only the public profile email, which is empty for most
+        accounts and may be a personal address that holds no grant."""
         if not self.data_source:
             return
         email, source_user_id = None, None
@@ -331,6 +348,8 @@ class GitHubTeamsConnector(BaseConnector):
         except Exception as e:
             self.logger.debug("Could not read the authenticated GitHub account: %s", e)
             return
+        if isinstance(source_user_id, int):
+            email = self.users.resolved_email(source_user_id) or email
         await self.register_authenticated_source_user(
             email.strip() if isinstance(email, str) else None,
             str(source_user_id) if source_user_id is not None else None,
@@ -342,19 +361,42 @@ class GitHubTeamsConnector(BaseConnector):
             self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
             await self.runtime.refresh_token_if_needed()
-            await self._register_authenticated_identity()
             self.logger.info("Starting GitHub Teams sync")
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "githubteams", self.connector_id, self.logger
             )
+            self._require_scope_filter()
             self.logger.info("Starting sync of GitHub org members")
             await self.users.sync_users()
+            await self._register_authenticated_identity()
             self.logger.info("Starting sync of GitHub repositories")
             await self.projects.sync_all_repos()
             self.repos.timestamps.schedule()
+            if self.projects.failures:
+                raise RuntimeError(
+                    "GitHub Teams sync did not complete: " + "; ".join(self.projects.failures[:10])
+                )
         except Exception as e:
             self.logger.error("Error in GitHub Teams sync: %s", e, exc_info=True)
             raise
+
+    def _require_scope_filter(self) -> None:
+        """Refuse to sync without a repository or organization filter.
+
+        The repository field is required, so a sync without one means the filters
+        could not be read (``load_connector_filters`` answers a config-store failure
+        with empty filters). Falling back to every repository the token can see would
+        index, and grant access to, repositories the admin never selected.
+        """
+        sf = self.sync_filters
+        for key in (SyncFilterKey.REPO_IDS, SyncFilterKey.ORG_IDS):
+            f = sf.get(key) if sf else None
+            if f is not None and not f.is_empty():
+                return
+        raise RuntimeError(
+            "GitHub Teams sync filters name no repository (or could not be read); "
+            "not syncing every repository the token can see."
+        )
 
     async def run_incremental_sync(self) -> None:
         """Incremental sync delegates to the same full sync (deltas are handled via checkpoints)."""

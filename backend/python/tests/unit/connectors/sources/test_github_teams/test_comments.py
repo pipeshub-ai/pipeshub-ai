@@ -775,24 +775,40 @@ class TestCommentBlockFailures:
             await helper.build_issue_comment_blocks("acme", "widgets", 1, 0, record)
         assert exc.value.status_code == HttpStatusCode.CONFLICT.value
 
-    async def test_reviews_failure_still_builds_conversation(self) -> None:
+    async def test_reviews_failure_fails_the_stream(self) -> None:
+        """Review text is part of the PR's indexed content. Building the PR without
+        it would index it as complete and, its revision unchanged, never again."""
         c = make_mock_connector()
         helper = CommentsHelper(c)
         c.runtime.ds_call.side_effect = _dispatch(c, {
             "list_issue_comments": ok_response([_conv_comment(1, "hello", _dt(1))]),
-            "get_pull_reviews": failed_response("403"),
-            "get_pull_review_comments": failed_response("403"),
+            "get_pull_reviews": failed_response("503", status_code=503),
+            "get_pull_review_comments": ok_response([]),
             "get_pull_file_changes": ok_response([]),
         })
         record, pull_request = _pr_blocks_fixture()
 
-        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
-            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
-        )
+        with pytest.raises(HTTPException) as exc:
+            await helper.build_pr_comment_and_diff_blocks(
+                "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+            )
+        assert exc.value.status_code >= 500
 
-        assert len(block_groups) == 1
-        assert "hello" in block_groups[0].data
-        assert block_groups[0].data.startswith("**Comment by alice")
+    async def test_review_comments_failure_fails_the_stream(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": failed_response("502", status_code=502),
+            "get_pull_file_changes": ok_response([]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+
+        with pytest.raises(HTTPException):
+            await helper.build_pr_comment_and_diff_blocks(
+                "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+            )
 
     async def test_file_changes_failure_raises(self) -> None:
         c = make_mock_connector()
@@ -1098,15 +1114,13 @@ class TestCommentBlockFailures:
 
         assert helper._decode_content_file(_Bad()) is None
 
-    async def test_commit_fetch_failure_returns_empty(self) -> None:
+    async def test_commit_fetch_failure_fails_the_stream(self) -> None:
         c = make_mock_connector()
         helper = CommentsHelper(c)
-        c.runtime.ds_call.side_effect = _dispatch(c, {"get_pull_commits": failed_response("500")})
+        c.runtime.ds_call.side_effect = _dispatch(c, {"get_pull_commits": failed_response("500", status_code=500)})
 
-        blocks, bg = await helper.build_pr_commit_blocks("acme", "widgets", 1, index=1, parent_index=0)
-
-        assert blocks == []
-        assert bg is None
+        with pytest.raises(HTTPException):
+            await helper.build_pr_commit_blocks("acme", "widgets", 1, index=1, parent_index=0)
 
 
 async def _single_file_group(file: SimpleNamespace) -> object:
