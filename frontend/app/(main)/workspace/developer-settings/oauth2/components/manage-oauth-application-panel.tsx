@@ -1089,7 +1089,7 @@ export function ManageOAuthApplicationPanel({
                       }}
                     >
                       <Text size="2" style={{ color: 'var(--amber-11)' }}>
-                        {t('workspace.oauth2.create.clientCredentialsWarning')}
+                        {t('workspace.oauth2.create.clientCredentialsIdentityNote')}
                       </Text>
                     </Box>
                   )}

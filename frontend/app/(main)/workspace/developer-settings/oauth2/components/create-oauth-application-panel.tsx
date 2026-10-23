@@ -24,6 +24,7 @@ import {
 import { FormField, WorkspaceRightPanel } from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { Oauth2Api } from '../api';
+import { ServiceAccountsApi } from '../../../service-accounts/api';
 import type {
   OAuthGrantTypeValue,
   OAuthScopeItem,
@@ -139,7 +140,23 @@ export function CreateOAuthApplicationPanel({
     redirectUris?: string;
     grants?: string;
     optionalUrls?: string;
+    serviceAccount?: string;
   }>({});
+
+  /**
+   * The service account a client-credentials application acts as.
+   *
+   * Required for that grant, because its tokens carry no person. Without one
+   * the application would act as whoever created it, which for an
+   * administrator means administrator rights for as long as it exists.
+   */
+  const [serviceAccountId, setServiceAccountId] = useState<string>('');
+  const [serviceAccounts, setServiceAccounts] = useState<
+    { id: string; fullName: string; email: string }[] | null
+  >(null);
+  const [serviceAccountsError, setServiceAccountsError] = useState<string | null>(
+    null
+  );
 
   const [scopesByCategory, setScopesByCategory] = useState<Record<
     string,
@@ -316,6 +333,12 @@ export function CreateOAuthApplicationPanel({
       errors.grants = t('workspace.oauth2.create.errorGrantRequired');
     }
 
+    if (grantTypes.has('client_credentials') && !serviceAccountId) {
+      errors.serviceAccount = t(
+        'workspace.oauth2.create.errorServiceAccountRequired'
+      );
+    }
+
     const optFields = [
       { v: homepageUrl, key: 'home' as const },
       { v: privacyPolicyUrl, key: 'privacy' as const },
@@ -339,8 +362,40 @@ export function CreateOAuthApplicationPanel({
     homepageUrl,
     privacyPolicyUrl,
     termsUrl,
+    serviceAccountId,
     t,
   ]);
+
+  useEffect(() => {
+    if (!grantTypes.has('client_credentials')) return;
+    if (serviceAccounts !== null) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { serviceAccounts: list } = await ServiceAccountsApi.list();
+        if (cancelled) return;
+        setServiceAccounts(
+          list
+            .filter((a) => !a.isDisabled)
+            .map((a) => ({ id: a.id, fullName: a.fullName, email: a.email }))
+        );
+        setServiceAccountsError(null);
+      } catch {
+        if (cancelled) return;
+        // Left as an error rather than an empty list: "there are none" and
+        // "we could not ask" lead to different actions, and only one of them
+        // is "go and make one".
+        setServiceAccounts([]);
+        setServiceAccountsError(
+          t('workspace.oauth2.create.serviceAccountLoadError')
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [grantTypes, serviceAccounts, t]);
 
   const buildPayload = useCallback(() => {
     const redirectUrisClean = usesAuthorizationCode
@@ -357,6 +412,10 @@ export function CreateOAuthApplicationPanel({
       termsOfServiceUrl: optionalUrlOrEmpty(termsUrl),
       isConfidential: true as const,
       knowledgeLimit: knowledgeLimitForApi(knowledgeLimit),
+      // Sent only where it means something; the server ignores it otherwise.
+      tokenIdentityUserId: grantTypes.has('client_credentials')
+        ? serviceAccountId
+        : undefined,
     };
   }, [
     name,
@@ -777,18 +836,76 @@ export function CreateOAuthApplicationPanel({
                   ))}
                 </Flex>
                 {grantTypes.has('client_credentials') && (
-                  <Box
-                    style={{
-                      marginTop: 'var(--space-3)',
-                      backgroundColor: 'var(--amber-2)',
-                      border: '1px solid var(--amber-6)',
-                      borderRadius: 'var(--radius-2)',
-                      padding: 'var(--space-3)',
-                    }}
-                  >
-                    <Text size="2" style={{ color: 'var(--amber-11)' }}>
-                      {t('workspace.oauth2.create.clientCredentialsWarning')}
-                    </Text>
+                  <Box style={{ marginTop: 'var(--space-3)' }}>
+                    <Flex direction="column" gap="1">
+                      <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                        {t('workspace.oauth2.create.serviceAccountHeading')}
+                        <Text
+                          as="span"
+                          weight="medium"
+                          style={{ color: 'var(--red-a11)', marginLeft: 2 }}
+                          aria-hidden
+                        >
+                          *
+                        </Text>
+                      </Text>
+                      <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                        {t('workspace.oauth2.create.serviceAccountHelper')}
+                      </Text>
+                    </Flex>
+
+                    {serviceAccounts === null ? (
+                      <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                        {t('workspace.oauth2.create.serviceAccountLoading')}
+                      </Text>
+                    ) : serviceAccounts.length === 0 ? (
+                      <Box
+                        style={{
+                          marginTop: 'var(--space-2)',
+                          backgroundColor: 'var(--amber-2)',
+                          border: '1px solid var(--amber-6)',
+                          borderRadius: 'var(--radius-2)',
+                          padding: 'var(--space-3)',
+                        }}
+                      >
+                        <Text size="2" style={{ color: 'var(--amber-11)' }}>
+                          {serviceAccountsError ??
+                            t('workspace.oauth2.create.serviceAccountNone')}
+                        </Text>
+                      </Box>
+                    ) : (
+                      <select
+                        value={serviceAccountId}
+                        onChange={(e) => setServiceAccountId(e.target.value)}
+                        aria-label={t(
+                          'workspace.oauth2.create.serviceAccountHeading'
+                        )}
+                        style={{
+                          marginTop: 'var(--space-2)',
+                          width: '100%',
+                          padding: 'var(--space-2)',
+                          borderRadius: 'var(--radius-2)',
+                          border: '1px solid var(--slate-7)',
+                          background: 'var(--color-surface)',
+                          color: 'var(--slate-12)',
+                        }}
+                      >
+                        <option value="">
+                          {t('workspace.oauth2.create.serviceAccountPlaceholder')}
+                        </option>
+                        {serviceAccounts.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.fullName} — {a.email}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+
+                    {generalErrors.serviceAccount && (
+                      <Text size="1" style={{ color: 'var(--red-a11)' }}>
+                        {generalErrors.serviceAccount}
+                      </Text>
+                    )}
                   </Box>
                 )}
               </Box>

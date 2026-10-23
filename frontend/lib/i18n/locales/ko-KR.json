@@ -1875,7 +1875,14 @@
         "errorOptionalUrlInvalid": "선택 URL을 입력하는 경우 유효한 http(s) 주소여야 합니다.",
         "grantRequiredTitle": "권한 부여 유형 필요",
         "grantRequiredDescription": "하나 이상의 권한 부여 유형이 선택된 상태여야 합니다.",
-        "clientCredentialsWarning": "클라이언트 자격 증명 토큰은 토큰 엔드포인트를 호출하는 사람이 아니라 항상 이 애플리케이션을 생성한 사용자로서 Pipeshub에 접근합니다. 부여한 스코프 범위 안에서 토큰은 그 사용자가 접근할 수 있는 모든 것에 접근할 수 있고 그 사용자의 역할까지 물려받으므로, 관리자가 생성한 애플리케이션은 관리자 권한을 갖게 됩니다. 또한 해당 계정이 삭제되면 토큰은 작동을 멈춥니다. 이 애플리케이션이 Authorization Code 플로우도 지원하는 경우, 사용자는 그 방식으로 직접 인증할 수 있습니다."
+        "serviceAccountHeading": "이 애플리케이션이 대신 작업할 서비스 계정",
+        "clientCredentialsIdentityNote": "이 애플리케이션의 토큰은 지정된 서비스 계정으로서 작동하며, 지정된 곃이 없으면 이를 만든 사람으로서 작동합니다. 관리자가 만들었다면 관리자 권한을 갖게 됩니다. 애플리케이션의 토큰 ID에서 설정하거나 변경하세요.",
+        "serviceAccountHelper": "클라이언트 자격 증명 토큰에는 사람이 포함되지 않으므로 이 애플리케이션에는 자체 ID가 필요합니다. 서비스 계정은 항상 구성원이며 관리자가 될 수 없고 로그인할 수 없습니다. 서비스 계정이 없으면 애플리케이션은 이를 만든 사람으로서 작업하게 됩니다.",
+        "serviceAccountPlaceholder": "서비스 계정 선택",
+        "serviceAccountLoading": "서비스 계정을 불러오는 중…",
+        "serviceAccountNone": "아직 서비스 계정이 없습니다. 워크스페이스 → 서비스 계정에서 만든 다음 다시 돌아오세요.",
+        "serviceAccountLoadError": "서비스 계정을 불러오지 못했습니다. 잠시 후 다시 시도하세요.",
+        "errorServiceAccountRequired": "이 애플리케이션이 대신 작업할 서비스 계정을 선택하세요."
       }
     },
     "personalAccessTokens": {

@@ -1875,7 +1875,14 @@
         "errorOptionalUrlInvalid": "選填的 URL 若有填寫，必須是有效的 http(s) 位址。",
         "grantRequiredTitle": "必須選取授權類型",
         "grantRequiredDescription": "至少必須保留一種已選取的授權類型。",
-        "clientCredentialsWarning": "用戶端憑證 token 一律以建立此應用程式的使用者身分存取 Pipeshub，而非以呼叫 token 端點的人的身分。在您授予的權限範圍（scope）內，token 可以存取該使用者能存取的一切，並繼承其角色，因此由管理員建立的應用程式將擁有管理員權限。若該帳號被刪除，token 也會失效。若此應用程式同時支援授權碼流程，使用者仍可透過該方式為自己授權。"
+        "serviceAccountHeading": "此應用程式代表其行事的服務帳號",
+        "clientCredentialsIdentityNote": "此應用程式的權杖以所指向的服務帳號身分行事；若未設定，則以建立它的人的身分行事——如果建立者是管理員，就意味著管理員權限。可在該應用程式的權杖身分中設定或變更。",
+        "serviceAccountHelper": "用戶端認證權杖不包含任何人員，因此此應用程式需要自己的身分。服務帳號始終是成員，絕不會是管理員，且無法登入。沒有服務帳號，應用程式將以建立它的人的身分行事。",
+        "serviceAccountPlaceholder": "選擇服務帳號",
+        "serviceAccountLoading": "正在載入服務帳號…",
+        "serviceAccountNone": "目前還沒有服務帳號。請在「工作區 → 服務帳號」中建立一個，然後返回此處。",
+        "serviceAccountLoadError": "無法載入服務帳號。請稍後再試。",
+        "errorServiceAccountRequired": "請選擇此應用程式代表其行事的服務帳號。"
       }
     },
     "personalAccessTokens": {

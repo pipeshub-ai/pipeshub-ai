@@ -1954,7 +1954,14 @@
         "errorOptionalUrlInvalid": "Pokud volitelné URL vyplníte, musí to být platné http(s) adresy.",
         "grantRequiredTitle": "Typ udělení je povinný",
         "grantRequiredDescription": "Alespoň jeden typ udělení musí zůstat vybraný.",
-        "clientCredentialsWarning": "Tokeny z přihlašovacích údajů klienta přistupují k PipesHub vždy jako uživatel, který tuto aplikaci vytvořil — nikoli jako ten, kdo volá koncový bod pro tokeny. V rámci rozsahů, které jí udělíte, má token přístup ke všemu, k čemu má přístup daná osoba, a dědí její roli, takže aplikace vytvořená správcem má přístup správce. Přestane také fungovat, pokud bude tento účet smazán. Pokud tato aplikace podporuje také tok s autorizačním kódem, uživatelé ji mohou tímto způsobem i nadále autorizovat sami za sebe."
+        "serviceAccountHeading": "Servisní účet, jehož jménem tato aplikace jedná",
+        "clientCredentialsIdentityNote": "Tokeny této aplikace jednají jménem servisního účtu, na který je nasměrována, a pokud žádný nastavený není, jménem toho, kdo ji vytvořil — což u správce znamená správcovský přístup. Nastavit nebo změnit to lze u identity tokenu aplikace.",
+        "serviceAccountHelper": "Tokeny s přihlašovacími údaji klienta neobsahují žádnou osobu, takže tato aplikace potřebuje vlastní identitu. Servisní účet je vždy člen, nikdy správce, a nemůže se přihlásit. Bez něj by aplikace jednala jménem toho, kdo ji vytvořil.",
+        "serviceAccountPlaceholder": "Vyberte servisní účet",
+        "serviceAccountLoading": "Načítání servisních účtů…",
+        "serviceAccountNone": "Zatím neexistují žádné servisní účty. Vytvořte jeden v Pracovní prostor → Servisní účty a pak se sem vraťte.",
+        "serviceAccountLoadError": "Servisní účty se nepodařilo načíst. Zkuste to za okamžik znovu.",
+        "errorServiceAccountRequired": "Vyberte servisní účet, jehož jménem tato aplikace jedná."
       }
     },
     "personalAccessTokens": {

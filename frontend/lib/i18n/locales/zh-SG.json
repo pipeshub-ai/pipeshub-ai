@@ -1875,7 +1875,14 @@
         "errorOptionalUrlInvalid": "可选 URL 如已填写，必须是有效的 http(s) 地址。",
         "grantRequiredTitle": "需要授权类型",
         "grantRequiredDescription": "必须至少保留一种已选择的授权类型。",
-        "clientCredentialsWarning": "客户端凭据令牌始终以创建此应用的用户身份访问 Pipeshub，而不是以调用令牌端点的任何人的身份。在您授予的权限范围（scope）内，令牌可以访问该用户能访问的一切，并继承其角色，因此由管理员创建的应用将拥有管理员权限。如果该账户被删除，令牌也会失效。如果此应用同时支持授权码流程，用户仍可通过该方式为自己授权。"
+        "serviceAccountHeading": "此应用程序代表其行事的服务账户",
+        "clientCredentialsIdentityNote": "此应用程序的令牌以所指向的服务账户身份行事；若未设置，则以创建它的人的身份行事——如果创建者是管理员，就意味着管理员权限。可在该应用程序的令牌身份中设置或更改。",
+        "serviceAccountHelper": "客户端凭据令牌不包含任何人员，因此此应用程序需要自己的身份。服务账户始终是成员，绝不会是管理员，并且无法登录。没有服务账户，应用程序将以创建它的人的身份行事。",
+        "serviceAccountPlaceholder": "选择服务账户",
+        "serviceAccountLoading": "正在加载服务账户…",
+        "serviceAccountNone": "目前还没有服务账户。请在“工作区 → 服务账户”中创建一个，然后返回此处。",
+        "serviceAccountLoadError": "无法加载服务账户。请稍后重试。",
+        "errorServiceAccountRequired": "请选择此应用程序代表其行事的服务账户。"
       }
     },
     "personalAccessTokens": {
