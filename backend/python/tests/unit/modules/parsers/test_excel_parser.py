@@ -2757,34 +2757,6 @@ class TestProcessSheetExceptionHandler:
 
         assert "sheet error" in str(exc_info.value)
 
-
-class TestProcessCellFormulaCell:
-    """Cover lines 407, 460: formula cell handling in _process_sheet."""
-
-    def test_formula_cell_data_type_f(self):
-        """Cell with data_type 'f' gets formula attribute added."""
-        from openpyxl.cell.cell import Cell
-
-        ep = _make_excel_parser()
-        cell = MagicMock(spec=Cell)
-        cell.value = "=SUM(A1:A10)"
-        cell.data_type = "f"
-        cell.number_format = "General"
-        cell.column_letter = "B"
-        cell.coordinate = "B2"
-        cell.font = MagicMock(bold=False, italic=False, size=11, color=None)
-        cell.fill = MagicMock(start_color=None)
-        cell.alignment = MagicMock(horizontal=None, vertical=None)
-
-        # _process_cell handles data_type but _process_sheet checks for "f"
-        # We test via _process_sheet behavior. The formula check is in _process_sheet
-        # at line 459-460, not in _process_cell. Let's verify that.
-        # Actually, looking at the code, lines 459-460 are in _process_sheet.
-        # _process_cell doesn't have formula handling. Let's build a mock sheet
-        # that exercises lines 459-460.
-        pass
-
-
 class TestProcessSheetFormulaCells:
     """Cover lines 459-460: formula cell in _process_sheet."""
 
