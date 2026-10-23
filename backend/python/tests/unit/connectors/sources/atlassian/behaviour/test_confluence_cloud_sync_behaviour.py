@@ -6,6 +6,7 @@ api.atlassian.com) is answered by an in-memory stub, and our databases are
 in-memory fakes.
 """
 
+import asyncio
 import logging
 import re
 import time
@@ -2200,3 +2201,46 @@ class TestSpentQuotaEdges:
 
         assert err.value.status_code == 429
         assert int(err.value.headers["Retry-After"]) > 0
+
+
+class TestSmallAuditFixes:
+    async def test_a_site_url_typed_with_wiki_is_not_doubled(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints, {"auth": {
+            "authType": "API_TOKEN", "baseUrl": f"{SITE}/wiki/", "email": "svc@acme.com", "apiToken": "tok"}, "filters": {}})
+
+        assert connector.external_client.get_client().get_base_url() == f"{SITE}/wiki/api/v2"
+
+    async def test_cleanup_closes_the_http_client(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        api.on("GET", f"{V2}/spaces", {"results": []})
+        await connector.test_connection_and_access()
+        client = connector.external_client.get_client()
+        assert client.client is not None
+
+        await connector.cleanup()
+
+        assert client.client is None
+
+    async def test_a_cancelled_sync_sends_no_notice(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        for step in ("_sync_users", "register_authenticated_source_user"):
+            setattr(connector, step, AsyncMock())
+        connector._sync_user_groups = AsyncMock(side_effect=lambda: connector._note_problem("a group could not be read"))
+        connector._sync_spaces = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            await connector.run_sync()
+
+        assert connector._notification_service.sent == []
+
+    async def test_a_restriction_entry_without_an_id_keeps_the_page_restricted(
+        self, api, db, checkpoints, search
+    ) -> None:
+        search.by_cursor[None] = search_page([v1_page("10")])
+        api.on("GET", f"{V1}/content/10/restriction", {"results": [{"operation": "read", "restrictions": {
+            "user": {"results": [{"displayName": "Someone"}]}, "group": {"results": []}}}]})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED, "not opened to the whole space"

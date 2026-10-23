@@ -287,8 +287,10 @@ class ConfluenceClient(IClient):
                 if not api_token:
                     raise ValueError("API token is required for API_TOKEN auth")
 
-                # Normalize base URL
+                # Normalize base URL; a site URL typed with its /wiki path must not become /wiki/wiki
                 base_url = base_url.rstrip('/')
+                if email and base_url.endswith('/wiki'):
+                    base_url = base_url[: -len('/wiki')]
 
                 if email:
                     # Cloud: Basic auth with email:token + /wiki/api/v2

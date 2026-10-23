@@ -868,6 +868,12 @@ class ConfluenceConnector(BaseConnector):
 
             self.logger.info("✅ Confluence sync completed successfully")
 
+        except asyncio.CancelledError:
+            # Stopped on purpose (disabled, deleted, stopped): no notice saying it finished.
+            self._sync_problems = []
+            self._skipped_items = defaultdict(int)
+            self._sync_read_incomplete = True
+            raise
         except AtlassianQuotaExhausted as e:
             # Not a failure: the next sync resumes from the checkpoints this one kept.
             self.logger.warning(f"⚠️ Confluence sync stopped: {e}")
@@ -1144,6 +1150,7 @@ class ConfluenceConnector(BaseConnector):
                 page_ids = {r.get("user", {}).get("accountId") or r.get("accountId") for r in users_data} - {None}
                 if not page_ids - seen_account_ids:
                     # The same page again: the offset is being ignored, so stop rather than loop.
+                    self._note_problem("The Confluence user list repeated a page, so it may not have been read to the end")
                     break
                 seen_account_ids |= page_ids
 
@@ -3903,6 +3910,10 @@ class ConfluenceConnector(BaseConnector):
             for user_data in user_results:
                 # Extract accountId (could be under different keys)
                 principal_id = user_data.get("accountId") or user_data.get("id")
+                if not principal_id:
+                    # Dropping it could leave the restriction with no grants, which reads as open.
+                    permissions.append(unresolved_principal_permission("unidentified-user", permission_type))
+                    continue
                 if principal_id:
                     permission = await self._create_permission_from_principal(
                         "user",
@@ -3918,6 +3929,11 @@ class ConfluenceConnector(BaseConnector):
 
             for group_data in group_results:
                 principal_id = group_data.get("id")
+                if not principal_id and group_data.get("name"):
+                    principal_id = (await self._ensure_group_name_cache()).get(str(group_data["name"]).lower())
+                if not principal_id:
+                    permissions.append(unresolved_principal_permission("unidentified-group", permission_type))
+                    continue
                 if principal_id:
                     permission = await self._create_permission_from_principal(
                         "group",
@@ -6612,9 +6628,14 @@ class ConfluenceConnector(BaseConnector):
             return None
 
     async def cleanup(self) -> None:
-        """Cleanup resources."""
+        """Close the HTTP client, so its pooled connections go when the connector does."""
         self.logger.info("Cleaning up Confluence connector resources")
-        # Add cleanup logic if needed
+        client = self.external_client.get_client() if self.external_client else None
+        if client is not None and hasattr(client, "close"):
+            try:
+                await client.close()
+            except Exception as e:
+                self.logger.debug(f"Closing the Confluence HTTP client failed: {e}")
 
     async def get_filter_options(
         self,
