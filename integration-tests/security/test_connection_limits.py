@@ -358,6 +358,11 @@ class TestMcp:
         assert err_out or OUTSIDE_MESSAGE in opened_out, opened_out[:1000]
         assert corpus["outside_record"] not in opened_out
 
+    def test_a_folder_limit_browses_from_its_folder(self, base_url, folder_pat, corpus) -> None:
+        (root, _), = mcp(base_url, folder_pat, ("pipeshub_get_record_content", {"mode": "navigate"}))
+        assert corpus["picked_folder"] in root, root[:1500]
+        assert corpus["other_folder"] not in root and corpus["sibling_record"] not in root, root[:1500]
+
     def test_the_source_list_names_only_what_is_shared(self, base_url, collection_pat, unlimited_pat, corpus) -> None:
         (limited, _), = mcp(base_url, collection_pat, ("pipeshub_sources", {"include": ["sources"]}))
         (control, _), = mcp(base_url, unlimited_pat, ("pipeshub_sources", {"include": ["sources"]}))
@@ -491,3 +496,27 @@ class TestKnowledgeBaseRoutes:
                               params={"limit": 100}, timeout=30)
         assert listed.status_code == 200, listed.text[:300]
         assert corpus["kb_out"] not in listed.text and corpus["kb_in"] in listed.text
+
+    def test_a_folder_limit_lists_its_folder_at_the_knowledge_hub_root(self, base_url, folder_pat, corpus) -> None:
+        listed = requests.get(f"{base_url}/api/v1/knowledgeBase/knowledge-hub/nodes",
+                              headers=_bearer(folder_pat), params={"limit": 50}, timeout=30)
+        assert listed.status_code == 200, listed.text[:300]
+        ids = [item["id"] for item in listed.json()["items"]]
+        assert corpus["picked_folder"] in ids, ids
+        assert not {corpus["kb_in"], corpus["kb_out"], corpus["other_folder"]} & set(ids), ids
+        assert listed.json()["pagination"]["totalItems"] == len(ids)
+
+    def test_a_folder_limited_search_pages_over_what_it_shares(self, base_url, folder_pat, corpus) -> None:
+        """Every name in the corpus carries the tag; the limit shares only the folder and its file."""
+        url = f"{base_url}/api/v1/knowledgeBase/knowledge-hub/nodes"
+        first = requests.get(url, headers=_bearer(folder_pat), params={"q": corpus["tag"], "limit": 1}, timeout=60)
+        assert first.status_code == 200, first.text[:300]
+        page = first.json()["pagination"]
+        assert len(first.json()["items"]) == 1 and page["hasNext"] and page["nextCursor"], page
+        second = requests.get(url, headers=_bearer(folder_pat),
+                              params={"cursor": page["nextCursor"], "limit": 1}, timeout=60)
+        assert second.status_code == 200, second.text[:300]
+        found = {item["id"] for body in (first.json(), second.json()) for item in body["items"]}
+        assert found == {corpus["picked_folder"], corpus["inside_record"]}, found
+        assert second.json()["pagination"]["hasNext"] is False
+        assert second.json()["pagination"]["totalItems"] == 2

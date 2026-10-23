@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames
 from app.services.graph_db.interface.graph_db_provider import (
     AGENT_BOUND_FILTER_KEYS,
     ALLOWED_FILTER_KEYS,
@@ -369,6 +369,124 @@ async def connection_coverage(
     _set_bound(bound, CONNECTION_BOUND_FILTER_KEYS, connection_sources)
     _, (scope,) = await resolve_request_scopes(graph_provider, user_key, org_id, bound)
     return scope.app_ids, scope.connector_ids - scope.app_ids
+
+
+def names_below_apps(sources: Mapping[str, Iterable[str]] | None) -> bool:
+    """Whether a limit or a selection names any record group, folder or file."""
+    return bool(sources) and any(sources.get(key) for key in ("recordGroups", "records"))
+
+
+@dataclass(frozen=True)
+class NamedNode:
+    """A node a selection or a bound names, as it is stored."""
+
+    #: The selection key that names it: ``apps``, ``kb``, ``recordGroups``,
+    #: ``records`` or ``recordsExact``.
+    key: str
+    id: str
+    doc: Mapping[str, Any]
+
+    @property
+    def node_type(self) -> str:
+        """``app``, ``recordGroup``, ``folder`` or ``record``, as listings name them."""
+        if self.key in ("apps", "kb"):
+            return "app"
+        if self.key == "recordGroups":
+            return "recordGroup"
+        return "folder" if self.doc.get("mimeType") in FOLDER_MIME_TYPES else "record"
+
+    @property
+    def name(self) -> str:
+        return self.doc.get("name") or self.doc.get("groupName") or self.doc.get("recordName") or self.id
+
+    @property
+    def created_at(self) -> int | None:
+        """When the source says it was made, else when it was synced; as listings date it."""
+        return self.doc.get("sourceCreatedAtTimestamp") or self.doc.get("createdAtTimestamp") or None
+
+    @property
+    def updated_at(self) -> int | None:
+        return self.doc.get("sourceLastModifiedTimestamp") or self.doc.get("updatedAtTimestamp") or None
+
+
+_NAMED_COLLECTIONS = {
+    "apps": CollectionNames.APPS.value,
+    "kb": CollectionNames.APPS.value,
+    "recordGroups": CollectionNames.RECORD_GROUPS.value,
+    "records": CollectionNames.RECORDS.value,
+    "recordsExact": CollectionNames.RECORDS.value,
+}
+_DATES = ["createdAtTimestamp", "updatedAtTimestamp", "sourceCreatedAtTimestamp", "sourceLastModifiedTimestamp"]
+_NAMED_FIELDS = {
+    CollectionNames.APPS.value: ["name", "type"],
+    CollectionNames.RECORD_GROUPS.value: [
+        "groupName", "groupType", "connectorName", "connectorId", "webUrl", *_DATES,
+    ],
+    CollectionNames.RECORDS.value: [
+        "recordName", "recordType", "mimeType", "connectorName", "connectorId", "origin", "webUrl",
+        "indexingStatus", "sizeInBytes", "extension", *_DATES,
+    ],
+}
+
+
+async def readable_named_nodes(
+    graph_provider: IGraphDBProvider,
+    user_key: str,
+    org_id: str,
+    named: Mapping[str, Iterable[str]],
+    bounds: Iterable[SelectionScope],
+) -> list[NamedNode]:
+    """Each node ``named`` names (keyed as a selection is) that the user can
+    read and that every one of ``bounds`` admits, in the order named."""
+    named = {key: [i for i in ids or () if isinstance(i, str) and i] for key, ids in named.items()}
+    bounds = list(bounds)
+    ids = list(dict.fromkeys(i for node_ids in named.values() for i in node_ids))
+    if not ids:
+        return []
+    access = await graph_provider.check_access(user_key, org_id, node_ids=ids, scopes=bounds)
+    readable = access.node_ids_in_scope if bounds else access.node_ids
+    docs: dict[str, dict[str, Mapping[str, Any]]] = {}
+    for collection in dict.fromkeys(_NAMED_COLLECTIONS.values()):
+        wanted = list(dict.fromkeys(
+            i for key, node_ids in named.items() if _NAMED_COLLECTIONS.get(key) == collection
+            for i in node_ids if i in readable
+        ))
+        if wanted:
+            rows = await graph_provider.get_nodes_by_field_in(
+                collection, "id", wanted, return_fields=["id", *_NAMED_FIELDS[collection]],
+            )
+            docs[collection] = {(row.get("id") or row.get("_key")): row for row in rows or []}
+    return [
+        NamedNode(key=key, id=node_id, doc=docs[_NAMED_COLLECTIONS[key]][node_id])
+        for key, node_ids in named.items()
+        for node_id in node_ids
+        if node_id in docs.get(_NAMED_COLLECTIONS.get(key, ""), {})
+    ]
+
+
+async def connection_named_nodes(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    connection_sources: Mapping[str, Iterable[str]],
+) -> list[NamedNode]:
+    """The top-level items a connected app's limit lets it open: each app,
+    collection, record group, folder and file the limit names that the user
+    can read. Empty when the user is unknown.
+
+    Raises:
+        SelectionTooLargeError, PermissionVerificationUnavailableError: see
+            ``resolve_selection_scope``.
+    """
+    user = await graph_provider.get_user_by_user_id(user_id=user_id)
+    user_key = (user.get("_key") or user.get("id")) if user else None
+    if not user_key:
+        return []
+    bound: dict[str, Any] = {}
+    _set_bound(bound, CONNECTION_BOUND_FILTER_KEYS, connection_sources)
+    _, bounds = await resolve_request_scopes(graph_provider, user_key, org_id, bound)
+    named = {key: connection_sources.get(key) or () for key in ("apps", "recordGroups", "records")}
+    return await readable_named_nodes(graph_provider, user_key, org_id, named, bounds)
 
 
 async def prepare_turn_scope(

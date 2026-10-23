@@ -6,24 +6,44 @@ from typing import Any, Dict, List, Optional, Set, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
-from app.api.connection_limit import ids_outside_connection, refuse_outside_connection
-from app.api.middlewares.auth import is_request_admin, require_scopes
+from app.api.connection_limit import (
+    connection_apps,
+    ids_outside_connection,
+    named_inside_connection,
+    refuse_outside_connection,
+    root_lists_what_the_limit_names,
+)
+from app.api.middlewares.auth import connection_limit, is_request_admin, require_scopes
 from app.config.constants.arangodb import ProgressStatus
 from app.config.constants.service import OAuthScopes
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
+    CountItem,
+    CountsInfo,
     IncludeOption,
     KnowledgeHubErrorResponse,
     KnowledgeHubNodesResponse,
+    NodeItem,
     NodeType,
     OriginType,
+    PaginationInfo,
     SortField,
     SortOrder,
+)
+from app.connectors.sources.localKB.handlers.kh_bounded import (
+    BOUNDED_BATCH,
+    BoundedRead,
+    Position,
+    decode_bounded_cursor,
+    encode_bounded_cursor,
+    is_bounded_cursor,
+    read_inside,
 )
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.containers.connector import ConnectorAppContainer
 from app.models.entities import RecordType
+from app.modules.retrieval.selection_scope import names_below_apps
 from app.utils.user_messages import action_failed
 
 # Handlers bind their own ``logger`` inside the request, so the module logger
@@ -436,31 +456,34 @@ async def _handle_get_nodes(
         parsed_updated_at = _parse_date_range(updated_at)
         parsed_size = _parse_size_range(size)
 
-        # Call service
-        result = await knowledge_hub_service.get_nodes(
-            user_id=user_id,
-            org_id=org_id,
-            parent_id=parent_id,
-            parent_type=parent_type,
-            only_containers=only_containers,
-            page=page,
-            limit=limit,
-            sort_by=sort_by,
-            sort_order=sort_order,
-            q=q,
-            node_types=parsed_node_types,
-            record_types=parsed_record_types,
-            origins=parsed_origins,
-            connector_ids=parsed_connector_ids,
-            indexing_status=parsed_indexing_status,
-            created_at=parsed_created_at,
-            updated_at=parsed_updated_at,
-            size=parsed_size,
-            flattened=flattened,
-            include=parsed_include,
-            cursor=cursor,
-            is_org_admin=is_request_admin(request),
-        )
+        query: dict[str, Any] = {
+            "user_id": user_id,
+            "org_id": org_id,
+            "parent_id": parent_id,
+            "parent_type": parent_type,
+            "only_containers": only_containers,
+            "page": page,
+            "limit": limit,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+            "q": q,
+            "node_types": parsed_node_types,
+            "record_types": parsed_record_types,
+            "origins": parsed_origins,
+            "connector_ids": parsed_connector_ids,
+            "indexing_status": parsed_indexing_status,
+            "created_at": parsed_created_at,
+            "updated_at": parsed_updated_at,
+            "size": parsed_size,
+            "flattened": flattened,
+            "include": parsed_include,
+            "cursor": cursor,
+            "is_org_admin": is_request_admin(request),
+        }
+        if parent_id is None and connection_limit(request.state.user) is not None:
+            result = await _root_inside_connection(request, knowledge_hub_service, query)
+        else:
+            result = await knowledge_hub_service.get_nodes(**query)
 
         if not result.success:
             # The service flags what it wrote for a person with a 4xx code (a node
@@ -482,8 +505,8 @@ async def _handle_get_nodes(
                 detail=error_detail
             )
 
-        # shortcut: hiding items after paging can leave a page short and the
-        # counts high; filter in the listing query if that matters to a client.
+        # Every listing above keeps to the limit before it is paged; this only
+        # guards against a row that should not have reached it.
         outside = await ids_outside_connection(
             request, request.app.state.graph_provider, org_id, user_id, [item.id for item in result.items],
         )
@@ -503,3 +526,240 @@ async def _handle_get_nodes(
             detail=action_failed("open this collection")
         ) from e
 
+
+
+
+# The service refuses a page number past this; a later page is reached by cursor.
+_MAX_PAGE_WALK = 50
+_INVALID_LIMIT_CURSOR = "Invalid cursor: issued for a different listing"
+_COUNT_LABELS = {"app": "apps", "folder": "folders", "recordGroup": "groups", "record": "records"}
+_SORT_KEYS = {
+    "name": lambda item: (item.name or "").casefold(),
+    "createdAt": lambda item: item.createdAt or 0,
+    "updatedAt": lambda item: item.updatedAt or 0,
+    "size": lambda item: item.sizeInBytes if item.sizeInBytes is not None else -1,
+    "type": lambda item: str(item.nodeType),
+}
+
+
+def _bad_cursor() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_INVALID_LIMIT_CURSOR)
+
+
+def _page_walk_refused() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"Invalid page: page must not exceed {_MAX_PAGE_WALK}. Use the cursor from a previous response.",
+    )
+
+
+async def _root_inside_connection(
+    request: Request, service: KnowledgeHubService, query: dict[str, Any],
+) -> KnowledgeHubNodesResponse:
+    """The root listing or global search of a connected app with a limit, paged
+    over what the limit admits only.
+
+    A limit of whole apps narrows the listing query itself. A limit that also
+    names folders or files cannot be put in the query: a browse lists what the
+    limit names, and a search reads the query's pages and keeps what it admits.
+    """
+    limit_sources = connection_limit(request.state.user) or {}
+    whole, partial = await connection_apps(
+        request, request.app.state.graph_provider, query["org_id"], query["user_id"],
+    )
+    cursor = query["cursor"]
+    # The service's own cursor checks it was issued to a listing narrowed the same way.
+    if not names_below_apps(limit_sources) or (cursor and not is_bounded_cursor(cursor)):
+        return await service.get_nodes(**query, within_app_ids=whole)
+
+    if cursor:
+        try:
+            mode, seen, position = decode_bounded_cursor(cursor)
+        except ValueError:
+            raise _bad_cursor() from None
+    else:
+        if query["page"] > _MAX_PAGE_WALK:
+            raise _page_walk_refused()
+        flattened = query["flattened"]
+        searching = flattened if flattened is not None else service._has_flattening_filters(
+            query["q"], query["node_types"], query["record_types"], query["origins"],
+            query["connector_ids"], query["indexing_status"], query["created_at"],
+            query["updated_at"], query["size"],
+        )
+        mode, seen, position = ("search" if searching else "browse"), 0, Position()
+    if mode == "search":
+        return await _search_inside_connection(
+            request, service, query, whole | partial, seen=seen, position=position, by_cursor=bool(cursor),
+        )
+    if root_lists_what_the_limit_names(limit_sources):
+        offset = seen if cursor else (query["page"] - 1) * query["limit"]
+        return await _named_root(request, service, query, whole | partial, offset=offset)
+    if cursor:
+        raise _bad_cursor()
+    return await service.get_nodes(**query, within_app_ids=whole)
+
+
+def _admits(item: NodeItem, query: dict[str, Any]) -> bool:
+    """Whether ``item`` passes the request's filters, as the listing query applies them."""
+    q = query["q"]
+    if q and q.casefold() not in (item.name or "").casefold():
+        return False
+    for allowed, value in (
+        (query["node_types"], item.nodeType), (query["record_types"], item.recordType),
+        (query["origins"], item.origin), (query["indexing_status"], item.indexingStatus),
+    ):
+        if allowed and value not in allowed:
+            return False
+    connector_ids = query["connector_ids"]
+    if connector_ids and item.connectorId not in connector_ids and item.id not in connector_ids:
+        return False
+    if query["only_containers"] and not (item.hasChildren or item.nodeType in ("app", "recordGroup", "folder")):
+        return False
+    for bounds, value in (
+        (query["created_at"], item.createdAt), (query["updated_at"], item.updatedAt), (query["size"], item.sizeInBytes),
+    ):
+        if not bounds:
+            continue
+        if value is None:
+            return False
+        if bounds.get("gte") is not None and value < bounds["gte"]:
+            return False
+        if bounds.get("lte") is not None and value > bounds["lte"]:
+            return False
+    return True
+
+
+def _counts(items: list[NodeItem]) -> CountsInfo:
+    by_type: dict[str, int] = {}
+    for item in items:
+        by_type[str(item.nodeType)] = by_type.get(str(item.nodeType), 0) + 1
+    return CountsInfo(
+        items=[CountItem(label=_COUNT_LABELS.get(t, t), count=n) for t, n in sorted(by_type.items())],
+        total=len(items),
+    )
+
+
+async def _named_root(
+    request: Request, service: KnowledgeHubService, query: dict[str, Any], apps: frozenset,
+    *, offset: int,
+) -> KnowledgeHubNodesResponse:
+    """The root of a connection limited below app level: each app, record
+    group, folder and file its limit names that the user can read, as one
+    listing with exact totals."""
+    include = query["include"] or []
+    named = await named_inside_connection(
+        request, request.app.state.graph_provider, query["org_id"], query["user_id"],
+    )
+    named_apps = {node.id for node in named if node.node_type == "app"}
+    # Read over every app the limit touches, so the filter options name them all;
+    # an app reached only through some of its folders is not itself listed.
+    listing = await service.get_nodes(
+        **{**query, "page": 1, "limit": 200, "cursor": None, "flattened": False,
+           "include": [i for i in include if i != "counts"] or None},
+        within_app_ids=apps,
+    )
+    if not listing.success:
+        return listing
+    rows = [item for item in listing.items if item.id in named_apps]
+    rows += [
+        item for item in await service.named_node_items(query["user_id"], query["org_id"], named)
+        if _admits(item, query)
+    ]
+    sort_key = _SORT_KEYS.get(query["sort_by"], _SORT_KEYS["name"])
+    rows.sort(key=lambda item: (sort_key(item), item.id), reverse=query["sort_order"] == "desc")
+    limit = query["limit"]
+    page = rows[offset:offset + limit]
+    end = offset + len(page)
+    return KnowledgeHubNodesResponse(
+        success=True,
+        items=page,
+        pagination=PaginationInfo(
+            limit=limit,
+            totalItems=len(rows),
+            hasNext=end < len(rows),
+            hasPrev=offset > 0,
+            startIndex=offset + 1 if page else 0,
+            endIndex=end,
+            currentPageItems=len(page),
+            nextCursor=encode_bounded_cursor("browse", end) if end < len(rows) else None,
+            prevCursor=encode_bounded_cursor("browse", max(0, offset - limit)) if offset > 0 else None,
+            page=query["page"] if query["cursor"] is None else None,
+            totalPages=(len(rows) + limit - 1) // limit if query["cursor"] is None else None,
+        ),
+        filters=listing.filters,
+        permissions=listing.permissions,
+        breadcrumbs=[] if "breadcrumbs" in include else None,
+        counts=_counts(rows) if "counts" in include else None,
+    )
+
+
+def _resume(read: BoundedRead, limit: int) -> Position | None:
+    """Where the page after a read's first ``limit`` rows starts; None when none follows."""
+    if len(read.kept) > limit:
+        return read.after[limit - 1]
+    return read.stop
+
+
+async def _search_inside_connection(
+    request: Request, service: KnowledgeHubService, query: dict[str, Any], apps: frozenset,
+    *, seen: int, position: Position, by_cursor: bool,
+) -> KnowledgeHubNodesResponse:
+    """A global search of a connection limited below app level: the search's
+    own pages, narrowed to the apps the limit touches, refilled with what the
+    limit admits. The total counts what has been found so far, and is final
+    once no page follows."""
+    graph_provider = request.app.state.graph_provider
+    org_id, user_id, limit = query["org_id"], query["user_id"], query["limit"]
+    include = query["include"] or []
+    extras = [i for i in include if i != "counts"] or None
+    final = False
+
+    async def fetch(at: Position, *, first: bool) -> KnowledgeHubNodesResponse:
+        return await service.get_nodes(
+            **{**query, "page": 1 if at.cursor else at.page, "limit": BOUNDED_BATCH, "cursor": at.cursor,
+               "flattened": True, "include": extras if first and final else None},
+            within_app_ids=apps,
+        )
+
+    async def inside(ids: list[str]) -> set[str]:
+        return set(ids) - await ids_outside_connection(request, graph_provider, org_id, user_id, ids)
+
+    pages = 1 if by_cursor else query["page"]
+    for number in range(1, pages + 1):
+        final = number == pages
+        read = await read_inside(fetch, inside, start=position, want=limit + 1)
+        if read.failed:
+            return read.first
+        if final:
+            break
+        following = _resume(read, limit)
+        seen += min(len(read.kept), limit)
+        if following is None:
+            # Asked for a page past the last one.
+            read.kept, read.after, read.stop, read.exhausted = [], [], None, True
+            break
+        position = following
+    items = read.kept[:limit]
+    following = _resume(read, limit)
+    return KnowledgeHubNodesResponse(
+        success=True,
+        items=items,
+        pagination=PaginationInfo(
+            limit=limit,
+            totalItems=seen + len(read.kept),
+            hasNext=following is not None,
+            hasPrev=seen > 0,
+            startIndex=seen + 1 if items else 0,
+            endIndex=seen + len(items),
+            currentPageItems=len(items),
+            nextCursor=(
+                encode_bounded_cursor("search", seen + len(items), following) if following is not None else None
+            ),
+            page=None if by_cursor else query["page"],
+        ),
+        filters=read.first.filters,
+        permissions=read.first.permissions,
+        breadcrumbs=[] if "breadcrumbs" in include else None,
+        # Counted only when this one read covered the whole answer.
+        counts=_counts(read.kept) if "counts" in include and seen == 0 and read.exhausted else None,
+    )

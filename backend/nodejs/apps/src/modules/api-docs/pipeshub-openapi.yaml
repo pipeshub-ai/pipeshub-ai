@@ -7380,6 +7380,10 @@ components:
               description: Page size.
             totalItems:
               type: integer
+              description: |
+                Items in the whole result. For a search by a connected app
+                limited to folders or files, the matches found so far: it can
+                grow from page to page and is final once `hasNext` is false.
             totalPages:
               type: integer
             hasNext:
@@ -30437,6 +30441,19 @@ paths:
         - `breadcrumbs` — adds the breadcrumb trail (empty at root level)
         - `permissions` — adds the caller's permission flags
 
+        **A connected app with a limit**
+
+        A token that may see only some sources pages and counts only what
+        its limit lets it see:
+        - Limited to whole apps or collections: the listing and the search
+          cover those, with exact totals and counts.
+        - Limited to folders or files: the listing returns those folders and
+          files, each one a node to open, with exact totals. A search reads
+          forward only (`prevCursor` is always null). Its `totalItems` counts
+          the matches found so far and can grow from page to page; it is
+          final once `hasNext` is false. `counts` is returned only when the
+          whole result fits in the first page read, and is `null` otherwise.
+
         **Access control**
 
         Requires a valid bearer token. For OAuth tokens the `kb:read` scope
@@ -39740,6 +39757,11 @@ paths:
         **Scope:** everything the caller can read, across both connectors and
         Knowledge Base collections. No connector-level filter is applied — the
         listing is bounded by per-node permissions alone.
+
+        **A connected app with a limit:** with no `nodeId`, a token limited to
+        whole apps or collections gets the flat listing of those. A token
+        limited to folders or files gets those folders and files instead,
+        each one a node to open, since no app lies wholly inside its limit.
 
         **Permission scoping:**
 

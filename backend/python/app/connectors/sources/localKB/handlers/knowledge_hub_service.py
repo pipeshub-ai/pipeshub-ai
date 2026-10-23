@@ -6,7 +6,7 @@ import logging
 import re
 import traceback
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import replace
 from typing import Any, TypeVar
 
@@ -39,6 +39,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
 from app.connectors.sources.localKB.handlers.kh_search import SearchPage, search_page
 from app.models.entities import RecordType, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.modules.retrieval.selection_scope import NamedNode
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.kh_cursor import (
     Boundary,
@@ -118,6 +119,14 @@ def _without_apps(access: dict[str, Any], app_ids: frozenset[str]) -> dict[str, 
     out = {**access, "gated_app_ids": [a for a in access.get("gated_app_ids") or [] if a not in app_ids]}
     if access.get("by_connector") is not None:
         out["by_connector"] = {k: v for k, v in access["by_connector"].items() if k not in app_ids}
+    return out
+
+
+def _only_apps(access: dict[str, Any], app_ids: frozenset[str]) -> dict[str, Any]:
+    """The access context with only these Apps left in the gate."""
+    out = {**access, "gated_app_ids": [a for a in access.get("gated_app_ids") or [] if a in app_ids]}
+    if access.get("by_connector") is not None:
+        out["by_connector"] = {k: v for k, v in access["by_connector"].items() if k in app_ids}
     return out
 
 
@@ -388,6 +397,7 @@ class KnowledgeHubService:
         want_counts: bool,
         access: dict[str, list[str]],
         excluded: frozenset[str] = frozenset(),
+        within: frozenset[str] | None = None,
     ) -> tuple[SearchPage, dict[str, Any] | None]:
         """One page of a listing or search, plus the `scope` a scoped request carries.
 
@@ -406,6 +416,12 @@ class KnowledgeHubService:
                 issued = decode(cursor, secret, expected_user_id=user_id, expected_org_id=org_id)
             except CursorError as exc:
                 raise BrowseRequestError(f"Invalid cursor: {exc}", 400) from exc
+            # A cursor carries the total it was first counted with. One issued
+            # to a listing that was not narrowed to the same Apps would report
+            # rows outside them in that total.
+            issued_apps = (issued.filters or {}).get("connector_ids") or ()
+            if within is not None and (not issued_apps or not set(issued_apps) <= within):
+                raise BrowseRequestError("Invalid cursor: issued for a different listing", 400)
             flatten = _flatten_for_cursor(issued.mode, request_flatten=flatten)
         sort_field = self._sort_field(sort_by)
         sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
@@ -419,6 +435,8 @@ class KnowledgeHubService:
                     await self.graph_provider.get_knowledge_hub_access_v3(user_key=user_key, org_id=org_id),
                     excluded,
                 )
+                if within is not None:
+                    access = _only_apps(access, within)
 
             async def fetch_global(token: str | None) -> SearchPage:
                 self._decode_cursor(token, secret, user_id, org_id, mode=mode)
@@ -638,6 +656,7 @@ class KnowledgeHubService:
         include_typed_records: bool = False,
         cursor: str | None = None,
         is_org_admin: bool | None = None,
+        within_app_ids: Iterable[str] | None = None,
     ) -> KnowledgeHubNodesResponse:
         """
         Get nodes for the Knowledge Hub unified browse API
@@ -649,6 +668,11 @@ class KnowledgeHubService:
         False), it always decides search-vs-browse mode. Only when it's
         omitted (None) do we fall back to computing it from which filters
         are present (see _has_flattening_filters).
+
+        `within_app_ids` narrows a root listing or a global search to these
+        Apps and collections before it is paged, so its pages, totals and
+        counts cover only them (a connected app limited to whole sources). It
+        is ignored below the root, where the start node decides what is listed.
         """
         filters_task: asyncio.Task | None = None
         permissions_task: asyncio.Task | None = None
@@ -713,6 +737,14 @@ class KnowledgeHubService:
                 ),
                 excluded,
             )
+            within: frozenset[str] | None = None
+            if parent_id is None and within_app_ids is not None:
+                within = frozenset(within_app_ids)
+                if connector_ids:
+                    within &= frozenset(connector_ids)
+                # Carried in the cursor too, so a later page keeps to the same Apps.
+                filters["connector_ids"] = sorted(within)
+                access = _only_apps(access, within)
             if parent_id is None:
                 # A project's own file collection is opened from its project, by id;
                 # the top-level listing, global search and filter options leave it out.
@@ -743,6 +775,7 @@ class KnowledgeHubService:
                 filters=filters,
                 flatten=use_search_mode,
                 want_counts=bool(include and 'counts' in include),
+                within=within,
             )
 
             # The start node's own admission decides this, and the 404 body is
@@ -1096,6 +1129,43 @@ class KnowledgeHubService:
         except Exception as e:
             self.logger.warning("Could not read the collection role for %s: %s", parent_id, e)
             return None
+
+    async def named_node_items(self, user_id: str, org_id: str, nodes: Iterable[NamedNode]) -> list[NodeItem]:
+        """The record groups, folders and files among ``nodes`` as listing rows.
+        Apps are left out: the root listing reads them with their grants."""
+        user = await self._shared(("user", user_id, org_id), lambda: self._resolve_user(user_id, org_id))
+        user_email = (user or {}).get("email")
+        items: list[NodeItem] = []
+        for node in nodes:
+            if node.node_type == "app":
+                continue
+            doc = node.doc
+            group = node.node_type == "recordGroup"
+            origin = ("COLLECTION" if doc.get("connectorName") == "KB" else "CONNECTOR") if group else doc.get("origin")
+            item = self._doc_to_node_item({
+                "id": node.id,
+                "name": node.name,
+                "nodeType": node.node_type,
+                "origin": origin or "CONNECTOR",
+                "connector": doc.get("connectorName"),
+                "connectorId": doc.get("connectorId"),
+                "recordType": doc.get("recordType"),
+                "recordGroupType": doc.get("groupType"),
+                "indexingStatus": doc.get("indexingStatus"),
+                "createdAt": node.created_at or 0,
+                "updatedAt": node.updated_at or 0,
+                "sizeInBytes": doc.get("sizeInBytes"),
+                "mimeType": doc.get("mimeType"),
+                "extension": doc.get("extension"),
+                "webUrl": doc.get("webUrl"),
+                # A container opens whether or not it holds anything; a file is
+                # listed without the extra read that would tell.
+                "hasChildren": node.node_type in ("recordGroup", "folder"),
+            })
+            if item.webUrl:
+                item.webUrl = substitute_user_email(item.webUrl, user_email, item.connector)
+            items.append(item)
+        return items
 
     def _doc_to_node_item(self, doc: dict[str, Any]) -> NodeItem:
         """Convert a database document to a NodeItem"""

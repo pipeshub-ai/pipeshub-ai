@@ -1,8 +1,8 @@
 """Keeps a connected app (an OAuth app or a personal access token) to what its
 user let it see, on the routes that reach a node by id or list nodes."""
 
-from collections.abc import Iterable, Sequence
-from typing import Any
+from collections.abc import Awaitable, Iterable, Sequence
+from typing import Any, TypeVar
 
 from fastapi import HTTPException, Request
 
@@ -12,24 +12,63 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.retrieval.selection_scope import (
     CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
     CONNECTION_OUTSIDE_MESSAGE,
+    NamedNode,
     SelectionTooLargeError,
+    connection_coverage,
+    connection_named_nodes,
+    names_below_apps,
     outside_connection,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+_T = TypeVar("_T")
+
+
+async def _resolved(work: Awaitable[_T]) -> _T:
+    """``work``, with a limit too large to resolve answered as a 422."""
+    try:
+        return await work
+    except SelectionTooLargeError as exc:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value, detail=CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
+        ) from exc
 
 
 async def ids_outside_connection(
     request: Request, graph_provider: IGraphDBProvider, org_id: str, user_id: str, node_ids: Iterable[str],
 ) -> set[str]:
     """Of ``node_ids``, those the calling app may not see; none without a limit."""
-    try:
-        return await outside_connection(
-            graph_provider, user_id, org_id, node_ids, connection_limit(request.state.user),
-        )
-    except SelectionTooLargeError as exc:
-        raise HTTPException(
-            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value, detail=CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
-        ) from exc
+    return await _resolved(outside_connection(
+        graph_provider, user_id, org_id, node_ids, connection_limit(request.state.user),
+    ))
+
+
+async def connection_apps(
+    request: Request, graph_provider: IGraphDBProvider, org_id: str, user_id: str,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The apps and collections the calling app's limit names whole, and those
+    it reaches only through the folders and files it names. Call it only for a
+    request that carries a limit."""
+    return await _resolved(connection_coverage(
+        graph_provider, user_id, org_id, connection_limit(request.state.user) or {},
+    ))
+
+
+async def named_inside_connection(
+    request: Request, graph_provider: IGraphDBProvider, org_id: str, user_id: str,
+) -> list[NamedNode]:
+    """What the calling app's limit names that its user can read: the items a
+    browse of its root lists. Call it only for a request that carries a limit."""
+    return await _resolved(connection_named_nodes(
+        graph_provider, user_id, org_id, connection_limit(request.state.user) or {},
+    ))
+
+
+def root_lists_what_the_limit_names(limit: dict[str, list[str]] | None) -> bool:
+    """Whether a browse of the root lists the items a limit names rather than
+    the apps it names: a limit to folders or files leaves no app wholly inside
+    it to list."""
+    return names_below_apps(limit) and not (limit or {}).get("apps")
 
 
 async def ids_outside_connection_on_restore(

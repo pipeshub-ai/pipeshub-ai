@@ -34,7 +34,11 @@ from pydantic import BaseModel
 
 from app.agents.actions.knowledge_graph.catalog import ConnectorCatalog
 from app.agents.actions.knowledge_graph.identifiers import _BARE_ISSUE_KEY, _is_url
-from app.agents.actions.knowledge_graph.models import NavigationView
+from app.agents.actions.knowledge_graph.models import (
+    NavigationView,
+    NodeRow,
+    PaginationInfo,
+)
 from app.agents.actions.knowledge_graph.navigator import GraphNavigator
 from app.agents.actions.knowledge_graph.ops.time_range import (
     parse_time_range,
@@ -48,7 +52,9 @@ from app.agents.actions.knowledge_graph.views import (
 from app.api.connection_limit import (
     ids_outside_connection,
     keep_path_inside_connection,
+    named_inside_connection,
     refuse_outside_connection,
+    root_lists_what_the_limit_names,
 )
 from app.api.middlewares.auth import (
     connection_limit,
@@ -2047,6 +2053,12 @@ async def knowledge_graph_navigate(
     # app, so it is bounded before paging, or a page could come back empty.
     root_apps = None
     limit_sources = connection_limit(request.state.user)
+    if node_id is None and root_lists_what_the_limit_names(limit_sources):
+        view = await _named_root_view(
+            request, graph_provider, org_id, user_id, page=page, limit=limit, node_types=node_types,
+            created_at=created_at, updated_at=updated_at,
+        )
+        return {**view.model_dump(), "text": render_navigation_view(view, page)}
     if node_id is None and limit_sources is not None:
         # The catalog leaves collections out, so the apps the limit names are
         # candidates too; the access check keeps only those the user reaches.
@@ -2088,9 +2100,6 @@ async def knowledge_graph_navigate(
             detail="Failed to navigate knowledge graph",
         ) from e
 
-    # shortcut: a limit to folders hides their apps at the root, so a connected
-    # app opens those folders by id (search finds them); list them at the root
-    # if apps limited to folders need to browse from the top.
     outside = await ids_outside_connection(
         request, graph_provider, org_id, user_id,
         [row.id for row in [*view.rows, *view.related, *view.breadcrumbs]],
@@ -2101,6 +2110,59 @@ async def knowledge_graph_navigate(
         view.breadcrumbs = [crumb for crumb in view.breadcrumbs if crumb.id not in outside]
 
     return {**view.model_dump(), "text": render_navigation_view(view, page)}
+
+
+def _in_range(value: int | None, bounds: dict[str, int | None] | None) -> bool:
+    if not bounds:
+        return True
+    if value is None:
+        return False
+    return (bounds.get("gte") is None or value >= bounds["gte"]) and (bounds.get("lte") is None or value <= bounds["lte"])
+
+
+async def _named_root_view(
+    request: Request,
+    graph_provider: IGraphDBProvider,
+    org_id: str,
+    user_id: str,
+    *,
+    page: int,
+    limit: int,
+    node_types: list[str] | None,
+    created_at: dict[str, int | None] | None,
+    updated_at: dict[str, int | None] | None,
+) -> NavigationView:
+    """The root of a connection limited below app level: what its limit names
+    that the user can read, the items it opens from. No app is wholly inside
+    such a limit, so the usual root, every record of the apps, would be empty."""
+    named = await named_inside_connection(request, graph_provider, org_id, user_id)
+    rows = [
+        NodeRow(
+            id=node.id,
+            name=node.name,
+            node_type=node.node_type,
+            sub_type=node.doc.get("recordType") or node.doc.get("groupType") or node.doc.get("connectorName")
+            or node.doc.get("type"),
+            is_record=node.node_type in ("record", "folder"),
+            has_children=node.node_type != "record",
+            detail=None,
+            web_url=node.doc.get("webUrl"),
+            indexing_status=node.doc.get("indexingStatus"),
+            source_created_at=node.created_at,
+            source_modified_at=node.updated_at,
+        )
+        for node in named
+        if (not node_types or node.node_type in node_types)
+        and _in_range(node.created_at, created_at) and _in_range(node.updated_at, updated_at)
+    ]
+    start = (page - 1) * limit
+    return NavigationView(
+        current=None, breadcrumbs=[], rows=rows[start:start + limit], related=[],
+        pagination=PaginationInfo(
+            page=page, limit=limit, total=len(rows), has_next=start + limit < len(rows), has_prev=page > 1,
+        ),
+        web_url=None, indexing_status=None, connector=None,
+    )
 
 
 @router.get(

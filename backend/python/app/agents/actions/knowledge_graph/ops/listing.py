@@ -19,6 +19,12 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     NodeItem,
     NodeType,
 )
+from app.connectors.sources.localKB.handlers.kh_bounded import (
+    BOUNDED_BATCH,
+    BOUNDED_MAX_BATCHES,
+    Position,
+    read_inside,
+)
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
@@ -126,13 +132,6 @@ def _render_flat_text(
     return "\n".join(lines)
 
 
-# How far a search inside a bound below app level reads its sources' pages to
-# fill one page of results: the rows outside the bound are dropped, so a page
-# of the source is not a page of the answer.
-_BOUNDED_BATCH = 50
-_BOUNDED_MAX_BATCHES = 6
-
-
 def _bound_as_selection(filters: dict[str, Any]) -> dict[str, Any]:
     """``filters`` with what every bound below app level names written as the
     turn's selection, so ``list_selected_nodes`` lists those nodes and keeps
@@ -151,7 +150,7 @@ def _bound_as_selection(filters: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _page_inside_bounds(
-    fetch: Callable[[int, int], Awaitable[KnowledgeHubNodesResponse]],
+    fetch: Callable[..., Awaitable[KnowledgeHubNodesResponse]],
     inside: Callable[[list[str]], Awaitable[set[str]]],
     *,
     page: int,
@@ -160,25 +159,15 @@ async def _page_inside_bounds(
     """Page ``page`` of the rows ``inside`` admits, read from the source's pages
     until it is full or they run out, and a line saying whether more follow.
     The response carries no total: the source's counts include dropped rows."""
-    wanted = page * limit + 1
-    kept: list[NodeItem] = []
-    has_next = False
-    for batch in range(1, _BOUNDED_MAX_BATCHES + 1):
-        response = await fetch(batch, _BOUNDED_BATCH)
-        if not response.success:
-            return response, None
-        rows = response.items or []
-        admitted = await inside([item.id for item in rows]) if rows else set()
-        kept.extend(item for item in rows if item.id in admitted)
-        has_next = bool(response.pagination and response.pagination.hasNext)
-        if len(kept) >= wanted or not has_next:
-            break
-    items = kept[(page - 1) * limit:page * limit]
-    if len(kept) > page * limit:
+    read = await read_inside(fetch, inside, start=Position(), want=page * limit + 1)
+    if read.failed:
+        return read.first, None
+    items = read.kept[(page - 1) * limit:page * limit]
+    if len(read.kept) > page * limit:
         hint = f"(More items follow: call again with page={page + 1}.)"
-    elif has_next:
+    elif read.stop is not None:
         hint = (
-            f"(Stopped after checking {_BOUNDED_BATCH * _BOUNDED_MAX_BATCHES} items; more may match. "
+            f"(Stopped after checking {BOUNDED_BATCH * BOUNDED_MAX_BATCHES} items; more may match. "
             "Narrow the query to find them.)"
         )
     else:
@@ -325,8 +314,9 @@ async def execute_list_files(
 
         hint: str | None = None
         if bound_user_key and partial_ids:
+            # This service hands out no cursors, so a batch is read by page number.
             response, hint = await _page_inside_bounds(
-                fetch,
+                lambda position, **_: fetch(position.page, BOUNDED_BATCH),
                 lambda ids: ids_within_scope(state, graph_provider, bound_user_key, org_id, ids),
                 page=page, limit=limit,
             )
