@@ -177,3 +177,89 @@ class TestStaysInsideAConnectionLimit:
         _, text = await execute_list_files(self._limited_state(graph), query="budget", limit=1)
 
         assert len(_ids(text)) == 1 and _ids(text) <= {"hr-1", "hr-2"}
+
+
+# A collection with many files, and a folder in it that a limit names; the only
+# file under the folder sorts after every other file the name search matches.
+_BIG = {
+    "kb-big": [
+        *(node(f"big-{i:02d}", f"budget {i:02d}", origin="COLLECTION") for i in range(60)),
+        node("shared-folder", "shared folder", "folder", origin="COLLECTION"),
+        node("shared-file", "zz budget shared", parent_id="shared-folder", origin="COLLECTION"),
+    ],
+    "kb-other": [node("other-1", "budget other", origin="COLLECTION")],
+}
+_UNDER_FOLDER = {"shared-folder", "shared-file"}
+
+
+class TestStaysInsideAFolderLimit:
+    """A limit that names a folder admits that folder and what is under it, not
+    the rest of its collection, so a page of the collection is not a page of
+    the answer."""
+
+    @staticmethod
+    def _graph() -> MagicMock:
+        graph = create_autospec(ArangoHTTPProvider, instance=True)
+        stub_listing(graph, USER_KEY, _BIG)
+        owner = {row["id"]: app_id for app_id, rows in _BIG.items() for row in rows}
+        owner |= {app_id: app_id for app_id in _BIG}
+        graph.get_selection_nodes.return_value = {
+            "groups": [],
+            "records": [{"id": i, "vrid": "", "connectorId": "kb-big"} for i in sorted(_UNDER_FOLDER)],
+        }
+
+        def check(_user_key: str, _org_id: str, node_ids=(), scopes=(), **_: object) -> AccessCheck:
+            seen = frozenset(i for i in node_ids if i in owner)
+            inside = frozenset(
+                i for i in seen
+                if all(owner[i] in scope.app_ids or i in scope.records for scope in scopes or ())
+            )
+            return AccessCheck(node_ids=seen, node_ids_in_scope=inside)
+
+        names = {row["id"]: row for rows in _BIG.values() for row in rows}
+
+        def by_ids(collection: str, _field: str, ids: list[str], **_: object) -> list[dict[str, Any]]:
+            if collection == "apps":
+                return [{"id": i, "name": i} for i in ids if i in _BIG]
+            return [{"id": i, "recordName": names[i]["name"],
+                     "mimeType": "text/directory" if names[i]["nodeType"] == "folder" else "text/plain"}
+                    for i in ids if i in names]
+
+        graph.check_access.side_effect = check
+        graph.get_nodes_by_field_in.side_effect = by_ids
+        return graph
+
+    @staticmethod
+    def _state(graph: MagicMock) -> dict[str, Any]:
+        state = _state(graph, apps=[], kb=["kb-big", "kb-other"])
+        state["filters"] = within_connection(
+            {"apps": [], "kb": ["kb-big", "kb-other"]},
+            {"apps": [], "recordGroups": [], "records": ["shared-folder"]},
+        )
+        return state
+
+    async def test_a_match_past_the_first_page_of_its_collection_is_found(self) -> None:
+        graph = self._graph()
+
+        _, text = await execute_list_files(self._state(graph), query="budget", limit=5)
+
+        assert _ids(text) == {"shared-file"}
+        assert "more items" not in text.lower() and "Stopped" not in text
+        assert len(connector_pages(graph)) >= 2
+
+    async def test_a_full_page_says_another_page_follows_and_it_holds_the_rest(self) -> None:
+        graph = self._graph()
+        state = self._state(graph)
+
+        _, first = await execute_list_files(state, query="sh", limit=1)
+        _, second = await execute_list_files(state, query="sh", limit=1, page=2)
+
+        assert len(_ids(first)) == 1 and "page=2" in first
+        assert _ids(first) | _ids(second) == _UNDER_FOLDER
+        assert "page=3" not in second
+
+    async def test_a_root_listing_names_what_the_limit_shares(self) -> None:
+        _, text = await execute_list_files(self._state(self._graph()))
+
+        assert "shared-folder" in text
+        assert "kb-big" not in text and "kb-other" not in text and "big-00" not in text
