@@ -2725,7 +2725,8 @@ class ConfluenceConnector(BaseConnector):
         False when a read or delete failed, or a missed item could not be
         explained, so the caller holds the checkpoint.
         """
-        existing = await self._list_space_content(space.external_group_id, record_type)
+        parents: dict[str, str] = {}
+        existing = await self._list_space_content(space.external_group_id, record_type, parents)
         if existing is None:
             return False
         try:
@@ -2787,7 +2788,47 @@ class ConfluenceConnector(BaseConnector):
                     doomed.extend(left_out)
         if doomed:
             settled = await self._delete_content_records(doomed) and settled
+        if record_type == RecordType.CONFLUENCE_PAGE:
+            gone = {r.external_record_id for r in doomed}
+            settled = await self._resync_moved_pages(
+                space, [r for r in stored if r.external_record_id not in gone], parents, just_listed=listing.full,
+            ) and settled
         return settled
+
+    async def _resync_moved_pages(
+        self, space: RecordGroup, stored: list[Record], parents: dict[str, str], *, just_listed: bool
+    ) -> bool:
+        """Sync again stored pages whose parent in the space listing differs from the stored one.
+
+        Moving a page need not change its version, so the listing by last change may never
+        bring it back, and its stored parent (and the access inherited through it) stays.
+        A difference still there after a page was synced again comes from how the two APIs
+        name the parent, not from a move: it is remembered and not synced again until the
+        listed parent changes. ``just_listed``: this run listed every page, so the stored
+        parents are fresh and differences are only remembered. False if a sync failed.
+        """
+        listed_differs = {
+            r.external_record_id: parents[r.external_record_id] for r in stored
+            if r.external_record_id in parents and parents[r.external_record_id] != r.parent_external_record_id
+        }
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "parents", space.short_name)
+        seen = await self.pages_sync_point.read_sync_point(key)
+        before: dict[str, str] = json.loads(seen.get("differs") or "{}") if seen else {}
+        moved = [] if just_listed else sorted(i for i, parent in listed_differs.items() if before.get(i) != parent)
+        failed: set[str] = set()
+        for start in range(0, len(moved), ID_SEARCH_CHUNK):
+            chunk = moved[start:start + ID_SEARCH_CHUNK]
+            result = await self._sync_content(
+                space.short_name, RecordType.CONFLUENCE_PAGE, defer_checkpoint=True, within_ids=chunk,
+            )
+            if not result.complete:
+                failed.update(chunk)
+        if moved:
+            self.logger.info(f"Synced {len(moved)} pages in space {space.short_name} again: their parent changed")
+        # A failed page is left out, so the next sync tries it again.
+        remembered = {i: parent for i, parent in listed_differs.items() if i not in failed}
+        await self.pages_sync_point.update_sync_point(key, {"differs": json.dumps(remembered, sort_keys=True)})
+        return not failed
 
     async def _read_missed_again(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
         """Read again, by id, stored items a full listing missed; True if every one was read.
@@ -2847,7 +2888,9 @@ class ConfluenceConnector(BaseConnector):
             complete = complete and result.complete
         return complete
 
-    async def _list_space_content(self, space_id: str, record_type: RecordType) -> dict[str, str] | None:
+    async def _list_space_content(
+        self, space_id: str, record_type: RecordType, parents: dict[str, str] | None = None
+    ) -> dict[str, str] | None:
         """Status by id of every page or blog post in a space the account can see; None unless read to the end.
 
         The v2 listing defaults to current and archived pages and current blog
@@ -2883,6 +2926,8 @@ class ConfluenceConnector(BaseConnector):
             for item in results:
                 if isinstance(item, dict) and item.get("id"):
                     statuses[str(item["id"])] = str(item.get("status") or "current")
+                    if parents is not None and item.get("parentId"):
+                        parents[str(item["id"])] = str(item["parentId"])
             next_url = (data.get("_links") or {}).get("next")
             if not next_url:
                 return statuses

@@ -1150,6 +1150,51 @@ def in_space(*ids: str, archived: tuple[str, ...] = (), cursor: str | None = Non
     return {"results": items, "_links": links}
 
 
+def in_space_under(parents: dict[str, str | None]) -> dict[str, Any]:
+    """A v2 space listing of current pages with their parent ids."""
+    items = [{"id": i, "status": "current", "title": f"Page {i}", **({"parentId": p} if p else {})}
+             for i, p in parents.items()]
+    return {"results": items, "_links": {"base": WIKI}}
+
+
+class TestMovedPages:
+    """Moving a page need not change its version, so the listing by last change never brings it back."""
+
+    async def _synced(self, api, db, checkpoints, search) -> ConfluenceConnector:
+        search.folders = []
+        search.blogposts = []
+        search.by_cursor = {None: search_page([v1_page("10"), v1_page("11")])}
+        api.on("GET", f"{V2}/spaces/77/pages", in_space_under({"10": None, "11": None}))
+        api.on("GET", f"{V2}/spaces/77/blogposts", in_space())
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+        search.by_cursor = {None: search_page([])}
+        return connector
+
+    @staticmethod
+    def _reads_of(search, page_id: str) -> int:
+        return sum(1 for q in search.queries if re.search(rf"id in \([^)]*{page_id}", q.get("cql", "")))
+
+    async def test_a_page_moved_without_a_new_version_gets_its_new_parent(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+        search.indexed = {"11": {**v1_page("11"), "ancestors": [{"id": "10", "type": "page"}]}}
+        api.on("GET", f"{V2}/spaces/77/pages", in_space_under({"10": None, "11": "10"}))
+
+        await connector._sync_spaces_content([ENG])
+
+        assert db.records["11"].parent_external_record_id == "10"
+
+    async def test_a_parent_the_apis_name_differently_is_read_again_once(self, api, db, checkpoints, search) -> None:
+        connector = await self._synced(api, db, checkpoints, search)
+        search.indexed = {"11": v1_page("11")}  # its ancestors never name the listed parent
+        api.on("GET", f"{V2}/spaces/77/pages", in_space_under({"10": None, "11": "10"}))
+
+        await connector._sync_spaces_content([ENG])
+        await connector._sync_spaces_content([ENG])
+
+        assert self._reads_of(search, "11") == 1
+
+
 class TestContentGoneFromSource:
     """What the account can no longer find, or a narrowed filter leaves out, is removed; a failed read or delete removes nothing and holds the checkpoint."""
 
