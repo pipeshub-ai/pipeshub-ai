@@ -111,6 +111,9 @@ def v1_page(pid: str, *, version: int = 1, space_id: int = 77, attachments: Opti
     }
 
 
+PAGE_TIME = "2024-05-01T10:00:00.000Z"
+
+
 def epoch_ms(value: datetime) -> int:
     return int(value.timestamp() * 1000)
 
@@ -437,7 +440,9 @@ class TestPageSync:
 
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
-        assert checkpoints.values_for("confluence_pages/ENG") is None
+        saved = checkpoints.values_for("confluence_pages/ENG")
+        assert not saved.get("last_sync_time"), "a full listing keeps no checkpoint until it ends"
+        assert saved["full_resume_after"] == PAGE_TIME, "the next sync resumes after the saved batch"
 
     async def test_a_failed_folder_listing_page_does_not_move_the_folder_checkpoint(self, api, db, checkpoints, search) -> None:
         folder = {**v1_page("500"), "type": "folder", "title": "Specs"}
@@ -448,7 +453,7 @@ class TestPageSync:
         await connector._sync_folders("ENG")
 
         assert "500" in db.records
-        assert checkpoints.values_for("confluence_folders/ENG") is None
+        assert checkpoints.values_for("confluence_folders/ENG")["last_sync_time"] == PAGE_TIME, "only past the saved batch"
 
     @staticmethod
     def _many_attachments(api: AtlassianApiStub, search: ContentSearch, second_page: object) -> None:
@@ -1102,6 +1107,8 @@ def space_group(space_id: str, key: str) -> RecordGroup:
 ENG = space_group("77", "ENG")
 PAGES_CHECKPOINT = "confluence_pages/ENG"
 OLD_CHECKPOINT = "2020-01-01T00:00:00.000Z"
+# A held checkpoint still moves past the batches that were saved, to their last change.
+HELD_AT_SAVED_BATCH = PAGE_TIME
 
 
 def in_space(*ids: str, archived: tuple[str, ...] = (), cursor: str | None = None) -> dict[str, Any]:
@@ -1135,7 +1142,7 @@ class TestContentGoneFromSource:
 
     def _checkpoint(self, checkpoints) -> str | None:
         value = checkpoints.values_for(PAGES_CHECKPOINT)
-        return value["last_sync_time"] if value else None
+        return value.get("last_sync_time") if value else None
 
     def _refilter(self, connector, checkpoints, search, *excluded: str) -> None:
         checkpoints.sync_points.clear()  # saving filters deletes the connector's sync points
@@ -1238,7 +1245,7 @@ class TestContentGoneFromSource:
         search.indexed = json_response({"message": "Service Unavailable"}, status=503)
         await connector._sync_spaces_content([ENG])
         assert "11" not in db.records
-        assert self._checkpoint(checkpoints) == OLD_CHECKPOINT
+        assert self._checkpoint(checkpoints) == HELD_AT_SAVED_BATCH
 
     async def test_an_archived_page_the_account_can_see_is_kept(self, api, db, checkpoints, search) -> None:
         connector = await self._two_pages_synced(api, db, checkpoints, search)
@@ -1262,7 +1269,7 @@ class TestContentGoneFromSource:
 
         await connector._sync_spaces_content([ENG])
         assert "11" in db.records, "the delete failed once"
-        assert self._checkpoint(checkpoints) == OLD_CHECKPOINT
+        assert self._checkpoint(checkpoints) == HELD_AT_SAVED_BATCH
 
         await connector._sync_spaces_content([ENG])
         assert "11" not in db.records and "att2" not in db.records
@@ -1289,7 +1296,7 @@ class TestContentGoneFromSource:
         await connector._sync_spaces_content([ENG])
 
         assert {"11", "att2"} <= set(db.records)
-        assert self._checkpoint(checkpoints) == OLD_CHECKPOINT
+        assert self._checkpoint(checkpoints) == HELD_AT_SAVED_BATCH
 
     async def test_a_short_space_listing_page_is_followed_to_the_end(self, api, db, checkpoints, search) -> None:
         connector = await self._two_pages_synced(api, db, checkpoints, search)
@@ -1309,7 +1316,7 @@ class TestContentGoneFromSource:
 
         await connector._sync_spaces_content([ENG])
 
-        assert "11" in db.records and self._checkpoint(checkpoints) == OLD_CHECKPOINT
+        assert "11" in db.records and self._checkpoint(checkpoints) == HELD_AT_SAVED_BATCH
 
     async def test_a_failed_change_search_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
         connector = await self._two_pages_synced(api, db, checkpoints, search)
@@ -1726,7 +1733,28 @@ class TestCheckpointPerBatch:
         listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         assert listing.complete is False
-        assert checkpoints.values_for("confluence_pages/ENG") == {"last_sync_time": "2024-05-02T09:30:00.000Z"}
+        saved = checkpoints.values_for("confluence_pages/ENG")
+        assert saved["full_resume_after"] == "2024-05-02T09:30:00.000Z"
+
+        search.queries.clear()
+        search.by_cursor = {None: search_page([page_changed_at("12", "2024-05-04T09:00:00.000Z")])}
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert f'lastModified > "{cql_minute("2024-05-02T09:30:00.000Z", less_hours=24)}"' in search.queries[0]["cql"]
+        assert listing.full and listing.resumed and listing.complete
+        assert checkpoints.values_for("confluence_pages/ENG")["full_resume_after"] == "", "a finished listing clears it"
+
+    async def test_the_checkpoint_never_moves_back(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page([page_changed_at("10", "2024-05-01T10:00:00.000Z")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        now = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+
+        search.by_cursor = {None: search_page([page_changed_at("10", "2024-05-01T10:00:00.000Z")], cursor="C2")}
+        search.by_cursor["C2"] = json_response({"message": "busy"}, status=503)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert checkpoints.values_for("confluence_pages/ENG")["last_sync_time"] == now
 
     async def test_a_skipped_item_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
         search.by_cursor[None] = search_page([page_changed_at("10", "2024-05-01T10:00:00.000Z")], cursor="C2")

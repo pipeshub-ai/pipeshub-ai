@@ -188,6 +188,8 @@ class ContentListing(NamedTuple):
 
     ``full`` means it ran without a checkpoint, so ``seen`` holds every item the
     sync filters admit; otherwise ``seen`` holds only what changed since then.
+    ``resumed``: a full listing that picked up where an earlier one stopped, so
+    ``seen`` lacks what that earlier part read.
     ``checkpoint_time`` is the checkpoint the listing earned, or None when it
     must not move.
     """
@@ -197,6 +199,7 @@ class ContentListing(NamedTuple):
     seen: frozenset[str]
     checkpoint_key: str
     checkpoint_time: str | None
+    resumed: bool = False
 
 
 # Constant for pseudo-user group prefix
@@ -1756,7 +1759,9 @@ class ConfluenceConnector(BaseConnector):
                 if records_with_permissions:
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} folders")
-                await self._save_batch_checkpoint(sync_point_key, items_data, listing_complete)
+                await self._save_batch_checkpoint(
+                    sync_point_key, items_data, listing_complete, field="last_sync_time", current=last_sync_time
+                )
 
                 # Extract next page token from _links.next
                 # May contain either start=N (offset) or cursor=<token> depending on API version
@@ -1843,6 +1848,10 @@ class ConfluenceConnector(BaseConnector):
             )
             last_sync_data = None if within_ids else await self.pages_sync_point.read_sync_point(sync_point_key)
             last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
+            # Where an unfinished full listing stopped; a full listing keeps no checkpoint until it ends.
+            full_resume_after = None if last_sync_time else (last_sync_data or {}).get("full_resume_after")
+            if full_resume_after:
+                self.logger.info(f"🔁 Resuming the full {content_type} listing after {full_resume_after}")
             if last_sync_time:
                 self.logger.info(f"🔄 Incremental sync: Fetching {content_type}s modified after {last_sync_time}")
 
@@ -1864,7 +1873,9 @@ class ConfluenceConnector(BaseConnector):
                 created_after, created_before = created_filter.get_datetime_iso()
 
             filter_modified_after = modified_after
-            modified_after = listing_modified_after(filter_modified_after, last_sync_time, TIME_OFFSET_HOURS)
+            modified_after = listing_modified_after(
+                filter_modified_after, last_sync_time or full_resume_after, TIME_OFFSET_HOURS
+            )
             if filter_modified_after and last_sync_time:
                 self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {filter_modified_after}, checkpoint: {last_sync_time} less {TIME_OFFSET_HOURS}h)")
             elif filter_modified_after:
@@ -2212,7 +2223,11 @@ class ConfluenceConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments)")
                 if not within_ids:
-                    await self._save_batch_checkpoint(sync_point_key, items_data, listing_complete)
+                    await self._save_batch_checkpoint(
+                        sync_point_key, items_data, listing_complete,
+                        field="last_sync_time" if last_sync_time else "full_resume_after",
+                        current=last_sync_time or full_resume_after,
+                    )
 
                 # Extract next page token from _links.next
                 # May contain either start=N (offset) or cursor=<token> depending on API version
@@ -2237,13 +2252,16 @@ class ConfluenceConnector(BaseConnector):
             if listing_complete and total_synced > 0 and not within_ids:
                 current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
                 if not defer_checkpoint:
-                    await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
+                    await self.pages_sync_point.update_sync_point(
+                        sync_point_key, {"last_sync_time": current_sync_time, "full_resume_after": ""}
+                    )
                     self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")
 
             self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Permissions: {total_permissions_synced}")
             return ContentListing(
                 full=not last_sync_time, complete=listing_complete, seen=frozenset(seen),
                 checkpoint_key=sync_point_key, checkpoint_time=current_sync_time,
+                resumed=bool(full_resume_after),
             )
 
         except Exception as e:
@@ -2251,13 +2269,16 @@ class ConfluenceConnector(BaseConnector):
             raise
 
     async def _save_batch_checkpoint(
-        self, sync_point_key: str, items: list[dict[str, Any]], nothing_skipped: bool
+        self, sync_point_key: str, items: list[dict[str, Any]], nothing_skipped: bool,
+        *, field: str, current: str | None,
     ) -> None:
         """Move a listing's checkpoint to the latest change in a batch that was just saved.
 
         The listing runs oldest change first, so a sync stopped later resumes after this
         batch instead of from the start. Only while nothing so far in the listing was
-        skipped: the checkpoint never moves past an item that was not saved.
+        skipped: the checkpoint never moves past an item that was not saved. ``field``
+        is ``last_sync_time``, or ``full_resume_after`` for a full listing, which keeps
+        no checkpoint until it ends. Never moves back: the listing looks back a day.
         """
         if not nothing_skipped or not items:
             return
@@ -2272,8 +2293,14 @@ class ConfluenceConnector(BaseConnector):
                 # Without every item's time the batch can't say how far it got.
                 return
             latest = changed if latest is None or changed > latest else latest
+        if current:
+            try:
+                if latest <= datetime.fromisoformat(current.replace("Z", "+00:00")):
+                    return
+            except ValueError:
+                pass
         checkpoint = latest.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": checkpoint})
+        await self.pages_sync_point.update_sync_point(sync_point_key, {field: checkpoint})
 
     async def _sync_spaces_content(self, spaces: list[RecordGroup]) -> None:
         """Sync each space's folders, pages and blog posts, then remove what left the source.
@@ -2296,7 +2323,7 @@ class ConfluenceConnector(BaseConnector):
                     continue
                 if settled:
                     await self.pages_sync_point.update_sync_point(
-                        listing.checkpoint_key, {"last_sync_time": listing.checkpoint_time}
+                        listing.checkpoint_key, {"last_sync_time": listing.checkpoint_time, "full_resume_after": ""}
                     )
                 else:
                     self.logger.warning(
@@ -2347,7 +2374,9 @@ class ConfluenceConnector(BaseConnector):
                 if existing.get(r.external_record_id) == "current" and r.external_record_id not in listing.seen
             ]
             if missed:
-                verdict = await self._filter_verdict(space.short_name, record_type, missed, filters)
+                verdict = await self._filter_verdict(
+                    space.short_name, record_type, missed, filters, resumed=listing.resumed
+                )
                 if verdict is None:
                     settled = False
                 else:
@@ -2494,13 +2523,16 @@ class ConfluenceConnector(BaseConnector):
         return kwargs
 
     async def _filter_verdict(
-        self, space_key: str, record_type: RecordType, ids: list[str], filters: dict[str, Any]
+        self, space_key: str, record_type: RecordType, ids: list[str], filters: dict[str, Any],
+        *, resumed: bool = False,
     ) -> tuple[set[str], set[str]] | None:
         """Split ids the full listing missed into (left out by the filters, unexplained); None if a search failed.
 
         Left out: a search of the space finds the id without the filters and not
         with them. Unexplained: the search doesn't find it at all (a lagging index)
-        or finds it with the filters too (the listing skipped it).
+        or finds it with the filters too (the listing skipped it). After a resumed
+        listing, one the filters still admit was read before it stopped, so only
+        an id the search doesn't find is unexplained.
         """
         anywhere = await self._search_ids_in_space(space_key, record_type, ids, {})
         if anywhere is None:
@@ -2509,6 +2541,8 @@ class ConfluenceConnector(BaseConnector):
         if in_scope is None:
             return None
         excluded = anywhere - in_scope
+        if resumed:
+            return excluded, set(ids) - anywhere
         return excluded, set(ids) - excluded
 
     async def _search_ids_in_space(
@@ -2676,7 +2710,9 @@ class ConfluenceConnector(BaseConnector):
                 generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", group.short_name),
                 generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_blogposts", group.short_name),
             ):
-                await self.pages_sync_point.update_sync_point(checkpoint_key, {"last_sync_time": ""})
+                await self.pages_sync_point.update_sync_point(
+                    checkpoint_key, {"last_sync_time": "", "full_resume_after": ""}
+                )
         if group is not None and not await self.data_entities_processor.on_record_group_deleted(
             space_id, self.connector_id
         ):

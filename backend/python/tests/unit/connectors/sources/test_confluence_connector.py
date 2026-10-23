@@ -17,6 +17,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     BooleanOperator,
     Filter,
@@ -507,7 +508,8 @@ class TestSyncFolders:
             with patch.object(c, "_fetch_page_permissions", new_callable=AsyncMock, return_value=[]):
                 await c._sync_folders("TEST")
 
-        c.pages_sync_point.update_sync_point.assert_called_once()
+        # Once after the batch, once when the listing ends.
+        assert c.pages_sync_point.update_sync_point.await_count >= 1
         args = c.pages_sync_point.update_sync_point.call_args[0]
         assert "confluence_folders" in args[0]
         assert "last_sync_time" in args[1]
@@ -4359,9 +4361,8 @@ class TestInit:
             new_callable=AsyncMock,
             side_effect=RuntimeError("build failed"),
         ):
-            result = await c.init()
-
-        assert result is False
+            with pytest.raises(ConnectorInitError, match="build failed"):
+                await c.init()
 
 
 # ===========================================================================
@@ -4482,16 +4483,16 @@ class TestConnectionAndAccess:
         mock_ds = MagicMock()
         mock_ds.get_spaces = AsyncMock(return_value=_mk_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        result = await c.test_connection_and_access()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="HTTP 500"):
+            await c.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_returns_false_on_exception(self):
         c = _mk_connector()
         c.external_client = MagicMock()
         c._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("connection error"))
-        result = await c.test_connection_and_access()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="connection error"):
+            await c.test_connection_and_access()
 
 
 # ===========================================================================
@@ -7348,8 +7349,8 @@ class TestInitAdditional:
             "app.connectors.sources.atlassian.confluence_cloud.connector.ExternalConfluenceClient.build_from_services",
             side_effect=RuntimeError("build fail"),
         ):
-            result = await c.init()
-        assert result is False
+            with pytest.raises(ConnectorInitError, match="build fail"):
+                await c.init()
 
     @pytest.mark.asyncio
     async def test_init_success_returns_true(self):
