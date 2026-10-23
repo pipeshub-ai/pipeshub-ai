@@ -31,6 +31,9 @@ const logger = Logger.getInstance({
 
 const AI_SERVICE_TIMEOUT_MS = 620_000;
 
+const textOf = (value: unknown): string | undefined =>
+  typeof value === 'string' && value !== '' ? value : undefined;
+
 export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
   private method: HttpMethod;
   private body?: any;
@@ -140,11 +143,14 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
         ? responsePayload
         : null;
     const payloadRecord = payloadObject as Record<string, unknown> | null;
+    const detail = payloadRecord?.detail;
 
     const errorDetail =
-      (payloadRecord?.detail as string | undefined) ||
-      (payloadRecord?.message as string | undefined) ||
-      (payloadRecord?.error as string | undefined) ||
+      textOf(detail) ||
+      // A coded refusal (a 402's budget detail) is an object carrying its own text.
+      textOf((detail as Record<string, unknown> | null | undefined)?.message) ||
+      textOf(payloadRecord?.message) ||
+      textOf(payloadRecord?.error) ||
       (typeof responsePayload === 'string' ? responsePayload : undefined) ||
       response.statusText ||
       `HTTP error! status: ${response.status}`;

@@ -1801,7 +1801,9 @@ async def askAI(
         config_service=config_service,
         cancellation_registry=cancellation_registry,
     )
-    outcome = await collect_stream_outcome(stream, request.is_disconnected)
+    outcome = await collect_stream_outcome(
+        stream, request.is_disconnected, keep_events=get_chat_extension().completion_events(),
+    )
     return outcome.to_response()
 
 

@@ -229,6 +229,7 @@ const nonStreamingTurn =
         modelInfo: extractModelInfo(body),
         requestId,
         run,
+        answer: turns.streamFor(req as AuthenticatedUserRequest, deps).answer,
       });
       outcome = outcomeForStatus(turn.conversation.status as string);
       // Release before replying: a client that sends again on seeing the answer must not meet our lease.

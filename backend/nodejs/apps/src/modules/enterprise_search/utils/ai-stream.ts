@@ -13,10 +13,21 @@ const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 // A code the client can look up: capitals, digits and underscores.
 const REFUSAL_CODE = /^[A-Z][A-Z0-9_]{2,63}$/;
 
-/** The AI service refused the request as malformed and named why; the client words the code, so the text stays general. */
+/** The chat stream's own code for a request the AI service refused with 402, so a refusal before the stream reads the same. */
+export const AI_BUDGET_EXCEEDED = 'ai_budget_exceeded';
+
+/**
+ * The AI service refused the request and named why. A malformed request's text
+ * stays general, since the client words its code; a budget refusal keeps the
+ * AI service's text, which tells the person whom to ask.
+ */
 export class AIRequestRefusedError extends DomainHttpError {
-  constructor(code: string) {
-    super(code, CHAT_ERROR_MESSAGES.failed, 502);
+  constructor(
+    code: string,
+    message: string = CHAT_ERROR_MESSAGES.failed,
+    statusCode = 502,
+  ) {
+    super(code, message, statusCode);
   }
 }
 
@@ -27,13 +38,25 @@ interface FailedCall {
   };
 }
 
-/** A 400 whose `detail` names a code; other statuses keep their own handling (a 402's `detail` has a code too). */
+/** A 400 whose `detail` names a code, or a 402 from the AI service; other statuses keep their own handling. */
 export const refusalFrom = (
   status: unknown,
   data: unknown,
 ): AIRequestRefusedError | undefined => {
-  const code = (data as { detail?: { code?: unknown } | null } | null)?.detail
-    ?.code;
+  const detail = (
+    data as { detail?: { code?: unknown; message?: unknown } | null } | null
+  )?.detail;
+  if (status === 402) {
+    const message = detail?.message;
+    return new AIRequestRefusedError(
+      AI_BUDGET_EXCEEDED,
+      typeof message === 'string' && message.trim() !== ''
+        ? message
+        : CHAT_ERROR_MESSAGES.budgetExceeded,
+      402,
+    );
+  }
+  const code = detail?.code;
   return status === 400 && typeof code === 'string' && REFUSAL_CODE.test(code)
     ? new AIRequestRefusedError(code)
     : undefined;

@@ -92,11 +92,11 @@ describe('the activity card', () => {
     expect(screen.queryByTestId('chat-activity-separator')).toBeNull();
   });
 
-  it('is at most 640 px wide, on a raised fill', () => {
+  it('spans the answer column, on a raised fill', () => {
     response.activityCard = true;
     answer();
     const card = screen.getByTestId('chat-activity-card');
-    expect(card.style.maxWidth).toBe('640px');
+    expect(card.style.maxWidth).toBe('');
     expect(card.style.background).toBe('var(--olive-2)');
   });
 });

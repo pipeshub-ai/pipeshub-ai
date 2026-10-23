@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { Types } from 'mongoose';
+import { ClientSession, Types } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../../../libs/middlewares/types';
 import { IProjectDocument } from '../../../../projects/types/project.interfaces';
 import { AppConfig } from '../../../../tokens_manager/config/config';
@@ -87,6 +87,27 @@ export interface NoRunReply {
   requestId?: string;
 }
 
+/** The run whose answer row is being saved. */
+export interface TurnAnswerContext {
+  conversation: IChatSessionDocument;
+  run?: TurnRun;
+}
+
+/**
+ * What the extension adds to the answer one request's run saves. It sees the run's custom events as
+ * they pass (they are still forwarded), may change the answer row before it is written, and acts
+ * inside the answer's write once the row is stored.
+ */
+export interface TurnAnswerHooks {
+  observe(eventName: string, value: unknown): void;
+  prepare(row: IMessage, context: TurnAnswerContext): Promise<IMessage>;
+  /** Runs in the answer's write: a throw fails the write. */
+  stored(
+    row: IChatSessionMessageDocument,
+    context: TurnAnswerContext & { dbSession: ClientSession | null },
+  ): Promise<void>;
+}
+
 /** What the stream relay may ask about a turn. */
 export interface TurnStreamExtension {
   /** Describes the agent that answered, for the final frame; undefined when the conversation's own agent did. */
@@ -95,6 +116,8 @@ export interface TurnStreamExtension {
   ): Promise<Record<string, unknown> | undefined>;
   /** When the server ends this run if its AI backend stalls. */
   runLimits(run: TurnRun, conversation: IChatSessionDocument): RunLimits;
+  /** One per request; absent, the answer is saved as the AI backend gave it. */
+  answer?: TurnAnswerHooks;
 }
 
 /**

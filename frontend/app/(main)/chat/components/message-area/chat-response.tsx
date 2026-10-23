@@ -67,10 +67,9 @@ import { useInlineCitationPopoverStore } from './response-tabs/citations/citatio
 // Stable empty reference — avoids creating new objects in default params
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
-// No bottom padding: the activity inside ends with its own bottom margin. A step of light above the page, capped so
-// it reads as the work beside the answer rather than as the answer.
+// No bottom padding: the activity inside ends with its own bottom margin. A step of light above the page, as wide as
+// the answer column, the same as the steps in a one-person chat.
 const ACTIVITY_CARD_STYLE: React.CSSProperties = {
-  maxWidth: 640,
   border: '1px solid var(--olive-5)',
   background: 'var(--olive-2)',
   borderRadius: 'var(--radius-3)',

@@ -8,6 +8,7 @@ import * as controller from '../../../../src/modules/enterprise_search/controlle
 import { HttpError } from '../../../../src/libs/errors/http.errors'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
+import { AI_BUDGET_EXCEEDED } from '../../../../src/modules/enterprise_search/utils/ai-stream'
 import { CONVERSATION_ID_HEADER } from '../../../../src/modules/enterprise_search/utils/non-streaming-chat'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
@@ -222,6 +223,17 @@ describe('es_controller non-streaming chat routes', () => {
         expect(r.conversation().status).to.equal('Failed')
         expect(r.conversation().failReason).to.equal(CHAT_ERROR_MESSAGES.failed)
         expect(r.conversation().conversationErrors?.at(-1)?.errorType).to.equal('REQUEST_VERSION_UNSUPPORTED')
+      })
+
+      it('reports a used-up budget as one, with the words the AI backend chose for the person', async () => {
+        const r = await run(flow, (ai) =>
+          ai.reply(exactPath(flow.aiPath), 402, { detail: { code: 'AI_BUDGET_EXCEEDED', message: 'This request is not allowed right now.' } }),
+        )
+
+        expect(r.error()).to.include({ code: AI_BUDGET_EXCEEDED, statusCode: 402, message: 'This request is not allowed right now.' })
+        expect(r.conversation().status).to.equal('Failed')
+        expect(r.conversation().failReason).to.equal('This request is not allowed right now.')
+        expect(r.conversation().conversationErrors?.at(-1)?.errorType).to.equal(AI_BUDGET_EXCEEDED)
       })
 
       it('never shows upstream text for a 5xx', async () => {

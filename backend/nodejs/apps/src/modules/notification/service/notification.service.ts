@@ -120,14 +120,15 @@ export class NotificationService {
       }
 
       // Disconnect event handler
-      socket.on('disconnect', () => {
+      // The reason tells a proxy or idle timeout ('transport close') from a client that stopped answering pings.
+      socket.on('disconnect', (reason: string) => {
         if (userId) {
           // Check if user has any other active connections in the room
           const room = this.io?.sockets.adapter.rooms.get(userId);
           if (!room || room.size === 0) {
             this.connectedUsers.delete(userId);
             this.logger.info(
-              `User disconnected: userId: ${userId} & socketId: ${socket.id}`,
+              `User disconnected: userId: ${userId} & socketId: ${socket.id} & reason: ${reason}`,
             );
           } else {
             // User still has other connections, keep them marked as connected

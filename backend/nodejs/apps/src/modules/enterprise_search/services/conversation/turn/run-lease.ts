@@ -17,7 +17,7 @@ export interface LeaseHandle {
   release(status: ConversationStatus, options?: ReleaseOptions): Promise<void>;
   /** Filter fragment that makes a session write conditional on still holding the lease. */
   ownershipFilter(): SessionFilter;
-  /** Renews every 30 s; a failed or unmatched renew stops the heartbeat and calls `onLost` once. */
+  /** Renews every 15 s; stops and calls `onLost` once when a renew finds the lease gone or none has worked for 35 s. */
   startHeartbeat(onLost: () => void): void;
   stopHeartbeat(): void;
 }

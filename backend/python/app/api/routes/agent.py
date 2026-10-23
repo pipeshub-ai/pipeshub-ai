@@ -1757,7 +1757,10 @@ async def chat(request: Request, agent_id: str) -> JSONResponse:
     if not isinstance(streaming_response, StreamingResponse):
         return streaming_response  # pragma: no cover - chat_stream() only returns StreamingResponse today
 
-    outcome = await collect_stream_outcome(streaming_response.body_iterator, request.is_disconnected)
+    outcome = await collect_stream_outcome(
+        streaming_response.body_iterator, request.is_disconnected,
+        keep_events=get_chat_extension().completion_events(),
+    )
     return outcome.to_response()
 
 

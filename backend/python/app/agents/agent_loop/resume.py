@@ -68,6 +68,7 @@ def last_real_user_query(
     fallback: str,
     *,
     answers: str | None = None,
+    author_ref: str | None = None,
 ) -> str:
     """Original user goal when this request answers a card (ask_user_question or a tool approval).
 
@@ -75,19 +76,28 @@ def last_real_user_query(
     the latest chat: resuming from a later chat made the model redo that reply and the UI painted it
     onto the card. A card is matched by its question text, so an older card left open while a newer
     one was answered keeps its own goal; without a match the latest card is the one.
+
+    `author_ref` (a shared chat) keeps only that member's questions and the cards put to them
+    (`askedByRef`, else whoever asked the question the card follows).
     """
     if answers is not None:
         answered = _answered_questions(answers)
         latest_card: str | None = None
         matching_card: str | None = None
         last_user: str | None = None
+        asker: str | None = None
         for turn in previous_conversations or []:
             role = turn.get("role")
             content = str(turn.get("content") or "").strip()
             if role == "user_query":
+                asker = turn.get("authorRef")
+                if author_ref is not None and asker != author_ref:
+                    continue
                 if content and not is_ask_user_question_resume_query(content) and not is_tool_approval_resume_query(content):
                     last_user = content
             elif role == "bot_response" and last_user:
+                if author_ref is not None and turn.get("askedByRef", asker) != author_ref:
+                    continue
                 asked = _turn_asked_questions(turn)
                 if asked is None:
                     continue
@@ -99,6 +109,8 @@ def last_real_user_query(
             return goal
     for turn in reversed(previous_conversations or []):
         if turn.get("role") != "user_query":
+            continue
+        if author_ref is not None and turn.get("authorRef") != author_ref:
             continue
         content = str(turn.get("content") or "").strip()
         if content and not is_ask_user_question_resume_query(content) and not is_tool_approval_resume_query(content):

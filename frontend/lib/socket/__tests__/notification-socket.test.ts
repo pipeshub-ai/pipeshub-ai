@@ -1,27 +1,42 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const ioMock = vi.fn();
 const disconnectMock = vi.fn();
 const removeAllListenersMock = vi.fn();
 
-let lastSocket: {
+interface FakeSocket {
   connected: boolean;
+  /** socket.io's: false once the server refused the handshake, until `connect()` is called. */
+  active: boolean;
   auth: { token: string };
   disconnect: ReturnType<typeof vi.fn>;
   removeAllListeners: ReturnType<typeof vi.fn>;
-} | null = null;
+  connect: ReturnType<typeof vi.fn>;
+  on: (event: string, fn: (...a: unknown[]) => void) => void;
+  emit: (event: string, ...a: unknown[]) => void;
+}
+
+let lastSocket: FakeSocket | null = null;
 
 vi.mock('socket.io-client', () => ({
   io: (...args: unknown[]) => {
     ioMock(...args);
     const options = (args[1] ?? {}) as { auth?: { token: string } };
-    lastSocket = {
+    const handlers = new Map<string, Array<(...a: unknown[]) => void>>();
+    const created: FakeSocket = {
       connected: false,
+      active: true,
       auth: options.auth ?? { token: '' },
       disconnect: disconnectMock,
       removeAllListeners: removeAllListenersMock,
+      connect: vi.fn(() => {
+        created.active = true;
+      }),
+      on: (event, fn) => handlers.set(event, [...(handlers.get(event) ?? []), fn]),
+      emit: (event, ...a) => (handlers.get(event) ?? []).forEach((fn) => fn(...a)),
     };
-    return lastSocket;
+    lastSocket = created;
+    return created;
   },
 }));
 
@@ -99,5 +114,69 @@ describe('notification-socket', () => {
       'https://host.example.com',
       expect.objectContaining({ path: '/pipes/socket.io' })
     );
+  });
+
+  describe('bug-bash #5: a handshake the server refused', () => {
+    afterEach(() => vi.useRealTimers());
+
+    const refuse = (sock: FakeSocket) => {
+      sock.active = false;
+      sock.emit('connect_error', new Error('Authentication token expired'));
+    };
+
+    it('is retried with growing delays instead of leaving the socket dead until a reload', async () => {
+      vi.useFakeTimers();
+      const { connectNotificationSocket, REFUSED_RETRY_BASE_MS } = await import('../notification-socket');
+      connectNotificationSocket('token-a');
+      const sock = lastSocket!;
+      refuse(sock);
+      vi.advanceTimersByTime(REFUSED_RETRY_BASE_MS - 1);
+      expect(sock.connect).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(sock.connect).toHaveBeenCalledTimes(1);
+      refuse(sock);
+      vi.advanceTimersByTime(REFUSED_RETRY_BASE_MS);
+      expect(sock.connect).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(REFUSED_RETRY_BASE_MS);
+      expect(sock.connect).toHaveBeenCalledTimes(2);
+    });
+
+    it('is left to socket.io when it is still reconnecting by itself', async () => {
+      vi.useFakeTimers();
+      const { connectNotificationSocket } = await import('../notification-socket');
+      connectNotificationSocket('token-a');
+      lastSocket!.emit('connect_error', new Error('xhr poll error'));
+      vi.advanceTimersByTime(60_000);
+      expect(lastSocket!.connect).not.toHaveBeenCalled();
+    });
+
+    it('is not retried on a socket a new token replaced', async () => {
+      vi.useFakeTimers();
+      const { connectNotificationSocket } = await import('../notification-socket');
+      connectNotificationSocket('token-a');
+      const old = lastSocket!;
+      refuse(old);
+      connectNotificationSocket('token-b');
+      vi.advanceTimersByTime(60_000);
+      expect(old.connect).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ensureNotificationSocketConnected', () => {
+    it('reconnects a socket that gave up, and leaves a live or reconnecting one alone', async () => {
+      const { connectNotificationSocket, ensureNotificationSocketConnected } = await import('../notification-socket');
+      ensureNotificationSocketConnected();
+      connectNotificationSocket('token-a');
+      const sock = lastSocket!;
+      ensureNotificationSocketConnected();
+      expect(sock.connect).not.toHaveBeenCalled();
+      sock.active = false;
+      ensureNotificationSocketConnected();
+      expect(sock.connect).toHaveBeenCalledTimes(1);
+      sock.connected = true;
+      sock.active = false;
+      ensureNotificationSocketConnected();
+      expect(sock.connect).toHaveBeenCalledTimes(1);
+    });
   });
 });

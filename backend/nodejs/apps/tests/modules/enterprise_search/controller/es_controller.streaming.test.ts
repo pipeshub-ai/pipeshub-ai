@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import { Types } from 'mongoose'
 import * as controllerModule from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
+import { AI_BUDGET_EXCEEDED } from '../../../../src/modules/enterprise_search/utils/ai-stream'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './chat-test-harness'
@@ -239,16 +240,21 @@ describe('es_controller streaming answers', () => {
         expect(error?.data.code).to.not.equal('REQUEST_VERSION_UNSUPPORTED')
       })
 
-      it('keeps the words of a coded refusal that is not a 400, such as a used-up budget', async () => {
+      it('keeps the words of a used-up budget and reports it as one, not as an internal error', async () => {
         const run = await startStream(flow, controllerModule, (ai) => {
-          ai.refuseStream(402, { detail: { code: 'BUDGET_USED_UP', message: 'Your AI budget for this month is used up.' } })
+          ai.refuseStream(402, { detail: { code: 'AI_BUDGET_EXCEEDED', message: 'This request is not allowed right now.' } })
         })
         await run.res.ended
         await settle()
 
         const [error] = run.res.eventsOf('RUN_ERROR')
-        expect(error?.data.message).to.equal('Your AI budget for this month is used up.')
-        expect(error?.data.code).to.not.equal('BUDGET_USED_UP')
+        expect(error?.data.message).to.equal('This request is not allowed right now.')
+        expect(error?.data.code).to.equal(AI_BUDGET_EXCEEDED)
+        expect(run.conversation().status).to.equal('Failed')
+        expect(run.conversation().failReason).to.equal('This request is not allowed right now.')
+        if (!flow.regenerate) {
+          expect(run.conversation().conversationErrors?.at(-1)?.errorType).to.equal(AI_BUDGET_EXCEEDED)
+        }
       })
 
       it('reports an interrupted answer when the AI stream ends without a final answer', async () => {

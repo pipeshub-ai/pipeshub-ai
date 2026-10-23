@@ -180,7 +180,19 @@ export interface ChatExtension {
     /** Text that goes to the clipboard. */
     toPlainText(text: string): string;
   };
+  answer: {
+    /**
+     * The stored answer as the markdown renderer gets it. Text the extension draws itself is wrapped in
+     * `ANSWER_INLINE_MARK` pairs, which reach `AnswerInlineText` in place of plain text.
+     */
+    toMarkdown(text: string): string;
+    /** The stored answer as it goes to the clipboard, before markdown is stripped. */
+    toPlainText(text: string): string;
+  };
 }
+
+/** Delimits an answer's inline text the extension draws (`answer.toMarkdown`); a private-use character, never typed. */
+export const ANSWER_INLINE_MARK = '';
 
 const NO_FIELDS = Object.freeze({}) as Record<string, never>;
 
@@ -231,6 +243,10 @@ export const defaultChatExtension: ChatExtension = {
   },
   question: {
     truncate: (text, limit) => text.slice(0, limit),
+    toPlainText: (text) => text,
+  },
+  answer: {
+    toMarkdown: (text) => text,
     toPlainText: (text) => text,
   },
 };
@@ -442,6 +458,8 @@ export interface ChatSlots {
   SidePanel: ComponentType<{ slotId: string | null }>;
   useResponseExtension(input: ChatResponseInput): ChatResponseExtension;
   QueryText: ComponentType<{ text: string }>;
+  /** An answer's text holding `ANSWER_INLINE_MARK` (`answer.toMarkdown`). */
+  AnswerInlineText: ComponentType<{ text: string }>;
   /** Conversations a list may show. */
   useVisibleConversations<T extends { id: string }>(rows: T[]): T[];
   /** Conversations of an agent shared with the user, shown in their own section. */
@@ -512,6 +530,7 @@ export const defaultChatSlots: ChatSlots = {
   SidePanel: () => null,
   useResponseExtension: () => DEFAULT_RESPONSE,
   QueryText: PlainQueryText,
+  AnswerInlineText: PlainQueryText,
   useVisibleConversations: (rows) => rows,
   useAgentSharedConversations: (rows) => rows,
   useChatRow: ({ ownerMenu }) => ({ rightSlot: ownerMenu, dialogs: null, interceptProjectChange: () => false }),

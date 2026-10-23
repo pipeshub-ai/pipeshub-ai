@@ -2222,8 +2222,9 @@ async function regenerateAnswersInternal(
       reservation?.runId,
       gate.lease,
     );
+    const streamExtension = turns.streamFor(req, deps);
     const watchdog = new RunWatchdog(
-      turns.streamFor(req, deps).runLimits(turnRun, existingConversation),
+      streamExtension.runLimits(turnRun, existingConversation),
       (limit) => {
         logger.warn('Run reached its time limit; stopping the regeneration', {
           requestId,
@@ -2278,6 +2279,7 @@ async function regenerateAnswersInternal(
         },
         turnRun,
         (write) => pendingWrites.push(write),
+        streamExtension.answer,
       );
     });
 
@@ -2312,6 +2314,7 @@ async function regenerateAnswersInternal(
               staleAskToolCallIds,
               turnRun,
               frame,
+              streamExtension.answer,
             );
           if (await dropReplacedTurn()) {
             const shown = responseConversation as {

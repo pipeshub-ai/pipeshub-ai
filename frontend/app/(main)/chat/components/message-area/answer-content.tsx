@@ -33,6 +33,8 @@ import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
 import { downloadCode } from '../../utils/code-download';
 import { downloadTableCsv, tableNodeToRows, type TableNode } from '../../utils/table-csv';
 import { CHAT_LINK_STYLE, isRawUrlText, shortLinkLabel } from '../../utils/link-label';
+import { ANSWER_INLINE_MARK } from '../../chat-extension';
+import { chatExtension, chatSlots } from '@/config';
 
 /**
  * rehype-sanitize schema.
@@ -833,6 +835,17 @@ export function parseInlineCitations(
   return parts.length > 0 ? parts : [text];
 }
 
+/** Text the chat extension marked (`answer.toMarkdown`) goes to its `AnswerInlineText`; the rest stays as it is. */
+function withInlineText(nodes: React.ReactNode[]): React.ReactNode[] {
+  return nodes.map((node, i) =>
+    typeof node === 'string' && node.includes(ANSWER_INLINE_MARK) ? (
+      <chatSlots.AnswerInlineText key={`inline-${i}`} text={node} />
+    ) : (
+      node
+    ),
+  );
+}
+
 /**
  * Recursively walk React children, replacing `[N]` citations in any string segments.
  */
@@ -842,13 +855,13 @@ export function processChildren(
   citationCallbacks?: CitationCallbacks,
 ): React.ReactNode {
   if (typeof children === 'string') {
-    return parseInlineCitations(children, citationMaps, citationCallbacks);
+    return withInlineText(parseInlineCitations(children, citationMaps, citationCallbacks));
   }
 
   if (Array.isArray(children)) {
     return children.map((child, i) => {
       if (typeof child === 'string') {
-        const parsed = parseInlineCitations(child, citationMaps, citationCallbacks);
+        const parsed = withInlineText(parseInlineCitations(child, citationMaps, citationCallbacks));
         // Wrap in a fragment with key if we produced multiple nodes
         return parsed.length === 1 ? parsed[0] : <React.Fragment key={i}>{parsed}</React.Fragment>;
       }
@@ -1333,7 +1346,7 @@ export const AnswerContent = React.memo(function AnswerContent({
   // 3. preprocessMath            — \[..\] / \(..\) → $$..$$  (both forms)
   //    (skips fenced blocks created by step 1)
   const normalizedContent = useMemo(
-    () => preprocessMath(preprocessHtmlIndentation(preprocessHtmlCodeBlocks(content))),
+    () => preprocessMath(preprocessHtmlIndentation(preprocessHtmlCodeBlocks(chatExtension.answer.toMarkdown(content)))),
     [content],
   );
 

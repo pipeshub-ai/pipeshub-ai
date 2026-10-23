@@ -232,3 +232,50 @@ class TestErrorResponse:
         stream = _Stream(_frame("error", {"message": "odd", "status_code": 200}))
 
         assert (await collect_stream_outcome(stream)).to_response().status_code == 500
+
+
+class TestKeptEvents:
+    """`keep_events`: the root run's custom events a non-streaming route returns with the answer."""
+
+    def _custom(self, name: str, value: dict, **extra) -> str:
+        return _frame("CUSTOM", {"type": "CUSTOM", "runId": "r1", "name": name, "value": value, **extra})
+
+    async def test_named_root_events_go_back_with_the_answer_in_order(self):
+        stream = _Stream(
+            self._custom("agent_mention", {"type": "participant", "ref": "participant_2"}),
+            self._custom("agent_draft", {"draft": "secret"}),
+            self._custom("agent_mention", {"type": "participant", "ref": "participant_9"}, parentRunId="r0"),
+            _frame("agent_mention", {"type": "participant", "ref": "participant_3"}),
+            self._custom("agent_mention", {"type": "participant", "ref": "participant_4"}),
+            _run_finished({"answer": "@Bea, over to you."}),
+        )
+
+        outcome = await collect_stream_outcome(stream, keep_events=frozenset({"agent_mention"}))
+
+        assert _body(outcome.to_response()) == {
+            "answer": "@Bea, over to you.",
+            "events": [
+                {"name": "agent_mention", "value": {"type": "participant", "ref": "participant_2"}},
+                {"name": "agent_mention", "value": {"type": "participant", "ref": "participant_3"}},
+                {"name": "agent_mention", "value": {"type": "participant", "ref": "participant_4"}},
+            ],
+        }
+
+    async def test_without_keep_events_the_answer_is_unchanged(self):
+        stream = _Stream(
+            self._custom("agent_mention", {"type": "participant", "ref": "participant_2"}),
+            _run_finished({"answer": "42"}),
+        )
+
+        assert _body((await collect_stream_outcome(stream)).to_response()) == {"answer": "42"}
+
+    async def test_a_failed_run_returns_its_error_without_the_events(self):
+        stream = _Stream(
+            self._custom("agent_mention", {"type": "participant", "ref": "participant_2"}),
+            _run_error("boom", "server_error"),
+        )
+
+        response = (await collect_stream_outcome(stream, keep_events=frozenset({"agent_mention"}))).to_response()
+
+        assert response.status_code == 502
+        assert "events" not in _body(response)

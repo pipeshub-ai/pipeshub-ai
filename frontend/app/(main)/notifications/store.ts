@@ -63,6 +63,8 @@ interface NotificationState {
   loadMore: () => Promise<void>;
   ensureBackfill: () => Promise<void>;
   addNotification: (item: NotificationListItem) => void;
+  /** Rows found after a reconnect, newest first on top; the counts come from the server's stats instead. */
+  mergeMissed: (items: readonly NotificationListItem[]) => void;
   upsertNotification: (item: NotificationListItem) => void;
   markRead: (id: string) => void;
   markUnread: (id: string) => void;
@@ -171,6 +173,13 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       notifications: next,
       unreadCount: !isDuplicate && wasUnread ? get().unreadCount + 1 : get().unreadCount,
     });
+  },
+
+  mergeMissed: (items) => {
+    const prev = get().notifications;
+    const known = new Set(prev.map((n) => n._id));
+    const fresh = items.filter((n) => n._id && !known.has(n._id)).slice().reverse();
+    if (fresh.length > 0) set({ notifications: [...fresh, ...prev] });
   },
 
   upsertNotification: (item) => {

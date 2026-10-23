@@ -330,6 +330,19 @@ describe('NotificationService over a real socket', () => {
       expect(await secondTab.nextEvent()).to.deep.equal(['notification', { tab: 2 }]);
     });
 
+    it("logs why a user's last socket went away, so a proxy timeout can be told from a silent client", async () => {
+      const info = sinon.spy(
+        (internals() as unknown as { logger: { info: (msg: string) => void } }).logger,
+        'info',
+      );
+      const tab = await connectAs(alice);
+      await tab.close();
+      await waitFor(() => socketsInRoom(alice.userId) === 0);
+      await waitFor(() => info.getCalls().some((c) => String(c.args[0]).startsWith('User disconnected')));
+      const line = String(info.getCalls().find((c) => String(c.args[0]).startsWith('User disconnected'))!.args[0]);
+      expect(line).to.match(/reason: \w[\w ]*$/);
+    });
+
   });
 
   describe('forced sign-out', () => {

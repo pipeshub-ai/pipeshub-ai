@@ -317,6 +317,45 @@ describe('AIServiceCommand', () => {
       }
     })
 
+    it('takes the text of a coded refusal whose detail is an object, and keeps the body', async () => {
+      const body = { detail: { code: 'AI_BUDGET_EXCEEDED', message: 'This request is not allowed right now.' } }
+      fetchStub.resolves(makeFetchResponse(402, body, 'Payment Required'))
+
+      const cmd = new AIServiceCommand({
+        uri: 'http://ai.local/stream',
+        method: HttpMethod.POST,
+        headers: { 'content-type': 'application/json' },
+        body: { prompt: 'refused' },
+      })
+
+      try {
+        await cmd.executeStream()
+        expect.fail('Should have thrown')
+      } catch (err: any) {
+        expect(err.message).to.equal('This request is not allowed right now.')
+        expect(err.status).to.equal(402)
+        expect(err.response.data).to.deep.equal(body)
+      }
+    })
+
+    it('falls back to the status text when an object detail has no text', async () => {
+      fetchStub.resolves(makeFetchResponse(422, { detail: [{ loc: ['body'], msg: 'field required' }] }, 'Unprocessable Entity'))
+
+      const cmd = new AIServiceCommand({
+        uri: 'http://ai.local/stream',
+        method: HttpMethod.POST,
+        headers: { 'content-type': 'application/json' },
+        body: { prompt: 'bad' },
+      })
+
+      try {
+        await cmd.executeStream()
+        expect.fail('Should have thrown')
+      } catch (err: any) {
+        expect(err.message).to.equal('Unprocessable Entity')
+      }
+    })
+
     it('should throw an error with message field from JSON error response', async () => {
       const errorPayload = JSON.stringify({ message: 'Rate limit exceeded' })
       const mockResponse = {

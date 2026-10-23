@@ -1,3 +1,4 @@
+import { DomainHttpError } from '../../../libs/errors/domain-http.error';
 import { HttpError } from '../../../libs/errors/http.errors';
 
 /**
@@ -16,6 +17,8 @@ export const CHAT_ERROR_MESSAGES = {
     'Something went wrong while answering. Please send your message again, and if it keeps happening, contact your workspace admin.',
   timedOut:
     'The answer took too long and was stopped. Click Regenerate or send your message again.',
+  budgetExceeded:
+    'The AI service did not run this request. Ask your workspace admin.',
 } as const;
 
 // The service answering the chat can't be reached at all.
@@ -55,6 +58,10 @@ const errorCodes = (error: ErrorLike): string[] =>
 export const userFacingChatError = (error: unknown): string => {
   if (error instanceof HttpError) {
     return userFacingStatusError(error.statusCode, error.message);
+  }
+  // A domain error's text is written for the client; a 5xx one still reads as a plain failure.
+  if (error instanceof DomainHttpError) {
+    return error.statusCode < 500 ? error.message : CHAT_ERROR_MESSAGES.failed;
   }
   if (error !== null && typeof error === 'object') {
     const err = error as ErrorLike;

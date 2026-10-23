@@ -13,7 +13,7 @@ import {
 import type { ModelInfo, AppliedFilters } from '@/chat/types';
 import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
-import { ChatMessageExtras } from '@/config';
+import { ChatMessageExtras, chatExtension } from '@/config';
 import { toast } from '@/lib/store/toast-store';
 import { useChatSpeechSynthesis } from '@/lib/hooks/use-chat-speech-synthesis';
 import { AgentsApi } from '@/app/(main)/agents/api';
@@ -365,12 +365,12 @@ export function MessageActions({
   );
 
   const handleCopyMarkdown = useCallback(() => {
-    const resolved = resolveMarkdownCitations(content, citationMaps);
+    const resolved = resolveMarkdownCitations(chatExtension.answer.toPlainText(content), citationMaps);
     copyToClipboard(resolved, t('chat.copiedAsMarkdown'));
   }, [content, citationMaps, copyToClipboard, t]);
 
   const handleCopyText = useCallback(() => {
-    const plainText = stripMarkdownAndCitations(content);
+    const plainText = stripMarkdownAndCitations(chatExtension.answer.toPlainText(content));
     copyToClipboard(plainText, t('chat.copiedAsText'));
   }, [content, copyToClipboard, t]);
 

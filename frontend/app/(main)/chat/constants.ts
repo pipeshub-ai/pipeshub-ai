@@ -236,6 +236,12 @@ export const CHAT_CONTENT_PADDING_X = {
   desktop: '0px',
 } as const;
 
+/**
+ * The least space between the column and the pane's edge on desktop. A pane narrower than the column (a side panel
+ * open, or a narrow window beside the sidebar) would otherwise put the text against the sidebar.
+ */
+export const CHAT_CONTENT_MIN_GUTTER_DESKTOP = 'var(--space-5)';
+
 export function chatContentColumnStyle(isMobile: boolean): {
   maxWidth: string;
   width: string;
@@ -246,7 +252,7 @@ export function chatContentColumnStyle(isMobile: boolean): {
 } {
   return {
     maxWidth: CHAT_CONTENT_MAX_WIDTH,
-    width: '100%',
+    width: isMobile ? '100%' : `calc(100% - 2 * ${CHAT_CONTENT_MIN_GUTTER_DESKTOP})`,
     minWidth: 0,
     boxSizing: 'border-box',
     paddingLeft: isMobile ? CHAT_CONTENT_PADDING_X.mobile : CHAT_CONTENT_PADDING_X.desktop,

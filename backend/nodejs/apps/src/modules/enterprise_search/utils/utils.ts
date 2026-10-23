@@ -46,6 +46,7 @@ import {
   TurnRun,
   turnWrite,
 } from '../services/conversation/turn/turn-run';
+import type { TurnAnswerHooks } from '../services/conversation/turn/turn-extension';
 import { MongoUserDirectory } from '../../user_management/services/user-directory.service';
 import { Users } from '../../user_management/schema/users.schema';
 import { safeParsePagination } from '../../../utils/safe-integer';
@@ -2114,6 +2115,7 @@ export interface CompletedTurnOptions {
   turnRows?: Array<Record<string, unknown>>;
   /** Called once the answer's write committed, before the response is built. */
   onSaved?: (answer: Record<string, unknown>, citations: ICitation[]) => void;
+  answer?: TurnAnswerHooks;
 }
 
 /** Inserts a turn's citations on the write's session; a no-op for none. */
@@ -2151,8 +2153,7 @@ export const saveCompletedTurn = async (
         }),
     );
 
-    // Create AI response message
-    const aiResponseMessage = stampTurnRow(
+    const built = stampTurnRow(
       buildAIResponseMessage(
         { data: completeData, statusCode: 200 },
         citations,
@@ -2160,6 +2161,9 @@ export const saveCompletedTurn = async (
       ),
       run,
     );
+    const aiResponseMessage = options.answer
+      ? await options.answer.prepare(built, { conversation, run })
+      : built;
 
     const assignModelInfo =
       options.assignModelInfo === true && isOwnersTurn(run, conversation);
@@ -2196,6 +2200,7 @@ export const saveCompletedTurn = async (
       if (!(await patchTurnSession(conversation, patch, run, dbSession))) {
         throw new InternalServerError(`Failed to update ${noun}`);
       }
+      await options.answer?.stored(inserted, { conversation, run, dbSession });
       return inserted;
     });
     const answer = insertedMessage.toObject() as Record<string, unknown>;
@@ -2229,12 +2234,14 @@ export const saveCompleteConversation = (
   session?: ClientSession | null,
   modelInfo?: IAIModel,
   run?: TurnRun,
+  answer?: TurnAnswerHooks,
 ): Promise<Record<string, unknown>> =>
   saveCompletedTurn(conversation, completeData, orgId, {
     session,
     modelInfo,
     assignModelInfo: true,
     run,
+    answer,
   });
 
 // Helper function to add error to conversation errors array
@@ -2929,6 +2936,7 @@ export const handleRegenerationStreamData = (
   onAskUserQuestion?: (payload: unknown) => void,
   run?: TurnRun,
   trackWrite?: (write: Promise<void>) => void,
+  answer?: TurnAnswerHooks,
 ): string => {
   const chunkStr = chunk.toString();
   let newBuffer = buffer + chunkStr;
@@ -3049,6 +3057,9 @@ export const handleRegenerationStreamData = (
       ) {
         try {
           const eventData = JSON.parse(dataLine);
+          if (typeof eventData?.name === 'string') {
+            answer?.observe(eventData.name as string, eventData.value);
+          }
           if (eventData?.name === 'ask_user_question' && eventData.value) {
             const payload = eventData.value.toolData ?? eventData.value;
             onAskUserQuestion?.(payload);
@@ -3190,6 +3201,7 @@ export const handleRegenerationSuccess = async (
   staleAskToolCallIds?: mongoose.Types.ObjectId[],
   run?: TurnRun,
   frame?: StreamFrame,
+  answer?: TurnAnswerHooks,
 ): Promise<{
   conversation: any;
   savedCitations: ICitation[];
@@ -3211,7 +3223,7 @@ export const handleRegenerationSuccess = async (
 
   // Build AI response message and replace the original message with it,
   // preserving the original's _id/seq (see updateMessageById).
-  const aiResponseMessage = stampTurnRow(
+  const built = stampTurnRow(
     buildAIResponseMessage(
       { statusCode: 200, data: completeData },
       savedCitations,
@@ -3219,6 +3231,9 @@ export const handleRegenerationSuccess = async (
     ),
     run,
   );
+  const aiResponseMessage = answer
+    ? await answer.prepare(built, { conversation: existingConversation, run })
+    : built;
   if (askUserQuestionPayload) {
     attachAskUserQuestionToMessage(aiResponseMessage, askUserQuestionPayload);
   }
@@ -3270,6 +3285,11 @@ export const handleRegenerationSuccess = async (
         'Failed to update conversation with regenerated response: message not found',
       );
     }
+    await answer?.stored(replaced, {
+      conversation: existingConversation,
+      run,
+      dbSession,
+    });
     if (
       !(await patchTurnSession(existingConversation, patch, run, dbSession))
     ) {

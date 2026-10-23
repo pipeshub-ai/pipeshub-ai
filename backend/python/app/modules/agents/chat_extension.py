@@ -120,6 +120,10 @@ class ChatExtension:
     def install_tool_result_hooks(self, hooks: HookRegistry, context: AgentContext) -> None:
         """POST_TOOL_USE hooks after the built-in ones."""
 
+    def completion_events(self) -> frozenset[str]:
+        """Custom events a non-streaming chat route returns with the answer (`collect_stream_outcome`)."""
+        return frozenset()
+
     def history_renderer(self, context: AgentContext) -> HistoryTurnRenderer | None:
         """None renders history turns as they were sent."""
         return None

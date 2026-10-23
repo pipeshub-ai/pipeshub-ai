@@ -434,6 +434,8 @@ export interface IAIResponse {
   parts?: IMessagePart[];
   /** Set by Python `classify_error` on a graceful failure answer (`auth_error`, …). */
   errorCode?: string;
+  /** Non-streaming routes only: the run's custom events the chat extension asked to keep. Never stored. */
+  events?: unknown[];
 }
 
 export interface IAIModel {

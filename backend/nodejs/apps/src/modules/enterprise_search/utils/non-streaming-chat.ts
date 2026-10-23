@@ -19,6 +19,7 @@ import {
 } from '../types/conversation.interfaces';
 import { RunLostError } from '../services/conversation/domain/errors';
 import { LeaseLostError } from '../services/conversation/turn/run-lease';
+import type { TurnAnswerHooks } from '../services/conversation/turn/turn-extension';
 import {
   inShortTransaction,
   TurnRun,
@@ -140,6 +141,7 @@ export interface CompleteTurnOptions {
   requestId?: string;
   /** Present for a follow-up turn: stamps the answer and fences its write on the lease. */
   run?: TurnRun;
+  answer?: TurnAnswerHooks;
 }
 
 export interface CompletedTurn {
@@ -210,7 +212,7 @@ export const completeTurn = async (
   }
 
   if (response.statusCode !== 200) {
-    // A coded refusal reaches the client as its code, never its words, as a stream's does.
+    // A coded refusal reaches the client as its code, as a stream's does.
     const refusal = refusalFrom(response.statusCode, response.data);
     const failReason = refusal?.message ?? userFacingAIResponseError(response);
     return fail(
@@ -227,6 +229,18 @@ export const completeTurn = async (
     );
   }
 
+  // The custom events a streamed run would have passed through, collected by the AI backend.
+  const { events } = response.data;
+  if (Array.isArray(events)) {
+    for (const event of events) {
+      const { name, value } = (event ?? {}) as {
+        name?: unknown;
+        value?: unknown;
+      };
+      if (typeof name === 'string') options.answer?.observe(name, value);
+    }
+  }
+
   try {
     const saved = (await saveCompleteConversation(
       conversation,
@@ -235,6 +249,7 @@ export const completeTurn = async (
       null,
       options.modelInfo,
       options.run,
+      options.answer,
     )) as Record<string, unknown>;
     return {
       conversation: saved,

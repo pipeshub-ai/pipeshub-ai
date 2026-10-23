@@ -653,6 +653,36 @@ def test_a_tool_approval_answer_ignores_question_cards() -> None:
     assert last_real_user_query(previous, "Tool approval: allow") == "file a bug"
 
 
+def _by(ref: str, turn: dict) -> dict:
+    return {**turn, "authorRef": ref}
+
+
+def test_a_shared_chat_goal_is_the_card_the_member_answers_not_their_later_question() -> None:
+    previous = [
+        _by("p1", {"role": "user_query", "content": "plan the launch"}),
+        {"role": "bot_response", "content": "", "tool_results": [_asked("ask_one", "Which region first?")]},
+        _by("p2", {"role": "user_query", "content": "what is our budget"}),
+        {"role": "bot_response", "content": "", "tool_results": [_asked("ask_two", "Which region first?")]},
+        _by("p1", {"role": "user_query", "content": "who owns the roadmap?"}),
+        {"role": "bot_response", "content": "Priya owns the roadmap."},
+    ]
+    answers = 'User selections:\n1. "Which region first?" → EU'
+    assert last_real_user_query(previous, "fallback", answers=answers, author_ref="p1") == "plan the launch"
+    assert last_real_user_query(previous, "fallback", answers=answers, author_ref="p2") == "what is our budget"
+    assert last_real_user_query(previous, "fallback", author_ref="p1") == "who owns the roadmap?"
+
+
+def test_a_shared_chat_card_belongs_to_whom_it_was_asked() -> None:
+    previous = [
+        _by("p1", {"role": "user_query", "content": "plan the launch"}),
+        _by("p2", {"role": "user_query", "content": "what is our budget"}),
+        {"role": "bot_response", "askedByRef": "p1", "content": "", "tool_results": [_asked("ask_one", "Which region first?")]},
+    ]
+    answers = 'User selections:\n1. "Which region first?" → EU'
+    assert last_real_user_query(previous, "fallback", answers=answers, author_ref="p1") == "plan the launch"
+    assert last_real_user_query(previous, "fallback", answers=answers, author_ref="p3") == "fallback"
+
+
 @pytest.mark.asyncio
 async def test_inject_binds_the_answers_to_the_card_they_name() -> None:
     ctx = await _replay(*_older_card_left_open_newer_answered())

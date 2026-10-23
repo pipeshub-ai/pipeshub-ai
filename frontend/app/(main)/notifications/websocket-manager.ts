@@ -4,10 +4,33 @@ import { useEffect } from 'react';
 import {
   connectNotificationSocket,
   disconnectNotificationSocket,
+  ensureNotificationSocketConnected,
 } from '@/lib/socket/notification-socket';
 import { logoutAndRedirect, useAuthStore, notificationExtension } from '@/config';
 import { useNotificationStore } from './store';
 import { NotificationsApi, type NotificationListItem } from './api';
+import { isCatchUpPrimed, noteSeen, resetCatchUp, takeMissed } from './catch-up';
+
+/**
+ * On every (re)connect: the counts, the open panel's list, and the unread notices pushed while the socket was down,
+ * which get what their push would have given them (`onMissedNotifications`). The first connect after a load or
+ * sign-in hands the unread page to `onUnreadAtStart` instead: what came while no tab was open.
+ */
+async function catchUpOnConnect(): Promise<void> {
+  const { isPanelOpen, setInitialPage, setStats, mergeMissed } = useNotificationStore.getState();
+  const unread = await NotificationsApi.list({ status: 'unread' });
+  const first = !isCatchUpPrimed();
+  const missed = takeMissed(unread.notifications);
+  if (missed.length > 0) mergeMissed(missed);
+  const [stats, page] = await Promise.all([
+    NotificationsApi.getStats(),
+    isPanelOpen ? NotificationsApi.list() : Promise.resolve(null),
+  ]);
+  setStats(stats);
+  if (page) setInitialPage(page);
+  if (first) notificationExtension.onUnreadAtStart(unread.notifications);
+  else if (missed.length > 0) notificationExtension.onMissedNotifications(missed);
+}
 
 /** Refetch stats (and list when the panel is open) from the server. */
 async function syncNotificationsFromServer(): Promise<void> {
@@ -36,8 +59,6 @@ export function useNotificationSocket(): void {
   const accessToken = useAuthStore((s) => s.accessToken);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isHydrated = useAuthStore((s) => s.isHydrated);
-  const setInitialPage = useNotificationStore((s) => s.setInitialPage);
-  const setStats = useNotificationStore((s) => s.setStats);
   const addNotification = useNotificationStore((s) => s.addNotification);
 
   notificationExtension.useSocketEffects({ isHydrated, isAuthenticated, accessToken });
@@ -45,6 +66,7 @@ export function useNotificationSocket(): void {
   useEffect(() => {
     if (!isHydrated || !isAuthenticated || !accessToken) {
       disconnectNotificationSocket();
+      if (!isAuthenticated) resetCatchUp();
       return;
     }
 
@@ -54,12 +76,7 @@ export function useNotificationSocket(): void {
     const onConnect = async () => {
       notificationExtension.onSocketConnect();
       try {
-        const stats = await NotificationsApi.getStats();
-        setStats(stats);
-        if (useNotificationStore.getState().isPanelOpen) {
-          const page = await NotificationsApi.list();
-          setInitialPage(page);
-        }
+        await catchUpOnConnect();
       } catch {
         // non-fatal: user still gets live events
       }
@@ -67,6 +84,7 @@ export function useNotificationSocket(): void {
 
     const onNew = (payload: NotificationListItem) => {
       if (payload._id) {
+        noteSeen(payload);
         addNotification(payload);
       }
     };
@@ -92,18 +110,25 @@ export function useNotificationSocket(): void {
     };
   }, [accessToken, isAuthenticated, isHydrated, addNotification]);
 
-  // When the user returns to this tab, refresh counts (and panel list) after actions in another tab.
+  // When the user returns to this tab, refresh counts (and panel list) after actions in another tab, and bring back
+  // a socket that gave up while the tab slept or the network was gone; its reconnect catches up on what was missed.
   useEffect(() => {
     if (!isHydrated || !isAuthenticated || !accessToken) return;
 
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
+        ensureNotificationSocketConnected();
         void syncNotificationsFromServer();
       }
     };
+    const onOnline = () => ensureNotificationSocketConnected();
 
     document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', onOnline);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', onOnline);
+    };
   }, [accessToken, isAuthenticated, isHydrated]);
 }
 

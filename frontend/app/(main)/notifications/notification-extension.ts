@@ -43,6 +43,16 @@ export interface NotificationExtension {
   useSocketEffects(opts: NotificationSocketOptions): void;
   /** The notification socket (re)connected. */
   onSocketConnect(): void;
+  /**
+   * Unread notices that arrived while the socket was down, oldest first, found when it reconnected: what a live
+   * push would have done for them (a pop-up, a refreshed list) is done now instead.
+   */
+  onMissedNotifications(rows: readonly NotificationListItem[]): void;
+  /**
+   * The first connect after a load or a sign-in, with the newest unread page (newest first): notices from before
+   * this load, which no push reached. The extension may surface some of them; the inbox keeps all of them.
+   */
+  onUnreadAtStart(rows: readonly NotificationListItem[]): void;
 }
 
 const NO_PANEL_ROWS: NotificationPanelRows = { decorate: () => null, extraAction: () => null };
@@ -51,4 +61,6 @@ export const defaultNotificationExtension: NotificationExtension = {
   usePanelRows: () => NO_PANEL_ROWS,
   useSocketEffects: () => {},
   onSocketConnect: () => {},
+  onMissedNotifications: () => {},
+  onUnreadAtStart: () => {},
 };

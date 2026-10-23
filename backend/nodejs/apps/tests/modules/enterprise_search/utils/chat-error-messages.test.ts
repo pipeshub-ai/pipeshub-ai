@@ -11,6 +11,7 @@ import {
   InternalServerError,
   ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors'
+import { AIRequestRefusedError, refusalFrom } from '../../../../src/modules/enterprise_search/utils/ai-stream'
 
 describe('enterprise_search/utils/chat-error-messages', () => {
   describe('userFacingChatError', () => {
@@ -35,6 +36,14 @@ describe('enterprise_search/utils/chat-error-messages', () => {
     it('keeps a deliberate 4xx message, which already speaks to the user', () => {
       const msg = 'No AI model is set up for this workspace yet.'
       expect(userFacingChatError(new BadRequestError(msg))).to.equal(msg)
+    })
+
+    it("keeps a used-up budget's words, and a malformed request's general text", () => {
+      const budget = refusalFrom(402, { detail: { code: 'AI_BUDGET_EXCEEDED', message: 'This request is not allowed right now.' } })
+      expect(userFacingChatError(budget)).to.equal('This request is not allowed right now.')
+      expect(userFacingChatError(new AIRequestRefusedError('REQUEST_VERSION_UNSUPPORTED'))).to.equal(
+        CHAT_ERROR_MESSAGES.failed,
+      )
     })
 
     it('never passes raw error text through for anything else', () => {

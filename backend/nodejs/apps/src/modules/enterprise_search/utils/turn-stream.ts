@@ -618,6 +618,9 @@ export class TurnStreamPump {
     if (eventType === AGUIEventType.CUSTOM) {
       const parsed = this.parse(data, 'CUSTOM', false);
       const value = parsed?.value as { toolData?: unknown } | undefined;
+      if (typeof parsed?.name === 'string') {
+        this.o.extension?.answer?.observe(parsed.name, parsed.value);
+      }
       if (parsed?.name === 'ask_user_question' && value) {
         this.persistToolCard('ask_user_question', value.toolData ?? value);
       } else if (typeof parsed?.name === 'string' && value) {
@@ -708,6 +711,7 @@ export class TurnStreamPump {
           agent: this.o.agent,
           frame: this.o.frame,
           ...(this.o.frame === 'turn' && { turnRows: this.turnRows() }),
+          answer: this.o.extension?.answer,
           onSaved: (answer, citations) => {
             this.saved = { answer, citations };
           },

@@ -10,6 +10,7 @@ import {
   addComputedFields,
   buildFilter,
 } from '../../../../src/modules/enterprise_search/utils/utils'
+import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { EXCLUDE_AGENT, ONLY_AGENT } from '../../../../src/modules/enterprise_search/constants/constants'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
 import { agentArchivesScope, agentListScope, chatArchivesScope, chatListScope, ListScopeEnv, withListScope } from '../helpers/list-scope'
@@ -259,11 +260,17 @@ describe('es_controller list surfaces', () => {
   })
 
   describe('content search is pushed down to the accessible sessions', () => {
-    it('finds the one accessible match among more than 10 000 matches of other users', async () => {
+    it('finds the one accessible match among more matches of other users than the search keeps', async () => {
+      // The search keeps 10 000 sessions; a smaller cap proves the same without building 10 000 of them.
+      const cap = 10
+      const findMatches = searchUtils.findSessionIdsMatchingContent
+      sinon
+        .stub(searchUtils, 'findSessionIdsMatchingContent')
+        .callsFake((orgId, search, options) => findMatches(orgId, search, { ...options, limit: cap }))
       const store = new InMemoryChatStore()
       store.install()
       new FakeAIBackend().install()
-      const others = Array.from({ length: 10_001 }, () =>
+      const others = Array.from({ length: cap + 1 }, () =>
         store.addSession({ orgId: ORG, userId: STRANGER, initiator: STRANGER, title: 'unrelated' }),
       )
       const mine = store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'my notes' })
