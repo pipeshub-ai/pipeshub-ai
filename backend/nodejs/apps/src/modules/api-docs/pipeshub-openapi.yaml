@@ -20102,7 +20102,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the application allows client_credentials and the caller is not an organisation administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '404':
+          description: >-
+            The selected tokenIdentityUserId is malformed, or does not name a service
+            account in this organisation. A disabled account answers 400 instead.
           content:
             application/json:
               schema:
@@ -20242,8 +20250,9 @@ paths:
         it settles whose documents the application's tokens reach. A non-administrator answers `403`, and that
         check runs first — so a member sees `403` whether or not a service account is bound.
 
-        For an administrator, it answers `400` unless the application already acts as a service account and that
-        account is still present and enabled. Point the application at one first with
+        For an administrator, it answers `400` when no service account is bound or the bound account is
+        disabled, and `404` when the bound identity no longer exists or is not a service account — distinct
+        from the `404` for an application this caller cannot see. Point the application at one first with
         `PUT /oauth-clients/{appId}/token-identity`. An application that already allows the grant without a
         service account predates this rule and can still be edited.
 
@@ -20297,7 +20306,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
-          description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          description: >-
+            OAuth app not found or not visible to this caller (each user only sees apps they
+            created), or the service account the application is bound to no longer exists or
+            is not a service account.
           content:
             application/json:
               schema:
