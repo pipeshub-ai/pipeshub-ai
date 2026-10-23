@@ -552,6 +552,14 @@ export class OAuthAppService {
         data.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS) &&
         !app.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS);
 
+      // Gaining the grant is the same decision as making it at creation, and
+      // this route has no admin check of its own, so without this the gate on
+      // creation is bypassed by making an authorization_code app and editing
+      // it afterwards.
+      if (gainingClientCredentials && !isAdmin) {
+        throw new ForbiddenError(ADMIN_ACCESS_REQUIRED_MESSAGE);
+      }
+
       if (gainingClientCredentials && !app.tokenIdentityUserId) {
         throw new BadRequestError(
           'Point this application at a service account before allowing ' +

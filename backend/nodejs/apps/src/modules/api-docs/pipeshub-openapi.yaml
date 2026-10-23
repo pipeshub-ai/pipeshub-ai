@@ -94,7 +94,7 @@ tags:
 
       **Who authorizes vs. client credentials**
       - **Authorization code:** Any authenticated user in the workspace may complete consent for a valid `client_id`; issued tokens represent **that user**.
-      - **Client credentials:** Access tokens represent the **OAuth app creator** (who registered the client), not the caller.
+      - **Client credentials:** Access tokens represent the **service account the app is pointed at**, never the caller. An app that allows this grant must name one at creation, and only an administrator may choose it. Apps created before that rule, and never bound, still represent the **OAuth app creator** — the fallback this rule exists to remove.
 
       **Scopes**
       - `GET /oauth-clients/scopes` returns scopes grouped by category for the **signed-in user's role**.
@@ -19611,7 +19611,7 @@ paths:
           the cause is recorded in the delegation log, which only an
           administrator can read.
 
-        For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
+        For **`client_credentials`**, access tokens represent the **service account the app is pointed at** (`tokenIdentityUserId`), or the **OAuth app creator** for an app registered before that was required and never bound. The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the identity (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
 
         **Client Authentication:**
         Can be provided via:

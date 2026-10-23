@@ -157,7 +157,6 @@ export function CreateOAuthApplicationPanel({
   const [serviceAccountsError, setServiceAccountsError] = useState<string | null>(
     null
   );
-  const [serviceAccountsLoading, setServiceAccountsLoading] = useState(false);
 
   const [scopesByCategory, setScopesByCategory] = useState<Record<
     string,
@@ -217,7 +216,6 @@ export function CreateOAuthApplicationPanel({
       setServiceAccountId('');
       setServiceAccounts(null);
       setServiceAccountsError(null);
-      setServiceAccountsLoading(false);
       setGeneralErrors({});
       setScopesByCategory(null);
       setScopesError(null);
@@ -373,16 +371,26 @@ export function CreateOAuthApplicationPanel({
     t,
   ]);
 
+  /**
+   * Two states, and no flag for "in flight".
+   *
+   * A loading flag set inside this effect is also a dependency of it, so
+   * setting it re-runs the effect, the cleanup cancels the request that was
+   * just started, and the flag never clears — the panel waits for a response
+   * it has already thrown away. The two states below say everything needed
+   * without that: `serviceAccounts` is null until a list arrives, and
+   * `serviceAccountsError` is set only when asking failed.
+   *
+   * A failure leaves the list null and the error set, so this stops rather
+   * than retrying in a loop. Clearing the error is what asks again, which is
+   * what the retry button does.
+   */
   useEffect(() => {
     if (!grantTypes.has('client_credentials')) return;
-    // `serviceAccountsAttempt` rather than the list itself: a failure leaves
-    // an empty list behind, and guarding on that would make one bad request
-    // block creation for as long as the panel stays open.
-    if (serviceAccounts !== null && serviceAccountsError === null) return;
-    if (serviceAccountsLoading) return;
+    if (serviceAccounts !== null) return;
+    if (serviceAccountsError !== null) return;
 
     let cancelled = false;
-    setServiceAccountsLoading(true);
     void (async () => {
       try {
         const { serviceAccounts: list } = await ServiceAccountsApi.list();
@@ -392,30 +400,26 @@ export function CreateOAuthApplicationPanel({
             .filter((a) => !a.isDisabled)
             .map((a) => ({ id: a.id, fullName: a.fullName, email: a.email }))
         );
-        setServiceAccountsError(null);
       } catch {
         if (cancelled) return;
-        // Left as an error rather than an empty list: "there are none" and
-        // "we could not ask" lead to different actions, and only one of them
-        // is "go and make one".
-        setServiceAccounts([]);
+        // The list is left null, so "we could not ask" stays distinct from
+        // "there are none" — only one of those means go and make one.
         setServiceAccountsError(
           t('workspace.oauth2.create.serviceAccountLoadError')
         );
-      } finally {
-        if (!cancelled) setServiceAccountsLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [grantTypes, serviceAccounts, serviceAccountsError, serviceAccountsLoading, t]);
+  }, [grantTypes, serviceAccounts, serviceAccountsError, t]);
 
   const retryServiceAccounts = useCallback(() => {
     // Clearing the error is what re-arms the effect above.
     setServiceAccountsError(null);
     setServiceAccounts(null);
   }, []);
+
 
   const buildPayload = useCallback(() => {
     const redirectUrisClean = usesAuthorizationCode
@@ -878,7 +882,30 @@ export function CreateOAuthApplicationPanel({
                       </Text>
                     </Flex>
 
-                    {serviceAccounts === null ? (
+                    {serviceAccountsError !== null ? (
+                      <Box
+                        style={{
+                          marginTop: 'var(--space-2)',
+                          backgroundColor: 'var(--amber-2)',
+                          border: '1px solid var(--amber-6)',
+                          borderRadius: 'var(--radius-2)',
+                          padding: 'var(--space-3)',
+                        }}
+                      >
+                        <Text size="2" style={{ color: 'var(--amber-11)' }}>
+                          {serviceAccountsError}
+                        </Text>
+                        <Button
+                          size="1"
+                          variant="soft"
+                          type="button"
+                          onClick={retryServiceAccounts}
+                          style={{ marginTop: 'var(--space-2)' }}
+                        >
+                          {t('workspace.oauth2.create.serviceAccountRetry')}
+                        </Button>
+                      </Box>
+                    ) : serviceAccounts === null ? (
                       <Text size="1" style={{ color: 'var(--slate-11)' }}>
                         {t('workspace.oauth2.create.serviceAccountLoading')}
                       </Text>
@@ -893,20 +920,8 @@ export function CreateOAuthApplicationPanel({
                         }}
                       >
                         <Text size="2" style={{ color: 'var(--amber-11)' }}>
-                          {serviceAccountsError ??
-                            t('workspace.oauth2.create.serviceAccountNone')}
+                          {t('workspace.oauth2.create.serviceAccountNone')}
                         </Text>
-                        {serviceAccountsError && (
-                          <Button
-                            size="1"
-                            variant="soft"
-                            type="button"
-                            onClick={retryServiceAccounts}
-                            style={{ marginTop: 'var(--space-2)' }}
-                          >
-                            {t('workspace.oauth2.create.serviceAccountRetry')}
-                          </Button>
-                        )}
                       </Box>
                     ) : (
                       <select

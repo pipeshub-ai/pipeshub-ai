@@ -658,6 +658,75 @@ describe('OAuthAppService', () => {
   })
 
   describe('updateApp', () => {
+
+    /**
+     * Adding the grant is the same decision as making it at creation, and
+     * this route has no admin check of its own — so without these the gate on
+     * creation is bypassed by making an authorization_code app and editing it
+     * a moment later.
+     */
+    describe('gaining client_credentials', () => {
+      function appAllowing(grants: OAuthGrantType[], bound?: string) {
+        return {
+          _id: fakeAppId,
+          allowedGrantTypes: grants,
+          allowedScopes: ['org:read'],
+          tokenIdentityUserId: bound ? new Types.ObjectId(bound) : undefined,
+          knowledgeLimit: undefined,
+          save: sinon.stub().resolves(),
+        }
+      }
+
+      async function failureFrom(isAdmin: boolean, app: any): Promise<string> {
+        sinon.stub(OAuthApp, 'findOne').resolves(app)
+        try {
+          await service.updateApp(fakeAppId, fakeOrgId, fakeUserId, isAdmin, {
+            allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+          })
+          return ''
+        } catch (error: any) {
+          return error.message ?? ''
+        }
+      }
+
+      it('refuses a member', async () => {
+        const app = appAllowing([OAuthGrantType.AUTHORIZATION_CODE])
+        const message = await failureFrom(false, app)
+
+        expect(message.toLowerCase()).to.contain('admin')
+        expect(app.save.called).to.equal(false)
+      })
+
+      it('refuses an admin when nothing is bound', async () => {
+        const app = appAllowing([OAuthGrantType.AUTHORIZATION_CODE])
+        const message = await failureFrom(true, app)
+
+        expect(message).to.contain('service account')
+        expect(app.save.called).to.equal(false)
+      })
+
+      it('refuses when the bound account has since been disabled', async () => {
+        const app = appAllowing(
+          [OAuthGrantType.AUTHORIZATION_CODE],
+          new Types.ObjectId().toString(),
+        )
+        sinon.stub(Users, 'findOne').returns({
+          select: sinon.stub().returns({
+            lean: sinon.stub().returns({
+              exec: sinon.stub().resolves({ isDisabled: true }),
+            }),
+          }),
+        } as any)
+
+        const message = await failureFrom(true, app)
+
+        // Otherwise the update succeeds and every token request afterwards
+        // fails, which is a confusing way to find out.
+        expect(message).to.contain('disabled')
+        expect(app.save.called).to.equal(false)
+      })
+    })
+
     it('should throw NotFoundError when app not found', async () => {
       sinon.stub(OAuthApp, 'findOne').resolves(null)
       try {
