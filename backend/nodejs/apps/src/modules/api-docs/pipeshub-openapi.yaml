@@ -6110,8 +6110,10 @@ components:
         node_type:
           type: string
           description: >-
-            One of `recordGroup`, `folder`, `record`. Listings never contain
-            `app` nodes.
+            One of `recordGroup`, `folder`, `record`, or `app`. A listing holds
+            `app` nodes only at the root of a connected app whose limit names
+            spaces, folders or files as well as whole sources: there it lists
+            those sources.
         sub_type:
           type: string
           nullable: true
@@ -7382,7 +7384,7 @@ components:
               type: integer
               description: |
                 Items in the whole result. For a search by a connected app
-                limited to folders or files, the matches found so far: it can
+                limited to spaces, folders or files, the matches found so far: it can
                 grow from page to page and is final once `hasNext` is false.
             totalPages:
               type: integer
@@ -30445,11 +30447,13 @@ paths:
 
         A token that may see only some sources pages and counts only what
         its limit lets it see:
-        - Limited to whole apps or collections: the listing and the search
-          cover those, with exact totals and counts.
-        - Limited to folders or files, alone or beside whole apps: the
-          listing returns every app, folder and file the limit names, each
-          one a node to open, with exact totals. A search reads
+        - Limited to whole sources (apps or collections) only: the listing
+          and the search cover those, with exact totals and counts.
+        - Limited to any spaces, folders or files, alone or beside whole
+          sources: the listing returns each whole source, space (record
+          group), folder and file the limit names, one item each, to open
+          by its `id`. `totalItems` counts those items, not what is inside
+          them. A search reads
           forward only (`prevCursor` is always null). Its `totalItems` counts
           the matches found so far and can grow from page to page; it is
           final once `hasNext` is false. `counts` is returned only when the
@@ -39719,9 +39723,10 @@ paths:
 
         Call it with no `nodeId` for a flat listing of every record group and
         record the caller can reach, newest first. This is a starting point to
-        pick a node from, not a roster of connected apps — app nodes are never
-        returned in a listing, though an app's `id` is accepted as a `nodeId`
-        and lists that app's record groups. Pass a node's `id` to descend:
+        pick a node from, not a roster of connected apps — app nodes are not
+        returned in a listing (except at the root of a limited connected app,
+        below), though an app's `id` is accepted as a `nodeId` and lists that
+        app's record groups. Pass a node's `id` to descend:
         record groups contain records and folders, and a record contains its
         own children — comments, attachments, sub-tasks — plus a `related`
         section of cross-referenced records, such as the Confluence page linked
@@ -39759,10 +39764,15 @@ paths:
         Knowledge Base collections. No connector-level filter is applied — the
         listing is bounded by per-node permissions alone.
 
-        **A connected app with a limit:** with no `nodeId`, a token limited to
-        whole apps or collections gets the flat listing of those. A token
-        whose limit names any folder or file gets what its limit names
-        instead (apps, folders and files), each one a node to open.
+        **A connected app with a limit:** with no `nodeId`, the root depends
+        on what the limit names.
+        - Whole sources (apps or collections) only: the usual flat root,
+          every record group and record in those sources.
+        - Any spaces, folders or files, alone or beside whole sources: one
+          row for each whole source, space (record group), folder and file
+          the limit names, and nothing from inside them. `pagination.total`
+          counts those rows, not the records inside them. `depth` is not
+          applied on this call; pass a row's `id` as `nodeId` to open it.
 
         **Permission scoping:**
 

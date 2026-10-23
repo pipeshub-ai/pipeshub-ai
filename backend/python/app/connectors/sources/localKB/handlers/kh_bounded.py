@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from app.connectors.sources.localKB.api.knowledge_hub_models import (
         KnowledgeHubNodesResponse,
@@ -108,15 +108,41 @@ async def read_inside(
 
 _CURSOR_PREFIX = "lim1."
 
+#: The request parameters a cursor carries as the request sent them, so the
+#: cursor alone resumes the same listing, as the service's own cursors do.
+#: They are parsed and validated again on every request that brings them back.
+CARRIED_TEXT = (
+    "q", "sort_by", "sort_order", "node_types", "record_types", "origins", "connector_ids",
+    "indexing_status", "created_at", "updated_at", "size",
+)
+CARRIED_FLAGS = ("only_containers", "flattened")
 
-def encode_bounded_cursor(mode: str, seen: int, position: Position | None = None) -> str:
+
+@dataclass(frozen=True)
+class BoundedCursor:
+    mode: str
+    #: Rows before the page.
+    seen: int
+    #: Where the page starts.
+    position: Position
+    #: The listing's parameters (``CARRIED_TEXT`` and ``CARRIED_FLAGS``);
+    #: one left out was not sent.
+    params: dict[str, str | bool] = field(default_factory=dict)
+
+
+def encode_bounded_cursor(
+    mode: str, seen: int, position: Position | None = None, params: Mapping[str, object] | None = None,
+) -> str:
     """A next-page cursor for a listing read inside a bound. Not signed, and
     need not be: every row it leads to is checked against the bound again, so
-    an edited one can only skip rows inside it. The source cursor it carries is
-    signed by the source."""
-    payload = {"m": mode, "n": seen}
+    an edited one can only skip rows inside it or change what is asked for
+    inside it. The source cursor it carries is signed by the source."""
+    payload: dict[str, object] = {"m": mode, "n": seen}
     if position is not None:
         payload.update(c=position.cursor, p=position.page, s=position.skip)
+    carried = {k: v for k, v in (params or {}).items() if k in (*CARRIED_TEXT, *CARRIED_FLAGS) and v is not None}
+    if carried:
+        payload["f"] = carried
     raw = json.dumps(payload, separators=(",", ":")).encode()
     return _CURSOR_PREFIX + base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
@@ -125,10 +151,17 @@ def is_bounded_cursor(token: str | None) -> bool:
     return bool(token) and token.startswith(_CURSOR_PREFIX)
 
 
-def decode_bounded_cursor(token: str) -> tuple[str, int, Position]:
-    """``(mode, rows before the page, where the page starts)``.
+def _valid_params(params: object) -> bool:
+    if not isinstance(params, dict):
+        return False
+    return all(
+        (key in CARRIED_TEXT and isinstance(value, str)) or (key in CARRIED_FLAGS and isinstance(value, bool))
+        for key, value in params.items()
+    )
 
-    Raises:
+
+def decode_bounded_cursor(token: str) -> BoundedCursor:
+    """Raises:
         ValueError: the token is not one ``encode_bounded_cursor`` made.
     """
     if not is_bounded_cursor(token):
@@ -142,12 +175,14 @@ def decode_bounded_cursor(token: str) -> tuple[str, int, Position]:
         raise ValueError("unreadable cursor")
     mode, seen = payload.get("m"), payload.get("n")
     cursor, page, skip = payload.get("c"), payload.get("p", 1), payload.get("s", 0)
+    params = payload.get("f", {})
     valid = (
         mode in ("browse", "search")
         and all(isinstance(v, int) and not isinstance(v, bool) for v in (seen, page, skip))
         and seen >= 0 and page >= 1 and skip >= 0
         and (cursor is None or isinstance(cursor, str))
+        and _valid_params(params)
     )
     if not valid:
         raise ValueError("unreadable cursor")
-    return mode, seen, Position(cursor=cursor, page=page, skip=skip)
+    return BoundedCursor(mode, seen, Position(cursor=cursor, page=page, skip=skip), params)
