@@ -1576,6 +1576,8 @@ class ConfluenceConnector(BaseConnector):
                             continue
                         read_groups.append((group_data, *members))
 
+                    except AtlassianQuotaExhausted:
+                        raise
                     except Exception as group_error:
                         self.logger.error(f"❌ Failed to read group {group_data.get('name')}: {group_error}")
                         self._note_problem(f"Couldn't read group {group_data.get('name')}: {str(group_error)[:200]}")
@@ -1771,6 +1773,8 @@ class ConfluenceConnector(BaseConnector):
                         record_groups_with_permissions.append((record_group, permissions))
                         self.logger.debug(f"Space {space_name}: {len(permissions)} permissions")
 
+                    except AtlassianQuotaExhausted:
+                        raise
                     except Exception as space_error:
                         self.logger.error(f"❌ Failed to process space {space_data.get('name')}: {space_error}")
                         self._note_problem(f"Couldn't sync space {space_data.get('name')}: {str(space_error)[:200]}")
@@ -1953,6 +1957,8 @@ class ConfluenceConnector(BaseConnector):
                         total_synced += 1
                         self.logger.debug(f"Folder {item_title}: {len(permissions)} permissions")
 
+                    except AtlassianQuotaExhausted:
+                        raise
                     except Exception as item_error:
                         self.logger.error(f"❌ Failed to process folder {item_data.get('title')}: {item_error}")
                         self._note_skipped(space_key, "folders that failed to sync")
@@ -2424,6 +2430,8 @@ class ConfluenceConnector(BaseConnector):
                                         records_with_permissions.append((attachment_record, []))
                                         total_attachments_synced += 1
 
+                                except AtlassianQuotaExhausted:
+                                    raise
                                 except Exception as att_error:
                                     self.logger.error(f"Failed to process attachment: {att_error}")
                                     self._note_skipped(space_key, "attachments that failed to sync")
@@ -2435,6 +2443,8 @@ class ConfluenceConnector(BaseConnector):
                                 item_id, {str(a.get("id")) for a in attachments if a.get("id")}, space_key
                             )
 
+                    except AtlassianQuotaExhausted:
+                        raise
                     except Exception as item_error:
                         self.logger.error(f"Failed to process {content_type} {item_data.get('title')}: {item_error}")
                         self._note_skipped(space_key, f"{content_type}s that failed to sync")
