@@ -163,7 +163,7 @@ async def test_a_completion_that_is_not_kept_is_not_queued_again(keep: AsyncMock
     with patch("app.events.processor.convert_record_dict_to_record", return_value=SimpleNamespace(id="r1")), \
             patch("app.modules.transformers.transformer.TransformContext", _context):
         assert await completion._complete_one(graph, _sink(_BLOB, extraction), None, "r1", "o1", 100, 0) == "written"
-    graph.schedule_named_entity_reextract.assert_not_awaited()
+    graph.schedule_named_entity_reextract.assert_not_called()
 
 
 async def test_a_failed_extraction_writes_nothing() -> None:
