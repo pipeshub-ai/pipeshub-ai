@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
@@ -13,6 +14,14 @@ from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.iclient import IClient
 from app.sources.client.resilience import ResiliencePolicy
+
+DEFAULT_NOTION_API_BASE_URL = "https://api.notion.com/v1"
+
+
+def notion_api_base_url() -> str:
+    """The Notion API base URL: ``NOTION_API_BASE_URL`` when set (test stacks point it at a local
+    stand-in for the API), else Notion's own."""
+    return (os.environ.get("NOTION_API_BASE_URL") or DEFAULT_NOTION_API_BASE_URL).rstrip("/")
 
 
 @dataclass
@@ -71,8 +80,8 @@ class NotionRESTClientViaOAuth(HTTPClient):
         # Initialize with empty token first, will be set after OAuth flow
         super().__init__(access_token or "", "Bearer", resilience=resilience)
 
-        self.base_url = "https://api.notion.com/v1"
-        self.oauth_base_url = "https://api.notion.com/v1/oauth"
+        self.base_url = notion_api_base_url()
+        self.oauth_base_url = f"{self.base_url}/oauth"
         self.client_id = client_id
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
@@ -254,7 +263,7 @@ class NotionRESTClientViaToken(HTTPClient):
         resilience: Optional[ResiliencePolicy] = None
     ) -> None:
         super().__init__(token, "Bearer", resilience=resilience)
-        self.base_url = "https://api.notion.com/v1"
+        self.base_url = notion_api_base_url()
         self.version = version
         self.headers.update({
             "Notion-Version": version,
@@ -408,6 +417,52 @@ class NotionClient(IClient):
         except Exception as e:
             logger.error(f"Failed to build Notion client from services: {str(e)}")
             raise
+
+    @classmethod
+    async def build_from_toolset(
+        cls,
+        toolset_config: dict[str, Any],
+        logger: logging.Logger,
+        config_service: ConfigurationService | None = None,
+    ) -> "NotionClient":
+        """Build NotionClient from a per-user toolset configuration.
+
+        Args:
+            toolset_config: Toolset configuration from etcd containing:
+                - authType: OAUTH or API_TOKEN
+                - credentials: { access_token, ... } for OAuth
+                - auth: { apiToken } for API_TOKEN
+                - isAuthenticated: bool
+            logger: Logger instance
+            config_service: Unused; accepted for the common factory signature
+
+        Returns:
+            NotionClient instance
+
+        Raises:
+            ValueError: If the configuration is missing or not authenticated
+        """
+        if not toolset_config:
+            raise ValueError("Toolset configuration is required")
+        if not toolset_config.get("isAuthenticated", False):
+            raise ValueError("Toolset is not authenticated. Please complete authentication first.")
+
+        auth_type = (toolset_config.get("authType") or "").upper()
+        version = toolset_config.get("version") or "2025-09-03"
+        if auth_type == "OAUTH":
+            token = (toolset_config.get("credentials") or {}).get("access_token", "")
+            if not token:
+                raise ValueError("Access token not found in OAuth credentials. Please re-authenticate.")
+        elif auth_type == "API_TOKEN":
+            token = ((toolset_config.get("auth") or {}).get("apiToken") or "").strip()
+            if not token:
+                raise ValueError("API token is required for API_TOKEN auth")
+        else:
+            raise ValueError(f"Unsupported auth type: {auth_type}. Supported: OAUTH, API_TOKEN")
+
+        logger.info(f"Created Notion client from toolset config (auth type: {auth_type})")
+        # Both auth types call the API with a bearer token; OAuth refresh is handled by the toolset store.
+        return cls(NotionRESTClientViaToken(token, version))
 
     @staticmethod
     async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:

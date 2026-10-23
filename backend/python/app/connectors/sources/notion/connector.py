@@ -95,7 +95,11 @@ from app.models.entities import (
 )
 from app.models.permission import Permission
 from app.modules.parsers.image_parser.image_parser import ImageParser
-from app.sources.client.notion.notion import NotionClient, NotionRESTClientViaOAuth
+from app.sources.client.notion.notion import (
+    NotionClient,
+    NotionRESTClientViaOAuth,
+    notion_api_base_url,
+)
 from app.sources.external.notion.notion import NotionDataSource
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.image_utils import get_extension_from_mimetype
@@ -111,8 +115,8 @@ from app.connectors.core.base.error.stream_errors import (
 # Note: Notion OAuth doesn't use traditional scopes. Permissions are configured
 # when creating the integration in Notion's developer portal. The scope parameter
 # below is a placeholder to satisfy the OAuth validator.
-AUTHORIZE_URL = "https://api.notion.com/v1/oauth/authorize"
-TOKEN_URL = "https://api.notion.com/v1/oauth/token"
+AUTHORIZE_URL = f"{notion_api_base_url()}/oauth/authorize"
+TOKEN_URL = f"{notion_api_base_url()}/oauth/token"
 
 # HTTP statuses on an image fetch that no amount of retrying will fix.
 # 401/403 are deliberately absent: Notion serves images as S3 pre-signed URLs

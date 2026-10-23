@@ -17,7 +17,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
-from app.sources.client.notion.notion import NotionClient
+from app.sources.client.notion.notion import NotionClient, notion_api_base_url
 from app.sources.external.notion.notion import NotionDataSource
 
 logger = logging.getLogger(__name__)
@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Notion",
-            authorize_url="https://api.notion.com/v1/oauth/authorize",
-            token_url="https://api.notion.com/v1/oauth/token",
+            authorize_url=f"{notion_api_base_url()}/oauth/authorize",
+            token_url=f"{notion_api_base_url()}/oauth/token",
             redirect_uri="toolsets/oauth/callback/notion",
             scopes=OAuthScopeConfig(
                 personal_sync=[],
@@ -546,7 +546,8 @@ class Notion:
                         }
                     }
                 ],
-                "properties": properties
+                # Notion-Version 2025-09-03: the schema belongs to the database's first data source.
+                "initial_data_source": {"properties": properties},
             }
 
             response = self._run_async(
@@ -602,9 +603,18 @@ class Notion:
             if page_size is not None:
                 request_body["page_size"] = page_size
 
+            # Notion-Version 2025-09-03 queries rows through a data source: use the database's first one,
+            # or the id itself when it already names a data source.
+            data_source_id = database_id
+            database = self._run_async(self.client.retrieve_database(database_id=database_id))
+            if database.success:
+                sources = (database.data.json() or {}).get("data_sources") or []
+                if sources:
+                    data_source_id = sources[0]["id"]
+
             response = self._run_async(
-                self.client.query_database(
-                    database_id=database_id,
+                self.client.query_data_source_by_id(
+                    data_source_id=data_source_id,
                     request_body=request_body
                 )
             )

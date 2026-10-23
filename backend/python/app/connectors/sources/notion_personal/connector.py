@@ -29,10 +29,11 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.notion.connector import NotionConnector
 from app.connectors.sources.notion_personal.common.apps import NotionPersonalApp
 from app.models.entities import RecordGroup, RecordGroupType
+from app.sources.client.notion.notion import notion_api_base_url
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-AUTHORIZE_URL = "https://api.notion.com/v1/oauth/authorize"
-TOKEN_URL = "https://api.notion.com/v1/oauth/token"
+AUTHORIZE_URL = f"{notion_api_base_url()}/oauth/authorize"
+TOKEN_URL = f"{notion_api_base_url()}/oauth/token"
 
 CONNECTOR_NOTION_PERSONAL_INFO = (
     "Only you can search the content synced by this connector. It indexes exactly the pages "
