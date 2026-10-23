@@ -646,7 +646,8 @@ class ConfluenceConnector(BaseConnector):
             response = await datasource.get_spaces(
                 limit=1
             )
-        except ConnectorInitError:
+        except (ConnectorInitError, HTTPException):
+            # An HTTPException here already says what to do (e.g. the connector is not connected).
             raise
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}", exc_info=True)

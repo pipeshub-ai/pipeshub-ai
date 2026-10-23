@@ -45,6 +45,7 @@ from app.connectors.core.base.connector.connector_service import ConnectorInitEr
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
+from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.models.entities import (
     AppUser,
     CommentRecord,
@@ -215,12 +216,14 @@ class TestOAuthClientAndTokenRefresh:
         assert err.value.status_code == 409
         assert "is not connected. Check its settings and try again." in err.value.detail
         assert api.calls("GET", f"{V2}/spaces") == [], "nothing is sent without a token"
-        assert await connector.test_connection_and_access() is False
+        with pytest.raises(HTTPException, match="is not connected"):
+            await connector.test_connection_and_access()
 
     async def test_rejected_token_at_setup_is_reported_not_swallowed(self, api, db, checkpoints) -> None:
         api.on("GET", RESOURCES_PATH, json_response({"message": "Unauthorized"}, status=401))
         connector, _ = await make_connector(db, checkpoints)
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="Couldn't connect to Confluence"):
+            await connector.init()
         assert connector.external_client is None
 
     async def test_a_token_reaching_several_sites_asks_for_a_single_site_app(self, api, db, checkpoints) -> None:
@@ -1564,3 +1567,184 @@ class TestSpacesOutOfScope:
         await connector._remove_spaces_out_of_scope(spaces)
 
         assert "990" in db.records and checkpoints.values_for("confluence_space_scope/all") is None
+
+
+class TestConnectionErrors:
+    """Connection checks raise a message the admin can act on; the API shows it as is."""
+
+    @pytest.mark.parametrize(
+        ("status", "body", "says"),
+        [
+            (401, {"message": "Unauthorized"}, "rejected the credentials"),
+            (403, {"message": "Forbidden"}, "can't read Confluence"),
+            (404, {"message": "Not found"}, "No Confluence site was found"),
+            (503, {"message": "busy"}, r"did not answer the connection test \(HTTP 503\)"),
+        ],
+    )
+    async def test_a_failed_connection_test_says_why(self, api, db, checkpoints, status, body, says) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        api.on("GET", f"{V2}/spaces", json_response(body, status=status))
+
+        with pytest.raises(ConnectorInitError, match=says):
+            await connector.test_connection_and_access()
+
+    async def test_a_missing_oauth_scope_is_named(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        granted = [s for s in AtlassianScope.get_confluence_read_access() if s != "read:audit-log:confluence"]
+        api.on("GET", RESOURCES_PATH, json_response([{"id": CLOUD_ID, "name": "acme", "url": SITE, "scopes": granted}]))
+        api.on(
+            "GET", f"{V2}/spaces",
+            json_response({"code": 401, "message": "Unauthorized; scope does not match"}, status=401),
+        )
+
+        with pytest.raises(ConnectorInitError, match="Missing: read:audit-log:confluence"):
+            await connector.test_connection_and_access()
+
+    async def test_an_unreachable_site_is_reported(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+
+        def refuse(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        api.on("GET", f"{V2}/spaces", refuse)
+
+        with pytest.raises(ConnectorInitError, match="Couldn't reach Confluence"):
+            await connector.test_connection_and_access()
+
+    async def test_incomplete_settings_name_the_missing_one(self, api, db, checkpoints) -> None:
+        config = {"auth": {"authType": "API_TOKEN", "email": "svc@acme.com", "apiToken": "tok"}, "filters": {}}
+        connector, _ = await make_connector(db, checkpoints, config)
+
+        with pytest.raises(ConnectorInitError, match="Base URL is required"):
+            await connector.init()
+
+
+class TestRetriesAndRateLimit:
+    async def test_the_client_carries_the_connectors_retry_policy(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+
+        policy = connector.resilience
+        assert policy is not None and policy.max_retries == 3
+        assert connector.external_client.get_client().resilience is policy
+
+
+class TestSyncProblemsNotice:
+    """One notice per failing run, to the creator and the org admins; none for a clean run."""
+
+    async def _run(self, connector: ConfluenceConnector) -> None:
+        for step in (
+            "_sync_users", "_sync_user_groups", "_reconcile_inactive_app_users",
+            "_sync_spaces_content", "_remove_spaces_out_of_scope",
+            "_sync_permission_changes_from_audit_log", "_sweep_placeholder_records",
+            "register_authenticated_source_user",
+        ):
+            setattr(connector, step, AsyncMock())
+        await connector.run_sync()
+
+    async def test_a_failed_space_listing_is_reported_once_at_the_end(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V2}/spaces", json_response({"message": "busy"}, status=503))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await self._run(connector)
+
+        (note,) = connector._notification_service.sent
+        assert "Couldn't read the Confluence space list (HTTP 503)" in note["message"]
+        assert note["recipient_user_ids"] == ["creator-1"]
+        assert [r.value for r in note["recipient_roles"]] == ["admin"]
+        assert "finished with problems" in note["title"]
+        assert connector.full_sync_coverage().complete is False, "a full sync unlinks nothing it did not see"
+
+    async def test_the_same_failure_is_reported_on_every_run(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V2}/spaces", json_response({"message": "busy"}, status=503))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await self._run(connector)
+        await self._run(connector)
+
+        assert len(connector._notification_service.sent) == 2
+
+    async def test_a_clean_run_sends_nothing(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V2}/spaces", {"results": [], "_links": {"base": WIKI}})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await self._run(connector)
+
+        assert connector._notification_service.sent == []
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_sync_that_stops_says_so_and_still_raises(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._sync_spaces = AsyncMock(side_effect=RuntimeError("graph store down"))
+
+        with pytest.raises(RuntimeError):
+            await self._run(connector)
+
+        (note,) = connector._notification_service.sent
+        assert note["title"].endswith("sync failed")
+        assert "The sync stopped: graph store down" in note["message"]
+
+    async def test_skipped_pages_are_counted_per_space(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page([v1_page("10"), v1_page("11")])
+        api.on_suffix("GET", "/restriction", json_response({"message": "busy"}, status=503))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await connector._report_sync_problems()
+
+        (note,) = connector._notification_service.sent
+        assert "Space ENG: skipped 2 pages whose restrictions could not be read" in note["message"]
+
+    async def test_a_refused_audit_log_explains_what_it_needs(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V1}/audit", json_response({"message": "Forbidden"}, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        assert await connector._fetch_permission_audit_logs(0, 1) is None
+        await connector._report_sync_problems()
+
+        (note,) = connector._notification_service.sent
+        assert "audit log (HTTP 403)" in note["message"] and "administrator" in note["message"]
+        assert connector.full_sync_coverage().complete is True, "a refused audit log leaves no content unread"
+
+
+def page_changed_at(pid: str, when: str) -> dict[str, Any]:
+    page = v1_page(pid)
+    page["history"]["lastUpdated"]["when"] = when
+    return page
+
+
+class TestCheckpointPerBatch:
+    """The checkpoint moves after each saved batch, never past an item that was not saved."""
+
+    async def test_a_listing_cut_off_resumes_after_the_last_saved_batch(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page(
+            [page_changed_at("10", "2024-05-01T10:00:00.000Z"), page_changed_at("11", "2024-05-02T09:30:00.000Z")],
+            cursor="C2",
+        )
+        search.by_cursor["C2"] = json_response({"message": "busy"}, status=503)
+        connector, _ = await ready_connector(db, checkpoints)
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert listing.complete is False
+        assert checkpoints.values_for("confluence_pages/ENG") == {"last_sync_time": "2024-05-02T09:30:00.000Z"}
+
+    async def test_a_skipped_item_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page([page_changed_at("10", "2024-05-01T10:00:00.000Z")], cursor="C2")
+        search.by_cursor["C2"] = search_page([page_changed_at("11", "2024-05-03T10:00:00.000Z")])
+        api.on("GET", f"{V1}/content/10/restriction", json_response({"message": "busy"}, status=503))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert checkpoints.values_for("confluence_pages/ENG") is None, "page 10 was not saved, so nothing moves"
+        assert "11" in db.records, "the rest of the listing is still synced"
+
+    async def test_a_page_that_fails_to_process_holds_the_checkpoint(self, api, db, checkpoints, search) -> None:
+        search.by_cursor[None] = search_page([page_changed_at("10", "2024-05-01T10:00:00.000Z")])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._process_webpage_with_update = AsyncMock(side_effect=RuntimeError("bad page"))
+
+        listing = await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert listing.complete is False
+        assert checkpoints.values_for("confluence_pages/ENG") is None
