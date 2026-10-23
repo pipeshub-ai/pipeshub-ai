@@ -852,6 +852,9 @@ class RSSConnector(BaseConnector):
                 self.logger.debug(
                     f"⚠️ Non-HTML content type for {redact_url(url)}: {content_type}"
                 )
+                if raise_on_error:
+                    # Same reason as an empty extraction below: no summary under the article's revision.
+                    raise not_found_at_source(self.display_name)
                 return ""
 
             # Extraction is CPU-bound and slow on a large page; it would stall every other sync.
@@ -1006,24 +1009,26 @@ class RSSConnector(BaseConnector):
                 except HTTPException as exc:
                     source_error = exc
 
-                def find_entry() -> dict | None:
+                def entry_by_id() -> dict | None:
                     for candidate in feed.entries:
                         # The bare guid matches records synced before ids were prefixed.
-                        candidate_ids = (
+                        if guid and guid in (
                             self._entry_external_id(candidate, feed_url),
                             self._entry_guid(candidate),
-                        )
-                        if (guid and guid in candidate_ids) or (
-                            article_url and self._article_link(candidate) == article_url
                         ):
                             return candidate
                     return None
 
+                def entry_by_link() -> dict | None:
+                    # Entries can share a link (a podcast's show page); then the link names none of them.
+                    matches = [c for c in feed.entries if article_url and self._article_link(c) == article_url]
+                    return matches[0] if len(matches) == 1 else None
+
                 if feed and feed.entries:
-                    entry = find_entry()
+                    entry = entry_by_id()
                     if entry is None:
                         await self._read_next_pages(feed, feed_url)
-                        entry = find_entry()
+                        entry = entry_by_id() or entry_by_link()
                     if entry is not None:
                         entry_url = self._article_link(entry)
                         try:

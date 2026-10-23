@@ -491,11 +491,11 @@ class TestFetchLimitsAndLogs:
     @pytest.mark.asyncio
     async def test_a_feed_url_token_never_reaches_the_log(self) -> None:
         conn = _connector(FakeStore(), [FEED_A])
-        secret_feed = "https://user:pw@a.example.com/rss?token=s3cret"
-        with patch(FETCH, new=AsyncMock(side_effect=RuntimeError(f"cannot reach {secret_feed}"))):
-            assert await conn._fetch_and_parse_feed(secret_feed) is None
+        feed_with_userinfo = "https://user:pw@a.example.com/rss?token=s3cret"
+        with patch(FETCH, new=AsyncMock(side_effect=RuntimeError(f"cannot reach {feed_with_userinfo}"))):
+            assert await conn._fetch_and_parse_feed(feed_with_userinfo) is None
         with patch(FETCH, new=AsyncMock(return_value=_failed(500))):
-            assert await conn._fetch_and_parse_feed(secret_feed) is None
+            assert await conn._fetch_and_parse_feed(feed_with_userinfo) is None
         logged = " ".join(str(call) for method in ("info", "warning", "error", "debug")
                           for call in getattr(conn.logger, method).call_args_list)
         assert "a.example.com/rss" in logged
@@ -702,3 +702,50 @@ class TestReviewFindings:
         assert writes.await_count == 1
         sent = conn.notify.await_args.kwargs
         assert "1 of 2 feed(s)" in sent["message"] and "it could not be saved" in sent["message"]
+
+    @pytest.mark.asyncio
+    async def test_streaming_finds_an_entry_by_id_when_several_share_its_link(self) -> None:
+        conn = _connector(FakeStore(), [FEED_A])
+        show = "https://a.example.com/show"
+        episodes = [_entry(f"urn:ep:{n}", f"Episode {n}", show, f"Notes for episode {n}.") for n in (1, 2, 3)]
+        pages = {
+            FEED_A: _xml(_page(episodes[:2], "page2.xml")),
+            "https://a.example.com/page2.xml": _xml(_page(episodes[2:])),
+        }
+
+        def record(external_id: str) -> FileRecord:
+            return FileRecord(
+                record_name="Episode", external_record_id=external_id, external_record_group_id=FEED_A,
+                weburl=show, origin="CONNECTOR", connector_name="RSS", connector_id="rss-conn-1",
+                record_type="FILE", version=0, is_file=True, mime_type="text/plain",
+            )
+
+        with patch(FETCH, new=AsyncMock(side_effect=lambda url, **_: pages[url])):
+            for n in (2, 3):
+                response = await conn.stream_record(record(f"urn:ep:{n}"))
+                assert b"".join([c async for c in response.body_iterator]) == f"Notes for episode {n}.".encode()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("headers", [{"Content-Type": "application/pdf"}, {}])
+    async def test_a_page_that_is_not_html_keeps_the_stored_article(self, headers: dict[str, str]) -> None:
+        store = FakeStore()
+        conn = _connector(store, [FEED_A], fetch_full_content=True)
+        feed = _feed(_entry("1", summary="Only the summary."))
+        with patch(FETCH, new=AsyncMock(return_value=_html("The full article."))):
+            await _sync(conn, {FEED_A: feed})
+        stored = store.records[f"{FEED_A}#1"]
+        store.content_writes.clear()
+
+        not_html = FetchResponse(status_code=200, content_bytes=b"%PDF-1.7", headers=headers,
+                                 final_url="", strategy="aiohttp")
+        with patch(FETCH, new=AsyncMock(return_value=not_html)):
+            await _sync(conn, {FEED_A: feed})
+            assert store.content_writes == []
+            assert store.records[f"{FEED_A}#1"].external_revision_id == stored.external_revision_id
+
+            with patch.object(conn, "_fetch_and_parse_feed", new=AsyncMock(return_value=feed)):
+                with pytest.raises(HTTPException):
+                    await conn.stream_record(stored)
+                stored.external_revision_id = hashlib.md5(b"Only the summary.").hexdigest()
+                response = await conn.stream_record(stored)
+        assert b"".join([c async for c in response.body_iterator]) == b"Only the summary."
