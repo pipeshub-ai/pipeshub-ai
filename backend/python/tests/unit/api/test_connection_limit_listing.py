@@ -143,6 +143,7 @@ async def _nodes(graph: MagicMock, knowledge_limit: dict | None, **overrides: ob
 FOLDER_LIMIT = {"apps": [], "recordGroups": [], "records": [FOLDER]}
 FILES_LIMIT = {"apps": [], "recordGroups": [], "records": ["zz-a", "big-07"]}
 APP_LIMIT = {"apps": ["kb-big"], "recordGroups": [], "records": []}
+MIXED_LIMIT = {"apps": ["kb-other"], "recordGroups": [], "records": [FOLDER]}
 
 
 class TestASearchInsideAFolderLimit:
@@ -178,6 +179,12 @@ class TestASearchInsideAFolderLimit:
 
         assert result.pagination.totalItems == 3 and result.pagination.hasNext is False
         assert result.counts.total == 3
+
+    async def test_a_mixed_limit_searches_its_apps_and_its_folders(self) -> None:
+        result = await _nodes(_graph(), MIXED_LIMIT, q="budget")
+
+        assert [item.id for item in result.items] == ["other-1", "zz-a", "zz-b", "zz-c"]
+        assert result.pagination.totalItems == 4 and result.pagination.hasNext is False
 
     async def test_a_cursor_the_service_issued_elsewhere_is_refused(self) -> None:
         graph = _graph()
