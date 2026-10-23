@@ -85,6 +85,9 @@ export const CONVERSATIONS: Record<string, Class> = {
   'PUT /:conversationId/project': 'M', 'PATCH /:conversationId/project-visibility': 'M', 'POST /:conversationId/cancel': 'M',
   'PATCH /:conversationId/title': 'M', 'POST /:conversationId/message/:messageId/feedback': 'M',
   'PATCH /:conversationId/archive': 'M', 'PATCH /:conversationId/unarchive': 'M', 'GET /show/archives/search': 'M',
+  // Owner only; the copy keeps each turn's author and drops other authors' details (`copySessionUpToMessage`).
+  'POST /:conversationId/message/:messageId/fork': 'M',
+  'PATCH /:conversationId/pin': 'M', 'PATCH /:conversationId/unpin': 'M',
 }
 const SEARCH: Record<string, Class> = {
   'POST /': 'O', 'GET /': 'R', 'GET /:searchId': 'R', 'DELETE /:searchId': 'M', 'DELETE /': 'M',
@@ -99,7 +102,10 @@ export const AGENTS: Record<string, Class> = {
   [`POST ${AGENT_BASE}/:conversationId/messages/stream`]: 'R',
   [`POST ${AGENT_BASE}/internal/:conversationId/messages/stream`]: { via: 'controller/es_controller.ts#addMessageStreamToAgentConversation' },
   [`POST ${AGENT_BASE}/:conversationId/message/:messageId/regenerate`]: regen,
-  [`GET ${AGENT_BASE}/:conversationId`]: 'R',
+  [`POST ${AGENT_BASE}/:conversationId/message/:messageId/fork`]: 'M',
+  // The route handler wraps `getAgentConversationByIdOf`, which redacts every message for the viewer.
+  [`GET ${AGENT_BASE}/:conversationId`]: { via: 'controller/es_controller.ts#getAgentConversationByIdOf' },
+  [`POST ${AGENT_BASE}/:conversationId/share`]: 'M', [`POST ${AGENT_BASE}/:conversationId/unshare`]: 'M',
   [`POST ${AGENT_BASE}/internal/attachments/upload`]: 'M', [`POST ${AGENT_BASE}/attachments/upload`]: 'M', [`DELETE ${AGENT_BASE}/attachments/:recordId`]: 'M',
   [`POST ${AGENT_BASE}/:conversationId/cancel`]: 'M', [`POST ${AGENT_BASE}/:conversationId/message/:messageId/feedback`]: 'M',
   [`GET ${AGENT_BASE}`]: 'M', [`DELETE ${AGENT_BASE}/:conversationId`]: 'M', [`PATCH ${AGENT_BASE}/:conversationId/title`]: 'M',
@@ -217,6 +223,7 @@ describe('conversation routes and per-viewer redaction (runtime enumeration)', (
       'modules/enterprise_search/controller/es_controller.ts',
       'modules/enterprise_search/schema/chat.session.message.schema.ts',
       'modules/enterprise_search/schema/chat.session.schema.ts',
+      'modules/enterprise_search/utils/fork-conversation.ts',
       'modules/enterprise_search/utils/utils.ts',
     ])
   })

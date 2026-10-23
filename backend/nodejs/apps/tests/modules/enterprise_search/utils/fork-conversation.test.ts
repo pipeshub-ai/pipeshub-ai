@@ -7,6 +7,7 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { ForbiddenError, NotFoundError, InternalServerError } from '../../../../src/libs/errors/http.errors'
 import {
+  runsByAuthor,
   buildForkTitle,
   FORK_TITLE_MAX_LENGTH,
   FORK_TITLE_PREFIX,
@@ -513,5 +514,23 @@ describe('copySessionUpToMessage with artifacts', () => {
       expect(error).to.be.instanceOf(NotFoundError)
     }
     expect(copyArtifacts.called).to.equal(false)
+  })
+})
+
+describe('stripMessageForCopy and runsByAuthor keep a fork inside what its owner may read', () => {
+  const OWNER = 'a'.repeat(24)
+  const BOB = 'b'.repeat(24)
+
+  it('groups consecutive turns by author, leaving the owner’s own and unstamped turns to the owner', () => {
+    const rows = [{ authorUserId: OWNER }, {}, { authorUserId: BOB }, { authorUserId: BOB }, { authorUserId: OWNER }]
+    const runs = runsByAuthor(rows, OWNER)
+    expect(runs.map((r) => r.author)).to.deep.equal([undefined, BOB, undefined])
+    expect(runs.map((r) => r.rows.length)).to.deep.equal([2, 2, 1])
+  })
+
+  it('drops the author stamp always, and tools, reasoning, parts and reference data from another author’s turn', () => {
+    const message = { content: 'c', authorUserId: BOB, tools: [1], reasoning: [1], parts: [1], referenceData: [1] }
+    expect(stripMessageForCopy(message)).to.deep.equal({ content: 'c', tools: [1], reasoning: [1], parts: [1], referenceData: [1] })
+    expect(stripMessageForCopy(message, true)).to.deep.equal({ content: 'c' })
   })
 })
