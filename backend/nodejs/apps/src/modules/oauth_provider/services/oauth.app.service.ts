@@ -141,20 +141,20 @@ export class OAuthAppService {
     // an authorization_code app acts as the person who authorised it.
     const needsServiceAccount = allowedGrantTypes.includes(
       OAuthGrantType.CLIENT_CREDENTIALS,
-    )
-    let tokenIdentityUserId: Types.ObjectId | undefined
+    );
+    let tokenIdentityUserId: Types.ObjectId | undefined;
     if (needsServiceAccount) {
       if (!data.tokenIdentityUserId) {
         throw new BadRequestError(
           'An application that uses client_credentials must name the service ' +
             'account its tokens act as. Without one it would act as whoever ' +
             'created it.',
-        )
+        );
       }
       tokenIdentityUserId = await this.requireUsableServiceAccount(
         data.tokenIdentityUserId,
         orgId,
-      )
+      );
     }
 
     const redirectUris = data.redirectUris || []
@@ -230,7 +230,7 @@ export class OAuthAppService {
     orgId: string,
   ): Promise<Types.ObjectId> {
     if (!Types.ObjectId.isValid(serviceAccountId)) {
-      throw new NotFoundError('Service account not found')
+      throw new NotFoundError('Service account not found');
     }
 
     const serviceAccount = await Users.findOne({
@@ -241,18 +241,18 @@ export class OAuthAppService {
     })
       .select('isDisabled')
       .lean()
-      .exec()
+      .exec();
 
     if (!serviceAccount) {
-      throw new NotFoundError('Service account not found')
+      throw new NotFoundError('Service account not found');
     }
     if (serviceAccount.isDisabled === true) {
       throw new BadRequestError(
         'That service account is disabled. Enable it before pointing an application at it.',
-      )
+      );
     }
 
-    return new Types.ObjectId(serviceAccountId)
+    return new Types.ObjectId(serviceAccountId);
   }
 
   async setTokenIdentity(
@@ -282,7 +282,7 @@ export class OAuthAppService {
       app.tokenIdentityUserId = await this.requireUsableServiceAccount(
         serviceAccountId,
         orgId,
-      )
+      );
     }
 
     await app.save()
@@ -518,14 +518,14 @@ export class OAuthAppService {
       // punishes the wrong thing.
       const gainingClientCredentials =
         data.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS) &&
-        !app.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS)
+        !app.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS);
 
       if (gainingClientCredentials && !app.tokenIdentityUserId) {
         throw new BadRequestError(
           'Point this application at a service account before allowing ' +
             'client_credentials. Without one its tokens would act as whoever ' +
             'created it.',
-        )
+        );
       }
     }
 
