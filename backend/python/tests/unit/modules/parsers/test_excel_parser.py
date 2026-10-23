@@ -2880,8 +2880,10 @@ class TestProcessCellExceptionHandler:
         # Make cell.value raise an exception when accessed
         type(cell).value = property(lambda self: (_ for _ in ()).throw(RuntimeError("bad cell")))
 
-        with pytest.raises(RuntimeError, match="bad cell"):
+        with pytest.raises(RuntimeError) as exc_info:
             ep._process_cell(cell, "Header", 1, 1)
+
+        assert "bad cell" in str(exc_info.value)
 
 
 class TestGetRowsTextExceptionHandler:
