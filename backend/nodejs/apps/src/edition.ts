@@ -15,3 +15,9 @@ export const TELEMETRY_DEFAULT_ENABLED = true;
  * one workspace's records turns this off, and the routes then answer 403.
  */
 export const VECTOR_STORE_REBUILD_AVAILABLE = true;
+
+/**
+ * Keys inside an AI model's `configuration`, besides the built-in public ones,
+ * that hold settings rather than secrets, so reads return them as stored.
+ */
+export const EXTRA_AI_PUBLIC_CONFIG_KEYS: readonly string[] = [];

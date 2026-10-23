@@ -35,9 +35,11 @@ import { getQueryModeConfig } from '@/chat/constants';
 import {
   useChatStore,
   ctxKeyFromAgent,
+  getEffectiveModel,
   isModelReasoningCapable,
   getModelDefaultReasoningEffort,
 } from '@/chat/store';
+import { chatModelOptions } from '@/config';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
@@ -495,12 +497,17 @@ export function ChatInput({
   // model-related reads/writes below are keyed by this so assistant selections
   // don't leak into agents and vice-versa.
   const modelCtxKey = ctxKeyFromAgent(agentId);
-  const contextSelectedModel = settings.selectedModels[modelCtxKey] ?? null;
-  const contextDefaultModel = settings.defaultModels[modelCtxKey] ?? null;
-  const displayModel = contextSelectedModel ?? contextDefaultModel;
-  const displayModelLabel = displayModel
-    ? (displayModel.modelFriendlyName || displayModel.modelName)
-    : t('chat.aiModelsTooltip');
+  const openedProjectId = useChatStore((s) => s.projectScope?.projectId ?? null);
+  const displayModel = useMemo(
+    () => getEffectiveModel(modelCtxKey),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getEffectiveModel reads these from the store
+    [modelCtxKey, openedProjectId, settings.newChatDefaultModel, settings.selectedModels, settings.defaultModels],
+  );
+  const displayModelLabel =
+    chatModelOptions.selectionLabel(t, displayModel) ??
+    (displayModel
+      ? (displayModel.modelFriendlyName || displayModel.modelName)
+      : t('chat.aiModelsTooltip'));
   const handleModelSelect = useCallback(
     (model: ModelOverride | null) => {
       setSelectedModelForCtx(modelCtxKey, model);
@@ -2289,7 +2296,7 @@ export function ChatInput({
           onClose={() => setIsModelPanelOpen(false)}
         >
           <ModelSelectorPanel
-            selectedModel={contextSelectedModel ?? contextDefaultModel}
+            selectedModel={displayModel}
             onModelSelect={handleModelSelect}
             agentId={agentId}
           />

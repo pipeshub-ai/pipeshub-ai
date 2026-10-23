@@ -119,6 +119,8 @@ export interface PickedModel {
   isMultimodal: boolean;
   isReasoning: boolean;
   contextLength?: number | null;
+  /** Configuration keys this model sets for itself, applied over the shared ones. */
+  configuration?: Record<string, unknown>;
 }
 
 // ========================================

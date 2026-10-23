@@ -49,6 +49,7 @@ export const AIModelsApi = {
         isMultimodal: boolean;
         isReasoning: boolean;
         contextLength?: number | null;
+        configuration?: Record<string, unknown>;
       }>;
       defaultModel?: string;
       connectionId?: string;
