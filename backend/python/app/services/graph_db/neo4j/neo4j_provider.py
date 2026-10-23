@@ -11139,7 +11139,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
 
                 # Step 2: Delete records
-                deleted_records, failed_record_batches = await self._delete_nodes_by_keys(
+                deleted_records, failed_records = await self._delete_nodes_by_keys(
                     transaction,
                     collected["record_keys"],
                     CollectionNames.RECORDS.value
@@ -11150,25 +11150,33 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     )
 
                 # Step 3: Delete record groups
-                deleted_rg, _ = await self._delete_nodes_by_keys(
+                deleted_rg, failed_rg = await self._delete_nodes_by_keys(
                     transaction,
                     collected["record_group_keys"],
                     CollectionNames.RECORD_GROUPS.value
                 )
 
                 # Step 4: Delete roles
-                deleted_roles, _ = await self._delete_nodes_by_keys(
+                deleted_roles, failed_roles = await self._delete_nodes_by_keys(
                     transaction,
                     collected["role_keys"],
                     CollectionNames.ROLES.value
                 )
 
                 # Step 5: Delete groups
-                deleted_groups, _ = await self._delete_nodes_by_keys(
+                deleted_groups, failed_groups = await self._delete_nodes_by_keys(
                     transaction,
                     collected["group_keys"],
                     CollectionNames.GROUPS.value
                 )
+
+                # Auto-committed batches report failure by count instead of raising; the
+                # app node is deleted last so a retry can finish what is left.
+                if failed_records or failed_rg or failed_roles or failed_groups:
+                    raise Exception(
+                        f"CRITICAL: Failed to delete some node batches (records={failed_records}, "
+                        f"record groups={failed_rg}, roles={failed_roles}, groups={failed_groups})."
+                    )
 
                 # Step 6: Delete sync points
                 deleted_sync, sync_success = await self._delete_nodes_by_connector_id(
