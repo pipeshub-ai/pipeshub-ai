@@ -2752,8 +2752,10 @@ class TestProcessSheetExceptionHandler:
         sheet.title = "BadSheet"
         sheet.iter_rows = MagicMock(side_effect=RuntimeError("sheet error"))
 
-        with pytest.raises(RuntimeError, match="sheet error"):
+        with pytest.raises(RuntimeError) as exc_info:
             ep._process_sheet(sheet)
+
+        assert "sheet error" in str(exc_info.value)
 
 
 class TestProcessCellFormulaCell:
