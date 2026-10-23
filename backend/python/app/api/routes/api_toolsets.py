@@ -350,7 +350,7 @@ async def delete_api_toolset_credentials(request: Request, instance_id: str) -> 
 
 
 @router.get("/instances/{instance_id}/oauth/authorize", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
-async def start_api_toolset_oauth(request: Request, instance_id: str, desktop: bool = Query(False)) -> dict[str, Any]:
+async def start_api_toolset_oauth(request: Request, instance_id: str, *, desktop: bool = Query(False)) -> dict[str, Any]:
     return await _start_sign_in(request, *await _own_credential_toolset(request, instance_id), desktop=desktop)
 
 
@@ -365,7 +365,7 @@ async def delete_api_toolset_shared_credentials(request: Request, instance_id: s
 
 
 @router.get("/instances/{instance_id}/shared-credentials/oauth/authorize", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
-async def start_api_toolset_shared_oauth(request: Request, instance_id: str, desktop: bool = Query(False)) -> dict[str, Any]:
+async def start_api_toolset_shared_oauth(request: Request, instance_id: str, *, desktop: bool = Query(False)) -> dict[str, Any]:
     return await _start_sign_in(request, *await _shared_credential_toolset(request, instance_id), desktop=desktop)
 
 
