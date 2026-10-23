@@ -1983,6 +1983,19 @@ class TestCheckpointPerBatch:
 
 
 class TestUsersListing:
+    async def test_guests_and_external_collaborators_are_marked_as_guests(self, api, db, checkpoints) -> None:
+        api.on("GET", f"{V1}/search/user", [{"results": [
+            {"user": {"accountId": "acc-1", "displayName": "Ana", "isGuest": False}, "email": "ana@acme.com"},
+            {"user": {"accountId": "acc-2", "displayName": "Gus", "isGuest": True}, "email": "gus@else.com"},
+            {"user": {"accountId": "acc-3", "displayName": "Eve", "isExternalCollaborator": True}, "email": "eve@else.com"},
+        ], "_links": {"base": WIKI}}, {"results": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._account_statuses_known = True
+
+        await connector._sync_users()
+
+        assert {u.source_user_id: u.is_guest for u in db.app_users} == {"acc-1": False, "acc-2": True, "acc-3": True}
+
     async def test_a_short_page_before_the_end_does_not_cut_the_user_list(self, api, db, checkpoints) -> None:
         def users(first: int, count: int) -> dict[str, Any]:
             return {"results": [{"user": {"accountId": f"acc-{i}", "displayName": f"User {i}"},

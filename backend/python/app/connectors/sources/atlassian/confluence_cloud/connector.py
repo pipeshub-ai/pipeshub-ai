@@ -5531,6 +5531,8 @@ class ConfluenceConnector(BaseConnector):
                 full_name=user_data.get("displayName"),
                 is_active=False,
                 source_updated_at=source_updated_at,
+                # Guests and external collaborators see only what they are given; not org members.
+                is_guest=bool(user_data.get("isGuest") or user_data.get("isExternalCollaborator")),
             )
 
         except Exception as e:
