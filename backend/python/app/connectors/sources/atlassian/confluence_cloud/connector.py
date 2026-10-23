@@ -2467,6 +2467,7 @@ class ConfluenceConnector(BaseConnector):
 
             self.logger.info(f"Syncing folders for space: {space.name} ({space_key})")
             await self._sync_folders(space_key)
+            await self._remove_folders_gone(space)
 
             for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST):
                 self.logger.info(f"Syncing {record_type.value} records for space: {space.name} ({space_key})")
@@ -2765,6 +2766,70 @@ class ConfluenceConnector(BaseConnector):
                     return None
                 token = next_token
         return found
+
+    async def _list_folder_ids(self, space_key: str) -> set[str] | None:
+        """Ids of every folder a search of the space finds; None unless read to the end."""
+        ids: set[str] = set()
+        token: str | None = None
+        followed: set[str] = set()
+        while True:
+            offset, cursor = self._split_pagination_token(token)
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_folders_v1(space_key=space_key, start=offset, cursor=cursor, limit=250)
+            data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
+            results = data.get("results") if isinstance(data, dict) else None
+            if not isinstance(results, list):
+                return None
+            ids.update(str(item["id"]) for item in results if isinstance(item, dict) and item.get("id"))
+            next_url = (data.get("_links") or {}).get("next")
+            if not next_url:
+                return ids
+            token = self._extract_cursor_from_next_link(next_url)
+            if not results or not token or token in followed:
+                return None
+            followed.add(token)
+
+    async def _remove_folders_gone(self, space: RecordGroup) -> None:
+        """Delete the space's stored folders Confluence no longer has there (trashed, purged or moved away).
+
+        Only a folder the search no longer finds is looked up, one by one; a lookup that
+        fails keeps it. Its pages are detached to the space root, as Confluence does.
+        """
+        try:
+            stored = [r for r in await self._stored_content(space.external_group_id, RecordType.FILE) if _is_folder(r)]
+        except Exception as e:
+            self.logger.warning(f"Could not read the stored folders of space {space.short_name}: {e}")
+            return
+        if not stored:
+            return
+        listed = await self._list_folder_ids(space.short_name)
+        if listed is None:
+            self._note_problem(
+                f"Space {space.short_name}: couldn't check for deleted folders; the next sync tries again", unread=False
+            )
+            return
+        gone: list[Record] = []
+        for folder in (f for f in stored if str(f.external_record_id) not in listed):
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_folder_by_id(id=int(folder.external_record_id))
+            except Exception as e:
+                self.logger.warning(f"Could not look up folder {folder.external_record_id}: {e}")
+                continue
+            if response and response.status == HttpStatusCode.NOT_FOUND.value:
+                gone.append(folder)
+            elif response and response.status == HttpStatusCode.SUCCESS.value:
+                data = response.json() or {}
+                moved = data.get("spaceId") and str(data["spaceId"]) != str(space.external_group_id)
+                if data.get("status") in ("trashed", "deleted") or moved:
+                    gone.append(folder)
+        if gone:
+            self.logger.info(f"Removing {len(gone)} folders space {space.short_name} no longer has")
+            if not await self._delete_content_records(gone):
+                self._note_problem(
+                    f"Space {space.short_name}: couldn't remove some deleted folders; the next sync tries again",
+                    unread=False,
+                )
 
     async def _remove_attachments_gone(self, page_id: str, current_ids: set[str], space_key: str) -> None:
         """Delete a page's stored attachments that its complete attachment list no longer has.

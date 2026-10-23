@@ -2260,3 +2260,39 @@ class TestSpaceGrantErrors:
         db.get_user_by_source_id = broken
 
         assert await connector._fetch_space_permissions("1", "Engineering") is None, "not saved without the grant"
+
+
+class TestFoldersGoneFromConfluence:
+    async def _folder_synced(self, api, db, checkpoints, search) -> ConfluenceConnector:
+        folder = {**v1_page("500"), "type": "folder", "title": "Specs"}
+        search.folders = [folder]
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_folders("ENG")
+        assert db.records["500"].external_record_group_id == "77"
+        search.folders = []
+        return connector
+
+    async def test_a_deleted_folder_is_removed(self, api, db, checkpoints, search) -> None:
+        connector = await self._folder_synced(api, db, checkpoints, search)
+        api.on("GET", f"{V2}/folders/500", json_response({"message": "not found"}, status=404))
+
+        await connector._remove_folders_gone(ENG)
+
+        assert "500" not in db.records
+
+    async def test_a_folder_the_search_misses_but_confluence_still_has_is_kept(self, api, db, checkpoints, search) -> None:
+        connector = await self._folder_synced(api, db, checkpoints, search)
+        api.on("GET", f"{V2}/folders/500", {"id": "500", "status": "current", "spaceId": "77", "title": "Specs"})
+
+        await connector._remove_folders_gone(ENG)
+
+        assert "500" in db.records
+
+    async def test_a_failed_folder_search_removes_nothing(self, api, db, checkpoints, search) -> None:
+        connector = await self._folder_synced(api, db, checkpoints, search)
+        api.on("GET", f"{V1}/content/search", json_response({"message": "busy"}, status=503))
+        api.on("GET", f"{V2}/folders/500", json_response({"message": "not found"}, status=404))
+
+        await connector._remove_folders_gone(ENG)
+
+        assert "500" in db.records
