@@ -553,6 +553,24 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to initialize Confluence connector: {e}", exc_info=True)
             raise ConnectorInitError(f"Couldn't connect to Confluence: {str(e)[:300]}") from e
 
+    async def on_background_init_failed(self, error: Optional[Exception]) -> None:
+        """A sync could not start: tell the creator and the org admins, on every failed start."""
+        if error is not None and isinstance(error.__cause__, AtlassianMultiSiteError):
+            return  # init already sent its own notice for this
+        reason = str(error)[:300] if error else "the connector could not be set up"
+        try:
+            await self.notify_and_wait(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"{self.display_name}: sync could not start",
+                message=f"The sync did not run: {reason}. Check the connector's settings and credentials.",
+                recipient_user_ids=[self.created_by] if self.created_by else None,
+                recipient_roles=[NotificationRecipientRole.ADMIN],
+                suppress_repeats=False,
+            )
+        except Exception as e:
+            self.logger.error(f"Could not send the failed-start notification: {e}")
+
     async def _cache_authenticated_confluence_email(self) -> None:
         """Cache the email of the account the connector is authenticated as; never fails init."""
         try:

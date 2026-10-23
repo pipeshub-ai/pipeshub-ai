@@ -1833,3 +1833,21 @@ class TestRestrictionChangesFromTheAuditLog:
         await connector._sync_permission_changes_from_audit_log()
 
         assert db.records["500"].access_rule == AccessRule.RESTRICTED
+
+
+class TestBackgroundStartFailure:
+    async def test_a_sync_that_cannot_start_notifies_the_creator_and_admins(self, api, db, checkpoints) -> None:
+        api.on("GET", RESOURCES_PATH, json_response({"message": "Unauthorized"}, status=401))
+        connector, _ = await make_connector(db, checkpoints)
+        with pytest.raises(ConnectorInitError) as err:
+            await connector.init()
+
+        await connector.on_background_init_failed(err.value)
+        await connector.on_background_init_failed(err.value)
+
+        notes = connector._notification_service.sent
+        assert len(notes) == 2, "every failed start is reported"
+        assert notes[0]["title"].endswith("sync could not start")
+        assert "Couldn't connect to Confluence" in notes[0]["message"]
+        assert notes[0]["recipient_user_ids"] == ["creator-1"]
+        assert [r.value for r in notes[0]["recipient_roles"]] == ["admin"]

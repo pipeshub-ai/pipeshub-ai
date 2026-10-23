@@ -366,6 +366,7 @@ class ConnectorFactory:
                     logger.error(
                         f"❌ Failed to initialize {name} {connector_id} connector"
                     )
+                    await connector.on_background_init_failed(None)
                     return None
                 logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
@@ -373,6 +374,7 @@ class ConnectorFactory:
                 logger.error(
                     f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}"
                 )
+                await connector.on_background_init_failed(e)
                 return None
 
         return None

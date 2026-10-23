@@ -227,6 +227,12 @@ class BaseConnector(ABC):
     async def init(self) -> bool:
         pass
 
+    async def on_background_init_failed(self, error: Optional[Exception]) -> None:
+        """Called when ``init`` failed while starting a sync in the background, where no
+        one sees the error (the API shows its own). ``error`` is what ``init`` raised, or
+        None when it returned False. Does nothing by default; must not raise."""
+        return None
+
     @abstractmethod
     def test_connection_and_access(self) -> bool:
         NotImplementedError("This method should be implemented by the subclass")
