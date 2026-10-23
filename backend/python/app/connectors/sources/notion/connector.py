@@ -610,7 +610,7 @@ class NotionConnector(BaseConnector):
         await self.notify(
             type=NotificationType.CONNECTOR_AUTH_ERROR if unauthorized else NotificationType.CONNECTOR_SYNC_ERROR,
             severity=NotificationSeverity.ERROR,
-            title=self._notification_title("sync failed"),
+            title=f"{self.display_name}: sync failed",
             message=(
                 f"The Notion sync stopped: {str(error)[:200]}. "
                 + ("Reconnect the connector or check the integration's capabilities."
@@ -695,7 +695,7 @@ class NotionConnector(BaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_WARNING,
                 severity=NotificationSeverity.WARNING,
-                title=self._notification_title("couldn't sync some pages"),
+                title=f"{self.display_name}: couldn't sync some pages",
                 message=(
                     f"{len(self._failed_pages)} Notion page(s) could not be read in full and were "
                     "not updated. They are retried on the next sync."
