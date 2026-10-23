@@ -84,34 +84,64 @@ class IssueSecurityContext:
     # team-managed project advances the issue cursor; those issues stay closed.
     defer_checkpoint: bool = False
 
-    def level_fingerprints(self) -> dict[str, str]:
-        """Level id -> a digest of its holders, so a change names the levels it touched."""
+    def level_fingerprints(
+        self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> dict[str, str]:
+        """Level id -> a digest of its holders, so a change names the levels it touched.
+
+        An application-role holder is granted as that role's groups, so the groups are part
+        of its digest: a group leaving the role re-reads the level's issues.
+        """
         return {
-            level_id: hashlib.sha1(",".join(sorted(
-                _holder_fingerprint(holder) for holder in holders if isinstance(holder, dict)
+            level_id: hashlib.sha256(",".join(sorted(
+                _holder_fingerprint(holder, app_roles_mapping) for holder in holders if isinstance(holder, dict)
             )).encode()).hexdigest()[:16]
             for level_id, holders in self.members_by_level.items()
         }
 
-    def fingerprint(self) -> str:
+    def fingerprint(self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None) -> str:
         if self.knowledge == SchemeKnowledge.NONE:
             return "none"
         if self.knowledge != SchemeKnowledge.PRESENT:
             return "unknown"
-        levels = self.level_fingerprints()
+        levels = self.level_fingerprints(app_roles_mapping)
         return "|".join([self.scheme_id or "", "1" if self.members_readable else "0",
                          *(f"{lid}={levels[lid]}" for lid in sorted(levels))])
 
 
-def _holder_fingerprint(holder: dict[str, Any]) -> str:
+def _holder_fingerprint(
+    holder: dict[str, Any], app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
+) -> str:
     """Include the user. value alone misses an account change."""
     user = holder.get("user") if isinstance(holder.get("user"), dict) else {}
     account = user.get("accountId") or user.get("key") or user.get("name") or ""
     email = str(user.get("emailAddress") or "").lower()
-    return (
-        f"{holder.get('type')}:{holder.get('value') or holder.get('parameter')}:"
-        f"{account}:{email}"
-    )
+    role_key = holder.get("parameter") or holder.get("value")
+    digest = f"{holder.get('type')}:{role_key}:{account}:{email}"
+    if holder.get("type") == HOLDER_APPLICATION_ROLE:
+        groups = application_role_groups(role_key, app_roles_mapping)
+        digest += ":" + "+".join(sorted(str(_group_ref(g)) for g in groups))
+    return digest
+
+
+def application_role_groups(
+    role_key: str | None, app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
+) -> list[dict[str, Any]]:
+    """The groups an application-role holder stands for.
+
+    A bare holder (no role key) is "Any logged in user": an account with access to any
+    Jira product, which is the union of every role's groups, not the whole org.
+    """
+    mapping = app_roles_mapping or {}
+    if role_key:
+        groups = mapping.get(role_key) or []
+    else:
+        groups = [g for role_groups in mapping.values() for g in role_groups or []]
+    return [g for g in groups if isinstance(g, dict) and _group_ref(g)]
+
+
+def _group_ref(group_info: dict[str, Any]) -> str | None:
+    return group_info.get("groupId") or group_info.get("name")
 
 
 def http_status_is_transient(status: int | None) -> bool:
@@ -388,13 +418,11 @@ def _permissions_for_holder(
     if holder_type == HOLDER_APPLICATION_ROLE:
         # A security level must not become an org-wide grant. Resolve the role
         # to its groups, or skip it when those groups cannot be read.
-        role_key = parameter or value
-        groups = (app_roles_mapping or {}).get(role_key) if role_key else None
+        groups = application_role_groups(parameter or value, app_roles_mapping)
         if not groups:
             return grants, False, HOLDER_APPLICATION_ROLE
         for group_info in groups:
-            if isinstance(group_info, dict):
-                add_group(group_info.get("groupId") or group_info.get("name"))
+            add_group(_group_ref(group_info))
         return grants, False, None
 
     if holder_type == HOLDER_ANYONE:

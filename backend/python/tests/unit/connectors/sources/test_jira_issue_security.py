@@ -306,7 +306,7 @@ class TestIssueAccess:
         assert record.rewrite_permissions is False
         assert record.access_rule == AccessRule.RESTRICTED
 
-    def test_unsecured_story_under_epic_inherits_the_project_not_the_epic(self) -> None:
+    def test_unsecured_story_under_epic_inherits_the_epic(self) -> None:
         record = _record(parent_external_record_id="epic-1")
         apply_issue_access(
             record,
@@ -318,7 +318,7 @@ class TestIssueAccess:
         assert record.inherit_permissions_from_group is False
         assert record.access_rule == AccessRule.STRICT
 
-    def test_secured_story_under_epic_has_its_own_level_and_inherits_the_project(self) -> None:
+    def test_secured_story_under_epic_has_its_own_level_and_still_inherits_the_epic(self) -> None:
         record = _record(parent_external_record_id="epic-1")
         apply_issue_access(
             record,
@@ -363,3 +363,53 @@ class TestIssueAccess:
         assert record.access_rule == AccessRule.STRICT
         assert record.rewrite_permissions is True
         assert record.inherit_permissions_from_group is False
+
+
+class TestApplicationRoleHolders:
+    MAPPING = {
+        "jira-software": [{"groupId": "g-sw"}, {"groupId": "g-shared"}],
+        "jira-servicedesk": [{"groupId": "g-sd"}, {"groupId": "g-shared"}],
+    }
+
+    def test_a_bare_level_holder_is_every_product_group_not_the_org(self) -> None:
+        """"Any logged in user" on a level: the accounts with product access, as on Browse."""
+        record = _record()
+        permissions, skipped = apply_issue_access(
+            record,
+            {"security": {"id": "20"}},
+            is_subtask=False,
+            project_key="PROJ",
+            context=_present(members={"20": [{"type": "applicationRole"}]}),
+            app_roles_mapping=self.MAPPING,
+        )
+        assert {(p.entity_type, p.external_id) for p in permissions} == {
+            (EntityType.GROUP, "g-sw"), (EntityType.GROUP, "g-shared"), (EntityType.GROUP, "g-sd")}
+        assert skipped == [] and record.access_rule == AccessRule.RESTRICTED
+
+    def test_a_bare_level_holder_with_no_roles_known_grants_nothing(self) -> None:
+        permissions, skipped = apply_issue_access(
+            _record(),
+            {"security": {"id": "20"}},
+            is_subtask=False,
+            project_key="PROJ",
+            context=_present(members={"20": [{"type": "applicationRole"}]}),
+        )
+        assert permissions == [] and skipped == ["applicationRole"]
+
+    def test_a_group_leaving_an_application_role_changes_the_level_digest(self) -> None:
+        """Otherwise the removed group's members keep the issue until it is edited."""
+        ctx = _present(members={
+            "20": [{"type": "applicationRole", "parameter": "jira-software"}],
+            "21": [{"type": "group", "value": "g"}],
+        })
+        before = ctx.level_fingerprints(self.MAPPING)
+        after = ctx.level_fingerprints({**self.MAPPING, "jira-software": [{"groupId": "g-sw"}]})
+        assert before["20"] != after["20"]
+        assert before["21"] == after["21"]
+
+    def test_a_bare_holder_digest_follows_every_role(self) -> None:
+        ctx = _present(members={"20": [{"type": "applicationRole"}]})
+        before = ctx.level_fingerprints(self.MAPPING)
+        after = ctx.level_fingerprints({**self.MAPPING, "jira-servicedesk": []})
+        assert before["20"] != after["20"]
+

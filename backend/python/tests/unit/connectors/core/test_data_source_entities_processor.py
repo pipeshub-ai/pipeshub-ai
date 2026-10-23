@@ -7481,7 +7481,7 @@ class TestPlaceholderFlag:
         assert incoming.version == 0
 
     @pytest.mark.asyncio
-    async def test_stub_that_knows_its_restriction_overrides_the_stored_rule(self):
+    async def test_stub_that_knows_its_restriction_overrides_the_stored_rule(self) -> None:
         """A stub written OPEN by an earlier sync is corrected when the sweep learns its level."""
         for knows, expected in ((True, AccessRule.RESTRICTED), (False, AccessRule.OPEN)):
             proc = _make_processor()

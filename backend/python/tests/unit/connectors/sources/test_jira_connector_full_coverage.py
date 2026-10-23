@@ -937,6 +937,8 @@ class TestCheckAndFetchUpdatedIssue:
 
         mock_ds = MagicMock()
         mock_ds.get_issue = AsyncMock(return_value=_make_mock_response(200, issue_response))
+        mock_ds.get_project_issue_security_scheme = AsyncMock(return_value=_make_mock_response(
+            404, {"errorMessages": ["Security level for project proj-1 does not exist."]}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         record = _make_ticket_record(source_updated_at=1700000000000)
