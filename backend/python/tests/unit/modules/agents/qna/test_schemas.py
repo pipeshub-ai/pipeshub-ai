@@ -130,12 +130,17 @@ class TestAgentAnswerWithMetadataJSON:
         assert errors[0]["type"] == "literal_error"
 
     def test_invalid_answer_match_type_raises(self):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as exc_info:
             AgentAnswerWithMetadataJSON(
                 answer="x",
                 confidence="High",
                 answerMatchType="Unknown Type",
             )
+
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["loc"] == ("answerMatchType",)
+        assert errors[0]["type"] == "literal_error"
 
     def test_missing_required_answer_raises(self):
         with pytest.raises(ValidationError):
