@@ -191,6 +191,10 @@ V2_CONTENT_LIST_LIMIT = 250
 ID_SEARCH_CHUNK = 50
 
 
+class GoneAtSource(Exception):
+    """Confluence answered 404 for a stored record: it was deleted or the account lost access."""
+
+
 class CommentsUnreadable(Exception):
     """A page's comments could not be read in full, so its blocks must not be indexed without them."""
 
@@ -6537,6 +6541,10 @@ class ConfluenceConnector(BaseConnector):
                         updated_records.append((updated_record, permissions))
                     else:
                         non_updated_records.append(record)
+                except GoneAtSource:
+                    # Re-indexing it would only fail; the next sync's removal scan deletes it.
+                    self.logger.info(f"Not re-indexing {record.external_record_id}: it is gone from Confluence")
+                    continue
                 except Exception as e:
                     self.logger.error(f"Error checking record {record.id} at source: {e}")
                     continue
@@ -6557,14 +6565,9 @@ class ConfluenceConnector(BaseConnector):
 
             # Reindex non-updated records (preserving existing mime types)
             if non_updated_records:
-                # DISABLED: Don't convert HTML to BLOCKS anymore to support HTML format for new records
-                # while preserving existing BLOCKS records
-                # fixed_records, ok_records = await self._fix_legacy_mime_types(non_updated_records)
-                # TODO: Uncomment this when we want to convert HTML to BLOCKS again
-                # all_reindex_records = fixed_records + ok_records
-                
-                # Use records as-is (preserves existing BLOCKS, new ones are HTML)
-                all_reindex_records = non_updated_records
+                # A re-index is asked for, so a stored HTML page is indexed as blocks, with its comments.
+                fixed_records, ok_records = await self._fix_legacy_mime_types(non_updated_records)
+                all_reindex_records = fixed_records + ok_records
                 
                 if all_reindex_records:
                     await self.data_entities_processor.reindex_existing_records(all_reindex_records)
@@ -6618,8 +6621,10 @@ class ConfluenceConnector(BaseConnector):
                 body_format="storage"
             )
 
+            if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                raise GoneAtSource(page_id)
             if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(f"Page {page_id} not found at source, may have been deleted")
+                self.logger.warning(f"Page {page_id} could not be read at source")
                 return None
 
             page_data = response.json()
@@ -6662,6 +6667,8 @@ class ConfluenceConnector(BaseConnector):
 
             return (webpage_record, permissions)
 
+        except GoneAtSource:
+            raise
         except Exception as e:
             self.logger.error(f"Error fetching page {record.external_record_id}: {e}")
             return None
@@ -6679,8 +6686,10 @@ class ConfluenceConnector(BaseConnector):
                 body_format="storage"
             )
 
+            if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                raise GoneAtSource(blogpost_id)
             if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(f"Blogpost {blogpost_id} not found at source, may have been deleted")
+                self.logger.warning(f"Blogpost {blogpost_id} could not be read at source")
                 return None
 
             blogpost_data = response.json()
@@ -6723,6 +6732,8 @@ class ConfluenceConnector(BaseConnector):
 
             return (webpage_record, permissions)
 
+        except GoneAtSource:
+            raise
         except Exception as e:
             self.logger.error(f"Error fetching blogpost {record.external_record_id}: {e}")
             return None
@@ -6755,8 +6766,10 @@ class ConfluenceConnector(BaseConnector):
                 include_version=True
             )
 
+            if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                raise GoneAtSource(attachment_id)
             if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(f"Attachment {attachment_id} not found at source, may have been deleted")
+                self.logger.warning(f"Attachment {attachment_id} could not be read at source")
                 return None
 
             attachment_data = response.json()
@@ -6801,6 +6814,8 @@ class ConfluenceConnector(BaseConnector):
             attachment_record.rewrite_permissions = True
             return (attachment_record, [])
 
+        except GoneAtSource:
+            raise
         except Exception as e:
             self.logger.error(f"Error fetching attachment {record.external_record_id}: {e}")
             return None
