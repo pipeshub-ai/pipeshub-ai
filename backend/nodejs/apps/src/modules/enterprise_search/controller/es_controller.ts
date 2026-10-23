@@ -133,6 +133,7 @@ import {
   redactConversationFor,
   redactMessagesFor,
   redactSearchesFor,
+  type ViewerMessage,
 } from '../utils/viewer-redaction';
 import { validateNoFormatSpecifiers } from '../../../utils/xss-sanitization';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -1500,15 +1501,16 @@ export const addMessageStream =
       // users' turns, or the model could repeat content they cannot read.
       const allMessagesSoFar = (await redactMessagesFor(
         appConfig,
-        await getMessages(
+        (await getMessages(
           confirmedConversation._id as mongoose.Types.ObjectId,
           {
             orgId: confirmedConversation.orgId,
             populateCitations: !!confirmedConversation.isShared,
           },
           session,
-        ),
-        confirmedConversation.initiator?.toString(),
+        )) as ViewerMessage[],
+        (confirmedConversation.initiator as Types.ObjectId | undefined)
+          ?.toString(),
         { userId: String(userId), orgId: String(orgId) },
       )) as IMessage[];
       const previousConversations = formatPreviousConversations(
@@ -3545,7 +3547,8 @@ async function regenerateAnswersInternal(
     }
     // The answer was built from its author's access, so only the author may redo it.
     const turnAuthor = (
-      lastBot.authorUserId ?? conversation.initiator
+      lastBot.authorUserId ??
+      (conversation.initiator as Types.ObjectId | undefined)
     )?.toString();
     if (turnAuthor !== String(userId)) {
       throw new ForbiddenError(
@@ -3717,8 +3720,9 @@ async function regenerateAnswersInternal(
           populateCitations: !!existingConversation.isShared,
         },
         session,
-      )) as Array<Record<string, unknown>>,
-      existingConversation.initiator?.toString(),
+      )) as ViewerMessage[],
+      (existingConversation.initiator as Types.ObjectId | undefined)
+        ?.toString(),
       { userId: String(userId), orgId: String(orgId) },
     )) as Array<IMessage & { _id?: mongoose.Types.ObjectId }>;
     // The turn being regenerated (its user query, its answer, and any
@@ -7357,15 +7361,16 @@ export const addMessageStreamToAgentConversation =
       // users' turns, or the model could repeat content they cannot read.
       const allMessagesSoFar = (await redactMessagesFor(
         appConfig,
-        await getMessages(
+        (await getMessages(
           confirmedConversation._id as mongoose.Types.ObjectId,
           {
             orgId: confirmedConversation.orgId,
             populateCitations: !!confirmedConversation.isShared,
           },
           session,
-        ),
-        confirmedConversation.initiator?.toString(),
+        )) as ViewerMessage[],
+        (confirmedConversation.initiator as Types.ObjectId | undefined)
+          ?.toString(),
         { userId: String(userId), orgId: String(orgId) },
       )) as IMessage[];
       const previousConversations = formatPreviousConversations(

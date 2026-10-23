@@ -22,8 +22,9 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { Logger } from '../../../libs/services/logger.service';
 import type { AppConfig } from '../../tokens_manager/config/config';
-import mongoose from 'mongoose';
-import Citation from '../schema/citation.schema';
+import mongoose, { Types } from 'mongoose';
+import Citation, { ICitationMetadata } from '../schema/citation.schema';
+import type { IMessage } from '../types/conversation.interfaces';
 import { Users } from '../../user_management/schema/users.schema';
 
 const logger = Logger.getInstance({ service: 'Viewer Redaction' });
@@ -57,7 +58,49 @@ export interface MessageRedaction {
   reason: typeof REDACTION_REASON;
 }
 
-type Json = Record<string, any>;
+type Json = Record<string, unknown>;
+
+/** A citation document as stored in `citations`, populated into a message or a search. */
+interface CitedDoc {
+  _id?: unknown;
+  chunkIndex?: number;
+  metadata?: Partial<ICitationMetadata>;
+}
+
+/** A message citation: a bare reference, or one populated with its document. */
+type CitationEntry = Partial<RedactedItem> & {
+  citationId?: Types.ObjectId | CitedDoc;
+  citationData?: CitedDoc;
+};
+
+/** The message fields redaction reads or rewrites; any other field passes through untouched. */
+export interface ViewerMessage {
+  messageType?: IMessage['messageType'];
+  content?: string;
+  authorUserId?: { toString(): string };
+  // A legacy row can hold a null entry; populate nulls `citationId` when its document is gone.
+  citations?: Array<CitationEntry | null>;
+  attachments?: Array<{ recordId?: string } & Partial<RedactedItem>>;
+  tools?: unknown;
+  reasoning?: unknown;
+  parts?: unknown;
+  referenceData?: unknown;
+  followUpQuestions?: unknown;
+  askedBy?: { userId: string; name: string };
+  redaction?: MessageRedaction;
+  detailsHidden?: boolean;
+}
+
+/** A saved search's hit: a bare reference, a populated citation, or its redacted stand-in. */
+type SearchHit = Types.ObjectId | (CitedDoc & Partial<RedactedItem>) | null;
+
+/** The saved-search fields redaction reads or rewrites. */
+export interface ViewerSearch {
+  userId?: Types.ObjectId | string;
+  citationIds?: SearchHit[];
+  records?: Record<string, unknown>;
+  redaction?: { redacted: boolean; reason: typeof REDACTION_REASON };
+}
 
 /**
  * POST to Python's per-user record routes, signed as `user` with the
@@ -106,7 +149,7 @@ export const readableRecordIds = async (
   const readable = new Set<string>();
   try {
     for (let i = 0; i < ids.length; i += ACCESS_CHECK_BATCH) {
-      const data = await callRecordAccess<{ accessible?: string[] }>(
+      const data = await callRecordAccess<{ accessible?: string[] } | null>(
         appConfig,
         viewer,
         'access',
@@ -115,10 +158,10 @@ export const readableRecordIds = async (
       for (const id of data?.accessible ?? []) readable.add(id);
     }
     return readable;
-  } catch (error: any) {
+  } catch (error: unknown) {
     // Unknown is unreadable: a failed check must never show the author's text.
     logger.error('Viewer access check failed; redacting every source', {
-      error: error.message,
+      error: error instanceof Error ? error.message : String(error),
     });
     return new Set();
   }
@@ -130,15 +173,12 @@ export const readableRecordIds = async (
  * own record URL (or web URL). Citations without a populated document resolve
  * nothing, so their text stays uncited (the message then has no readable source).
  */
-interface CitedDoc {
-  chunkIndex?: number;
-  metadata?: { recordId?: string; webUrl?: string };
-}
-
-const citationResolver = (citations: Json[]): CitationResolver => {
+const citationResolver = (
+  citations: Array<CitationEntry | null>,
+): CitationResolver => {
   const byIndex = new Map<number, CitedDoc>();
   for (const c of citations) {
-    const doc = citationDoc(c) as CitedDoc | undefined;
+    const doc = citationDoc(c);
     if (typeof doc?.chunkIndex === 'number') byIndex.set(doc.chunkIndex, doc);
   }
   return (n, target) => {
@@ -156,26 +196,27 @@ const citationResolver = (citations: Json[]): CitationResolver => {
 };
 
 /** The populated citation document, whichever way the message was shaped. */
-const citationDoc = (citation: Json): Json | undefined => {
+const citationDoc = (citation: CitationEntry | null): CitedDoc | undefined => {
   const doc = citation?.citationData ?? citation?.citationId;
-  return doc && typeof doc === 'object' && 'metadata' in doc ? doc : undefined;
+  return isCitationDoc(doc) ? doc : undefined;
 };
 
-const citationRecordId = (citation: Json): string | undefined =>
+const citationRecordId = (citation: CitationEntry | null): string | undefined =>
   citationDoc(citation)?.metadata?.recordId;
 
 const requestAccessFor = (
   recordId: string | undefined,
-  metadata: Json | undefined,
+  metadata: Partial<ICitationMetadata> | undefined,
   native: boolean,
 ): RequestAccessInfo => {
-  const kind = native || metadata?.origin !== 'CONNECTOR' ? 'native' : 'connector';
+  const kind =
+    native || metadata?.origin !== 'CONNECTOR' ? 'native' : 'connector';
   const collection =
     kind === 'native' && String(metadata?.connector).toUpperCase() === 'KB';
   return {
     recordId: recordId ?? '',
     kind,
-    ...(kind === 'connector' && metadata?.webUrl && !metadata?.hideWeburl
+    ...(kind === 'connector' && metadata?.webUrl && !metadata.hideWeburl
       ? { sourceUrl: metadata.webUrl }
       : {}),
     ...(collection ? { collection } : {}),
@@ -183,10 +224,10 @@ const requestAccessFor = (
   };
 };
 
-const redactedItem = (
-  extra: Json,
+const redactedItem = <E extends object>(
+  extra: E,
   info: RequestAccessInfo,
-): Json & RedactedItem => ({
+): E & RedactedItem => ({
   ...extra,
   redacted: true,
   reason: REDACTION_REASON,
@@ -390,8 +431,7 @@ const toUnits = (content: string): Unit[] => {
   const push = (kind: Unit['kind'], line: string): void => {
     const last = units[units.length - 1];
     if (
-      last &&
-      last.kind === kind &&
+      last?.kind === kind &&
       (kind === 'run' || kind === 'table' || kind === 'blank')
     )
       last.lines.push(line);
@@ -466,7 +506,9 @@ export const redactAnswerText = (
 };
 
 /** Every record id a page of messages points at (citations and attachments). */
-export const collectMessageRecordIds = (messages: Json[]): string[] => {
+export const collectMessageRecordIds = (
+  messages: ViewerMessage[],
+): string[] => {
   const ids: string[] = [];
   for (const m of messages) {
     for (const c of m.citations ?? []) {
@@ -485,16 +527,17 @@ export const collectMessageRecordIds = (messages: Json[]): string[] => {
  * citation lets us verify per viewer.
  */
 export const redactMessagesForViewer = (
-  messages: Json[],
+  messages: ViewerMessage[],
   readable: Set<string>,
-): Json[] =>
+): ViewerMessage[] =>
   messages.map((message) => {
-    const citations: Json[] = message.citations ?? [];
-    const attachments: Json[] = message.attachments ?? [];
-    const isReadable = (id?: string) => !!id && readable.has(id);
+    const citations = message.citations ?? [];
+    const attachments = message.attachments ?? [];
+    const isReadable = (id?: string): boolean => !!id && readable.has(id);
 
     const unreadable = new Set<number>();
-    let anyUnreadable = false;
+    // Set inside the callbacks below; `as boolean` keeps it from narrowing to `false`.
+    let anyUnreadable = false as boolean;
     const newCitations = citations.map((c) => {
       const id = citationRecordId(c);
       if (isReadable(id)) return c;
@@ -503,7 +546,7 @@ export const redactMessagesForViewer = (
       if (typeof doc?.chunkIndex === 'number') unreadable.add(doc.chunkIndex);
       const raw = c?.citationId;
       return redactedItem(
-        { citationId: raw?._id ?? raw },
+        { citationId: isCitationDoc(raw) ? (raw._id ?? raw) : raw },
         requestAccessFor(id, doc?.metadata, false),
       );
     });
@@ -544,7 +587,7 @@ export const redactMessagesForViewer = (
     // A citation with no populated document cannot be judged: nothing of the answer is shown.
     const everyCitationUnreadable =
       citations.length > 0 &&
-      (newCitations.every((c) => c.redacted) ||
+      (newCitations.every((c) => c?.redacted) ||
         citations.some((c) => !citationDoc(c)));
     const redaction: MessageRedaction = {
       redacted: everyCitationUnreadable,
@@ -568,11 +611,10 @@ export const redactMessagesForViewer = (
 
 /** Who a message was generated for: its stamp, else the conversation's initiator. */
 export const messageAuthorId = (
-  message: Json,
+  message: ViewerMessage,
   initiatorId: string | undefined,
 ): string | undefined => {
-  const stamp = message.authorUserId as { toString(): string } | undefined;
-  return stamp?.toString() ?? initiatorId;
+  return message.authorUserId?.toString() ?? initiatorId;
 };
 
 /**
@@ -585,11 +627,11 @@ export const messageAuthorId = (
  */
 export const redactMessagesFor = async (
   appConfig: AppConfig,
-  messages: Json[],
+  messages: ViewerMessage[],
   initiatorId: string | undefined,
   viewer: { userId: string; orgId: string },
-): Promise<Json[]> => {
-  const isOthers = (m: Json): boolean => {
+): Promise<ViewerMessage[]> => {
+  const isOthers = (m: ViewerMessage): boolean => {
     const author = messageAuthorId(m, initiatorId);
     // Callers may hand over an ObjectId where a string is typed.
     const viewerId: unknown = viewer.userId;
@@ -633,7 +675,7 @@ export const userDisplayName = (user: {
 
 /** Display names of the users who asked these questions, looked up in the viewer's own org only. */
 const askerNames = async (
-  questions: Json[],
+  questions: ViewerMessage[],
   initiatorId: string | undefined,
   orgId: string,
 ): Promise<Map<string, string>> => {
@@ -662,12 +704,14 @@ const askerNames = async (
 };
 
 /** A conversation object `{ initiator, messages, ... }` for the viewer. */
-export const redactConversationFor = async <T extends Json>(
+export const redactConversationFor = async <
+  T extends { initiator?: { toString(): string }; messages?: ViewerMessage[] },
+>(
   appConfig: AppConfig,
   conversation: T,
   viewer: { userId: string; orgId: string },
 ): Promise<T> => {
-  const initiator = conversation?.initiator?.toString();
+  const initiator = conversation.initiator?.toString();
   if (!initiator) return conversation;
   const messages = await redactMessagesFor(
     appConfig,
@@ -684,16 +728,16 @@ export const redactConversationFor = async <T extends Json>(
  * Error frames carry a whole conversation only when every message in it is the
  * receiving user's own. Anyone else's client refetches through the redacted GET.
  */
-export const conversationForAuthorOnly = <T extends Json>(
+export const conversationForAuthorOnly = <
+  T extends { initiator?: { toString(): string }; messages?: ViewerMessage[] },
+>(
   conversation: T,
   userId: string | undefined,
 ): T | undefined => {
-  const initiator = (
-    conversation.initiator as { toString(): string } | undefined
-  )?.toString();
+  const initiator = conversation.initiator?.toString();
   return userId &&
     initiator &&
-    ((conversation.messages as Json[] | undefined) ?? []).every(
+    (conversation.messages ?? []).every(
       (m) => messageAuthorId(m, initiator) === userId,
     )
     ? conversation
@@ -702,23 +746,27 @@ export const conversationForAuthorOnly = <T extends Json>(
 
 /** A search's stored hits: unreadable citations lose their text, name and URL. */
 export const redactSearchForViewer = (
-  search: Json,
+  search: ViewerSearch,
   readable: Set<string>,
-): Json => {
-  const citations: Json[] = search.citationIds ?? [];
-  let changed = false;
-  const citationIds = citations.map((c) => {
-    const id = c?.metadata?.recordId;
+): ViewerSearch => {
+  const citations = search.citationIds ?? [];
+  // Set inside the callback below; `as boolean` keeps it from narrowing to `false`.
+  let changed = false as boolean;
+  const citationIds = citations.map((c): SearchHit => {
+    const doc = isCitationDoc(c) ? c : undefined;
+    const id = doc?.metadata?.recordId;
     if (id && readable.has(id)) return c;
     changed = true;
     return redactedItem(
-      { _id: c?._id ?? c },
-      requestAccessFor(id, c?.metadata, false),
+      { _id: doc?._id ?? c },
+      requestAccessFor(id, doc?.metadata, false),
     );
   });
   // `records` can name records no hit cites, so it is filtered on its own.
   const entries = Object.entries(search.records ?? {});
-  const records = Object.fromEntries(entries.filter(([id]) => readable.has(id)));
+  const records = Object.fromEntries(
+    entries.filter(([id]) => readable.has(id)),
+  );
   if (!changed && Object.keys(records).length === entries.length) return search;
   return {
     ...search,
@@ -728,14 +776,14 @@ export const redactSearchForViewer = (
   };
 };
 
-export const collectSearchRecordIds = (search: Json): string[] => [
-  ...(search.citationIds ?? [])
-    .map((c: Json) => c?.metadata?.recordId)
-    .filter(Boolean),
+export const collectSearchRecordIds = (search: ViewerSearch): string[] => [
+  ...(search.citationIds ?? []).flatMap((c) =>
+    isCitationDoc(c) && c.metadata?.recordId ? [c.metadata.recordId] : [],
+  ),
   ...Object.keys(search.records ?? {}),
 ];
 
-const isCitationDoc = (c: unknown): boolean =>
+const isCitationDoc = (c: unknown): c is CitedDoc =>
   !!c && typeof c === 'object' && 'metadata' in c;
 
 /**
@@ -745,14 +793,14 @@ const isCitationDoc = (c: unknown): boolean =>
  */
 export const redactSearchesFor = async (
   appConfig: AppConfig,
-  searches: Json[],
+  searches: ViewerSearch[],
   viewer: { userId: string; orgId: string },
-): Promise<Json[]> => {
+): Promise<ViewerSearch[]> => {
   const shared = searches.filter((s) => String(s.userId) !== viewer.userId);
   if (shared.length === 0) return searches;
 
   const bareIds = shared.flatMap((s) =>
-    (s.citationIds ?? []).filter((c: unknown) => !isCitationDoc(c)),
+    (s.citationIds ?? []).filter((c): c is Types.ObjectId => !isCitationDoc(c)),
   );
   const docs = bareIds.length
     ? await Citation.find({
@@ -762,12 +810,12 @@ export const redactSearchesFor = async (
         .select('-__v')
         .lean()
     : [];
-  const byId = new Map(docs.map((d) => [String(d._id), d as Json]));
-  const withDocs = (s: Json): Json => ({
+  const byId = new Map<string, CitedDoc>(docs.map((d) => [String(d._id), d]));
+  const withDocs = (s: ViewerSearch): ViewerSearch => ({
     ...s,
     // A hit whose document is gone or foreign stays a bare id: unreadable.
-    citationIds: (s.citationIds ?? []).map((c: unknown) =>
-      isCitationDoc(c) ? c : (byId.get(String(c)) ?? c),
+    citationIds: (s.citationIds ?? []).map(
+      (c): SearchHit => (isCitationDoc(c) ? c : (byId.get(String(c)) ?? c)),
     ),
   });
 
