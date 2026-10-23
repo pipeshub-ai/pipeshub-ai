@@ -3230,6 +3230,44 @@ class ConfluenceDataSource:
         resp = await self._client.execute(req)
         return resp
 
+    async def get_comments_v1(
+        self,
+        space_key: str,
+        modified_after: Optional[str] = None,
+        start: Optional[int] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+        time_offset_hours: int = 0,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """Comments of a space changed after a time, with the page or blog post each is on.
+
+        v1 ``GET .../rest/api/content/search`` with CQL ``type=comment``; ``container``
+        is expanded so each result names its page.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+        cql_parts = ["type=comment", f'space="{_escape_cql_literal(space_key)}"']
+        if modified_after:
+            formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)
+            cql_parts.append(f'lastModified > "{formatted_date}"')
+        _query: Dict[str, Any] = {"cql": " AND ".join(cql_parts), "expand": "container,version"}
+        if limit is not None:
+            _query["limit"] = limit
+        if cursor is not None:
+            _query["cursor"] = cursor
+        elif start is not None:
+            _query["start"] = start
+        req = HTTPRequest(
+            method="GET",
+            url=self._v1_rest_api_base() + "/content/search",
+            headers=_as_str_dict(dict(headers or {})),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
     async def get_page_permissions_v1(
         self,
         page_id: str,

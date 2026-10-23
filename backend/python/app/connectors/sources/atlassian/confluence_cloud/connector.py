@@ -191,6 +191,10 @@ V2_CONTENT_LIST_LIMIT = 250
 ID_SEARCH_CHUNK = 50
 
 
+class CommentsUnreadable(Exception):
+    """A page's comments could not be read in full, so its blocks must not be indexed without them."""
+
+
 class ContentListing(NamedTuple):
     """What one space's page or blog post listing read.
 
@@ -4282,7 +4286,9 @@ class ConfluenceConnector(BaseConnector):
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=parent_record_type,
                 weburl=web_url,
-                mime_type=MimeTypes.HTML.value,
+                # Blocks carry the page's comments. A stored HTML page streams as blocks only
+                # once its content changes: a file type change alone does not re-index it.
+                mime_type=MimeTypes.BLOCKS.value,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 is_dependent_node=False,  # Pages are root nodes
@@ -5625,6 +5631,24 @@ class ConfluenceConnector(BaseConnector):
             )
             return None
 
+    async def _comments_indexed(self, record_type: RecordType) -> bool:
+        """Whether the "Index page comments" / "Index blog post comments" setting is on (default on).
+
+        Read from the settings at stream time: indexing streams through an instance whose
+        sync never ran, so its loaded filters may be empty.
+        """
+        try:
+            _, indexing_filters = await load_connector_filters(
+                self.config_service, "confluence", self.connector_id, self.logger
+            )
+        except Exception:
+            indexing_filters = self.indexing_filters
+        key = (
+            IndexingFilterKey.PAGE_COMMENTS if record_type == RecordType.CONFLUENCE_PAGE
+            else IndexingFilterKey.BLOGPOST_COMMENTS
+        )
+        return indexing_filters.is_enabled(key)
+
     async def _fetch_page_comments_recursive(
         self,
         page_id: str,
@@ -5646,6 +5670,7 @@ class ConfluenceConnector(BaseConnector):
         all_comments: list[dict[str, Any]] = []
         batch_size = 100
         cursor = None
+        followed: set[str] = set()
 
         # Early return for unsupported record types
         if record_type not in [RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST]:
@@ -5693,8 +5718,10 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.debug(f"Failed to fetch {comment_type} comments for {record_type}: {page_id}")
-                    break
+                    raise CommentsUnreadable(
+                        f"{comment_type} comments of {page_id} could not be read "
+                        f"(HTTP {response.status if response else 'no response'})"
+                    )
 
                 response_data = response.json()
                 comments_data = response_data.get("results", [])
@@ -5719,12 +5746,15 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 cursor = self._extract_cursor_from_next_link(next_url)
-                if not cursor:
-                    break
+                if not cursor or cursor in followed:
+                    raise CommentsUnreadable(f"{comment_type} comments of {page_id} could not be followed to the end")
+                followed.add(cursor)
 
+            except CommentsUnreadable:
+                raise
             except Exception as e:
-                self.logger.error(f"Error fetching {comment_type} comments for page {page_id}: {e}", exc_info=True)
-                break
+                # Indexed without its comments the page would stay that way until it changes.
+                raise CommentsUnreadable(f"{comment_type} comments of {page_id} could not be read: {e}") from e
 
         return all_comments
 
@@ -5748,6 +5778,7 @@ class ConfluenceConnector(BaseConnector):
         all_children: list[dict[str, Any]] = []
         batch_size = 100
         cursor = None
+        followed: set[str] = set()
 
         datasource = await self._get_fresh_datasource()
         comment_id_int = int(comment_id) if isinstance(comment_id, str) else comment_id
@@ -5770,7 +5801,10 @@ class ConfluenceConnector(BaseConnector):
                     )
 
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    break
+                    raise CommentsUnreadable(
+                        f"replies to comment {comment_id} could not be read "
+                        f"(HTTP {response.status if response else 'no response'})"
+                    )
 
                 response_data = response.json()
                 children_data = response_data.get("results", [])
@@ -5795,12 +5829,14 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 cursor = self._extract_cursor_from_next_link(next_url)
-                if not cursor:
-                    break
+                if not cursor or cursor in followed:
+                    raise CommentsUnreadable(f"replies to comment {comment_id} could not be followed to the end")
+                followed.add(cursor)
 
+            except CommentsUnreadable:
+                raise
             except Exception as e:
-                self.logger.error(f"Error fetching children for comment {comment_id}: {e}", exc_info=True)
-                break
+                raise CommentsUnreadable(f"replies to comment {comment_id} could not be read: {e}") from e
 
         return all_children
 
@@ -5982,7 +6018,7 @@ class ConfluenceConnector(BaseConnector):
         footer_comments: list[dict[str, Any]] = []
         inline_comments: list[dict[str, Any]] = []
 
-        if record_type:
+        if record_type and await self._comments_indexed(record_type):
             # Fetch footer comments
             footer_comments = await self._fetch_page_comments_recursive(
                 page_id=page_id,
@@ -6323,68 +6359,27 @@ class ConfluenceConnector(BaseConnector):
         page_weburl: str | None,
         attachment_api_base_url: str | None = None,
     ) -> dict[str, ChildRecord]:
-        """
-        Process page attachments and create ChildRecords.
-        Creates FileRecords if they don't exist (for new attachments added after sync).
+        """Link a page's stored attachment records as children of its blocks.
 
-        Args:
-            attachment_api_base_url: v2 list response _links.base (required to build absolute web URLs for attachments).
+        Read only: the sync owns attachment records (it applies the attachment indexing
+        filters and leaves images shown in the page out), so streaming never creates one.
+        An attachment added since the last sync is linked once the sync has stored it.
         """
         attachment_children_map: dict[str, ChildRecord] = {}
-        new_file_records: list[tuple[FileRecord, list[Permission]]] = []
-        page_permissions: Optional[list[Permission]] = None
-        page_permissions_read = False
-
         for attachment in attachments_data:
             attachment_id = attachment.get("id")
             if not attachment_id:
                 continue
-
-            # Look up existing FileRecord (without "attachment_" prefix - matches how records are stored)
             existing_record = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id,
-                external_record_id=str(attachment_id)  # No prefix - matches external_record_id in FileRecord
+                external_record_id=str(attachment_id),
             )
-
-            # Create FileRecord if it doesn't exist (new attachment added after sync)
-            if not existing_record:
-                # Transform to FileRecord
-                file_record = self._transform_to_attachment_file_record(
-                    attachment_data=attachment,
-                    parent_external_record_id=page_id,
-                    parent_external_record_group_id=space_id,
-                    existing_record=None,
-                    parent_node_id=page_node_id,
-                    attachment_api_base_url=attachment_api_base_url,
-                )
-
-                if file_record:
-                    if not page_permissions_read:
-                        page_permissions = await self._fetch_page_permissions(page_id)
-                        page_permissions_read = True
-                    if page_permissions is None:
-                        # Saved without the page's restrictions, it would be open to the whole space.
-                        self.logger.warning(
-                            f"Not saving new attachment {attachment_id} yet: restrictions of page {page_id} could not be read"
-                        )
-                    else:
-                        file_record.inherit_permissions = True
-                        file_record.rewrite_permissions = True
-                        new_file_records.append((file_record, []))
-                        existing_record = file_record
-
             if existing_record:
                 attachment_children_map[str(attachment_id)] = ChildRecord(
                     child_type=ChildType.RECORD,
                     child_id=existing_record.id,
-                    child_name=existing_record.record_name
+                    child_name=existing_record.record_name,
                 )
-
-        # Save new FileRecords if any were created
-        if new_file_records:
-            await self.data_entities_processor.on_new_records(new_file_records)
-            self.logger.info(f"📎 Created {len(new_file_records)} new FileRecords for attachments added after sync")
-
         return attachment_children_map
 
     async def _fetch_attachment_content(self, record: Record) -> AsyncGenerator[bytes, None]:
