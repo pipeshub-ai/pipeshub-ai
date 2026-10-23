@@ -4996,6 +4996,12 @@ class ConfluenceConnector(BaseConnector):
 
         except HTTPException:
             raise  # Re-raise HTTP exceptions as-is
+        except AtlassianQuotaExhausted as e:
+            raise HTTPException(
+                status_code=HttpStatusCode.TOO_MANY_REQUESTS.value,
+                detail=f"Confluence can't be read right now: {e}. Try again after that.",
+                headers={"Retry-After": str(max(1, int(e.reset_at - time.time())))},
+            ) from e
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
             raise to_stream_error(e, connector=self.display_name) from e

@@ -2140,3 +2140,47 @@ class TestNoRawErrorTextForUsers:
             await connector.init()
 
         assert "10.0.0.5" not in str(err.value)
+
+
+class TestSpentQuotaEdges:
+    async def test_a_response_the_policy_refuses_to_wait_for_is_closed(self, monkeypatch) -> None:
+        from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
+
+        closed: list[bool] = []
+
+        class Body(httpx.AsyncByteStream):
+            async def __aiter__(self):  # noqa: ANN204
+                yield b""
+
+            async def aclose(self) -> None:
+                closed.append(True)
+
+        async def answer_429(self: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429, headers={"Retry-After": "1800"}, stream=Body(), request=request)
+
+        monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", answer_429)
+        transport = ResilientHTTPTransport(QuotaAwarePolicy(rate_limit=100, max_retries=3))
+
+        with pytest.raises(AtlassianQuotaExhausted):
+            await transport.handle_async_request(httpx.Request("GET", f"{SITE}/wiki/api/v2/spaces"))
+
+        assert closed == [True], "the pooled connection is given back"
+
+    async def test_opening_a_page_while_the_quota_is_spent_says_when_to_retry(self, api, db, checkpoints) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        page = WebpageRecord(
+            org_id="org-1", record_name="Page", record_type=RecordType.CONFLUENCE_PAGE, external_record_id="10",
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+            version=0, mime_type=MimeTypes.HTML.value,
+        )
+
+        async def spent(*_: object, **__: object) -> str:
+            raise AtlassianQuotaExhausted(time.time() + 600)
+
+        connector._fetch_page_content = spent
+
+        with pytest.raises(HTTPException) as err:
+            await connector.stream_record(page)
+
+        assert err.value.status_code == 429
+        assert int(err.value.headers["Retry-After"]) > 0
