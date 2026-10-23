@@ -1776,3 +1776,22 @@ class TestCheckpointPerBatch:
 
         assert listing.complete is False
         assert checkpoints.values_for("confluence_pages/ENG") is None
+
+
+class TestUsersListing:
+    async def test_a_short_page_before_the_end_does_not_cut_the_user_list(self, api, db, checkpoints) -> None:
+        def users(first: int, count: int) -> dict[str, Any]:
+            return {"results": [{"user": {"accountId": f"acc-{i}", "displayName": f"User {i}"},
+                                 "email": f"user{i}@acme.com"} for i in range(first, first + count)],
+                    "_links": {"base": WIKI}}
+
+        api.on("GET", f"{V1}/search/user", [users(0, 100), users(100, 40), users(140, 60), {"results": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._account_statuses_known = True
+
+        await connector._sync_users()
+
+        assert len({u.source_user_id for u in db.app_users}) == 200
+        assert [AtlassianApiStub.query(r)["start"] for r in api.calls("GET", f"{V1}/search/user")] == [
+            "0", "100", "140", "200",
+        ]

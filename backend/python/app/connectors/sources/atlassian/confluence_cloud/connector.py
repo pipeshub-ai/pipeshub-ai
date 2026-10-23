@@ -1016,6 +1016,7 @@ class ConfluenceConnector(BaseConnector):
             start = 0
             total_synced = 0
             total_skipped = 0
+            seen_account_ids: set[str] = set()
 
             # Paginate through all users
             while True:
@@ -1070,14 +1071,14 @@ class ConfluenceConnector(BaseConnector):
                     total_synced += len(app_users)
                     self.logger.info(f"Synced {len(app_users)} users (batch starting at {start})")
 
-                # Move to next page
-                start += batch_size
-
-                # Check if we've reached the end
-                # FIX: Do not rely on totalSize as it returns incorrect values (e.g. 100) for /search/user
-                # Instead, stop if we received fewer results than requested
-                if len(users_data) < batch_size:
+                # Cloud's /search/user has no next link and its totalSize is the page size, and a
+                # page can come back short before the end, so only an empty page ends the list.
+                page_ids = {r.get("user", {}).get("accountId") or r.get("accountId") for r in users_data} - {None}
+                if not page_ids - seen_account_ids:
+                    # The same page again: the offset is being ignored, so stop rather than loop.
                     break
+                seen_account_ids |= page_ids
+                start += len(users_data)
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
 
