@@ -1,8 +1,14 @@
+from __future__ import annotations
+
 import asyncio
+from typing import TYPE_CHECKING
 
 import pytest
 
 from app.utils import turn_memo
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 @pytest.mark.asyncio
@@ -100,3 +106,33 @@ async def test_ending_the_turn_stops_a_lookup_still_running() -> None:
 
     await asyncio.create_task(turn())
     assert cancelled
+
+
+@pytest.mark.asyncio
+async def test_closing_the_stream_early_stops_lookups_after_the_inner_stream_ends() -> None:
+    order: list[str] = []
+    started = asyncio.Event()
+
+    async def compute() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            order.append("lookup cancelled")
+            raise
+
+    @turn_memo.per_turn_lookups
+    async def stream() -> AsyncGenerator[str, None]:
+        try:
+            lookup = asyncio.ensure_future(turn_memo.memo("k", compute))
+            await started.wait()
+            lookup.cancel()
+            yield "first"
+            yield "never reached"
+        finally:
+            order.append("inner finished")
+
+    chunks = stream()
+    assert await chunks.__anext__() == "first"
+    await chunks.aclose()
+    assert order == ["inner finished", "lookup cancelled"]

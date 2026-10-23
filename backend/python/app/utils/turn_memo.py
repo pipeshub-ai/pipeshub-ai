@@ -11,11 +11,15 @@ inside a turn wait on one query instead of each issuing their own.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import functools
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ParamSpec
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Hashable
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Hashable
+
+P = ParamSpec("P")
 
 _turn: ContextVar[dict[Hashable, asyncio.Task] | None] = ContextVar("pipeshub_turn_memo", default=None)
 
@@ -44,3 +48,23 @@ async def memo(key: Hashable, compute: Callable[[], Awaitable[Any]]) -> Any:  # 
         cache[key] = task
     # shield: one caller's cancellation must not cancel the query for the rest.
     return await asyncio.shield(task)
+
+
+def per_turn_lookups(stream: Callable[P, AsyncGenerator[str, None]]) -> Callable[P, AsyncGenerator[str, None]]:
+    """Give each run of a streaming turn its own memo, and end the lookups it left running.
+
+    The inner stream is closed first, so a live turn is not cut off; closing the
+    outer stream at any point, setup included, still reaches the cleanup.
+    """
+
+    @functools.wraps(stream)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> AsyncGenerator[str, None]:
+        lookups = begin_turn()
+        try:
+            async with contextlib.aclosing(stream(*args, **kwargs)) as chunks:
+                async for chunk in chunks:
+                    yield chunk
+        finally:
+            await end_turn(lookups)
+
+    return wrapper

@@ -97,6 +97,7 @@ from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.image_admission import admission_from_state
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
+from app.utils.turn_memo import per_turn_lookups
 from app.web.config import resolve_web_search
 
 if TYPE_CHECKING:
@@ -346,6 +347,7 @@ async def _run_no_tools_degradation(
         yield create_sse_event("error", {"error": f"Stream error: {exc}"})
 
 
+@per_turn_lookups  # knowledge-hub access is asked about by several stages of a turn
 async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's call-site symmetry
     query_info: dict[str, Any],
     user_info: dict[str, Any],
@@ -384,10 +386,6 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     from app.utils.execute_query import connector_instances_have_sql, sql_connector_instance_ids
     from app.utils.fetch_slack_thread import connector_instances_have_slack
 
-    from app.utils.turn_memo import begin_turn, end_turn
-
-    # Per-turn memo for lookups several stages repeat (knowledge-hub access).
-    turn_lookups = begin_turn()
     policy = policy or resolve_chat_mode_policy(query_info.get("chatMode"))
     system_prompts_config = system_prompts_config or {}
 
@@ -778,7 +776,6 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         if heartbeat:
             tasks.append(heartbeat)
         await asyncio.gather(*tasks, return_exceptions=True)
-        await end_turn(turn_lookups)
 
 
 __all__ = ["run_chat_stream"]
