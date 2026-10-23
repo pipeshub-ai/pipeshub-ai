@@ -286,7 +286,8 @@ class TestAzureFilesPP341:
         # No account key in a SAS string: the download streams through the SDK.
         assert _download(pipeshub_client, record.id) == b"read through a SAS"
 
-        with pytest.raises(PipeshubClientError, match="Connection test failed"):
+        # The refusal names what the credential lacks.
+        with pytest.raises(PipeshubClientError, match="needs the Read permission"):
             make_connector([share], connection_string=_sas_connection_string("l"))
 
     async def test_tc_folder_rename(self, scratch, azure_files_storage, pipeshub_client, graph_provider) -> None:

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
@@ -30,8 +31,8 @@ def _ok(data: object) -> AzureFilesResponse:
     return AzureFilesResponse(success=True, data=data)
 
 
-def _err(error: str) -> AzureFilesResponse:
-    return AzureFilesResponse(success=False, error=error)
+def _err(error: str, code: str | None = None) -> AzureFilesResponse:
+    return AzureFilesResponse(success=False, error=error, error_code=code)
 
 
 class FakeDataSource:
@@ -58,7 +59,7 @@ class FakeDataSource:
 
     async def list_shares(self, **kwargs: object) -> AzureFilesResponse:
         if self.fail_list_shares:
-            return _err("Azure Files API error: AuthenticationFailed")
+            return _err("Azure Files API error: AuthenticationFailed", "AuthenticationFailed")
         return _ok([{"name": s, "last_modified": LIST_TIME} for s in self.shares])
 
     async def list_directories_and_files(
@@ -66,10 +67,12 @@ class FakeDataSource:
     ) -> AzureFilesResponse:
         self.listed.append((share_name, directory_path))
         if (share_name, directory_path) in self.fail_dirs:
-            return _err("Azure Files API error: ServerBusy")
+            return _err("Azure Files API error: ServerBusy", "ServerBusy")
         tree = self.shares.get(share_name)
-        if tree is None or (directory_path and directory_path not in tree):
-            return _err(f"Directory not found: {share_name}/{directory_path}")
+        if tree is None:
+            return _err(f"Directory not found: {share_name}/{directory_path}", "ShareNotFound")
+        if directory_path and directory_path not in tree:
+            return _err(f"Directory not found: {share_name}/{directory_path}", "ResourceNotFound")
         items = []
         for path, item in tree.items():
             parent = path.rsplit("/", 1)[0] if "/" in path else ""
@@ -79,13 +82,13 @@ class FakeDataSource:
 
     async def get_share_properties(self, share_name: str) -> AzureFilesResponse:
         if share_name not in self.shares:
-            return _err(f"Share not found: {share_name}")
+            return _err(f"Share not found: {share_name}", "ShareNotFound")
         return _ok({"name": share_name})
 
     async def get_file_properties(self, share_name: str, file_path: str) -> AzureFilesResponse:
         item = self.shares.get(share_name, {}).get(file_path)
         if not item:
-            return _err(f"File not found: {share_name}/{file_path}")
+            return _err(f"File not found: {share_name}/{file_path}", "ResourceNotFound")
         # The SDK parses the properties headers into naive datetimes.
         naive = item["last_write_time"].replace(tzinfo=None)
         return _ok({**item, "last_modified": naive, "last_write_time": naive, "creation_time": naive})
@@ -547,10 +550,12 @@ class TestO6O7Failures:
         ds.add("s", "a.txt")
         ds.fail_list_shares = True
         conn = _connector(ds, FakeProcessor())
-        with pytest.raises(ConnectionError, match="Failed to list shares"):
+        # The fake refuses with AuthenticationFailed: the owner is told to fix the credentials.
+        with pytest.raises(ConnectionError, match="Listing file shares was refused"):
             await _sync(conn)
         conn.notify.assert_awaited()
         assert conn.display_name in conn.notify.await_args.kwargs["message"]
+        assert "Credentials rejected" in conn.notify.await_args.kwargs["title"]
 
     async def test_every_share_failing_raises(self) -> None:
         ds = FakeDataSource({})
@@ -771,20 +776,22 @@ class TestO2ConnectionTest:
     async def test_list_only_sas_fails_on_read(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
-        ds.get_file_properties = AsyncMock(return_value=_err("AuthorizationPermissionMismatch"))
+        ds.get_file_properties = AsyncMock(return_value=_err("AuthorizationPermissionMismatch", "AuthorizationPermissionMismatch"))
         conn = _connector(ds, FakeProcessor())
         conn.sync_filters = FilterCollection()
-        assert await conn.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match="needs the Read permission"):
+            await conn.test_connection_and_access()
         ds.get_file_properties.assert_awaited_once_with("s", "a.txt")
 
     async def test_read_is_checked_on_a_folder_when_the_root_has_no_file(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "d", is_dir=True)
         ds.add("s", "d/a.txt")
-        ds.get_directory_properties = AsyncMock(return_value=_err("AuthorizationPermissionMismatch"))
+        ds.get_directory_properties = AsyncMock(return_value=_err("AuthorizationPermissionMismatch", "AuthorizationPermissionMismatch"))
         conn = _connector(ds, FakeProcessor())
         conn.sync_filters = _filters(["s"])
-        assert await conn.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match="needs the Read permission"):
+            await conn.test_connection_and_access()
         ds.get_directory_properties.assert_awaited_once_with("s", "d")
 
     async def test_directory_listing_refused_fails(self) -> None:
@@ -793,7 +800,8 @@ class TestO2ConnectionTest:
         ds.fail_dirs.add(("s", ""))
         conn = _connector(ds, FakeProcessor())
         conn.sync_filters = FilterCollection()
-        assert await conn.test_connection_and_access() is False
+        with pytest.raises(ConnectorInitError, match="needs the List permission"):
+            await conn.test_connection_and_access()
 
     async def test_share_sas_needs_no_list_shares(self) -> None:
         ds = FakeDataSource({})

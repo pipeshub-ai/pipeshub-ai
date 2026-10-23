@@ -55,6 +55,8 @@ class AzureFilesResponse:
     data: Optional[Any] = None
     error: Optional[str] = None
     message: Optional[str] = None
+    # Azure's x-ms-error-code (e.g. ShareNotFound), so callers can tell "gone" from any other failure.
+    error_code: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
