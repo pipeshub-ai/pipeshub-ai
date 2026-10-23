@@ -39,10 +39,10 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import (
     AccessRule,
-    ProgressStatus,
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
