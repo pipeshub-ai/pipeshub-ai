@@ -2833,6 +2833,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [(str(row["key"]), [str(k) for k in row["records"]]) for row in rows]
 
     @override
+    async def get_record_content_revs(self, record_ids: list[str]) -> dict[str, str]:
+        keys = [rid for rid in dict.fromkeys(record_ids) if rid]
+        if not keys:
+            return {}
+        if self.http_client is None:
+            raise RuntimeError("ArangoDB client is not connected")
+        rows = await self.http_client.execute_aql(
+            """
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys AND doc.contentRev != null
+                RETURN {key: doc._key, rev: doc.contentRev}
+            """,
+            {"@collection": CollectionNames.RECORDS.value, "keys": keys},
+        )
+        return {str(row["key"]): str(row["rev"]) for row in rows}
+
+    @override
     async def compare_and_set_record_fields(
         self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
     ) -> list[str]:

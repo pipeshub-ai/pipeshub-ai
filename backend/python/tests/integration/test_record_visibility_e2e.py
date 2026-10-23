@@ -665,6 +665,16 @@ async def test_records_selected_by_their_stage_state(world: _World) -> None:
     finally:
         await g.stage_states_delete_for_virtual_records(vrids)
 
+async def test_record_content_revisions(world: _World) -> None:
+    """A classify retry binds each selected record to its revision; one with none is left out."""
+    g = world.graph
+    await g.update_node(world.ids["live"], CollectionNames.RECORDS.value, {"contentRev": "rev-7"})
+    await g.update_node(world.ids["live_failed"], CollectionNames.RECORDS.value, {"contentRev": None})
+    got = await g.get_record_content_revs([world.ids["live"], world.ids["live"], world.ids["live_failed"], "no-such-id"])
+    assert got == {world.ids["live"]: "rev-7"}
+    assert await g.get_record_content_revs([]) == {}
+
+
 async def test_failed_records(world: _World) -> None:
     g = world.graph
     assert _ids(await g.get_failed_records_by_org(world.org_id, world.connector_id)) == {world.ids["live_failed"]}

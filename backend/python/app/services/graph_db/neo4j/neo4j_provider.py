@@ -15501,6 +15501,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [(str(row["key"]), [str(k) for k in row["records"]]) for row in rows]
 
     @override
+    async def get_record_content_revs(self, record_ids: list[str]) -> dict[str, str]:
+        keys = [rid for rid in dict.fromkeys(record_ids) if rid]
+        if not keys:
+            return {}
+        label = collection_to_label(CollectionNames.RECORDS.value)
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (r:{label}) WHERE r.id IN $keys AND r.contentRev IS NOT NULL
+            RETURN r.id AS key, r.contentRev AS rev
+            """,
+            {"keys": keys},
+        )
+        return {str(row["key"]): str(row["rev"]) for row in rows}
+
+    @override
     async def compare_and_set_record_fields(
         self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
     ) -> list[str]:

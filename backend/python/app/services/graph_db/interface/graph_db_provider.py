@@ -2424,6 +2424,11 @@ class IGraphDBProvider(ABC):
         """
 
     @abstractmethod
+    async def get_record_content_revs(self, record_ids: list[str]) -> dict[str, str]:
+        """Record id -> its ``contentRev``, for the records that have one. Raises on
+        infrastructure errors."""
+
+    @abstractmethod
     async def compare_and_set_record_fields(
         self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
     ) -> list[str]:

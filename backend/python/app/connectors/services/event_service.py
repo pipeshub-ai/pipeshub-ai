@@ -1425,7 +1425,12 @@ class EventService:
             if stages:
                 # Only the stages re-run: the record stays searchable and its indexing
                 # status is untouched, and the connector is not asked to re-fetch it.
-                await connector.data_entities_processor.reindex_existing_records(records, stages=stages)
+                # Bound to the revision selected now, so a record re-indexed before its event
+                # is handled is left to that revision's stages instead of reindexed again.
+                revisions = await self.graph_provider.get_record_content_revs([r.id for r in records])
+                await connector.data_entities_processor.reindex_existing_records(
+                    records, stages=stages, stage_revisions=revisions
+                )
                 total_processed += len(records)
                 if fetched_count < batch_size:
                     break

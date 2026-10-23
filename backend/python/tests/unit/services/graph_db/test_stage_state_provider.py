@@ -393,3 +393,36 @@ class TestAConnectorsStageStatesGoInBoundedBatches:
         setattr(client, method, AsyncMock(side_effect=RuntimeError("down")))
 
         assert await provider._delete_stage_states_by_connector_id("txn1", "c1") == (0, False)
+
+
+class TestRecordContentRevs:
+    """A classify retry binds each record it selected to the revision it was selected on."""
+
+    @pytest.mark.asyncio
+    async def test_arango_reads_the_revisions_of_the_given_records(self) -> None:
+        provider = _arango([{"key": "r1", "rev": "rev-a"}])
+        assert await provider.get_record_content_revs(["r1", "r2", "r1", ""]) == {"r1": "rev-a"}
+        query = _query(provider.http_client.execute_aql)
+        assert "FILTER doc._key IN @keys AND doc.contentRev != null" in query
+        assert provider.http_client.execute_aql.await_args.args[1] == {"@collection": "records", "keys": ["r1", "r2"]}
+
+    @pytest.mark.asyncio
+    async def test_neo4j_reads_the_revisions_of_the_given_records(self) -> None:
+        provider = _neo4j([{"key": "r1", "rev": "rev-a"}])
+        assert await provider.get_record_content_revs(["r1", "r2"]) == {"r1": "rev-a"}
+        query = _query(provider.client.execute_query)
+        assert "WHERE r.id IN $keys AND r.contentRev IS NOT NULL" in query
+        assert provider.client.execute_query.await_args.kwargs["parameters"] == {"keys": ["r1", "r2"]}
+
+    @pytest.mark.asyncio
+    async def test_no_records_is_no_query(self) -> None:
+        arango, neo4j = _arango(), _neo4j()
+        assert await arango.get_record_content_revs([]) == {} and await neo4j.get_record_content_revs([]) == {}
+        arango.http_client.execute_aql.assert_not_awaited()
+        neo4j.client.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_raises(self) -> None:
+        provider = _arango(side_effect=ConnectionError("graph down"))
+        with pytest.raises(ConnectionError):
+            await provider.get_record_content_revs(["r1"])

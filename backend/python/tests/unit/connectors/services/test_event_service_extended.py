@@ -557,6 +557,8 @@ class TestStageReruns:
         records = [_make_mock_record("r1"), _make_mock_record("r2")]
         service.graph_provider.get_records_by_status = AsyncMock(return_value=records)
         service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+        # r2 has no revision yet (indexed before revisions existed): its event carries none.
+        service.graph_provider.get_record_content_revs = AsyncMock(return_value={"r1": "rev-a"})
 
         await service._run_reindex(
             connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
@@ -566,7 +568,11 @@ class TestStageReruns:
 
         kwargs = service.graph_provider.get_records_by_status.call_args.kwargs
         assert (kwargs["status_field"], kwargs["status_filters"]) == ("extractionStatus", ["FAILED"])
-        connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with(records, stages=["classify"])
+        service.graph_provider.get_record_content_revs.assert_awaited_once_with(["r1", "r2"])
+        # Each record carries the revision it was selected on, so a record re-indexed since is left alone.
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with(
+            records, stages=["classify"], stage_revisions={"r1": "rev-a"}
+        )
         connector.reindex_records.assert_not_awaited()
         service.graph_provider.update_indexing_status_for_record_ids.assert_not_awaited()
 
