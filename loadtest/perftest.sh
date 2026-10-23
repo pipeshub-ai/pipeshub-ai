@@ -382,6 +382,11 @@ if log_available; then
   log_read "$START" "$FINISH" | "$PYTHON" "$HERE/instr/agg_tools.py" --json "$OUTDIR/tools.json" | tee -a "$REPORT"
 fi
 
+# Extra report sections, when present: loadtest/ee/report_*.sh.
+for ext in "$HERE"/ee/report_*.sh; do
+  if [ -f "$ext" ]; then . "$ext"; fi
+done
+
 # Machine-readable, so `aggregate.py` can roll many runs into one table without
 # re-parsing the human report. PIPESHUB_ARM/TRIAL are set by the matrix driver.
 "$PYTHON" "$HERE/instr/make_summary.py" \
