@@ -112,6 +112,38 @@ class TestUnboundHoldsOfOneRecordDoNotOverlap:
         release.set()
         await task
 
+    @pytest.mark.parametrize("wait_s", [0.0, -1.0])
+    @pytest.mark.asyncio
+    async def test_a_free_record_is_held_with_no_wait_left(self, wait_s: float) -> None:
+        """A save whose deadline has run out still takes a free record, as a bound hold does."""
+        leases = RecordLeases()
+        entered = False
+        async with leases.hold("r1", owner="classify", wait_s=wait_s, still_current=AsyncMock(return_value=True)):
+            entered = True
+        assert entered
+
+    @pytest.mark.asyncio
+    async def test_a_held_record_with_no_wait_left_is_busy(self) -> None:
+        leases = RecordLeases()
+        held = asyncio.Event()
+        release = asyncio.Event()
+
+        async def holder() -> None:
+            async with leases.hold("r1", owner="classify", wait_s=5, still_current=AsyncMock(return_value=True)):
+                held.set()
+                await release.wait()
+
+        task = asyncio.create_task(holder())
+        await held.wait()
+        with pytest.raises(RecordBusy):
+            async with leases.hold("r1", owner="entities", wait_s=0, still_current=AsyncMock(return_value=True)):
+                pass
+        release.set()
+        await task
+        # The refused waiter left no trace: the record is free again.
+        async with leases.hold("r1", owner="entities", wait_s=0, still_current=AsyncMock(return_value=True)):
+            pass
+
     @pytest.mark.asyncio
     async def test_other_records_do_not_wait(self) -> None:
         leases = RecordLeases()

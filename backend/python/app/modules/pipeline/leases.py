@@ -144,7 +144,10 @@ class RecordLeases:
         self._local[record_id] = (lock, users + 1)
         try:
             try:
-                await asyncio.wait_for(lock.acquire(), timeout=max(0.0, wait_s))
+                # Not wait_for: it runs the acquire as a task, so a timeout of 0 gives up even
+                # on a free lock. Awaited here, a free lock is taken before the timeout fires.
+                async with asyncio.timeout(max(0.0, wait_s)):
+                    await lock.acquire()
             except TimeoutError:
                 raise RecordBusy(f"record {record_id} stayed busy for {wait_s:.0f}s") from None
             try:
