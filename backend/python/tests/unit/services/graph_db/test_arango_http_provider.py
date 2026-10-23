@@ -7073,6 +7073,12 @@ class TestEnsureIndexesExtended:
 
         assert from_pipeline
         assert from_schema == from_pipeline
+        # The equality alone passes if both paths lose it.
+        assert any(
+            c.args[1] == ["connectorId", "stage", "status", "_key"]
+            and c.kwargs.get("name") == "stage_state_connector_stage_status_key"
+            for c in from_schema
+        )
 
 
 # ---------------------------------------------------------------------------

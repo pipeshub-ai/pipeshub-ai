@@ -1599,7 +1599,7 @@ class TestEnsureIndexes:
         schema step still succeeds without the index; this is the only place it shows."""
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        calls = connected_provider.http_client.ensure_persistent_index.call_args_list
+        calls = connected_provider.http_client.ensure_persistent_index.await_args_list
         assert calls
         for call in calls:
             collection, fields = call.args[:2]
