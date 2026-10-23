@@ -185,23 +185,25 @@ class TestAgentAnswerWithMetadataDict:
         }
         assert d["referenceData"][0]["id"] == "PROJ-1"
 
-    def test_all_answer_match_types_are_defined(self):
-        # Verify all five match types are accepted by the TypedDict annotation
-        valid_types = [
+    # Verify all five match types are accepted by the TypedDict annotation
+    @pytest.mark.parametrize(
+        "match_type",
+        [
             "Exact Match",
             "Derived From Blocks",
             "Derived From User Info",
             "Enhanced With Full Record",
             "Derived From Tool Execution",
-        ]
-        for match_type in valid_types:
-            d: AgentAnswerWithMetadataDict = {
-                "answer": "x",
-                "reason": "",
-                "confidence": "Low",
-                "answerMatchType": match_type,
-            }
-            assert d["answerMatchType"] == match_type
+        ],
+    )
+    def test_all_answer_match_types_are_defined(self, match_type):
+        d: AgentAnswerWithMetadataDict = {
+            "answer": "x",
+            "reason": "",
+            "confidence": "Low",
+            "answerMatchType": match_type,
+        }
+        assert d["answerMatchType"] == match_type
 
     def test_total_false_allows_partial(self):
         # total=False means no keys are required at runtime
