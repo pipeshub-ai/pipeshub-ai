@@ -2093,3 +2093,34 @@ class TestAuditLogKeepsStubsAsStubs:
 
         assert db.records["10"].is_placeholder is True
         assert db.records["10"].access_rule == AccessRule.RESTRICTED, "its access is still updated"
+
+
+class TestFullListingMisses:
+    """A full listing that misses a stored current page reads it again by id, so a full sync keeps it."""
+
+    async def test_a_page_the_full_listing_missed_is_read_again_by_id(self, api, db, checkpoints, search) -> None:
+        helper = TestContentGoneFromSource()
+        connector = await helper._two_pages_synced(api, db, checkpoints, search)
+        helper._refilter(connector, checkpoints, search)
+        search.indexed = {"11": v1_page("11", version=2, attachments=[SPEC])}
+        writes_before = len(db.record_batches)
+
+        await connector._sync_spaces_content([ENG])
+
+        rewritten = {r.external_record_id for batch in db.record_batches[writes_before:] for r in batch}
+        assert {"10", "11"} <= rewritten, "the missed page is written again, so the full sync sees it"
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_missed_page_that_cannot_be_read_again_is_kept_and_reported(
+        self, api, db, checkpoints, search
+    ) -> None:
+        helper = TestContentGoneFromSource()
+        connector = await helper._two_pages_synced(api, db, checkpoints, search)
+        helper._refilter(connector, checkpoints, search)
+        search.indexed = {}
+
+        await connector._sync_spaces_content([ENG])
+
+        assert "11" in db.records
+        assert connector.full_sync_coverage().complete is False, "the full sync must not unlink it"
+        assert any("could not be read in this sync" in p for p in connector._sync_problems)

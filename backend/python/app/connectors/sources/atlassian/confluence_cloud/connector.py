@@ -2498,6 +2498,15 @@ class ConfluenceConnector(BaseConnector):
                 f"in space {space.short_name}"
             )
         filters = self._content_filter_kwargs(record_type)
+        if listing.full and listing.complete and not filters and not listing.resumed:
+            # Without filters a full listing should have seen every current item; one it missed
+            # (a search index behind the database) is read again, or the full sync would unlink it.
+            missed = [
+                r.external_record_id for r in stored
+                if existing.get(r.external_record_id) == "current" and r.external_record_id not in listing.seen
+            ]
+            if missed and not await self._read_missed_again(space, record_type, missed):
+                settled = False
         if listing.full and listing.complete and filters:
             missed = [
                 r.external_record_id for r in stored
@@ -2511,7 +2520,7 @@ class ConfluenceConnector(BaseConnector):
                     settled = False
                 else:
                     excluded, unexplained = verdict
-                    if unexplained:
+                    if unexplained and not await self._read_missed_again(space, record_type, sorted(unexplained)):
                         self.logger.warning(
                             f"{len(unexplained)} {record_type.value} records in space {space.short_name} were missed by "
                             "the listing but the search can't say why; keeping them and the full sync owed"
@@ -2527,6 +2536,29 @@ class ConfluenceConnector(BaseConnector):
         if doomed:
             settled = await self._delete_content_records(doomed) and settled
         return settled
+
+    async def _read_missed_again(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
+        """Read again, by id, stored items a full listing missed; True if every one was read.
+
+        One that still can't be read is kept as stored, and the sync reports a partial read so
+        the full sync does not unlink it.
+        """
+        seen: set[str] = set()
+        complete = True
+        for start in range(0, len(ids), ID_SEARCH_CHUNK):
+            result = await self._sync_content(
+                space.short_name, record_type, defer_checkpoint=True, within_ids=ids[start:start + ID_SEARCH_CHUNK],
+            )
+            seen |= result.seen
+            complete = complete and result.complete
+        still_missed = set(ids) - seen
+        if still_missed or not complete:
+            self._note_problem(
+                f"Space {space.short_name}: {len(still_missed) or 'some'} stored {record_type.value} records could not be "
+                "read in this sync; they are kept as they were",
+            )
+            return False
+        return True
 
     async def _sync_listed_but_not_stored(
         self,
