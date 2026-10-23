@@ -723,6 +723,9 @@ async def get_shared_fetcher(*, browser_like: bool = True) -> Crawl4AIFetcher:
     this with a call to release_shared_fetcher() when done.
     """
     global _shared_instance, _ref_count
+    from app.utils.browser_install import ensure_chromium
+
+    await ensure_chromium()
     async with _get_shared_lock():
         created = _shared_instance is None
         if created:
