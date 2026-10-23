@@ -2146,6 +2146,10 @@ class ConfluenceConnector(BaseConnector):
                         children = item_data.get("children", {})
                         attachment_data = children.get("attachment", {})
                         attachments = attachment_data.get("results", [])
+                        # Only a list read in full can say an attachment is gone.
+                        attachments_complete = not attachments and not attachment_data.get("size") and not (
+                            attachment_data.get("_links") or {}
+                        ).get("next")
 
                         if attachments:
                             # v2 list API puts base URL only on response _links, not per attachment
@@ -2158,6 +2162,7 @@ class ConfluenceConnector(BaseConnector):
                                     attachments_v2, v2_base_url, attachments_cut_short = (
                                         await self._list_current_attachments_v2(datasource, item_id, content_type)
                                     )
+                                    attachments_complete = bool(attachments_v2) and not attachments_cut_short
                                     if attachments_v2:
                                         attachments = attachments_v2
                                         v2_attachments_base_url = v2_base_url
@@ -2318,6 +2323,11 @@ class ConfluenceConnector(BaseConnector):
                                     self._note_skipped(space_key, "attachments that failed to sync")
                                     listing_complete = False
                                     continue
+
+                        if attachments_complete and existing_record is not None:
+                            await self._remove_attachments_gone(
+                                item_id, {str(a.get("id")) for a in attachments if a.get("id")}, space_key
+                            )
 
                     except Exception as item_error:
                         self.logger.error(f"Failed to process {content_type} {item_data.get('title')}: {item_error}")
@@ -2692,6 +2702,34 @@ class ConfluenceConnector(BaseConnector):
                     return None
                 token = next_token
         return found
+
+    async def _remove_attachments_gone(self, page_id: str, current_ids: set[str], space_key: str) -> None:
+        """Delete a page's stored attachments that its complete attachment list no longer has.
+
+        Removing an attachment leaves the page in place, so nothing else ever removed its record.
+        """
+        try:
+            children = await self.data_entities_processor.get_records_by_parent(
+                connector_id=self.connector_id, parent_external_record_id=page_id
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not read the stored attachments of {page_id}: {e}")
+            self._note_problem(
+                f"Space {space_key}: couldn't check a page for deleted attachments; the next sync tries again",
+                unread=False,
+            )
+            return
+        gone = [
+            c for c in children
+            if c.record_type == RecordType.FILE and not _is_folder(c) and str(c.external_record_id) not in current_ids
+        ]
+        if not gone:
+            return
+        self.logger.info(f"Removing {len(gone)} attachments page {page_id} no longer has")
+        if not await self._delete_content_records(gone):
+            self._note_problem(
+                f"Space {space_key}: couldn't remove some deleted attachments; the next sync tries again", unread=False
+            )
 
     async def _delete_content_records(self, records: list[Record]) -> bool:
         """Delete pages or blog posts with their file attachments and comments; True if every delete succeeded.

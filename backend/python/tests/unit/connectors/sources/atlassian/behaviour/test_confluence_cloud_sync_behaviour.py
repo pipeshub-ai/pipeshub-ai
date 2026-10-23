@@ -2004,3 +2004,49 @@ class TestListingsThatDoNotEnd:
         connector, _ = await ready_connector(db, checkpoints)
 
         assert await connector._fetch_space_permissions("1", "Engineering") is None
+
+
+class TestAttachmentsGoneFromAPage:
+    def _page_with(self, api: AtlassianApiStub, search: ContentSearch, *ids: str, version: int = 1) -> None:
+        atts = [{"id": i, "title": f"{i}.pdf", "mediaType": "application/pdf", "fileSize": 10,
+                 "version": {"number": 1}, "_links": {"download": f"/download/attachments/10/{i}.pdf"}} for i in ids]
+        search.by_cursor = {None: search_page([v1_page("10", version=version, attachments=atts)])}
+        api.on("GET", f"{V2}/pages/10/attachments", {"results": atts, "_links": {"base": WIKI}})
+        api.on("GET", f"{V2}/pages/10", {"id": "10", "body": {"atlas_doc_format": {"value": '{"type":"doc","content":[]}'}}})
+
+    async def test_an_attachment_removed_from_a_page_is_removed(self, api, db, checkpoints, search) -> None:
+        self._page_with(api, search, "att1", "att2")
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert {"att1", "att2"} <= set(db.records)
+
+        self._page_with(api, search, "att1", version=2)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att1" in db.records and "att2" not in db.records
+
+    async def test_the_last_attachment_removed_is_removed_too(self, api, db, checkpoints, search) -> None:
+        self._page_with(api, search, "att1")
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        self._page_with(api, search, version=2)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert "att1" not in db.records and "10" in db.records
+
+    async def test_an_attachment_list_read_in_part_removes_nothing(self, api, db, checkpoints, search) -> None:
+        self._page_with(api, search, "att1", "att2")
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        self._page_with(api, search, "att1", version=2)
+        api.on("GET", f"{V2}/pages/10/attachments", [
+            {"results": [{"id": "att1", "title": "att1.pdf", "mediaType": "application/pdf", "fileSize": 10,
+                          "version": {"number": 1}}],
+             "_links": {"base": WIKI, "next": f"{V2}/pages/10/attachments?cursor=A2"}},
+            json_response({"message": "busy"}, status=503),
+        ])
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        assert {"att1", "att2"} <= set(db.records)
