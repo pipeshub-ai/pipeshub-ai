@@ -24,6 +24,7 @@ from google_behaviour_fakes import (
 from googleapiclient.errors import HttpError
 
 from app.config.constants.arangodb import MimeTypes
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.google.common import datasource_refresh
 from app.connectors.sources.google.common.connector_google_exceptions import (
     DriveSyncIncomplete,
@@ -931,7 +932,8 @@ async def test_the_connection_test_fails_once_the_refresh_token_is_revoked(drive
     drive.http._token_owner.pop("access-1")
     drive.http.revoked_refresh_tokens.add("refresh-1")
 
-    assert not await connector.test_connection_and_access()
+    with pytest.raises(ConnectorInitError, match="sign in to Google again"):
+        await connector.test_connection_and_access()
 
 
 async def test_a_revoked_refresh_token_fails_the_run_without_a_checkpoint(drive: Harness) -> None:
