@@ -1,0 +1,77 @@
+import asyncio
+
+import pytest
+
+from app.utils import turn_memo
+
+
+@pytest.mark.asyncio
+async def test_concurrent_callers_in_a_turn_share_one_call() -> None:
+    calls = 0
+
+    async def compute() -> dict:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+        return {"n": calls}
+
+    async def turn() -> list:
+        turn_memo.begin_turn()
+        return await asyncio.gather(*(turn_memo.memo("k", compute) for _ in range(5)))
+
+    results = await asyncio.create_task(turn())
+    assert calls == 1
+    assert all(r == {"n": 1} for r in results)
+
+
+@pytest.mark.asyncio
+async def test_nothing_survives_into_the_next_turn() -> None:
+    calls = 0
+
+    async def compute() -> int:
+        nonlocal calls
+        calls += 1
+        return calls
+
+    async def turn() -> int:
+        turn_memo.begin_turn()
+        return await turn_memo.memo("k", compute)
+
+    assert await asyncio.create_task(turn()) == 1
+    assert await asyncio.create_task(turn()) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_call_is_retried_not_cached() -> None:
+    attempts = 0
+
+    async def compute() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("graph down")
+        return "ok"
+
+    async def turn() -> str:
+        turn_memo.begin_turn()
+        with pytest.raises(RuntimeError):
+            await turn_memo.memo("k", compute)
+        return await turn_memo.memo("k", compute)
+
+    assert await asyncio.create_task(turn()) == "ok"
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_outside_a_turn_every_call_computes() -> None:
+    calls = 0
+
+    async def compute() -> int:
+        nonlocal calls
+        calls += 1
+        return calls
+
+    async def no_turn() -> list:
+        return [await turn_memo.memo("k", compute), await turn_memo.memo("k", compute)]
+
+    assert await asyncio.create_task(no_turn()) == [1, 2]

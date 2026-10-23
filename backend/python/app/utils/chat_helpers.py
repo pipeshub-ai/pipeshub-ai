@@ -258,7 +258,27 @@ def flattened_result_sort_key(result: dict[str, Any]) -> tuple[str, int]:
 
 
 
+# Verdicts by (length, str hash): the same multi-megabyte image strings are
+# checked from several render paths on every turn, and each check strips and
+# regex-scans the whole string. A str caches its own hash, so a repeat costs
+# nothing, and the key holds no reference to the image.
+_base64_image_verdicts: dict[tuple[int, int], bool] = {}
+
+
 def is_base64_image(s: str) -> bool:
+    if not isinstance(s, str):
+        return False
+    key = (len(s), hash(s))
+    verdict = _base64_image_verdicts.get(key)
+    if verdict is None:
+        verdict = _is_base64_image_uncached(s)
+        if len(_base64_image_verdicts) >= 20000:
+            _base64_image_verdicts.clear()
+        _base64_image_verdicts[key] = verdict
+    return verdict
+
+
+def _is_base64_image_uncached(s: str) -> bool:
     """
     Check if a string is a valid base64-encoded image.
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import io
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -23,6 +24,20 @@ from app.utils.image_admission import (
     admission_from_state,
 )
 from app.utils.image_policy import permissive_policy, resolve_image_policy
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@pytest.fixture(autouse=True)
+def _forget_shared_verdicts() -> Iterator[None]:
+    """The normalization verdicts outlive a request by design; a test must not
+    inherit another test's, or the work it spies on is never done."""
+    from app.utils import image_admission
+
+    image_admission._shared_normalized.clear()
+    yield
+    image_admission._shared_normalized.clear()
 
 _PNG_1PX = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"

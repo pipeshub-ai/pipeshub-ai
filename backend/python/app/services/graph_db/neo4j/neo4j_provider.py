@@ -18640,6 +18640,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         transaction: str | None = None,
     ) -> dict[str, Any]:
+        """Memoized for the current chat turn (see `app.utils.turn_memo`); a
+        turn asked for the same answer about six times."""
+        if transaction is not None:
+            return await self._get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
+        from app.utils.turn_memo import memo
+
+        return await memo(
+            ("kh_access_v3", user_key, org_id),
+            lambda: self._get_knowledge_hub_access_v3(user_key, org_id),
+        )
+
+    async def _get_knowledge_hub_access_v3(
+        self,
+        user_key: str,
+        org_id: str,
+        *,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
         """Who this user is, and every node granted to them directly.
 
         Resolved once per request: later queries test ``node.id IN $grantedIds``
