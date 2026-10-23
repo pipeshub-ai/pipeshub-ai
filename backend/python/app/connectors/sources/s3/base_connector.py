@@ -907,22 +907,28 @@ class S3CompatibleBaseConnector(BaseConnector):
         max_timestamp = last_sync_time if last_sync_time else 0
         listed: set[str] = set()
         unjudged = False
+        # A refused position is dropped once; refused again, the listing fails as any other.
+        restarted = False
 
         while has_more:
+            listing = False
             try:
                 async with self._paced():
+                    listing = True
                     response = await self.data_source.list_objects_v2(
                         Bucket=bucket_name,
                         MaxKeys=self.list_page_size,
                         ContinuationToken=continuation_token,
                         Prefix=prefix or None,
                     )
+                    listing = False
 
                     if not response.success:
                         error_msg = response.error or "Unknown error"
                         status = getattr(response, "status_code", None)
                         if (
                             continuation_token
+                            and not restarted
                             and status == HttpStatusCode.BAD_REQUEST.value
                             and error_msg.startswith("InvalidArgument")
                         ):
@@ -943,6 +949,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                             )
                             continuation_token = None
                             resumed = False
+                            restarted = True
                             listing_started_at = get_epoch_timestamp_in_ms()
                             continue
                         # Only this code proves the bucket is gone; access and network errors prove nothing.
@@ -1054,6 +1061,10 @@ class S3CompatibleBaseConnector(BaseConnector):
                         )
 
             except Exception as e:
+                if not listing:
+                    # Our own failure (a graph or sync point write), not the store's: the bucket
+                    # fails, and the run fails once the other buckets are synced.
+                    raise
                 self.logger.error(
                     f"Error during bucket sync for {bucket_name}: {e}", exc_info=True
                 )

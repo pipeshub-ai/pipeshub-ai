@@ -374,6 +374,7 @@ class FakeRecordsDb:
             self._note_seen("records", record.id)
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+        self._check("on_new_record_groups")
         for group, permissions in groups:
             self._note_seen("recordGroups", group.id)
             self.record_groups[group.external_group_id] = group

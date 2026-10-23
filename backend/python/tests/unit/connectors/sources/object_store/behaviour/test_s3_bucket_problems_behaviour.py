@@ -156,6 +156,25 @@ class TestFailedBuckets:
         assert not connector.full_sync_coverage().complete
 
 
+    @pytest.mark.asyncio
+    async def test_a_failed_group_write_fails_the_run_and_is_not_called_a_listing_failure(
+        self, connector, db,
+    ) -> None:
+        """Our own write failing while a bucket is listed: the bucket fails, not "could not be listed"."""
+        connector.data_source.denied.clear()
+        await connector.run_sync()
+        assert BUCKET in db.record_groups
+        db.failing.add("on_new_record_groups")
+        connector.notify.reset_mock()
+
+        with pytest.raises(RuntimeError, match="sync failed"):
+            await connector.run_sync()
+
+        assert [n["title"].split(": ", 1)[1] for n in notices(connector)] == ["Some buckets failed to sync"]
+        assert not connector.full_sync_coverage().complete
+        assert BUCKET in db.record_groups
+
+
 class TestVersion:
     @pytest.mark.asyncio
     async def test_records_are_sent_at_version_zero_for_the_processor_to_number(
@@ -278,3 +297,37 @@ class TestStaleListingPosition:
         assert f"{BUCKET}/a.txt" not in db.paths()
         assert all(p.get("continuation_token") is None for p in checkpoints.sync_points.values())
         assert [n["title"].split(": ", 1)[1] for n in notices(connector)] == ["Bucket listed again from the start"]
+
+
+    @pytest.mark.asyncio
+    async def test_a_position_refused_again_after_the_restart_is_a_listing_failure(
+        self, connector, store, db, checkpoints,
+    ) -> None:
+        """One restart per listing: a store that refuses every token must not be re-listed for ever."""
+        connector.data_source.denied.clear()
+        for key in ("a.txt", "b.txt", "c.txt"):
+            store.put(key)
+        await connector.run_sync()
+        for key, point in checkpoints.sync_points.items():
+            if key.endswith(f"/{BUCKET}"):
+                point["continuation_token"] = "stale"
+        listing = connector.data_source.list_objects_v2
+        calls = []
+
+        async def refuses_every_token(**kwargs: object) -> Response:
+            calls.append(kwargs.get("ContinuationToken"))
+            if kwargs.get("Bucket") == BUCKET and kwargs.get("ContinuationToken"):
+                return Response(False, error="InvalidArgument: The continuation token provided is incorrect", status_code=400)
+            return await listing(**kwargs)
+
+        connector.data_source.list_objects_v2 = refuses_every_token
+        connector.notify.reset_mock()
+
+        await connector.run_sync()
+
+        assert [n["title"].split(": ", 1)[1] for n in notices(connector)] == [
+            "Bucket listed again from the start", "Some buckets could not be listed",
+        ]
+        assert len(calls) < 10
+        # Not listed to the end, so nothing is removed and the cleanup waits.
+        assert db.deleted == [] and not connector.full_sync_coverage().complete
