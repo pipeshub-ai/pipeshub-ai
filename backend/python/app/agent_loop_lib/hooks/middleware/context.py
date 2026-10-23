@@ -36,6 +36,7 @@ from app.agent_loop_lib.tools.base import Tag, ToolOutput
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.context.base import ContextBudget
+    from app.agent_loop_lib.context.protection import CurrentRequest
     from app.agent_loop_lib.core.scope import RunScope, ToolScope, TurnScope
     from app.agent_loop_lib.core.types import (
         AgentResult,
@@ -257,6 +258,15 @@ class ModelCallContext:
     # construction (see tests/hooks/_helpers.py) stays valid untouched.
     turn_index: int = 0
     max_turns: int | None = None
+    # The current request as it stood before any shaper ran, captured once
+    # from the unshaped messages. The final invariant guard checks the
+    # shaped list against it.
+    request: "CurrentRequest | None" = field(init=False)
+
+    def __post_init__(self) -> None:
+        from app.agent_loop_lib.context.protection import current_request
+
+        self.request = current_request(self.messages)
 
 
 @dataclass

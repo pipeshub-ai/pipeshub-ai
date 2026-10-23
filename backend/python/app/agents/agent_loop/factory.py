@@ -60,9 +60,6 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.events.base import CompositeEmitter
 from app.agent_loop_lib.hooks.events import HookEvent
-from app.agent_loop_lib.hooks.middleware.builtin._message_boundaries import (
-    shape_tool_pairing_repair,
-)
 from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import (
     shape_artifact_compaction,
 )
@@ -75,6 +72,9 @@ from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import (
 )
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     shape_budget_reduction,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.context_invariants import (
+    shape_context_invariants,
 )
 from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import (
     shape_deterministic_compact,
@@ -1082,17 +1082,19 @@ class PipesHubAgentFactory:
                 )
             )
 
-        # --- PRE_MODEL context-shaping pipeline (cheapest-first, L0→L9) ---
+        # --- PRE_MODEL context-shaping pipeline (least lossy first) ---
         # Same ordering ControlPlane.start() uses for its context_engine.
-        # L0 injects image attachments into the initial UserMessage (no-op
+        # L0 puts image attachments on a copy of the current request (no-op
         # when context.attachment_image_blocks is empty — deferred check).
-        # L1–L6 are pure-Python (no LLM call). L7a/L7b are LLM-backed
+        # L1–L4 and L6 are pure-Python (no LLM call). L7a/L7b are LLM-backed
         # auto-compact — two phases so old conversation history is
-        # summarized first (gentle, keep 12) and old turns second
-        # (aggressive, keep 6) only when the gentle pass wasn't enough.
-        # L9 is the safety-net: validates tool_call/tool_result pairing
-        # after all shapers ran — catches any orphans from shaper
-        # interactions or future shapers that don't use safe_tail_boundary.
+        # summarized first (gentle) and old turns second (aggressive) only
+        # when the gentle pass wasn't enough. L5 eviction runs after them,
+        # so it drops only what extraction and summaries could not shrink.
+        # Every compaction layer keeps context/protection.py's protected
+        # messages (the current request, pinned messages) verbatim.
+        # L9 checks the result: tool pairing, the current request, and the
+        # model window (raises ContextBudgetExceeded past it).
         hooks.on(HookEvent.PRE_MODEL).use(shape_image_injection(context))     # L0
         if not supports_multipart_tool_result:
             # Providers that reject images inside a tool result (Ollama,
@@ -1129,7 +1131,6 @@ class PipesHubAgentFactory:
             }) | _CODE_TRAVERSAL_TOOLS,
         ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_loop_compaction())            # L4
-        hooks.on(HookEvent.PRE_MODEL).use(shape_sliding_window())             # L5
         hooks.on(HookEvent.PRE_MODEL).use(shape_deterministic_compact())      # L6
 
         if transport_registry is not None:
@@ -1145,8 +1146,9 @@ class PipesHubAgentFactory:
                 max_tail_ratio=_AUTO_COMPACT_PHASE2_TAIL_RATIO,
             ))
 
+        hooks.on(HookEvent.PRE_MODEL).use(shape_sliding_window())             # L5
         hooks.on(HookEvent.PRE_MODEL).use(shape_synthesis_guard())            # L8
-        hooks.on(HookEvent.PRE_MODEL).use(shape_tool_pairing_repair())       # L9
+        hooks.on(HookEvent.PRE_MODEL).use(shape_context_invariants())         # L9
 
         # LLM transport retry (429/5xx/network) with SSE "retrying..." status
         # feedback — see retry_with_status.py's docstring for why this lives

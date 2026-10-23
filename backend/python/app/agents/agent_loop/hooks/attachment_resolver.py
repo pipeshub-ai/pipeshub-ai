@@ -23,11 +23,11 @@ Three public entry points:
     without the model having to re-upload the file.
 
 ``shape_image_injection``
-    PRE_MODEL hook that injects ``ImagePart`` objects into the initial
-    ``UserMessage`` when the LLM supports vision.  Converts the
-    ``image_url`` dicts stored on ``context.attachment_image_blocks`` into
-    ``ImagePart`` instances on every model call — the stored context keeps
-    the lightweight text version; the model always sees the image data.
+    PRE_MODEL hook that puts ``ImagePart`` objects on the current request
+    when the LLM supports vision.  Converts the ``image_url`` dicts stored on
+    ``context.attachment_image_blocks`` into ``ImagePart`` instances on every
+    model call, on a copy of the message — the stored context keeps the
+    lightweight text version; the model always sees the image data.
 """
 
 from __future__ import annotations
@@ -598,15 +598,16 @@ def _langchain_image_to_part(block: dict[str, Any]) -> Any:
 
 
 def shape_image_injection(context: "AgentContext") -> "Middleware[Any]":
-    """PRE_MODEL hook: injects image attachment content into the initial
-    ``UserMessage`` so the LLM receives actual image data instead of a
-    text placeholder.
+    """PRE_MODEL hook: puts the current turn's image attachments on the
+    current request so the LLM receives the image data, not a placeholder.
 
     Converts LangChain ``image_url`` dicts (stored on
     ``context.attachment_image_blocks`` by the factory after this hook is
-    registered) into ``ImagePart`` objects and appends them to the first
-    ``UserMessage``'s content on every model call.  The stored context
-    keeps the lightweight text version; the model always sees the image.
+    registered) into ``ImagePart`` objects on every model call. The images
+    go on a copy of the current request (``context/protection.py``), never on
+    the stored message: in a chat the first user message is an earlier
+    question, and writing to a stored message would carry the images into
+    every later call and turn.
 
     The check is deferred to dispatch time (not registration time) because
     ``_build_hooks`` runs before ``resolve_attachments_for_goal`` populates
@@ -620,16 +621,8 @@ def shape_image_injection(context: "AgentContext") -> "Middleware[Any]":
             parts = [_langchain_image_to_part(b) for b in context.attachment_image_blocks]
             _cached_parts.extend(p for p in parts if p is not None)
 
-        if not _cached_parts:
-            await next_fn()
-            return
-
-        from app.agent_loop_lib.core.messages import (
-            TextPart,
-            UserMessage,
-        )
-
-        _inject_into_first_user_message(ctx.messages, _cached_parts, TextPart, UserMessage)
+        if _cached_parts:
+            ctx.messages = _with_images_on_current_request(ctx.messages, _cached_parts)
         await next_fn()
 
     return _middleware
@@ -649,42 +642,34 @@ def _image_identity(part: Any) -> str | None:
         return getattr(source, "data", None)
 
 
-def _inject_into_first_user_message(
-    messages: list[Any], parts: list[Any], text_part_cls: Any, user_message_cls: Any,
-) -> None:
-    """Append `parts` (`ImagePart`s) to the first `UserMessage` in
-    `messages`, converting plain-string content to multipart first. Shared
-    by `shape_image_injection` (attachment images) and
-    `shape_retrieved_image_injection` (tool-sourced images, Ollama
-    fallback) — same target message, same multipart-conversion rule.
-    """
-    for msg in messages:
-        if not isinstance(msg, user_message_cls):
-            continue
-        content = msg.content
-        if isinstance(content, str):
-            msg.content = [text_part_cls(text=content), *parts]
-        elif isinstance(content, list):
-            # Dedup per image, not by "any image present" — the latter
-            # would drop a whole batch of newly-popped
-            # `pending_tool_images` (each batch is popped exactly once,
-            # see `shape_retrieved_image_injection`, so a dropped batch is
-            # gone for good) whenever the message already carried an
-            # unrelated image, e.g. an attachment injected by
-            # `shape_image_injection` or an earlier retrieved-image batch.
-            #
-            # Key on the normalised data URL rather than `source.data`: the
-            # same image can arrive as a base64 source or a url source
-            # depending on which producer built the part, and those two
-            # carry different `data` strings for identical bytes.
-            existing_sources = {
-                _image_identity(p) for p in content
-                if getattr(p, "type", None) == "image"
-            }
-            new_parts = [p for p in parts if _image_identity(p) not in existing_sources]
-            if new_parts:
-                msg.content = [*content, *new_parts]
-        break
+def _with_images_on_current_request(messages: list[Any], parts: list[Any]) -> list[Any]:
+    """A copy of `messages` whose current request carries `parts`
+    (`ImagePart`s), converting plain-string content to multipart first.
+    Images the request already carries are not added twice. The message
+    objects in `messages` are never modified."""
+    from app.agent_loop_lib.context.protection import current_request_index
+    from app.agent_loop_lib.core.messages import TextPart
+
+    index = current_request_index(messages)
+    if index is None:
+        return messages
+    request = messages[index]
+    content = request.content
+    if isinstance(content, str):
+        new_content = [TextPart(text=content), *parts]
+    else:
+        # Key on the normalised data URL rather than `source.data`: the same
+        # image can arrive as a base64 source or a url source depending on
+        # which producer built the part, and those two carry different
+        # `data` strings for identical bytes.
+        existing = {_image_identity(p) for p in content if getattr(p, "type", None) == "image"}
+        new_parts = [p for p in parts if _image_identity(p) not in existing]
+        if not new_parts:
+            return messages
+        new_content = [*content, *new_parts]
+    shaped = list(messages)
+    shaped[index] = request.model_copy(update={"content": new_content})
+    return shaped
 
 
 def shape_retrieved_image_injection(context: "AgentContext") -> "Middleware[Any]":
@@ -700,30 +685,19 @@ def shape_retrieved_image_injection(context: "AgentContext") -> "Middleware[Any]
 
     Pops (not peeks) `context.tool_state["pending_tool_images"]` on every
     dispatch — `retrieval.py`/`citations.py` repopulate it fresh on each
-    tool call within the turn, so each batch of tool-sourced images is
-    delivered exactly once, on the very next model call after the tool
-    call that produced them.
+    tool call within the turn — and puts the batch on a copy of the current
+    request, so each batch is delivered exactly once, on the very next model
+    call after the tool call that produced it.
     """
 
     async def _middleware(ctx: Any, next_fn: "Next") -> None:
         pending = context.tool_state.pop("pending_tool_images", [])
-        if not pending:
-            await next_fn()
-            return
+        if pending:
+            from app.utils.chat_helpers import image_dict_to_part
 
-        from app.utils.chat_helpers import image_dict_to_part
-
-        image_parts = [p for img in pending if (p := image_dict_to_part(img)) is not None]
-        if not image_parts:
-            await next_fn()
-            return
-
-        from app.agent_loop_lib.core.messages import (
-            TextPart,
-            UserMessage,
-        )
-
-        _inject_into_first_user_message(ctx.messages, image_parts, TextPart, UserMessage)
+            image_parts = [p for img in pending if (p := image_dict_to_part(img)) is not None]
+            if image_parts:
+                ctx.messages = _with_images_on_current_request(ctx.messages, image_parts)
         await next_fn()
 
     return _middleware

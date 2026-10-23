@@ -19,6 +19,7 @@ from app.agent_loop_lib.agent.tool_loop import (
     tool_schemas_for_turn,
 )
 from app.agent_loop_lib.context.base import ContextBudget
+from app.agent_loop_lib.context.errors import ContextError
 from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.exceptions import AgentError, HookBlocked, RunCancelled, TransportError
 from app.agent_loop_lib.core.tokens import count_schema_tokens, count_text_tokens
@@ -737,9 +738,24 @@ class Agent:
             spec.model.model, context_window=spec.model.context_window,
             reserved_prompt_tokens=count_text_tokens(system_prompt or "") + count_schema_tokens(tool_schemas),
         )
-        messages = await hooks.dispatch_pre_model(
-            self._hooks, messages, budget, turn_index=turn_index, max_turns=spec.max_turns, scope=turn_scope,
-        )
+        try:
+            messages = await hooks.dispatch_pre_model(
+                self._hooks, messages, budget, turn_index=turn_index, max_turns=spec.max_turns, scope=turn_scope,
+            )
+        except ContextError as e:
+            # The shaped request would be rejected by the provider (or lose the
+            # question), so this turn makes no model call. On the wrap-up turn
+            # the caller falls back to what the run already has.
+            if final_answer_only:
+                await obs.append_timeline(
+                    self, "final_answer_turn_failed", f"Context could not be shaped: {e}",
+                    "calling_llm", {"turn_index": turn_index, "error": str(e)},
+                )
+                return StepOutcome("continue")
+            return StepOutcome("stop", result=await self.fail(
+                goal, f"Context could not be shaped: {e}", event="context_budget_exceeded",
+                summary=f"Context could not be shaped: {e}",
+            ))
         if final_answer_only:
             carried_before = len(messages)
             if add_loop_note(messages, _FINAL_ANSWER_NOTE) != "step_footer":

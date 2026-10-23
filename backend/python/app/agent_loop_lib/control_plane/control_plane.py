@@ -515,6 +515,9 @@ class ControlPlane:
                     InMemoryArtifactStore,
                     shape_artifact_registration,
                 )
+                from app.agent_loop_lib.hooks.middleware.builtin.context_invariants import (
+                    shape_context_invariants,
+                )
                 from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import (
                     shape_deterministic_compact,
                 )
@@ -585,8 +588,6 @@ class ControlPlane:
                         threshold_tokens=ce.offload_threshold_tokens,
                         preview_lines=ce.offload_preview_lines,
                     ))
-                if ce.enable_sliding_window:
-                    kernel.on(HookEvent.PRE_MODEL).use(shape_sliding_window(pin_first_n=ce.sliding_window_pin_first_n))
                 if ce.enable_deterministic_compact:
                     kernel.on(HookEvent.PRE_MODEL).use(shape_deterministic_compact(
                         trigger_ratio=ce.deterministic_compact_trigger_ratio,
@@ -599,10 +600,13 @@ class ControlPlane:
                         trigger_ratio=ce.auto_compact_trigger_ratio,
                         max_tail_ratio=ce.auto_compact_max_tail_ratio,
                     ))
+                if ce.enable_sliding_window:
+                    kernel.on(HookEvent.PRE_MODEL).use(shape_sliding_window())
                 if ce.enable_synthesis_guard:
                     kernel.on(HookEvent.PRE_MODEL).use(shape_synthesis_guard(
                         keep_last_n_tool_results=ce.synthesis_guard_keep_last_n,
                     ))
+                kernel.on(HookEvent.PRE_MODEL).use(shape_context_invariants())
             elif hook_name == "skill_learning":
                 # Deferred: needs the SkillManager + timeline store, both
                 # built below at step 8b/8 — wired onto this same `kernel`
