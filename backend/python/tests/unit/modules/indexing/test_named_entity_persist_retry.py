@@ -80,7 +80,7 @@ async def test_the_stored_extraction_is_written_again_without_a_model_call():
     )
 
 
-async def test_an_unclassified_record_is_still_reprojected_from_its_kept_extraction():
+async def test_an_unclassified_record_is_still_reprojected_from_its_kept_extraction() -> None:
     """The entities stage keeps its extraction outside the stored record, so a record with no
     classification stored must still reach the reprojection."""
     record = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a"}
