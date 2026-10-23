@@ -18,6 +18,10 @@ _TRANSIENT_RETRY = Retry(
     total=3,
     backoff_factor=1.0,
     status_forcelist=(500, 502, 503, 504),
+    # Reads only. urllib3's default also retries PUT and DELETE: a merge (PUT) that
+    # GitHub completed behind a 502 was sent again, failed as "not mergeable", and was
+    # reported to the user as a failed merge.
+    allowed_methods=frozenset({"GET", "HEAD"}),
 )
 
 from app.config.configuration_service import ConfigurationService

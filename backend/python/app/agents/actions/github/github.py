@@ -898,7 +898,7 @@ class GitHub:
             ToolParameter(name="body", type=ParameterType.STRING, description="New body/description (omit to leave unchanged)", required=False),
             ToolParameter(name="state", type=ParameterType.STRING, description="'open' or 'closed' (omit to leave unchanged)", required=False),
             ToolParameter(name="assignees", type=ParameterType.ARRAY, description="Replace assignees with these usernames (omit to leave unchanged)", required=False),
-            ToolParameter(name="labels", type=ParameterType.ARRAY, description="Replace labels with these names (omit to leave unchanged)", required=False),
+            ToolParameter(name="labels", type=ParameterType.ARRAY, description="Replace labels with these names (omit to leave unchanged; pass [] to remove every label)", required=False),
         ],
         tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
         args_summary=args_template("Updating GitHub issue {owner}/{repo}#{number}", "owner", "repo", "number"),
@@ -1252,8 +1252,9 @@ class GitHub:
                 repo=repo,
                 number=number,
                 fetch_full_content=fetch_full_content,
-                max_changes_per_file=max_changes_per_file,
-                max_diff_lines=max_diff_lines,
+                # The model may ask for any size; the defaults are the ceiling.
+                max_changes_per_file=min(max_changes_per_file, 10000),
+                max_diff_lines=min(max_diff_lines, 10000),
                 context_lines=context_lines,
             )
             
@@ -1334,6 +1335,7 @@ class GitHub:
             ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number to merge", required=True),
             ToolParameter(name="commit_message", type=ParameterType.STRING, description="Custom commit message for the merge", required=False),
             ToolParameter(name="merge_method", type=ParameterType.STRING, description="Merge method: 'merge', 'squash', or 'rebase'", required=False),
+            ToolParameter(name="sha", type=ParameterType.STRING, description="Head commit SHA the PR must still be at (from get_pull_request); GitHub refuses the merge if the PR changed since", required=False),
         ],
         tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
         args_summary=args_template("Merging pull request {owner}/{repo}#{number}", "owner", "repo", "number"),
@@ -1348,10 +1350,11 @@ class GitHub:
         number: int,
         commit_message: Optional[str] = None,
         merge_method: str = "merge",
+        sha: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Merge a pull request in a GitHub repository."""
         try:
-            logger.info("github.merge_pull_request called with args: %s", {"owner": owner, "repo": repo, "number": number, "commit_message": commit_message, "merge_method": merge_method})
+            logger.info("github.merge_pull_request called with args: %s", {"owner": owner, "repo": repo, "number": number, "commit_message": commit_message, "merge_method": merge_method, "sha": sha})
             response = await self._call(
                 self.client.merge_pull,
                 owner=owner,
@@ -1359,6 +1362,7 @@ class GitHub:
                 number=number,
                 commit_message=commit_message,
                 merge_method=merge_method,
+                sha=sha,
             )
             return self._handle_response(response, "Pull request merged successfully", "merge the pull request")
         except Exception as e:

@@ -232,6 +232,7 @@ class TestOwnersAndRepositories:
     @pytest.mark.asyncio
     async def test_list_repositories_pages_and_trims_payload(self, github, api) -> None:
         repos = [repo("ann", f"r{i}") for i in range(25)]
+        api.on("GET", r"/user", (200, {"login": "me-user", "url": f"{API}/user"}))
         api.on("GET", r"/users/ann", (200, {"login": "ann", "url": f"{API}/users/ann"}))
         api.on("GET", r"/users/ann/repos", (200, repos))
         data = ok(await github.list_repositories("ann", per_page=10, page=2))
@@ -240,7 +241,17 @@ class TestOwnersAndRepositories:
         assert api.calls("GET", r"/users/ann/repos")[0].query["type"] == ["owner"]
 
     @pytest.mark.asyncio
+    async def test_own_login_lists_private_repositories_too(self, github, api) -> None:
+        """/users/{login}/repos is public-only even for the caller; their own come from /user/repos."""
+        api.on("GET", r"/user", (200, {"login": "Ann", "url": f"{API}/user"}))
+        api.on("GET", r"/user/repos", (200, [repo("ann", "secret")]))
+        data = ok(await github.list_repositories("ann", per_page=10, page=1))
+        assert [r["name"] for r in data["data"]] == ["secret"]
+        assert not api.calls("GET", r"/users/ann/repos")
+
+    @pytest.mark.asyncio
     async def test_list_repositories_clamps_page_size(self, github, api) -> None:
+        api.on("GET", r"/user", (200, {"login": "me-user", "url": f"{API}/user"}))
         api.on("GET", r"/users/ann", (200, {"login": "ann", "url": f"{API}/users/ann"}))
         api.on("GET", r"/users/ann/repos", (200, [repo("ann", f"r{i}") for i in range(80)]))
         assert len(ok(await github.list_repositories("ann", per_page=500, page=0))["data"]) == 50
@@ -718,6 +729,7 @@ class TestPaging:
 
     @pytest.mark.asyncio
     async def test_full_page_of_repositories_points_to_the_next_page(self, github, api) -> None:
+        api.on("GET", r"/user", (200, {"login": "me-user", "url": f"{API}/user"}))
         api.on("GET", r"/users/ann", (200, {"login": "ann", "url": f"{API}/users/ann"}))
         api.on("GET", r"/users/ann/repos", (200, [repo("ann", f"r{i}") for i in range(25)]))
         data = ok(await github.list_repositories("ann", per_page=10, page=1))
@@ -726,6 +738,7 @@ class TestPaging:
 
     @pytest.mark.asyncio
     async def test_short_page_of_repositories_is_the_last(self, github, api) -> None:
+        api.on("GET", r"/user", (200, {"login": "me-user", "url": f"{API}/user"}))
         api.on("GET", r"/users/ann", (200, {"login": "ann", "url": f"{API}/users/ann"}))
         api.on("GET", r"/users/ann/repos", (200, [repo("ann", f"r{i}") for i in range(25)]))
         data = ok(await github.list_repositories("ann", per_page=10, page=3))
