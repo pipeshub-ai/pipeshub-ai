@@ -53,7 +53,7 @@ from app.edition_services import (
     get_data_entities_processor_cls,
     sync_executor_enabled,
 )
-from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField
+from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1483,6 +1483,7 @@ class EventService:
                     break
                 after_key = page[-1][0]
                 keys = list(dict.fromkeys(k for _, record_keys in page for k in record_keys))
+                revisions = {k: stage_state_rev(state) for state, record_keys in page for k in record_keys}
                 typed = (
                     await self.graph_provider.get_typed_records_batch(keys, raise_on_error=True)
                     if keys else {}
@@ -1497,7 +1498,9 @@ class EventService:
                     self.logger.info(
                         f"Re-running {stages} for {len(records)} records ({stage} {status}, after {after_key})"
                     )
-                    await connector.data_entities_processor.reindex_existing_records(records, stages=stages)
+                    await connector.data_entities_processor.reindex_existing_records(
+                        records, stages=stages, stage_revisions=revisions
+                    )
                     total += len(records)
                 if len(page) < batch_size:
                     break

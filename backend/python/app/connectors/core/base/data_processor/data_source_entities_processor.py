@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import contextvars
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Optional
@@ -4088,7 +4088,7 @@ class DataSourceEntitiesProcessor:
 
     @staticmethod
     def _reindex_event_payload(
-        record: Record, *, vector_db_only: bool, stages: list[str] | None = None
+        record: Record, *, vector_db_only: bool, stages: list[str] | None = None, stage_rev: str | None = None
     ) -> dict:
         payload = {**record.to_kafka_record(), "forceReindex": True}
         if record.virtual_record_id:
@@ -4097,11 +4097,18 @@ class DataSourceEntitiesProcessor:
             payload["vectorDbOnly"] = True
         if stages:
             payload["stages"] = list(stages)
+            if stage_rev:
+                payload["stageRev"] = stage_rev
         return payload
 
     @retry_on_deadlock()
     async def reindex_existing_records(
-        self, records: list[Record], *, vector_db_only: bool = False, stages: list[str] | None = None
+        self,
+        records: list[Record],
+        *,
+        vector_db_only: bool = False,
+        stages: list[str] | None = None,
+        stage_revisions: Mapping[str, str] | None = None,
     ) -> list[str]:
         """
         Publish reindex events for existing records without DB operations.
@@ -4114,6 +4121,9 @@ class DataSourceEntitiesProcessor:
                 without re-parsing the source.
             stages: When given, indexing re-runs only these pipeline stages for each
                 record's current revision; the record stays searchable.
+            stage_revisions: Record id -> the revision its stages were selected on. A
+                record that has moved to another revision by the time indexing reads the
+                event is left to that revision's own stages.
 
         Returns:
             The ids whose reindex event reached the broker.
@@ -4164,7 +4174,10 @@ class DataSourceEntitiesProcessor:
                             # already-indexed guard skips it and reindex silently
                             # does nothing for a healthy corpus.
                             "payload": self._reindex_event_payload(
-                                record, vector_db_only=vector_db_only, stages=stages
+                                record,
+                                vector_db_only=vector_db_only,
+                                stages=stages,
+                                stage_rev=(stage_revisions or {}).get(record.id),
                             ),
                         },
                     )

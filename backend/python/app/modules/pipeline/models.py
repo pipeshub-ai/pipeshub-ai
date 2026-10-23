@@ -65,6 +65,11 @@ def stage_state_key(virtual_record_id: str, rev: str, stage: str) -> str:
     return f"{virtual_record_id}:{rev}:{stage}"
 
 
+def stage_state_rev(key: str) -> str:
+    """The revision in a ``stage_state_key``; a revision and a stage name hold no colon."""
+    return key.rsplit(":", 2)[1]
+
+
 class StageJob(BaseModel):
     """One unit of stage work for one content revision; ``job_id`` is its idempotency key."""
 

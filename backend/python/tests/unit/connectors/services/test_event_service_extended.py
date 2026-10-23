@@ -591,7 +591,9 @@ class TestStageReruns:
     async def test_a_stage_without_a_record_field_is_selected_by_its_stage_state(self, service) -> None:
         connector = AsyncMock()
         connector.data_entities_processor.reindex_existing_records = AsyncMock()
-        self._stage_rerun_graph(service, [[("s1", ["r1"]), ("s2", []), ("s3", ["r3", "r1"])]])
+        self._stage_rerun_graph(
+            service, [[("vr1:rev-a:entities", ["r1"]), ("vr2:rev-b:entities", []), ("vr3:rev-c:entities", ["r3"])]]
+        )
 
         await self._rerun_entities(service, connector, ["FAILED"])
 
@@ -602,7 +604,9 @@ class TestStageReruns:
         # A record the indexer is working on is never selected; a failed batch read raises.
         service.graph_provider.get_typed_records_batch.assert_awaited_once_with(["r1", "r3"], raise_on_error=True)
         republished = connector.data_entities_processor.reindex_existing_records.await_args
-        assert [r.id for r in republished.args[0]] == ["r1", "r3"] and republished.kwargs == {"stages": ["entities"]}
+        assert [r.id for r in republished.args[0]] == ["r1", "r3"]
+        # Each record carries the revision it was selected on, so a record re-indexed since is left alone.
+        assert republished.kwargs == {"stages": ["entities"], "stage_revisions": {"r1": "rev-a", "r3": "rev-c"}}
         service.graph_provider.get_records_by_status.assert_not_awaited()
         service.graph_provider.update_indexing_status_for_record_ids.assert_not_awaited()
 
@@ -610,13 +614,13 @@ class TestStageReruns:
     async def test_a_stage_state_selection_pages_on_the_last_state_key(self, service) -> None:
         connector = AsyncMock()
         connector.data_entities_processor.reindex_existing_records = AsyncMock()
-        first = [(f"s{i:03d}", [f"r{i:03d}"]) for i in range(100)]
-        self._stage_rerun_graph(service, [first, [("s100", [])]])
+        first = [(f"vr{i:03d}:rev:entities", [f"r{i:03d}"]) for i in range(100)]
+        self._stage_rerun_graph(service, [first, [("vr100:rev:entities", [])]])
 
         await self._rerun_entities(service, connector, ["FAILED"])
 
         calls = service.graph_provider.get_stage_states_with_records.await_args_list
-        assert [c.kwargs["after_key"] for c in calls] == [None, "s099"]
+        assert [c.kwargs["after_key"] for c in calls] == [None, "vr099:rev:entities"]
         # A page whose states have no qualifying record still advances; nothing is republished for it.
         assert connector.data_entities_processor.reindex_existing_records.await_count == 1
 
@@ -624,7 +628,7 @@ class TestStageReruns:
     async def test_each_status_gets_its_own_pass(self, service) -> None:
         connector = AsyncMock()
         connector.data_entities_processor.reindex_existing_records = AsyncMock()
-        self._stage_rerun_graph(service, [[("s1", ["r1"])], [("s2", ["r2"])]])
+        self._stage_rerun_graph(service, [[("vr1:rev:entities", ["r1"])], [("vr2:rev:entities", ["r2"])]])
 
         await self._rerun_entities(service, connector, ["FAILED", "SKIPPED", "FAILED"])
 
@@ -635,7 +639,7 @@ class TestStageReruns:
     async def test_a_page_whose_records_cannot_be_read_fails_the_run(self, service) -> None:
         connector = AsyncMock()
         connector.data_entities_processor.reindex_existing_records = AsyncMock()
-        self._stage_rerun_graph(service, [[("s1", ["r1"])]])
+        self._stage_rerun_graph(service, [[("vr1:rev:entities", ["r1"])]])
         service.graph_provider.get_typed_records_batch = AsyncMock(side_effect=ConnectionError("graph down"))
 
         with pytest.raises(ConnectionError):
