@@ -5726,6 +5726,23 @@ class TestStageRedrive:
         assert {c[0] for c in gp.mock_calls} == {"get_document"}
 
     @pytest.mark.asyncio
+    async def test_a_retry_selected_before_the_record_had_a_revision_leaves_a_new_one_alone(self) -> None:
+        """Selected with no revision (indexed before revisions existed), consumed after a re-index
+        gave it rev-1: that revision was not selected, so nothing re-runs on it."""
+        handler, gp, ingress = self._handler(None)
+        events = await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(stageRev=None))
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        ingress.redrive.assert_not_awaited()
+        assert {c[0] for c in gp.mock_calls} == {"get_document"}
+
+    @pytest.mark.asyncio
+    async def test_a_retry_selected_with_no_revision_runs_while_the_record_still_has_none(self) -> None:
+        handler, gp, ingress = self._handler(["vr1:?:classify@1"])
+        gp.get_document.return_value.pop("contentRev")
+        await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(stageRev=None))
+        ingress.redrive.assert_awaited_once_with("vr1", None, ["classify"])
+
+    @pytest.mark.asyncio
     async def test_a_retry_for_the_current_revision_re_runs_its_stage(self) -> None:
         handler, gp, ingress = self._handler(["vr1:rev-1:entities@1"])
         await _collect_events(

@@ -1609,7 +1609,8 @@ class RecordEventHandler(BaseEventService):
             if event_type == EventTypes.REINDEX_RECORD.value and isinstance(stages, list) and stages and stage_ingress is not None:
                 stage_redrive = True
                 stage_rev = payload.get("stageRev")
-                if stage_rev and record.get("contentRev") != stage_rev:
+                # A null stageRev is a record selected before it had a revision.
+                if "stageRev" in payload and (record.get("contentRev") or None) != (stage_rev or None):
                     # Selected on a revision the record has left: the new one runs its own
                     # stages, and a full reindex here would start a second pipeline beside it.
                     self.logger.info(

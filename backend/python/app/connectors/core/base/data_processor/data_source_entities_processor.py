@@ -4088,7 +4088,12 @@ class DataSourceEntitiesProcessor:
 
     @staticmethod
     def _reindex_event_payload(
-        record: Record, *, vector_db_only: bool, stages: list[str] | None = None, stage_rev: str | None = None
+        record: Record,
+        *,
+        vector_db_only: bool,
+        stages: list[str] | None = None,
+        stage_rev: str | None = None,
+        selected: bool = False,
     ) -> dict:
         payload = {**record.to_kafka_record(), "forceReindex": True}
         if record.virtual_record_id:
@@ -4097,8 +4102,9 @@ class DataSourceEntitiesProcessor:
             payload["vectorDbOnly"] = True
         if stages:
             payload["stages"] = list(stages)
-            if stage_rev:
-                payload["stageRev"] = stage_rev
+            if selected:
+                # Null for a record selected with no revision: it has moved on once it has one.
+                payload["stageRev"] = stage_rev or None
         return payload
 
     @retry_on_deadlock()
@@ -4108,7 +4114,7 @@ class DataSourceEntitiesProcessor:
         *,
         vector_db_only: bool = False,
         stages: list[str] | None = None,
-        stage_revisions: Mapping[str, str] | None = None,
+        stage_revisions: Mapping[str, str | None] | None = None,
     ) -> list[str]:
         """
         Publish reindex events for existing records without DB operations.
@@ -4121,9 +4127,9 @@ class DataSourceEntitiesProcessor:
                 without re-parsing the source.
             stages: When given, indexing re-runs only these pipeline stages for each
                 record's current revision; the record stays searchable.
-            stage_revisions: Record id -> the revision its stages were selected on. A
-                record that has moved to another revision by the time indexing reads the
-                event is left to that revision's own stages.
+            stage_revisions: Record id -> the revision its stages were selected on (None
+                when it had none). A record that has moved to another revision by the time
+                indexing reads the event is left to that revision's own stages.
 
         Returns:
             The ids whose reindex event reached the broker.
@@ -4178,6 +4184,7 @@ class DataSourceEntitiesProcessor:
                                 vector_db_only=vector_db_only,
                                 stages=stages,
                                 stage_rev=(stage_revisions or {}).get(record.id),
+                                selected=record.id in (stage_revisions or {}),
                             ),
                         },
                     )

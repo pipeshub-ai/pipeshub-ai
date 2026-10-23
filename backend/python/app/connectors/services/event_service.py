@@ -1435,8 +1435,7 @@ class EventService:
                 records = [r for r in records if r.id in revisions]
                 if records:
                     await connector.data_entities_processor.reindex_existing_records(
-                        records, stages=stages,
-                        stage_revisions={k: rev for k, rev in revisions.items() if rev},
+                        records, stages=stages, stage_revisions=revisions,
                     )
                 total_processed += len(records)
                 if fetched_count < batch_size:

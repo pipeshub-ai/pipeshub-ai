@@ -557,7 +557,7 @@ class TestStageReruns:
         records = [_make_mock_record("r1"), _make_mock_record("r2")]
         service.graph_provider.get_records_by_status = AsyncMock(return_value=records)
         service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
-        # r2 has no revision (indexed before revisions existed), so its event carries none;
+        # r2 has no revision (indexed before revisions existed), so its event says so;
         # r3 left the selection before its revision was read, so it is not re-run.
         records.append(_make_mock_record("r3"))
         service.graph_provider.get_record_content_revs = AsyncMock(return_value={"r1": "rev-a", "r2": None})
@@ -576,7 +576,7 @@ class TestStageReruns:
         )
         # Each record carries the revision it holds while still selected, so one re-indexed since is left alone.
         connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with(
-            records[:2], stages=["classify"], stage_revisions={"r1": "rev-a"}
+            records[:2], stages=["classify"], stage_revisions={"r1": "rev-a", "r2": None}
         )
         connector.reindex_records.assert_not_awaited()
         service.graph_provider.update_indexing_status_for_record_ids.assert_not_awaited()

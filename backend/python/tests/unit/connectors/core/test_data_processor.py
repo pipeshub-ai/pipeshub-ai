@@ -3166,13 +3166,24 @@ class TestStageRerunEvents:
         proc.messaging_producer.send_messages = AsyncMock(return_value=[True, True])
         proc._mark_queued_after_publish = AsyncMock()
 
-        await proc.reindex_existing_records([first, second], stages=["entities"], stage_revisions={"rec-1": "rev-a"})
+        third = _make_record()
+        third.id = "rec-3"
+        proc.data_store_provider.get_existing_record_keys = AsyncMock(return_value={"rec-1", "rec-2", "rec-3"})
+        proc.messaging_producer.send_messages = AsyncMock(return_value=[True, True, True])
+
+        await proc.reindex_existing_records(
+            [first, second, third], stages=["classify"], stage_revisions={"rec-1": "rev-a", "rec-2": None},
+        )
 
         _topic, messages = proc.messaging_producer.send_messages.await_args.args
         assert messages[0][1]["payload"]["stageRev"] == "rev-a"
-        assert "stageRev" not in messages[1][1]["payload"]
+        # Selected before it had a revision: an explicit null, so a revision it gains later is not re-run.
+        assert "stageRev" in messages[1][1]["payload"] and messages[1][1]["payload"]["stageRev"] is None
+        assert "stageRev" not in messages[2][1]["payload"]
 
     def test_a_revision_is_sent_only_with_stages(self) -> None:
         proc = _make_processor()
         record = _make_record()
-        assert "stageRev" not in proc._reindex_event_payload(record, vector_db_only=False, stage_rev="rev-a")
+        assert "stageRev" not in proc._reindex_event_payload(
+            record, vector_db_only=False, stage_rev="rev-a", selected=True
+        )
