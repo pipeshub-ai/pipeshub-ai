@@ -72,6 +72,44 @@ class UnitShardsTest(unittest.TestCase):
         listed = [s.strip().strip("'\"") for s in match.group(1).split(",") if s.strip()]
         self.assertEqual(listed, list(unit_shards.SHARDS))
 
+    def test_the_shards_are_balanced(self):
+        totals = unit_shards.shard_minutes(unit_shards.load_durations())
+        self.assertEqual(unit_shards.balance_problems(totals), [])
+
+    def test_the_measured_minutes_name_real_test_files(self):
+        # A renamed or deleted file's minutes would no longer count anywhere.
+        stale = set(unit_shards.load_durations()) - set(unit_shards.test_files())
+        self.assertLess(len(stale), 50, f"refresh unit_shard_durations.json: {sorted(stale)[:10]}")
+
+    def test_a_lopsided_split_is_reported(self):
+        totals = dict.fromkeys(unit_shards.SHARDS, 5.0)
+        totals["core"] = 20.0
+        problems = unit_shards.balance_problems(totals)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("core", problems[0])
+
+    def test_a_junit_classname_maps_to_its_file(self):
+        files = {"tests/unit/a/test_x.py"}
+        self.assertEqual(unit_shards._file_of("tests.unit.a.test_x.TestY.TestZ", files), "tests/unit/a/test_x.py")
+        self.assertEqual(unit_shards._file_of("tests.unit.a.test_x", files), "tests/unit/a/test_x.py")
+        self.assertIsNone(unit_shards._file_of("tests.unit.b.test_x", files))
+
+    def test_minutes_are_summed_per_file_from_junit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests/unit/a").mkdir(parents=True)
+            (root / "tests/unit/a/test_x.py").touch()
+            junit = root / "junit.xml"
+            junit.write_text(
+                '<testsuites><testsuite>'
+                '<testcase classname="tests.unit.a.test_x.TestY" name="t1" time="30"/>'
+                '<testcase classname="tests.unit.a.test_x" name="t2" time="60"/>'
+                '<testcase classname="tests.unit.gone.test_z" name="t3" time="5"/>'
+                '</testsuite></testsuites>',
+                encoding="utf-8",
+            )
+            self.assertEqual(unit_shards.file_minutes([junit], root), {"tests/unit/a/test_x.py": 1.5})
+
     def test_a_path_inside_another_shards_directory_is_carved_out(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

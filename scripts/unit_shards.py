@@ -14,34 +14,44 @@ makes `core` longer. Glob entries expand to the files they match.
 Run (from backend/python): python3 ../../scripts/unit_shards.py args <shard>
 prints the pytest arguments for that shard, one per line.
 
-Measured minutes per shard (serial, under coverage, 2026-10-22) are in the
-comments; move paths between shards when one grows far past the others.
+The run ends when the slowest shard ends. scripts/unit_shard_durations.json
+holds measured minutes per test file, and `balance` prints each shard's total;
+scripts/test_unit_shards.py fails when one exceeds MAX_OVER_MEAN times the
+average. To refresh the minutes, download the py-junit-* artifacts of a green
+unit-test run and run
+  python3 scripts/unit_shards.py durations --source "<run>" junit/*/*.xml \
+    > scripts/unit_shard_durations.json
+To rebalance, move paths between SHARDS until `balance` is even.
 """
 
 from __future__ import annotations
 
 import argparse
 import glob
+import json
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 PYTHON_ROOT = Path(__file__).resolve().parent.parent / "backend" / "python"
 UNIT_ROOT = "tests/unit"
+DURATIONS = Path(__file__).resolve().parent / "unit_shard_durations.json"
+
+# How far the longest shard may sit above the average before the guard fails.
+MAX_OVER_MEAN = 1.35
 
 SHARDS: dict[str, tuple[str, ...]] = {
-    # ~5.5 min: the connector test files directly under sources/.
+    # The connector test files directly under sources/.
     "connectors-a": ("tests/unit/connectors/sources/test_*.py",),
-    # ~5.3 min: web (3.3), localKB and the smaller connector directories.
+    # web, localKB and the smaller connector directories.
     "connectors-b": ("tests/unit/connectors/sources",),
-    # ~5.3 min: google (2.7), microsoft, and connectors outside sources/.
+    # google, microsoft, and connectors outside sources/.
     "connectors-c": (
         "tests/unit/connectors",
         "tests/unit/connectors/sources/google",
         "tests/unit/connectors/sources/microsoft",
     ),
-    # ~5.4 min
     "agents": ("tests/unit/agents", "tests/unit/agent_loop_lib"),
-    # ~4.2 min
     "services": (
         "tests/unit/services",
         "tests/unit/events",
@@ -50,9 +60,8 @@ SHARDS: dict[str, tuple[str, ...]] = {
         "tests/unit/config",
         "tests/unit/telemetry",
     ),
-    # ~5.1 min
     "modules": ("tests/unit/modules", "tests/unit/utils"),
-    # ~4.8 min: top-level test files, api, sources, models and the rest.
+    # Top-level test files, api, sources, models and the rest.
     "core": (UNIT_ROOT,),
 }
 
@@ -148,17 +157,81 @@ def test_files(root: Path = PYTHON_ROOT) -> list[str]:
     )
 
 
+def _file_of(classname: str, files: set[str]) -> str | None:
+    """The test file a JUnit classname (tests.unit.x.test_y.TestZ) comes from."""
+    parts = classname.split(".")
+    for end in range(len(parts), 0, -1):
+        candidate = "/".join(parts[:end]) + ".py"
+        if candidate in files:
+            return candidate
+    return None
+
+
+def file_minutes(junit_paths: list[Path], root: Path = PYTHON_ROOT) -> dict[str, float]:
+    """Minutes of test time per test file, summed over every report."""
+    files = set(test_files(root))
+    seconds: dict[str, float] = {}
+    for junit in junit_paths:
+        for case in ET.parse(junit).iter("testcase"):
+            path = _file_of(case.get("classname", ""), files)
+            if path is not None:
+                seconds[path] = seconds.get(path, 0.0) + float(case.get("time") or 0)
+    return {path: round(sec / 60, 3) for path, sec in sorted(seconds.items())}
+
+
+def load_durations(path: Path = DURATIONS) -> dict[str, float]:
+    return json.loads(path.read_text(encoding="utf-8"))["files"]
+
+
+def shard_minutes(durations: dict[str, float], root: Path = PYTHON_ROOT) -> dict[str, float]:
+    """Measured minutes per shard. A file with no measurement counts as zero."""
+    owners = owned_paths(root)
+    totals = dict.fromkeys(SHARDS, 0.0)
+    for test_file in test_files(root):
+        totals[owners[nearest_owner(test_file, owners)]] += durations.get(test_file, 0.0)
+    return totals
+
+
+def balance_problems(totals: dict[str, float]) -> list[str]:
+    mean = sum(totals.values()) / len(totals)
+    limit = mean * MAX_OVER_MEAN
+    return [
+        f"{shard} has {minutes:.1f} min of tests, over {limit:.1f} "
+        f"({MAX_OVER_MEAN} x the {mean:.1f} min average): move paths out of it in SHARDS"
+        for shard, minutes in totals.items()
+        if minutes > limit
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     args_cmd = sub.add_parser("args", help="print the pytest arguments for a shard")
     args_cmd.add_argument("shard", choices=list(SHARDS))
     sub.add_parser("list", help="print the shard names")
+    durations_cmd = sub.add_parser("durations", help="per-file minutes from JUnit reports, as JSON")
+    durations_cmd.add_argument("--source", required=True, help="where the reports came from")
+    durations_cmd.add_argument("junit", nargs="+", type=Path)
+    sub.add_parser("balance", help="print measured minutes per shard")
     ns = parser.parse_args(argv)
     if ns.command == "list":
         print("\n".join(SHARDS))
-    else:
+    elif ns.command == "args":
         print("\n".join(pytest_args(ns.shard)))
+    elif ns.command == "durations":
+        print(json.dumps({
+            "_source": ns.source,
+            "_units": "Minutes of test time per file, summed over xdist workers; "
+                      "a shard's wall clock is about its total / 4 plus setup and collection.",
+            "files": file_minutes(ns.junit),
+        }, indent=1))
+    else:
+        totals = shard_minutes(load_durations())
+        for shard, minutes in sorted(totals.items(), key=lambda item: -item[1]):
+            print(f"{shard:14} {minutes:6.1f} min")
+        problems = balance_problems(totals)
+        print("\n".join(problems) or "balanced")
+        return 1 if problems else 0
     return 0
 
 
