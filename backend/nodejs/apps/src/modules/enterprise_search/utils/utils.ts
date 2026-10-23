@@ -256,6 +256,39 @@ export const allocateSeq = async (
  * for; leave it out for the conversation initiator's own turns on a chat that was
  * never write-shared (readers treat an unstamped message as the initiator's).
  */
+/**
+ * The records an answer drew on also include the attachments of the question it
+ * answers, read here from the stored question so the list never depends on which
+ * page of messages a viewer loads. Answers without a recorded list (older rows,
+ * stopped partials) stay without one: viewers treat that as unknown.
+ */
+const withTurnAttachments = async (
+  message: IMessage,
+  sessionId: mongoose.Types.ObjectId | string,
+  orgId: mongoose.Types.ObjectId | string,
+  beforeSeq: number,
+  precedingQuestion: IMessage | undefined,
+  mongoSession?: ClientSession | null,
+): Promise<IMessage> => {
+  if (message.messageType !== 'bot_response' || !message.sourceRecordIds) {
+    return message;
+  }
+  const question =
+    precedingQuestion ??
+    (await ChatSessionMessage.findOne(
+      { sessionId, orgId, messageType: 'user_query', seq: { $lt: beforeSeq } },
+      { attachments: 1 },
+      { session: mongoSession || undefined },
+    )
+      .sort({ seq: -1 })
+      .lean());
+  const attached = (question?.attachments ?? []).map((a) => a.recordId);
+  return {
+    ...message,
+    sourceRecordIds: [...new Set([...message.sourceRecordIds, ...attached])],
+  };
+};
+
 export const appendMessages = async (
   sessionId: mongoose.Types.ObjectId | string,
   orgId: mongoose.Types.ObjectId | string,
@@ -268,13 +301,26 @@ export const appendMessages = async (
   }
   const endSeq = await allocateSeq(sessionId, messages.length, mongoSession);
   const startSeq = endSeq - messages.length + 1;
-  const toInsert = messages.map((message, i) => ({
-    ...message,
-    ...(authorUserId ? { authorUserId } : {}),
-    sessionId,
-    orgId,
-    seq: startSeq + i,
-  }));
+  let lastQuestion: IMessage | undefined;
+  const toInsert = [];
+  for (const [i, message] of messages.entries()) {
+    if (message.messageType === 'user_query') lastQuestion = message;
+    const stamped = await withTurnAttachments(
+      message,
+      sessionId,
+      orgId,
+      startSeq + i,
+      lastQuestion,
+      mongoSession,
+    );
+    toInsert.push({
+      ...stamped,
+      ...(authorUserId ? { authorUserId } : {}),
+      sessionId,
+      orgId,
+      seq: startSeq + i,
+    });
+  }
   return ChatSessionMessage.insertMany(toInsert, {
     ordered: true,
     session: mongoSession || undefined,
@@ -303,10 +349,18 @@ export const updateMessageById = async (
   if (!existing) {
     return null;
   }
+  const stamped = await withTurnAttachments(
+    newContent,
+    existing.sessionId,
+    orgId,
+    existing.seq,
+    undefined,
+    mongoSession,
+  );
   return ChatSessionMessage.findOneAndReplace(
     { _id: messageId, orgId },
     {
-      ...newContent,
+      ...stamped,
       // A regenerated answer is still the same turn's author's.
       ...(existing.authorUserId ? { authorUserId: existing.authorUserId } : {}),
       sessionId: existing.sessionId,
@@ -485,6 +539,22 @@ export const withoutErrorStacks = <T extends object>(conversation: T): T => {
     ...conversation,
     conversationErrors: conversationErrors.map(withoutStack),
   };
+};
+
+/**
+ * Error text, the failure reason and the compacted summary are written from the
+ * owner's runs and can quote what they read; other people listing the chat get none.
+ */
+export const withoutOwnerOnlyFields = <T extends object>(
+  conversation: T,
+): T => {
+  const {
+    conversationErrors: _errors,
+    failReason: _reason,
+    compactedSummary: _summary,
+    ...visible
+  } = conversation as Record<string, unknown>;
+  return visible as T;
 };
 
 export const attachMessages = (session: any, messages: any[]): any => {
@@ -683,6 +753,11 @@ export const buildAIResponseMessage = (
     },
     modelInfo: modelInfo,
   };
+
+  // The records the turn drew on, cited or not (absent on older answers).
+  if (Array.isArray(data.sourceRecordIds)) {
+    message.sourceRecordIds = data.sourceRecordIds.map(String);
+  }
 
   // Include referenceData if present (IDs for follow-up queries)
   // This stores technical IDs that were in the response for later reference
@@ -956,14 +1031,19 @@ export const addComputedFields = <
   },
 >(
   conversation: T,
-  userId: string,
+  userId: string | { toString(): string },
 ) => {
+  // Callers may hand over an ObjectId where a string is typed.
+  const viewerId = String(userId);
+  const isOwner = conversation.initiator.toString() === viewerId;
   return {
-    ...withoutErrorStacks(conversation),
-    isOwner: conversation.initiator.toString() === userId,
+    ...(isOwner
+      ? withoutErrorStacks(conversation)
+      : withoutOwnerOnlyFields(conversation)),
+    isOwner,
     accessLevel:
       conversation.sharedWith?.find(
-        (share) => share.userId.toString() === userId,
+        (share) => share.userId.toString() === viewerId,
       )?.accessLevel || 'read',
   };
 };
@@ -1551,7 +1631,11 @@ export const buildConversationResponse = (
     isShared: conversation.isShared,
     sharedWith: conversation.sharedWith,
     status: conversation.status,
-    failReason: conversation.failReason,
+    // Written from the owner's runs; not for other viewers.
+    failReason:
+      conversation.initiator.toString() === userId
+        ? conversation.failReason
+        : undefined,
     projectId: conversation.projectId,
     projectVisibility: conversation.projectVisibility,
     messages: messages.map((message) => ({

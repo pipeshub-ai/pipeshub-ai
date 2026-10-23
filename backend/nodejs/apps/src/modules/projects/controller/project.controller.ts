@@ -8,6 +8,7 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
+import { withoutOwnerOnlyFields } from '../../enterprise_search/utils/utils';
 import {
   CreateProjectInput,
   ProjectService,
@@ -326,7 +327,9 @@ export const getProjectConversations =
       ]);
 
       res.status(200).json({
-        conversations,
+        conversations: conversations.map((c) =>
+          String(c.userId) === userId ? c : withoutOwnerOnlyFields(c),
+        ),
         pagination: {
           page,
           limit,

@@ -1385,6 +1385,9 @@ class TestRunChatStreamNoToolsDegradation:
         event_names = [chunk.split("\n", 1)[0] for chunk in events]
         assert "event: status" in event_names
         assert event_names[-1] == "event: complete"
+        # Node needs the records behind the answer to decide who may see it.
+        complete = json.loads(events[-1].split("data: ", 1)[1].strip())
+        assert complete["sourceRecordIds"] == []
 
     async def test_a_failed_forced_prefetch_tells_the_model_to_say_so(self) -> None:
         notice = "We couldn't reach the search index just now, so no results are shown. Please try again in a minute."

@@ -55,6 +55,7 @@ from app.agents.agent_loop.period_summary import timeline_replaces_prefetch
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
 from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
+from app.agents.agent_loop.source_ids import source_record_ids
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
     _cancel_orphaned_agent_tasks,
@@ -330,6 +331,10 @@ async def _run_no_tools_degradation(
         user_data="", is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,
     )
 
+    prefetched_state = {
+        "virtual_record_id_to_result": prefetch.virtual_record_id_to_result if prefetch else {},
+        "final_results": prefetch.final_results if prefetch else [],
+    }
     try:
         async for event in handle_simple_mode(
             llm=llm,
@@ -341,6 +346,8 @@ async def _run_no_tools_degradation(
             virtual_record_id_to_result=prefetch.virtual_record_id_to_result if prefetch else {},
             ref_to_url=ref_mapper.ref_to_url if ref_mapper else None,
         ):
+            if event["event"] == "complete":
+                event["data"]["sourceRecordIds"] = source_record_ids(prefetched_state)
             yield create_sse_event(event["event"], event["data"])
     except Exception as exc:
         log.error("run_chat_stream: no-tools degradation stream failed: %s", exc, exc_info=True)

@@ -220,7 +220,7 @@ describe('viewer redaction (shared chats)', () => {
     it('leaves the author’s own conversation alone and makes no call', async () => {
       const exec = sinon.stub(AIServiceCommand.prototype, 'execute')
       const conversation = { initiator: 'viewer', messages: [answer('x [1]', [cite(1, 'r1')])] }
-      expect(await redactConversationFor(config, conversation, viewer)).to.equal(conversation)
+      expect(await redactConversationFor(config, conversation, viewer)).to.deep.equal(conversation)
       expect(exec.called).to.equal(false)
     })
 
@@ -233,7 +233,7 @@ describe('viewer redaction (shared chats)', () => {
 
     it('error frames carry the conversation only for its author', () => {
       const conversation = { initiator: 'author', messages: [answer('x', [])] }
-      expect(conversationForAuthorOnly(conversation, 'author')).to.equal(conversation)
+      expect(conversationForAuthorOnly(conversation, 'author')).to.deep.equal(conversation)
       expect(conversationForAuthorOnly(conversation, 'viewer')).to.equal(undefined)
       expect(conversationForAuthorOnly(conversation, undefined)).to.equal(undefined)
     })

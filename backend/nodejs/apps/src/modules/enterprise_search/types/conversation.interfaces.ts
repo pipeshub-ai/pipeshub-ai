@@ -196,6 +196,12 @@ export interface IMessage {
   tools?: IToolCallItem[];
   /** Persisted chain-of-thought for this bot_response turn (opt-in, see IReasoningTurn). */
   reasoning?: IReasoningTurn[];
+  /**
+   * Record ids this answer's turn retrieved or looked at, cited or not, plus its
+   * question's attachments; `*` marks output no record id names. Internal: never sent to
+   * a viewer. Absent on older answers, which viewers treat as unknown.
+   */
+  sourceRecordIds?: string[];
   /** Ordered agent-activity transcript for this bot_response turn — see IMessagePart. */
   parts?: IMessagePart[];
   /**
@@ -406,6 +412,8 @@ export interface IAIResponse {
   referenceData?: IReferenceDataItem[];
   /** Present only when `PIPESHUB_PERSIST_REASONING=true` on the Python side. */
   reasoning?: IReasoningTurn[];
+  /** Records the turn drew on, cited or not (see IMessage.sourceRecordIds). */
+  sourceRecordIds?: string[];
   /** Ordered agent-activity transcript (`agui` protocol only) — see IMessagePart. */
   parts?: IMessagePart[];
   /** Set by Python `classify_error` on a graceful failure answer (`auth_error`, …). */

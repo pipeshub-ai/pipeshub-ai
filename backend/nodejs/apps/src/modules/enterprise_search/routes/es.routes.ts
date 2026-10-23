@@ -567,7 +567,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     ValidationMiddleware.validate(listAllArchivesConversationQuerySchema),
-    listAllArchivesConversation,
+    listAllArchivesConversation(appConfig),
   );
 
   /**

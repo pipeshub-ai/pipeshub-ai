@@ -34,11 +34,30 @@ returned unchanged.
 - Cost, accepted: in mixed-source turns viewers lose uncited connective text, tables and headings that no readable citation covers. Residual: a mixed group in prose keeps its text, and a citation that *leads* its sentence leaves the sentence after it uncited (hence redacted).
 - The answer prompts must keep citations after the claim (pinned by `tests/unit/agents/test_citation_placement_prompt.py`).
 
+**Which records a turn drew on.** The query service stores, with every answer, the ids of the
+records its turn retrieved or looked at, cited or not (`sourceRecordIds`: prefetched retrieval, search
+and fetch tools, listings), plus the attachments of the question it answers (added when Node saves the
+answer). Output that no record id names (connector, web, MCP or sub-agent tools, more than 1000
+records) adds `*`, which no viewer can read. An empty list means the turn provably used no sources.
+Another person's answer is shown only if the stored list exists and the viewer can read every id in it:
+
+- a record in the list the viewer cannot read counts as an unreadable source, cited or not, so the
+  fail-closed span rule above applies; with no citation at all the answer is hidden whole
+  (`redaction.redacted`, empty content);
+- **no stored list** (answers saved before this field, stopped partials Node saved itself): an
+  answer without citations is hidden. This is fail-closed and accepted: older uncited answers are
+  hidden from everyone but their author, the owner viewing a write-sharer's turn included;
+- follow-up questions and every other text derived from the answer go with a hidden answer;
+- the list is internal: it is never returned to a viewer (the author's own turn aside).
+
+Error text, the failure reason and the compacted summary of a chat are shown to its owner only
+(`addComputedFields`, `buildConversationResponse`, the project conversation list).
+
 Tool results, reasoning, `parts` and `referenceData` are dropped for every viewer who is not the message's user (`detailsHidden: true`), since tool output can carry record content that no
 citation lets us verify; follow-up questions are dropped on redacted messages. Paraphrase in uncited or mixed sentences can still
 reflect unreadable content.
 
-**Every path that returns messages to a viewer** goes through `redactMessagesFor` /
+**Every path that returns messages to a viewer** (the archived list `GET /conversations/show/archives` included) goes through `redactMessagesFor` /
 `redactConversationFor` in `utils/viewer-redaction.ts`: the GET reads, the `complete`
 frames of add-message (chat and agent) and regenerate, and the history sent to the model
 for the requester. Error frames carry a conversation only when every message in it is the

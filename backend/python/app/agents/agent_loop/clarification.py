@@ -83,6 +83,8 @@ async def emit_pre_run_clarification(
         "citations": [],
         "confidence": "Medium",
         "answerMatchType": "Clarification Needed",
+        # A question put before the agent ran: nothing was retrieved.
+        "sourceRecordIds": [],
     }
     for evt in context.formatter.answer_delta(
         context, chunk=clarifying_text, accumulated=clarifying_text, citations=[],

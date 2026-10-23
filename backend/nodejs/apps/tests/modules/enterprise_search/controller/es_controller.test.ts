@@ -2746,7 +2746,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await listAllArchivesConversation(req, res, next)
+      await listAllArchivesConversation(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -2774,7 +2774,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await listAllArchivesConversation(req, res, next)
+      await listAllArchivesConversation(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -8755,7 +8755,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await listAllArchivesConversation(req, res, next)
+      await listAllArchivesConversation(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })

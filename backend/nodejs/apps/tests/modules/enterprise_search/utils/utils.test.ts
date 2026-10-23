@@ -1425,16 +1425,18 @@ describe('Enterprise Search Utils', () => {
       expect(JSON.stringify(result.$or)).to.not.contain('sharedWith')
     })
 
-    it('with includeShared, a recipient matches only when isShared AND they are in sharedWith', () => {
+    it('with sharedAccess, a recipient matches only when isShared AND they are in sharedWith at that level', () => {
       const req = createMockRequest()
-      const result = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1', undefined, undefined, undefined, true)
-      const sharedBranch = result.$or.find((branch: any) => branch.$and)
-      expect(sharedBranch.$and).to.have.length(2)
-      expect(sharedBranch.$and[0]).to.deep.equal({ isShared: true })
-      expect(String(sharedBranch.$and[1]['sharedWith.userId'])).to.equal(VALID_OID)
-      expect(result).to.have.property('sessionType', 'agent')
-      expect(result).to.have.property('agentKey', 'agent-key-1')
-      expect(result).to.have.property('isDeleted', false)
+      const read = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1', undefined, undefined, undefined, 'read')
+      const branch = read.$or.find((b: any) => b.isShared)
+      expect(branch.isShared).to.equal(true)
+      expect(String(branch.sharedWith.$elemMatch.userId)).to.equal(VALID_OID)
+      expect(branch.sharedWith.$elemMatch).to.not.have.property('accessLevel')
+      const write = buildAgentConversationFilter(req, VALID_OID2, VALID_OID, 'agent-key-1', undefined, undefined, undefined, 'write')
+      expect(write.$or.find((b: any) => b.isShared).sharedWith.$elemMatch.accessLevel).to.equal('write')
+      expect(read).to.have.property('sessionType', 'agent')
+      expect(read).to.have.property('agentKey', 'agent-key-1')
+      expect(read).to.have.property('isDeleted', false)
     })
 
     it('should handle shared filter in agent conversations', () => {
@@ -4091,7 +4093,7 @@ describe('chatSessions helpers', () => {
     const existing = { _id: messageId, sessionId, orgId, seq: 7, content: 'old' }
     sinon.stub(ChatSessionMessage, 'findOne').resolves(existing as any)
     const replaceStub = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ ...existing, content: 'new' } as any)
-    await updateMessageById(messageId, { messageType: 'bot_response', content: 'new' } as any)
+    await updateMessageById(messageId, orgId, { messageType: 'bot_response', content: 'new' } as any)
     expect(replaceStub.firstCall.args[1].seq).to.equal(7)
     expect(replaceStub.firstCall.args[1].sessionId).to.equal(sessionId)
   })

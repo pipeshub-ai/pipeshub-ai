@@ -102,7 +102,7 @@ function world(): World {
     orgId: ORG, userId: A, initiator: A, title: 'Agent room', sessionType: 'agent', agentKey: AGENT_KEY, conversationSource: 'agent_chat', isShared: true, sharedWith,
   })
   store.addMessage(agentChat, { messageType: 'user_query', content: 'Agent question' })
-  store.addMessage(agentChat, { messageType: 'bot_response', content: 'Agent answer.' })
+  store.addMessage(agentChat, { messageType: 'bot_response', content: `Agent answer ${A1}.`, citations: [citationOf(store, 1, 'rA', A_CHUNK)] })
   store.writes.length = 0
   return { store, ai, chatId: String(chat._id), agentChatId: String(agentChat._id), messages: () => store.messagesOf(chat._id) as Array<Record<string, any>> }
 }
@@ -151,7 +151,7 @@ async function getAs(w: World, who: Types.ObjectId): Promise<Array<Record<string
 describe('write-shared conversations: users add messages, each turn shown in full only to its author', () => {
   afterEach(() => sinon.restore())
 
-  describe('T1: a write-shared user adds a message and the turn runs as them', () => {
+  describe('a write-shared user adds a message and the turn runs as them', () => {
     it('asks the AI service with the requester’s own credentials and answers from their access', async () => {
       const w = world()
       const res = await addAsB(w)
@@ -181,24 +181,6 @@ describe('write-shared conversations: users add messages, each turn shown in ful
       expect(String(session.initiator)).to.equal(String(A))
     })
 
-    it('works for an agent conversation too, calling the agent as the requester', async () => {
-      const w = world()
-      const res = await streamTurn(
-        w,
-        controller.addMessageStreamToAgentConversation(appConfig) as StreamHandler,
-        B,
-        { conversationId: w.agentChatId, agentKey: AGENT_KEY },
-        { query: 'B asks the agent' },
-        { answer: 'Agent reply.' },
-      )
-
-      expect(res.eventsOf('RUN_ERROR')).to.deep.equal([])
-      expect(w.ai.streamCalls[0]?.url).to.equal(`http://ai.test/api/v1/agent/${AGENT_KEY}/chat/stream`)
-      expect(w.ai.streamCalls[0]?.headers.authorization).to.equal('Bearer token-B')
-      const rows = w.store.messagesOf(w.store.sessions[1]!._id) as Array<Record<string, any>>
-      expect(rows.slice(2).map((m) => String(m.authorUserId))).to.deep.equal([String(B), String(B)])
-    })
-
     it('the non-streaming route runs the same way and redacts the reply it returns for the requester', async () => {
       const w = world()
       w.ai.reply(/\/api\/v1\/chat$/, 200, { answer: `Layoffs are planned ${B1}.`, citations: [bCitation], confidence: 'High' })
@@ -218,7 +200,7 @@ describe('write-shared conversations: users add messages, each turn shown in ful
     })
   })
 
-  describe('T2: the owner sees the writer’s turn redacted for the sources the owner cannot read', () => {
+  describe('the owner sees the writer’s turn redacted for the sources the owner cannot read', () => {
     it('redacts B’s answer for A, with a way to request access, and keeps A’s own turn whole', async () => {
       const w = world()
       await addAsB(w)
@@ -246,7 +228,7 @@ describe('write-shared conversations: users add messages, each turn shown in ful
     })
   })
 
-  describe('T3: a read-only user cannot add messages', () => {
+  describe('a read-only user cannot add messages', () => {
     /** Calls a public route the way Express does (with `next`) and reports what escaped. */
     const callRoute = async (handler: Handler, req: never) => {
       const escaped: unknown[] = []
@@ -263,11 +245,10 @@ describe('write-shared conversations: users add messages, each turn shown in ful
       return { next, res, escaped }
     }
 
-    it('answers 403 on the public streaming routes (chat and agent) through next, before any stream, with no rejection escaping', async () => {
+    it('answers 403 on the public streaming route through next, before any stream, with no rejection escaping', async () => {
       const w = world()
       for (const [handler, params] of [
         [controller.addMessageStream(appConfig) as Handler, { conversationId: w.chatId }],
-        [controller.addMessageStreamToAgentConversation(appConfig) as Handler, { conversationId: w.agentChatId, agentKey: AGENT_KEY }],
       ] as const) {
         const { next, res, escaped } = await callRoute(handler, requestFor(C, { ...params }, { query: 'let me in' }))
         expect(next.firstCall?.args[0]?.statusCode).to.equal(403)
@@ -292,7 +273,6 @@ describe('write-shared conversations: users add messages, each turn shown in ful
       const w = world()
       for (const [handler, params] of [
         [controller.addMessage(appConfig) as Handler, { conversationId: w.chatId }],
-        [controller.addMessageToAgentConversation(appConfig) as Handler, { conversationId: w.agentChatId, agentKey: AGENT_KEY }],
       ] as const) {
         const { next, escaped } = await callRoute(handler, requestFor(C, { ...params }, { query: 'let me in' }))
         expect(next.firstCall?.args[0]?.statusCode).to.equal(403)
@@ -310,7 +290,7 @@ describe('write-shared conversations: users add messages, each turn shown in ful
     })
   })
 
-  describe('T4: tool results and reasoning only for the turn’s author', () => {
+  describe('tool results and reasoning only for the turn’s author', () => {
     it('shows each user their own turns’ tool activity and hides everyone else’s, the owner’s view included', async () => {
       const w = world()
       const chat = w.store.sessions[0]!
@@ -335,13 +315,19 @@ describe('write-shared conversations: users add messages, each turn shown in ful
       expect(asC).to.not.include(A_TOOL)
       expect(asC).to.not.include(B_TOOL)
       const hidden = (await getAs(w, A)).filter((m) => m.detailsHidden)
-      expect(hidden.map((m) => m.content)).to.deep.equal(['B answer'])
+      // B's answer cites nothing and carries tool output, so for anyone else it is hidden whole.
+      expect(hidden.map((m) => [m.content, m.redaction?.redacted])).to.deep.equal([['', true]])
     })
   })
 
   describe('the owner grants write', () => {
     const share = async (w: World, who: Types.ObjectId, userIds: Types.ObjectId[], accessLevel?: string) => {
       const next = sinon.stub()
+      // Every named user is a member of the org.
+      ;(Users.find as unknown as sinon.SinonStub).callsFake(((filter: { _id: { $in: Types.ObjectId[] } }) => {
+        const chain: any = { select: () => chain, lean: () => chain, exec: () => Promise.resolve(filter._id.$in.map((id) => ({ _id: id }))) }
+        return chain
+      }) as never)
       const body = conversationShareParamsSchema.shape.body.parse({ userIds: userIds.map(String), ...(accessLevel ? { accessLevel } : {}) })
       await (controller.shareConversationById(appConfig) as Handler)(
         requestFor(who, { conversationId: w.chatId }, body), new FakeSSEResponse() as never, next as never)
@@ -376,30 +362,20 @@ describe('write-shared conversations: users add messages, each turn shown in ful
     })
   })
 
-  describe('a shared agent conversation', () => {
-    const call = async (handler: Handler, who: Types.ObjectId, w: World, body: Record<string, unknown> = {}) => {
-      const res = new FakeSSEResponse()
-      const next = sinon.stub()
-      await handler(requestFor(who, { conversationId: w.agentChatId, agentKey: AGENT_KEY }, body), res as never, next as never)
-      await settle()
-      return { res, error: next.firstCall?.args[0] as { statusCode?: number } | undefined }
-    }
-
-    it('lets a writer view and stop it, a reader view it but not stop it, and a stranger neither', async () => {
+  describe('an agent conversation read by a recipient', () => {
+    it('goes through the same redaction as a chat: the owner’s private source is hidden from a recipient, shown to the owner', async () => {
       const w = world()
-      const get = controller.getAgentConversationById(appConfig) as Handler
-      const stop = controller.cancelAgentConversationStream(appConfig) as Handler
-      for (const who of [B, C]) expect((await call(get, who, w)).error, `get ${NAMES.get(String(who))}`).to.equal(undefined)
-      expect((await call(get, oid(), w)).error?.statusCode).to.equal(404)
-      expect((await call(stop, B, w, { runId: 'r1' })).error).to.equal(undefined)
-      expect((await call(stop, C, w, { runId: 'r1' })).error?.statusCode).to.equal(404)
-    })
-
-    it('tells a reader who deletes it 403, and deletes nothing', async () => {
-      const w = world()
-      const out = await call(controller.deleteAgentConversationById(appConfig) as Handler, C, w)
-      expect(out.error?.statusCode).to.equal(403)
-      expect(w.store.sessions[1]!.get('isDeleted')).to.equal(false)
+      const read = async (who: Types.ObjectId) => {
+        const res = new FakeSSEResponse()
+        const next = sinon.stub()
+        await (controller.getAgentConversationById(appConfig) as Handler)(
+          requestFor(who, { conversationId: w.agentChatId, agentKey: AGENT_KEY }), res as never, next as never)
+        await settle()
+        expect(next.firstCall?.args[0], 'GET error').to.equal(undefined)
+        return JSON.stringify(res.jsonBody)
+      }
+      expect(await read(C)).to.not.include(A_CHUNK)
+      expect(await read(A)).to.include(A_CHUNK)
     })
   })
 
@@ -427,7 +403,7 @@ describe('write-shared conversations: users add messages, each turn shown in ful
     })
   })
 
-  describe('T5: the history the model gets holds only what the requester may read', () => {
+  describe('the history the model gets holds only what the requester may read', () => {
     it('gives B’s request A’s turn without A’s unreadable source or tool output', async () => {
       const w = world()
       await addAsB(w)
@@ -468,7 +444,7 @@ describe('write-shared conversations: users add messages, each turn shown in ful
     })
   })
 
-  describe('T6: turns from two users keep one ordering and lose nothing', () => {
+  describe('turns from two users keep one ordering and lose nothing', () => {
     it('allocates distinct, increasing seq values to appends racing from different users', async () => {
       const w = world()
       const chat = w.store.sessions[0]!
@@ -505,7 +481,7 @@ describe('write-shared conversations: users add messages, each turn shown in ful
     })
   })
 
-  describe('T7: only the turn’s author regenerates it', () => {
+  describe('only the turn’s author regenerates it', () => {
     it('refuses the owner regenerating the writer’s answer, and changes nothing', async () => {
       const w = world()
       await addAsB(w)
@@ -538,6 +514,43 @@ describe('write-shared conversations: users add messages, each turn shown in ful
       const last = w.messages().at(-1)!
       expect(last.content).to.equal(`Layoffs are planned, take two ${B1}.`)
       expect(String(last.authorUserId), 'a regenerated answer stays its author’s').to.equal(String(B))
+    })
+
+    it('applies the same rules to editing the last question: not the owner on a writer’s turn, not a reader', async () => {
+      const w = world()
+      await addAsB(w)
+      const botId = String(w.messages().at(-1)!._id)
+      const askedBefore = w.messages().at(-2)!.content
+      w.ai.calls.length = 0
+
+      for (const who of [A, C]) {
+        const res = new FakeSSEResponse()
+        await (controller.regenerateAnswers(appConfig) as StreamHandler)(
+          requestFor(who, { conversationId: w.chatId, messageId: botId }, { query: 'An edited question' }), res as never)
+        await settle()
+        expect(res.eventsOf('RUN_ERROR'), String(who)).to.have.length(1)
+      }
+      expect(w.ai.streamCalls).to.deep.equal([])
+      expect(w.messages().at(-2)!.content, 'the question was not rewritten').to.equal(askedBefore)
+      expect(w.messages().at(-1)!.content).to.equal(`Layoffs are planned ${B1}.`)
+    })
+
+    it('lets the writer edit their own last question, and its complete frame holds nothing the writer cannot read', async () => {
+      const w = world()
+      await addAsB(w)
+      const botId = String(w.messages().at(-1)!._id)
+      w.ai.calls.length = 0
+
+      const res = await streamTurn(
+        w, controller.regenerateAnswers(appConfig) as StreamHandler, B,
+        { conversationId: w.chatId, messageId: botId }, { query: 'B asks again' },
+        { answer: `Layoffs are planned, edited ${B1}.`, citations: [bCitation] },
+      )
+
+      expect(res.eventsOf('RUN_ERROR')).to.deep.equal([])
+      expect(w.messages().at(-2)!.content).to.equal('B asks again')
+      // The frame is for B: A’s turns in it are redacted for B, so A’s private chunk is not in it.
+      expect(res.body).to.not.include(A_CHUNK)
     })
 
     it('lets the owner regenerate their own last answer, and a reader not at all', async () => {

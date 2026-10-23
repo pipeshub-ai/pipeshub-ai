@@ -75,6 +75,7 @@ from app.agents.agent_loop.error_classification import (
 )
 from app.agents.agent_loop.hooks.ask_user_question import _ASK_USER_QUESTION_TOOL_NAMES
 from app.agents.agent_loop.mcp_sign_in import sign_in_part
+from app.agents.agent_loop.source_ids import source_record_ids
 from app.agents.agent_loop.reasoning_persistence import build_reasoning_payload, filter_reasoning_parts
 from app.agents.agent_loop.tool_approvals import PENDING_MESSAGE, RESUMING
 from app.modules.agents.qna.helpers import _tool_names_and_results_from_state
@@ -142,6 +143,10 @@ class AnswerFinalizer:
         if (sign_in := sign_in_part(self._context)) is not None:
             parts = [*parts, sign_in]
         completion_data["parts"] = parts
+
+    def _attach_sources(self, completion_data: dict[str, Any]) -> None:
+        """The records this turn drew on, for the per-viewer access check Node runs when the chat is shared."""
+        completion_data["sourceRecordIds"] = source_record_ids(self._context.tool_state)
 
     async def run(
         self,
@@ -318,6 +323,7 @@ class AnswerFinalizer:
                 "status": "waiting_input",
             }
             waiting_response.update(_tool_names_from_state(state))
+            self._attach_sources(waiting_response)
             self._attach_parts(waiting_response, final_text="")
             await self._emit_ask_user_question_fallback(state, event_sink)
             for evt in self._context.formatter.answer_final(
@@ -338,6 +344,7 @@ class AnswerFinalizer:
                 "answerMatchType": "Fallback Response",
             }
             fallback_response.update(_tool_names_from_state(state))
+            self._attach_sources(fallback_response)
             self._attach_parts(fallback_response, final_text=answer_text)
             for evt in self._context.formatter.answer_delta(
                 self._context, chunk=answer_text, accumulated=answer_text, citations=[],
@@ -378,6 +385,7 @@ class AnswerFinalizer:
         ended_on_it = awaiting_approval and clean_output.strip() == str(pending_message).strip()
         if awaiting_approval and not ended_on_it:
             clean_output = f"{clean_output.rstrip()}\n\n{pending_message}"
+        self._attach_sources(completion_data)
         self._attach_parts(completion_data, final_text=clean_output, append=ended_on_it)
 
         parts = completion_data.get("parts")
@@ -514,6 +522,7 @@ class AnswerFinalizer:
 
         clean_output, _ = parse_confidence_from_answer(streamed_answer)
         completion_data: dict[str, Any] = {"status": "stopped"}
+        self._attach_sources(completion_data)
         self._attach_parts(completion_data, final_text=clean_output)
 
         parts = completion_data.get("parts")
@@ -599,6 +608,7 @@ class AnswerFinalizer:
             "errorCode": error_code,
         }
         error_response.update(_tool_names_from_state(self._context.tool_state))
+        self._attach_sources(error_response)
         self._attach_parts(error_response, final_text=user_message)
         for evt in self._context.formatter.answer_delta(
             self._context, chunk=user_message, accumulated=user_message, citations=[],

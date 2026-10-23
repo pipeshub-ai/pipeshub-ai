@@ -5123,139 +5123,149 @@ const setConversationPinned =
 export const pinConversation = setConversationPinned(true);
 export const unpinConversation = setConversationPinned(false);
 
-export const listAllArchivesConversation = async (
-  req: AuthenticatedUserRequest,
-  res: Response,
-  next: NextFunction,
-) => {
-  const requestId = req.context?.requestId;
-  const startTime = Date.now();
-  try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    if (!userId || !orgId) {
-      throw new BadRequestError('User ID and Organization ID are required');
-    }
-    const { conversationId } = req.query;
-
-    logger.debug('Fetching all archived conversations', {
-      requestId,
-      userId,
-    });
-
-    const { skip, limit, page } = getPaginationParams(req);
-    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
-    if (req.query.search) {
-      const escapedSearch = validateAndEscapeSearch(req.query.search);
-      contentMatchIds = await findSessionIdsMatchingContent(
-        orgId,
-        escapedSearch,
-        String(userId),
-      );
-    }
-    const filter = {
-      ...buildFilter(
-        req,
-        orgId,
-        userId,
-        conversationId as string,
-        true,
-        true,
-        contentMatchIds,
-      ),
-      isArchived: true, // Add archived filter
-      archivedBy: { $exists: true }, // Ensure it was properly archived
-    };
-    const sortOptions = buildSortOptions(req);
-    const sessionFilter = { ...filter, ...EXCLUDE_AGENT };
-
-    // Execute query
-    const [conversations, totalCount] = await Promise.all([
-      ChatSession.find(sessionFilter)
-        .sort(sortOptions as any)
-        .skip(skip)
-        .limit(limit)
-        .select('-__v')
-        .lean()
-        .exec(),
-      ChatSession.countDocuments(sessionFilter),
-    ]);
-
-    // Batch-fetch every message for the page in one query, grouped in
-    // memory by sessionId — never a per-row query.
-    const pageIds = conversations.map((c: any) => c._id);
-    const allMessages = await ChatSessionMessage.find({
-      sessionId: { $in: pageIds },
-    })
-      .sort({ seq: 1 })
-      .lean()
-      .exec();
-    const messagesBySession = new Map<string, any[]>();
-    for (const message of allMessages) {
-      const key = message.sessionId.toString();
-      const bucket = messagesBySession.get(key);
-      if (bucket) {
-        bucket.push(message);
-      } else {
-        messagesBySession.set(key, [message]);
+export const listAllArchivesConversation =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    try {
+      const userId = req.user?.userId;
+      const orgId = req.user?.orgId;
+      if (!userId || !orgId) {
+        throw new BadRequestError('User ID and Organization ID are required');
       }
-    }
+      const { conversationId } = req.query;
 
-    // Process results with computed fields and restructured citations
-    const processedConversations = conversations.map((conversation: any) => {
-      const sessionMessages =
-        messagesBySession.get(conversation._id.toString()) || [];
-      const conversationWithMessages = attachMessages(
-        conversation,
-        sessionMessages,
-      );
-      const conversationWithComputedFields = addComputedFields(
-        conversationWithMessages as IConversation,
-        userId,
-      );
-
-      return {
-        ...conversationWithComputedFields,
-        archivedAt: conversation.updatedAt,
-        archivedBy: conversation.archivedBy,
-      };
-    });
-
-    // Build response with metadata
-    const response = {
-      conversations: processedConversations,
-      pagination: buildPaginationMetadata(totalCount, page, limit),
-      filters: buildFiltersMetadata(filter, req.query),
-      summary: {
-        totalArchived: totalCount,
-        oldestArchive: processedConversations[0]?.archivedAt,
-        newestArchive:
-          processedConversations[processedConversations.length - 1]?.archivedAt,
-      },
-      meta: {
+      logger.debug('Fetching all archived conversations', {
         requestId,
-        timestamp: new Date().toISOString(),
+        userId,
+      });
+
+      const { skip, limit, page } = getPaginationParams(req);
+      let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+      if (req.query.search) {
+        const escapedSearch = validateAndEscapeSearch(req.query.search);
+        contentMatchIds = await findSessionIdsMatchingContent(
+          orgId,
+          escapedSearch,
+          String(userId),
+        );
+      }
+      const filter = {
+        ...buildFilter(
+          req,
+          orgId,
+          userId,
+          conversationId as string,
+          true,
+          true,
+          contentMatchIds,
+        ),
+        isArchived: true, // Add archived filter
+        archivedBy: { $exists: true }, // Ensure it was properly archived
+      };
+      const sortOptions = buildSortOptions(req);
+      const sessionFilter = { ...filter, ...EXCLUDE_AGENT };
+
+      // Execute query
+      const [conversations, totalCount] = await Promise.all([
+        ChatSession.find(sessionFilter)
+          .sort(sortOptions as any)
+          .skip(skip)
+          .limit(limit)
+          .select('-__v')
+          .lean()
+          .exec(),
+        ChatSession.countDocuments(sessionFilter),
+      ]);
+
+      // Batch-fetch every message for the page in one query, grouped in
+      // memory by sessionId — never a per-row query.
+      const pageIds = conversations.map((c: any) => c._id);
+      const allMessages = await ChatSessionMessage.find({
+        sessionId: { $in: pageIds },
+      })
+        .sort({ seq: 1 })
+        // The redaction below judges a citation by its record, so it must be populated.
+        .populate({
+          path: 'citations.citationId',
+          model: 'citation',
+          select: '-__v',
+        })
+        .lean()
+        .exec();
+      const messagesBySession = new Map<string, any[]>();
+      for (const message of allMessages) {
+        const key = message.sessionId.toString();
+        const bucket = messagesBySession.get(key);
+        if (bucket) {
+          bucket.push(message);
+        } else {
+          messagesBySession.set(key, [message]);
+        }
+      }
+
+      // Process results with computed fields and restructured citations
+      const processedConversations = await Promise.all(
+        conversations.map(async (conversation: any) => {
+          const sessionMessages =
+            messagesBySession.get(conversation._id.toString()) || [];
+          // Same per-viewer redaction as getConversationById: archiving must not
+          // widen what a shared viewer sees.
+          const conversationWithMessages = (await redactConversationFor(
+            appConfig,
+            attachMessages(conversation, sessionMessages),
+            { userId: String(userId), orgId: String(orgId) },
+          )) as IConversation;
+          const conversationWithComputedFields = addComputedFields(
+            conversationWithMessages,
+            userId,
+          );
+
+          return {
+            ...conversationWithComputedFields,
+            archivedAt: conversation.updatedAt,
+            archivedBy: conversation.archivedBy,
+          };
+        }),
+      );
+
+      // Build response with metadata
+      const response = {
+        conversations: processedConversations,
+        pagination: buildPaginationMetadata(totalCount, page, limit),
+        filters: buildFiltersMetadata(filter, req.query),
+        summary: {
+          totalArchived: totalCount,
+          oldestArchive: processedConversations[0]?.archivedAt,
+          newestArchive:
+            processedConversations[processedConversations.length - 1]
+              ?.archivedAt,
+        },
+        meta: {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+        },
+      };
+
+      logger.debug('Successfully fetched archived conversations', {
+        requestId,
+        count: conversations.length,
+        totalCount,
         duration: Date.now() - startTime,
-      },
-    };
+      });
 
-    logger.debug('Successfully fetched archived conversations', {
-      requestId,
-      count: conversations.length,
-      totalCount,
-      duration: Date.now() - startTime,
-    });
-
-    res.status(HTTP_STATUS.OK).json(response);
-  } catch (error: any) {
-    logger.error('Error fetching archived conversations', {
-      requestId,
-      message: 'Error fetching archived conversations',
-      error: error.message,
-    });
-    next(error);
-  }
-};
+      res.status(HTTP_STATUS.OK).json(response);
+    } catch (error: any) {
+      logger.error('Error fetching archived conversations', {
+        requestId,
+        message: 'Error fetching archived conversations',
+        error: error.message,
+      });
+      next(error);
+    }
+  };
 
 /**
  * Search across all archived conversations — both assistant (Conversation)
@@ -8352,7 +8362,7 @@ const getAgentConversationByIdOf = async (
           []) as unknown as IMessageDocument[],
         messageSortOptions as { field: keyof IMessage },
       ),
-      session.initiator?.toString(),
+      session.initiator.toString(),
       { userId, orgId },
     )) as unknown as IMessageDocument[];
 

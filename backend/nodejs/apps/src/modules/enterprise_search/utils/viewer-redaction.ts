@@ -30,6 +30,8 @@ import { Users } from '../../user_management/schema/users.schema';
 const logger = Logger.getInstance({ service: 'Viewer Redaction' });
 
 export const REDACTED_TOKEN = '{{redacted}}';
+/** Stored in `sourceRecordIds` for output no record id names; no viewer can read it. */
+export const OPAQUE_SOURCE = '*';
 export const REDACTION_REASON = 'no_access';
 export const ACCESS_REQUESTS_ENDPOINT = '/api/v1/access-requests';
 const ACCESS_CHECK_BATCH = 500;
@@ -86,6 +88,8 @@ export interface ViewerMessage {
   parts?: unknown;
   referenceData?: unknown;
   followUpQuestions?: unknown;
+  /** Records the turn drew on; read for the access check, never sent out. */
+  sourceRecordIds?: unknown[];
   askedBy?: { userId: string; name: string };
   redaction?: MessageRedaction;
   detailsHidden?: boolean;
@@ -516,6 +520,9 @@ export const collectMessageRecordIds = (
       if (id) ids.push(id);
     }
     for (const a of m.attachments ?? []) if (a.recordId) ids.push(a.recordId);
+    for (const id of m.sourceRecordIds ?? []) {
+      if (id !== OPAQUE_SOURCE) ids.push(String(id));
+    }
   }
   return ids;
 };
@@ -559,36 +566,53 @@ export const redactMessagesForViewer = (
       );
     });
 
+    // Records the turn drew on, cited or not. Any the viewer cannot read counts as
+    // an unreadable source (D-22 rule 2); a missing list (older answers) is unknown.
+    const isAnswer = message.messageType === 'bot_response';
+    const sources: string[] | undefined = Array.isArray(message.sourceRecordIds)
+      ? message.sourceRecordIds.map(String)
+      : undefined;
+    const hiddenSources =
+      isAnswer &&
+      !!sources?.some((id) => id === OPAQUE_SOURCE || !readable.has(id));
+    const uncitedUnknown =
+      isAnswer &&
+      citations.length === 0 &&
+      (sources === undefined || hiddenSources);
+
     const {
       tools,
       reasoning,
       parts,
       referenceData,
       followUpQuestions,
+      sourceRecordIds: _internal,
       ...rest
     } = message;
     const hadDetails = [tools, reasoning, parts, referenceData].some(
       (v) => Array.isArray(v) && v.length > 0,
     );
+    const closed = anyUnreadable || hiddenSources || uncitedUnknown;
     const base = {
       ...rest,
       ...(Array.isArray(followUpQuestions)
-        ? { followUpQuestions: anyUnreadable ? [] : followUpQuestions }
+        ? { followUpQuestions: closed ? [] : followUpQuestions }
         : {}),
       ...(hadDetails ? { detailsHidden: true } : {}),
     };
-    if (!anyUnreadable) return base;
+    if (!closed) return base;
     // Only an assistant answer is "based on" sources; a question with a hidden
     // attachment just shows that attachment's request row.
-    if (message.messageType !== 'bot_response') {
+    if (!isAnswer) {
       return { ...base, citations: newCitations, attachments: newAttachments };
     }
 
     // A citation with no populated document cannot be judged: nothing of the answer is shown.
     const everyCitationUnreadable =
-      citations.length > 0 &&
-      (newCitations.every((c) => c?.redacted) ||
-        citations.some((c) => !citationDoc(c)));
+      uncitedUnknown ||
+      (citations.length > 0 &&
+        (newCitations.every((c) => c?.redacted) ||
+          citations.some((c) => !citationDoc(c))));
     const redaction: MessageRedaction = {
       redacted: everyCitationUnreadable,
       partial: !everyCitationUnreadable,
@@ -600,7 +624,9 @@ export const redactMessagesForViewer = (
         ? ''
         : redactAnswerText(
             message.content ?? '',
-            unreadable,
+            // An unreadable source that nothing cites still closes the answer to
+            // the spans a readable citation covers (no marker is numbered -1).
+            unreadable.size === 0 ? new Set([-1]) : unreadable,
             citationResolver(citations),
           ),
       citations: newCitations,
@@ -615,6 +641,14 @@ export const messageAuthorId = (
   initiatorId: string | undefined,
 ): string | undefined => {
   return message.authorUserId?.toString() ?? initiatorId;
+};
+
+/** The source list is for the access check only; no response carries it, the author's own turns included. */
+const withoutSourceIds = <T extends { sourceRecordIds?: unknown }>(
+  message: T,
+): Omit<T, 'sourceRecordIds'> => {
+  const { sourceRecordIds: _internal, ...rest } = message;
+  return rest;
 };
 
 /**
@@ -638,7 +672,7 @@ export const redactMessagesFor = async (
     return !!author && author !== String(viewerId);
   };
   const others = messages.filter(isOthers);
-  if (others.length === 0) return messages;
+  if (others.length === 0) return messages.map(withoutSourceIds);
   const readable = await readableRecordIds(
     appConfig,
     viewer,
@@ -650,7 +684,7 @@ export const redactMessagesFor = async (
     viewer.orgId,
   );
   return messages.map((m) => {
-    if (!isOthers(m)) return m;
+    if (!isOthers(m)) return withoutSourceIds(m);
     const [redacted] = redactMessagesForViewer([m], readable);
     if (!redacted || m.messageType !== 'user_query') return redacted ?? m;
     const userId = messageAuthorId(m, initiatorId) ?? '';
@@ -740,7 +774,12 @@ export const conversationForAuthorOnly = <
     (conversation.messages ?? []).every(
       (m) => messageAuthorId(m, initiator) === userId,
     )
-    ? conversation
+    ? {
+        ...conversation,
+        messages: ((conversation.messages as Json[] | undefined) ?? []).map(
+          withoutSourceIds,
+        ),
+      }
     : undefined;
 };
 

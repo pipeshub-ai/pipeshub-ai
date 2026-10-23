@@ -3,24 +3,28 @@
 import React, { useMemo } from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { ChatResponse, emptyCitationMaps } from '@/chat/components';
+import { ChatResponse, buildCitationMapsFromApi } from '@/chat/components';
 import { ChatPixelIcon } from '@/app/components/ui/chat-pixel-icon';
 import type { ConversationMessage } from '../types';
+import type { RequestAccessInfo } from '@/chat/types';
 
-// Stable empty citation maps — avoids creating new objects per render.
-const EMPTY_CITATION_MAPS = emptyCitationMaps();
+type CitationMaps = ReturnType<typeof buildCitationMapsFromApi>;
 
 interface MessagePair {
   key: string;
   question: string;
   answer: string;
+  // The same per-viewer redaction the chat view shows (hidden sources, request access, who asked).
+  citationMaps: CitationMaps;
+  redactedAttachments: RequestAccessInfo[];
+  askedBy?: { userId: string; name: string };
 }
 
 /**
  * Group raw ConversationMessage[] into user→bot pairs.
  * A user_query without a following bot_response is kept with an empty answer.
  */
-function buildMessagePairs(messages: ConversationMessage[]): MessagePair[] {
+export function buildMessagePairs(messages: ConversationMessage[]): MessagePair[] {
   const pairs: MessagePair[] = [];
 
   for (let i = 0; i < messages.length; i++) {
@@ -28,17 +32,26 @@ function buildMessagePairs(messages: ConversationMessage[]): MessagePair[] {
     if (msg.messageType !== 'user_query') continue;
 
     const next = messages[i + 1];
-    const answer =
-      next?.messageType === 'bot_response' ? next.content : '';
+    const bot = next?.messageType === 'bot_response' ? next : undefined;
+    const answer = bot?.content ?? '';
 
     pairs.push({
       key: msg._id,
       question: msg.content,
       answer,
+      citationMaps: buildCitationMapsFromApi(
+        bot?.citations ?? [],
+        bot?.redaction,
+        bot?.detailsHidden,
+      ),
+      redactedAttachments: (msg.attachments ?? []).flatMap((a) =>
+        'redacted' in a ? [a.requestAccess] : [],
+      ),
+      askedBy: msg.askedBy,
     });
 
     // Skip the bot_response in the outer loop
-    if (answer) i++;
+    if (bot) i++;
   }
 
   return pairs;
@@ -84,6 +97,8 @@ function LoadingState() {
 // ======================================================
 
 interface ArchivedChatViewProps {
+  /** The chat shown: a redacted source is asked for in it. */
+  conversationId: string;
   conversationTitle: string;
   messages: ConversationMessage[];
   isLoading: boolean;
@@ -91,6 +106,7 @@ interface ArchivedChatViewProps {
 }
 
 export function ArchivedChatView({
+  conversationId,
   conversationTitle: _conversationTitle,
   messages,
   isLoading,
@@ -147,7 +163,10 @@ export function ArchivedChatView({
                 key={pair.key}
                 question={pair.question}
                 answer={pair.answer}
-                citationMaps={EMPTY_CITATION_MAPS}
+                citationMaps={pair.citationMaps}
+                redactedAttachments={pair.redactedAttachments}
+                conversationId={conversationId}
+                askedBy={pair.askedBy}
                 isStreaming={false}
                 isLastMessage={false}
               />

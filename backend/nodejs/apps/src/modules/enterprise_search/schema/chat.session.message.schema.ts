@@ -273,6 +273,9 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     referenceData: [referenceDataItemSchema],
     // Tool call data for tool_call messageType
     tools: [toolCallItemSchema],
+    // Records the turn drew on, cited or not. `default: undefined` keeps older rows
+    // absent ("unknown") instead of an empty list ("no sources").
+    sourceRecordIds: { type: [String], default: undefined },
     // Persisted chain-of-thought (additive, opt-out — see reasoningTurnSchema).
     reasoning: [reasoningTurnSchema],
     // Ordered agent-activity transcript (additive, `agui` protocol only) --
