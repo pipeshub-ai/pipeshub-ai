@@ -14,7 +14,7 @@ Output format: the prompt asks for a detailed markdown write-up (headed
 sections for the restatement/requirements/success criteria/open
 questions, when applicable) and — for auto mode — a trailing tier word.
 The output is still NOT parsed into structured fields: the model's
-entire markdown text becomes `rewritten_query` (i.e. `Goal.description`)
+entire markdown text becomes `rewritten_query` (i.e. `Goal.interpretation`)
 verbatim, headers and all, and the only extraction is a single-word
 regex scan for the `route`. The richer shape is purely for the model's
 (and a human reading the trace's) benefit — downstream consumers
@@ -63,7 +63,9 @@ class IntentRouteDecision(BaseModel):
 
     rewritten_query: the model's full free-form output — a self-contained
                restatement of the request with reasoning, requirements,
-               and success criteria baked in. Becomes `Goal.description`.
+               and success criteria baked in. Becomes `Goal.interpretation`
+               (and the `description` planners work from); the person's own
+               words stay the current user message.
     route: quick/react/deep — only populated when `include_routing=True`
                was passed; `None` otherwise.
     clarifying_questions: empty unless the model judged the request FATALLY
@@ -99,9 +101,12 @@ _INTENT_INSTRUCTIONS = (
     "for the agent that will execute it.\n\n"
     "1. Resolve pronouns and follow-ups ('do it', 'the second one', 'yes') "
     "against the conversation history.\n"
-    "2. Preserve every explicit ID, name, key, date, or value from the "
+    "2. Name an earlier topic of the conversation only when the request refers back "
+    "to it. A request that makes sense on its own is a new question: restate it "
+    "without bringing in earlier topics, and do not describe the conversation.\n"
+    "3. Preserve every explicit ID, name, key, date, or value from the "
     "original query VERBATIM.\n"
-    "3. Do NOT add assumptions, new constraints, or invented detail — only "
+    "4. Do NOT add assumptions, new constraints, or invented detail — only "
     "surface what the request already implies.\n\n"
     "Structure your markdown with these headings, skipping any that don't "
     "apply to this request (this is guidance, not a schema — write "
@@ -412,8 +417,8 @@ async def parse_intent_and_route(
         if not decision.rewritten_query.strip():
             decision.rewritten_query = user_query
         logger.info(
-            "Intent parsed: route=%s | rewritten_query=%s",
-            decision.route, decision.rewritten_query[:120],
+            "Intent parsed: route=%s | interpretation_chars=%d | prior_messages=%d",
+            decision.route, len(decision.rewritten_query), len(prior_messages),
         )
         return decision
     except StructuredSingleShotError as e:

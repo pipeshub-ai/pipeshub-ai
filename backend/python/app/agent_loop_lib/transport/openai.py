@@ -19,6 +19,7 @@ from app.agent_loop_lib.core.messages import (
     Message,
     MessageRole,
     ToolCall,
+    as_sent,
 )
 from app.agent_loop_lib.core.responses import (
     ModelResponse,
@@ -318,6 +319,7 @@ class OpenAITransport(LLMTransport):
 
     def _format_message(self, msg: Message) -> dict[str, Any]:
         """Convert a framework Message to an OpenAI chat message dict."""
+        msg = as_sent(msg)
         if msg.role == MessageRole.TOOL:
             step_footer = getattr(msg, "step_footer", "")
             content = msg.content

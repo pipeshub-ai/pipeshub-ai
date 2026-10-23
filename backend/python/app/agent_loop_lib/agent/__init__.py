@@ -650,7 +650,7 @@ class Agent:
                     return result
 
                 if not _skip_user_message:
-                    await self._context.add(UserMessage(content=goal.description))
+                    await self._context.add(UserMessage(content=goal.request_text()))
 
             result = await self._spec.loop.run(self, goal)
             try:

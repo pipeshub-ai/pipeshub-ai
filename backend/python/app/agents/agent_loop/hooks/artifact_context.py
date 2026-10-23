@@ -1,10 +1,7 @@
 """`artifact_context_reminder`: PRE_TURN hook that surfaces artifacts already
 registered for this conversation (from an earlier turn) as a
-`goal.constraints` reminder — the SAME injection point
-`memory.py::conversation_enrichment` uses for its own "reuse previous
-results" nudge, kept as a separate hook rather than folded into that one
-since it fires unconditionally (any earlier artifact is worth surfacing),
-not only for short "yes"/"do it" follow-ups.
+`goal.constraints` reminder. It fires unconditionally: any earlier
+artifact is worth surfacing.
 
 Queries `ArtifactRegistryService` directly (the source of truth) rather
 than trying to reconstruct artifact IDs from the bounded, text-only

@@ -1011,3 +1011,64 @@ class TestAnswerRules:
         flagged.tool_state[READ_RECORDS_IN_FULL_STATE_KEY] = True
 
         assert _build(flagged, tool_names=["knowledgegraph__search"]) == plain
+
+
+def _blocks(goal: Goal) -> tuple[str, str]:
+    spec = AgentSpec(
+        name="pipeshub-agent", system_prompt="BASE", tool_names=[],
+        model=ModelSpec(provider="scripted", model="scripted-model"),
+    )
+    with patch.multiple(
+        "app.agents.agent_loop.prompt_builder",
+        _build_knowledge_context=MagicMock(return_value=""),
+        build_llm_time_context=MagicMock(return_value=""),
+        build_capability_summary=MagicMock(return_value=""),
+        _format_user_context=MagicMock(return_value=""),
+    ):
+        return PipesHubPromptBuilder(make_context()).build_blocks(spec, _runtime_for([]), goal, [], {})
+
+
+class TestCurrentRequestInBandC:
+    """CE-07/CE-08: the verbatim request and the intent's reading of it are turn-volatile
+    context; the cached stable band never changes with them."""
+
+    RAW = "What did the audit find?"
+    BRIEFING = "## Request\nExplain what the refund audit found."
+
+    def test_anchor_and_interpretation_render_in_the_volatile_band(self) -> None:
+        goal = Goal(description=self.BRIEFING, user_message=self.RAW, interpretation=self.BRIEFING)
+
+        stable, volatile = _blocks(goal)
+
+        assert "Current request (verbatim)" in volatile and self.RAW in volatile
+        assert "How the request was interpreted" in volatile and "Explain what the refund audit found." in volatile
+        assert self.RAW not in stable and "refund audit" not in stable
+
+    def test_stable_band_is_the_same_for_any_request(self) -> None:
+        with_interpretation = Goal(description=self.BRIEFING, user_message=self.RAW, interpretation=self.BRIEFING)
+        plain = Goal(description="hello", user_message="hello")
+
+        assert _blocks(with_interpretation)[0] == _blocks(plain)[0]
+
+    def test_the_raw_query_is_not_labelled_as_data(self) -> None:
+        from app.agents.agent_loop.intent import IntentRouteDecision
+        from app.agents.agent_loop.router import _build_goal
+
+        goal = _build_goal(self.RAW, IntentRouteDecision(rewritten_query=self.BRIEFING))
+
+        _stable, volatile = _blocks(goal)
+
+        assert "User's original phrasing" not in volatile
+
+    def test_a_long_request_is_capped_in_the_anchor(self) -> None:
+        long_request = "word " * 2_000
+        _stable, volatile = _blocks(Goal(description=long_request, user_message=long_request))
+
+        assert len(volatile) < 3_000
+        assert "latest user message" in volatile
+
+    def test_stable_band_says_what_a_context_note_is(self) -> None:
+        stable, _volatile = _blocks(Goal(description="hello", user_message="hello"))
+
+        assert '<context_note source="agent">' in stable
+        assert "not written by the user" in stable

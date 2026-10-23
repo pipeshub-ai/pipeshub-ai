@@ -216,8 +216,9 @@ class TestMessageToLangchain:
         assert converted[1].content == "[ref1] (image)"
         assert isinstance(converted[-1], HumanMessage)
         assert converted[-1].content == [
-            {"type": "text", "text": _RELOCATED_IMAGES_PREFIX},
+            {"type": "text", "text": f'<context_note source="agent">\n{_RELOCATED_IMAGES_PREFIX}'},
             {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
+            {"type": "text", "text": "</context_note>"},
         ]
 
     def test_relocate_tool_images_adds_no_message_when_there_are_no_images(self) -> None:

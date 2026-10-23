@@ -30,6 +30,7 @@ from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     Message,
     MessageRole,
+    as_sent,
 )
 from app.agent_loop_lib.core.responses import (
     ModelResponse,
@@ -285,8 +286,14 @@ class GeminiTransport(LLMTransport):
         flattened: set[str] = set()
 
         for msg in messages:
+            msg = as_sent(msg)
             if msg.role == MessageRole.TOOL:
-                payload = (msg.content or "") + getattr(msg, "step_footer", "")
+                payload = msg.text + msg.step_footer
+                # Images ride beside the function_response in the same turn, the way
+                # langchain-google-genai sends them.
+                images = self._content_parts(
+                    [p for p in msg.content if getattr(p, "type", None) == "image"]
+                ) if isinstance(msg.content, list) else []
                 name = call_names.get(msg.tool_call_id or "")
                 if not name:
                     meta = getattr(msg, "artifact_meta", None)
@@ -296,14 +303,14 @@ class GeminiTransport(LLMTransport):
                     # would have no function_call to attach to.
                     contents.append(types.Content(
                         role="user",
-                        parts=[types.Part(
+                        parts=[*images, types.Part(
                             text="[previous tool result] " + name + ": " + payload
                         )],
                     ))
                     continue
                 contents.append(types.Content(
                     role="user",
-                    parts=[types.Part(function_response=types.FunctionResponse(
+                    parts=[*images, types.Part(function_response=types.FunctionResponse(
                         name=name,
                         response={"result": payload},
                     ))],

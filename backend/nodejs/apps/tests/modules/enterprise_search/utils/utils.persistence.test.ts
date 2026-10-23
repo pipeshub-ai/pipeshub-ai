@@ -583,6 +583,53 @@ describe('Saving chat answers (enterprise search utils)', () => {
     })
   })
 
+  describe('formatPreviousConversations unanswered turns', () => {
+    it('replays a turn that failed before an answer as a failed answer', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Summarise the Q3 deck' } as IMessage,
+        { messageType: 'bot_response', content: 'It covers revenue.' } as IMessage,
+        { messageType: 'user_query', content: 'List every open Jira epic' } as IMessage,
+        { messageType: 'error', content: 'Error Generating Response, Please try again' } as IMessage,
+      ])
+
+      expect(history.map((turn) => turn.role)).to.deep.equal([
+        'user_query',
+        'bot_response',
+        'user_query',
+        'bot_response',
+      ])
+      expect(at(history, 3)).to.deep.equal({ role: 'bot_response', content: '', status: 'failed' })
+    })
+
+    it('keeps dropping an error row that follows an answer', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Open tickets?' } as IMessage,
+        { messageType: 'bot_response', content: 'Three.' } as IMessage,
+        { messageType: 'error', content: 'Something went wrong' } as IMessage,
+      ])
+
+      expect(history).to.have.length(2)
+    })
+
+    it('marks an answer the user stopped', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Compare every epic' } as IMessage,
+        { messageType: 'bot_response', content: 'Epic A is', status: 'stopped' } as IMessage,
+      ])
+
+      expect(at(history, 1)).to.include({ role: 'bot_response', content: 'Epic A is', status: 'stopped' })
+    })
+
+    it('adds no status to a completed answer', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Hi' } as IMessage,
+        { messageType: 'bot_response', content: 'Hello' } as IMessage,
+      ])
+
+      expect(at(history, 1)).to.not.have.property('status')
+    })
+  })
+
   describe('staleAskUserQuestionToolCallIds', () => {
     const row = (
       messageType: string,

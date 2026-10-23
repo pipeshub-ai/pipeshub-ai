@@ -39,6 +39,7 @@ from app.agent_loop_lib.core.messages import (
     ToolCall,
     ToolMessage,
     UserMessage,
+    as_sent,
 )
 from app.agent_loop_lib.core.responses import TokenUsage
 
@@ -195,7 +196,7 @@ def convert_message_to_langchain(
         return LCSystemMessage(content=message.content)
 
     if message.role == MessageRole.USER:
-        content = message.content
+        content = as_sent(message).content
         if isinstance(content, str):
             return HumanMessage(content=content)
         return HumanMessage(content=[_part_to_block(p) for p in content])
@@ -271,17 +272,17 @@ def convert_messages_to_langchain(
         for m in messages
     ]
     if relocate_tool_images:
-        blocks = [
-            _image_part_to_block(part)
+        images: list[Part] = [
+            part
             for m in messages
             if m.role == MessageRole.TOOL and isinstance(m.content, list)
             for part in m.content
             if isinstance(part, ImagePart)
         ]
-        if blocks:
-            converted.append(HumanMessage(
-                content=[{"type": "text", "text": _RELOCATED_IMAGES_PREFIX}, *blocks],
-            ))
+        if images:
+            converted.append(convert_message_to_langchain(UserMessage(
+                content=[TextPart(text=_RELOCATED_IMAGES_PREFIX), *images], injected=True,
+            )))
     if system:
         return [LCSystemMessage(content=system), *converted]
     return converted

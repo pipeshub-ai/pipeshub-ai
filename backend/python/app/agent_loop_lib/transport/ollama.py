@@ -12,6 +12,7 @@ from app.agent_loop_lib.core.messages import (
     Message,
     MessageRole,
     ToolCall,
+    as_sent,
 )
 from app.agent_loop_lib.core.responses import (
     ModelResponse,
@@ -88,6 +89,7 @@ class OllamaTransport(LLMTransport):
     # ------------------------------------------------------------------
 
     def _format_message(self, msg: Message) -> dict[str, Any]:
+        msg = as_sent(msg)
         if msg.role == MessageRole.TOOL:
             # Ollama's /api/chat has no dedicated tool-result role field
             # beyond "tool" + content — no tool_call_id round-trip, so the

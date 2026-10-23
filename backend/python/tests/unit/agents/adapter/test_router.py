@@ -16,7 +16,7 @@ intent-parsed `Goal` every mode now receives, focused on:
   pays for a routing classification, only intent parsing.
 - `_build_goal`'s contract: the rewritten query becomes `Goal.description`,
   falling back to the raw query when blank, with the raw query always
-  preserved verbatim as a constraint, and `decision.gaps` landing on
+  the goal's `user_message`, and `decision.gaps` landing on
   `Goal.gaps` unchanged.
 - The 3rd return value (`clarifying_questions`) passing through verbatim
   from `decision.clarifying_questions`, and the 4th (`ModeDefinition`)
@@ -81,10 +81,17 @@ class TestBuildGoal:
         goal = _build_goal("raw query", decision)
         assert goal.description == "raw query"
 
-    def test_preserves_raw_query_verbatim_as_constraint(self) -> None:
+    def test_raw_query_is_the_user_message_and_the_rewrite_the_interpretation(self) -> None:
         decision = IntentRouteDecision(reasoning="r", rewritten_query="rewritten")
         goal = _build_goal("do the thing for Acme Corp", decision)
-        assert "<original_query>do the thing for Acme Corp</original_query>" in goal.constraints
+        assert goal.user_message == "do the thing for Acme Corp"
+        assert goal.interpretation == "rewritten"
+        assert goal.constraints == []
+
+    def test_no_interpretation_when_the_rewrite_is_the_query(self) -> None:
+        decision = IntentRouteDecision(reasoning="r", rewritten_query="raw query")
+        goal = _build_goal("raw query", decision)
+        assert goal.interpretation is None
 
     def test_threads_requirements_and_success_criteria(self) -> None:
         decision = IntentRouteDecision(
@@ -138,7 +145,8 @@ class TestSelectLoopAndGoal:
         assert goal.requirements == []
         assert goal.success_criteria == []
         assert goal.gaps == []
-        assert "<original_query>hello</original_query>" in goal.constraints
+        assert goal.user_message == "hello"
+        assert goal.interpretation is None
         assert clarifying == []
 
     async def test_react_mode_returns_react_loop_without_routing_classification(
@@ -445,3 +453,59 @@ class TestSelectLoopAndGoal:
                 chat_mode=chat_mode, query="hello", llm=context.llm, context=context,
             )
             assert mode is resolve_mode(chat_mode)
+
+
+class TestResumes:
+    """B9: a request that answers a card continues the turn that stopped on it."""
+
+    @pytest.mark.parametrize("chat_mode", ["react", "planExecute", "deep"])
+    async def test_explicit_mode_resume_makes_no_intent_call(
+        self, chat_mode: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list = []
+
+        async def _fake_parse_intent(*_args: Any, **kwargs: Any) -> IntentRouteDecision:
+            calls.append(kwargs)
+            return IntentRouteDecision(reasoning="r", rewritten_query="briefing")
+
+        monkeypatch.setattr("app.agents.agent_loop.router.parse_intent_and_route", _fake_parse_intent)
+        context = make_context(llm=FakeChatModel())
+
+        _loop, goal, clarifying, mode = await select_loop_and_goal(
+            chat_mode=chat_mode, query="Create a ticket for the outage", llm=context.llm,
+            context=context, resume=True,
+        )
+
+        assert calls == []
+        assert mode == resolve_mode(chat_mode)
+        assert goal.user_message == "Create a ticket for the outage"
+        assert goal.interpretation is None
+        assert clarifying == []
+
+    async def test_auto_mode_resume_still_routes_but_never_asks_again(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
+
+        question = AskUserQuestionItemInput(
+            question="Which project?", options=[{"label": "A"}, {"label": "B"}, {"label": "C"}],
+            multiSelect=False,
+        )
+        calls: list = []
+
+        async def _fake_parse_intent(*_args: Any, **kwargs: Any) -> IntentRouteDecision:
+            calls.append(kwargs)
+            return IntentRouteDecision(
+                reasoning="r", rewritten_query="briefing", route="deep", clarifying_questions=[question],
+            )
+
+        monkeypatch.setattr("app.agents.agent_loop.router.parse_intent_and_route", _fake_parse_intent)
+        context = make_context(llm=FakeChatModel())
+
+        _loop, _goal, clarifying, mode = await select_loop_and_goal(
+            chat_mode="auto", query="do the thing", llm=context.llm, context=context, resume=True,
+        )
+
+        assert [c["include_routing"] for c in calls] == [True]
+        assert mode.name == "deep"
+        assert clarifying == []

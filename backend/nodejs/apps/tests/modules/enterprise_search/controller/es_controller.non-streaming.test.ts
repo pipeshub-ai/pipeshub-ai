@@ -356,11 +356,13 @@ describe('es_controller non-streaming chat routes', () => {
         expect(third.error, String(third.error?.message)).to.be.undefined
         expect(conversation().status, 'a successful turn recovers a failed conversation').to.equal('Complete')
         expect(conversation().failReason).to.be.undefined
-        // Error messages never go back to the model; the unanswered question does.
+        // The error text never goes back to the model; the failed question goes
+        // back closed by a failed answer, so it never reads as still open.
         expect(ai.calls[2]!.body.previousConversations).to.deep.equal([
           { content: 'Q1', role: 'user_query' },
           { content: 'A1', role: 'bot_response' },
           { content: 'Q2', role: 'user_query' },
+          { content: '', role: 'bot_response', status: 'failed' },
         ])
 
         answerNext(200, answer('A4'))
@@ -370,6 +372,7 @@ describe('es_controller non-streaming chat routes', () => {
           { content: 'Q1', role: 'user_query' },
           { content: 'A1', role: 'bot_response' },
           { content: 'Q2', role: 'user_query' },
+          { content: '', role: 'bot_response', status: 'failed' },
           { content: 'Q3', role: 'user_query' },
           { content: 'A3', role: 'bot_response' },
         ])

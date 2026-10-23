@@ -118,22 +118,14 @@ def _build_loop(
     return ReActLoop()
 
 
-def _base_constraints(
-    raw_query: str,
-    attachments: list[dict[str, Any]] | None = None,
-) -> list[str]:
-    """Seed constraints common to every Goal: the verbatim query + attachment
-    names. Wrapped in `<original_query>` tags (rather than a plain sentence)
-    because `PipesHubPromptBuilder` renders every constraint under
-    "## Request Context" in the highest-attention trailing position of the
-    prompt — tagging it as data, distinct from `goal.description` (the
-    rewritten query the agent actually acts on), stops a model from reading
-    the duplicate as a second, competing instruction."""
-    constraints: list[str] = [f"<original_query>{raw_query}</original_query>"]
-    if attachments:
-        names = ", ".join(a.get("recordName", "unknown") for a in attachments)
-        constraints.append(f"User attached file(s): {names}")
-    return constraints
+def _base_constraints(attachments: list[dict[str, Any]] | None = None) -> list[str]:
+    """Seed constraints common to every Goal: the names of attached files. The
+    query itself is `Goal.user_message`, which the prompt builder anchors
+    verbatim; repeating it here put it under a "this is data" header."""
+    if not attachments:
+        return []
+    names = ", ".join(a.get("recordName", "unknown") for a in attachments)
+    return [f"User attached file(s): {names}"]
 
 
 import re as _re
@@ -175,14 +167,12 @@ def _build_goal(
 ) -> Goal:
     """Builds the structured `Goal` the agent actually runs with.
 
-    `rewritten_query` becomes `description` (falling back to the raw query
-    if the model returned nothing usable — `parse_intent_and_route()` also
-    guards this, this is belt-and-suspenders). The ORIGINAL raw query is
-    always preserved verbatim as a constraint so nothing downstream loses
-    it: `PipesHubPromptBuilder` surfaces `goal.constraints`, and
-    `conversation_enrichment`'s (PRE_TURN hook) follow-up-reuse note keys
-    off `goal.description`/history, not this constraint — appending to it
-    is additive, never a replacement of that hook's own note.
+    The raw query is `user_message`: the current user message is always the
+    person's own words. `rewritten_query` is the `interpretation`, rendered
+    as context in the system prompt, and the `description` the planners and
+    tool search work from (falling back to the raw query if the model
+    returned nothing usable — `parse_intent_and_route()` also guards this,
+    this is belt-and-suspenders).
 
     `decision.gaps` lands on `Goal.gaps` unchanged — the same field
     `agent_loop_lib`'s own `GoalBuilder` populates, so anything downstream
@@ -192,13 +182,26 @@ def _build_goal(
     caller (`select_loop_and_goal`) short-circuits before this `Goal` is
     ever handed to an `Agent` — see that function's docstring.
     """
-    description = decision.rewritten_query.strip() or raw_query
+    interpretation = decision.rewritten_query.strip()
     return Goal(
-        description=description,
+        description=interpretation or raw_query,
+        user_message=raw_query,
+        interpretation=interpretation if interpretation and interpretation != raw_query.strip() else None,
         requirements=list(decision.requirements),
         success_criteria=list(decision.success_criteria),
-        constraints=_base_constraints(raw_query, attachments),
+        constraints=_base_constraints(attachments),
         gaps=list(decision.gaps),
+    )
+
+
+def _goal_without_intent(raw_query: str, attachments: list[dict[str, Any]] | None) -> Goal:
+    """The goal when no intent call runs: the request as typed, plus the
+    regex criteria `_infer_quick_mode_criteria` can read off its shape."""
+    return Goal(
+        description=raw_query,
+        user_message=raw_query,
+        success_criteria=_infer_quick_mode_criteria(raw_query),
+        constraints=_base_constraints(attachments),
     )
 
 
@@ -213,6 +216,7 @@ async def select_loop_and_goal(
     opik_active: bool = False,
     opik_project_name: str | None = None,
     transport_registry: "TransportRegistry | None" = None,
+    resume: bool = False,
 ) -> tuple[LoopStrategy, Goal, list[AskUserQuestionItemInput], ModeDefinition]:
     """Single entry point `PipesHubAgentFactory.create()` calls to resolve
     `chatMode` to a concrete `LoopStrategy` AND the `Goal` the agent runs
@@ -264,12 +268,18 @@ async def select_loop_and_goal(
     it's non-empty (see `clarification.py`), exactly like `02_orchestrator.
     py`'s `intent_agent` gating what `executor_agent` receives, except the
     gate here can end the whole turn instead of only choosing a sub-agent.
+
+    `resume`: the request answers an ask-user or approval card, continuing
+    the turn that stopped on it, so it asks no clarifying question. With the
+    mode known up front the intent call is skipped too: the run continues
+    the stopped turn, whose own question is `query`. Under `auto` the call
+    still runs, because its tier picks the loop and the tools.
     """
     mode = resolve_mode(chat_mode)
 
     attachments = context.tool_state.get("attachments") or []
 
-    if mode is not None and mode.skip_intent:
+    if mode is not None and (mode.skip_intent or resume):
         # `quick` today: the mode is already known from the wire value
         # (not the tier classifier), so there is no round-trip left to
         # amortize an intent call against — skip it outright rather than
@@ -279,15 +289,9 @@ async def select_loop_and_goal(
         # anyway (`decision.rewritten_query.strip() or raw_query`) had the
         # model call failed, so this is that same fallback shape, just
         # reached without paying for the call.
-        # Lightweight heuristic: infer basic success criteria from query
-        # structure so the prompt's goal_brief section can tell the model
-        # what "done" looks like, even without the full intent call.
-        inferred_criteria = _infer_quick_mode_criteria(query)
-        goal = Goal(
-            description=query,
-            success_criteria=inferred_criteria,
-            constraints=_base_constraints(query, attachments),
-        )
+        if resume and not mode.skip_intent:
+            logger.info("intent_skipped reason=resume mode=%s", mode.name)
+        goal = _goal_without_intent(query, attachments)
         clarifying_questions: list["AskUserQuestionItemInput"] = []
         # No intent call — use the conservative regex fallback so pinpoint
         # queries (the majority) still cost zero tokens.
@@ -313,8 +317,8 @@ async def select_loop_and_goal(
             opik_project_name=opik_project_name,
         )
         goal = _build_goal(query, decision, attachments=attachments)
-        # A turn that answers an approval card always runs: the approved call runs in it.
-        clarifying_questions = [] if context.tool_approval is not None else list(decision.clarifying_questions)
+        # A turn that answers a card always runs: it continues the turn that asked.
+        clarifying_questions = [] if resume or context.tool_approval is not None else list(decision.clarifying_questions)
 
         # Propagate the whole-document bit from the intent result.
         # When the model emitted the WHOLE_DOCUMENT marker, use it directly;

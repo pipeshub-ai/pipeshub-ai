@@ -844,11 +844,39 @@ const withTurnAskToolResults = (
   return extra.length ? [...existing, ...extra] : existing;
 };
 
+/** Whether the turn at `index` still gets an answer before the next question. */
+const answerFollows = (messages: IMessage[], index: number): boolean => {
+  for (let j = index + 1; j < messages.length; j++) {
+    const type = messages[j]?.messageType;
+    if (type === 'bot_response') return true;
+    if (type === 'user_query') return false;
+  }
+  return false;
+};
+
+/**
+ * Prior turns for the AI service, oldest first.
+ *
+ * A turn that failed before an answer leaves an `error` row in place of one.
+ * It is sent as an answer with `status: 'failed'`: dropped, its question
+ * replayed as still open, and providers that merge consecutive user turns
+ * joined it to the current question. An answer the user stopped carries
+ * `status: 'stopped'`. The AI service renders both as short markers.
+ */
 export const formatPreviousConversations = (messages: IMessage[]) => {
   const result: Array<Record<string, unknown>> = [];
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    if (!msg || msg.messageType === 'error' || msg.messageType === 'tool_call') {
+    if (!msg || msg.messageType === 'tool_call') {
+      continue;
+    }
+    if (msg.messageType === 'error') {
+      if (
+        result[result.length - 1]?.role === 'user_query' &&
+        !answerFollows(messages, i)
+      ) {
+        result.push({ role: 'bot_response', content: '', status: 'failed' });
+      }
       continue;
     }
     let toolResults: PreviousToolResult[] =
@@ -874,6 +902,8 @@ export const formatPreviousConversations = (messages: IMessage[]) => {
       // see HOW a past answer was produced instead of text-only history
       // (see `_convert_conversation_turn`, factory.py).
       ...(toolResults.length > 0 && { tool_results: toolResults }),
+      ...(msg.messageType === 'bot_response' &&
+        msg.status === 'stopped' && { status: 'stopped' }),
     });
   }
   return result;

@@ -130,7 +130,6 @@ from app.agents.agent_loop.hooks import (
     code_graph_unlock_after_tools,
     code_graph_unlock_on_turn,
     completion_gate,
-    conversation_enrichment,
     progressive_entity_tools,
     # repo_instructions_after_tools,
     # repo_instructions_on_turn,
@@ -231,6 +230,12 @@ def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:  #
     if final_answer_enabled():
         tool_registry.register_tool(FinalAnswerTool())
 from app.modules.agents.qna.tool_system import code_execution_enabled  # noqa: E402
+from app.modules.agents.qna.turn_outcome import (  # noqa: E402
+    FAILED,
+    STOPPED,
+    UNANSWERED_ANSWER,
+    replayed_answer,
+)
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -680,6 +685,7 @@ class PipesHubAgentFactory:
             opik_active=opik_active,
             opik_project_name=opik_project_name,
             transport_registry=transport_registry,
+            resume=bool(resume_answers or approval_resume),
         )
 
         _mark("f:select_loop_and_goal")
@@ -693,12 +699,13 @@ class PipesHubAgentFactory:
                 context, logger,
             )
             if attachment_text:
-                goal.description = (
-                    f"{goal.description}\n\n{attachment_text}"
+                goal.attachment_text = (
+                    f"{attachment_text}"
                     "\n\nWhen citing facts from attached documents, use the "
                     "Citation ID as a markdown link, e.g. [source](ref2). "
                     "Do NOT use record URLs or block indices as citation links."
                 )
+                goal.description = f"{goal.description}\n\n{goal.attachment_text}"
             if image_blocks:
                 context.attachment_image_blocks = image_blocks
 
@@ -1186,7 +1193,6 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.PRE_AGENT).use(resume_parked_call(context))
         hooks.on(HookEvent.PRE_AGENT).use(selected_nodes_prompt(context))
         hooks.on(HookEvent.PRE_AGENT).use(period_summary_hint(context))
-        hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
         hooks.on(HookEvent.PRE_TURN).use(seed_visible_tools_from_history(context))
@@ -1258,12 +1264,16 @@ class PipesHubAgentFactory:
         history: list[Message] = []
         tool_results_at: dict[str, int] = {}
         after_answer = False
+        unanswered = 0
         for turn in previous_conversations:
             if turn.get("role") == "user_query" and is_tool_approval_resume_query(str(turn.get("content") or "")):
                 _drop_closing_text(history)
                 after_answer = True
                 continue
             messages = _convert_conversation_turn(turn)
+            if messages and _opens_a_new_question(turn) and _ends_on_open_question(history):
+                history.append(AssistantMessage(content=UNANSWERED_ANSWER))
+                unanswered += 1
 
             if (
                 turn.get("role") == "user_query"
@@ -1305,11 +1315,22 @@ class PipesHubAgentFactory:
             _append_turn(history, messages, tool_results_at, fold=after_answer and turn.get("role") == "bot_response")
             after_answer = after_answer and turn.get("role") != "bot_response"
 
+        # The run adds the current request next.
+        if _ends_on_open_question(history):
+            history.append(AssistantMessage(content=UNANSWERED_ANSWER))
+            unanswered += 1
+
         # After the fold: folding an approval answer relies on its repeated id.
         _dedupe_tool_call_ids(history, set())
         for message in history:
             await ctx.add(message)
         agent.seed_context(ctx)
+        statuses = [turn.get("status") for turn in previous_conversations if turn.get("role") == "bot_response"]
+        logger.info(
+            "history_seeded conversation_id=%s turns=%d messages=%d failed=%d stopped=%d unanswered=%d",
+            context.conversation_id, len(previous_conversations), len(history),
+            statuses.count(FAILED), statuses.count(STOPPED), unanswered,
+        )
 
 
 def _inject_images_into_message(
@@ -1483,6 +1504,16 @@ def _find_ask_user_question_call(
             tool_call_id = call.id
             break
     return keep_through, tool_call_id
+
+
+def _ends_on_open_question(history: list[Message]) -> bool:
+    """Whether the last message is the person's, with no answer after it."""
+    return bool(history) and isinstance(history[-1], UserMessage) and not history[-1].injected
+
+
+def _opens_a_new_question(turn: dict[str, Any]) -> bool:
+    """A user turn that asks something, as opposed to one that answers the card before it."""
+    return turn.get("role") == "user_query" and not is_ask_user_question_resume_query(str(turn.get("content") or ""))
 
 
 def _drop_closing_text(history: list[Message]) -> None:
@@ -1670,6 +1701,7 @@ def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:
 
     if role != "bot_response":
         return []
+    content = replayed_answer(content, turn.get("status"))
 
     messages: list[Message] = []
     tool_results = turn.get("tool_results") or []

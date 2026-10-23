@@ -291,3 +291,36 @@ async def test_invariants_hold_for_any_chat(
     assert repair_tool_pairing(sent)[1] == 0
     assert count_tokens(sent) <= budget.hard_limit_tokens
     assert [m.model_dump() for m in stored] == before
+
+
+class _SeededAgent:
+    def __init__(self) -> None:
+        self.context = None
+
+    def seed_context(self, context: Any) -> None:  # noqa: ANN401
+        self.context = context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_row", [None, {"role": "bot_response", "content": "", "status": "failed"}])
+async def test_errored_previous_turn_is_answered_on_every_call(failed_row):
+    """SC-08: an earlier turn that failed before an answer (Node either drops its error row or
+    sends it with a status). Every call, compacted or not, closes it with a placeholder answer,
+    so it never sits next to the current question as a second open question."""
+    previous = [
+        {"role": "user_query", "content": "QUESTION A: how do SMS appointment reminders work?"},
+        {"role": "bot_response", "content": "ANSWER A: enable reminders in Practice Settings."},
+        {"role": "user_query", "content": "QUESTION B: list every open billing ticket"},
+        *([failed_row] if failed_row else []),
+    ]
+    agent = _SeededAgent()
+    await PipesHubAgentFactory._seed_conversation_history(agent, previous, _context())
+    stored = [*await agent.context.messages(), UserMessage(content=CURRENT)]
+    hooks = _chain()
+    budget = _budget(32_000, 4_000)
+    for turn in range(1, 9):
+        _tool_round(stored, turn, 6_000)
+        sent = await _send(hooks, stored, budget, turn)
+        _assert_current_question_sent(sent)
+        humans = [isinstance(m, UserMessage) and not m.injected for m in sent]
+        assert not any(a and b for a, b in zip(humans, humans[1:])), f"call {turn}: two human turns in a row"

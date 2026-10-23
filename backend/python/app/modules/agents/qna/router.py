@@ -27,9 +27,14 @@ from app.modules.agents.capability_summary import (
     format_connector_filter_lines,
 )
 from app.modules.agents.qna.tool_system import code_execution_enabled
+from app.modules.agents.qna.turn_outcome import replayed_answer
 from app.modules.artifacts.reader import record_artifact_reader
 
 logger = logging.getLogger(__name__)
+
+# Enough of an earlier answer for a list the next question can point into
+# ("the second one"), while the intent call stays small.
+_PRIOR_ANSWER_CHARS = 1_500
 
 
 class RouteDecision(BaseModel):
@@ -183,7 +188,8 @@ async def build_prior_routing_messages(
       exactly as they appear in the document (images only when multimodal).
     - Standalone image attachments: appended after the turn text (multimodal only).
 
-    Bot turns are truncated to their first line to keep the context compact.
+    Bot turns keep their first `_PRIOR_ANSWER_CHARS` characters, so a follow-up
+    that points into an earlier answer ("the second one") can be resolved.
     Attachment fetching errors are silently swallowed so routing is never blocked.
     """
     from app.utils.attachment_utils import resolve_attachment_blocks_simple
@@ -252,8 +258,8 @@ async def build_prior_routing_messages(
             messages.append(HumanMessage(content=msg_content))
 
         elif role == "bot_response":
-            first_line = content.split("\n")[0][:150]
-            messages.append(AIMessage(content=first_line))
+            answer = replayed_answer(content, conv.get("status"))
+            messages.append(AIMessage(content=answer[:_PRIOR_ANSWER_CHARS]))
 
     return messages
 
