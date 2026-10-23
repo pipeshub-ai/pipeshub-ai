@@ -11,6 +11,8 @@ This compares the two directly, so the gap is named on the pull request instead.
 
 from __future__ import annotations
 
+from typing import get_args
+
 import pytest
 from app.models.entities import (
     AppMetadata,
@@ -92,4 +94,45 @@ def test_the_schema_names_every_field_the_model_carries(entity: str) -> None:
     assert not missing, (
         f"{model.__name__} carries {missing}, which {layers} "
         f"does not name; add each one before shipping it"
+    )
+
+
+def _nested_model(annotation: object) -> type[BaseModel] | None:
+    """The model behind a field typed `Model` or `Optional[Model]`, else None."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    models = [
+        arg for arg in get_args(annotation)
+        if isinstance(arg, type) and issubclass(arg, BaseModel)
+    ]
+    return models[0] if len(models) == 1 else None
+
+
+@pytest.mark.parametrize("entity", sorted(MODEL_FOR_ENTITY))
+def test_the_schema_names_every_field_of_a_nested_model(entity: str) -> None:
+    """A schema that lists a nested object's properties rejects any it does not list.
+
+    `block_containers` is checked key by key, so `BlocksContainer.code_facts_version`
+    failed every Jira and Linear graph check on the nightly while the top-level
+    comparison above stayed green.
+    """
+    model = MODEL_FOR_ENTITY[entity]
+    declared = merged_graph_entity_schema(entity).fields
+    checked: list[str] = []
+    gaps: list[str] = []
+    for name, field in model.model_fields.items():
+        nested = _nested_model(field.annotation)
+        schema = declared.get(name)
+        if field.exclude is True or nested is None or schema is None or not schema.properties:
+            continue
+        checked.append(name)
+        missing = sorted(_carried_fields(nested) - set(schema.properties))
+        if missing:
+            gaps.append(f"{name} ({nested.__name__}) carries {missing}")
+
+    if "block_containers" in model.model_fields:
+        assert "block_containers" in checked, "block_containers must be compared, not skipped"
+    assert not gaps, (
+        f"{model.__name__}: {'; '.join(gaps)}, which integration-tests/validation/schemas/ "
+        "does not name under that field's properties; add each one before shipping it"
     )
