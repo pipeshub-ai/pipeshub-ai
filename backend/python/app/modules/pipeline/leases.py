@@ -68,7 +68,8 @@ class RecordLeases:
         manager = self._manager
         if manager is None:
             # Classify and entities both read-modify-write the stored record: without a lease
-            # to serialise them, the second write would drop the first one's section.
+            # to serialise them, the second write would drop the first one's section. This
+            # lock covers one process only; across processes nothing serialises them here.
             async with self._local_hold(record_id, wait_s):
                 if not await still_current():
                     raise RevisionSuperseded(record_id)
