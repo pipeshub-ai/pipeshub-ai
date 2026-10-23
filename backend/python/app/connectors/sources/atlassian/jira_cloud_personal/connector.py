@@ -28,7 +28,6 @@ from uuid import uuid4
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
-    CollectionNames,
     Connectors,
     PermissionModel,
 )
@@ -266,6 +265,8 @@ class JiraCloudPersonalConnector(JiraConnector):
 
     async def run_sync(self) -> None:
         """Sync projects and issues visible to the configured user; no permission APIs."""
+        self._kept_unread_access = False
+        self._kept_after_refusal = []
         try:
             # Init is done by event_service / setup before run_sync is scheduled
             # (same as Confluence Cloud). Do not re-init here.
@@ -337,11 +338,17 @@ class JiraCloudPersonalConnector(JiraConnector):
             projects, _raw_projects = await self._fetch_projects(
                 allowed_keys, project_keys_operator, []
             )
+            self._synced_project_keys = {group.short_name for group, _ in projects if group.short_name}
 
             await self.data_entities_processor.on_new_record_groups(projects)
 
             last_sync_time = await self._get_issues_sync_checkpoint()
             sync_stats = await self._sync_all_project_issues(projects, [], last_sync_time)
+            failed_statuses = sync_stats.get("failed_project_statuses") or {}
+            for key in sync_stats.get("failed_project_keys") or []:
+                # Issues not read would look gone to a full sync's unlink.
+                self._note_unread(failed_statuses.get(key), ("project_issues", key))
+            await self._note_kept_after_refusal(projects)
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
@@ -435,22 +442,9 @@ class JiraCloudPersonalConnector(JiraConnector):
                 "Could not check for projects that left this account's view; retrying next sync: %s", e
             )
         await self._remove_issues_gone_from_jira(
-            [project for project in projects if project.short_name not in failed_project_keys]
+            [project for project in projects if project.short_name not in failed_project_keys],
+            covered_project_ids={project.external_group_id for project in projects if project.external_group_id},
         )
-
-    async def _signed_in_to_jira(self) -> bool:
-        """Whether Jira still recognises the account (``GET /myself`` answers 401 to an anonymous visitor)."""
-        try:
-            response = await self._call_with_retry(
-                lambda ds: ds.get_current_user(), ctx="checking the Jira account"
-            )
-        except Exception as e:
-            self.logger.warning("Could not ask Jira which account this connector uses: %s", e)
-            return False
-        if response.status != HttpStatusCode.OK.value:
-            return False
-        profile = self._safe_json_parse(response, "GET /myself")
-        return isinstance(profile, dict) and bool(profile.get("accountId"))
 
     async def _remove_projects_out_of_view(
         self,
@@ -479,23 +473,6 @@ class JiraCloudPersonalConnector(JiraConnector):
                     "retrying next sync: %s",
                     project_key, e,
                 )
-
-    async def _stored_projects(self) -> list[tuple[str, str]]:
-        """(Jira id, key) of each project this connector holds; none when the read fails, as the stores answer."""
-        groups = await self.data_entities_processor.get_nodes_by_filters(
-            collection=CollectionNames.RECORD_GROUPS.value,
-            filters={"connectorId": self.connector_id, "groupType": RecordGroupType.PROJECT.value},
-            return_fields=["externalGroupId", "shortName", "isDeletedAtSource"],
-        )
-        return [
-            (str(group["externalGroupId"]), str(group["shortName"]))
-            for group in groups or []
-            # A group marked deleted at source is only kept for its records in the trash.
-            if isinstance(group, dict)
-            and group.get("externalGroupId")
-            and group.get("shortName")
-            and not group.get("isDeletedAtSource")
-        ]
 
     async def _remove_project_out_of_view(self, project_id: str, project_key: str) -> None:
         response = await self._call_with_retry(

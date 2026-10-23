@@ -930,7 +930,7 @@ class TestCheckAndFetchUpdatedIssue:
                 "creator": {"accountId": "acc-1", "displayName": "Creator", "emailAddress": "c@test.com"},
                 "reporter": {"accountId": "acc-2", "displayName": "Reporter"},
                 "assignee": {"accountId": "acc-3", "displayName": "Assignee"},
-                "project": {"id": "proj-1"},
+                "project": {"id": "proj-id-1"},
                 "parent": None,
             },
         }

@@ -3285,10 +3285,13 @@ class TestFetchProjectPermissionSchemeCoverage:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        permissions = await connector._fetch_project_permission_scheme("PROJ", {})
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ORG
-        assert permissions[0].external_id == "all_licensed_users"
+        # "Any logged in user" means anyone with product access: the application roles' groups,
+        # not the whole PipesHub org.
+        mapping = {"jira-software": [{"groupId": "g-sw"}], "jira-servicedesk": [{"groupId": "g-sd"}, {"groupId": "g-sw"}]}
+        permissions = await connector._fetch_project_permission_scheme("PROJ", mapping)
+        assert [(p.entity_type, p.external_id) for p in permissions] == [
+            (EntityType.GROUP, "g-sw"), (EntityType.GROUP, "g-sd"),
+        ]
 
 
 # ===========================================================================
