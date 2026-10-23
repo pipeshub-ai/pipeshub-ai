@@ -321,8 +321,8 @@ jobs:
       # value in those env files.
       CONNSIM_REF: fcfe407746e1ecd254b30731a8d78479c58f59d9
       CONNSIM_IMAGE: pipeshub/connectors-simulator:it
-      CONNSIM_PACK_URI: s3://pipeshub-simulator-dataset/packs/lumenfold-1.tar.gz
-      CONNSIM_PACK_SHA256: d39e021dc029ebd3c6e8af29b7dc8de161020ecc0818411204d6ce585db2d725
+      CONNSIM_PACK_URI: s3://pipeshub-simulator-dataset/packs/lumenfold-2.tar.gz
+      CONNSIM_PACK_SHA256: 54c042080de46e9fbdda84f6c954cceeb9a4d1d3fc78075e29fc418a43096354
       # The Gmail suites run against the Gmail simulator (gmail-sim profile) on shard 4, with the Drive suites'
       # Google credentials; connectors/gmail_sim.env points the Gmail connectors at it.
       NEEDS_GMAIL_SIM: ${{ (matrix.shard == 'connectors-4' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'true' || 'false' }}

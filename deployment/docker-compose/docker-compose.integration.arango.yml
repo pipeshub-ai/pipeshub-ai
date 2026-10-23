@@ -302,7 +302,7 @@ services:
 
   # Confluence Cloud and Jira Cloud simulators (pipeshub-ai/connectors-simulator) for
   # the Confluence and Jira suites, behind the atlassian-sim profile. Both serve one
-  # site with the same people and groups, served from the lumenfold@1 content pack
+  # site with the same people and groups, served from the lumenfold@2 content pack
   # (CONNSIM_PACK_DIR, downloaded from S3 by the workflow). Pack and build time are
   # pinned, so every run gets the same world and the suites can name fixture issues
   # (integration-tests/connectors/atlassian_sim.env). The test process uses the
