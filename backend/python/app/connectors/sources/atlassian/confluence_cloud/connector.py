@@ -1203,6 +1203,7 @@ class ConfluenceConnector(BaseConnector):
             total_synced = 0
             total_skipped = 0
             seen_account_ids: set[str] = set()
+            user_list_complete = True
 
             # Paginate through all users
             while True:
@@ -1217,6 +1218,7 @@ class ConfluenceConnector(BaseConnector):
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch users: {response.status if response else 'No response'}")
                     self._note_problem("Couldn't read the Confluence user list (HTTP %s)" % (response.status if response else "no response"))
+                    user_list_complete = False
                     break
 
                 response_data = response.json()
@@ -1228,6 +1230,7 @@ class ConfluenceConnector(BaseConnector):
                 if not page_ids - seen_account_ids:
                     # The same page again: the offset is being ignored, so stop rather than loop.
                     self._note_problem("The Confluence user list repeated a page, so it may not have been read to the end")
+                    user_list_complete = False
                     break
                 seen_account_ids |= page_ids
 
@@ -1273,6 +1276,8 @@ class ConfluenceConnector(BaseConnector):
                     f"Confluence's user search returns at most {USER_SEARCH_CAP:,} users, so users past that "
                     "were not added and can't be given access from Confluence"
                 )
+            elif user_list_complete and seen_account_ids:
+                await self._withdraw_users_gone_from_source(seen_account_ids)
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
 
             try:
@@ -5188,6 +5193,31 @@ class ConfluenceConnector(BaseConnector):
             )
             return
         await self._withdraw_inactive_app_users()
+
+    async def _withdraw_users_gone_from_source(self, listed_account_ids: set[str]) -> None:
+        """Take the connector away from stored users a complete user list no longer has.
+
+        A user removed from the site, or without Confluence access any more, is not
+        deactivated, so the inactive check never sees them; their grants would stay.
+        When more than half the stored users are missing the list is not trusted.
+        """
+        try:
+            stored = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        except Exception as e:
+            self.logger.warning(f"Could not read the stored users; none withdrawn: {e}")
+            return
+        gone = [u for u in stored if u.source_user_id and u.source_user_id not in listed_account_ids]
+        if not gone:
+            return
+        if len(gone) * 2 > len(stored):
+            self._note_problem(
+                f"{len(gone)} of {len(stored)} stored users were missing from Confluence's user list; "
+                "none was removed, because that many looks like a misread",
+                unread=False,
+            )
+            return
+        self.logger.info(f"Withdrawing {len(gone)} users Confluence no longer lists")
+        await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
 
     async def _withdraw_inactive_app_users(self) -> None:
         """Take the connector away from stored users whose account a group listing reported
