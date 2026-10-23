@@ -44,6 +44,8 @@ class _StoredRecords:
 
     def __init__(self, records: dict[str, dict[str, Any]]) -> None:
         self._records = records
+        # Keyed by document id, as storage is: a wrong id from a lookup must not find the record.
+        self._documents = {f"doc-{vrid}": record for vrid, record in records.items()}
 
     async def get_document_ids_by_virtual_record_ids(self, vrids: list[str]) -> dict[str, dict[str, Any]]:
         return {v: {"record_doc_id": f"doc-{v}"} for v in vrids if v in self._records}
@@ -51,7 +53,9 @@ class _StoredRecords:
     async def get_record_from_storage(
         self, virtual_record_id: str, org_id: str, lookup_result: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        record = self._records.get(virtual_record_id)
+        if lookup_result is None:
+            lookup_result = (await self.get_document_ids_by_virtual_record_ids([virtual_record_id])).get(virtual_record_id)
+        record = self._documents.get(lookup_result["record_doc_id"]) if lookup_result else None
         return copy.deepcopy(record) if record is not None else None
 
 
