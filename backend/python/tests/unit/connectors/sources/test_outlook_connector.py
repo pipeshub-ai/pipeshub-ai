@@ -15,10 +15,6 @@ from app.connectors.core.registry.filters import (
     FilterOptionsResponse,
     SyncFilterKey,
 )
-from app.connectors.sources.microsoft.outlook.connector import (
-    OutlookConnector,
-    OutlookCredentials,
-)
 from app.connectors.sources.microsoft.common.outlook_constants import (
     OutlookAPIFields,
     OutlookFolders,
@@ -27,28 +23,31 @@ from app.connectors.sources.microsoft.common.outlook_constants import (
     OutlookThreadDetection,
     mail_content_revision,
 )
+from app.connectors.sources.microsoft.outlook.connector import (
+    OutlookConnector,
+    OutlookCredentials,
+)
 
 # Backwards compatibility aliases for tests
 STANDARD_OUTLOOK_FOLDERS = OutlookFolders.STANDARD_FOLDERS
 THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = OutlookThreadDetection.ROOT_CONVERSATION_INDEX_LENGTH
+import base64
+import uuid
+from unittest.mock import PropertyMock
+
+from fastapi import HTTPException
+
+from app.config.constants.arangodb import MimeTypes, OriginTypes
 from app.models.entities import (
     AppUser,
     AppUserGroup,
+    FileRecord,
+    MailRecord,
     RecordGroup,
     RecordGroupType,
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-import base64
-import uuid
-from unittest.mock import PropertyMock
-from fastapi import HTTPException
-from app.config.constants.arangodb import MimeTypes, OriginTypes
-from app.models.entities import (
-    FileRecord,
-    MailRecord,
-)
-
 
 # ===========================================================================
 # Helpers
@@ -1602,7 +1601,9 @@ class TestProcessSingleFolderMessages:
         connector.email_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
         connector.email_delta_sync_point.update_sync_point = AsyncMock()
 
-        from app.connectors.sources.microsoft.outlook.connector import MessagesDeltaResult
+        from app.connectors.sources.microsoft.outlook.connector import (
+            MessagesDeltaResult,
+        )
         connector._get_all_messages_delta_external = _delta_pages(MessagesDeltaResult(messages=[], delta_link=None))
 
         user = MagicMock()
@@ -1633,7 +1634,9 @@ class TestProcessSingleFolderMessages:
         msg1.id = "m1"
         msg1.has_attachments = False
 
-        from app.connectors.sources.microsoft.outlook.connector import MessagesDeltaResult
+        from app.connectors.sources.microsoft.outlook.connector import (
+            MessagesDeltaResult,
+        )
         connector._get_all_messages_delta_external = _delta_pages(MessagesDeltaResult(
                 messages=[msg1],
                 delta_link='https://graph.microsoft.com/v1.0/delta'
@@ -1676,7 +1679,9 @@ class TestProcessSingleFolderMessages:
         msg.id = "m-del"
         msg.additional_data = {"@removed": {"reason": "deleted"}}
 
-        from app.connectors.sources.microsoft.outlook.connector import MessagesDeltaResult
+        from app.connectors.sources.microsoft.outlook.connector import (
+            MessagesDeltaResult,
+        )
         connector._get_all_messages_delta_external = _delta_pages(MessagesDeltaResult(messages=[msg], delta_link=None))
 
         connector._process_single_message = AsyncMock(return_value=([], True))
@@ -5797,7 +5802,9 @@ class TestDeltaPaging:
 
     @pytest.mark.asyncio
     async def test_a_repeated_delta_next_link_raises_instead_of_looping(self) -> None:
-        from app.connectors.sources.microsoft.common.outlook_folders import read_delta_pages
+        from app.connectors.sources.microsoft.common.outlook_folders import (
+            read_delta_pages,
+        )
 
         page = MagicMock(value=[], odata_next_link="https://graph.microsoft.com/v1.0/delta?$skiptoken=1", odata_delta_link=None)
         fetch = AsyncMock(return_value=MagicMock(success=True, data=page))

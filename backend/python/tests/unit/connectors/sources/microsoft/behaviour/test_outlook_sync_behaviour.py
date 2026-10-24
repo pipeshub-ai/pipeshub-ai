@@ -2065,7 +2065,7 @@ class TestOutlookPersonal:
         personal_api.on("GET", me_delta_path(), graph_error(401, "InvalidAuthenticationToken"))
         personal_api.on("GET", me_delta_path("sent"), graph_error(401, "InvalidAuthenticationToken"))
 
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match="InvalidAuthenticationToken"):
             await personal.run_sync()
 
         assert len(refreshes) == 1, "each rejected refresh counts toward deactivating the connector"
@@ -2158,7 +2158,9 @@ class TestGraphErrorText:
         assert graph_error_status("no status here") is None
 
     def test_a_mail_missing_in_outlook_streams_as_404_with_either_text(self) -> None:
-        from app.connectors.sources.microsoft.common.outlook_folders import graph_stream_error
+        from app.connectors.sources.microsoft.common.outlook_folders import (
+            graph_stream_error,
+        )
 
         for wrapped_as in ("kiota", "status"):
             error = Exception(real_graph_error_text(404, "ErrorItemNotFound", wrapped_as=wrapped_as))

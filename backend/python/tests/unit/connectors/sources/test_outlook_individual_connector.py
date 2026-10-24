@@ -9,16 +9,16 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from app.connectors.core.registry.filters import FilterCollection
-from app.connectors.core.registry.filters import SyncFilterKey
+from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.connectors.sources.microsoft.outlook_individual.connector import (
     OutlookCredentials,
     OutlookIndividualConnector,
 )
-from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.models.entities import RecordType
-from app.connectors.core.base.connector.connector_service import ConnectorInitError
+
 
 @pytest.fixture
 def mock_data_entities_processor():
@@ -47,7 +47,8 @@ def mock_data_store_provider():
 
 @pytest.fixture
 def connector(logger, mock_data_entities_processor, mock_data_store_provider, mock_config_service):
-    instance = OutlookIndividualConnector(
+    # The move to immutable ids is covered by the behaviour suite.
+    return OutlookIndividualConnector(
         logger=logger,
         data_entities_processor=mock_data_entities_processor,
         data_store_provider=mock_data_store_provider,
@@ -56,8 +57,6 @@ def connector(logger, mock_data_entities_processor, mock_data_store_provider, mo
         scope="PERSONAL",
         created_by="test-user-id",
     )
-    # The move to immutable ids is covered by the behaviour suite.
-    return instance
 
 
 
@@ -496,7 +495,9 @@ class TestDeltaAndMessageProcessing:
     @pytest.mark.asyncio
     async def test_process_single_folder_messages_returns_zero_when_no_messages(self, connector):
         connector.email_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
-        from app.connectors.sources.microsoft.outlook_individual.connector import MessagesDeltaResult
+        from app.connectors.sources.microsoft.outlook_individual.connector import (
+            MessagesDeltaResult,
+        )
         connector._get_all_messages_delta_external = _delta_pages(MessagesDeltaResult(messages=[], delta_link=None))
         user = MagicMock(email="user@test.com", source_user_id="u-1")
         folder = MagicMock(id="folder-1", display_name="Inbox")
@@ -516,7 +517,9 @@ class TestDeltaAndMessageProcessing:
     async def test_process_single_folder_messages_processes_updates_and_sync_point(self, connector):
         connector.email_delta_sync_point.read_sync_point = AsyncMock(return_value={"delta_link": "old-link"})
         connector.email_delta_sync_point.update_sync_point = AsyncMock()
-        from app.connectors.sources.microsoft.outlook_individual.connector import MessagesDeltaResult
+        from app.connectors.sources.microsoft.outlook_individual.connector import (
+            MessagesDeltaResult,
+        )
         msg = MagicMock(id="msg-1")
         connector._get_all_messages_delta_external = _delta_pages(MessagesDeltaResult(messages=[msg], delta_link="new-link"))
         mail_record = MagicMock(record_type=RecordType.MAIL)
@@ -892,7 +895,9 @@ class TestFolderAndThreadProcessing:
     async def test_a_reply_whose_parent_is_in_the_run_needs_no_db_lookup(self, connector, mock_data_store_provider):
         import base64
 
-        from app.connectors.sources.microsoft.common.outlook_folders import MailThreadRef
+        from app.connectors.sources.microsoft.common.outlook_folders import (
+            MailThreadRef,
+        )
 
         root = base64.b64encode(b"A" * 22).decode()
         reply = base64.b64encode(b"A" * 27).decode()
@@ -1406,7 +1411,9 @@ class TestCoverageBoostBranches:
     async def test_process_single_folder_messages_covers_batch_boundaries(self, connector):
         connector.email_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
         connector.email_delta_sync_point.update_sync_point = AsyncMock()
-        from app.connectors.sources.microsoft.outlook_individual.connector import MessagesDeltaResult
+        from app.connectors.sources.microsoft.outlook_individual.connector import (
+            MessagesDeltaResult,
+        )
         msg1 = MagicMock(id="m1")
         msg2 = MagicMock(id="m2")
         connector._get_all_messages_delta_external = _delta_pages(MessagesDeltaResult(messages=[msg1, msg2], delta_link="d"))
