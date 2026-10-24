@@ -9,6 +9,7 @@ import {
   GatewayTimeoutError,
   InternalServerError,
   NotFoundError,
+  PaymentRequiredError,
   ServiceUnavailableError,
   TooManyRequestsError,
   UnprocessableEntityError,
@@ -32,6 +33,17 @@ describe('handleBackendError', () => {
       )
       expect(result).to.be.instanceOf(ForbiddenError)
       expect(result.message).to.equal('You can only edit collections you own.')
+    })
+
+    it('passes a 402 through with only its message', () => {
+      const message = 'Payment required by the upstream service'
+      const result = handleBackendError(
+        { response: { status: 402, data: { detail: { code: 'PAYMENT_REQUIRED', message } } } },
+        'Chat Stream',
+      )
+      expect(result).to.be.instanceOf(PaymentRequiredError)
+      expect((result as PaymentRequiredError).statusCode).to.equal(402)
+      expect(result.message).to.equal(message)
     })
 
     it('reads an axios-shaped 404', () => {
@@ -147,6 +159,14 @@ describe('handleBackendError', () => {
       )
     })
 
+    it("keeps Python's 503 for an unreadable user record", () => {
+      const detail =
+        "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+      const result = handleBackendError({ statusCode: 503, data: { detail } }, 'get team')
+      expect(result).to.be.instanceOf(ServiceUnavailableError)
+      expect(result.message).to.equal(detail)
+    })
+
     // An unknown 5xx message is replaced however readable it looks: guessing
     // from shape is what let topology through.
     for (const [label, detail] of [
@@ -172,6 +192,12 @@ describe('handleBackendError', () => {
     it('maps a 504 to a gateway timeout', () => {
       const result = handleBackendError({ statusCode: 504, data: {} }, 'search')
       expect(result).to.be.instanceOf(GatewayTimeoutError)
+    })
+
+    it('reads a request that timed out as a gateway timeout, not a failure', () => {
+      const result = handleBackendError(new DOMException('The operation was aborted due to timeout', 'TimeoutError'), 'list MCP servers')
+      expect(result).to.be.instanceOf(GatewayTimeoutError)
+      expect(result.message).to.not.include('aborted')
     })
   })
 

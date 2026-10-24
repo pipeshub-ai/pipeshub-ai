@@ -16,6 +16,7 @@ from app.sources.client.resilience import (
     ResiliencePolicy,
     parse_retry_after,
 )
+from app.utils.url_redaction import redact_sensitive_query_params
 
 
 class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
@@ -49,7 +50,7 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
                 delay = policy.note_retry(attempt)
                 policy.logger.warning(
                     "%s %s — %s (attempt %s/%s), retrying in %.2fs",
-                    request.method, request.url, type(exc).__name__,
+                    request.method, redact_sensitive_query_params(str(request.url)), type(exc).__name__,
                     attempt + 1, policy.max_retries + 1, delay,
                 )
                 await asyncio.sleep(delay)
@@ -59,10 +60,19 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
             if attempt >= policy.max_retries or not is_retryable_status(response.status_code):
                 return response
 
-            delay = policy.note_retry(attempt, parse_retry_after(response.headers))
+            note_status = getattr(policy, "note_response_status", None)
+            if note_status is not None:
+                note_status(response.status_code)
+            try:
+                delay = policy.note_retry(attempt, parse_retry_after(response.headers))
+            except BaseException:
+                # A policy may refuse to wait (an hourly quota spent); the response still holds a connection.
+                with contextlib.suppress(Exception):
+                    await response.aclose()
+                raise
             policy.logger.warning(
                 "%s %s — HTTP %s (attempt %s/%s), retrying in %.2fs",
-                request.method, request.url, response.status_code,
+                request.method, redact_sensitive_query_params(str(request.url)), response.status_code,
                 attempt + 1, policy.max_retries + 1, delay,
             )
             # The response body is still unread and holding a pooled connection;
@@ -80,6 +90,6 @@ class ResilientHTTPTransport(httpx.AsyncHTTPTransport):
             raise RuntimeError("Retry loop exited without a response or an exception")
         policy.logger.error(
             "%s %s failed after %s attempts: %s",
-            request.method, request.url, policy.max_retries + 1, type(last_exc).__name__,
+            request.method, redact_sensitive_query_params(str(request.url)), policy.max_retries + 1, type(last_exc).__name__,
         )
         raise last_exc

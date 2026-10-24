@@ -102,3 +102,47 @@ describe('AnswerContent — streaming block-split vs single-instance render equi
     expect(streamedLinkCount).toBeGreaterThan(0);
   });
 });
+
+describe('AnswerContent — link labels', () => {
+  function renderContent(content: string) {
+    return render(h(Theme, null, h(AnswerContent, { content, citationMaps: makeCitationMaps(), isStreaming: false })));
+  }
+
+  it('shows an autolinked URL by its short name, with the full URL on hover', () => {
+    const url = 'https://github.com/pipeshub-ai/pipeshub-ai/pull/1234';
+    const { container } = renderContent(`Merged in ${url}.`);
+    const link = container.querySelector('a') as HTMLAnchorElement;
+    expect(link.textContent).toBe('#1234');
+    expect(link.getAttribute('href')).toContain(url);
+    expect(link.getAttribute('title')).toBe(url);
+  });
+
+  it('shortens a markdown link whose text is its own URL', () => {
+    const url = 'https://acme.atlassian.net/browse/PROJ-12';
+    const { container } = renderContent(`[${url}](${url})`);
+    expect(container.querySelector('a')?.textContent).toBe('PROJ-12');
+  });
+
+  it('keeps link text the answer wrote', () => {
+    const { container } = renderContent('Read the [release notes](https://example.com/a/b/notes).');
+    const link = container.querySelector('a') as HTMLAnchorElement;
+    expect(link.textContent).toBe('release notes');
+    expect(link.getAttribute('title')).toBeNull();
+  });
+});
+
+describe('AnswerContent — link URLs with parentheses', () => {
+  it('keeps escaped brackets in link text out of math when the URL has parentheses', () => {
+    const { container } = render(
+      h(Theme, null, h(AnswerContent, {
+        content: 'Read [the \\[draft\\] notes](https://x.test/wiki/A_(b)) first.',
+        citationMaps: makeCitationMaps(),
+        isStreaming: false,
+      })),
+    );
+    const link = container.querySelector('a') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('https://x.test/wiki/A_(b)');
+    expect(link.textContent).toBe('the [draft] notes');
+    expect(container.querySelector('.katex')).toBeNull();
+  });
+});

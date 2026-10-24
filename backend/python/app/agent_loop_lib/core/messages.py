@@ -24,6 +24,7 @@ four message types polymorphic; the discriminated union is.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import Enum
 from typing import Annotated, Any, Literal
 
@@ -45,6 +46,10 @@ __all__ = [
     "ToolMessageMeta",
     "ToolMessage",
     "Message",
+    "CONTEXT_NOTE_RULE",
+    "add_loop_note",
+    "as_sent",
+    "render_context_note",
 ]
 
 
@@ -114,6 +119,9 @@ class ImagePart(BaseModel):
     # unmeasured, never zero-cost -- see `tokens.py`.
     width: int | None = None
     height: int | None = None
+    # The person attached this image to their request. An image cap keeps these
+    # before images the run fetched, whatever their position in the request.
+    user_attached: bool = False
 
 
 # Open/Closed: adding a new content shape (e.g. DocumentPart) means adding a
@@ -163,6 +171,10 @@ class UserMessage(BaseModel):
     # losing one of those degrades guidance; losing the plan itself
     # strands the executor with no plan to execute.
     pinned: bool = False
+    # The context layer that wrote this message (a compaction summary), on
+    # the per-call copy only. Layers read it instead of matching their own
+    # header text, which a person's question could contain too.
+    compacted_by: str | None = None
 
 
 class AssistantMessage(BaseModel):
@@ -180,6 +192,9 @@ class AssistantMessage(BaseModel):
     # message itself since `Agent.step()`'s truncation-recovery branch reads
     # the message, not the response, at the point it needs the flag.
     truncated: bool = False
+    # The context layer that shortened this message, on the per-call copy
+    # only (see `UserMessage.compacted_by`).
+    compacted_by: str | None = None
 
     @field_validator("content", mode="before")
     @classmethod
@@ -224,6 +239,10 @@ class ToolMessage(BaseModel):
     # but NOT included in .content, so consumers like parent_results.py
     # that read raw content see clean tool output.
     step_footer: str = ""
+    # The context layer that last shortened this result (capped, cleared,
+    # replaced by a reference), on the per-call copy only. Layers read it
+    # instead of matching marker text a tool's own output could contain.
+    compacted_by: str | None = None
 
     @property
     def text(self) -> str:
@@ -241,3 +260,113 @@ Message = Annotated[
     SystemMessage | UserMessage | AssistantMessage | ToolMessage,
     Field(discriminator="role"),
 ]
+
+
+_CONTEXT_NOTE_OPEN = '<context_note source="agent">'
+_CONTEXT_NOTE_CLOSE = "</context_note>"
+
+# Said once in every system prompt, so the model reads the wrapper below as the runtime's.
+CONTEXT_NOTE_RULE = (
+    f"text inside {_CONTEXT_NOTE_OPEN}...{_CONTEXT_NOTE_CLOSE} is added by the agent runtime, "
+    "not written by the user."
+)
+
+
+def _escape_note_tags(text: str) -> str:
+    # Injected text can quote tool output or a summary of it; a literal tag there would end the
+    # note early and pass the rest off as the person's words.
+    return text.replace("<context_note", "&lt;context_note").replace("</context_note", "&lt;/context_note")
+
+
+def _is_context_note(texts: list[str]) -> bool:
+    """`texts`, joined, are exactly one complete note (already rendered, so not wrapped twice)."""
+    joined = "".join(texts)
+    return (
+        joined.startswith(_CONTEXT_NOTE_OPEN)
+        and joined.endswith(_CONTEXT_NOTE_CLOSE)
+        and joined.count("<context_note") == 1
+        and joined.count("</context_note") == 1
+    )
+
+
+def render_context_note(text: str) -> str:
+    """`text` wrapped as a note from the agent runtime."""
+    if _is_context_note([text]):
+        return text
+    return f"{_CONTEXT_NOTE_OPEN}\n{_escape_note_tags(text)}\n{_CONTEXT_NOTE_CLOSE}"
+
+
+def as_sent(message: Message) -> Message:
+    """`message` as every transport puts it on the wire.
+
+    Providers have no role for text the loop adds (summaries, nudges, plans, relocated images),
+    so it goes in the user role; wrapped as a context note, the model can tell it from the person
+    even where a provider merges it into the person's turn. Returns a copy, never changes
+    `message`.
+    """
+    if not isinstance(message, UserMessage) or not message.injected:
+        return message
+    content = message.content
+    if isinstance(content, str):
+        return message.model_copy(update={"content": render_context_note(content)})
+    if _is_context_note([part.text for part in content if isinstance(part, TextPart)]):
+        return message
+    parts = [TextPart(text=_escape_note_tags(part.text)) if isinstance(part, TextPart) else part for part in content]
+    if parts and isinstance(parts[0], TextPart):
+        parts[0] = TextPart(text=f"{_CONTEXT_NOTE_OPEN}\n{parts[0].text}")
+    else:
+        parts.insert(0, TextPart(text=_CONTEXT_NOTE_OPEN))
+    if isinstance(parts[-1], TextPart):
+        parts[-1] = TextPart(text=f"{parts[-1].text}\n{_CONTEXT_NOTE_CLOSE}")
+    else:
+        parts.append(TextPart(text=_CONTEXT_NOTE_CLOSE))
+    return message.model_copy(update={"content": parts})
+
+
+def dedupe_tool_call_ids(messages: Sequence[Message], seen: set[str]) -> int:
+    """Rename, in place, each tool call whose id is empty or already in `seen`,
+    and the results that answer it; `seen` gains every id kept or given.
+
+    A provider rejects two calls sharing an id, or binds a result to the wrong
+    one. Ids repeat across turns: Node saves one fixed id for every
+    `ask_user_question`, and transports that number calls per response
+    (`call_0`, or LangChain's empty id) reissue ids history already holds.
+    Returns how many calls were renamed.
+    """
+    assigned: dict[str, list[str]] = {}
+    used: dict[str, int] = {}
+    renamed = 0
+    for msg in messages:
+        if isinstance(msg, AssistantMessage):
+            for call in msg.tool_calls or []:
+                original = call.id
+                if not original or original in seen:
+                    base = original or "call"
+                    n = 2
+                    while f"{base}_{n}" in seen:
+                        n += 1
+                    call.id = f"{base}_{n}"
+                    renamed += 1
+                seen.add(call.id)
+                assigned.setdefault(original, []).append(call.id)
+        elif isinstance(msg, ToolMessage) and msg.tool_call_id in assigned:
+            ids = assigned[msg.tool_call_id]
+            nth = used.get(msg.tool_call_id, 0)
+            used[msg.tool_call_id] = nth + 1
+            msg.tool_call_id = ids[min(nth, len(ids) - 1)]
+    return renamed
+
+
+def add_loop_note(messages: list[Message], note: str) -> str:
+    """Put `note` on the latest tool result's loop footer, replacing that
+    entry of `messages` with a copy so stored history keeps the plain footer.
+    An instruction posing as the user right after tool output reads as a
+    prompt attack to provider content filters (Azure OpenAI rejects the whole
+    request), so a user message is the fallback only when no tool result
+    ends the list. Returns the channel used."""
+    if messages and isinstance(messages[-1], ToolMessage):
+        last = messages[-1]
+        messages[-1] = last.model_copy(update={"step_footer": last.step_footer + "\n" + note})
+        return "step_footer"
+    messages.append(UserMessage(content=note, injected=True))
+    return "user_message"

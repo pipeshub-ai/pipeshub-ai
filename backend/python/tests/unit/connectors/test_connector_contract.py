@@ -44,7 +44,7 @@ def _registry() -> dict[str, type]:
 REGISTRY = _registry()
 CONNECTOR_IDS = sorted(REGISTRY)
 
-# Seven entries in `_beta_connector_definitions` are placeholders produced by the
+# Six entries in `_beta_connector_definitions` are placeholders produced by the
 # builder decorator in app/connectors/core/registry/connector.py. They are not
 # BaseConnector subclasses and have no create_connector, run_sync or streaming
 # support; their connect() prints a line and returns True.
@@ -64,7 +64,6 @@ KNOWN_INCOMPLETE = {
     "forms",
     "meet",
     "slides",
-    "zendesk",
 }
 
 COMPLETE_IDS = [k for k in CONNECTOR_IDS if k not in KNOWN_INCOMPLETE]

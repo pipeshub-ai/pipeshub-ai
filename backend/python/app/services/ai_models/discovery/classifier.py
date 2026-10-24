@@ -15,6 +15,17 @@ from app.services.ai_models.discovery.types import DiscoveredModel, RawModel
 
 _EXCLUDE = re.compile(r"(moderation|guard|realtime|\bre-?rank\b|search)", re.IGNORECASE)
 
+# Chat models a provider also serves on its decision endpoint: their ids match the
+# chat model's, so neither the catalog nor an ID rule can tell. Matched by prefix so
+# dated snapshots ("gpt-6-luna-2026-10-06") count.
+_ALSO_DECISION_PREFIXES: dict[str, tuple[str, ...]] = {
+    "openAI": ("gpt-6-luna",),
+}
+# Models that only answer decisions; they must not be offered as chat models.
+_DECISION_ONLY_PREFIXES: dict[str, tuple[str, ...]] = {
+    "azureOpenAI": ("microsoft-decision",),
+}
+
 
 def _id_capabilities(model_id: str) -> list[str] | None:
     """Return ID-rule capabilities, an empty list to drop the model, or None."""
@@ -36,6 +47,7 @@ def _id_capabilities(model_id: str) -> list[str] | None:
     ):
         capabilities.append("imageGeneration")
     return capabilities or None
+
 
 
 def _deprecated_from_catalog(entry: dict) -> bool | None:
@@ -77,6 +89,11 @@ def classify(provider_id: str, raw: RawModel) -> DiscoveredModel | None:
         source = "heuristic"
     if not capabilities:
         return None
+    lowered_id = raw.id.lower()
+    if lowered_id.startswith(_DECISION_ONLY_PREFIXES.get(provider_id, ())):
+        capabilities = ["decision"]
+    elif lowered_id.startswith(_ALSO_DECISION_PREFIXES.get(provider_id, ())) and "decision" not in capabilities:
+        capabilities = [*capabilities, "decision"]
 
     context_length = raw.context_length
     is_multimodal = raw.is_multimodal

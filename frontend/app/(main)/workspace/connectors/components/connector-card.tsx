@@ -6,6 +6,7 @@ import { Flex, Text } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
 import { PermissionLockIcon } from '@/config';
 import type { Connector } from '../types';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 // ========================================
 // Props
@@ -145,6 +146,7 @@ function SetupButton({
   onClick?: () => void;
   permissionDenied?: boolean;
 }) {
+  const isMobile = useIsMobile();
   const [isHovered, setIsHovered] = useState(false);
   const { t } = useTranslation();
 
@@ -170,7 +172,7 @@ function SetupButton({
         justifyContent: 'center',
         gap: 8,
         width: '100%',
-        height: 32,
+        height: isMobile ? 44 : 32,
         borderRadius: 'var(--radius-2)',
         backgroundColor: isHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
         cursor: permissionDenied ? 'not-allowed' : 'pointer',
@@ -205,6 +207,7 @@ function ActiveInstanceBar({
   onAdd?: () => void;
   onBadgeClick?: () => void;
 }) {
+  const isMobile = useIsMobile();
   const [isAddHovered, setIsAddHovered] = useState(false);
   const { t } = useTranslation();
   const onlyOnePill = (activeCount > 0) !== (inactiveCount > 0);
@@ -288,8 +291,8 @@ function ActiveInstanceBar({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          width: 32,
-          height: 32,
+          width: isMobile ? 44 : 32,
+          height: isMobile ? 44 : 32,
           borderRadius: 'var(--radius-2)',
           backgroundColor: isAddHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
           cursor: 'pointer',

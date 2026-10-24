@@ -3,6 +3,7 @@
 import React from 'react';
 import { Flex, Box, Text, Badge, IconButton, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { SearchResultsExtras } from '@/config';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useChatStore } from '@/chat/store';
@@ -110,6 +111,7 @@ export function SearchResultsView() {
   const searchQuery = useChatStore((s) => s.searchQuery);
   const isSearching = useChatStore((s) => s.isSearching);
   const searchError = useChatStore((s) => s.searchError);
+  const searchResponseMeta = useChatStore((s) => s.searchResponseMeta);
   const setMode = useChatStore((s) => s.setMode);
   const { onPreview } = useCitationActions();
 
@@ -210,19 +212,21 @@ export function SearchResultsView() {
           )}
         </Flex>
 
-        {/* Close search results — returns to chat mode */}
-        <Tooltip content={backToChatLabel} side="top">
-          <IconButton
-            variant="ghost"
-            color="gray"
-            size="2"
-            aria-label={backToChatLabel}
-            onClick={handleBackToChat}
-            style={{ margin: 0 }}
-          >
-            <MaterialIcon name="close" size={ICON_SIZES.PRIMARY} color="var(--slate-11)" />
-          </IconButton>
-        </Tooltip>
+        <Flex align="center" gap="2">
+          {!isSearching && !searchError && <SearchResultsExtras meta={searchResponseMeta} />}
+          <Tooltip content={backToChatLabel} side="top">
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size="2"
+              aria-label={backToChatLabel}
+              onClick={handleBackToChat}
+              style={{ margin: 0 }}
+            >
+              <MaterialIcon name="close" size={ICON_SIZES.PRIMARY} color="var(--slate-11)" />
+            </IconButton>
+          </Tooltip>
+        </Flex>
       </Flex>
 
       {/* Separator */}

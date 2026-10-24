@@ -3,9 +3,8 @@
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
-import { useThemeAppearance } from '@/app/components/theme-provider';
+import { useThemeAppearance, type ThemePreference } from '@/app/components/theme-provider';
 import { useTranslation } from 'react-i18next';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useLanguageStore } from '@/lib/store/language-store';
 import { SUPPORTED_LANGUAGES } from '@/lib/i18n/supported-languages';
 import { MenuItem } from './menu-item';
@@ -18,6 +17,12 @@ interface SettingsSectionProps {
   isLanguageActive: boolean;
   onLogout: () => void;
 }
+
+const APPEARANCE_LABEL_KEYS: Record<ThemePreference, string> = {
+  system: 'workspaceMenu.system',
+  light: 'workspaceMenu.light',
+  dark: 'workspaceMenu.dark',
+};
 
 /** Icon for appearance: shows current mode icon */
 function AppearanceIcon({ color }: { color: string }) {
@@ -44,11 +49,11 @@ export function SettingsSection({
   onLogout,
 }: SettingsSectionProps) {
   const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const { appearance } = useThemeAppearance();
+  const { preference } = useThemeAppearance();
   const { language } = useLanguageStore();
 
-  const appearanceLabel = appearance === 'dark' ? t('workspaceMenu.darkMode') : t('workspaceMenu.lightMode');
+  // Match the option checked in the Appearance panel ("System" stays "System").
+  const appearanceLabel = t(APPEARANCE_LABEL_KEYS[preference]);
   const languageLabel = SUPPORTED_LANGUAGES[language].menuName;
 
   return (
@@ -103,20 +108,18 @@ export function SettingsSection({
         onClick={onLanguageToggle}
       />
 
-      {!isMobile && (
-        <MenuItem
-          icon={
-            <MaterialIcon
-              name="settings"
-              size={ICON_SIZE_DEFAULT}
-              color="var(--slate-11)"
-            />
-          }
-          label={t('workspaceMenu.workspaceSettings')}
-          href="/workspace/"
-          onClick={onWorkspaceSettings}
-        />
-      )}
+      <MenuItem
+        icon={
+          <MaterialIcon
+            name="settings"
+            size={ICON_SIZE_DEFAULT}
+            color="var(--slate-11)"
+          />
+        }
+        label={t('workspaceMenu.workspaceSettings')}
+        href="/workspace/"
+        onClick={onWorkspaceSettings}
+      />
 
       <MenuItem
         icon={

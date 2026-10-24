@@ -9,6 +9,12 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/workspace/general',
 }));
 
+// jsdom has no matchMedia; these tests cover the desktop sidebar.
+vi.mock('@/lib/hooks/use-is-mobile', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/hooks/use-is-mobile')>()),
+  useIsMobile: () => false,
+}));
+
 let userState = { profile: { isAdmin: false } as { isAdmin: boolean } | null };
 vi.mock('@/lib/store/user-store', () => ({
   useUserStore: (selector: (s: typeof userState) => unknown) => selector(userState),
@@ -19,12 +25,13 @@ let flagsState: { flags: Record<string, boolean> | null } = { flags: null };
 vi.mock('@/lib/store/feature-flags-store', () => ({
   useFeatureFlagsStore: (selector: (s: typeof flagsState) => unknown) => selector(flagsState),
   selectFeatureFlagsLoaded: (s: typeof flagsState) => s.flags !== null,
-  selectMcpEnabled: (s: typeof flagsState) => s.flags?.ENABLE_MCP === true,
+  selectMcpEnabled: (s: typeof flagsState) => s.flags?.ENABLE_MCP !== false,
   selectActionsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_ACTIONS !== false,
   selectSkillsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_SKILLS !== false,
 }));
 
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: () => undefined },
   useTranslation: () => ({
     t: (key: string) => {
       const parts = key.split('.');

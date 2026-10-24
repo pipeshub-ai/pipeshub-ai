@@ -23,6 +23,7 @@ from .openai import OpenAIProvider
 from .openai_compatible import OpenAICompatibleProvider
 from .openrouter import OpenRouterProvider
 from .together import TogetherProvider
+from .typesafe import TypeSafeProvider
 from .vertex_ai import VertexAIProvider
 from .whisper import WhisperProvider
 from .wispr import WisprProvider
@@ -54,6 +55,7 @@ ALL_PROVIDER_CLASSES: list[type] = [
     HuggingFaceProvider,
     WhisperProvider,
     WisprProvider,
+    TypeSafeProvider,
 ]
 
 

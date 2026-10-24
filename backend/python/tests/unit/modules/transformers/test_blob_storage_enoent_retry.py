@@ -30,6 +30,8 @@ def _blob(**overrides) -> BlobStorage:
         config_service=MagicMock(),
         graph_provider=MagicMock(),
     )
+    # No other record shares the vrid, so its stored copy is written whole.
+    b.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
     for k, v in overrides.items():
         setattr(b, k, v)
     return b

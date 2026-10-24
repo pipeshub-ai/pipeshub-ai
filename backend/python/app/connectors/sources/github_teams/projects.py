@@ -23,7 +23,7 @@ from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.models.entities import RecordGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
 
-from .constants import AFFILIATION_ALL
+from .constants import AFFILIATION_ALL, HTTP_NOT_FOUND
 
 if TYPE_CHECKING:
     from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
@@ -74,13 +74,20 @@ class ProjectsSync:
         self._org_record_group_meta: dict[int, str] = {}
         # Orgs whose accumulated permissions changed since the last flush.
         self._dirty_org_ids: set[int] = set()
+        # What could not be completed this sync (read by the connector to fail it).
+        self.failures: list[str] = []
 
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
 
     async def sync_all_repos(self) -> None:
-        """Discover repos and run the per-repo sync pipeline."""
+        """Discover repos, remove the ones that left the scope, and sync the rest.
+
+        Every step that could not finish is recorded in ``self.failures``; the
+        connector reports the sync as failed when any is left, so a sync that did
+        not work never reads as a success. Checkpoints are already withheld per step.
+        """
         c = self.c
         if not c.data_source:
             raise Exception("GitHub data source not initialized")
@@ -88,16 +95,35 @@ class ProjectsSync:
         self._org_permission_accumulator = {}
         self._org_record_group_meta = {}
         self._dirty_org_ids = set()
+        self.failures = []
 
-        repos = await self._resolve_repos_with_filters()
+        repos, complete = await self.resolve_repo_scope()
+        orgs_removable = complete
+        if complete:
+            try:
+                orgs_removable = await c.repo_scope.remove_out_of_scope(
+                    {int(r.id) for r in repos}, self._still_in_scope)
+            except Exception as e:
+                # A removal that failed must not keep every in-scope repository from syncing.
+                orgs_removable = False
+                self.failures.append(f"removing repositories that left the scope: {e}")
+                self.logger.error("Could not remove repositories that left the scope: %s", e, exc_info=True)
+        else:
+            # Without a complete answer, a missing repository may only be unreachable
+            # for now: nothing is removed.
+            self.failures.append("the repository scope could not be resolved completely")
         if not repos:
             self.logger.warning("No GitHub repositories to sync after applying filters")
+            if orgs_removable:
+                await c.repo_scope.remove_empty_orgs(set())
             return
 
         for repo in repos:
             try:
-                await self._sync_repo(repo)
+                if not await self._sync_repo(repo):
+                    self.failures.append(f"{getattr(repo, 'full_name', '?')} did not sync completely")
             except Exception as e:
+                self.failures.append(f"{getattr(repo, 'full_name', '?')}: {e}")
                 self.logger.error(
                     "Unhandled error syncing GitHub repo %s (id=%s); continuing: %s",
                     getattr(repo, "full_name", "?"), getattr(repo, "id", "?"), e, exc_info=True,
@@ -106,9 +132,16 @@ class ProjectsSync:
         # Each repo already flushed its own org, so this is normally a no-op; it
         # exists to retry an org left dirty by a failed mid-sync flush.
         await self._flush_org_record_groups()
+        # Last, and only when every repository synced: a repository transferred to
+        # another org still sits under its old org group until its own sync moves it.
+        if orgs_removable and not self.failures:
+            await c.repo_scope.remove_empty_orgs({int(r.owner.id) for r in repos})
 
-    async def _sync_repo(self, repo: GhObject) -> None:
-        """Sync one repo: permissions -> record group hierarchy -> issues/PRs/code."""
+    async def _sync_repo(self, repo: GhObject) -> bool:
+        """Sync one repo: permissions -> record group hierarchy -> issues/PRs/code.
+
+        Returns False when any part of it did not complete.
+        """
         c = self.c
         owner_login = repo.owner.login
         repo_name = repo.name
@@ -118,24 +151,28 @@ class ProjectsSync:
         except Exception as e:
             permissions = self._permissions_without_collaborators(repo, e)
             if permissions is None:
-                return
+                return False
 
         visibility_permissions = self._visibility_permissions(repo)
         if any(p.entity_type == EntityType.ORG for p in visibility_permissions):
             await c.data_entities_processor.ensure_team_app_edge(c.connector_id)
         permissions.extend(visibility_permissions)
         permissions = _dedupe_highest_permissions(permissions)
-        self._accumulate_org_permissions(repo.owner, permissions)
-        # Before the repo group, not after every repo: the org group is the only
-        # one the platform links to the App (a group with a parent never gets
-        # that edge), and connector stats count by walking DOWN from the App.
-        # Flushing at the end left every record of the sync unreachable — and so
-        # counted as zero — until the final write. Flushing here also means the
-        # repo group's parent lookup finds a real group instead of creating a
-        # bare placeholder.
-        await self._flush_org_record_groups()
+        # A personal repo hangs directly off the app. The team connector still
+        # puts an org group above the repo and keeps that group's grants.
+        if getattr(c, "scope", None) != "personal":
+            self._accumulate_org_permissions(repo.owner, permissions)
+            # Before the repo group, not after every repo: the org group is the only
+            # one the platform links to the App (a group with a parent never gets
+            # that edge), and connector stats count by walking DOWN from the App.
+            # Flushing at the end left every record of the sync unreachable — and so
+            # counted as zero — until the final write. Flushing here also means the
+            # repo group's parent lookup finds a real group instead of creating a
+            # bare placeholder.
+            await self._flush_org_record_groups()
         await self._create_record_group_hierarchy(repo, permissions)
 
+        ok = True
         for step_name, step in (
             # Issues and PRs page from their own endpoints: the /issues listing
             # returns PR stubs too, but those lack head refs and reviewers, and
@@ -145,19 +182,54 @@ class ProjectsSync:
             ("code", lambda: c.repos.run(repo)),
         ):
             try:
-                await step()
+                if await step() is False:
+                    ok = False
             except Exception as e:
+                ok = False
                 self.logger.error(
                     "Unhandled error syncing %s for repo %s (id=%s); continuing: %s",
                     step_name, repo.full_name, repo.id, e, exc_info=True,
                 )
+        return ok
 
     # ------------------------------------------------------------------
     # Repo resolution
     # ------------------------------------------------------------------
 
+    async def _still_in_scope(self, repo_id: int) -> bool | None:
+        """Ask GitHub directly whether a repository missing from the scope listing
+        still belongs to it. False only on a definite answer: 404, or the repository
+        answers but the filters no longer select it. None when GitHub did not answer."""
+        c = self.c
+        res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        if not res.success or not res.data:
+            return False if res.status_code == HTTP_NOT_FOUND else None
+        sf = c.sync_filters
+        repo_f = sf.get(SyncFilterKey.REPO_IDS) if sf else None
+        org_f = sf.get(SyncFilterKey.ORG_IDS) if sf else None
+        full_name = str(getattr(res.data, "full_name", "") or "").lower()
+        owner = str(getattr(getattr(res.data, "owner", None), "login", "") or "").lower()
+        repo_on = repo_f is not None and not repo_f.is_empty()
+        org_on = org_f is not None and not org_f.is_empty()
+        names = {str(v).lower() for v in repo_f.value} if repo_on else set()  # type: ignore[union-attr]
+        orgs = {str(v).lower() for v in org_f.value} if org_on else set()  # type: ignore[union-attr]
+        # In resolve_repo_scope's order: a repository list decides alone; otherwise the
+        # org filter and the repository exclusion must both let the repository through.
+        if repo_on and repo_f.operator_value == FilterOperator.IN:  # type: ignore[union-attr]
+            return full_name in names
+        if repo_on and full_name in names:
+            return False
+        if org_on:
+            return (owner in orgs) == (org_f.operator_value == FilterOperator.IN)  # type: ignore[union-attr]
+        return True if repo_on else None
+
     async def _resolve_repos_with_filters(self) -> list[GhObject]:
-        """Resolve repos to sync from sync filters.
+        """The repositories in scope (see ``resolve_repo_scope``)."""
+        repos, _complete = await self.resolve_repo_scope()
+        return repos
+
+    async def resolve_repo_scope(self) -> tuple[list[GhObject], bool]:
+        """Resolve repos to sync from sync filters, as ``(repos, complete)``.
 
         Semantics:
         - ``REPO_IDS IN`` is authoritative: only listed repos sync (values are
@@ -165,6 +237,10 @@ class ProjectsSync:
         - ``ORG_IDS IN`` (without ``REPO_IDS IN``): all repos under each listed org.
         - Neither filter: discover every org visible to the token.
         - ``NOT_IN`` variants are subtractive.
+
+        ``complete`` is True only when every lookup gave a definite answer: a
+        repository or a 404 (deleted, or no longer readable by the token). Any
+        other failure leaves the scope unknown, and nothing may be removed on it.
         """
         c = self.c
         sf = c.sync_filters
@@ -181,6 +257,7 @@ class ProjectsSync:
         repo_not_in = repo_vals if repo_op == FilterOperator.NOT_IN else []
 
         by_id: dict[int, GhObject] = {}
+        complete = True
 
         if repo_in:
             for full_name in repo_in:
@@ -190,7 +267,14 @@ class ProjectsSync:
                 owner, name = full_name.split("/", 1)
                 res = await c.runtime.ds_call(c.data_source.get_repo, owner, name)
                 if not res.success or not res.data:
-                    self.logger.error("Repository not found or inaccessible: %s (%s)", full_name, res.error)
+                    if res.status_code == HTTP_NOT_FOUND:
+                        self.logger.warning(
+                            "Repository %s is gone or no longer readable by this token (404); "
+                            "it leaves the sync's scope.", full_name,
+                        )
+                    else:
+                        complete = False
+                        self.logger.error("Repository not found or inaccessible: %s (%s)", full_name, res.error)
                     continue
                 by_id[int(res.data.id)] = res.data
         else:
@@ -200,10 +284,12 @@ class ProjectsSync:
                 orgs, orgs_ok = await c.users._resolve_target_orgs()
             if not orgs_ok:
                 self.logger.error("GitHub org discovery failed; no repositories to sync this run.")
-                return []
+                return [], False
             for org in orgs:
                 res = await c.runtime.ds_call(c.data_source.list_org_repos, org)
                 if not res.success:
+                    if res.status_code != HTTP_NOT_FOUND:
+                        complete = False
                     self.logger.error("Could not list repos for org %s: %s", org, res.error)
                     continue
                 for r in res.data or []:
@@ -216,7 +302,7 @@ class ProjectsSync:
         if org_not_in:
             excluded_orgs = set(org_not_in)
             candidates = [r for r in candidates if getattr(r.owner, "login", None) not in excluded_orgs]
-        return candidates
+        return candidates, complete
 
     # ------------------------------------------------------------------
     # Repo member / permission sync
@@ -415,8 +501,13 @@ class ProjectsSync:
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=str(repo.id),
-            parent_external_group_id=self._org_parent_external_id(repo.owner.id),
+            parent_external_group_id=(
+                None
+                if getattr(c, "scope", None) == "personal"
+                else self._org_parent_external_id(repo.owner.id)
+            ),
             web_url=getattr(repo, "html_url", None),
+            inherit_permissions=getattr(c, "scope", None) == "personal",
         )
         # The ACL lives ONLY on the repo group. The three child groups set
         # inherit_permissions=True, which makes the processor write a
@@ -526,6 +617,7 @@ class ProjectsSync:
                 connector_id=c.connector_id,
                 external_group_id=self._org_parent_external_id(org_id),
                 web_url=f"https://github.com/{org_login}",
+                inherit_permissions=getattr(c, "scope", None) == "personal",
             )
             await c.data_entities_processor.on_new_record_groups([(org_rg, list(bucket.values()))])
             # Cleared per org, after its own write: a failure leaves that org
@@ -573,6 +665,4 @@ def _permission_rank(ptype: PermissionType) -> int:
         PermissionType.OWNER: 3,
         PermissionType.WRITE: 2,
         PermissionType.READ: 1,
-        PermissionType.COMMENT: 1,
-        PermissionType.OTHER: 0,
     }.get(ptype, 0)

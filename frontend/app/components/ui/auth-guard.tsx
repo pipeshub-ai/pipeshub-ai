@@ -12,7 +12,8 @@ export function LoadingScreen() {
     <Flex
       align="center"
       justify="center"
-      style={{ height: '100vh', width: '100%', backgroundColor: 'var(--olive-1)' }}
+      className="viewport-height"
+      style={{ width: '100%', backgroundColor: 'var(--olive-1)' }}
     >
       <LottieLoader variant="loader" size={64} />
     </Flex>

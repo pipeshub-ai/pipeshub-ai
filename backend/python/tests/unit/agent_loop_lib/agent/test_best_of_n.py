@@ -38,6 +38,7 @@ def _fake_agent(*, run_child_results, transport_registry: object | None = None) 
     agent.run_ctx = "run-ctx"
     agent.scope = "scope"
     agent.session_id = "sess-1"
+    agent.context = None
     return agent
 
 

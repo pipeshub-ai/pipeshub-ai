@@ -10,7 +10,6 @@ Usage:
     3. execute_tool_calls uses the registry to dispatch handling
 """
 
-import asyncio
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any
@@ -19,41 +18,10 @@ from app.utils.chat_helpers import generate_text_fragment_url
 from app.utils.citations import (
     display_url_for_llm,
 )
-from app.utils.image_utils import _fetch_image_as_base64, supported_mime_types
 from app.utils.logger import create_logger
 from app.utils.text_fragments import SourceFormat
-from app.config.constants.service import config_node_constants
-
-DEFAULT_WEB_SEARCH_INCLUDE_IMAGES = False
-DEFAULT_WEB_SEARCH_MAX_IMAGES = 3
-MAX_WEB_SEARCH_IMAGES = 500
-
-
-def normalize_web_search_image_settings(
-    settings: dict[str, Any] | None,
-) -> tuple[bool, int]:
-    include_images = DEFAULT_WEB_SEARCH_INCLUDE_IMAGES
-    max_images = DEFAULT_WEB_SEARCH_MAX_IMAGES
-
-    if isinstance(settings, dict):
-        raw_include_images = settings.get("includeImages")
-        if isinstance(raw_include_images, bool):
-            include_images = raw_include_images
-
-        raw_max_images = settings.get("maxImages")
-        parsed_max_images: int | None = None
-        if isinstance(raw_max_images, int) and not isinstance(raw_max_images, bool):
-            parsed_max_images = raw_max_images
-        elif isinstance(raw_max_images, str):
-            try:
-                parsed_max_images = int(raw_max_images)
-            except ValueError:
-                parsed_max_images = None
-
-        if parsed_max_images is not None and 1 <= parsed_max_images <= MAX_WEB_SEARCH_IMAGES:
-            max_images = parsed_max_images
-
-    return include_images, max_images
+from app.web.untrusted import FENCE_CLOSE, defuse, fence_open
+from app.web.url import display_domain
 
 logger = create_logger(__name__)
 
@@ -162,7 +130,7 @@ class WebSearchHandler(ToolResultHandler):
 
         formatted_blocks = [{
             "type": "text",
-            "text": f"web_search_query: {query}\nBlocks retrieved from web search:",
+            "text": f"web_search_query: {query}\nBlocks retrieved from web search:\n{fence_open('web_search')}",
         }]
 
         for result in web_results:
@@ -176,12 +144,13 @@ class WebSearchHandler(ToolResultHandler):
                 generate_text_fragment_url(link, snippet, SourceFormat.PLAIN) if snippet else link
             )
             display_url = display_url_for_llm(citation_url, ref_mapper)
+            lines = [f"title: {defuse(title)}", f"site: {result.get('domain') or display_domain(link)}"]
+            if result.get("published"):
+                lines.append(f"published: {defuse(str(result['published']))}")
+            lines += [f"url/Citation ID: {display_url}", f"content: {defuse(snippet)}"]
+            formatted_blocks.append({"type": "text", "text": "\n".join(lines)})
 
-            formatted_blocks.append({
-                "type": "text",
-                "text": f"title: {title}\nurl/Citation ID: {display_url}\ncontent: {snippet}",
-            })
-
+        formatted_blocks.append({"type": "text", "text": FENCE_CLOSE})
         return formatted_blocks
 
     def extract_records(self, tool_result: dict[str, Any], org_id: str | None = None) -> list[dict[str, Any]]:
@@ -218,153 +187,47 @@ def _block_attr(block, attr: str, default: str = "") -> str:
 
 
 def _block_citation_url(base_url: str, block) -> str:
-    """Build the citation URL for a single block of a fetched page.
-
-    Text blocks get a text-fragment URL derived from their content so each block
-    resolves to its own location. Image blocks use the image's own URL when it is
-    a full http(s) URL; otherwise they fall back to the page URL.
-    """
-    if _block_attr(block, "type") == "image":
-        img_uri = _block_attr(block, "url", "")
-        if img_uri.startswith("http"):
-            return img_uri
-        return base_url
+    """A text-fragment URL for one text block of a fetched page, so each block cites its own place."""
     return generate_text_fragment_url(
         base_url, _block_attr(block, "content", ""), SourceFormat.PLAIN
     )
+
+
+def _text_blocks(tool_result: dict[str, Any]) -> list[Any]:
+    return [b for b in tool_result.get("blocks", []) if _block_attr(b, "type") == "text"]
 
 
 class UrlContentHandler(ToolResultHandler):
     """Handler for fetched URL content with block structure."""
 
     async def format_message(self, tool_result: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
+        # Only text reaches the model: a tool message carries text alone, so image blocks
+        # (from older stored results) are skipped rather than downloaded and dropped.
         url = tool_result.get("url", "")
-        blocks = tool_result.get("blocks", [])
         ref_mapper = context.get("ref_mapper")
-        config_service = context.get("config_service")
-        is_multimodal_llm = context.get("is_multimodal_llm", False)
-        web_search_config = (
-            await config_service.get_config(
-                config_node_constants.WEB_SEARCH.value,
-                default={},
-                use_cache=False,
-            )
-            if config_service is not None
-            else {}
-        )
-        include_images, max_images = normalize_web_search_image_settings(
-            web_search_config.get("settings") if isinstance(web_search_config, dict) else None
-        )
-
-        include_images = is_multimodal_llm and include_images
-
-        # Phase 1: Collect all remote image URLs that need fetching
-        images_to_fetch = []
-        image_results = {}
-
-        count = 0
-
-        if include_images:
-            for index, block in enumerate(blocks):
-                if _block_attr(block, "type") == "image":
-                    img_uri = _block_attr(block, "url", "")
-                    if img_uri and img_uri.startswith("http"):
-                        if not img_uri.endswith((".svg", ".gif", ".ico")):
-                            images_to_fetch.append((index, img_uri))
-                            count += 1
-                            if count >= max_images:
-                                break
-
-
-            # Phase 2: Fetch all images in parallel
-            if images_to_fetch:
-                logger.info("Fetching %d images in parallel", len(images_to_fetch))
-                fetch_tasks = [_fetch_image_as_base64(img_url) for (_, img_url) in images_to_fetch]
-                fetched_images = await asyncio.gather(*fetch_tasks, return_exceptions=True)
-
-                # Create mapping: index -> fetched_result
-                for (index, _), fetched in zip(images_to_fetch, fetched_images):
-                    image_results[index] = fetched
-
-        # Phase 3: Build formatted_blocks using pre-fetched results
-        count = 0
-        formatted_blocks = [{
-            "type": "text",
-            "text": "Blocks of content from the URL:",
-        }]
-        for index, block in enumerate(blocks):
-            block_citation_url = _block_citation_url(url, block)
-            display_url = display_url_for_llm(block_citation_url, ref_mapper)
-            block_type = _block_attr(block, "type")
-            if block_type == "image":
-                if not include_images or count >= max_images:
-                    continue
-                img_uri = _block_attr(block, "url", "")
-
-                if img_uri:
-
-                    if img_uri.startswith("data:image/"):
-                        mime_type = img_uri.split(";")[0].split(":")[1]
-                        image_base64 = img_uri.split(",")[1]
-                        if mime_type not in supported_mime_types:
-                            logger.warning("Not a valid image mime type: %s", mime_type)
-                            continue
-                        formatted_blocks.append({
-                            "type": "text",
-                            "text": f"url/Citation ID: {display_url}\ncontent(image):",
-                        })
-                        formatted_blocks.append({
-                            "type": "image",
-                            "base64": image_base64,
-                            "mime_type": mime_type,
-                        })
-                        count += 1
-                    elif index in image_results:
-                        fetched = image_results[index]
-                        if fetched:
-                            image_base64, mime_type = fetched
-                            if mime_type not in supported_mime_types:
-                                logger.warning("Not a valid image mime type: %s", mime_type)
-                                continue
-                            formatted_blocks.append({
-                                "type": "text",
-                                "text": f"url/Citation ID: {display_url}\ncontent(image):",
-                            })
-                            formatted_blocks.append({
-                                "type": "image",
-                                "base64": image_base64,
-                                "mime_type": mime_type,
-                            })
-                            count += 1
-                    elif not img_uri.startswith("http"):
-                        logger.warning("Not a valid image url: %s", img_uri[:100])
-            else:
-                formatted_blocks.append({
-                    "type": "text",
-                    "text": f"url/Citation ID: {display_url}\ncontent: {_block_attr(block, 'content', '')}",
-                })
-
+        formatted_blocks = [{"type": "text", "text": f"Blocks of content from the URL:\n{fence_open(display_domain(url))}"}]
+        for block in _text_blocks(tool_result):
+            display_url = display_url_for_llm(_block_citation_url(url, block), ref_mapper)
+            formatted_blocks.append({
+                "type": "text",
+                "text": f"url/Citation ID: {display_url}\ncontent: {defuse(_block_attr(block, 'content', ''))}",
+            })
+        formatted_blocks.append({"type": "text", "text": FENCE_CLOSE})
         return formatted_blocks
 
     def extract_records(self, tool_result: dict[str, Any], org_id: str | None=None) -> list[dict[str, Any]]:
         """Extract URL blocks as records for citation tracking."""
         url = tool_result.get("url", "")
-        blocks = tool_result.get("blocks", [])
-
-        records = []
-        for block in blocks:
-            block_citation_url = _block_citation_url(url, block)
-            if _block_attr(block, "type") == "text":
-                content = _block_attr(block, "content", "")
-            else:
-                content = _block_attr(block, "alt", "") or "Image"
-            records.append({
-                "url": block_citation_url,
-                "content": content,
+        return [
+            {
+                "url": _block_citation_url(url, block),
+                "title": tool_result.get("title") or "",
+                "content": _block_attr(block, "content", ""),
                 "source_type": "web",
                 "org_id": org_id,
-            })
-        return records
+            }
+            for block in _text_blocks(tool_result)
+        ]
 
 
 class ToolHandlerRegistry:

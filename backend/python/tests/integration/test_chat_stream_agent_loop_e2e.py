@@ -24,6 +24,8 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse
 
 from app.api.routes.chatbot import askAIStream
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from app.web.models import WebResult
 
 
 def _mock_request(body: dict) -> MagicMock:
@@ -242,13 +244,13 @@ class TestChatStreamAgentLoopEndToEnd:
         assert "error" not in events
 
     async def test_attachment_upload_then_chat_folds_attachment_into_agent_context(self):
-        """Attachment flow: a document attachment's resolved text context
-        must reach the agent's `Goal.constraints` (see `attachments.py`)
-        so the model can answer from -- and cite -- the attached record,
-        not just the org's ambient knowledge base."""
+        """Attachment flow: the factory gets the attachment to put on the
+        current request (within its budget), and the bridge adds no second,
+        unbounded copy of the document to `Goal.constraints`."""
         captured_goal = {}
 
         async def _fake_create_capturing_goal(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
+            captured_goal["attachments"] = context.tool_state.get("attachments")
             agent = MagicMock()
             agent.last_stream_result = _successful_stream_result(
                 "Per the attached deck, revenue is up 12%."
@@ -277,7 +279,17 @@ class TestChatStreamAgentLoopEndToEnd:
                 {"virtualRecordId": "vr-attach-1", "mimeType": "application/pdf", "fileName": "board_deck.pdf"},
             ],
         })
+
+        async def _check_access(user_key, org_id, *, virtual_record_ids=(), **_kwargs) -> AccessCheck:
+            # The uploader alone may read the attachment, as the upload's OWNER edge grants.
+            granted = {"vr-attach-1": "rec-attach-1"} if (user_key, org_id) == ("user-key-1", "org-1") else {}
+            return AccessCheck(
+                records_by_vrid={vrid: rid for vrid, rid in granted.items() if vrid in virtual_record_ids}
+            )
+
         graph = AsyncMock()
+        graph.get_user_by_user_id.return_value = {"_key": "user-key-1"}
+        graph.check_access.side_effect = _check_access
         graph.get_records_by_virtual_record_id.return_value = ["rec-attach-1"]
         graph.check_record_access_with_details.return_value = {"id": "rec-attach-1"}
 
@@ -304,7 +316,8 @@ class TestChatStreamAgentLoopEndToEnd:
         events = _events_by_name(chunks)
         assert "complete" in events
         assert "error" not in events
-        assert any(
+        assert [a["virtualRecordId"] for a in captured_goal["attachments"]] == ["vr-attach-1"]
+        assert not any(
             "Q3 Board Deck" in str(c) for c in captured_goal["goal"].constraints
         )
 
@@ -343,12 +356,14 @@ class TestWebSearchCitationEndToEnd:
 
     async def test_web_search_tool_call_resolves_into_a_citation(self):
         canned_results = [
-            {
-                "title": "Fed holds rates steady",
-                "link": "https://news.example.com/fed-rate-decision",
-                "snippet": "The Federal Reserve held its benchmark rate steady on Wednesday.",
-            }
+            WebResult(
+                url="https://news.example.com/fed-rate-decision",
+                title="Fed holds rates steady",
+                snippet="The Federal Reserve held its benchmark rate steady on Wednesday.",
+                source="canned",
+            )
         ]
+        canned_provider = SimpleNamespace(id="canned", cooldown_key="canned", search=AsyncMock(return_value=canned_results))
 
         async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
             from app.agents.agent_loop.tool_loader import _build_dynamic_tools  # noqa: PLC0415
@@ -381,10 +396,7 @@ class TestWebSearchCitationEndToEnd:
 
         with (
             patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
-            patch(
-                "app.utils.web_search_tool._search_with_duckduckgo",
-                new=AsyncMock(return_value=canned_results),
-            ),
+            patch("app.web.container.search_providers", return_value=[canned_provider]),
         ):
             response = await askAIStream(
                 request=request,

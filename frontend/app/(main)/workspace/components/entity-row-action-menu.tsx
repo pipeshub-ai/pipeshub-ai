@@ -4,6 +4,9 @@ import React, { useState } from 'react';
 import { IconButton, Flex, Text, Box, Popover, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { MobileBottomSheet } from '@/app/components/ui/mobile-bottom-sheet';
+import { useTranslation } from 'react-i18next';
 
 // ── Sub-menu radio option ──
 
@@ -294,7 +297,16 @@ function ActionCard({
 // Collision-aware: Radix Popover flips top ↔ bottom automatically.
 // ────────────────────────────────────────────────────────────────
 
+const floatingCard: React.CSSProperties = {
+  minWidth: 178,
+  backgroundColor: 'var(--olive-2)',
+  border: '1px solid var(--olive-3)',
+};
+const sheetCard: React.CSSProperties = { minWidth: 0, backgroundColor: 'transparent', border: 'none' };
+
 export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
+  const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<View>('actions');
 
@@ -308,19 +320,228 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
     if (!isOpen) setView('actions');
   };
 
+  const trigger = (
+    <IconButton
+      className="touch-hit"
+      variant="ghost"
+      size={isMobile ? '3' : '1'}
+      color="gray"
+      aria-label={t('common.moreOptions')}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (isMobile) setOpen(true);
+      }}
+      style={{ cursor: 'pointer' }}
+    >
+      <MaterialIcon name="more_horiz" size={16} color="var(--slate-11)" />
+    </IconButton>
+  );
+
+  const menuBody = (
+    <>
+      {view === 'actions' ? (
+        /* ── Action list ── */
+        <Box
+          style={{
+            ...(isMobile ? sheetCard : floatingCard),
+            borderRadius: 'var(--radius-1)',
+            padding: 4,
+            backdropFilter: 'blur(25px)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-2)',
+          }}
+        >
+          {visibleActions.map((action, i) => {
+            const isDanger = action.variant === 'danger';
+            const isDisabled = action.disabled === true;
+
+            const row = (
+              <Flex
+                role="menuitem"
+                aria-disabled={isDisabled || undefined}
+                tabIndex={isDisabled ? -1 : 0}
+                align="center"
+                gap="1"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (isDisabled) return;
+                  if (action.subMenu) {
+                    setView('rolePicker');
+                  } else {
+                    action.onClick?.();
+                    handleOpenChange(false);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (isDisabled) return;
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (action.subMenu) {
+                      setView('rolePicker');
+                    } else {
+                      action.onClick?.();
+                      handleOpenChange(false);
+                    }
+                  }
+                }}
+                onMouseEnter={({ currentTarget }) => {
+                  if (isDisabled) return;
+                  (currentTarget as HTMLElement).style.backgroundColor =
+                    isDanger ? 'var(--red-a3)' : 'var(--slate-a3)';
+                }}
+                onMouseLeave={({ currentTarget }) => {
+                  (currentTarget as HTMLElement).style.backgroundColor =
+                    'transparent';
+                }}
+                style={{
+                  height: isMobile ? 44 : 24,
+                  padding: '0 8px',
+                  borderRadius: 'var(--radius-1)',
+                  cursor: isDisabled ? 'not-allowed' : 'pointer',
+                  opacity: isDisabled ? 0.45 : 1,
+                }}
+              >
+                <MaterialIcon
+                  name={action.icon}
+                  size={16}
+                  color={isDanger ? 'var(--red-10)' : 'var(--slate-11)'}
+                />
+                <Text
+                  size="1"
+                  style={{
+                    color: isDanger ? 'var(--red-10)' : 'var(--slate-11)',
+                  }}
+                >
+                  {action.label}
+                </Text>
+              </Flex>
+            );
+
+            return action.tooltip ? (
+              <Tooltip key={i} content={action.tooltip} side="left">
+                {row}
+              </Tooltip>
+            ) : (
+              <React.Fragment key={i}>{row}</React.Fragment>
+            );
+          })}
+        </Box>
+      ) : (
+        /* ── Role picker ── */
+        subMenuAction?.subMenu && (
+          <Box
+            style={{
+              ...(isMobile
+                ? sheetCard
+                : {
+                  ...floatingCard,
+                  borderRadius: 'var(--radius-2)',
+                  boxShadow:
+                    '0px 12px 32px -16px rgba(0, 9, 50, 0.12), 0px 12px 60px 0px rgba(0, 0, 0, 0.15)',
+                }),
+              overflow: 'hidden',
+            }}
+          >
+
+            {/* Radio options */}
+            {subMenuAction.subMenu.options.map((option, index) => {
+              const isSelected = option.value === subMenuAction.subMenu!.value;
+              const isLast =
+                index === subMenuAction.subMenu!.options.length - 1;
+
+              return (
+                <Flex
+                  key={option.value}
+                  align="center"
+                  justify="between"
+                  onClick={() => {
+                    subMenuAction.subMenu!.onValueChange(option.value);
+                    handleOpenChange(false);
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLElement).style.backgroundColor =
+                      'var(--slate-a3)';
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLElement).style.backgroundColor =
+                      'transparent';
+                  }}
+                  style={{
+                    padding: 'var(--space-2) var(--space-4)',
+                    paddingBottom: isLast ? 12 : 8,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Flex direction="column" gap="1">
+                    <Text
+                      size="2"
+                      weight={isSelected ? 'medium' : 'regular'}
+                      style={{ color: 'var(--slate-12)' }}
+                    >
+                      {option.label}
+                    </Text>
+                    {option.description && (
+                      <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                        {option.description}
+                      </Text>
+                    )}
+                  </Flex>
+
+                  <Box
+                    style={{
+                      width: 16,
+                      height: 16,
+                      borderRadius: '50%',
+                      border: `2px solid ${isSelected ? 'var(--accent-9)' : 'var(--slate-a7)'}`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {isSelected && (
+                      <Box
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: '50%',
+                          backgroundColor: 'var(--accent-9)',
+                        }}
+                      />
+                    )}
+                  </Box>
+                </Flex>
+              );
+            })}
+          </Box>
+        )
+      )}
+    </>
+  );
+
+  // Phones: a bottom sheet with full-width rows instead of a small dropdown mid-table.
+  if (isMobile) {
+    return (
+      // Sheet events bubble through the React tree; keep them from opening the row.
+      <span onClick={(e) => e.stopPropagation()} style={{ display: 'contents' }}>
+        {trigger}
+        <MobileBottomSheet
+          open={open}
+          onOpenChange={handleOpenChange}
+          title={view === 'rolePicker' && subMenuAction ? subMenuAction.label : t('common.moreOptions')}
+          onBack={view === 'rolePicker' ? () => setView('actions') : undefined}
+        >
+          <Box style={{ padding: '0 var(--space-2) var(--space-4)' }}>{menuBody}</Box>
+        </MobileBottomSheet>
+      </span>
+    );
+  }
+
   return (
     <Popover.Root open={open} onOpenChange={handleOpenChange}>
-      <Popover.Trigger>
-        <IconButton
-          variant="ghost"
-          size="1"
-          color="gray"
-          onClick={(e) => e.stopPropagation()}
-          style={{ cursor: 'pointer' }}
-        >
-          <MaterialIcon name="more_horiz" size={16} color="var(--slate-11)" />
-        </IconButton>
-      </Popover.Trigger>
+      <Popover.Trigger>{trigger}</Popover.Trigger>
 
       <Popover.Content
         side="bottom"
@@ -334,185 +555,7 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
           boxShadow: 'none',
         }}
       >
-        {view === 'actions' ? (
-          /* ── Action list ── */
-          <Box
-            style={{
-              minWidth: 178,
-              backgroundColor: 'var(--olive-2)',
-              border: '1px solid var(--olive-3)',
-              borderRadius: 'var(--radius-1)',
-              padding: 4,
-              backdropFilter: 'blur(25px)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 'var(--space-2)',
-            }}
-          >
-            {visibleActions.map((action, i) => {
-              const isDanger = action.variant === 'danger';
-              const isDisabled = action.disabled === true;
-
-              const row = (
-                <Flex
-                  role="menuitem"
-                  aria-disabled={isDisabled || undefined}
-                  tabIndex={isDisabled ? -1 : 0}
-                  align="center"
-                  gap="1"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (isDisabled) return;
-                    if (action.subMenu) {
-                      setView('rolePicker');
-                    } else {
-                      action.onClick?.();
-                      handleOpenChange(false);
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (isDisabled) return;
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      if (action.subMenu) {
-                        setView('rolePicker');
-                      } else {
-                        action.onClick?.();
-                        handleOpenChange(false);
-                      }
-                    }
-                  }}
-                  onMouseEnter={({ currentTarget }) => {
-                    if (isDisabled) return;
-                    (currentTarget as HTMLElement).style.backgroundColor =
-                      isDanger ? 'var(--red-a3)' : 'var(--slate-a3)';
-                  }}
-                  onMouseLeave={({ currentTarget }) => {
-                    (currentTarget as HTMLElement).style.backgroundColor =
-                      'transparent';
-                  }}
-                  style={{
-                    height: 24,
-                    padding: '0 8px',
-                    borderRadius: 'var(--radius-1)',
-                    cursor: isDisabled ? 'not-allowed' : 'pointer',
-                    opacity: isDisabled ? 0.45 : 1,
-                  }}
-                >
-                  <MaterialIcon
-                    name={action.icon}
-                    size={16}
-                    color={isDanger ? 'var(--red-10)' : 'var(--slate-11)'}
-                  />
-                  <Text
-                    size="1"
-                    style={{
-                      color: isDanger ? 'var(--red-10)' : 'var(--slate-11)',
-                    }}
-                  >
-                    {action.label}
-                  </Text>
-                </Flex>
-              );
-
-              return action.tooltip ? (
-                <Tooltip key={i} content={action.tooltip} side="left">
-                  {row}
-                </Tooltip>
-              ) : (
-                <React.Fragment key={i}>{row}</React.Fragment>
-              );
-            })}
-          </Box>
-        ) : (
-          /* ── Role picker ── */
-          subMenuAction?.subMenu && (
-            <Box
-              style={{
-                minWidth: 178,
-                backgroundColor: 'var(--olive-2)',
-                border: '1px solid var(--olive-3)',
-                borderRadius: 'var(--radius-2)',
-                boxShadow:
-                  '0px 12px 32px -16px rgba(0, 9, 50, 0.12), 0px 12px 60px 0px rgba(0, 0, 0, 0.15)',
-                overflow: 'hidden',
-              }}
-            >
-
-              {/* Radio options */}
-              {subMenuAction.subMenu.options.map((option, index) => {
-                const isSelected = option.value === subMenuAction.subMenu!.value;
-                const isLast =
-                  index === subMenuAction.subMenu!.options.length - 1;
-
-                return (
-                  <Flex
-                    key={option.value}
-                    align="center"
-                    justify="between"
-                    onClick={() => {
-                      subMenuAction.subMenu!.onValueChange(option.value);
-                      handleOpenChange(false);
-                    }}
-                    onMouseEnter={(e) => {
-                      (e.currentTarget as HTMLElement).style.backgroundColor =
-                        'var(--slate-a3)';
-                    }}
-                    onMouseLeave={(e) => {
-                      (e.currentTarget as HTMLElement).style.backgroundColor =
-                        'transparent';
-                    }}
-                    style={{
-                      padding: 'var(--space-2) var(--space-4)',
-                      paddingBottom: isLast ? 12 : 8,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <Flex direction="column" gap="1">
-                      <Text
-                        size="2"
-                        weight={isSelected ? 'medium' : 'regular'}
-                        style={{ color: 'var(--slate-12)' }}
-                      >
-                        {option.label}
-                      </Text>
-                      {option.description && (
-                        <Text size="1" style={{ color: 'var(--slate-11)' }}>
-                          {option.description}
-                        </Text>
-                      )}
-                    </Flex>
-
-                    <Box
-                      style={{
-                        width: 16,
-                        height: 16,
-                        borderRadius: '50%',
-                        border: `2px solid ${isSelected ? 'var(--accent-9)' : 'var(--slate-a7)'}`,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        flexShrink: 0,
-                      }}
-                    >
-                      {isSelected && (
-                        <Box
-                          style={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: '50%',
-                            backgroundColor: 'var(--accent-9)',
-                          }}
-                        />
-                      )}
-                    </Box>
-                  </Flex>
-                );
-              })}
-            </Box>
-          )
-        )}
+        {menuBody}
       </Popover.Content>
     </Popover.Root>
   );

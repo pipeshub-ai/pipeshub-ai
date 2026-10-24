@@ -46,7 +46,7 @@ describe('ConfigService (updateConfig)', () => {
     it('should call all 6 endpoints and return result on success', async () => {
       nock('http://iam-backend:3001').post('/api/v1/users/updateAppConfig').reply(200, { ok: true })
       nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, { ok: true })
-      nock('http://auth-backend:3003').post('/api/v1/saml/updateAppConfig').reply(200, { ok: true })
+      nock('http://auth-backend:3003').post('/api/v1/userAccount/updateAppConfig').reply(200, { ok: true })
       nock('http://storage-backend:3004').post('/api/v1/document/updateAppConfig').reply(200, { ok: true })
       nock('http://token-backend:3005').post('/api/v1/connectors/updateAppConfig').reply(200, { ok: true })
       nock('http://es-backend:3006').post('/api/v1/search/updateAppConfig').reply(200, { done: true })
@@ -68,7 +68,7 @@ describe('ConfigService (updateConfig)', () => {
         reqheaders: { authorization: 'Bearer the-token' },
       }).post('/api/v1/users/updateAppConfig').reply(200, {})
       nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
-      nock('http://auth-backend:3003').post('/api/v1/saml/updateAppConfig').reply(200, {})
+      nock('http://auth-backend:3003').post('/api/v1/userAccount/updateAppConfig').reply(200, {})
       nock('http://storage-backend:3004').post('/api/v1/document/updateAppConfig').reply(200, {})
       nock('http://token-backend:3005').post('/api/v1/connectors/updateAppConfig').reply(200, {})
       nock('http://es-backend:3006').post('/api/v1/search/updateAppConfig').reply(200, {})
@@ -103,7 +103,7 @@ describe('ConfigService (updateConfig)', () => {
     it('should throw BadRequestError when auth endpoint returns non-200', async () => {
       nock('http://iam-backend:3001').post('/api/v1/users/updateAppConfig').reply(200, {})
       nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
-      nock('http://auth-backend:3003').post('/api/v1/saml/updateAppConfig').reply(500, {})
+      nock('http://auth-backend:3003').post('/api/v1/userAccount/updateAppConfig').reply(500, {})
       try {
         await service.updateConfig('token')
         expect.fail('should have thrown')
@@ -115,7 +115,7 @@ describe('ConfigService (updateConfig)', () => {
     it('should throw BadRequestError when storage endpoint returns non-200', async () => {
       nock('http://iam-backend:3001').post('/api/v1/users/updateAppConfig').reply(200, {})
       nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
-      nock('http://auth-backend:3003').post('/api/v1/saml/updateAppConfig').reply(200, {})
+      nock('http://auth-backend:3003').post('/api/v1/userAccount/updateAppConfig').reply(200, {})
       nock('http://storage-backend:3004').post('/api/v1/document/updateAppConfig').reply(500, {})
       try {
         await service.updateConfig('token')
@@ -128,7 +128,7 @@ describe('ConfigService (updateConfig)', () => {
     it('should throw BadRequestError when token endpoint returns non-200', async () => {
       nock('http://iam-backend:3001').post('/api/v1/users/updateAppConfig').reply(200, {})
       nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
-      nock('http://auth-backend:3003').post('/api/v1/saml/updateAppConfig').reply(200, {})
+      nock('http://auth-backend:3003').post('/api/v1/userAccount/updateAppConfig').reply(200, {})
       nock('http://storage-backend:3004').post('/api/v1/document/updateAppConfig').reply(200, {})
       nock('http://token-backend:3005').post('/api/v1/connectors/updateAppConfig').reply(500, {})
       try {
@@ -142,7 +142,7 @@ describe('ConfigService (updateConfig)', () => {
     it('should throw BadRequestError when es endpoint returns non-200', async () => {
       nock('http://iam-backend:3001').post('/api/v1/users/updateAppConfig').reply(200, {})
       nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
-      nock('http://auth-backend:3003').post('/api/v1/saml/updateAppConfig').reply(200, {})
+      nock('http://auth-backend:3003').post('/api/v1/userAccount/updateAppConfig').reply(200, {})
       nock('http://storage-backend:3004').post('/api/v1/document/updateAppConfig').reply(200, {})
       nock('http://token-backend:3005').post('/api/v1/connectors/updateAppConfig').reply(200, {})
       nock('http://es-backend:3006').post('/api/v1/search/updateAppConfig').reply(500, {})

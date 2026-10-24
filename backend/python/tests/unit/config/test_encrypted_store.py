@@ -274,148 +274,64 @@ class TestGetKey:
 # ===================================================================
 
 class TestListKeysInDirectory:
-    """Tests for EncryptedKeyValueStore.list_keys_in_directory."""
+    """SCALE-1: a directory is listed by the backend; key names come back as stored."""
 
     @pytest.mark.asyncio
-    async def test_empty_keys_returns_empty(self):
+    async def test_a_directory_is_listed_by_the_backends_prefix_scan(self):
         eks, store_mock, _ = _make_encrypted_store()
-        store_mock.get_all_keys = AsyncMock(return_value=[])
+        store_mock.list_keys_in_directory = AsyncMock(return_value=["/services/toolsets/i1/u1"])
+        store_mock.get_all_keys = AsyncMock()
 
-        result = await eks.list_keys_in_directory("/some/dir")
-        assert result == []
+        result = await eks.list_keys_in_directory("/services/toolsets/")
+
+        assert result == ["/services/toolsets/i1/u1"]
+        store_mock.list_keys_in_directory.assert_awaited_once_with("/services/toolsets/")
+        store_mock.get_all_keys.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_none_keys_returns_empty(self):
+    @pytest.mark.parametrize("root", ["", "/"])
+    async def test_the_root_lists_every_key(self, root):
+        eks, store_mock, _ = _make_encrypted_store()
+        store_mock.get_all_keys = AsyncMock(return_value=["/a/1", "/b/2"])
+
+        assert await eks.list_keys_in_directory(root) == ["/a/1", "/b/2"]
+
+    @pytest.mark.asyncio
+    async def test_a_prefix_without_the_trailing_slash_is_matched_as_given(self):
+        eks, store_mock, _ = _make_encrypted_store()
+        store_mock.get_all_keys = AsyncMock(
+            return_value=["/services/toolsets/i1/u1", "/services/toolsets-old/u1", "/services/mcp/x"]
+        )
+
+        result = await eks.list_keys_in_directory("/services/toolsets")
+
+        assert result == ["/services/toolsets/i1/u1", "/services/toolsets-old/u1"]
+
+    @pytest.mark.asyncio
+    async def test_key_names_are_never_decrypted(self):
+        """Only values are encrypted; a name that merely looks like ciphertext is a name."""
+        eks, store_mock, enc_mock = _make_encrypted_store()
+        store_mock.get_all_keys = AsyncMock(return_value=["iv:ciphertext:authTag"])
+
+        assert await eks.list_keys_in_directory("") == ["iv:ciphertext:authTag"]
+        enc_mock.decrypt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_keys_is_an_empty_list(self):
         eks, store_mock, _ = _make_encrypted_store()
         store_mock.get_all_keys = AsyncMock(return_value=None)
 
-        result = await eks.list_keys_in_directory("/some/dir")
-        assert result == []
+        assert await eks.list_keys_in_directory("/some/prefix") == []
 
     @pytest.mark.asyncio
-    async def test_decrypts_encrypted_keys(self):
-        """Keys in encrypted format (2 colons) should be decrypted."""
-        eks, store_mock, enc_mock = _make_encrypted_store()
-        store_mock.get_all_keys = AsyncMock(
-            return_value=["iv:ciphertext:authTag"]
-        )
-        enc_mock.decrypt.return_value = "/services/some/key"
-
-        result = await eks.list_keys_in_directory("/services")
-        assert "/services/some/key" in result
-        enc_mock.decrypt.assert_called_once_with("iv:ciphertext:authTag")
-
-    @pytest.mark.asyncio
-    async def test_unencrypted_keys_passthrough(self):
-        """Keys matching UNENCRYPTED_PREFIXES should not be decrypted."""
-        eks, store_mock, enc_mock = _make_encrypted_store()
-        endpoints_key = config_node_constants.ENDPOINTS.value + "/sub"
-        store_mock.get_all_keys = AsyncMock(return_value=[endpoints_key])
-
-        result = await eks.list_keys_in_directory(
-            config_node_constants.ENDPOINTS.value
-        )
-        assert endpoints_key in result
-        enc_mock.decrypt.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_filters_by_directory_prefix(self):
-        """Only keys matching the directory prefix should be returned."""
-        eks, store_mock, enc_mock = _make_encrypted_store()
-        store_mock.get_all_keys = AsyncMock(
-            return_value=[
-                "iv:cipher1:auth",
-                "iv:cipher2:auth",
-            ]
-        )
-        enc_mock.decrypt.side_effect = [
-            "/services/match/key1",
-            "/other/nomatch/key2",
-        ]
-
-        result = await eks.list_keys_in_directory("/services/match")
-        assert "/services/match/key1" in result
-        assert "/other/nomatch/key2" not in result
-
-    @pytest.mark.asyncio
-    async def test_root_directory_returns_all(self):
-        """Directory '/' should return all keys."""
-        eks, store_mock, enc_mock = _make_encrypted_store()
-        endpoints_key = config_node_constants.ENDPOINTS.value
-        store_mock.get_all_keys = AsyncMock(
-            return_value=[endpoints_key, "iv:cipher:auth"]
-        )
-        enc_mock.decrypt.return_value = "/some/key"
-
-        result = await eks.list_keys_in_directory("/")
-        assert len(result) == 2
-
-    @pytest.mark.asyncio
-    async def test_empty_directory_returns_all(self):
-        """Empty directory string should return all keys."""
-        eks, store_mock, enc_mock = _make_encrypted_store()
-        endpoints_key = config_node_constants.ENDPOINTS.value
-        store_mock.get_all_keys = AsyncMock(
-            return_value=[endpoints_key]
-        )
-
-        result = await eks.list_keys_in_directory("")
-        assert len(result) == 1
-
-    @pytest.mark.asyncio
-    async def test_keys_without_colons_not_decrypted(self):
-        """Keys that don't have exactly 2 colons are treated as unencrypted."""
-        eks, store_mock, enc_mock = _make_encrypted_store()
-        store_mock.get_all_keys = AsyncMock(
-            return_value=["simple_key_no_colons"]
-        )
-
-        result = await eks.list_keys_in_directory("")
-        assert "simple_key_no_colons" in result
-        enc_mock.decrypt.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_decryption_failure_uses_raw_key(self):
-        """If decryption fails for an encrypted-format key, use it as-is."""
-        eks, store_mock, enc_mock = _make_encrypted_store()
-        store_mock.get_all_keys = AsyncMock(
-            return_value=["iv:bad_cipher:auth"]
-        )
-        enc_mock.decrypt.side_effect = Exception("decrypt failed")
-
-        result = await eks.list_keys_in_directory("")
-        assert "iv:bad_cipher:auth" in result
-
-    @pytest.mark.asyncio
-    async def test_mixed_encrypted_and_unencrypted_keys(self):
-        """Properly handles a mix of encrypted and unencrypted keys."""
-        eks, store_mock, enc_mock = _make_encrypted_store()
-        endpoints_key = config_node_constants.ENDPOINTS.value + "/sub"
-        storage_key = config_node_constants.STORAGE.value + "/sub"
-        store_mock.get_all_keys = AsyncMock(
-            return_value=[
-                endpoints_key,
-                storage_key,
-                "iv:encrypted:tag",
-                "no_colon_key",
-                "one:colon",
-            ]
-        )
-        enc_mock.decrypt.return_value = "/services/decrypted"
-
-        result = await eks.list_keys_in_directory("")
-        # All keys should be returned (empty prefix matches all)
-        assert len(result) == 5
-
-    @pytest.mark.asyncio
-    async def test_store_exception_propagates(self):
+    @pytest.mark.parametrize("directory", ["/some/dir/", "/some/dir"])
+    async def test_a_store_failure_is_raised(self, directory):
         eks, store_mock, _ = _make_encrypted_store()
-        store_mock.get_all_keys = AsyncMock(
-            side_effect=Exception("store error")
-        )
+        store_mock.list_keys_in_directory = AsyncMock(side_effect=ConnectionError("store down"))
+        store_mock.get_all_keys = AsyncMock(side_effect=ConnectionError("store down"))
 
-        with pytest.raises(Exception, match="store error"):
-            await eks.list_keys_in_directory("/some/dir")
+        with pytest.raises(ConnectionError, match="store down"):
+            await eks.list_keys_in_directory(directory)
 
 
 # ===================================================================
@@ -855,60 +771,6 @@ class TestCreateKeyUnencryptedVerification:
 
         result = await ekv.create_key(excluded_key, value)
         assert result is True
-
-
-# ============================================================================
-# list_keys_in_directory key processing error (lines 354-356)
-# ============================================================================
-
-
-class TestListKeysKeyProcessingError:
-    """Test that key processing errors in list_keys_in_directory are skipped."""
-
-    @pytest.mark.asyncio
-    async def test_key_processing_error_continues(self):
-        """When processing a single key raises Exception, it's skipped (lines 354-356)."""
-        ekv, mock_store, mock_encryption = _build_store_simple()
-
-        # Set up: first key causes error in the is_unencrypted check (by making
-        # startswith fail), second key works fine
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "bad:key:data",
-            "/services/endpoints/good",
-        ])
-
-        # Make decrypt raise for the first key (has 2 colons, looks encrypted)
-        call_count = [0]
-        def side_effect(v):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise Exception("decrypt failed for bad key")
-            return "/services/decrypted"
-
-        mock_encryption.decrypt.side_effect = side_effect
-
-        result = await ekv.list_keys_in_directory("/services")
-        # The bad key falls back to raw and doesn't match /services prefix
-        # The good key matches /services prefix
-        assert "/services/endpoints/good" in result
-
-    @pytest.mark.asyncio
-    async def test_key_processing_general_error_skipped(self):
-        """A general exception during key processing is caught and skipped."""
-        ekv, mock_store, mock_encryption = _build_store_simple()
-
-        # Create a key that will cause an error during the any() check
-        # by making the key not a string
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "normal:key:data",
-        ])
-
-        # Make the decrypt fail with a general error
-        mock_encryption.decrypt.side_effect = RuntimeError("general error")
-
-        result = await ekv.list_keys_in_directory("")
-        # Key falls back to raw key
-        assert "normal:key:data" in result
 
 
 # ============================================================================

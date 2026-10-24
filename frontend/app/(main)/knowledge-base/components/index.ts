@@ -7,7 +7,6 @@ export { KbListView } from './kb-list-view';
 export { KbGridView } from './kb-grid-view';
 
 // Constants
-export { CARD_ICONS } from './grid-card-icons';
 
 // chat widget wrapper
 export { ChatWidgetWrapper } from './chat-widget-wrapper';
@@ -25,6 +24,7 @@ export {
   BulkDeleteConfirmationDialog,
   FolderDetailsSidebar,
   ReindexScopeDialog,
+  ReindexBlockedDialog,
 } from './dialogs';
 export type { MoveFolderSidebarProps } from './dialogs';
 export type { CreateFolderDialogProps } from './dialogs';

@@ -22,6 +22,7 @@ _EXPOSED_TYPES: tuple[tuple[str, str], ...] = (
     ("imageGeneration", "image"),
     ("tts", "text-to-speech"),
     ("stt", "automatic-speech-recognition"),
+    ("decision", "decision"),
 )
 
 

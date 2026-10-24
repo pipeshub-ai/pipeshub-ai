@@ -23,11 +23,14 @@ from app.utils.storage_path import build_hierarchical_storage_path
 
 
 def _make_bs(*, config_service=None, graph_provider=None):
-    return BlobStorage(
+    bs = BlobStorage(
         logger=MagicMock(),
         config_service=config_service or AsyncMock(),
         graph_provider=graph_provider,
     )
+    # No document left unmapped by an earlier attempt, unless a test says so.
+    bs._find_unmapped_record_document = AsyncMock(return_value=None)
+    return bs
 
 
 def _configure_auth(bs, storage_type="local"):
@@ -297,17 +300,17 @@ class TestGetActualContentPath:
         assert result == "records/conn-1/file.txt"
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_path_lookup_fails(self):
+    async def test_a_failed_lookup_raises_instead_of_reading_as_absent(self):
+        from app.modules.transformers.blob_storage import StorageLookupUnavailableError
+
         bs = _make_bs(graph_provider=AsyncMock())
 
         with patch.object(
             bs, "get_document_id_by_virtual_record_id",
             new_callable=AsyncMock,
             side_effect=RuntimeError("lookup failed"),
-        ):
-            result = await bs.get_actual_content_path("org-1", "vrid-1")
-
-        assert result is None
+        ), pytest.raises(StorageLookupUnavailableError):
+            await bs.get_actual_content_path("org-1", "vrid-1")
 
 
 # ---------------------------------------------------------------------------

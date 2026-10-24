@@ -26,7 +26,7 @@ async function openShareDialog(page: Page, kbId: string) {
   await page.goto(`/knowledge-base/?nodeType=app&nodeId=${kbId}`);
   // exact: the sidebar lists the collection itself, whose name may contain "Share".
   await page.getByRole('button', { name: 'Share', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Share Collection' });
+  const dialog = page.getByRole('dialog', { name: 'Share collection' });
   await expect(dialog).toBeVisible({ timeout: 15_000 });
   return dialog;
 }
@@ -112,7 +112,7 @@ test.describe('Share a collection', () => {
     // Listings show the name without its extension.
     const fileLabel = file.name.replace(/\.pdf$/, '');
     await input!.setInputFiles([file]);
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
     await expect(
       page.locator('[data-testid="upload-item-row"][data-status="completed"]'),
     ).toHaveCount(1, { timeout: 60_000 });

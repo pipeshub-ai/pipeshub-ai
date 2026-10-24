@@ -57,6 +57,14 @@
 /* Light Mode */
 :root, .light, .light-theme {
   --effects-translucent: rgba(255, 255, 255, 0.8);
+  --neutral-9: #8b8d98;
+  --neutral-11: #60646c;
+  --neutral-12: #1c2024;
+  --neutral-a3: #00104010;
+  --neutral-a5: #00104020;
+  --neutral-a8: #00064046;
+  --neutral-a10: #00071b7f;
+  --segment-on: #ffffff;
   --tokens-colors-surface: rgba(139, 139, 139, 0.084);
   --accent-surface: rgba(18, 249, 157, 0.04);
   --white-to-dark: rgba(0, 0, 0, 0.074);
@@ -100,6 +108,14 @@
 [data-is-root-theme="true"].dark,
 :root[class~="dark"] {
   --effects-translucent: rgba(29, 29, 33, 0.70);
+  --neutral-9: #696e77;
+  --neutral-11: #b0b4ba;
+  --neutral-12: #edeef0;
+  --neutral-a3: #ddeaf814;
+  --neutral-a5: #d9edfe25;
+  --neutral-a8: #d9edff5d;
+  --neutral-a10: #e5edfd7b;
+  --segment-on: #111113;
   --tokens-colors-surface: rgba(0, 0, 0, 0.25);
   --accent-surface: rgba(18, 249, 157, 0.04);
   --white-to-dark: rgba(0, 0, 0, 0.25);
@@ -286,14 +302,17 @@ body {
 
 
 
-/* Override Radix DropdownMenu item hover background */
+/* Override Radix DropdownMenu item hover: the design's soft olive-3 surface, and the text
+   pinned to gray-12 because Radix's solid highlight flips it to the accent contrast. */
 .radix-themes [role="menuitem"][data-highlighted] {
-  background-color: var(--olive-6) !important;
+  background-color: var(--olive-3) !important;
+  color: var(--gray-12) !important;
 }
 
 /* Red hover for destructive (delete) menu items */
 .radix-themes [role="menuitem"][data-accent-color="red"][data-highlighted] {
   background-color: var(--red-3) !important;
+  color: var(--red-11) !important;
 }
 .rt-DropdownMenuViewport {
   padding: 4px !important;
@@ -350,10 +369,14 @@ body {
    ======================== */
 
 /* Selected item background using page background color */
+.radix-themes .rt-SegmentedControlRoot {
+  background-color: var(--neutral-a3);
+  height: 24px;
+}
 .radix-themes .rt-SegmentedControlItem[data-state="on"] {
-  background-color: var(--page-background) !important;
+  background-color: var(--segment-on) !important;
   border-radius: 4px !important;
-  border: 1px solid var(--slate-a4) !important;
+  border: 1px solid var(--gray-a4) !important;
 }
 
 /* ========================
@@ -468,6 +491,42 @@ summary {
 [data-upload-scroll-area]::-webkit-scrollbar-thumb:hover {
   background-color: var(--slate-10);
   background-clip: padding-box;
+}
+
+/* Chat answer tables scroll sideways inside the message. Keep that scrollbar
+   visible: with overlay scrollbars a wide table's last columns look cut off.
+   Chrome ignores webkit scrollbar rules while scrollbar-color is set, and this
+   box inherits one from .chat-message-scroll, so reset it. Firefox has no
+   webkit thumb, so it gets the standard properties instead. */
+[data-table-scroll-area] {
+  scrollbar-color: auto;
+}
+[data-table-scroll-area]::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+  -webkit-appearance: none;
+}
+[data-table-scroll-area]::-webkit-scrollbar-track {
+  background: var(--slate-3);
+}
+[data-table-scroll-area]::-webkit-scrollbar-thumb {
+  background-color: var(--slate-8);
+  border-radius: 8px;
+  border: 2px solid var(--slate-3);
+  background-clip: padding-box;
+}
+[data-table-scroll-area]::-webkit-scrollbar-thumb:hover {
+  background-color: var(--slate-10);
+  background-clip: padding-box;
+}
+[data-table-scroll-area]::-webkit-scrollbar-corner {
+  background: var(--slate-3);
+}
+@supports not selector(::-webkit-scrollbar-thumb) {
+  [data-table-scroll-area] {
+    scrollbar-width: thin;
+    scrollbar-color: var(--slate-8) var(--slate-3);
+  }
 }
 
 /* Workspace-menu sub-panel — compact popup over a translucent backdrop;
@@ -731,6 +790,11 @@ li > blockquote {
   .agent-activity-enter {
     animation: none;
   }
+
+  /* Connector firewall-IP card border; its animation is set inline, hence !important. */
+  [data-ph-egress-glow] {
+    animation: none !important;
+  }
 }
 
 /* ========================
@@ -771,7 +835,8 @@ li > blockquote {
    Pure CSS — no JS or React state required.
    ======================== */
 
-@media screen and (orientation: landscape) and (max-width: 900px) {
+/* Height and pointer, not width: large phones (up to ~932px wide) are caught, and keyboards or narrow desktop windows are not. */
+@media screen and (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
   .landscape-block-overlay {
     display: flex !important;
   }
@@ -800,6 +865,46 @@ li > blockquote {
     opacity: 1;
     transform: scale(1) translateY(0);
   }
+}
+
+@keyframes kb-row-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Same box as the old outlined set, with a lighter stroke. */
+.material-icons-outlined {
+  font-family: 'Material Symbols Outlined' !important;
+  font-weight: 300;
+  font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 40 !important;
+}
+
+/* Full-width segmented control: equal columns that may shrink below their text, which then ends in an ellipsis. */
+.rt-SegmentedControlRoot.segmented-fill {
+  grid-auto-columns: minmax(0, 1fr);
+}
+.segmented-fill .rt-SegmentedControlItemLabel {
+  min-width: 0;
+  overflow: hidden;
+}
+.segmented-fill .rt-SegmentedControlItemLabelActive,
+.segmented-fill .rt-SegmentedControlItemLabelInactive {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+}
+.segmented-fill-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Icon-only segmented controls: square items instead of 12px side padding around a glyph. */
+.rt-SegmentedControlRoot[data-icon-only] .rt-SegmentedControlItemLabel {
+  padding-left: 4px;
+  padding-right: 4px;
 }
 
 @keyframes pulse {
@@ -903,6 +1008,20 @@ li > blockquote {
   border-color: var(--gray-9) !important;
 }
 
+/* Handles are 13px. On touch screens widen the grab area to 44px; it stays 22px tall,
+ * the spacing between stacked handles, so a finger never lands on the neighbour. */
+@media (pointer: coarse) {
+  .agent-builder-flow .react-flow__handle.agent-builder-node-handle::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 22px;
+    transform: translate(-50%, -50%);
+  }
+}
+
 /* Delete control on generic flow nodes: hidden until hover/focus within the card */
 .agent-builder-flow .flow-node-card .flow-node-delete {
   opacity: 0;
@@ -914,6 +1033,12 @@ li > blockquote {
 .agent-builder-flow .flow-node-card:hover .flow-node-delete,
 .agent-builder-flow .flow-node-card:focus-within .flow-node-delete {
   opacity: 1;
+}
+
+@media (hover: none) {
+  .agent-builder-flow .flow-node-card .flow-node-delete {
+    opacity: 1;
+  }
 }
 
 .agent-builder-flow .flow-node-surface {
@@ -1006,6 +1131,7 @@ li > blockquote {
 }
 
 .agent-builder-draggable-row {
+  min-height: 36px;
   border: 1px solid transparent;
   border-radius: var(--radius-1);
   transition:
@@ -1023,6 +1149,13 @@ li > blockquote {
 
 .agent-builder-draggable-row--disabled {
   cursor: not-allowed;
+}
+
+/* Same breakpoint as `useIsMobile`. */
+@media (max-width: 768px) {
+  .agent-builder-draggable-row {
+    min-height: 44px;
+  }
 }
 
 .agent-builder-palette-nest {
@@ -1260,4 +1393,246 @@ th code {
   border: none;
   border-top: 1px solid var(--olive-4);
   margin: 1em 0;
+}
+
+@keyframes kbRowIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+    filter: blur(2px);
+  }
+  60% {
+    filter: blur(0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+/* Duration is ROW_REVEAL_DURATION_MS in knowledge-base/utils/row-reveal.ts. */
+.kb-row-in {
+  animation: kbRowIn 280ms cubic-bezier(0.25, 0.1, 0.25, 1) both;
+}
+
+@keyframes kbSkeletonOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.kb-mention-token {
+  background: var(--accent-a3);
+  color: var(--accent-a11);
+  border-radius: 5px;
+  /* Inset, so nothing reaches past the text: this is drawn behind the textarea's own
+     transparent text, and anything that changes glyph width (weight, padding, margin)
+     moves the caret off it. The room inside comes from the pads around the name. */
+  box-shadow: inset 0 0 0 1px var(--accent-a6);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+/* The opening pad, which the icon is laid over; it never wraps, so it is one box. */
+.kb-mention-lead {
+  position: relative;
+}
+.kb-mention-icon {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  line-height: 0;
+}
+/* Laid over the right end of the hovered chip, above the textarea that covers the chips. */
+.kb-mention-remove {
+  position: absolute;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-4);
+  color: var(--accent-11);
+  cursor: pointer;
+}
+/* Fades the name out into the button instead of cutting a letter in half. */
+.kb-mention-remove::before {
+  content: '';
+  position: absolute;
+  right: 100%;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  background: linear-gradient(to right, transparent, var(--accent-4));
+  pointer-events: none;
+}
+.kb-mention-remove:hover {
+  background: var(--accent-6);
+  color: var(--accent-12);
+}
+.kb-mention-remove:hover::before {
+  background: linear-gradient(to right, transparent, var(--accent-6));
+}
+
+.chat-input-textarea::placeholder {
+  color: transparent;
+}
+.chat-placeholder-shimmer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  user-select: none;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: 0;
+  white-space: nowrap;
+  background-image: linear-gradient(
+    100deg,
+    var(--neutral-a10) 0%,
+    var(--neutral-a10) 38%,
+    var(--neutral-12) 50%,
+    var(--neutral-a10) 62%,
+    var(--neutral-a10) 100%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: chat-placeholder-sweep 3.2s linear infinite;
+}
+@keyframes chat-placeholder-sweep {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kb-row-in {
+    animation: none;
+  }
+  .chat-placeholder-shimmer {
+    animation: none;
+    color: var(--neutral-a10);
+    background: none;
+  }
+}
+
+/* Inline citation number circle: same idea, 44px tall and never wider than the
+ * circle plus a little, anchored at its left edge so neighbouring circles and
+ * the text before it keep their own taps. */
+@media (pointer: coarse) {
+  .citation-number-circle {
+    position: relative;
+  }
+  .citation-number-circle::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: max(100%, 24px);
+    height: 44px;
+    transform: translateY(-50%);
+  }
+}
+
+/* Rows of small icon buttons: space them so their 44px hit areas do not overlap. */
+@media (pointer: coarse) {
+  .touch-row {
+    gap: 20px !important;
+  }
+}
+
+/* Inline citation "+N" chip: a 44px tap target on touch screens without
+ * growing the 16px chip. Anchored at the chip's left edge so it never
+ * covers the numbered circle just before it. */
+@media (pointer: coarse) {
+  .citation-overflow-chip::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: max(100%, 44px);
+    height: 44px;
+    transform: translateY(-50%);
+  }
+}
+
+/* Filter chips keep their content width so the row scrolls instead of shrinking them. */
+.entity-filter-bar-mobile > * {
+  flex-shrink: 0;
+}
+
+/* Full-screen shells: dvh avoids the mobile URL-bar overflow; vh is the fallback. */
+.viewport-height {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* Grows the tap area to 44px on touch screens without growing the element. */
+@media (pointer: coarse) {
+  .touch-hit {
+    position: relative;
+  }
+  .touch-hit::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* iOS Safari zooms into any focused field under 16px. !important beats the inline font sizes
+   several fields set (the chat composer among them); the composer's backdrop and placeholder
+   follow so the chips stay aligned with the text. */
+@media (max-width: 768px) and (pointer: coarse) {
+  .rt-TextFieldInput,
+  .rt-TextAreaInput,
+  textarea,
+  input,
+  select,
+  [contenteditable]:not([contenteditable='false']),
+  .chat-input-backdrop,
+  .chat-placeholder-shimmer {
+    font-size: 16px !important;
+  }
+}
+
+/* t5: integrations catalogs */
+/* Fades the right edge of a sideways-scrolling tab row while more tabs are off-screen.
+   Browsers without scroll-driven animations show the row unfaded. */
+@property --tab-scroll-fade {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes tab-scroll-fade {
+  from {
+    --tab-scroll-fade: 56px;
+  }
+  to {
+    --tab-scroll-fade: 0px;
+  }
+}
+@supports (animation-timeline: scroll()) {
+  .tab-scroll-fade {
+    mask-image: linear-gradient(to right, #000 calc(100% - var(--tab-scroll-fade)), transparent);
+    animation: tab-scroll-fade linear both;
+    animation-timeline: scroll(self inline);
+  }
+}
+
+/* t3: knowledge base */
+/* Filter chips keep their width and scroll below desktop instead of shrinking. */
+.kb-filter-bar-mobile > * {
+  flex-shrink: 0;
 }

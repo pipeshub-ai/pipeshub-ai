@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
+import fakeredis.aioredis
+
 from app.services.vector_db.models import (
     CollectionConfig,
     HybridSearchRequest,
@@ -48,6 +50,19 @@ def embedding_models(models: dict[str, FakeEmbeddingModel]) -> Iterator[None]:
         side_effect=lambda provider, config: models[config["configuration"]["model"]],
     ):
         yield
+
+
+@contextmanager
+def recreate_lock_redis(server: fakeredis.FakeServer | None = None) -> Iterator[fakeredis.FakeServer]:
+    """The Redis that ``EntityVectorStore`` takes its recreate lock in: one
+    in-process server, a new client per call, as each call opens its own."""
+    server = server or fakeredis.FakeServer()
+
+    async def _client(config_service: object) -> fakeredis.aioredis.FakeRedis:
+        return fakeredis.aioredis.FakeRedis(server=server, decode_responses=True)
+
+    with patch("app.modules.transformers.entity_vectorstore.redis_from_config_service", side_effect=_client):
+        yield server
 
 
 def _field(payload: dict[str, Any], path: str) -> object:

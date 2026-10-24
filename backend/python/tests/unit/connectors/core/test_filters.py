@@ -360,6 +360,28 @@ class TestFilterField:
         assert "is_after" in schema["operators"]
         assert "noImplicitOperatorDefault" not in schema
 
+    def test_to_schema_dict_fallback_operator(self) -> None:
+        ff = FilterField(
+            name="sync_window",
+            display_name="Sync Messages From",
+            filter_type=FilterType.DATETIME,
+            fallback_operator="last_30_days",
+        )
+        assert ff.to_schema_dict()["fallbackOperator"] == "last_30_days"
+
+    def test_to_schema_dict_omits_fallback_operator_when_unset(self) -> None:
+        ff = FilterField(name="modified", display_name="Modified", filter_type=FilterType.DATETIME)
+        assert "fallbackOperator" not in ff.to_schema_dict()
+
+    def test_fallback_operator_must_be_a_field_operator(self) -> None:
+        with pytest.raises(ValueError, match="fallback_operator"):
+            FilterField(
+                name="sync_window",
+                display_name="Sync Messages From",
+                filter_type=FilterType.DATETIME,
+                fallback_operator="in",
+            )
+
     def test_to_schema_dict_no_implicit_operator_default(self):
         ff = FilterField(
             name="modified",
@@ -732,6 +754,48 @@ class TestFilter:
             operator=NumberOperator.GREATER_THAN,
         )
         assert f.value == 3.14
+
+    def test_number_empty_string_normalizes_to_none(self) -> None:
+        """UI sends "" (not omitted) when a number field is cleared/unset -
+        this must not raise, it should be treated as "no value"."""
+        f = Filter.model_validate({
+            "key": "max_items",
+            "value": "",
+            "type": "number",
+            "operator": "less_than_or_equal",
+        })
+        assert f.value is None
+        assert f.is_empty() is True
+
+    def test_number_numeric_string_coerced(self) -> None:
+        """Numeric strings (common from form inputs) are coerced to real numbers."""
+        f = Filter.model_validate({
+            "key": "max_items",
+            "value": "1000",
+            "type": "number",
+            "operator": "less_than_or_equal",
+        })
+        assert f.value == 1000
+        assert isinstance(f.value, int)
+
+    def test_number_invalid_string_raises(self) -> None:
+        """Non-numeric strings still raise a clear validation error."""
+        with pytest.raises(ValueError, match="Invalid value type"):
+            Filter.model_validate({
+                "key": "max_items",
+                "value": "not-a-number",
+                "type": "number",
+                "operator": "less_than_or_equal",
+            })
+
+    def test_boolean_empty_string_normalizes_to_none(self) -> None:
+        f = Filter.model_validate({
+            "key": "flag",
+            "value": "",
+            "type": "boolean",
+            "operator": "is",
+        })
+        assert f.value is None
 
     def test_multiselect_filter(self):
         """Multiselect filter with IN operator."""

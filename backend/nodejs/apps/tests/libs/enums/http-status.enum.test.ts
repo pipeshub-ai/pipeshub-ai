@@ -19,6 +19,10 @@ describe('HTTP_STATUS', () => {
     it('should have NO_CONTENT as 204', () => {
       expect(HTTP_STATUS.NO_CONTENT).to.equal(204);
     });
+
+    it('should have PARTIAL_CONTENT as 206', () => {
+      expect(HTTP_STATUS.PARTIAL_CONTENT).to.equal(206);
+    });
   });
 
   // 3xx Redirection
@@ -36,6 +40,10 @@ describe('HTTP_STATUS', () => {
 
     it('should have UNAUTHORIZED as 401', () => {
       expect(HTTP_STATUS.UNAUTHORIZED).to.equal(401);
+    });
+
+    it('should have PAYMENT_REQUIRED as 402', () => {
+      expect(HTTP_STATUS.PAYMENT_REQUIRED).to.equal(402);
     });
 
     it('should have FORBIDDEN as 403', () => {
@@ -64,6 +72,10 @@ describe('HTTP_STATUS', () => {
 
     it('should have UNSUPPORTED_MEDIA_TYPE as 415', () => {
       expect(HTTP_STATUS.UNSUPPORTED_MEDIA_TYPE).to.equal(415);
+    });
+
+    it('should have RANGE_NOT_SATISFIABLE as 416', () => {
+      expect(HTTP_STATUS.RANGE_NOT_SATISFIABLE).to.equal(416);
     });
 
     it('should have UNPROCESSABLE_ENTITY as 422', () => {
@@ -100,8 +112,8 @@ describe('HTTP_STATUS', () => {
 
   // Structural tests
   describe('structural checks', () => {
-    it('should have exactly 21 status codes', () => {
-      expect(Object.keys(HTTP_STATUS)).to.have.lengthOf(21);
+    it('should have exactly 24 status codes', () => {
+      expect(Object.keys(HTTP_STATUS)).to.have.lengthOf(24);
     });
 
     it('should contain only the expected keys', () => {
@@ -110,9 +122,11 @@ describe('HTTP_STATUS', () => {
         'CREATED',
         'ACCEPTED',
         'NO_CONTENT',
+        'PARTIAL_CONTENT',
         'PERMANENT_REDIRECT',
         'BAD_REQUEST',
         'UNAUTHORIZED',
+        'PAYMENT_REQUIRED',
         'FORBIDDEN',
         'NOT_FOUND',
         'METHOD_NOT_ALLOWED',
@@ -120,6 +134,7 @@ describe('HTTP_STATUS', () => {
         'GONE',
         'PAYLOAD_TOO_LARGE',
         'UNSUPPORTED_MEDIA_TYPE',
+        'RANGE_NOT_SATISFIABLE',
         'TOO_MANY_REQUESTS',
         'UNPROCESSABLE_ENTITY',
         'INTERNAL_SERVER',

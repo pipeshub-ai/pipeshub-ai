@@ -287,8 +287,18 @@ class TestAzureFilesRESTClient:
         assert client.get_account_key() == "dGVzdGtleQ=="
 
     def test_get_account_key_conn_str_config(self, conn_str_config):
+        # The key in a key connection string signs SAS URLs (PP-351).
         client = AzureFilesRESTClient(conn_str_config)
+        assert client.get_account_key() == "dGVzdGtleQ=="
+
+    def test_get_account_key_sas_conn_str_is_none(self):
+        config = AzureFilesConnectionStringConfig(
+            connectionString="FileEndpoint=https://acct.file.core.windows.net/;SharedAccessSignature=sv=1&sig=x"
+        )
+        client = AzureFilesRESTClient(config)
         assert client.get_account_key() is None
+        assert config.get_account_name() == "acct"
+        assert client.get_account_url() == "https://acct.file.core.windows.net"
 
     def test_get_authentication_method(self, conn_str_config):
         client = AzureFilesRESTClient(conn_str_config)
@@ -318,37 +328,6 @@ class TestAzureFilesRESTClient:
         client = AzureFilesRESTClient(conn_str_config)
         await client.close_async_client()  # Should not raise
 
-    @pytest.mark.asyncio
-    async def test_ensure_share_exists_creates(self, conn_str_config):
-        client = AzureFilesRESTClient(conn_str_config)
-        mock_share = MagicMock()
-        mock_share.exists = AsyncMock(return_value=False)
-        mock_share.create_share = AsyncMock(return_value=None)
-        mock_async_client = MagicMock()
-        mock_async_client.get_share_client.return_value = mock_share
-
-        with patch.object(client, "get_async_share_service_client", new_callable=AsyncMock, return_value=mock_async_client):
-            result = await client.ensure_share_exists("test-share")
-            assert result.success is True
-            assert result.data["action"] == "created"
-
-    @pytest.mark.asyncio
-    async def test_ensure_share_exists_already_exists(self, conn_str_config):
-        client = AzureFilesRESTClient(conn_str_config)
-        mock_share = MagicMock()
-        mock_share.exists = AsyncMock(return_value=True)
-        mock_async_client = MagicMock()
-        mock_async_client.get_share_client.return_value = mock_share
-
-        with patch.object(client, "get_async_share_service_client", new_callable=AsyncMock, return_value=mock_async_client):
-            result = await client.ensure_share_exists("test-share")
-            assert result.success is True
-            assert result.data["action"] == "exists"
-
-
-# ---------------------------------------------------------------------------
-# AzureFilesClient
-# ---------------------------------------------------------------------------
 
 
 class TestAzureFilesClient:
@@ -494,20 +473,6 @@ class TestAzureFilesClient:
         info = client.get_credentials_info()
         assert info["authentication_method"] == "connection_string"
 
-    @pytest.mark.asyncio
-    async def test_ensure_share_exists_delegates(self, acct_key_config):
-        """AzureFilesClient.ensure_share_exists delegates to REST client."""
-        rest_client = AzureFilesRESTClient(acct_key_config)
-        client = AzureFilesClient(rest_client)
-        mock_share = MagicMock()
-        mock_share.exists = AsyncMock(return_value=True)
-        mock_async_client = MagicMock()
-        mock_async_client.get_share_client.return_value = mock_share
-
-        with patch.object(rest_client, "get_async_share_service_client",
-                          new_callable=AsyncMock, return_value=mock_async_client):
-            result = await client.ensure_share_exists("myshare")
-            assert result.success is True
 
     @pytest.mark.asyncio
     async def test_get_async_share_service_client_delegates(self, acct_key_config):
@@ -628,47 +593,7 @@ class TestAzureFilesRESTClientAdditional:
         with pytest.raises(AzureFilesConfigurationError, match="Could not determine account URL"):
             client.get_account_url()
 
-    @pytest.mark.asyncio
-    async def test_ensure_share_exists_azure_error(self, conn_str_config):
-        """ensure_share_exists raises AzureFilesShareError on AzureError (lines 356-361)."""
-        client = AzureFilesRESTClient(conn_str_config)
-        mock_share = MagicMock()
 
-        # Import AzureError for the test
-        from azure.core.exceptions import AzureError
-        mock_share.exists = AsyncMock(side_effect=AzureError("azure failure"))
-        mock_async_client = MagicMock()
-        mock_async_client.get_share_client.return_value = mock_share
-
-        with patch.object(client, "get_async_share_service_client",
-                          new_callable=AsyncMock, return_value=mock_async_client):
-            with pytest.raises(AzureFilesShareError, match="Azure error"):
-                await client.ensure_share_exists("test-share")
-
-    @pytest.mark.asyncio
-    async def test_ensure_share_exists_generic_exception(self, conn_str_config):
-        """ensure_share_exists raises AzureFilesShareError on generic exception (lines 362-367)."""
-        client = AzureFilesRESTClient(conn_str_config)
-        mock_share = MagicMock()
-        mock_share.exists = AsyncMock(side_effect=RuntimeError("unexpected"))
-        mock_async_client = MagicMock()
-        mock_async_client.get_share_client.return_value = mock_share
-
-        with patch.object(client, "get_async_share_service_client",
-                          new_callable=AsyncMock, return_value=mock_async_client):
-            with pytest.raises(AzureFilesShareError, match="Unexpected error"):
-                await client.ensure_share_exists("test-share")
-
-    @pytest.mark.asyncio
-    async def test_ensure_share_exists_reraises_share_error(self, conn_str_config):
-        """ensure_share_exists re-raises AzureFilesShareError (line 354-355)."""
-        client = AzureFilesRESTClient(conn_str_config)
-
-        with patch.object(client, "get_async_share_service_client",
-                          new_callable=AsyncMock,
-                          side_effect=AzureFilesShareError("custom share error")):
-            with pytest.raises(AzureFilesShareError, match="custom share error"):
-                await client.ensure_share_exists("test-share")
 
 
 class TestAzureFilesClientBuildErrors:

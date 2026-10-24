@@ -21,13 +21,20 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
+from app.modules.parsers.code_parser.secret_scan import redact_secrets
 from app.utils.time_conversion import string_to_datetime
 
 from .common.utils import parse_item_id_from_url
+from .constants import MR_FILE_INLINE_CONTENT_MAX_BYTES
 from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
+
+
+def is_internal_note(note: object) -> bool:
+    """Internal notes are for Planner and up. GitLab before 15.0 calls the flag ``confidential``."""
+    return getattr(note, "internal", False) is True or getattr(note, "confidential", False) is True
 
 
 class CommentsHelper:
@@ -69,6 +76,9 @@ class CommentsHelper:
         base_project_url = f"{c._gitlab_base_url}/api/v4/projects/{project_id}"
 
         for comment in comments:
+            # The issue's readers include Guests; an internal note is not theirs to read.
+            if is_internal_note(comment):
+                continue
             raw_markdown_content: str = getattr(comment, "body", "") or ""
             child_records, remaining_records = await c.attachments.make_child_records_of_attachments(
                 markdown_raw=raw_markdown_content, record=record
@@ -217,52 +227,107 @@ class CommentsHelper:
                 message=file_changes_res.error,
             )
 
-        tmp_mr_res = await c.runtime.ds_call(
-            c.data_source.get_merge_request, project_id=int(project_id), mr_iid=mr_number,
-        )
-        tmp_mr = tmp_mr_res.data
-        tmp_mr_sha = getattr(tmp_mr, "sha", "")
         file_changes = file_changes_res.data or {}
         changes = file_changes.get("changes", [])
+        # The changes payload is the merge request itself plus its ``changes``,
+        # so its ``sha`` is the head commit. The merge request is fetched for
+        # it only if that is missing and a file actually needs its contents.
+        head_sha: str | None = file_changes.get("sha") or None
+        head_sha_looked_up = head_sha is not None
 
         for file_change in changes:
             file_path = file_change.get("new_path", "")
-            diff_content = file_change.get("diff", "")
+            old_path = file_change.get("old_path", "")
+            diff_content = file_change.get("diff", "") or ""
             is_new_file = file_change.get("new_file", False)
             is_deleted_file = file_change.get("deleted_file", False)
+            is_renamed_file = file_change.get("renamed_file", False)
             is_generated_file = file_change.get("generated_file", False)
             is_truncated_diff = file_change.get("too_large", False)
-            new_file_content = ""
+            is_collapsed_diff = file_change.get("collapsed", False)
+            a_mode = file_change.get("a_mode")
+            b_mode = file_change.get("b_mode")
 
-            if is_new_file or not is_deleted_file:
-                new_file_content_res = await c.runtime.ds_call(
-                    c.data_source.get_file_content,
-                    project_id=int(project_id), file_path=file_path, ref=tmp_mr_sha,
-                )
-                if not new_file_content_res.success:
-                    self.logger.error("Failed to fetch new file content for %s in MR %s: %s", file_path, mr_url, new_file_content_res.error)
-                    continue
-                new_file = new_file_content_res.data
-                new_file_content = getattr(new_file, "content", "") if new_file else ""
+            # The diff and review comments describe a change; the whole file
+            # at the merge request's head is fetched only when GitLab gives
+            # no diff for it (``too_large`` or ``collapsed``, both of which
+            # empty the diff, or an empty diff), since it is then the only
+            # view of the change. A binary file is not fetched: its diff is
+            # GitLab's "Binary files ... differ" notice. With no diff and both
+            # flags false, a rename, a mode change or a new empty file changed
+            # no text, so fetching it would index the same file once more.
+            # GitLab before 18.4 sends neither flag and still empties a diff
+            # over its limit, so without them an empty diff is always fetched.
+            flags_known = "too_large" in file_change and "collapsed" in file_change
+            # GitLab reports mode "0" for the missing side of a new or deleted
+            # file, so only a file present on both sides can change mode.
+            mode_changed = bool(
+                not is_new_file and not is_deleted_file and a_mode and b_mode and a_mode != b_mode
+            )
+            pruned = is_truncated_diff or is_collapsed_diff or not flags_known
+            nothing_to_show = not pruned and (is_renamed_file or mode_changed or is_new_file)
+            needs_content = not diff_content and not is_deleted_file and not nothing_to_show
 
-            try:
-                file_content = (
-                    await asyncio.to_thread(base64.b64decode, new_file_content)
-                ).decode(GitlabLiterals.UTF_8.value)
-            except Exception as e:
-                self.logger.error("Failed to decode code file content for %s: %s", file_path, e)
-                file_content = new_file_content
+            file_content: str | None = None
+            oversized_bytes: int | None = None
+            if needs_content:
+                if not head_sha_looked_up:
+                    head_sha_looked_up = True
+                    mr_res = await c.runtime.ds_call(
+                        c.data_source.get_merge_request, project_id=int(project_id), mr_iid=mr_number,
+                    )
+                    head_sha = getattr(mr_res.data, "sha", None) if mr_res.success else None
+                    if not mr_res.success:
+                        self.logger.warning(
+                            "Could not fetch MR %s for its head commit: %s", mr_url, mr_res.error,
+                        )
+                if head_sha:
+                    content_res = await c.runtime.ds_call(
+                        c.data_source.get_file_content,
+                        project_id=int(project_id), file_path=file_path, ref=head_sha,
+                    )
+                    if content_res.success and content_res.data:
+                        file_content, oversized_bytes = await self._inline_file_content(
+                            content_res.data, file_path
+                        )
+                    else:
+                        self.logger.warning(
+                            "Could not fetch file content for %s in MR %s: %s",
+                            file_path, mr_url, content_res.error,
+                        )
+                else:
+                    self.logger.warning(
+                        "No head commit for MR %s; %s has no diff and is indexed without its content",
+                        mr_url, file_path,
+                    )
 
             if is_generated_file:
-                data = f"[Generated file] \n\n {file_content} \n\n Diff content \n\n {diff_content}"
+                data_parts = ["[Generated file]"]
             elif is_new_file:
-                data = f"[New file] \n\n {file_content} \n\n Diff content \n\n {diff_content}"
+                data_parts = ["[New file]"]
             elif is_deleted_file:
-                data = f"[Deleted file] \n\n Diff content \n\n {diff_content}"
+                data_parts = ["[Deleted file]"]
             else:
-                data = f"Existing file \n\n {file_content} \n\n Diff content \n\n {diff_content}"
+                data_parts = ["Existing file"]
+            # Name the old path, so a search for it still finds the merge
+            # request that moved the file.
+            if is_renamed_file and old_path and old_path != file_path:
+                data_parts.append(f"Renamed from {old_path}.")
+            if mode_changed:
+                data_parts.append(f"File mode changed from {a_mode} to {b_mode}.")
+            if oversized_bytes is not None:
+                data_parts.append(
+                    f"Full file content: omitted ({oversized_bytes} bytes exceeds the "
+                    f"{MR_FILE_INLINE_CONTENT_MAX_BYTES}-byte limit)"
+                )
+            elif file_content:
+                data_parts.append(f"Full file content:\n\n{file_content}")
+            if diff_content or not nothing_to_show:
+                data_parts.append(f"Diff content\n\n{diff_content}")
+            data = "\n\n".join(data_parts)
             if is_truncated_diff:
                 data = data + "\n\n[TRUNCATED] Diff"
+            data = redact_secrets(data).text
 
             file_comments = map_file_r_comments.get(file_path, [])
             comments_list = [file_comments] if file_comments else []
@@ -280,3 +345,27 @@ class CommentsHelper:
             block_group_number += 1
 
         return block_groups, list_remaining_attachments
+
+    async def _inline_file_content(self, file_obj: object, file_path: str) -> tuple[str | None, int | None]:
+        """Text of a fetched file to inline, and its size when it is too big.
+
+        Returns ``(text, None)`` for text within ``MR_FILE_INLINE_CONTENT_MAX_BYTES``,
+        ``(None, size)`` when it is larger, and ``(None, None)`` for a file that
+        is not text (it does not decode as UTF-8, or holds a NUL byte, git's own
+        test for binary), so its bytes are never indexed as text.
+        """
+        declared = getattr(file_obj, "size", None)
+        if isinstance(declared, int) and declared > MR_FILE_INLINE_CONTENT_MAX_BYTES:
+            return None, declared
+        raw = getattr(file_obj, "content", "") or ""
+        try:
+            decoded = (await asyncio.to_thread(base64.b64decode, raw)).decode(GitlabLiterals.UTF_8.value)
+        except Exception as e:
+            self.logger.warning("Not inlining %s: its content is not UTF-8 text (%s)", file_path, e)
+            return None, None
+        if "\x00" in decoded:
+            return None, None
+        size = len(decoded.encode(GitlabLiterals.UTF_8.value))
+        if size > MR_FILE_INLINE_CONTENT_MAX_BYTES:
+            return None, size
+        return decoded, None

@@ -16,7 +16,7 @@ import {
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 // The re-read after a user grant stores its tokens.
-function stubCurrentApp(doc: { allowedScopes: string[] } | null) {
+function stubCurrentApp(doc: { allowedScopes: string[]; knowledgeLimit?: unknown } | null) {
   return sinon.stub(OAuthApp, 'findOne').returns({
     select: sinon.stub().returns({
       lean: sinon.stub().returns({ exec: sinon.stub().resolves(doc) }),
@@ -169,6 +169,35 @@ describe('OAuthTokenService', () => {
         expect(accessRevoke.calledOnce).to.be.true
       })
 
+      it("revokes the new tokens when the app's knowledge limit changed while they were minted", async () => {
+        stubCurrentApp({
+          allowedScopes: ['org:read', 'offline_access'],
+          knowledgeLimit: { apps: ['app-1'], recordGroups: [], records: [] },
+        })
+        const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+        sinon.stub(OAuthRefreshToken, 'updateOne').resolves({} as any)
+
+        try {
+          await mint()
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+        }
+        expect(accessRevoke.calledOnce).to.be.true
+      })
+
+      it("leaves a personal access token's own limit out of the recheck", async () => {
+        stubCurrentApp({ allowedScopes: ['org:read'] })
+        const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+
+        await service.generateTokens(
+          mockApp, userId, orgId, ['org:read'], false, undefined, undefined,
+          { recheckAppScopes: true, knowledgeLimit: { apps: ['app-1'], recordGroups: [], records: [] } },
+        )
+
+        expect(accessRevoke.called).to.be.false
+      })
+
       it('does not read the app again without the option', async () => {
         const findApp = stubCurrentApp(null)
 
@@ -176,6 +205,42 @@ describe('OAuthTokenService', () => {
 
         expect(findApp.called).to.be.false
       })
+    })
+
+    it("signs the app's knowledge limit into every token of the app", async () => {
+      const create = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
+
+      const result = await service.generateTokens(
+        { ...mockApp, knowledgeLimit }, new Types.ObjectId().toString(), new Types.ObjectId().toString(),
+        ['kb:read'], false,
+      )
+
+      expect((jwt.decode(result.accessToken) as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
+      expect(create.firstCall.args[0]).to.deep.include({ knowledgeLimit })
+    })
+
+    it('signs the knowledge limit a personal access token names into the token and stores it on the token row', async () => {
+      const create = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      const knowledgeLimit = { apps: ['app-1'], recordGroups: ['group-1'], records: [] }
+
+      const result = await service.generateTokens(
+        mockApp, new Types.ObjectId().toString(), new Types.ObjectId().toString(),
+        ['kb:read'], false, undefined, undefined, { knowledgeLimit },
+      )
+
+      expect((jwt.decode(result.accessToken) as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
+      expect(create.firstCall.args[0]).to.deep.include({ knowledgeLimit })
+    })
+
+    it('leaves the knowledge limit out of a token that may see everything', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+
+      const result = await service.generateTokens(
+        mockApp, null, new Types.ObjectId().toString(), ['kb:read'], false,
+      )
+
+      expect(jwt.decode(result.accessToken) as any).not.to.have.property('knowledgeLimit')
     })
 
     it('should not generate refresh token without offline_access scope', async () => {
@@ -731,6 +796,26 @@ describe('OAuthTokenService', () => {
 
       expect(result.total).to.equal(342)
     })
+
+    it('lists the knowledge limit of each token, and none for an unlimited one', async () => {
+      const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
+      const chainable = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([
+          { _id: new Types.ObjectId(), scopes: [], knowledgeLimit },
+          { _id: new Types.ObjectId(), scopes: [] },
+        ]),
+      }
+      sinon.stub(OAuthAccessToken, 'find').returns(chainable as any)
+      sinon.stub(OAuthAccessToken, 'countDocuments').resolves(2)
+
+      const result = await service.listAccessTokensForClientPaginated('client-1', 1, 50)
+
+      expect(result.tokens[0]!.knowledgeLimit).to.deep.equal(knowledgeLimit)
+      expect(result.tokens[1]!.knowledgeLimit).to.be.undefined
+    })
   })
 
   describe('revokeAccessTokenById', () => {
@@ -1227,6 +1312,22 @@ describe('OAuthTokenService - branch coverage', () => {
   // refreshTokens - scope narrowing
   // =========================================================================
   describe('refreshTokens', () => {
+    it('should throw InvalidGrantError when the token is for another workspace than the app', async () => {
+      const refreshToken = jwt.sign(
+        { isRefreshToken: true, userId: 'u1', orgId: 'o2' },
+        'test-secret-key-for-signing-tokens-at-least-32-bytes',
+      )
+      const findOne = sinon.stub(OAuthRefreshToken, 'findOne').resolves({} as any)
+
+      try {
+        await service.refreshTokens({ clientId: 'c1', orgId: 'o1' } as any, refreshToken)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(InvalidGrantError)
+      }
+      expect(findOne.calledOnce).to.be.true
+    })
+
     it('should throw InvalidTokenError when stored refresh token not found', async () => {
       const refreshToken = jwt.sign(
         { isRefreshToken: true, userId: 'u1', orgId: 'o1' },
@@ -1238,7 +1339,7 @@ describe('OAuthTokenService - branch coverage', () => {
         .onSecondCall().resolves(null) // refreshTokens check
 
       try {
-        await service.refreshTokens({ clientId: 'c1' } as any, refreshToken)
+        await service.refreshTokens({ clientId: 'c1', orgId: 'o1' } as any, refreshToken)
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(InvalidTokenError)
@@ -1286,6 +1387,7 @@ describe('OAuthTokenService - branch coverage', () => {
       ) => ({
         clientId,
         allowedScopes,
+        orgId,
         accessTokenLifetime: 3600,
         refreshTokenLifetime: 86400,
         createdBy: new Types.ObjectId(),
@@ -1307,6 +1409,26 @@ describe('OAuthTokenService - branch coverage', () => {
         expect(stored.save.calledOnce).to.be.true
         expect(accessCreate.calledOnce).to.be.true
         expect(refreshCreate.calledOnce).to.be.true
+      })
+
+      it("gives the refreshed tokens the app's current knowledge limit", async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+        const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
+        ;(OAuthApp.findOne as sinon.SinonStub).restore()
+        stubCurrentApp({ allowedScopes: ['user:read', 'offline_access'], knowledgeLimit })
+
+        // The token was issued before the creator set the limit.
+        const result = await service.refreshTokens(
+          { ...app('client-a'), knowledgeLimit }, signRefreshToken('client-a'),
+        )
+
+        expect((jwt.decode(result.accessToken) as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
+        expect(accessCreate.firstCall.args[0]).to.deep.include({ knowledgeLimit })
       })
 
       it('drops scopes the app no longer allows from the refreshed tokens', async () => {

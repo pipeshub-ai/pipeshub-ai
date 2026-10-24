@@ -271,6 +271,7 @@ class CifsClient(IClient):
             created_time=_as_datetime(getattr(item, "create_time", None)),
             last_write_time=_as_datetime(getattr(item, "last_write_time", None)),
             file_id=file_id_int,
+            attributes=attrs,
         )
 
     @classmethod
@@ -281,7 +282,7 @@ class CifsClient(IClient):
         connector_instance_id: str,
     ) -> "CifsClient":
         config = await config_service.get_config(
-            ConfigPaths.CONNECTOR_CONFIG.format(connector_id=connector_instance_id)
+            ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=connector_instance_id)
         )
         if not config:
             raise NetworkShareAuthError("CIFS configuration not found")

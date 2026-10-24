@@ -24,6 +24,7 @@ import type { GeneralFormData } from './store';
 import { OrgApi, MetricsApi } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Read-only view for non-admin users
@@ -44,7 +45,7 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
 
   return (
     <Box style={{ height: '100%', overflowY: 'auto' }}>
-      <Box style={{ padding: '64px 100px' }}>
+      <SettingsPageContainer>
         <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.sidebar.nav.general')}
@@ -83,7 +84,7 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
             <TextField.Root value={form.contactEmail} readOnly />
           </SettingsRow>
         </SettingsSection>
-      </Box>
+      </SettingsPageContainer>
     </Box>
   );
 }
@@ -361,7 +362,7 @@ export default function GeneralPage() {
       />
 
       {/* Page content */}
-      <Box style={{ padding: '64px 100px' }}>
+      <SettingsPageContainer>
         {/* Page header */}
         <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
@@ -549,7 +550,7 @@ export default function GeneralPage() {
             </Box>
           </SettingsSection>
         </Box>
-      </Box>
+      </SettingsPageContainer>
 
       {/* ── Discard Confirmation Dialog ── */}
       <ConfirmationDialog

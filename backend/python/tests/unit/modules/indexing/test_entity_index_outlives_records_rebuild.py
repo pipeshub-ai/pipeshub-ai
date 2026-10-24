@@ -9,8 +9,10 @@ again: taxonomy entities stayed out of search until the model next changed.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
+
+import pytest
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.models.entities import EntityRecord
@@ -44,6 +46,7 @@ from tests.support.entity_vector_db import (
     FakeEmbeddingModel,
     FakeEntityVectorDB,
     embedding_models,
+    recreate_lock_redis,
 )
 from tests.unit.modules.indexing.test_entity_index_rebuild import (
     APPS,
@@ -57,6 +60,15 @@ from tests.unit.modules.indexing.test_entity_index_rebuild import (
     _rec,
     _run_until_idle,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+@pytest.fixture(autouse=True)
+def _recreate_lock() -> Iterator[None]:
+    with recreate_lock_redis():
+        yield
+
 
 LOGGER = logging.getLogger("entity-index-test")
 ENTITY_INDEXES = {"metadata.orgId", "metadata.entityType", "metadata.entityId", "metadata.level"}

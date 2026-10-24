@@ -24,6 +24,7 @@ from app.api.routes.entity import (
     update_team,
     update_user_email,
 )
+from app.utils.user_messages import DATABASE_UNREACHABLE
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +292,10 @@ class TestCreateTeam:
         gp = _graph_provider(req)
         gp.get_user_by_user_id.side_effect = RuntimeError("LockAcquisitionTimeout")
 
-        with pytest.raises(RuntimeError, match="LockAcquisitionTimeout"):
+        with pytest.raises(HTTPException) as exc:
             await create_team(req)
+        assert exc.value.status_code == 503
+        assert exc.value.detail == DATABASE_UNREACHABLE
         gp.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
         gp.batch_upsert_nodes.assert_not_called()
 
@@ -572,6 +575,9 @@ class _TeamGraph:
     async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict:
         return {"_key": "user-key-1"}
 
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return bool(explicit and self.honours_explicit)
+
     async def begin_transaction(self, read: list | None = None, write: list | None = None,
                                 explicit: bool | None = None) -> str:
         self.explicit_requests.append(explicit)
@@ -613,7 +619,7 @@ class _TeamGraph:
         self.edges.update((collection, e["from_id"], e["to_id"]) for e in edges)
         return True
 
-    async def get_team_with_users(self, team_id: str, user_key: str) -> dict:
+    async def get_team_with_users(self, team_id: str, org_id: str, user_key: str) -> dict:
         self.read_back.append(team_id)
         return {"_key": team_id, "users": sorted(f for _, f, t in self.edges if t == team_id)}
 
@@ -630,6 +636,19 @@ class TestGetTeam:
         assert resp.status_code == 200
         content = json.loads(resp.body.decode())
         assert content["team"]["name"] == "T1"
+
+    @pytest.mark.asyncio
+    async def test_scopes_lookup_to_callers_org(self) -> None:
+        # Security: the team lookup must be scoped to the caller's org so a team
+        # id from another org cannot be read.
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_team_with_users.return_value = {"name": "T1", "users": []}
+
+        await get_team(req, "all_other-org")
+
+        assert gp.get_team_with_users.await_args.kwargs["org_id"] == req.state.user["orgId"]
 
     @pytest.mark.asyncio
     async def test_user_not_found(self):

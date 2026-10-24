@@ -165,6 +165,7 @@ class DriveWorld:
         self.aliases: dict[str, str] = {}
         self.groups: dict[str, dict[str, Any]] = {}
         self.drives: dict[str, dict[str, Any]] = {}
+        self.hide_unreadable_parents = False
         self.files: dict[str, FileState] = {}
         self.log: list[_Change] = []
         self.admin_email: Optional[str] = None
@@ -252,6 +253,18 @@ class DriveWorld:
         capabilities["canEdit"] = role in ("owner", "organizer", "fileOrganizer", "writer")
         capabilities["canDownload"] = role is not None
         meta["capabilities"] = capabilities
+        # Real Drive omits a parent the caller cannot open (an item shared on its own). Opt-in:
+        # turning it on everywhere changes Shared-with-Me filing for a reader synced after the
+        # owner (FINDINGS B8), which existing tests still encode.
+        parents = meta.get("parents") or []
+        if (
+            self.hide_unreadable_parents
+            and parents
+            and parents[0] in self.files
+            and parents[0] not in self.drives
+            and not self.can_open(parents[0], email)
+        ):
+            meta["parents"] = []
         if state.export_too_large:
             meta["exportLinks"] = {
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
@@ -412,7 +425,9 @@ class DriveWorld:
         r("GET", f"{DRIVE_API}/changes/startPageToken", self._start_token)
         r("GET", f"{DRIVE_API}/changes", self._changes_list)
         r("GET", f"{DRIVE_API}/drives", self._drives_list)
+        r("GET", f"{DRIVE_API}/drives/([^/]+)", self._drives_get)
         r("GET", f"{ADMIN_API}/users", self._admin_users)
+        r("GET", f"{ADMIN_API}/users/([^/]+)", self._admin_user)
         r("GET", f"{ADMIN_API}/groups", self._admin_groups)
         r("GET", f"{ADMIN_API}/groups/([^/]+)/members", self._admin_members)
 
@@ -638,19 +653,40 @@ class DriveWorld:
             drives = [d for d in drives if m.group(1).lower() in d["name"].lower()]
         return paginate(drives, req.query, default_size=self.page_size, key="drives")
 
+    def _drives_get(self, req: ApiRequest) -> object:
+        if req.query.get("useDomainAdminAccess") != "true" or self._caller(req) != self.admin_email:
+            return google_error(403, "forbidden")
+        drive = self.drives.get(req.path.split("/drives/")[1])
+        if drive is None:
+            return google_error(404, "notFound")
+        return {"id": drive["id"], "name": drive["name"], "createdTime": drive["createdTime"]}
+
     def _admin_guard(self, req: ApiRequest) -> Optional[object]:
         if self._caller(req) != self.admin_email:
             return google_error(403, "forbidden", "Not Authorized to access this resource/api")
         return None
 
+    @staticmethod
+    def _directory_user(u: DriveUser) -> dict[str, Any]:
+        return {"id": u.user_id, "primaryEmail": u.email, "name": {"fullName": u.name}, "suspended": u.suspended, "creationTime": "2023-01-01T00:00:00.000Z"}
+
     def _admin_users(self, req: ApiRequest) -> object:
         if denied := self._admin_guard(req):
             return denied
-        users = [
-            {"id": u.user_id, "primaryEmail": u.email, "name": {"fullName": u.name}, "suspended": u.suspended, "creationTime": "2023-01-01T00:00:00.000Z"}
-            for u in sorted(self.users.values(), key=lambda u: u.email)
-        ]
+        users = [self._directory_user(u) for u in sorted(self.users.values(), key=lambda u: u.email)]
         return paginate(users, req.query, default_size=self.admin_page_size, key="users")
+
+    def _admin_user(self, req: ApiRequest) -> object:
+        """users.get: the key may be the primary email, an alias or the user id."""
+        if denied := self._admin_guard(req):
+            return denied
+        key = req.path.rsplit("/", 1)[-1]
+        user = self.users.get(self.aliases.get(key, key)) or next(
+            (u for u in self.users.values() if u.user_id == key), None
+        )
+        if user is None:
+            return google_error(404, "notFound", "Resource Not Found: userKey")
+        return self._directory_user(user)
 
     def _admin_groups(self, req: ApiRequest) -> object:
         if denied := self._admin_guard(req):

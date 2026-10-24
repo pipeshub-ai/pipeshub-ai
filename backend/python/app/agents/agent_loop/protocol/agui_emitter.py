@@ -38,6 +38,8 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.events.base import EventEmitter, EventType, ToolCallStatus
 from app.agents.agent_loop.protocol.agui import AGUIEventType, frame, new_id
+from app.agents.agent_loop.protocol.result_views import ResultViewBudget
+from app.agents.agent_loop.protocol.transcript_collector import serialize_tool_args
 from app.utils.streaming import parse_confidence_from_answer, strip_partial_confidence_trailer
 
 if TYPE_CHECKING:
@@ -46,6 +48,13 @@ if TYPE_CHECKING:
     from app.modules.agents.event_sink import EventSink
 
 logger = logging.getLogger(__name__)
+
+# CUSTOM event: drop the named text message and everything its run streamed
+# after it. Sent when a model call fails mid-stream (see `Agent.step()`).
+MESSAGE_DISCARDED_EVENT_NAME = "message_discarded"
+
+# How a call that waited for approval was settled (`tool_approvals.Outcome.answer`).
+_APPROVAL_ANSWERS = ("allowed", "declined", "expired")
 
 
 class AGUIEventEmitter(EventEmitter):
@@ -65,6 +74,7 @@ class AGUIEventEmitter(EventEmitter):
         # (and its partial forms) from TEXT_MESSAGE_CONTENT frames.
         self._text_buffers: dict[str, str] = {}
         self._emitted_len: dict[str, int] = {}
+        self._view_budget = ResultViewBudget()
 
     async def emit(self, event: "AgentEvent") -> None:
         for sse_event in self._translate(event):
@@ -123,12 +133,20 @@ class AGUIEventEmitter(EventEmitter):
             display_name = payload.get("display_name")
             if display_name:
                 start_kwargs["displayName"] = display_name
+            if payload.get("approved") is True:
+                start_kwargs["approved"] = True
+            if payload.get("approval_answer") in _APPROVAL_ANSWERS:
+                start_kwargs["approvalAnswer"] = payload["approval_answer"]
+            args = payload.get("args", {})
             return [
                 frame(AGUIEventType.TOOL_CALL_START, **start_kwargs),
                 frame(
                     AGUIEventType.TOOL_CALL_ARGS, toolCallId=tool_call_id,
-                    delta=json.dumps(payload.get("args", {}), default=str), runId=run_id,
+                    delta=json.dumps(args, default=str), runId=run_id,
                     argsSummary=payload.get("args_summary"),
+                    # Shortened as the saved part's `args` are: cutting `delta` to that size broke
+                    # its JSON. `delta` stays whole; the Slack bot reads ask_user's questions from it.
+                    argsPreview=serialize_tool_args(args),
                 ),
             ]
 
@@ -144,20 +162,29 @@ class AGUIEventEmitter(EventEmitter):
             # `agui-event-handler.ts`) show the same running/completed/
             # failed/blocked state `TranscriptCollector` persists, instead
             # of only ever knowing "the call ended".
-            if payload.get("status") == ToolCallStatus.BLOCKED:
+            approval = None
+            result_view = None
+            if payload.get("status") in (ToolCallStatus.BLOCKED, ToolCallStatus.AWAITING_APPROVAL):
                 content = payload.get("reason")
-                status = "blocked"
+                status = "blocked" if payload.get("status") == ToolCallStatus.BLOCKED else "awaiting_approval"
                 result_summary = None
+                # What the client's approval card shows; the transcript keeps it on the part.
+                approval = payload.get("approval") if status == "awaiting_approval" else None
             else:
                 content = payload.get("content")
                 status = "failed" if payload.get("is_error") else "completed"
                 result_summary = payload.get("result_summary")
+                result_view = self._view_budget.admit(payload.get("result_view"))
+            result_fields: dict[str, Any] = {"resultSummary": result_summary}
+            if approval:
+                result_fields["approval"] = approval
+            if result_view:
+                result_fields["resultView"] = result_view
             return [
                 frame(AGUIEventType.TOOL_CALL_END, toolCallId=tool_call_id, runId=run_id),
                 frame(
                     AGUIEventType.TOOL_CALL_RESULT, toolCallId=tool_call_id,
-                    content=content, role="tool", status=status, runId=run_id,
-                    resultSummary=result_summary,
+                    content=content, role="tool", status=status, runId=run_id, **result_fields,
                 ),
             ]
 
@@ -190,6 +217,17 @@ class AGUIEventEmitter(EventEmitter):
             if message_id is None:
                 return []
             raw = self._text_buffers.pop(run_id, "")
+            if payload.get("discarded"):
+                # The model call failed mid-stream and may be retried: the
+                # client drops this message and the reasoning streamed after it.
+                self._emitted_len.pop(run_id, None)
+                return [
+                    frame(AGUIEventType.TEXT_MESSAGE_END, messageId=message_id, runId=run_id),
+                    frame(
+                        AGUIEventType.CUSTOM, name=MESSAGE_DISCARDED_EVENT_NAME,
+                        value={"messageId": message_id}, runId=run_id,
+                    ),
+                ]
             clean, _ = parse_confidence_from_answer(raw)
             prev = self._emitted_len.pop(run_id, 0)
             frames: list[dict] = []
@@ -247,4 +285,4 @@ class AGUIEventEmitter(EventEmitter):
         return []
 
 
-__all__ = ["AGUIEventEmitter"]
+__all__ = ["MESSAGE_DISCARDED_EVENT_NAME", "AGUIEventEmitter"]

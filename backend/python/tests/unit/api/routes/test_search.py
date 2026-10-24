@@ -14,6 +14,9 @@ from pydantic import ValidationError
 
 # The route module only loads cleanly once app.edition_config is imported first.
 import app.edition_config  # noqa: F401
+from app.agents.actions.knowledge_graph.ops.outside_dates import (
+    DATE_FILTER_SAFETY_NET_ENV_VAR,
+)
 from app.api.routes.search import (
     SearchQuery,
     SearchRequest,
@@ -27,16 +30,33 @@ from app.api.routes.search import (
 from app.utils.user_messages import action_failed
 
 
+@pytest.fixture(autouse=True)
+def _one_search_per_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These read the one search a request runs; the search without dates that
+    # runs beside a dated one is tested in test_search_outside_dates.py.
+    monkeypatch.setenv(DATE_FILTER_SAFETY_NET_ENV_VAR, "false")
+
+
 # ---------------------------------------------------------------------------
 # Pydantic model validation tests
 # ---------------------------------------------------------------------------
+def _retrieval_with_llm() -> MagicMock:
+    """A retrieval service whose LLM is found both ways an LLM resolver may look:
+    by reading `.llm` or by awaiting `get_llm_instance()`. The awaited path reads
+    `.llm` when called, so a test that swaps `.llm` later is seen either way."""
+    retrieval = MagicMock()
+    retrieval.llm = MagicMock()
+    retrieval.get_llm_instance = AsyncMock(side_effect=lambda *_a, **_k: retrieval.llm)
+    return retrieval
+
+
 class TestSearchQueryModel:
     """Tests for SearchQuery pydantic model."""
 
     def test_valid_query_minimal(self):
         sq = SearchQuery(query="hello world")
         assert sq.query == "hello world"
-        assert sq.limit == 5
+        assert sq.limit == 10
         assert sq.filters == {}
 
     def test_valid_query_with_all_fields(self):
@@ -52,6 +72,11 @@ class TestSearchQueryModel:
     def test_limit_none_uses_default(self):
         sq = SearchQuery(query="q", limit=None)
         assert sq.limit is None
+
+    @pytest.mark.parametrize("limit", [0, 101])
+    def test_limit_out_of_range_raises(self, limit) -> None:
+        with pytest.raises(ValidationError):
+            SearchQuery(query="q", limit=limit)
 
     def test_filters_none(self):
         sq = SearchQuery(query="q", filters=None)
@@ -193,8 +218,7 @@ class TestSearchEndpoint:
         """Search without KB filtering should skip KB access validation."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": [], "status_code": 200}
         )
@@ -226,8 +250,7 @@ class TestSearchEndpoint:
         """Search with KB filter - all KBs accessible."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": ["r1"], "status_code": 200}
         )
@@ -341,10 +364,7 @@ class TestSearchEndpoint:
         """An unexpected exception becomes a 500 with fixed text; its own text goes to the log."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
-        # Awaited by a resolver that does not read the cached .llm.
-        mock_retrieval.get_llm_instance = AsyncMock(return_value=MagicMock())
+        mock_retrieval = _retrieval_with_llm()
 
         mock_graph = MagicMock()
         body = SearchQuery(query="test")
@@ -374,8 +394,7 @@ class TestSearchEndpoint:
         """Expanded queries already in rewritten are not duplicated."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": [], "status_code": 200}
         )
@@ -407,8 +426,7 @@ class TestSearchEndpoint:
         """If rewritten query is blank, only expanded queries are used."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": [], "status_code": 200}
         )
@@ -439,8 +457,7 @@ class TestSearchEndpoint:
         """The status code from search results is forwarded in the response."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": [], "status_code": 206}
         )
@@ -469,8 +486,7 @@ class TestSearchEndpoint:
         """When results lack status_code, default to 500."""
         request = self._build_request()
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": []}
         )
@@ -499,13 +515,12 @@ class TestSearchEndpoint:
         """Verify org_id, user_id, limit, knowledge_search are forwarded."""
         request = self._build_request(user_id="u42", org_id="o99")
 
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
+        mock_retrieval = _retrieval_with_llm()
         mock_retrieval.search_with_filters = AsyncMock(
             return_value={"searchResults": [], "status_code": 200}
         )
         mock_graph = MagicMock()
-        body = SearchQuery(query="q", limit=7, filters={"type": ["file"]})
+        body = SearchQuery(query="q", limit=7, filters={"records": ["file"]})
 
         with patch(
             "app.api.routes.search.setup_query_transformation"
@@ -527,7 +542,94 @@ class TestSearchEndpoint:
         assert call_kwargs["user_id"] == "u42"
         assert call_kwargs["limit"] == 7
         assert call_kwargs["knowledge_search"] is True
-        assert call_kwargs["filter_groups"] == {"type": ["file"]}
+        assert call_kwargs["filter_groups"] == {"records": ["file"]}
+        assert call_kwargs["time_range"] is None
+
+    async def _search_with(self, body: SearchQuery) -> MagicMock:
+        mock_retrieval = _retrieval_with_llm()
+        mock_retrieval.search_with_filters = AsyncMock(
+            return_value={"searchResults": [], "status_code": 200}
+        )
+        with patch("app.api.routes.search.setup_query_transformation") as mock_setup:
+            mock_setup.return_value = (self._make_chain("r"), self._make_chain("e"))
+            await search(
+                request=self._build_request(),
+                body=body,
+                retrieval_service=mock_retrieval,
+                graph_provider=MagicMock(),
+            )
+        return mock_retrieval
+
+    @pytest.mark.asyncio
+    async def test_date_bounds_reach_the_retrieval_service(self) -> None:
+        """The retrieval service already filters by date; the route used to drop it."""
+        body = SearchQuery(
+            query="q", modifiedAfter="2026-09-01", modifiedBefore="2026-09-30T12:00:00Z",
+            createdAfter="2026-01-01", timeline="off",
+        )
+
+        retrieval = await self._search_with(body)
+
+        assert retrieval.search_with_filters.call_args.kwargs["time_range"] == {
+            "source_updated_after_ms": 1788220800000,  # 2026-09-01T00:00:00Z
+            "source_updated_before_ms": 1790769600000,  # 2026-09-30T12:00:00Z
+            "source_created_after_ms": 1767225600000,  # 2026-01-01T00:00:00Z
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_date_only_upper_bound_takes_in_the_whole_day(self) -> None:
+        retrieval = await self._search_with(SearchQuery(query="q", createdBefore="2026-03-31"))
+
+        assert retrieval.search_with_filters.call_args.kwargs["time_range"] == {
+            "source_created_before_ms": 1775001599999,  # 2026-03-31T23:59:59.999Z
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("field", "value", "said"), [
+        ("modifiedAfter", "last week", "modifiedAfter: 'last week' is not a valid ISO 8601 date"),
+        ("createdBefore", "2026-01-15T08:00:00", "createdBefore: '2026-01-15T08:00:00' has no timezone"),
+        ("modifiedAfter", "2999-01-01", "modifiedAfter cannot be in the future"),
+    ])
+    async def test_a_bad_date_is_a_400_that_names_the_request_field(
+        self, field: str, value: str, said: str
+    ) -> None:
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock()
+
+        with pytest.raises(HTTPException) as caught:
+            await search(
+                request=self._build_request(),
+                body=SearchQuery(query="q", **{field: value}),
+                retrieval_service=retrieval,
+                graph_provider=MagicMock(),
+            )
+
+        assert caught.value.status_code == 400
+        assert said in caught.value.detail
+        retrieval.search_with_filters.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_value_is_quoted_as_sent(self) -> None:
+        """Only the parser's label is renamed, never the caller's own text."""
+        with pytest.raises(HTTPException) as caught:
+            await self._search_with(SearchQuery(query="q", modifiedAfter="modified_after"))
+
+        assert caught.value.status_code == 400
+        assert caught.value.detail.startswith(
+            "modifiedAfter: 'modified_after' is not a valid ISO 8601 date"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_inverted_range_is_a_400(self) -> None:
+        with pytest.raises(HTTPException) as caught:
+            await self._search_with(
+                SearchQuery(query="q", modifiedAfter="2026-09-30", modifiedBefore="2026-09-01")
+            )
+
+        assert caught.value.status_code == 400
+        assert caught.value.detail == (
+            "modifiedAfter must be on or before modifiedBefore — got an inverted range."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -551,6 +653,77 @@ def _content_filter_error() -> openai.BadRequestError:
     )
 
 
+def _hits(n_records: int, per_record: int) -> dict:
+    """A retrieval response of ``n_records * per_record`` passages, best first."""
+    hits = [
+        {"content": f"r{r}p{p}", "score": 1.0 - (r * per_record + p) / 1000,
+         "metadata": {"recordId": f"rec{r}"}}
+        for r in range(n_records) for p in range(per_record)
+    ]
+    return {
+        "searchResults": hits,
+        "records": [{"_key": f"rec{r}"} for r in range(n_records)],
+        "virtual_to_record_map": {f"v{r}": {"_key": f"rec{r}"} for r in range(n_records)},
+        "status_code": 200,
+    }
+
+
+class TestSearchHonoursLimit:
+    """`limit` caps `searchResults` however many queries and expansions ran."""
+
+    async def _run(self, body: SearchQuery, response: dict) -> dict:
+        request = MagicMock()
+        request.state.user = {"userId": "u", "orgId": "o"}
+        request.app.container.logger.return_value = MagicMock()
+        retrieval = _retrieval_with_llm()
+        retrieval.search_with_filters = AsyncMock(return_value=response)
+        chain = lambda v: MagicMock(ainvoke=AsyncMock(return_value=v))  # noqa: E731
+        with patch("app.api.routes.search.setup_query_transformation") as setup:
+            # Rewrite plus three expansions: four queries, each adding hits.
+            setup.return_value = (chain("rewritten"), chain("e1\ne2\ne3"))
+            res = await search(request=request, body=body, retrieval_service=retrieval, graph_provider=MagicMock())
+        assert len(retrieval.search_with_filters.call_args.kwargs["queries"]) == 4
+        return json.loads(res.body)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [1, 10, 50])
+    async def test_response_never_exceeds_limit(self, limit) -> None:
+        out = await self._run(SearchQuery(query="q", limit=limit), _hits(40, 3))
+        assert len(out["searchResults"]) == min(limit, 120)
+        kept = {h["metadata"]["recordId"] for h in out["searchResults"]}
+        assert {r["_key"] for r in out["records"]} == kept
+        assert {r["_key"] for r in out["virtual_to_record_map"].values()} == kept
+
+    @pytest.mark.asyncio
+    async def test_default_limit_applies_when_omitted(self) -> None:
+        out = await self._run(SearchQuery(query="q"), _hits(40, 3))
+        assert len(out["searchResults"]) == 10
+
+    @pytest.mark.asyncio
+    async def test_ranking_is_kept_and_cut_passages_are_counted(self) -> None:
+        out = await self._run(SearchQuery(query="q", limit=2), _hits(1, 5))
+        assert [h["content"] for h in out["searchResults"]] == ["r0p0", "r0p1"]
+        assert out["omittedPassages"] == {"rec0": 3}
+
+    @pytest.mark.asyncio
+    async def test_a_cut_inside_a_section_keeps_the_match_before_its_context(self) -> None:
+        # One expanded section: equal scores, neighbours listed before the match.
+        hits = [
+            {"content": f"p{i}", "score": 0.5, "distanceFromMatch": d, "metadata": {"recordId": "rec0"}}
+            for i, d in enumerate([2, 1, 0, 1, 2])
+        ]
+        response = {"searchResults": hits, "records": [{"_key": "rec0"}], "status_code": 200}
+        for limit, expected in [(1, ["p2"]), (3, ["p2", "p1", "p3"])]:
+            out = await self._run(SearchQuery(query="q", limit=limit), {**response, "searchResults": list(hits)})
+            assert [h["content"] for h in out["searchResults"]] == expected
+
+    @pytest.mark.asyncio
+    async def test_fewer_hits_than_limit_are_untouched(self) -> None:
+        response = _hits(2, 2)
+        out = await self._run(SearchQuery(query="q", limit=10), response)
+        assert len(out["searchResults"]) == 4 and "omittedPassages" not in out
+
+
 class TestSearchSurvivesQueryTransformationFailure:
     """A failed rewrite or expansion falls back to the query the user typed."""
 
@@ -563,8 +736,7 @@ class TestSearchSurvivesQueryTransformationFailure:
         return request
 
     def _retrieval(self) -> MagicMock:
-        retrieval = MagicMock()
-        retrieval.llm = MagicMock()
+        retrieval = _retrieval_with_llm()
         retrieval.search_with_filters = AsyncMock(return_value=dict(self.RESULTS))
         return retrieval
 
@@ -684,6 +856,18 @@ class TestSearchSurvivesQueryTransformationFailure:
         assert any("rewrite" in w and "TimeoutError" in w for w in self._warnings(request))
 
     @pytest.mark.asyncio
+    async def test_the_tracing_config_reaches_both_transformations(self) -> None:
+        request, retrieval = self._build_request(), self._retrieval()
+        rewrite, expansion = self._chain(returns="rewritten"), self._chain(returns="angle one")
+        tracing = {"callbacks": [MagicMock(name="tracer")]}
+
+        with patch("app.api.routes.search.get_llm_invoke_config", return_value=tracing):
+            await self._search(request, retrieval, rewrite, expansion)
+
+        assert rewrite.ainvoke.call_args.kwargs == {"config": tracing}
+        assert expansion.ainvoke.call_args.kwargs == {"config": tracing}
+
+    @pytest.mark.asyncio
     async def test_an_expansion_repeated_by_the_model_is_searched_once(self) -> None:
         request, retrieval = self._build_request(), self._retrieval()
 
@@ -781,3 +965,143 @@ class TestSearchSurvivesQueryTransformationFailure:
 
         assert exc_info.value is denied
         retrieval.search_with_filters.assert_not_called()
+
+
+class TestSearchWithoutQueryRewrite:
+    """`rewriteQuery: false` searches the query as sent, with no model call."""
+
+    RESULTS = {"searchResults": [{"content": "hit"}], "status_code": 200}
+
+    def _request(self) -> MagicMock:
+        request = MagicMock()
+        request.state.user = {"userId": "user1", "orgId": "org1"}
+        request.app.container.logger.return_value = MagicMock()
+        return request
+
+    def _retrieval(self) -> MagicMock:
+        retrieval = MagicMock()
+        retrieval.llm = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value=dict(self.RESULTS))
+        return retrieval
+
+    def _chain(self, returns: str) -> MagicMock:
+        chain = MagicMock()
+        chain.ainvoke = AsyncMock(return_value=returns)
+        return chain
+
+    async def _search(
+        self, body: SearchQuery, retrieval: MagicMock, request: MagicMock | None = None
+    ) -> tuple[JSONResponse, MagicMock, MagicMock]:
+        rewrite, expansion = self._chain("rewritten q"), self._chain("variant a\nvariant b")
+        with patch(
+            "app.api.routes.search.setup_query_transformation",
+            return_value=(rewrite, expansion),
+        ) as setup:
+            response = await search(
+                request=request or self._request(),
+                body=body,
+                retrieval_service=retrieval,
+                graph_provider=MagicMock(),
+            )
+        return response, setup, rewrite
+
+    def test_the_rewrite_stays_on_when_the_field_is_left_out(self) -> None:
+        assert SearchQuery(query="q").rewriteQuery is True
+        assert SearchQuery(query="q", rewriteQuery=False).rewriteQuery is False
+
+    @pytest.mark.asyncio
+    async def test_left_out_the_query_is_rewritten_and_expanded_as_before(self) -> None:
+        retrieval = self._retrieval()
+
+        response, setup, rewrite = await self._search(SearchQuery(query="q"), retrieval)
+
+        assert response.status_code == 200
+        setup.assert_called_once()
+        rewrite.ainvoke.assert_awaited_once()
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            "rewritten q", "variant a", "variant b",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_off_searches_only_the_query_as_sent(self) -> None:
+        retrieval = self._retrieval()
+
+        response, setup, rewrite = await self._search(
+            SearchQuery(query="  billing retry policy  ", rewriteQuery=False), retrieval
+        )
+
+        assert response.status_code == 200
+        assert json.loads(response.body) == self.RESULTS
+        setup.assert_not_called()
+        rewrite.ainvoke.assert_not_called()
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            "billing retry policy",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_off_needs_no_chat_model(self) -> None:
+        """Retrieval needs only the embedding model, so no LLM is looked up."""
+        retrieval = self._retrieval()
+        retrieval.llm = None
+        retrieval.get_llm_instance = AsyncMock(return_value=None)
+
+        response, _, _ = await self._search(SearchQuery(query="q", rewriteQuery=False), retrieval)
+
+        assert response.status_code == 200
+        retrieval.get_llm_instance.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_off_keeps_filters_dates_and_limit(self) -> None:
+        retrieval = self._retrieval()
+        body = SearchQuery(
+            query="q", rewriteQuery=False, limit=7,
+            filters={"apps": ["c1"], "kb": []}, modifiedAfter="2026-09-01", timeline="off",
+        )
+
+        await self._search(body, retrieval)
+
+        kwargs = retrieval.search_with_filters.call_args.kwargs
+        assert kwargs["limit"] == 7
+        assert kwargs["filter_groups"] == {"apps": ["c1"], "kb": []}
+        assert kwargs["time_range"] == {"source_updated_after_ms": 1788220800000}
+
+    @pytest.mark.asyncio
+    async def test_the_timing_line_says_whether_the_rewrite_ran(self) -> None:
+        request = self._request()
+
+        with patch.dict("os.environ", {"PIPESHUB_CHAT_TIMING": "true"}):
+            await self._search(SearchQuery(query="q", rewriteQuery=False), self._retrieval(), request)
+
+        logger = request.app.container.logger.return_value
+        lines = [
+            call.args[0] % call.args[1:]
+            for call in logger.info.call_args_list
+            if call.args and str(call.args[0]).startswith("⏱")
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("⏱ search total=")
+        assert "query_transform=" in lines[0] and "retrieval=" in lines[0]
+        assert lines[0].endswith("| rewrite=off queries=1")
+
+
+class TestSearchLogsNoQueryText:
+    @pytest.mark.asyncio
+    async def test_rewritten_and_expanded_queries_are_not_logged(self) -> None:
+        request = TestSearchEndpoint()._build_request()
+        logger = request.app.container.logger.return_value
+        retrieval = _retrieval_with_llm()
+        retrieval.search_with_filters = AsyncMock(return_value={"searchResults": [], "status_code": 200})
+        chain = TestSearchEndpoint()._make_chain
+
+        with patch("app.api.routes.search.setup_query_transformation") as setup:
+            setup.return_value = (chain("rewritten nightjar merger"), chain("nightjar terms\nnightjar price"))
+            await search(
+                request=request, body=SearchQuery(query="nightjar merger", filters={}, timeline="off"),
+                retrieval_service=retrieval, graph_provider=MagicMock(),
+            )
+
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            "rewritten nightjar merger", "nightjar terms", "nightjar price",
+        ]
+        logged = " ".join(str(c) for c in logger.mock_calls)
+        assert "nightjar" not in logged

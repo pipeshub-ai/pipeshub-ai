@@ -16,7 +16,6 @@ from app.connectors.sources.postgres.connector import (
     connection_kwargs_from_auth,
     describe_connection_error,
 )
-from app.sources.client.postgres.postgres import PostgreSQLResponse
 from app.utils.url_fetcher import HostCheckError
 
 _MODULE = "app.connectors.sources.postgres.connector"
@@ -160,7 +159,7 @@ class TestCheckConnection:
 
     async def test_success_runs_a_query_with_a_short_timeout_and_closes(self):
         client = _fake_client()
-        response = PostgreSQLResponse(success=True, data={}, message="ok")
+        response = pg_client.PostgreSQLResponse(success=True, data={}, message="ok")
         with (
             patch(f"{_MODULE}.PostgreSQLConfig") as config_cls,
             patch(f"{_MODULE}.PostgreSQLDataSource") as data_source_cls,
@@ -223,7 +222,7 @@ class TestCheckConnection:
 
     async def test_failed_test_query_is_reported(self):
         client = _fake_client()
-        response = PostgreSQLResponse(success=False, error="permission denied", message="failed")
+        response = pg_client.PostgreSQLResponse(success=False, error="permission denied", message="failed")
         with (
             patch(f"{_MODULE}.PostgreSQLConfig") as config_cls,
             patch(f"{_MODULE}.PostgreSQLDataSource") as data_source_cls,

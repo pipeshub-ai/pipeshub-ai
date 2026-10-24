@@ -370,6 +370,15 @@ class TestConcurrentVisibilityGrowth:
         assert agent.visible_tools == {"jira_create_issue", "slack_send_message"}
 
 
+class TestSearchToolsQueryGuidance:
+    def test_description_and_query_ask_for_capability_words_not_the_question(self) -> None:
+        tool = SearchToolsTool(_registry_with_jira_and_slack())
+        query = next(p for p in tool.parameters if p.name == "query")
+
+        assert "Do NOT include the user's question" in tool.description
+        assert "Not your task or the user's question" in query.description
+
+
 class TestListToolsetsTool:
     async def test_no_toolset_argument_returns_top_level_overview(self) -> None:
         registry = _registry_with_jira_and_slack()

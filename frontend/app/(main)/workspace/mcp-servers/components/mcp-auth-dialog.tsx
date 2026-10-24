@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Dialog, Flex, Text, TextField } from '@radix-ui/themes';
+import { Button, Dialog, Flex, Text, TextField } from '@radix-ui/themes';
 import { toast } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api';
 import { LoadingButton } from '@/app/components/ui/loading-button';
@@ -11,9 +11,10 @@ import { McpServersApi } from '../api';
 import {
   buildMultiEnvAuthPayload,
   isMultiEnvAuthComplete,
+  isSecretFieldName,
   needsMultiEnvAuth,
 } from '../stdio-env-auth';
-import type { McpMyServerEntry } from '../types';
+import type { McpMyServerEntry, McpServerTemplate } from '../types';
 
 /**
  * Auth dialog for `api_token` / `headers` MCP auth modes. Shared by the personal
@@ -22,12 +23,14 @@ import type { McpMyServerEntry } from '../types';
  */
 interface McpAuthDialogProps {
   instance: McpMyServerEntry | null;
+  /** The instance's catalog entry, for its token label, hint and documentation link. */
+  template?: McpServerTemplate | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onAuthenticated: () => void;
 }
 
-export function McpAuthDialog({ instance, open, onOpenChange, onAuthenticated }: McpAuthDialogProps) {
+export function McpAuthDialog({ instance, template, open, onOpenChange, onAuthenticated }: McpAuthDialogProps) {
   const { t } = useTranslation();
   const [apiToken, setApiToken] = useState('');
   const [headerValue, setHeaderValue] = useState('');
@@ -53,6 +56,8 @@ export function McpAuthDialog({ instance, open, onOpenChange, onAuthenticated }:
   if (!instance) return null;
 
   const isHeaderMode = instance.authMode === 'headers';
+  const authHint = template?.authHint;
+  const documentationUrl = template?.documentationUrl;
   const isValid = isHeaderMode
     ? headerValue.trim().length > 0
     : multiEnv
@@ -69,7 +74,7 @@ export function McpAuthDialog({ instance, open, onOpenChange, onAuthenticated }:
           ? buildMultiEnvAuthPayload(requiredEnv, optionalEnv, envValues)
           : { apiToken: apiToken.trim() };
       await McpServersApi.authenticate(instance._id, payload);
-      toast.success(t('workspace.mcpServers.toasts.authenticated'));
+      toast.success(t('workspace.mcpServers.toasts.credentialsSaved'));
       onOpenChange(false);
       onAuthenticated();
     } catch (error) {
@@ -124,7 +129,7 @@ export function McpAuthDialog({ instance, open, onOpenChange, onAuthenticated }:
                 >
                   <TextField.Root
                     size="2"
-                    type={envKey.toLowerCase().includes('token') || envKey.toLowerCase().includes('key') ? 'password' : 'text'}
+                    type={isSecretFieldName(envKey) ? 'password' : 'text'}
                     value={envValues[envKey] ?? ''}
                     onChange={(e) => setEnvValues((prev) => ({ ...prev, [envKey]: e.target.value }))}
                     autoFocus={index === 0}
@@ -133,27 +138,36 @@ export function McpAuthDialog({ instance, open, onOpenChange, onAuthenticated }:
               );
             })
           ) : (
-            <FormField label={t('workspace.mcpServers.form.apiToken')} required>
+            <FormField label={authHint?.label || t('workspace.mcpServers.form.apiToken')} required>
               <TextField.Root
                 size="2"
                 type="password"
                 value={apiToken}
                 onChange={(e) => setApiToken(e.target.value)}
+                placeholder={authHint?.placeholder ?? undefined}
                 autoFocus
               />
+              {authHint?.helpText && (
+                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                  {authHint.helpText}
+                </Text>
+              )}
             </FormField>
+          )}
+          {documentationUrl && (
+            <Text size="1">
+              <a href={documentationUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--accent-11)' }}>
+                {t('workspace.mcpServers.authDialog.docsLink')}
+              </a>
+            </Text>
           )}
         </Flex>
 
         <Flex justify="end" gap="2" mt="5">
           <Dialog.Close>
-            <Text
-              as="span"
-              size="2"
-              style={{ padding: '8px 14px', cursor: 'pointer', color: 'var(--gray-11)' }}
-            >
+            <Button type="button" variant="soft" color="gray" size="2" disabled={isSaving}>
               {t('common.cancel')}
-            </Text>
+            </Button>
           </Dialog.Close>
           <LoadingButton
             type="button"

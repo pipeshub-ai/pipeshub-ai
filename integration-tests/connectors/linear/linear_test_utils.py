@@ -16,17 +16,18 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
-from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]
 from app.connectors.sources.linear.connector import (  # type: ignore[import-not-found]
     PLACEHOLDER_SWEEP_MAX_DEPTH,
+    PROJECT_PAGE_SIZE,
+    TEAM_PAGE_SIZE,
+    link_destination,
 )
-from app.models.entities import Record  # type: ignore[import-not-found]
+from app.sources.client.linear.upload_urls import is_linear_upload_url  # type: ignore[import-not-found]
 from app.sources.external.linear.linear import (
     LinearDataSource,  # type: ignore[import-not-found]
 )
 from connectors.linear.constants import (  # type: ignore[import-not-found]
     LINEAR_FROZEN_ISSUE_IDENTIFIERS,
-    LINEAR_INDEXING_WAIT_SEC,
     LINEAR_IT_ARTIFACT_PREFIX,
     LINEAR_IT_RUN_ID,
     LINEAR_IT_STALE_ARTIFACT_AGE_SEC,
@@ -152,7 +153,11 @@ async def fetch_linear_team_issue_ids(
     page_size: int = 100,
     max_pages: int = 200,
 ) -> set[str]:
-    """Return issue IDs belonging to ``team_id``, excluding IT artifacts."""
+    """Return issue IDs belonging to ``team_id``, excluding IT artifacts.
+
+    Linear's team filter also returns the issues of the team's sub-teams; the connector
+    files each issue under its own team only, so those are left out here too.
+    """
     issue_ids: set[str] = set()
     cursor: Optional[str] = None
 
@@ -167,7 +172,8 @@ async def fetch_linear_team_issue_ids(
         nodes = issues_data.get("nodes", [])
         for node in nodes:
             issue_id = node.get("id")
-            if issue_id and LINEAR_IT_ARTIFACT_PREFIX not in (node.get("title") or ""):
+            if (issue_id and _issue_team_id(node) in (None, team_id)
+                    and LINEAR_IT_ARTIFACT_PREFIX not in (node.get("title") or "")):
                 issue_ids.add(issue_id)
 
         page_info = issues_data.get("pageInfo", {})
@@ -197,7 +203,7 @@ async def count_linear_team_projects(
     datasource: LinearDataSource,
     team_id: str,
     *,
-    page_size: int = 50,
+    page_size: int = PROJECT_PAGE_SIZE,
     max_pages: int = 100,
 ) -> int:
     """Count projects accessible to ``team_id``."""
@@ -233,7 +239,8 @@ def extract_file_urls_from_markdown(
     *,
     exclude_images: bool = True,
 ) -> List[Dict[str, str]]:
-    """Extract ``uploads.linear.app`` file URLs from markdown (connector parity)."""
+    """Extract Linear upload URLs from markdown (connector parity): links to any other
+    host, ``uploads.linear.app`` merely appearing in them included, are never files."""
     if not markdown_text:
         return []
 
@@ -244,14 +251,14 @@ def extract_file_urls_from_markdown(
     if exclude_images:
         image_pattern = r"!\[([^\]]*)\]\(([^)]+)\)"
         for match in re.finditer(image_pattern, markdown_text):
-            url = match.group(2).strip()
-            if "uploads.linear.app" in url:
+            url = link_destination(match.group(2))
+            if is_linear_upload_url(url):
                 image_urls.add(url)
 
     link_pattern = r"\[([^\]]+)\]\(([^)]+)\)"
     for match in re.finditer(link_pattern, markdown_text):
-        url = match.group(2).strip()
-        if "uploads.linear.app" in url and url not in seen_urls:
+        url = link_destination(match.group(2))
+        if is_linear_upload_url(url) and url not in seen_urls:
             if exclude_images and url in image_urls:
                 continue
             seen_urls.add(url)
@@ -266,7 +273,7 @@ async def fetch_unique_projects_for_teams(
     datasource: LinearDataSource,
     team_ids: List[str],
     *,
-    page_size: int = 50,
+    page_size: int = PROJECT_PAGE_SIZE,
     max_pages: int = 100,
 ) -> List[Dict[str, Any]]:
     """Return deduplicated projects accessible to any of ``team_ids``."""
@@ -369,7 +376,8 @@ async def _paginate_team_issues(
         )
         data = (response.data or {}).get("issues", {})
         batch = data.get("nodes", [])
-        issues.extend(batch)
+        # The team filter also returns sub-team issues; each belongs to its own team.
+        issues.extend(i for i in batch if _issue_team_id(i) in (None, team_id))
         page_info = data.get("pageInfo", {})
         if not page_info.get("hasNextPage") or not page_info.get("endCursor"):
             break
@@ -428,7 +436,7 @@ async def fetch_first_document_in_teams(
         if nodes:
             doc = dict(nodes[0])
             doc["_parent_project_id"] = project_id
-            doc["_parent_team_id"] = team_ids[0]
+            doc["_parent_team_id"] = project_home_team(proj, team_ids)
             return doc
 
     return None
@@ -480,8 +488,7 @@ async def fetch_first_file_in_teams(
         content = proj.get("content") or ""
         files = extract_file_urls_from_markdown(content, exclude_images=True)
         if files:
-            teams = (proj.get("teams") or {}).get("nodes", [])
-            team_id = teams[0]["id"] if teams else team_ids[0]
+            team_id = project_home_team(proj, team_ids)
             return {
                 "url": files[0]["url"],
                 "filename": files[0]["filename"],
@@ -494,6 +501,31 @@ async def fetch_first_file_in_teams(
             }
 
     return None
+
+
+def project_home_team(project: Dict[str, Any], team_ids: List[str]) -> str:
+    """The team the connector files a project under: its first synced team by id. Its
+    other synced teams are shared groups of the project and of what hangs off it."""
+    synced = sorted(t["id"] for t in (project.get("teams") or {}).get("nodes", []) if t.get("id") in team_ids)
+    return synced[0] if synced else team_ids[0]
+
+
+async def count_shared_team_memberships(datasource: LinearDataSource, team_ids: List[str]) -> int:
+    """BELONGS_TO (and INHERIT_PERMISSIONS) edges beyond one per record: a project in
+    several synced teams belongs to each, and so do its documents, links and files."""
+    extra = 0
+    for project in await fetch_unique_projects_for_teams(datasource, team_ids):
+        response = await _api_call_with_retry(
+            datasource.project, id=project["id"], context=f"count_shared_team_memberships({project['id']})")
+        full = (response.data or {}).get("project") or {}
+        teams = [t for t in (full.get("teams") or {}).get("nodes", []) if t.get("id") in team_ids]
+        if len(teams) < 2:
+            continue
+        children = (len((full.get("documents") or {}).get("nodes", []))
+                    + len((full.get("externalLinks") or {}).get("nodes", []))
+                    + len(extract_file_urls_from_markdown(full.get("content") or "", exclude_images=True)))
+        extra += (len(teams) - 1) * (1 + children)
+    return extra
 
 
 async def fetch_first_project_in_team(
@@ -715,9 +747,11 @@ async def fetch_teams_by_ids(
     datasource: LinearDataSource,
     team_ids: List[str],
     *,
-    page_size: int = 50,
+    page_size: int = TEAM_PAGE_SIZE,
 ) -> List[Dict[str, Any]]:
-    """Fetch team metadata for specific team IDs."""
+    """Fetch team metadata for specific team IDs, as many per page as the connector asks
+    for: the ``teams`` query carries 100 members per team, and Linear refuses a query
+    over 10,000 points (50 teams a page is about 13,000)."""
     all_teams: List[Dict[str, Any]] = []
     cursor: Optional[str] = None
 
@@ -792,85 +826,6 @@ async def wait_until_linear_condition(
 
     raise TimeoutError(
         f"Timed out waiting for {description} after {timeout}s ({attempt} attempts)"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Indexing helpers
-# ---------------------------------------------------------------------------
-
-_RECORD_INDEXING_TERMINAL: frozenset[str] = frozenset(
-    {
-        ProgressStatus.COMPLETED.value,
-        ProgressStatus.FAILED.value,
-        ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-        ProgressStatus.EMPTY.value,
-        ProgressStatus.AUTO_INDEX_OFF.value,
-        ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
-    }
-)
-
-
-async def wait_until_record_indexing_completed(
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-    external_record_id: str,
-    *,
-    timeout: int = LINEAR_INDEXING_WAIT_SEC,
-    poll_interval: int = 5,
-    description: str = "record indexing COMPLETED",
-    pipeshub_client: Any | None = None,
-) -> Record:
-    """Poll the graph until the record reaches ``indexingStatus == COMPLETED``.
-
-    If ``pipeshub_client`` is set and the record hits ``AUTO_INDEX_OFF`` once,
-    triggers ``reindex_record`` and continues polling.
-    """
-    start = time.time()
-    deadline = start + timeout
-    attempt = 0
-    last_status: str | None = None
-    reindexed_after_auto_index_off = False
-
-    while time.time() < deadline:
-        attempt += 1
-        rec = await graph_provider.get_record_by_external_id(connector_id, external_record_id)
-        if rec is not None:
-            last_status = rec.indexing_status
-            if last_status == ProgressStatus.COMPLETED.value:
-                logger.info(
-                    "%s COMPLETED (attempt %d, %.1fs)",
-                    description, attempt, time.time() - start,
-                )
-                return rec
-            if last_status in _RECORD_INDEXING_TERMINAL:
-                if (
-                    last_status == ProgressStatus.AUTO_INDEX_OFF.value
-                    and pipeshub_client is not None
-                    and not reindexed_after_auto_index_off
-                ):
-                    logger.info("%s — AUTO_INDEX_OFF, triggering reindex", description)
-                    pipeshub_client.reindex_record(rec.id)
-                    reindexed_after_auto_index_off = True
-                    await asyncio.sleep(8)
-                    continue
-                raise AssertionError(
-                    f"{description}: record {external_record_id!r} reached terminal "
-                    f"indexingStatus={last_status!r} (expected COMPLETED)"
-                )
-        remaining = deadline - time.time()
-        if remaining <= 0:
-            break
-        sleep_time = min(poll_interval, remaining)
-        logger.info(
-            "%s — status=%s (attempt %d, %.0fs left)",
-            description, last_status or "pending", attempt, remaining,
-        )
-        await asyncio.sleep(sleep_time)
-
-    raise TimeoutError(
-        f"Timed out waiting for {description} on externalRecordId={external_record_id!r} "
-        f"after {timeout}s (last indexingStatus={last_status!r}, attempts={attempt})"
     )
 
 

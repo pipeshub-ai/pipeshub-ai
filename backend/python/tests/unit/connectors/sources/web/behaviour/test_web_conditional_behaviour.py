@@ -338,3 +338,22 @@ async def test_a_moved_file_whose_new_address_never_answers_keeps_its_old_copy(
 
     assert stale.id not in db.deleted
     assert site.storage_docs[db.pages()[old].storage_document_id] == b"%PDF-1.4 v2"
+
+
+async def test_an_unchanged_page_migrated_from_an_older_address_keeps_its_stored_html(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    guide = "http://site.test/guide"
+    site.html(START_URL, "Home", "/guide")
+    site.html(guide, "Guide", text="The same words as the stored copy")
+    connector = await make_connector()
+    await connector.run_sync()
+    # As an older version stored it: no trailing slash, the same content hash.
+    stored = db.records.pop(guide + "/")
+    db.records[guide] = stored.model_copy(update={"external_record_id": guide})
+
+    await connector.run_sync()
+
+    migrated = next(r for r in db.records.values() if r.id == stored.id)
+    assert migrated.external_record_id == guide + "/"
+    assert b"<" in site.storage_docs[migrated.storage_document_id], "the page's HTML, not its bare text"

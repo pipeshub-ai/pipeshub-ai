@@ -1,7 +1,7 @@
 """HTTP client that calls the API as the user in person, with a login session JWT.
 
-``PipeshubClient`` authenticates with an OAuth client-credentials token. Some
-routes refuse any OAuth access token or personal access token and accept only
+``PipeshubClient`` uses an OAuth client-credentials token against a remote
+instance, and the same login session on the local stack. Some routes refuse any OAuth access token or personal access token and accept only
 the session JWT a password login returns (``requireSessionAuth``, #3626):
 OAuth client management, the consent step and personal access tokens. Tests
 for those routes back their domain clients with this instead.

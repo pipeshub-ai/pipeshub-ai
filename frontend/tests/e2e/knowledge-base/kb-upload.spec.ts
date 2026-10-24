@@ -109,7 +109,7 @@ test.describe('Knowledge Base Upload', () => {
     const input = await openUploadSidebar(page, kbId);
     expect(input, 'Upload Data entry point should be available').not.toBeNull();
 
-    const save = page.getByRole('button', { name: 'Save' });
+    const save = page.getByTestId('upload-sidebar-save');
     await expect(save).toBeDisabled();
   });
 
@@ -118,7 +118,7 @@ test.describe('Knowledge Base Upload', () => {
     expect(input, 'Upload Data entry point should be available').not.toBeNull();
 
     await input!.setInputFiles(makeFiles(1, { prefix: 'ok-single' }));
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
     await expect(completedRows(page)).toHaveCount(1, { timeout: 30_000 });
@@ -132,7 +132,7 @@ test.describe('Knowledge Base Upload', () => {
     // 12 files exercises multi-batch fan-out (size-aware batching groups by
     // cumulative file size, but tiny files still fit in one batch by size).
     await input!.setInputFiles(makeFiles(12, { prefix: 'ok-multi' }));
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     const tracker = page.getByTestId('upload-progress-tracker');
     await expect(tracker).toBeVisible({ timeout: 15_000 });
@@ -152,7 +152,7 @@ test.describe('Knowledge Base Upload', () => {
     writeFileSync(join(dir, 'sub', 'ok-folder-nested.pdf'), 'nested content');
     try {
       await page.getByTestId('upload-input-folder').setInputFiles(dir);
-      await page.getByRole('button', { name: 'Save' }).click();
+      await page.getByTestId('upload-sidebar-save').click();
 
       await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
       await expect(completedRows(page)).toHaveCount(2, { timeout: 30_000 });
@@ -182,7 +182,7 @@ test.describe('Knowledge Base Upload', () => {
         join(dir, 'oversize.pdf'),
         join(dir, 'bad-mixed-00.xyz'),
       ]);
-      await page.getByRole('button', { name: 'Save' }).click();
+      await page.getByTestId('upload-sidebar-save').click();
 
       await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
       // 2 valid files complete; 1 oversize + 1 unsupported type fail.
@@ -202,7 +202,7 @@ test.describe('Knowledge Base Upload', () => {
     await input!.setInputFiles(
       makeFiles(3, { prefix: 'bad-all', ext: 'xyz', mimeType: 'application/octet-stream' }),
     );
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
     await expect(failedRows(page)).toHaveCount(3, { timeout: 30_000 });
@@ -216,7 +216,7 @@ test.describe('Knowledge Base Upload', () => {
     const { paths, cleanup } = writeOversizeFiles(realMaxBytes, 1);
     try {
       await input!.setInputFiles(paths);
-      await page.getByRole('button', { name: 'Save' }).click();
+      await page.getByTestId('upload-sidebar-save').click();
 
       const row = failedRows(page).first();
       await expect(row).toBeVisible({ timeout: 15_000 });
@@ -234,7 +234,7 @@ test.describe('Knowledge Base Upload', () => {
       ...makeFiles(2, { prefix: 'ok-tab' }),
       ...makeFiles(2, { prefix: 'bad-tab', ext: 'xyz', mimeType: 'application/octet-stream' }),
     ]);
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
     await expect(completedRows(page)).toHaveCount(2, { timeout: 30_000 });
@@ -277,7 +277,7 @@ test.describe('Knowledge Base Upload', () => {
     // 50 tiny files → size-batched (all fit well under 95MB budget). Verifies
     // the tracker handles a larger set without row-cap truncation or counter desync.
     await input!.setInputFiles(makeFiles(50, { prefix: 'ok-scale' }));
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     const tracker = page.getByTestId('upload-progress-tracker');
     await expect(tracker).toBeVisible({ timeout: 15_000 });
@@ -295,7 +295,7 @@ test.describe('Knowledge Base Upload', () => {
     await input!.setInputFiles([
       { name: 'report.v2.pdf', mimeType: 'application/pdf', buffer: validPdfBuffer(256, 'multi-dot') },
     ]);
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
     await expect(completedRows(page)).toHaveCount(1, { timeout: 30_000 });
@@ -313,7 +313,7 @@ test.describe('Knowledge Base Upload', () => {
       { name: 'within-batch-dup.pdf', mimeType: 'application/pdf', buffer: validPdfBuffer(256, 'copy-A') },
       { name: 'within-batch-dup.pdf', mimeType: 'application/pdf', buffer: validPdfBuffer(256, 'copy-B') },
     ]);
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
     await expect(completedRows(page)).toHaveCount(1, { timeout: 30_000 });
@@ -332,7 +332,7 @@ test.describe('Knowledge Base Upload', () => {
     const { path: filePath, cleanup } = writeExactSizeFile(realMaxBytes);
     try {
       await input!.setInputFiles(filePath);
-      await page.getByRole('button', { name: 'Save' }).click();
+      await page.getByTestId('upload-sidebar-save').click();
 
       const tracker = page.getByTestId('upload-progress-tracker');
       await expect(tracker).toBeVisible({ timeout: 15_000 });
@@ -357,7 +357,7 @@ test.describe('Knowledge Base Upload', () => {
       { name: 'my report (draft) v2.pdf', mimeType: 'application/pdf', buffer: validPdfBuffer(256, 'spaces') },
       { name: 'file-with-hyphens_and_underscores.pdf', mimeType: 'application/pdf', buffer: validPdfBuffer(256, 'hyphens') },
     ]);
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
     await expect(completedRows(page)).toHaveCount(2, { timeout: 30_000 });
@@ -375,7 +375,7 @@ test.describe('Knowledge Base Upload', () => {
     writeFileSync(join(dir, 'mixed-bad-1.xyz'), 'unsupported 2');
     try {
       await page.getByTestId('upload-input-folder').setInputFiles(dir);
-      await page.getByRole('button', { name: 'Save' }).click();
+      await page.getByTestId('upload-sidebar-save').click();
 
       await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
       await expect(completedRows(page)).toHaveCount(2, { timeout: 30_000 });
@@ -390,7 +390,7 @@ test.describe('Knowledge Base Upload', () => {
     expect(input, 'Upload Data entry point should be available').not.toBeNull();
 
     await input!.setInputFiles(makeFiles(1, { prefix: 'tab-default' }));
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     const tracker = page.getByTestId('upload-progress-tracker');
     await expect(tracker).toBeVisible({ timeout: 15_000 });
@@ -408,7 +408,7 @@ test.describe('Knowledge Base Upload', () => {
     await input!.setInputFiles(
       makeFiles(3, { prefix: 'tab-badge-bad', ext: 'xyz', mimeType: 'application/octet-stream' }),
     );
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     const tracker = page.getByTestId('upload-progress-tracker');
     await expect(tracker).toBeVisible({ timeout: 15_000 });
@@ -444,7 +444,7 @@ test.describe('Knowledge Base Upload', () => {
       { name: 'v2-test.pdf.docx.pdf', mimeType: 'application/pdf', buffer: validPdfBuffer(256, 'e') },
 
     ]);
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
     await expect(completedRows(page)).toHaveCount(5, { timeout: 30_000 });
@@ -484,7 +484,7 @@ test.describe('Knowledge Base Upload — Duplicate Detection', () => {
     expect(input, 'Upload Data entry point should be available').not.toBeNull();
 
     await input!.setInputFiles(makeFiles(1, { prefix: 'dup' }));
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
     await expect(completedRows(page)).toHaveCount(1, { timeout: 30_000 });
@@ -494,7 +494,7 @@ test.describe('Knowledge Base Upload — Duplicate Detection', () => {
     expect(input2, 'Upload Data entry point should be available for the second upload').not.toBeNull();
 
     await input2!.setInputFiles(makeFiles(1, { prefix: 'dup' }));
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
     const dupRow = failedRows(page).first();
@@ -516,7 +516,7 @@ test.describe('Knowledge Base Upload — Duplicate Detection', () => {
       { name: 'triple-1.pdf', mimeType: 'application/pdf', buffer: validPdfBuffer(256, 'second') },
       { name: 'triple-0.pdf', mimeType: 'application/pdf', buffer: validPdfBuffer(256, 'third') },
     ]);
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
     await expect(completedRows(page)).toHaveCount(2, { timeout: 30_000 });
@@ -552,7 +552,7 @@ test.describe('Knowledge Base Upload — Size-Aware Batching', () => {
     // into two batches: 50 + 2. This exercises the file-count cap without
     // overwhelming the backend with two large concurrent uploads.
     await input!.setInputFiles(makeFiles(52, { prefix: 'sb-tiny' }));
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
 
     const tracker = page.getByTestId('upload-progress-tracker');
     await expect(tracker).toBeVisible({ timeout: 15_000 });
@@ -579,7 +579,7 @@ test.describe('Knowledge Base Upload — Size-Aware Batching', () => {
     writeFileSync(join(dir, 'docs', 'sb-tiny-nested.pdf'), 'small');
     try {
       await page.getByTestId('upload-input-folder').setInputFiles(dir);
-      await page.getByRole('button', { name: 'Save' }).click();
+      await page.getByTestId('upload-sidebar-save').click();
 
       await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
       await expect(completedRows(page)).toHaveCount(4, { timeout: 60_000 });
@@ -606,7 +606,7 @@ test.describe('Knowledge Base Upload — Size-Aware Batching', () => {
     writeFileSync(join(level2, 'sb-deep.pdf'), Buffer.alloc(500, 'D'));
     try {
       await page.getByTestId('upload-input-folder').setInputFiles(dir);
-      await page.getByRole('button', { name: 'Save' }).click();
+      await page.getByTestId('upload-sidebar-save').click();
 
       await expect(page.getByTestId('upload-progress-tracker')).toBeVisible({ timeout: 15_000 });
       await expect(completedRows(page)).toHaveCount(3, { timeout: 60_000 });
@@ -651,7 +651,7 @@ test.describe('Knowledge Base Upload — Client-Side Size Validation', () => {
     const { paths, cleanup } = writeOversizeFiles(realMaxBytes, 1);
     try {
       await input!.setInputFiles(paths);
-      await page.getByRole('button', { name: 'Save' }).click();
+      await page.getByTestId('upload-sidebar-save').click();
 
       const tracker = page.getByTestId('upload-progress-tracker');
       await expect(tracker).toBeVisible({ timeout: 15_000 });
@@ -681,7 +681,7 @@ test.describe('Knowledge Base Upload — Client-Side Size Validation', () => {
     const { paths, cleanup } = writeOversizeFiles(realMaxBytes, 2, { prefix: 'cs-big' });
     try {
       await input!.setInputFiles(paths);
-      await page.getByRole('button', { name: 'Save' }).click();
+      await page.getByTestId('upload-sidebar-save').click();
 
       const tracker = page.getByTestId('upload-progress-tracker');
       await expect(tracker).toBeVisible({ timeout: 15_000 });
@@ -712,7 +712,7 @@ test.describe('Knowledge Base Upload — Client-Side Size Validation', () => {
         join(dir, 'cs-ok-1.pdf'),
         join(dir, 'cs-toobig.pdf'),
       ]);
-      await page.getByRole('button', { name: 'Save' }).click();
+      await page.getByTestId('upload-sidebar-save').click();
 
       const tracker = page.getByTestId('upload-progress-tracker');
       await expect(tracker).toBeVisible({ timeout: 15_000 });
@@ -736,7 +736,7 @@ test.describe('Knowledge Base Upload — Client-Side Size Validation', () => {
     const { paths, cleanup } = writeOversizeFiles(realMaxBytes, 1, { prefix: 'cs-msg' });
     try {
       await input!.setInputFiles(paths);
-      await page.getByRole('button', { name: 'Save' }).click();
+      await page.getByTestId('upload-sidebar-save').click();
 
       const row = failedRows(page).first();
       await expect(row).toBeVisible({ timeout: 10_000 });

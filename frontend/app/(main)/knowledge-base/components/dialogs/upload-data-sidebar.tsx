@@ -1,5 +1,8 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { sidePanelFrame, touchTarget } from '@/app/components/ui/responsive';
 import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { Flex, Box, Text, Button, IconButton, Dialog, VisuallyHidden } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
@@ -7,6 +10,19 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 import { folderLevelsInPath, uploadPathOf } from '../../utils/folder-depth';
+
+// iOS browsers expose `webkitdirectory` but cannot pick folders, so the folder
+// section is hidden there. Starts true so server and first client render match.
+function useFolderPickerSupport(): boolean {
+  const [supported, setSupported] = useState(true);
+  useEffect(() => {
+    const isIos =
+      /iP(hone|ad|od)/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    setSupported(!isIos && 'webkitdirectory' in HTMLInputElement.prototype);
+  }, []);
+  return supported;
+}
 
 function createUploadItemId(prefix: 'file' | 'folder'): string {
   const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
@@ -62,6 +78,7 @@ interface DropZoneProps {
 }
 
 function DropZone({ type, onDrop, isEmpty, compact = false }: DropZoneProps) {
+  const { t } = useTranslation();
   const [isDragOver, setIsDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -234,7 +251,7 @@ function DropZone({ type, onDrop, isEmpty, compact = false }: DropZoneProps) {
           variant="solid"
           size="1"
           onClick={handleClick}
-          aria-label={type === 'file' ? 'Add files' : 'Add a folder'}
+          aria-label={type === 'file' ? t('kb.upload.addFiles') : t('kb.upload.addFolder')}
           data-testid={`upload-add-${type}-compact`}
           style={{
             cursor: 'pointer',
@@ -264,7 +281,17 @@ function DropZone({ type, onDrop, isEmpty, compact = false }: DropZoneProps) {
         }}
     >
     <Box
+      role="button"
+      tabIndex={0}
+      aria-label={type === 'file' ? t('kb.upload.addFiles') : t('kb.upload.addFolder')}
+      data-upload-dropzone=""
       onClick={handleClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          handleClick();
+        }
+      }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -292,10 +319,10 @@ function DropZone({ type, onDrop, isEmpty, compact = false }: DropZoneProps) {
         {isEmpty && (
           <>
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Upload
+              {t('action.upload')}
             </Text>
             <Text size="1" weight="light" style={{ color: 'var(--slate-12)' }}>
-              {type === 'file' ? 'Add files' : 'Add a folder'}
+              {type === 'file' ? t('kb.upload.addFiles') : t('kb.upload.addFolder')}
             </Text>
           </>
         )}
@@ -315,6 +342,7 @@ interface ScrollableListProps {
 }
 
 function ScrollableList({ children }: ScrollableListProps) {
+  const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [showTopFade, setShowTopFade] = useState(false);
   const [showBottomFade, setShowBottomFade] = useState(false);
@@ -420,7 +448,7 @@ function ScrollableList({ children }: ScrollableListProps) {
                 border: '1px solid var(--olive-5)',
               }}
             >
-              More below
+              {t('kb.upload.moreBelow')}
             </Text>
           </Flex>
         </>
@@ -435,6 +463,7 @@ interface UploadedItemProps {
 }
 
 function UploadedItem({ item, onRemove }: UploadedItemProps) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
 
   return (
@@ -497,7 +526,7 @@ function UploadedItem({ item, onRemove }: UploadedItemProps) {
         size="1"
         onClick={() => onRemove(item.id)}
         data-testid="upload-selected-file-remove"
-        aria-label={`Remove ${item.name}`}
+        aria-label={t('kb.upload.removeNamed', { name: item.name })}
         style={{ opacity: isHovered ? 1 : 0.5 }}
       >
         <MaterialIcon name="close" size={16} color="var(--slate-11)" />
@@ -581,6 +610,7 @@ interface FolderTreeRowProps {
 }
 
 function FolderTreeRow({ node, depth, onRemovePath }: FolderTreeRowProps) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
   const [isExpanded, setIsExpanded] = useState(true);
   const isFolder = node.kind === 'folder';
@@ -622,7 +652,7 @@ function FolderTreeRow({ node, depth, onRemovePath }: FolderTreeRowProps) {
                 pointerEvents: hasChildren ? 'auto' : 'none',
                 flexShrink: 0,
               }}
-              aria-label={isExpanded ? 'Collapse folder' : 'Expand folder'}
+              aria-label={isExpanded ? t('kb.upload.collapseFolder') : t('kb.upload.expandFolder')}
             >
               <MaterialIcon
                 name={isExpanded ? 'expand_more' : 'chevron_right'}
@@ -663,7 +693,7 @@ function FolderTreeRow({ node, depth, onRemovePath }: FolderTreeRowProps) {
           onClick={() => onRemovePath(node.path)}
           data-testid="upload-folder-tree-remove"
           style={{ opacity: isHovered ? 1 : 0.45, flexShrink: 0 }}
-          aria-label={`Remove ${node.name}`}
+          aria-label={t('kb.upload.removeNamed', { name: node.name })}
         >
           <MaterialIcon name="close" size={16} color="var(--slate-11)" />
         </IconButton>
@@ -754,6 +784,8 @@ export function UploadDataSidebar({
   remainingFolderLevels = Infinity,
   maxFolderDepth,
 }: UploadDataSidebarProps) {
+  const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [fileItems, setFileItems] = useState<UploadFileItem[]>([]);
   const [folderItems, setFolderItems] = useState<UploadFileItem[]>([]);
   const { maxFileSizeMB } = useUploadLimits();
@@ -827,25 +859,28 @@ export function UploadDataSidebar({
     ),
   );
   const foldersAllowed = remainingFolderLevels > 0;
+  const supportsFolderPicker = useFolderPickerSupport();
 
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Content
         data-upload-data-dialog=""
         onInteractOutside={(event) => event.preventDefault()}
+        // Start on the first drop zone, not the Documentation link in the header.
+        onOpenAutoFocus={(event) => {
+          const zone = (event.currentTarget as HTMLElement | null)?.querySelector<HTMLElement>('[data-upload-dropzone]');
+          if (zone) {
+            event.preventDefault();
+            zone.focus();
+          }
+        }}
         style={{
-          position: 'fixed',
-          top: 10,
-          right: 10,
-          bottom: 10,
-          width: '37.5rem',
-          maxWidth: '100vw',
-          maxHeight: 'calc(100vh - 20px)',
+          ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
           background: 'var(--effects-translucent)',
           border: '1px solid var(--olive-3)',
-          borderRadius: 'var(--radius-2)',
+          borderRadius: isMobile ? 0 : 'var(--radius-2)',
           backdropFilter: 'blur(25px)',
           boxShadow: ' 0 20px 48px 0 rgba(0, 0, 0, 0.25)',
           overflow: 'hidden',
@@ -857,7 +892,7 @@ export function UploadDataSidebar({
         }}
       >
         <VisuallyHidden>
-          <Dialog.Title>Upload Data</Dialog.Title>
+          <Dialog.Title>{t('kb.upload.title')}</Dialog.Title>
         </VisuallyHidden>
         {/* Header */}
         <Flex
@@ -876,7 +911,7 @@ export function UploadDataSidebar({
           <Flex align="center" gap="2">
             <MaterialIcon name="file_upload" size={24} color="var(--slate-12)" />
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Upload Data
+              {t('kb.upload.title')}
             </Text>
           </Flex>
           <Flex align="center" gap="3">
@@ -887,12 +922,13 @@ export function UploadDataSidebar({
               onClick={() => window.open('https://docs.pipeshub.com', '_blank')}
             >
               <MaterialIcon name="open_in_new" size={14} color="var(--slate-11)" />
-              Documentation
+              {t('kb.upload.documentation')}
             </Button>
             <IconButton
               variant="ghost"
               color="gray"
               size="2"
+              aria-label={t('common.close')}
               onClick={() => handleOpenChange(false)}
             >
               <MaterialIcon name="close" size={16} color="var(--slate-11)" />
@@ -933,10 +969,10 @@ export function UploadDataSidebar({
             <Flex align="start" justify="between" gap="2">
               <Flex direction="column" gap="1">
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                  Upload Files
+                  {t('kb.upload.filesTitle')}
                 </Text>
                 <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                  Up to {maxFileSizeMB} MB per file; type and size are validated on upload
+                  {t('kb.upload.filesHint', { maxMb: maxFileSizeMB })}
                 </Text>
               </Flex>
               {fileItems.length > 0 && (
@@ -953,7 +989,7 @@ export function UploadDataSidebar({
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {fileItems.length} {fileItems.length === 1 ? 'file' : 'files'}
+                    {t('kb.upload.fileCount', { count: fileItems.length })}
                   </Text>
                 </Flex>
               )}
@@ -977,10 +1013,12 @@ export function UploadDataSidebar({
             )}
           </Flex>
 
+          {supportsFolderPicker && (
+            <>
           <Flex align="center" gap="3">
             <Box style={{ flex: 1, height: '1px', backgroundColor: 'var(--slate-6)' }} />
             <Text size="1" style={{ color: 'var(--slate-9)' }}>
-              OR
+              {t('kb.upload.or')}
             </Text>
             <Box style={{ flex: 1, height: '1px', backgroundColor: 'var(--slate-6)' }} />
           </Flex>
@@ -1003,10 +1041,10 @@ export function UploadDataSidebar({
             <Flex align="start" justify="between" gap="2">
               <Flex direction="column" gap="1">
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                  Upload Folders
+                  {t('kb.upload.foldersTitle')}
                 </Text>
                 <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                  Each file is validated on upload (max {maxFileSizeMB} MB per file)
+                  {t('kb.upload.foldersHint', { maxMb: maxFileSizeMB })}
                 </Text>
               </Flex>
               {folderItems.length > 0 && (
@@ -1023,7 +1061,7 @@ export function UploadDataSidebar({
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {folderItems.length} {folderItems.length === 1 ? 'folder' : 'folders'}
+                    {t('kb.upload.folderCount', { count: folderItems.length })}
                   </Text>
                 </Flex>
               )}
@@ -1047,8 +1085,7 @@ export function UploadDataSidebar({
 
             {exceedsFolderDepth && (
               <Text size="1" color="red" data-testid="upload-depth-warning">
-                Only {remainingFolderLevels} more folder {remainingFolderLevels === 1 ? 'level fits' : 'levels fit'} here
-                (folders can be nested at most {maxFolderDepth} levels deep). Remove some folders to continue.
+                {t('kb.upload.depthWarning', { count: remainingFolderLevels, max: maxFolderDepth })}
               </Text>
             )}
 
@@ -1060,11 +1097,12 @@ export function UploadDataSidebar({
 
             {folderItems.length === 0 && !foldersAllowed && (
               <Text size="1" style={{ color: 'var(--slate-9)' }} data-testid="upload-folder-limit-reached">
-                Folders can be nested at most {maxFolderDepth} levels deep and this folder is already at that
-                limit, so folders cannot be uploaded here. You can still upload files.
+                {t('kb.upload.folderLimitReached', { max: maxFolderDepth })}
               </Text>
             )}
           </Flex>
+            </>
+          )}
         </Box>
 
         {/* Footer */}
@@ -1084,21 +1122,22 @@ export function UploadDataSidebar({
           <Button
             variant="soft"
             color="gray"
-            size="2"
+            size={isMobile ? '3' : '2'}
             data-testid="upload-sidebar-cancel"
             onClick={() => handleOpenChange(false)}
           >
-            Cancel
+            {t('action.cancel')}
           </Button>
           <LoadingButton
             variant="solid"
-            size="2"
+            size={isMobile ? '3' : '2'}
+            style={touchTarget(isMobile)}
             data-testid="upload-sidebar-save"
             onClick={handleSave}
             disabled={!hasItems || exceedsFolderDepth}
             loading={isSaving}
           >
-            Save
+            {t('action.upload')}
           </LoadingButton>
         </Flex>
       </Dialog.Content>

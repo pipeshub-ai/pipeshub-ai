@@ -98,7 +98,7 @@ describe('DisableFirstDialog', () => {
     });
     const { onOpenChange, onProceed } = renderDialog();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Disable & Proceed' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
 
     await waitFor(() => expect(onProceed).toHaveBeenCalledTimes(1));
     expect(toggleConnector).toHaveBeenCalledWith('conn-1', 'sync');
@@ -115,7 +115,7 @@ describe('DisableFirstDialog', () => {
     toggleConnector.mockReturnValue(new Promise<void>((r) => (finish = r)));
     renderDialog();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Disable & Proceed' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
 
     expect(await screen.findByText('Disabling...')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(true);
@@ -126,7 +126,7 @@ describe('DisableFirstDialog', () => {
     toggleConnector.mockRejectedValue(new Error('You appear to be offline. Check your connection and try again.'));
     const { onOpenChange, onProceed } = renderDialog();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Disable & Proceed' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
 
     await waitFor(() => expect(toasts()).toHaveLength(1));
     expect(toasts()[0]).toMatchObject({
@@ -136,7 +136,7 @@ describe('DisableFirstDialog', () => {
     });
     expect(onProceed).not.toHaveBeenCalled();
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
-    expect(screen.getByRole('button', { name: 'Disable & Proceed' }).hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Disable & proceed' }).hasAttribute('disabled')).toBe(false);
   });
 
   it('leaves a server failure to the app-wide error toast instead of adding a second one', async () => {
@@ -148,11 +148,11 @@ describe('DisableFirstDialog', () => {
     });
     const { onProceed } = renderDialog();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Disable & Proceed' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
 
     await waitFor(() => expect(toggleConnector).toHaveBeenCalled());
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Disable & Proceed' }).hasAttribute('disabled')).toBe(false)
+      expect(screen.getByRole('button', { name: 'Disable & proceed' }).hasAttribute('disabled')).toBe(false)
     );
     expect(toasts()).toEqual([]);
     expect(onProceed).not.toHaveBeenCalled();
@@ -170,7 +170,7 @@ describe('DisableFirstDialog', () => {
     });
     const { onProceed } = renderDialog();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Disable & Proceed' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
 
     await waitFor(() => expect(toasts()).toHaveLength(1));
     expect(toasts()[0]).toMatchObject({
@@ -187,7 +187,7 @@ describe('DisableFirstDialog', () => {
       onProceed: () => Promise.reject(new Error('save failed')),
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Disable & Proceed' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
 
     await waitFor(() => expect(onProceed).toHaveBeenCalled());
     expect(toasts()).toEqual([]);

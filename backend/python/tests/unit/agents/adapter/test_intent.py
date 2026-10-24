@@ -260,3 +260,58 @@ class TestParseIntentAndRouteTransportRegistryReuse:
             intent_module.TransportRegistry = original_registry_cls
 
         assert decision.rewritten_query == "built its own transport"
+
+
+class TestIntentCallUsage:
+    """The intent call runs on its own one-turn agent, so its usage reaches
+    the request's ledger only through the request's transports."""
+
+    async def test_the_intent_call_is_reported_through_the_request_transport(self) -> None:
+        from app.agent_loop_lib.core.responses import TokenUsage
+        from app.agents.agent_loop.usage_transport import UsageReportingTransport
+
+        usage = TokenUsage(input_tokens=900, output_tokens=40, cache_read_tokens=800)
+        transport = ScriptedTransport().add_tool_call(
+            ToolCall(id="tc1", name="task_complete", arguments={"output": "find the onboarding doc"}),
+            usage=usage,
+        )
+        seen: list[tuple[str, TokenUsage]] = []
+        registry = TransportRegistry()
+        registry.register(
+            "langchain", lambda: UsageReportingTransport(transport, lambda s, u: seen.append((s, u))),
+        )
+
+        decision = await parse_intent_and_route(
+            _query_info("onboarding?"), _LOGGER, _FakeLangChainLLM(),
+            include_routing=False, transport_registry=registry,
+        )
+
+        assert decision.rewritten_query == "find the onboarding doc"
+        assert seen == [("single_shot:intent.parse_intent_and_route", usage)]
+
+
+class TestIntentSeesTheConversationTheAgentSees:
+    """HG-04: a follow-up that points into the previous answer ("the second one") can only be
+    resolved if the intent model sees that answer, not just its first line."""
+
+    async def test_list_items_below_the_first_line_reach_the_intent_model(self) -> None:
+        transport = _script_task_complete("## Request\nTell me more about INC-102.")
+        previous = [
+            {"role": "user_query", "content": "Which incidents are open?"},
+            {"role": "bot_response", "content": (
+                "Here are the three open incidents:\n"
+                "1. INC-101 VPN outage\n2. INC-102 Billing export failing\n3. INC-103 SSO latency"
+            )},
+        ]
+
+        await _run_with_transport(
+            transport, query="Tell me more about the second one", previous_conversations=previous,
+        )
+
+        sent = "\n".join(str(m.content) for m in transport.calls[0]["messages"])
+        assert "INC-102 Billing export failing" in sent
+
+    def test_instructions_name_earlier_topics_only_when_the_request_refers_back(self) -> None:
+        from app.agents.agent_loop.intent import _INTENT_INSTRUCTIONS
+
+        assert "only when the request refers back" in _INTENT_INSTRUCTIONS

@@ -6,9 +6,10 @@ from typing import Any, Optional
 
 from app.agents.tools.factories.base import ClientFactory, ToolsetAuthError
 from app.modules.agents.qna.chat_state import ChatState
-from app.sources.client.jira.jira import JiraClient
+from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
 from app.sources.external.common.atlassian import (
     AtlassianMultiSiteError,
+    atlassian_cloud_site_root,
     resolve_preferred_site_with_fallback,
 )
 
@@ -25,6 +26,8 @@ class JiraClientFactory(ClientFactory):
 
     # Notification heading for setup failures (the OAuth callback passes it through).
     _AUTH_ERROR_TITLE = "Jira action: Resource-restricted OAuth required"
+    # An email + API token is sent to the configured URL, which must then be an Atlassian site.
+    _CLOUD_SITE_ONLY = True
 
     async def create_client(
         self,
@@ -46,11 +49,16 @@ class JiraClientFactory(ClientFactory):
             JiraClient instance
         """
         try:
-            return await JiraClient.build_from_toolset(
+            client = await JiraClient.build_from_toolset(
                 toolset_config=toolset_config,
                 logger=logger,
                 config_service=config_service,
             )
+            if self._CLOUD_SITE_ONLY and isinstance(client.get_client(), JiraRESTClientViaApiKey):
+                rest_client = client.get_client()
+                rest_client.base_url = atlassian_cloud_site_root(rest_client.get_base_url())
+                client.site_url = rest_client.base_url
+            return client
         except AtlassianMultiSiteError as e:
             # Translate the provider-specific error to the generic toolset error the
             # wrapper handles, so no Atlassian knowledge leaks into generic code.
@@ -90,6 +98,8 @@ class JiraDataCenterClientFactory(JiraClientFactory):
     """
 
     _SUPPORTED_AUTH_TYPES = {"API_TOKEN", "BASIC_AUTH"}
+    # A Data Center instance is self-hosted, often on a private address.
+    _CLOUD_SITE_ONLY = False
 
     async def create_client(
         self,

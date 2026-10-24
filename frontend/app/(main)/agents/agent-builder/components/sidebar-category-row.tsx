@@ -8,6 +8,7 @@ import { ConnectorIcon } from '@/app/components/ui';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import { AGENT_TOOLSET_FALLBACK_ICON } from '../display-utils';
 import type { ToolsetSidebarStatus } from '../sidebar-toolset-utils';
+import { TapAddButton, usePaletteTapAdd } from './sidebar-draggable-row';
 
 function applyDragPayload(e: React.DragEvent, dragType: string, dragData?: Record<string, string>) {
   e.dataTransfer.effectAllowed = 'move';
@@ -119,6 +120,7 @@ export function SidebarCategoryRow(props: {
 
   const { t } = useTranslation();
   const dragZoneActive = Boolean(dragType || onDragAttempt);
+  const tapAdd = usePaletteTapAdd(dragType ? { ...dragData, 'application/reactflow': dragType } : undefined);
 
   const statusTooltip =
     toolsetStatus === 'authenticated'
@@ -183,6 +185,7 @@ export function SidebarCategoryRow(props: {
           size="1"
           variant="ghost"
           color="gray"
+          className="touch-hit"
           aria-expanded={isExpanded}
           aria-label={isExpanded ? t('agentBuilder.sidebarCollapseTools') : t('agentBuilder.sidebarExpandTools')}
           onClick={(e) => {
@@ -268,7 +271,8 @@ export function SidebarCategoryRow(props: {
             ) : null}
           </Flex>
 
-          <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+          <Flex align="center" gap="1" className="touch-row" style={{ flexShrink: 0 }}>
+            <TapAddButton onTap={tapAdd} />
             {toolsetStatus === 'needs_authentication' ? (
               openInNewHandler ? (
                 <Box
@@ -282,6 +286,7 @@ export function SidebarCategoryRow(props: {
                       size="1"
                       variant="ghost"
                       color="gray"
+                      className="touch-hit"
                       onClick={(e) => {
                         e.stopPropagation();
                         openInNewHandler();
@@ -333,6 +338,7 @@ export function SidebarCategoryRow(props: {
                     size="1"
                     variant="ghost"
                     color="gray"
+                    className="touch-hit"
                     onClick={(e) => {
                       e.stopPropagation();
                       gearHandler();

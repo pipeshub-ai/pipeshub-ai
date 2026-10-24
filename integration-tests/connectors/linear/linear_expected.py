@@ -555,7 +555,8 @@ class LinearExpected:
             org_id="",
             record_name=filename,
             record_type=RecordType.FILE,
-            external_record_id=file_url,
+            # One FILE record per (upload, parent): see file_record_id() in the connector.
+            external_record_id=f"{file_url}#parent={parent_external_id}",
             external_revision_id=None,
             external_record_group_id=team_id,
             parent_external_record_id=parent_external_id,

@@ -1,13 +1,14 @@
 'use client';
 
+import { useDemoDataActive } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import React, { useState } from 'react';
-import { Flex, Text, Button } from '@radix-ui/themes';
+import { Box, Flex, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { TableSkeleton } from '@/app/components/data-display/table-skeleton';
 import { useKnowledgeBaseStore } from '../store';
 import { useTranslation } from 'react-i18next';
 import { DeleteConfirmationDialog } from './dialogs'; 
-import { KbGridView, KbListView } from '@/config';
+import { KbGridView, KbListView, useKbListExtraColumns } from '@/config';
 import type {
   KnowledgeBaseItem,
   KnowledgeHubNode,
@@ -17,9 +18,14 @@ import type {
 } from '../types';
 import { AlertSquareIcon, EmptyIcon, NotFoundIcon } from '@/app/components/ui';
 import { resolveRootKbIdFromContext } from '../utils/resolve-root-kb-id';
+import { TableHeaderCell } from './kb-list-view';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { PAGE_PADDING_X } from '@/app/components/ui/responsive';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
+
+const NO_ITEMS: TableItem[] = [];
 
 // Type guard to check if item is KnowledgeHubNode
 function isKnowledgeHubNode(item: TableItem): item is KnowledgeHubNode {
@@ -31,13 +37,17 @@ interface KbDataTableProps {
   isLoading?: boolean;
   isRefreshing?: boolean;
   error?: string | null;
+  /** False when repeating the request cannot help (the view is too large to list), so no retry button. */
+  errorRetryable?: boolean;
   pagination?: {
-    page: number;
     limit: number;
     totalItems: number;
-    totalPages: number;
+    startIndex?: number;
+    endIndex?: number;
     hasNext: boolean;
     hasPrev: boolean;
+    nextCursor?: string | null;
+    prevCursor?: string | null;
   };
   permissions?: NodePermissions;
   currentNodeName?: string;
@@ -46,12 +56,16 @@ interface KbDataTableProps {
   showCheckbox?: boolean;
   hasActiveFilters?: boolean;
   hasSearchQuery?: boolean;
+  /** Clears the search; shown as a button on the no-results state. */
+  onClearSearch?: () => void;
   hasCollections?: boolean;
+  extrasRefreshKey?: number;
   onRefresh?: () => void;
-  onPageChange?: (page: number) => void;
+  onCursorChange?: (cursor: string | null, direction?: 'next' | 'prev') => void;
   onLimitChange?: (limit: number) => void;
   onItemClick: (item: TableItem) => void;
   onPreview?: (item: TableItem) => void;
+  onGoToParent?: (item: KnowledgeHubNode) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
   onReindex?: (item: TableItem, statusFilters?: string[]) => void;
   onReplace?: (item: TableItem) => void;
@@ -62,6 +76,8 @@ interface KbDataTableProps {
   onUpload?: () => void;
   onGoToCollection?: () => void;
   refreshData?: (deletedIds?: string[]) => Promise<void>;
+  /** False when no collection is open (a search at the Collections root): see `needsCollectionContext`. */
+  hasCollectionContext?: boolean;
 }
 
 export function KbDataTable({
@@ -69,6 +85,7 @@ export function KbDataTable({
   isLoading = false,
   isRefreshing = false,
   error = null,
+  errorRetryable = true,
   pagination,
   permissions,
   currentNodeName,
@@ -77,12 +94,15 @@ export function KbDataTable({
   showCheckbox = true,
   hasActiveFilters = false,
   hasSearchQuery = false,
+  onClearSearch,
   hasCollections = false,
+  extrasRefreshKey = 0,
   onRefresh,
-  onPageChange,
+  onCursorChange,
   onLimitChange,
   onItemClick,
   onPreview,
+  onGoToParent,
   onRename,
   onReindex,
   onReplace,
@@ -93,8 +113,12 @@ export function KbDataTable({
   onUpload,
   onGoToCollection,
   refreshData,
+  hasCollectionContext = true,
 }: KbDataTableProps) {
   const { t } = useTranslation();
+  // Looked up here, not in the list or grid: those unmount behind the loader on
+  // every navigation, which would ask for the connectors again on every click.
+  useDemoDataActive();
   const { selectedItems, toggleItemSelection, selectItem, clearSelection, selectedRecords, toggleRecordSelection, selectRecord, clearRecordSelection, deleteNode, deletingNodeIds, viewMode, sort, setSort, allRecordsSort, setAllRecordsSort, tableData: storeTableData, allRecordsSidebarSelection, isLoadingFlatCollections, loadingAppIds, appNodes } =
     useKnowledgeBaseStore();
 
@@ -106,6 +130,7 @@ export function KbDataTable({
     isLoadingFlatCollections || (kbApp ? loadingAppIds.has(kbApp.id) : false);
 
   const isAllRecords = pageViewMode === 'all-records';
+  const extraColumns = useKbListExtraColumns(items, extrasRefreshKey);
   const activeSelectedItems = isAllRecords ? selectedRecords : selectedItems;
   const activeToggleSelection = isAllRecords ? toggleRecordSelection : toggleItemSelection;
 
@@ -139,40 +164,41 @@ export function KbDataTable({
     setDeleteDialogOpen(true);
   };
 
-  const handleDeleteConfirm = async () => {
-    if (!itemToDelete) return;
-
+  /** Collection, folder or file, and the collection it sits in, as the delete API needs them. */
+  const resolveDeleteTarget = (item: TableItem) => {
     const storeState = useKnowledgeBaseStore.getState();
     const kbId = resolveRootKbIdFromContext({
       breadcrumbs: storeState.tableData?.breadcrumbs,
       categorizedNodes: storeState.categorizedNodes,
       parentId:
-        isKnowledgeHubNode(itemToDelete) && 'parentId' in itemToDelete
-          ? itemToDelete.parentId
+        isKnowledgeHubNode(item) && 'parentId' in item
+          ? item.parentId
           : undefined,
-      nodeId: itemToDelete.id,
+      nodeId: item.id,
     });
 
-    const isFolder = isKnowledgeHubNode(itemToDelete)
-      ? ['kb', 'app', 'folder', 'recordGroup'].includes(itemToDelete.nodeType)
-      : itemToDelete.type === 'folder';
-
     const isRootCollection =
-      isKnowledgeHubNode(itemToDelete) &&
-      itemToDelete.nodeType === 'recordGroup' &&
-      kbId === itemToDelete.id;
+      isKnowledgeHubNode(item) &&
+      item.nodeType === 'recordGroup' &&
+      kbId === item.id;
 
-    const nodeType = isKnowledgeHubNode(itemToDelete)
-      ? itemToDelete.nodeType === 'record'
+    const nodeType: 'app' | 'folder' | 'record' = isKnowledgeHubNode(item)
+      ? item.nodeType === 'record'
         ? 'record'
-        : itemToDelete.nodeType === 'app' || itemToDelete.nodeType === 'kb' || isRootCollection
+        : item.nodeType === 'app' || item.nodeType === 'kb' || isRootCollection
         ? 'app'
-        : ['folder', 'recordGroup'].includes(itemToDelete.nodeType)
+        : ['folder', 'recordGroup'].includes(item.nodeType)
         ? 'folder'
         : 'record'
-      : itemToDelete.type === 'folder'
+      : item.type === 'folder'
       ? 'folder'
       : 'record';
+    return { kbId, nodeType };
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!itemToDelete) return;
+    const { kbId, nodeType } = resolveDeleteTarget(itemToDelete);
 
     try {
       await deleteNode(itemToDelete.id, nodeType, kbId || undefined, refreshData);
@@ -198,32 +224,33 @@ export function KbDataTable({
   };
 
   const getWarningMessage = (_item: TableItem): string | undefined => undefined;
+  const isMobile = useIsMobile();
 
-  // Show refreshing state
-  if (isRefreshing) {
+  const showSkeleton = isRefreshing || isLoading;
+  // The list keeps its header and shimmers its own body; the grid has no row skeleton.
+  if (showSkeleton && viewMode === 'grid') {
     return (
-      <Flex align="center" justify="center" style={{ flex: 1 }}>
-        <LottieLoader variant="loader" size={32} showLabel label={t('common.refreshing')} />
-      </Flex>
-    );
-  }
-
-  // Show loading state
-  if (isLoading) {
-    return (
-      <Flex align="center" justify="center" style={{ flex: 1, backgroundColor: 'var(--olive-2)' }}>
-        <LottieLoader variant="loader" size={32} showLabel />
-      </Flex>
+      <RecordsLoadingTable
+        label={isRefreshing ? t('common.refreshing') : t('common.loading', { defaultValue: 'Loading' })}
+        showSourceColumn={showSourceColumn}
+        isMobile={isMobile}
+      />
     );
   }
 
   // Show error state
-  if (error) {
+  if (error && !showSkeleton) {
     return (
-      <Flex align="center" justify="center" direction="column" gap="3" style={{ flex: 1 }}>
+      <Flex
+        align="center"
+        justify="center"
+        direction="column"
+        gap="3"
+        style={{ flex: 1, padding: '0 var(--space-4)', textAlign: 'center' }}
+      >
         <AlertSquareIcon size={56} color="var(--red-11)" />
-        <Text size="2" color="red">{error}</Text>
-        {onRefresh && (
+        <Text size="2" color="red" role="alert">{error}</Text>
+        {onRefresh && errorRetryable && (
           <Button onClick={onRefresh} variant="soft" size="2">
             <MaterialIcon name="refresh" size={16} />
             {t('action.tryAgain')}
@@ -236,6 +263,7 @@ export function KbDataTable({
   // Show empty state when no node selected (no breadcrumbs) - Collections mode only
   const hasBreadcrumbs = !!storeTableData?.breadcrumbs?.length;
   if (
+    !showSkeleton &&
     items.length === 0 &&
     !hasBreadcrumbs &&
     pageViewMode === 'collections' &&
@@ -248,9 +276,11 @@ export function KbDataTable({
     // still responding.
     if (isLoadingCollections) {
       return (
-        <Flex align="center" justify="center" style={{ flex: 1, backgroundColor: 'var(--olive-2)' }}>
-          <LottieLoader variant="loader" size={32} showLabel />
-        </Flex>
+        <RecordsLoadingTable
+          label={t('common.loading', { defaultValue: 'Loading' })}
+          showSourceColumn={false}
+          isMobile={isMobile}
+        />
       );
     }
 
@@ -295,9 +325,9 @@ export function KbDataTable({
   }
 
   return (
-    <Flex direction="column" style={{ flex: 1, overflow: 'hidden', backgroundColor: 'var(--olive-2)' }}>
+    <Flex direction="column" style={{ flex: 1, overflow: 'hidden', background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))' }}>
       {/* Conditional view rendering based on viewMode */}
-      {items.length === 0 ? (
+      {items.length === 0 && !showSkeleton ? (
         <Flex
           align="center"
           justify="center"
@@ -321,7 +351,7 @@ export function KbDataTable({
                     : t('kb.folderEmpty')
               }
             </Text>
-            <Text size="2" style={{ color: 'var(--slate-10)' }}>
+            <Text size="2" style={{ color: 'var(--slate-10)', textAlign: 'center', maxWidth: 420, padding: `0 ${PAGE_PADDING_X}` }}>
               {hasSearchQuery
                 ? t('kb.searchEmptyHint')
                 : hasActiveFilters
@@ -334,6 +364,13 @@ export function KbDataTable({
               }
             </Text>
           </Flex>
+
+          {hasSearchQuery && onClearSearch && (
+            <Button variant="outline" color="gray" size="2" onClick={onClearSearch}>
+              <MaterialIcon name="close" size={16} />
+              {t('kb.clearSearch')}
+            </Button>
+          )}
 
           {/* Action buttons - only show in collections mode when not filtered */}
           {pageViewMode === 'collections' && hasBreadcrumbs && !hasActiveFilters && !hasSearchQuery && (
@@ -393,42 +430,50 @@ export function KbDataTable({
         <KbGridView
           items={items}
           selectedItems={activeSelectedItems}
+          allSelected={allSelected}
+          onSelectAll={handleSelectAll}
           showCheckbox={showCheckbox}
           pagination={pagination}
-          onPageChange={onPageChange}
+          onCursorChange={onCursorChange}
           onLimitChange={onLimitChange}
           onSelectItem={activeToggleSelection}
           onItemClick={onItemClick}
           onPreview={onPreview}
+          onGoToParent={hasSearchQuery || hasActiveFilters ? onGoToParent : undefined}
           onRename={onRename}
           onReindex={onReindex}
           onReplace={onReplace}
           onMove={onMove}
           onDelete={_onDelete ? handleDeleteClick : undefined}
           onDownload={onDownload}
+          hasCollectionContext={hasCollectionContext}
         />
       ) : (
         <KbListView
-          items={items}
+          items={showSkeleton ? NO_ITEMS : items}
+          loading={showSkeleton}
           selectedItems={activeSelectedItems}
-          allSelected={allSelected}
+          allSelected={!showSkeleton && allSelected}
           showSourceColumn={showSourceColumn}
           showCheckbox={showCheckbox}
+          extraColumns={extraColumns}
           sort={isAllRecords ? allRecordsSort : sort}
-          pagination={pagination}
-          onPageChange={onPageChange}
+          pagination={showSkeleton ? undefined : pagination}
+          onCursorChange={onCursorChange}
           onLimitChange={onLimitChange}
           onSelectAll={handleSelectAll}
           onSort={isAllRecords ? setAllRecordsSort : setSort}
           onSelectItem={activeToggleSelection}
           onItemClick={onItemClick}
           onPreview={onPreview}
+          onGoToParent={hasSearchQuery || hasActiveFilters ? onGoToParent : undefined}
           onRename={onRename}
           onReindex={onReindex}
           onReplace={onReplace}
           onMove={onMove}
           onDelete={_onDelete ? handleDeleteClick : undefined}
           onDownload={onDownload}
+          hasCollectionContext={hasCollectionContext}
         />
       )}
 
@@ -439,21 +484,72 @@ export function KbDataTable({
           onOpenChange={setDeleteDialogOpen}
           onConfirm={handleDeleteConfirm}
           itemName={itemToDelete.name}
-          itemType={
-            isKnowledgeHubNode(itemToDelete)
-              ? itemToDelete.nodeType === 'kb'
-                ? 'KB'
-                : ['kb', 'app', 'folder', 'recordGroup'].includes(itemToDelete.nodeType)
-                ? 'folder'
-                : 'record'
-              : itemToDelete.type === 'folder'
-              ? 'folder'
-              : 'record'
-          }
+          itemType={(() => {
+            const { nodeType } = resolveDeleteTarget(itemToDelete);
+            return nodeType === 'app' ? 'KB' : nodeType;
+          })()}
           warningMessage={getWarningMessage(itemToDelete)}
           isDeleting={deletingNodeIds.has(itemToDelete.id)}
         />
       )}
+    </Flex>
+  );
+}
+
+function RecordsLoadingTable({
+  label,
+  showSourceColumn,
+  isMobile,
+}: {
+  label: string;
+  showSourceColumn: boolean;
+  isMobile: boolean;
+}) {
+  return (
+    <Flex
+      direction="column"
+      role="status"
+      aria-busy="true"
+      aria-label={label}
+      style={{ flex: 1, minHeight: 0, backgroundColor: 'var(--olive-1)' }}
+    >
+      <Flex
+        align="center"
+        style={{
+          height: 36,
+          borderBottom: '1px solid var(--olive-3)',
+          backgroundColor: 'var(--olive-2)',
+          flexShrink: 0,
+        }}
+      >
+        <Box style={{ width: 36, flexShrink: 0 }} />
+        <TableHeaderCell label="File Name" flex={1} />
+        <TableHeaderCell label="Status" width="60px" />
+        {showSourceColumn && <TableHeaderCell label="Source" width="60px" />}
+        {!isMobile && <TableHeaderCell label="Size" width="89px" />}
+        {!isMobile && <TableHeaderCell label="Created" width="147px" />}
+        {!isMobile && <TableHeaderCell label="Updated" width="146px" />}
+        <Box style={{ width: 104, flexShrink: 0 }} />
+      </Flex>
+      <Box style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <TableSkeleton
+          rows={18}
+          rowHeight={60}
+          actionsWidth={104}
+          columns={[
+            { barWidth: 0.62 },
+            { width: '60px', barWidth: 0.45 },
+            ...(showSourceColumn ? [{ width: '60px', barWidth: 0.45 }] : []),
+            ...(!isMobile
+              ? [
+                  { width: '89px', barWidth: 0.55 },
+                  { width: '147px', barWidth: 0.7 },
+                  { width: '146px', barWidth: 0.7 },
+                ]
+              : []),
+          ]}
+        />
+      </Box>
     </Flex>
   );
 }

@@ -117,6 +117,7 @@ Playwright is configured with these projects:
 3. **authenticated** — All feature tests using saved auth state. Depends on `setup`.
 4. **ai** — Tests that need a real AI model (the cited answer and agent tests). They depend on **ai-models**, which adds a chat and an embedding model once if the org has none, and whose teardown (**ai-models-cleanup**) removes them after every `ai` test has finished. Without credentials the models aren't added and these tests skip with the reason.
 5. **unauthenticated** — Login page tests that run without saved auth.
+6. **first-run** — The first admin signing up on a fresh install and going through onboarding (AI model, embedding model, storage) into chat. It needs a stack with no organization, so it exists only when `E2E_FIRST_RUN=true` and runs with `--project=first-run`. It signs up with `TEST_USER_EMAIL` and `TEST_USER_PASSWORD`, so the other projects then sign in to the account it made. The smoke workflow runs it before it creates the org. Its models are "OpenAI Compatible" ones pointed at the stand-in served by the stack's `web-fixtures` service, so it needs no provider account.
 
 ## Directory Structure
 
@@ -135,6 +136,7 @@ tests/e2e/          # Playwright testDir (repo path: frontend/tests/e2e)
 │   ├── sidebar-form.helper.ts
 │   └── tag-input.helper.ts
 ├── seed/            # Data seeding and cleanup
+├── first-run/       # Sign-up and onboarding on a fresh install (first-run project)
 ├── auth/            # Login and logout tests
 ├── navigation/      # Routing and sidebar navigation tests
 ├── workspace/       # Workspace settings page tests

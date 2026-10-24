@@ -100,9 +100,11 @@ class FairSchedulerConfig:
     default_quantum: int = 1
     max_buffered_messages: int = 2000
     max_per_entity_messages: int = 500
-    # Last-resort escape for a delivery that never resolves its watermark
-    # claim: without it, one such offset stalls every later commit on its
-    # partition until the process restarts.
+    # Kafka only. Last-resort escape for a delivery that never resolves its
+    # watermark claim: without it, one such offset stalls every later commit
+    # on its partition until the process restarts. The Redis Streams consumer
+    # keeps a held entry for as long as it owns it (see its
+    # ``__sweep_stale_buffered``).
     max_dwell_seconds: float = 900.0
     # Allow several messages from one Kafka partition to be processed at
     # once. Off by default: it is safe only once the commit watermark is in

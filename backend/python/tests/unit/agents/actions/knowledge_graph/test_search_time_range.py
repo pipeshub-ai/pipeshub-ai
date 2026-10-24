@@ -10,7 +10,20 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.agents.actions.knowledge_graph.ops.outside_dates import (
+    DATE_FILTER_SAFETY_NET_ENV_VAR,
+)
 from app.agents.actions.knowledge_graph.ops.search import execute_search
+from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_SUMMARIES_ENV_VAR
+
+
+@pytest.fixture(autouse=True)
+def _ranked_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A span over a month runs as a timeline while the switch is on (test_timeline.py).
+    monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "false")
+    # One search per call here; the search without dates beside it is tested
+    # in test_outside_dates.py.
+    monkeypatch.setenv(DATE_FILTER_SAFETY_NET_ENV_VAR, "false")
 
 
 def _make_state(**overrides):
@@ -202,13 +215,13 @@ class TestSearchTimeRangeFanOut:
         from app.utils.chat_helpers import CitationRefMapper
 
         with patch(
-            "app.agents.actions.knowledge_graph.ops.search.get_flattened_results",
+            "app.modules.retrieval.context.builder.get_flattened_results",
             new_callable=AsyncMock,
             return_value=[],
         ), patch(
             "app.agents.actions.knowledge_graph.ops.search.BlobStorage",
         ), patch(
-            "app.agents.actions.knowledge_graph.ops.search.build_message_content_array",
+            "app.modules.retrieval.context.renderer.build_message_content_array",
             return_value=([], CitationRefMapper()),
         ):
             await execute_search(

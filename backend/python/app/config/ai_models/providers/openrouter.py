@@ -12,7 +12,9 @@ from .common_fields import (
     API_KEY,
     EMBEDDING_COMMON_TAIL,
     FRIENDLY_NAME,
+    GATEWAY_CAPABILITIES,
     LLM_COMMON_TAIL,
+    add_identity_forwarding,
     model_field,
 )
 
@@ -46,7 +48,7 @@ _OPENROUTER_TTS_FORMAT = AIModelField(
 )
 
 
-@AIModelProviderBuilder("OpenRouter", "openRouter") \
+@add_identity_forwarding(AIModelProviderBuilder("OpenRouter", "openRouter") \
     .with_description("400+ models via a single OpenAI-compatible API gateway") \
     .with_capabilities([
         ModelCapability.TEXT_GENERATION,
@@ -80,6 +82,6 @@ _OPENROUTER_TTS_FORMAT = AIModelField(
     .add_field(API_KEY, ModelCapability.STT) \
     .add_field(model_field("e.g., openai/whisper-1"), ModelCapability.STT) \
     .add_field(FRIENDLY_NAME, ModelCapability.STT) \
-    .build_decorator()
+    , GATEWAY_CAPABILITIES).build_decorator()
 class OpenRouterProvider:
     pass

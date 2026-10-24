@@ -1,5 +1,7 @@
 'use client';
 
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { sidePanelFrame } from '@/app/components/ui/responsive';
 import { Box, Flex, Text, IconButton, Dialog, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FolderIcon } from '@/app/components/ui';
@@ -64,6 +66,7 @@ function formatTimestamp(timestamp: number | undefined): string | undefined {
 }
 
 export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDetailsSidebarProps) {
+  const isMobile = useIsMobile();
   const currentNode = tableData?.currentNode;
   const breadcrumbs = tableData?.breadcrumbs;
   const permissions = tableData?.permissions;
@@ -76,18 +79,12 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Content
         style={{
-          position: 'fixed',
-          top: 10,
-          right: 10,
-          bottom: 10,
-          width: '37.5rem',
-          maxWidth: '100vw',
-          maxHeight: 'calc(100vh - 20px)',
+          ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
           backgroundColor: 'var(--effects-translucent)',
           border: '1px solid var(--olive-3)',
-          borderRadius: 'var(--radius-2)',
+          borderRadius: isMobile ? 0 : 'var(--radius-2)',
           backdropFilter: 'blur(25px)',
           boxShadow: '0 20px 48px 0 rgba(0, 0, 0, 0.25)',
           overflow: 'hidden',

@@ -89,6 +89,7 @@ echo " ok"
 
 if [ "$N" = "restore" ]; then
     got=$($DOCKER exec "$CONTAINER" sh -c "ps -eo args | grep -c '[p]ython -m app.query_main'" || echo 0)
+    got=${got//$'\r'/}
     echo "== launcher processes: $got (expect 1)"
     # Checked like the other branches: 0 means the restore did not take, and
     # anything above 1 means duplicate launchers are competing for the port.
@@ -97,6 +98,7 @@ elif [ "$N" = "1" ]; then
     # uvicorn only starts the multiprocess supervisor when workers > 1; at
     # --workers 1 the parent serves the app itself and spawns no children.
     got=$($DOCKER exec "$CONTAINER" sh -c "ps -eo args | grep -c '[p]ython -m uvicorn app.query_main'" || echo 0)
+    got=${got//$'\r'/}
     echo "== serving processes: $got (expect 1, no spawned children by design)"
     [ "$got" = "1" ] || { echo "WORKER COUNT MISMATCH -- do not trial this config" >&2; exit 1; }
 else
@@ -109,6 +111,7 @@ else
             grep -qa spawn_main /proc/$c/cmdline 2>/dev/null && n=$((n+1))
         done
         echo $n' || echo 0)
+    got=${got//$'\r'/}
     echo "== spawned workers: $got (expect $want)"
     [ "$got" = "$want" ] || { echo "WORKER COUNT MISMATCH -- do not trial this config" >&2; exit 1; }
 fi

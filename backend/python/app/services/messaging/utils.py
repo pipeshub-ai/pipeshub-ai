@@ -86,6 +86,7 @@ class MessagingUtils:
             "port": redis_config.port,
             "password": redis_config.password,
             "db": redis_config.db,
+            "retention_mode": messaging_env.redis_streams_retention_mode,
             "max_len": messaging_env.redis_streams_maxlen,
             "client_id": client_id,
             "group_id": group_id,
@@ -269,6 +270,17 @@ class MessagingUtils:
             # with no redelivery.
             config.enable_auto_commit = False
         return config
+
+    @staticmethod
+    async def create_code_graph_consumer_config(
+        app_container: ConnectorAppContainer,
+    ) -> KafkaConsumerConfig | RedisStreamsConfig:
+        return await MessagingUtils.create_consumer_config(
+            app_container,
+            "code_graph_consumer_client",
+            "code_graph_consumer_group",
+            [Topic.CODE_GRAPH_EVENTS.value],
+        )
 
     @staticmethod
     async def create_record_consumer_config(

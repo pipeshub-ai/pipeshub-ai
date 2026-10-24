@@ -1,8 +1,10 @@
 """A write that fails partway leaves the graph as it was, on Neo4j 5.26 and ArangoDB 3.12.
 
-With NEO4J_EXPLICIT_TRANSACTIONS off (the default), every Neo4j statement
-commits on its own, so a write split over several statements kept its first
-steps when a later one failed. ArangoDB rolls the whole transaction back. Each
+With NEO4J_EXPLICIT_TRANSACTIONS off, every Neo4j statement commits on its own,
+so a write split over several statements kept its first steps when a later one
+failed. It is on by default now and these writes are single statements anyway;
+the tests run in the default mode, and a plain multi-statement block that
+fails midway is checked to leave nothing. ArangoDB rolls the whole transaction back. Each
 write below is now one statement on Neo4j:
 
 - a sync rewriting a user group's members, a record group's permissions or an
@@ -184,7 +186,7 @@ async def _require_lock_timeout(graph: Neo4jProvider) -> None:
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_World]:
-    # The default, where each Neo4j statement commits on its own.
+    # The default: Neo4j runs each transaction block as one real transaction.
     monkeypatch.delenv("NEO4J_EXPLICIT_TRANSACTIONS", raising=False)
     # The failure is the point: a retry would only wait on the same hold again.
     monkeypatch.setattr(graph_data_store_module, "_is_retryable", lambda _instance, _error: False)
@@ -1060,16 +1062,28 @@ async def _kb_tree(w: _World) -> _KbTree:
     return _KbTree(service, kb_id, owner, old, new, reports, report.id, storage_moves)
 
 
+@contextlib.asynccontextmanager
+async def _arango_edge_hold(w: _World, parent: str, child: str) -> AsyncIterator[None]:
+    """Another writer's uncommitted PARENT_CHILD edge from *parent* to *child*."""
+    edges = CollectionNames.NODE_RELATIONS.value
+    async with _arango_unique(w, edges, ["_from", "_to"]), _arango_hold(
+        w, edges,
+        f"INSERT {{ _from: @p, _to: @c, relationshipType: 'PARENT_CHILD' }} INTO {edges} RETURN 1",
+        {"p": f"records/{parent}", "c": f"records/{child}"},
+    ):
+        yield
+
+
 async def _parents(w: _World, record_id: str) -> list[str]:
     """The record at the other end of each PARENT_CHILD edge into the record."""
     if w.neo4j:
         rows = await w.graph.client.execute_query(
-            "MATCH (p)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(:Record {id: $id}) RETURN p.id AS id",
+            "MATCH (p)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(:Record {id: $id}) RETURN p.id AS id",
             parameters={"id": record_id},
         )
         return [row["id"] for row in rows or []]
     return await w.graph.http_client.execute_aql(
-        "FOR e IN recordRelations FILTER e._to == @to AND e.relationshipType == 'PARENT_CHILD' "
+        "FOR e IN nodeRelations FILTER e._to == @to AND e.relationshipType == 'PARENT_CHILD' "
         "RETURN PARSE_IDENTIFIER(e._from).key",
         {"to": f"records/{record_id}"},
     ) or []
@@ -1156,9 +1170,9 @@ async def test_a_failed_kb_move_leaves_the_item_in_its_old_folder(world: _World,
             )
         else:
             hold = _arango_hold(
-                w, CollectionNames.RECORD_RELATIONS.value,
-                "FOR e IN recordRelations FILTER e._to == @to "
-                "UPDATE e WITH {updatedAtTimestamp: @now} IN recordRelations RETURN 1",
+                w, CollectionNames.NODE_RELATIONS.value,
+                "FOR e IN nodeRelations FILTER e._to == @to "
+                "UPDATE e WITH {updatedAtTimestamp: @now} IN nodeRelations RETURN 1",
                 {"to": f"records/{kb.reports}", "now": get_epoch_timestamp_in_ms()},
             )
     elif fails_on == "record":
@@ -1167,7 +1181,7 @@ async def test_a_failed_kb_move_leaves_the_item_in_its_old_folder(world: _World,
         # folder's File node, which that delete does not need.
         target = None
         moved = {
-            "parents": [], "externalParentId": None, "shown_in": ["root"],
+            "parents": [kb.kb_id], "externalParentId": None, "shown_in": ["root"],
             "path_of_its_file": ["Reports", "q3.pdf"],
         }
         if w.neo4j:
@@ -1180,15 +1194,14 @@ async def test_a_failed_kb_move_leaves_the_item_in_its_old_folder(world: _World,
                                 {"key": kb.reports, "now": get_epoch_timestamp_in_ms()})
     # The move fails on the edge from the new folder, after the edge from the old
     # one is deleted and the record rewritten. Another writer holds the new folder
-    # on Neo4j; on ArangoDB, whose edges have random keys, a unique index refuses
-    # the folder a second child.
+    # on Neo4j; on ArangoDB, whose edges have random keys, another writer holds the
+    # same edge behind a unique index on its ends.
     elif w.neo4j:
         hold = _neo4j_hold(
             w, "MATCH (r:Record {id: $id}) SET r.heldByTest = true RETURN count(r) AS n", {"id": kb.new}
         )
     else:
-        hold = _arango_unique(w, CollectionNames.RECORD_RELATIONS.value, ["_from", "relationshipType"])
-        expected = "unique constraint violated"
+        hold = _arango_edge_hold(w, kb.new, kb.reports)
     async with hold:
         assert expected in await _failed_kb_move(w, kb, target)
 
@@ -1231,7 +1244,7 @@ async def test_a_kb_move_into_a_folder_deleted_on_the_way_moves_nothing(world: _
     result = await kb.service.move_record(kb.kb_id, kb.reports, None, kb.owner)
     assert result["success"] is True, result
     assert await _kb_place(w, kb) == {
-        "parents": [], "externalParentId": None, "shown_in": ["root"],
+        "parents": [kb.kb_id], "externalParentId": None, "shown_in": ["root"],
         "path_of_its_file": ["Reports", "q3.pdf"],
     }
 
@@ -1256,12 +1269,12 @@ async def _children(w: _World, record_id: str) -> set[str]:
     """The record at the other end of each PARENT_CHILD edge out of the record."""
     if w.neo4j:
         rows = await w.graph.client.execute_query(
-            "MATCH (:Record {id: $id})-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(c) RETURN c.id AS id",
+            "MATCH (:Record {id: $id})-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(c) RETURN c.id AS id",
             parameters={"id": record_id},
         )
         return {row["id"] for row in rows or []}
     return set(await w.graph.http_client.execute_aql(
-        "FOR e IN recordRelations FILTER e._from == @from AND e.relationshipType == 'PARENT_CHILD' "
+        "FOR e IN nodeRelations FILTER e._from == @from AND e.relationshipType == 'PARENT_CHILD' "
         "RETURN PARSE_IDENTIFIER(e._to).key",
         {"from": f"records/{record_id}"},
     ) or [])
@@ -1487,9 +1500,10 @@ async def test_a_failed_knowledge_base_create_leaves_no_knowledge_base(world: _W
 async def test_with_create_transactions_off_a_failed_knowledge_base_create_leaves_it_half_made(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """NEO4J_CREATE_TRANSACTIONS=false is today's auto-commit, which the hold above does fail partway."""
+    """With both flags false it is the old auto-commit, which the hold above does fail partway."""
     w = world
     monkeypatch.setenv("NEO4J_CREATE_TRANSACTIONS", "false")
+    monkeypatch.setenv("NEO4J_EXPLICIT_TRANSACTIONS", "false")
     graph = await connect_neo4j(logger, monkeypatch)
     try:
         await _add_org(w)
@@ -1640,3 +1654,23 @@ async def test_a_failed_agent_create_leaves_no_agent(world: _World) -> None:
     assert await _sources(w, agent.get("id") or agent["_key"], CollectionNames.AGENT_INSTANCES.value) == {
         owner, w.org_id,
     }
+
+
+async def test_a_plain_block_that_fails_midway_writes_nothing(world: _World) -> None:
+    """The default on both stores: statements before the failure are rolled back."""
+    w = world
+    key = f"user-midway-{uuid.uuid4().hex[:8]}"
+    w.ids.add(key)
+    store = GraphDataStore(logger, w.graph)
+
+    async def write_then_fail(tx_store) -> None:
+        await tx_store.batch_upsert_nodes(
+            [{"id": key, "userId": key, "orgId": w.org_id, "email": f"{key}@example.com", "isActive": True}],
+            CollectionNames.USERS.value,
+        )
+        raise RuntimeError("fail after the first statement")
+
+    with pytest.raises(RuntimeError, match="after the first statement"):
+        await store.execute_in_transaction(write_then_fail)
+
+    assert await w.graph.get_document(key, CollectionNames.USERS.value) is None

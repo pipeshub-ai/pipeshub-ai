@@ -165,6 +165,34 @@ export interface Document {
    * Storage vendor
    */
   storageVendor: StorageVendor;
+
+  /**
+   * Set on a document that stands for one content revision of a virtual
+   * record: a directory of files under `root`, not a single stored file.
+   */
+  artifactSet?: ArtifactSet;
+}
+
+export interface ArtifactSet {
+  virtualRecordId: string;
+  rev: string;
+  /** Storage key prefix holding the revision's files. */
+  root: string;
+}
+
+/**
+ * A URL a caller can use without storage credentials, and the headers it must
+ * send with it (Azure refuses a PUT that does not name the blob type).
+ */
+export interface SignedObjectUrl {
+  url: string;
+  headers: Record<string, string>;
+}
+
+export interface SignObjectUrlOptions {
+  method: 'GET' | 'PUT';
+  contentType?: string;
+  expiresInSeconds: number;
 }
 
 /**

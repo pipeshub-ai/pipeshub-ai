@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SECTION_HEADER_PADDING } from '@/app/components/sidebar';
@@ -10,6 +11,8 @@ interface SidebarBackHeaderProps {
   /** Called when the user clicks the back arrow / header */
   onBack: () => void;
   backgroundColor?: string;
+  /** Controls on the right (e.g. inbox, collapse); their clicks do not go back. */
+  actions?: ReactNode;
 }
 
 /**
@@ -18,7 +21,7 @@ interface SidebarBackHeaderProps {
  *
  * Renders a chevron-left icon + title. The full area is clickable.
  */
-export function SidebarBackHeader({ title, onBack, backgroundColor }: SidebarBackHeaderProps) {
+export function SidebarBackHeader({ title, onBack, backgroundColor, actions }: SidebarBackHeaderProps) {
   return (
     <Flex
       align="center"
@@ -32,9 +35,14 @@ export function SidebarBackHeader({ title, onBack, backgroundColor }: SidebarBac
       onClick={onBack}
     >
       <MaterialIcon name="chevron_left" size={24} color="var(--slate-11)" />
-      <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+      <Text size="2" weight="medium" style={{ flex: 1, minWidth: 0, color: 'var(--slate-12)' }}>
         {title}
       </Text>
+      {actions && (
+        <Flex align="center" style={{ cursor: 'default' }} onClick={(e) => e.stopPropagation()}>
+          {actions}
+        </Flex>
+      )}
     </Flex>
   );
 }

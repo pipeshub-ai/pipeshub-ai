@@ -475,6 +475,14 @@ class TestSearchFiles:
         assert call_kwargs["orderBy"] == "modifiedTime desc"
 
     @pytest.mark.asyncio
+    async def test_page_token_forwarded(self) -> None:
+        gd = _make_drive()
+        gd.client.files_list = AsyncMock(return_value={"files": []})
+        await gd.search_files(query="test", page_token="page-2")
+        call_kwargs = gd.client.files_list.call_args[1]
+        assert call_kwargs["pageToken"] == "page-2"
+
+    @pytest.mark.asyncio
     async def test_fulltext_contains_query_not_wrapped(self):
         # Regression: same fix as TestGetFilesList — fullText contains must be
         # recognised as a structured operator and passed through unmodified.
@@ -573,6 +581,14 @@ class TestGetSharedDrives:
         assert call_kwargs["q"] == "Engineering"
 
     @pytest.mark.asyncio
+    async def test_page_token_forwarded(self) -> None:
+        gd = _make_drive()
+        gd.client.drives_list = AsyncMock(return_value={"drives": []})
+        await gd.get_shared_drives(page_token="page-2")
+        call_kwargs = gd.client.drives_list.call_args[1]
+        assert call_kwargs["pageToken"] == "page-2"
+
+    @pytest.mark.asyncio
     async def test_empty_result(self):
         gd = _make_drive()
         gd.client.drives_list = AsyncMock(return_value={"drives": []})
@@ -629,6 +645,14 @@ class TestGetFilePermissions:
         call_kwargs = gd.client.permissions_list.call_args[1]
         assert call_kwargs["fileId"] == "f1"
         assert call_kwargs["pageSize"] == 10
+
+    @pytest.mark.asyncio
+    async def test_page_token_forwarded(self) -> None:
+        gd = _make_drive()
+        gd.client.permissions_list = AsyncMock(return_value={"permissions": []})
+        await gd.get_file_permissions(file_id="f1", page_token="page-2")
+        call_kwargs = gd.client.permissions_list.call_args[1]
+        assert call_kwargs["pageToken"] == "page-2"
 
     @pytest.mark.asyncio
     async def test_empty_permissions(self):

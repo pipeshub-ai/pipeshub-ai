@@ -1,7 +1,10 @@
 import React from 'react';
-import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
+import { getI18n } from 'react-i18next';
+import '@/lib/__tests__/test-i18n';
+import de from '@/lib/i18n/locales/de-DE.json';
 import {
   AgentActivityTimeline,
   toolActivityLabel,
@@ -10,6 +13,7 @@ import {
   buildActivitySummary,
   CollapsibleActivitySection,
   ToolCallCard,
+  formatToolPayload,
 } from '../agent-activity';
 import type { MessagePart, StatusMessage } from '../../../types';
 
@@ -43,6 +47,16 @@ function renderCard(part: MessagePart) {
 }
 
 const STATUS: StatusMessage = { id: 's1', status: 'executing', message: 'Using Jira Search...', timestamp: '' };
+
+describe('getVisibleRootParts — the sign-in part', () => {
+  it("isn't activity, so a reply with only an answer and the card has no timeline", () => {
+    const parts: MessagePart[] = [
+      { type: 'text', content: 'Drive needs more permission.', isFinal: true },
+      { type: 'mcp_sign_in', servers: [{ instanceId: 'inst-drive', serverName: 'Drive', scopes: ['files.write'] }] },
+    ];
+    expect(getVisibleRootParts(parts, false)).toEqual([]);
+  });
+});
 
 describe('AgentActivityTimeline — narration text', () => {
   it('renders a root-level narration text part', () => {
@@ -339,7 +353,338 @@ describe('ToolCallCard — skill tool result preview gating', () => {
 
     fireEvent.click(screen.getByRole('button'));
 
-    expect(screen.getByText('{"stdout": "hello"}')).toBeTruthy();
+    expect(screen.getByText(/"stdout": "hello"/)).toBeTruthy();
+  });
+});
+
+describe('ToolCallCard — a call that went through an approval card', () => {
+  it.each([
+    [{ status: 'awaiting_approval' as const }, 'Needs approval'],
+    [{ status: 'completed' as const, approved: true, approvalAnswer: 'allowed' as const }, 'Approved'],
+    [{ status: 'blocked' as const, approvalAnswer: 'declined' as const }, 'Declined'],
+    [{ status: 'blocked' as const, approvalAnswer: 'expired' as const }, 'Expired'],
+  ])('says how it was answered on its row', (state, chip) => {
+    renderCard({ type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', displayName: 'Create issue', ...state });
+    expect(screen.getByText(chip)).toBeTruthy();
+  });
+
+  it('has no mark when no card was involved', () => {
+    renderCard({ type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_search', status: 'completed' });
+    for (const chip of ['Needs approval', 'Approved', 'Declined', 'Expired']) expect(screen.queryByText(chip)).toBeNull();
+  });
+});
+
+describe('ToolCallCard — raw arguments and result', () => {
+  function expand(part: MessagePart) {
+    renderCard(part);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+  }
+
+  it('shows the args summary AND the raw arguments, pretty-printed', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'call-1',
+      toolName: 'mcp_pangea_get_audit_logs',
+      status: 'completed',
+      argsSummary: 'start: "2026-09-01"',
+      args: '{"start":"2026-09-01","limit":50}',
+    });
+
+    expect(screen.getByText('start: "2026-09-01"')).toBeTruthy();
+    expect(screen.getByText(/"limit": 50/).textContent).toBe('{\n  "start": "2026-09-01",\n  "limit": 50\n}');
+  });
+
+  it('shows the raw arguments when there is no summary', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'completed', args: '{"q":"hi"}' });
+
+    expect(screen.getByText(/"q": "hi"/)).toBeTruthy();
+  });
+
+  it.each(['{}', 'null', '   '])('hides the Arguments section for empty args %j', (args) => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'completed', args });
+
+    expect(screen.queryByText('Arguments')).toBeNull();
+  });
+
+  it('labels the arguments section', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'completed', args: '{"q":"hi"}' });
+
+    expect(screen.getByText('Arguments')).toBeTruthy();
+  });
+
+  it('marks a failed call as an error, in red', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'mcp_github_create_issue',
+      status: 'failed',
+      resultSummary: 'The GitHub MCP server rejected the stored credentials (HTTP 401).',
+    });
+
+    const heading = screen.getByText('Error');
+    expect(heading.style.color).toBe('var(--red-11)');
+    expect(screen.getByText(/rejected the stored credentials/)).toBeTruthy();
+  });
+
+  it('shows the result summary AND the raw preview', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'mcp_pangea_get_audit_logs',
+      status: 'completed',
+      resultSummary: 'Returned 2 items in events',
+      resultPreview: '{"events":[{"id":1},{"id":2}]}',
+    });
+
+    expect(screen.getByText('Returned 2 items in events')).toBeTruthy();
+    expect(screen.getByText(/"events": \[/)).toBeTruthy();
+  });
+
+  it('shows a truncated (non-JSON) preview verbatim', () => {
+    const preview = '{"events":[{"id":1},… [truncated: 9000 chars total]';
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'completed', resultPreview: preview });
+
+    expect(screen.getByText(preview)).toBeTruthy();
+  });
+
+  it('shows the reason for a blocked call', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'blocked', resultPreview: 'denied by policy' });
+
+    expect(screen.getByText('Blocked')).toBeTruthy();
+    expect(screen.getByText('denied by policy')).toBeTruthy();
+  });
+
+  it('says a call is waiting for approval', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'awaiting_approval', resultPreview: 'Waiting for your approval' });
+
+    expect(screen.getByText('Waiting for approval')).toBeTruthy();
+  });
+
+  it('copies the formatted payload', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'completed', args: '{"q":"hi"}' });
+
+    fireEvent.click(screen.getByRole('button', { name: /copy/i }));
+
+    expect(writeText).toHaveBeenCalledWith('{\n  "q": "hi"\n}');
+  });
+});
+
+describe('ToolCallCard — a tool that is not from an MCP server', () => {
+  function expand(part: MessagePart) {
+    renderCard(part);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+  }
+
+  it('shows only the summaries, as before, without the raw payloads', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'load_skill',
+      status: 'completed',
+      argsSummary: 'Loading skill pptx',
+      args: '{"name":"pptx"}',
+      resultSummary: 'Loaded skill pptx',
+      resultPreview: '# pptx',
+    });
+
+    expect(screen.getByText('Loading skill pptx')).toBeTruthy();
+    expect(screen.getByText('Loaded skill pptx')).toBeTruthy();
+    expect(screen.queryByText(/"name"/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
+  });
+
+  it('shows the raw result, unformatted, only when there is no summary', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'list_toolsets', status: 'completed', resultPreview: '{"toolsets":[]}' });
+
+    expect(screen.getByText('{"toolsets":[]}')).toBeTruthy();
+  });
+
+  it('ignores a result view', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'knowledgegraph__search',
+      status: 'completed',
+      resultSummary: 'Found 2 records',
+      resultView: { kind: 'records', columns: ['Name'], rows: [{ cells: ['A'] }], total: 1 },
+    });
+
+    expect(screen.getByText('Found 2 records')).toBeTruthy();
+    expect(screen.queryByTestId('tool-result-table')).toBeNull();
+  });
+});
+
+describe('ToolCallCard — SQL query section', () => {
+  function expand(part: MessagePart) {
+    const { container } = renderCard(part);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+    return container;
+  }
+
+  it('shows the executed SQL in a Query section', () => {
+    const container = expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'sql__execute_sql_query',
+      status: 'completed',
+      argsSummary: 'Running SQL query on "PostgreSQL"',
+      args: JSON.stringify({ query: 'SELECT id, name FROM users WHERE active = true', source_name: 'PostgreSQL' }),
+    });
+
+    expect(screen.getByText('Query')).toBeTruthy();
+    expect(screen.getByText('Running SQL query on "PostgreSQL"')).toBeTruthy();
+    // Syntax highlighting splits the SQL across token spans.
+    expect(container.textContent).toContain('SELECT id, name FROM users WHERE active = true');
+    expect(screen.getByText('Copy')).toBeTruthy();
+  });
+
+  it('has no Query section for another tool with a "query" argument', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'web_search', status: 'completed', args: '{"query":"weather"}' });
+
+    expect(screen.queryByText('Query')).toBeNull();
+  });
+
+  describe('a cut-off query', () => {
+    // Cut inside the `--` comment, the copied prefix would still run, without its WHERE clause.
+    const args = JSON.stringify({ query: 'SELECT id FROM users -- active only\nWHERE active = true' });
+    const cutOff: MessagePart = {
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'sql__execute_sql_query',
+      status: 'completed',
+      args: args.slice(0, args.indexOf('\\n')),
+    };
+
+    it('offers no copy or download, and says only its start was kept', () => {
+      const container = expand(cutOff);
+
+      expect(container.textContent).toContain('SELECT id FROM users -- active only');
+      expect(screen.queryByText('Copy')).toBeNull();
+      expect(screen.queryByText('Download')).toBeNull();
+      expect(screen.getByText("Only the start of this query was kept, so it can't be copied.")).toBeTruthy();
+    });
+
+    it("says so in the reader's language", async () => {
+      const i18n = getI18n();
+      const previous = i18n.language;
+      if (!i18n.hasResourceBundle('de-DE', 'translation')) i18n.addResourceBundle('de-DE', 'translation', de);
+      await i18n.changeLanguage('de-DE');
+      try {
+        expand(cutOff);
+        expect(screen.getByText(de.chat.toolCard.queryCutOff)).toBeTruthy();
+      } finally {
+        await i18n.changeLanguage(previous);
+      }
+    });
+  });
+});
+
+describe('ToolCallCard — a readable result', () => {
+  function expand(part: MessagePart) {
+    renderCard(part);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+  }
+
+  const SEARCH: MessagePart = {
+    type: 'tool_call',
+    toolCallId: 'c',
+    toolName: 'mcp_atlassian_searchJiraIssuesUsingJql',
+    status: 'completed',
+    resultSummary: 'Found 23 issues',
+    resultPreview: '{"issues":[{"key":"PA-1"}]}',
+    resultView: {
+      kind: 'records',
+      columns: ['Key', 'Summary', 'Status'],
+      rows: [
+        { cells: ['PA-1', 'Login fails', 'In Progress'], url: 'https://example.atlassian.net/browse/PA-1' },
+        { cells: ['PA-2', 'Crash on save', 'Done'], url: 'javascript:alert(1)' },
+      ],
+      total: 23,
+    },
+  };
+
+  it('shows a table of what was found, linked, with the raw output behind a toggle', () => {
+    expand(SEARCH);
+
+    expect(screen.getByText('Found 23 issues')).toBeTruthy();
+    const table = within(screen.getByTestId('tool-result-table'));
+    expect(table.getByText('Summary')).toBeTruthy();
+    expect(table.getByRole('link', { name: 'PA-1' }).getAttribute('href')).toBe('https://example.atlassian.net/browse/PA-1');
+    expect(table.getByRole('link', { name: 'PA-1' }).getAttribute('rel')).toBe('noopener noreferrer');
+    // Not a web link: shown as text.
+    expect(table.queryByRole('link', { name: 'PA-2' })).toBeNull();
+    expect(table.getByText('PA-2')).toBeTruthy();
+    expect(screen.getByText('Showing 2 of 23')).toBeTruthy();
+    expect(screen.queryByText(/"issues": \[/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /View raw/ }));
+    expect(screen.getByText(/"issues": \[/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Hide raw/ }));
+    expect(screen.queryByText(/"issues": \[/)).toBeNull();
+  });
+
+  it("shows one record's fields", () => {
+    expand({
+      ...SEARCH,
+      resultSummary: 'PA-7 · Login fails',
+      resultView: { kind: 'fields', fields: [{ label: 'Status', value: 'Done' }], url: 'https://example.atlassian.net/browse/PA-7' },
+    });
+
+    const fields = within(screen.getByTestId('tool-result-fields'));
+    expect(fields.getByText('Status')).toBeTruthy();
+    expect(fields.getByText('Done')).toBeTruthy();
+    expect(fields.getByRole('link', { name: 'Open' }).getAttribute('href')).toBe('https://example.atlassian.net/browse/PA-7');
+  });
+
+  it.each([
+    ['not a view', 'a table'],
+    ['an unknown kind', { kind: 'html', html: '<b>x</b>' }],
+    ['no rows', { kind: 'records', columns: ['A'], rows: [] }],
+  ])('ignores %s and shows the raw output as before', (_label, resultView) => {
+    expand({ ...SEARCH, resultView });
+
+    expect(screen.queryByTestId('tool-result-table')).toBeNull();
+    expect(screen.getByText(/"issues": \[/)).toBeTruthy();
+  });
+
+  it('shows a prose result as text, without repeating its first line', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'mcp_docs_search',
+      status: 'completed',
+      resultSummary: '# Results',
+      resultPreview: '# Results\nThe page explains the setup.',
+    });
+
+    expect(screen.getByTestId('tool-result-text').textContent).toBe('# Results\nThe page explains the setup.');
+    expect(screen.getAllByText(/# Results/)).toHaveLength(1);
+  });
+
+  it('loads no image and links only to the web from a summary', () => {
+    expand({
+      ...SEARCH,
+      resultView: undefined,
+      resultSummary: 'PA-1 · ![x](https://tracker.example/pixel.png) [click](javascript:alert(1)) [docs](https://example.com/d)',
+    });
+
+    expect(document.querySelector('img')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'click' })).toBeNull();
+    const docs = screen.getByRole('link', { name: 'docs' });
+    expect(docs.getAttribute('href')).toBe('https://example.com/d');
+    expect(docs.getAttribute('target')).toBe('_blank');
+  });
+});
+
+describe('formatToolPayload', () => {
+  it('pretty-prints JSON', () => {
+    expect(formatToolPayload('{"a":[1]}')).toBe('{\n  "a": [\n    1\n  ]\n}');
+  });
+
+  it('returns non-JSON text unchanged', () => {
+    expect(formatToolPayload('plain text')).toBe('plain text');
   });
 });
 
@@ -627,5 +972,64 @@ describe('CollapsibleActivitySection', () => {
     fireEvent.click(screen.getByText('Used 1 tool'));
     expect(panel?.hasAttribute('aria-hidden')).toBe(false);
     expect(panel?.hasAttribute('inert')).toBe(false);
+  });
+});
+
+describe('ToolCallCard — web tools list what they found', () => {
+  function expand(part: MessagePart) {
+    renderCard(part);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+  }
+
+  const WEB_SEARCH: MessagePart = {
+    type: 'tool_call',
+    toolCallId: 'w',
+    toolName: 'dynamic__web_search',
+    status: 'completed',
+    argsSummary: 'Searched the web for "fed rates"',
+    resultSummary: 'Found 12 results',
+    resultView: {
+      kind: 'records',
+      columns: ['Title', 'Site', 'Date'],
+      rows: [
+        { cells: ['Fed holds rates', 'news.example.com', '2026-01-02'], url: 'https://news.example.com/fed' },
+        { cells: ['Second result', 'other.org', ''], url: 'https://other.org/a' },
+      ],
+      total: 12,
+    },
+  };
+
+  it('shows every search result with a link to it', () => {
+    expand(WEB_SEARCH);
+
+    const table = within(screen.getByTestId('tool-result-table'));
+    expect(table.getByRole('link', { name: 'Fed holds rates' }).getAttribute('href')).toBe('https://news.example.com/fed');
+    expect(table.getByText('other.org')).toBeTruthy();
+    expect(screen.getByText('Showing 2 of 12')).toBeTruthy();
+    // No raw payload toggle: the model-facing text isn't for people.
+    expect(screen.queryByRole('button', { name: /View raw/ })).toBeNull();
+  });
+
+  it('shows nothing extra while the search is still running', () => {
+    expand({ ...WEB_SEARCH, status: 'running' });
+
+    expect(screen.queryByTestId('tool-result-table')).toBeNull();
+  });
+
+  it('names the page a fetch read', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'f',
+      toolName: 'dynamic__fetch_url',
+      status: 'completed',
+      resultSummary: 'Read “Fed holds rates” (news.example.com)',
+      resultView: {
+        kind: 'fields',
+        fields: [{ label: 'Page', value: 'Fed holds rates' }, { label: 'Site', value: 'news.example.com' }],
+        url: 'https://news.example.com/fed',
+      },
+    });
+
+    expect(screen.getByText('news.example.com')).toBeTruthy();
   });
 });

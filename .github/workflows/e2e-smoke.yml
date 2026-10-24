@@ -113,8 +113,32 @@ jobs:
             if [ "$delay" -gt 64 ]; then delay=64; fi
           done
 
+      # The first admin's sign-up and onboarding, on the stack before any org
+      # exists. It creates the account the steps below sign in with. If it fails
+      # before that, the next step creates the account through the API instead,
+      # so the other browser tests still run; its failure is reported after them.
+      - name: Sign up and onboard in the browser (fresh install)
+        id: first_run
+        continue-on-error: true
+        working-directory: frontend
+        env:
+          CI: 'true'
+          PLAYWRIGHT_NO_SERVER: 'true'
+          E2E_FIRST_RUN: 'true'
+          BASE_URL: http://localhost:3000
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
+          TEST_USER_EMAIL: ${{ env.PIPESHUB_TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
+          # Its own folders: the smoke run below clears test-results/ when it starts.
+          PLAYWRIGHT_HTML_REPORT: playwright-report-first-run
+        run: npx playwright test --project=first-run --output=test-results-first-run 2>&1
+
       - name: Create organization and admin user
         run: |
+          if curl -sf "${PIPESHUB_BASE_URL}/api/v1/org/exists" | jq -e '.exists == true' > /dev/null; then
+            echo "The browser sign-up already created the organization."
+            exit 0
+          fi
           # jq reads the credentials from the environment, so quotes or backslashes
           # in a secret stay valid JSON and never appear on a command line.
           jq -n --arg name "Smoke Test" --arg short "SMOKE" '{
@@ -169,6 +193,12 @@ jobs:
           SMTP_PORT: '1025'
         run: npm run test:e2e:smoke 2>&1
 
+      - name: Report the sign-up and onboarding result
+        if: ${{ !cancelled() && steps.first_run.outcome == 'failure' }}
+        run: |
+          echo "::error::The fresh-install sign-up and onboarding browser test failed. Its report is playwright-report-first-run in the e2e-smoke-report artifact."
+          exit 1
+
       - name: Dump docker logs
         if: failure()
         working-directory: deployment/docker-compose
@@ -182,6 +212,8 @@ jobs:
           path: |
             frontend/playwright-report
             frontend/test-results
+            frontend/playwright-report-first-run
+            frontend/test-results-first-run
             frontend/docker-logs.txt
           retention-days: 7
 

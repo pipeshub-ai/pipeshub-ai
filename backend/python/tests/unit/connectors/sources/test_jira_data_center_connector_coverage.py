@@ -1854,6 +1854,45 @@ async def test_check_and_fetch_updated_issue_returns_when_timestamp_changes():
 
 
 @pytest.mark.asyncio
+async def test_changed_issue_keeps_its_links_and_mentions() -> None:
+    """The processor rewrites every link edge from related_external_records, so a
+    reindexed issue must carry its outward links and what its description names."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.indexing_filters = MagicMock()
+    rec = _ticket_record()
+    rec.external_record_id = "42"
+    rec.source_updated_at = 100
+    rec.version = 1
+    fresh = MagicMock()
+    fresh.status = HttpStatusCode.OK.value
+    fresh.json = MagicMock(return_value={
+        "id": "42", "key": "K-1",
+        "fields": {
+            "summary": "S", "description": "Blocked by OPS-12",
+            "updated": "2025-01-01T00:00:00.000+0000", "created": "2025-01-01T00:00:00.000+0000",
+            "issuetype": {"name": "Task"},
+            "creator": {"accountId": "c1", "emailAddress": "c@e", "displayName": "C"},
+            "issuelinks": [{"type": {"outward": "blocks", "name": "Blocks"}, "outwardIssue": {"id": "200", "key": "B-1"}}],
+        },
+    })
+    mapper = MagicMock()
+    mapper.map_type.return_value = "Task"
+    mapper.map_status.return_value = "Open"
+    mapper.map_priority.return_value = "Low"
+    conn.value_mapper = mapper
+    ds = MagicMock()
+    ds.get_issue_v2 = AsyncMock(return_value=fresh)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        with patch.object(conn, "_parse_jira_timestamp", return_value=200):
+            row = await conn._check_and_fetch_updated_issue(rec)
+
+    related = row[0].related_external_records
+    assert [r.external_record_id for r in related if not r.issue_key and not r.weburl] == ["200"]
+    assert [r.issue_key for r in related if r.issue_key] == ["OPS-12"]
+
+
+@pytest.mark.asyncio
 async def test_check_and_fetch_updated_issue_null_assignee_does_not_crash():
     """Jira DC sends ``assignee: null`` for unassigned issues — must not raise."""
     conn = _make_connector()
@@ -1889,7 +1928,8 @@ async def test_check_and_fetch_updated_issue_null_assignee_does_not_crash():
     ds = MagicMock()
     ds.get_issue_v2 = AsyncMock(return_value=fresh)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        with patch.object(conn, "_parse_jira_timestamp", side_effect=[200, 100, 100]):
+        # checked "updated", then created, updated and resolutiondate
+        with patch.object(conn, "_parse_jira_timestamp", side_effect=[200, 100, 100, 0]):
             row = await conn._check_and_fetch_updated_issue(rec)
     assert row is not None
     assert row[0].assignee is None
@@ -2522,6 +2562,24 @@ async def test_parse_issue_to_blocks_plain_string_comment_body():
     }
     box = await conn._parse_issue_to_blocks(issue_data, issue_key="K-1", weburl="https://jira.example/browse/K-1")
     assert len(box.block_groups) >= 2
+
+
+@pytest.mark.asyncio
+async def test_parse_issue_to_blocks_leaves_out_restricted_comments() -> None:
+    conn = _make_connector()
+    issue_data = {
+        "id": "10", "key": "K-1", "fields": {"summary": "T"},
+        "comments": [
+            {"id": "c1", "author": {"displayName": "A"}, "renderedBody": "<p>open</p>", "created": "2024-01-01T00:00:00.000+0000"},
+            {"id": "c2", "author": {"displayName": "B"}, "renderedBody": "<p>role secret</p>", "created": "2024-01-02T00:00:00.000+0000",
+             "visibility": {"type": "role", "value": "Administrators"}},
+            {"id": "c3", "author": {"displayName": "C"}, "renderedBody": "<p>group secret</p>", "created": "2024-01-03T00:00:00.000+0000",
+             "visibility": {"type": "group", "value": "jira-administrators"}},
+        ],
+    }
+    box = await conn._parse_issue_to_blocks(issue_data, issue_key="K-1", weburl="https://jira.example/browse/K-1")
+    assert {bg.source_group_id for bg in box.block_groups} & {"c1", "c2", "c3"} == {"c1"}
+    assert "secret" not in box.model_dump_json()
 
 
 @pytest.mark.asyncio
@@ -4805,3 +4863,45 @@ class TestStreamRecordFile404DC:
                     assert exc.status_code == 404
                 except Exception:
                     pytest.fail("HTTPException was swallowed by the outer handler")
+
+
+def test_extract_issue_data_keeps_jira_own_status_name() -> None:
+    """Jira's "Backlog" is normalised to NEW; Jira's own name is kept beside it
+    so the model can be shown both."""
+    from app.models.entities import Status
+    conn = _make_connector()
+    row = conn._extract_issue_data(
+        {
+            "id": "1",
+            "key": "K-1",
+            "fields": {"summary": "S", "issuetype": {"name": "Bug"}, "status": {"name": "Backlog"}},
+        },
+        {},
+    )
+    assert row["status"] == Status.NEW
+    assert row["source_status"] == "Backlog"
+
+
+def test_extract_issue_data_keeps_resolution_and_due_dates() -> None:
+    """Asked when an issue was done, the model had only its status. The
+    resolution date and due date are read with the issue and stored."""
+    conn = _make_connector()
+    row = conn._extract_issue_data(
+        {
+            "id": "1",
+            "key": "K-1",
+            "fields": {
+                "summary": "S", "issuetype": {"name": "Bug"}, "status": {"name": "Done"},
+                "resolutiondate": "2026-06-12T10:00:00.000+0000", "duedate": "2026-06-10",
+            },
+        },
+        {},
+    )
+    assert row["resolved_at"] == 1781258400000
+    assert row["due_date"] == 1781049600000
+
+    open_row = conn._extract_issue_data(
+        {"id": "2", "key": "K-2", "fields": {"summary": "S", "issuetype": {"name": "Bug"}}}, {},
+    )
+    assert open_row["resolved_at"] is None
+    assert open_row["due_date"] is None

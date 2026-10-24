@@ -18,6 +18,7 @@ Two invariants this suite depends on — do not "fix" either without reading the
 
   order 1  TC-SYNC-001    — full sync baseline vs the seed manifest
   order 2  TC-USER-001    — users / USER_APP_RELATION vs live /v1/users
+  order 2  TC-AUTH-001    — no creator link: an integration token's bot belongs to the workspace
   order 3  TC-WS-001      — workspace RecordGroup
   order 4  TC-WS-002      — workspace READ permissions
   order 5  TC-CONN-001    — connection test (positive + bad-token negative)
@@ -29,7 +30,7 @@ Two invariants this suite depends on — do not "fix" either without reading the
   order 11 TC-DS-003      — data source at workspace root (parent None)
   order 12 TC-FILE-001    — block attachments (file / pdf)
   order 13 TC-FILE-002    — image / embed / bookmark are NOT FileRecords
-  order 14 TC-FILE-003    — comment attachment + per-comment filename dedup
+  order 14 TC-FILE-003    — comment attachments, two files of one name stay two records
   order 15 TC-TITLE-001   — title extraction (standard / Name / fallback)
   order 16 TC-STREAM-001  — page BlocksContainer snapshot + recursion
   order 17 TC-STREAM-002  — image base64 + SVG→PNG
@@ -44,6 +45,7 @@ Two invariants this suite depends on — do not "fix" either without reading the
   order 39 TC-FILTER-*    — indexing filters (last: they force full syncs)
 """
 
+import asyncio
 import logging
 import os
 import sys
@@ -53,14 +55,16 @@ from typing import Any, AsyncGenerator
 
 import pytest
 import pytest_asyncio
+import requests
 
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from app.config.constants.arangodb import MimeTypes, ProgressStatus  # noqa: E402
+from app.config.constants.arangodb import CollectionNames, MimeTypes, ProgressStatus  # noqa: E402
 from app.models.blocks import BlockSubType, BlockType, GroupSubType  # noqa: E402
 from app.models.entities import RecordType  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from validation.graph_entity_validator import (  # noqa: E402
@@ -106,6 +110,7 @@ from connectors.notion.notion_seed import (  # noqa: E402
 from connectors.notion.notion_source_helper import (  # noqa: E402
     NotionSourceHelper,
     file_upload_block,
+    normalize_notion_id,
     paragraph_block,
     rich_text,
 )
@@ -133,6 +138,9 @@ pytestmark = [
 # helpers
 # =============================================================================
 
+# A stream that hits one Notion 429 waits out its ~30s Retry-After on top of a ~50s render.
+_STREAM_TIMEOUT_SECONDS = 240
+
 
 async def _stream_container(
     pipeshub_client: PipeshubClient,
@@ -143,7 +151,7 @@ async def _stream_container(
     """Stream a record's ``BlocksContainer`` and return it parsed."""
     record = await graph_provider.get_record_by_external_id(connector_id, external_id)
     assert record is not None, f"record {external_id} not synced — cannot stream"
-    response = pipeshub_client.stream_record(record.id)
+    response = pipeshub_client.stream_record(record.id, timeout=_STREAM_TIMEOUT_SECONDS)
     assert response.headers.get("content-type", "").startswith("application/octet-stream"), (
         f"expected an octet-stream blocks body, got {response.headers.get('content-type')!r}"
     )
@@ -377,6 +385,24 @@ class TestNotionFullSync:
             )
         logger.info("TC-USER-001 passed: %d users", rel_count)
 
+    @pytest.mark.order(2)
+    async def test_tc_auth_001_no_authenticated_identity(
+        self,
+        notion_connector: dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-AUTH-001: the creator is linked to no Notion account.
+
+        Only an OAuth bot is owned by the person who authorised it. This suite connects with
+        an integration token, whose bot belongs to the workspace, so there is no account to
+        link the creator to.
+        """
+        assert NOTION_AUTH_TYPE == "API_TOKEN", "an OAuth connection names its owner; expect a link"
+        await assert_authenticated_identity_link(
+            graph_provider, notion_connector["connector_id"], None, None,
+        )
+        logger.info("TC-AUTH-001 passed: integration token, no link")
+
     @pytest.mark.order(3)
     async def test_tc_ws_001_workspace_record_group(
         self,
@@ -419,17 +445,28 @@ class TestNotionFullSync:
         notion_source_helper: NotionSourceHelper,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-WS-002: every synced user gets a READ permission edge to the workspace group."""
+        """TC-WS-002: the workspace group inherits the app and carries no per-user grant;
+        every synced user reaches it through their link to the app."""
         connector_id = notion_connector["connector_id"]
         expected_users = await notion_source_helper.person_users_with_email()
 
-        edges = await graph_provider.count_permission_edges_to_record_groups(
+        grants = await graph_provider.count_permission_edges_to_record_groups(
             connector_id, notion_seed.workspace_id
         )
-        assert edges == len(expected_users), (
-            f"workspace PERMISSION edges {edges} != synced users {len(expected_users)}"
+        assert grants == 0, f"the workspace inherits the app, but carries {grants} PERMISSION edge(s)"
+        workspace = await graph_provider.get_record_group_by_external_id(connector_id, notion_seed.workspace_id)
+        assert workspace is not None, "workspace RecordGroup missing"
+        inherits = await graph_provider.find_edges_between(
+            CollectionNames.RECORD_GROUPS.value, workspace.id,
+            CollectionNames.APPS.value, connector_id,
+            CollectionNames.INHERIT_PERMISSIONS.value,
         )
-        logger.info("TC-WS-002 passed: %d workspace permission edges", edges)
+        assert len(inherits) == 1, f"expected the workspace to inherit the app, found {len(inherits)} edge(s)"
+        app_users = await graph_provider.count_user_app_relation_edges(connector_id)
+        assert app_users >= len(expected_users), (
+            f"{app_users} users linked to the app; every synced user ({len(expected_users)}) should be"
+        )
+        logger.info("TC-WS-002 passed: workspace inherits the app, %d users linked", app_users)
 
     @pytest.mark.order(5)
     async def test_tc_conn_001_connection_test(
@@ -718,10 +755,10 @@ class TestNotionRecordProperties:
         notion_source_helper: NotionSourceHelper,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-FILE-003: comment attachments sync as ``ca_{comment_id}_{filename}``, deduped.
+        """TC-FILE-003: comment attachments sync as ``ca_{comment_id}_{filename}``.
 
-        The seeded comment carries the SAME filename twice, so the connector's per-comment
-        normalized-filename dedup must collapse them into one record.
+        The seeded comment carries two files of the SAME name: they are two records, the first
+        ``ca_{comment_id}_{filename}`` and the second ``ca_{comment_id}_{filename}~2``.
         """
         connector_id = notion_connector["connector_id"]
 
@@ -740,7 +777,7 @@ class TestNotionRecordProperties:
         attachments = source_comment.get("attachments") or []
         assert len(attachments) >= 2, (
             f"expected 2 same-named attachments on the comment, got {len(attachments)} — "
-            "the dedup assertion below would be vacuous"
+            "the same-name assertion below would be vacuous"
         )
 
         expected = NotionExpected.comment_file_record(
@@ -753,15 +790,16 @@ class TestNotionRecordProperties:
         assert str(actual.parent_external_record_id) == notion_seed.commented_page_id
         assert actual.is_file is True
 
-        # Dedup: exactly one FileRecord for this comment despite two attachments.
+        # Two files of one name: two records, not one.
         comment_files = {
             fid for fid in await scoped_external_ids(
                 graph_provider, connector_id, RecordType.FILE.value
             )
             if fid.startswith(f"ca_{notion_seed.attachment_comment_id}_")
         }
-        assert len(comment_files) == 1, (
-            f"expected 1 deduped comment attachment record, got {sorted(comment_files)}"
+        first = notion_seed.comment_attachment_external_id
+        assert comment_files == {first, f"{first}~2"}, (
+            f"expected the two same-named attachments as two records, got {sorted(comment_files)}"
         )
         logger.info("TC-FILE-003 passed")
 
@@ -1137,7 +1175,7 @@ class TestNotionStreaming:
         pdf_block_id = notion_seed.file_block_ids["pdf"]
         record = await graph_provider.get_record_by_external_id(connector_id, pdf_block_id)
         assert record is not None, "pdf FileRecord not synced"
-        response = pipeshub_client.stream_record(record.id)
+        response = pipeshub_client.stream_record(record.id, timeout=_STREAM_TIMEOUT_SECONDS)
         assert response.content == expected_bytes, (
             "streamed block attachment bytes differ from the uploaded sample file"
         )
@@ -1153,7 +1191,9 @@ class TestNotionStreaming:
             connector_id, notion_seed.comment_attachment_external_id
         )
         assert comment_record is not None, "comment attachment FileRecord not synced"
-        comment_response = pipeshub_client.stream_record(comment_record.id)
+        comment_response = pipeshub_client.stream_record(
+            comment_record.id, timeout=_STREAM_TIMEOUT_SECONDS
+        )
         assert comment_response.content == expected_bytes, (
             "streamed comment attachment bytes differ from the uploaded sample file"
         )
@@ -1972,3 +2012,91 @@ class TestNotionFilters:
             logger.info("TC-FILTER-004 passed")
         finally:
             await notion_source_helper.trash_page(page_id)
+
+
+# =============================================================================
+# TestNotionAccessRevoke
+# =============================================================================
+
+
+def _simulator_control_url() -> str:
+    """The simulator's base URL, from its reset URL; skips against real Notion, which has no
+    control API to unshare a page with."""
+    reset_url = os.environ.get("NOTION_TEST_RESET_URL") or ""
+    if not reset_url.endswith("/_sim/reset"):
+        pytest.skip("access revoke needs the Notion simulator (NOTION_TEST_RESET_URL)")
+    return reset_url[: -len("/_sim/reset")]
+
+
+async def _set_shared(base_url: str, node_id: str, shared: bool) -> None:
+    response = await asyncio.to_thread(
+        requests.post, f"{base_url}/_sim/notion/shares",
+        json={"node_id": node_id, "shared": shared}, timeout=30,
+    )
+    response.raise_for_status()
+
+
+async def _top_level_page(helper: NotionSourceHelper, page_id: str) -> str:
+    """The workspace-level ancestor of a page: the node a share applies to."""
+    current = page_id
+    for _ in range(20):
+        parent = (await helper.retrieve_page(current)).get("parent") or {}
+        if parent.get("type") != "page_id":
+            return normalize_notion_id(current)
+        current = str(parent["page_id"])
+    raise AssertionError(f"no workspace-level ancestor within 20 levels of {page_id}")
+
+
+async def _scoped_pages(graph_provider: GraphProviderProtocol, connector_id: str) -> set[str]:
+    return {
+        normalize_notion_id(i)
+        for i in await scoped_external_ids(graph_provider, connector_id, RecordType.WEBPAGE.value)
+    }
+
+
+class TestNotionAccessRevoke:
+    """Unsharing a page with the integration removes it at the next sync; sharing it again restores it."""
+
+    @pytest.mark.order(43)
+    async def test_tc_access_001_unshared_page_leaves_scope_and_returns_when_reshared(
+        self,
+        notion_connector: dict[str, Any],
+        notion_seed: NotionSeed,
+        notion_source_helper: NotionSourceHelper,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-ACCESS-001: access revoked at the source is revoked in PipesHub.
+
+        Runs last: it unshares a shared top-level page outside the suite's fixture tree, so no
+        other case sees the change, and shares it again before it ends.
+        """
+        base_url = _simulator_control_url()
+        connector_id = notion_connector["connector_id"]
+        listing = await asyncio.to_thread(requests.get, f"{base_url}/_sim/notion/integrations", timeout=30)
+        listing.raise_for_status()
+        sync_integration = next(i for i in listing.json()["integrations"] if i["default"])
+        fixture_top = await _top_level_page(notion_source_helper, notion_seed.scratch_page_id)
+        in_scope = await _scoped_pages(graph_provider, connector_id)
+        victim = next(
+            (n for n in map(normalize_notion_id, sync_integration["shares"])
+             if n != fixture_top and n in in_scope),
+            None,
+        )
+        if victim is None:
+            pytest.skip("no synced top-level page outside the fixture tree to unshare")
+
+        await _set_shared(base_url, victim, False)
+        try:
+            await incremental_sync(pipeshub_client, graph_provider, connector_id)
+            assert victim not in await _scoped_pages(graph_provider, connector_id), (
+                f"page {victim} unshared at the source is still in scope"
+            )
+        finally:
+            await _set_shared(base_url, victim, True)
+
+        await incremental_sync(pipeshub_client, graph_provider, connector_id)
+        assert victim in await _scoped_pages(graph_provider, connector_id), (
+            f"page {victim} shared again is not back in scope"
+        )
+        logger.info("TC-ACCESS-001 passed")

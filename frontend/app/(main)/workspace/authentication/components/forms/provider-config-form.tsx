@@ -8,8 +8,12 @@ import React, {
   useCallback,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text } from '@radix-ui/themes';
+import { Flex } from '@radix-ui/themes';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
+import { CONFIG_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
+import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
+import { AuthConfigApi } from '../../api';
 import { PROVIDER_CONFIGS } from '../../constants';
 import type { ConfigurableMethod } from '../../types';
 import type { FieldDef } from '../../constants';
@@ -18,7 +22,6 @@ import { InputField } from './input-field';
 import { PasswordInputField } from './password-input-field';
 import { TextareaField } from './textarea-field';
 import { JitField } from './jit-field';
-import { XmlUploadField } from './xml-upload-field';
 
 // ============================================================
 // Public ref type
@@ -88,6 +91,42 @@ const ProviderConfigForm = forwardRef<ProviderConfigFormRef, ProviderConfigFormP
       setValues((prev) => ({ ...prev, [key]: val }));
     }, []);
 
+    // ── Reveal stored secrets ─────────────────────────────
+    // Masked fields round-trip the placeholder on save, which keeps the stored value.
+    const revealAvailable = useSecretRevealAvailable();
+    const [isRevealing, setIsRevealing] = useState(false);
+    const [revealed, setRevealed] = useState(false);
+    const beginReveal = useRevealScope(method);
+    useEffect(() => {
+      setRevealed(false);
+    }, [method]);
+    const canReveal =
+      revealAvailable &&
+      Object.values(values).some((value) => value === CONFIG_SECRET_PLACEHOLDER);
+
+    const handleReveal = async () => {
+      const stillCurrent = beginReveal();
+      setIsRevealing(true);
+      try {
+        const stored = await AuthConfigApi.revealProviderConfig(method);
+        if (!stillCurrent()) return;
+        setValues((prev) => {
+          const next = { ...prev };
+          for (const [key, value] of Object.entries(prev)) {
+            if (value === CONFIG_SECRET_PLACEHOLDER && typeof stored[key] === 'string') {
+              next[key] = stored[key] as string;
+            }
+          }
+          return next;
+        });
+        setRevealed(true);
+      } catch {
+        // The fields keep their placeholders, which still save correctly.
+      } finally {
+        setIsRevealing(false);
+      }
+    };
+
     // ── Imperative submit ─────────────────────────────────
     useImperativeHandle(ref, () => ({
       async submit() {
@@ -116,6 +155,11 @@ const ProviderConfigForm = forwardRef<ProviderConfigFormRef, ProviderConfigFormP
     // ── Field rendering ───────────────────────────────────
     return (
       <Flex direction="column" gap="4">
+        {canReveal ? (
+          <Flex justify="end">
+            <ShowStoredValuesButton loading={isRevealing} onClick={() => void handleReveal()} />
+          </Flex>
+        ) : null}
         {config.fields.map((field) => {
           if (field.type === 'readonly') {
             const warned = field.warningKey ? Boolean(values[field.warningKey]) : false;
@@ -147,6 +191,7 @@ const ProviderConfigForm = forwardRef<ProviderConfigFormRef, ProviderConfigFormP
                 field={field}
                 value={String(values[field.key] ?? '')}
                 onChange={(val) => setString(field.key, val)}
+                revealed={revealed}
               />
             );
           }
@@ -169,18 +214,6 @@ const ProviderConfigForm = forwardRef<ProviderConfigFormRef, ProviderConfigFormP
                 providerName={field.providerName}
                 checked={Boolean(values.enableJit)}
                 onCheckedChange={(val) => setBool('enableJit', val)}
-              />
-            );
-          }
-
-          if (field.type === 'xml-upload') {
-            return (
-              <XmlUploadField
-                key={field.key}
-                field={field}
-                onPopulate={(parsed) => {
-                  setValues((prev) => ({ ...prev, ...parsed }));
-                }}
               />
             );
           }

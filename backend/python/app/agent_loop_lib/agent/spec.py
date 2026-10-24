@@ -33,6 +33,9 @@ class ModelSpec(BaseModel):
     model: str = "claude-sonnet-5"
     thinking_budget: int | None = None
     effort: str | None = None
+    # The deployment's configured window for this model, in tokens. None falls
+    # back to the built-in table (`get_context_window`).
+    context_window: int | None = None
 
     model_config = {"frozen": True}
 

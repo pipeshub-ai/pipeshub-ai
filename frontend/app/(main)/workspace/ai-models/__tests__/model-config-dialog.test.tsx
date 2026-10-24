@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import type { SSEStreamingOptions } from '@/lib/api/streaming';
-import type { AIModelProvider } from '../types';
+import type { AIModelProvider, ConfiguredModel } from '../types';
 
 const api = vi.hoisted(() => ({
   addProvider: vi.fn(),
@@ -23,6 +23,10 @@ const toastMock = vi.hoisted(() => ({
   error: vi.fn(),
 }));
 vi.mock('@/lib/store/toast-store', () => ({ toast: toastMock }));
+vi.mock('@/lib/hooks/use-secret-reveal-available', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/hooks/use-secret-reveal-available')>();
+  return { ...actual, useSecretRevealAvailable: () => false };
+});
 
 import { ModelConfigDialog } from '../components/model-config-dialog';
 
@@ -122,7 +126,7 @@ describe('ModelConfigDialog without a model list', () => {
     fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
     addModelIds(['gpt-4o-2024']);
     fireEvent.click(screen.getAllByRole('switch')[0]);
-    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add model' }));
 
     await waitFor(() => expect(api.addProvider).toHaveBeenCalledTimes(1));
     expect(toastMock.loading).toHaveBeenCalledWith('Checking gpt-4o-2024 with Azure AI Foundry…', {
@@ -167,7 +171,7 @@ describe('ModelConfigDialog without a model list', () => {
 
     fireEvent.click(screen.getByRole('switch', { name: 'Reasoning for model-b' }));
     fireEvent.change(screen.getByLabelText('Context Length for model-b'), { target: { value: '64000' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add model' }));
 
     await waitFor(() => expect(api.batchAddModels).toHaveBeenCalledTimes(1));
     const body = api.batchAddModels.mock.calls[0][0];
@@ -197,7 +201,7 @@ describe('ModelConfigDialog without a model list', () => {
 
     fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
     addModelIds(['model-a', 'model-b']);
-    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add model' }));
 
     await screen.findByText(/not deployed/);
     expect(onClose).not.toHaveBeenCalled();
@@ -230,7 +234,7 @@ describe('ModelConfigDialog without a model list', () => {
 
     fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
     addModelIds(['model-a', 'model-b']);
-    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add model' }));
 
     await screen.findByText(/not deployed/);
     expect(api.batchAddModels.mock.calls[0][0].defaultModel).toBeUndefined();
@@ -260,7 +264,7 @@ describe('ModelConfigDialog without a model list', () => {
 
     fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
     addModelIds(['model-a', 'model-b']);
-    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add model' }));
     await screen.findByText(/not deployed/);
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
@@ -279,7 +283,7 @@ describe('ModelConfigDialog without a model list', () => {
     renderDialog(vi.fn(), vi.fn(), { provider: LOCAL_EMBEDDING_PROVIDER, capability: 'embedding' });
 
     addModelIds(['BAAI/bge-small-en-v1.5', 'BAAI/bge-base-en-v1.5']);
-    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add model' }));
 
     await waitFor(() => expect(api.batchAddModels).toHaveBeenCalledTimes(1));
     expect(order).toEqual([
@@ -309,7 +313,7 @@ describe('ModelConfigDialog without a model list', () => {
     expect(screen.queryByRole('button', { name: 'Remove gpt-5.6-luna' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Remove gpt-5.6-nova' })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add model' }));
     await waitFor(() => expect(api.addProvider).toHaveBeenCalledTimes(1));
     expect(api.addProvider.mock.calls[0][0].configuration).toMatchObject({
       model: 'gpt-5.6-nova',
@@ -343,7 +347,7 @@ describe('ModelConfigDialog without a model list', () => {
     expect(deployment.value).toBe('prod-mini');
 
     fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add model' }));
     await waitFor(() => expect(api.addProvider).toHaveBeenCalledTimes(1));
     expect(api.addProvider.mock.calls[0][0].configuration).toMatchObject({
       model: 'gpt-6-luna',
@@ -395,7 +399,7 @@ describe('ModelConfigDialog with a model list', () => {
     fireEvent.click(screen.getByRole('option', { name: /gpt-5-mini/ }));
     expect((screen.getByPlaceholderText('e.g. 128000') as HTMLInputElement).value).toBe('272000');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add model' }));
     await waitFor(() => expect(api.addProvider).toHaveBeenCalledTimes(1));
     expect(api.addProvider.mock.calls[0][0]).toMatchObject({
       configuration: { apiKey: 'sk-1', model: 'gpt-5-mini' },
@@ -403,6 +407,111 @@ describe('ModelConfigDialog with a model list', () => {
       isMultimodal: false,
       contextLength: 272000,
     });
+  });
+});
+
+const LISTED_MODELS = [
+  {
+    id: 'gpt-5-mini',
+    displayName: 'gpt-5-mini',
+    capabilities: ['llm'],
+    contextLength: 272000,
+    isReasoning: true,
+    isMultimodal: false,
+  },
+  {
+    id: 'gpt-5.4',
+    displayName: 'gpt-5.4',
+    capabilities: ['llm'],
+    contextLength: 128000,
+    isReasoning: false,
+    isMultimodal: true,
+  },
+];
+
+function configuredModel(overrides: Partial<ConfiguredModel> = {}): ConfiguredModel {
+  return {
+    modelKey: 'llm-1',
+    provider: 'openAI',
+    modelType: 'llm',
+    configuration: { model: 'gpt-5-mini' },
+    configuredFields: ['apiKey', 'model'],
+    isDefault: true,
+    isMultimodal: false,
+    isReasoning: true,
+    contextLength: 128000,
+    modelFriendlyName: 'Mini',
+    ...overrides,
+  };
+}
+
+describe('ModelConfigDialog on edit with a model list', () => {
+  it('loads the same model list from stored credentials and keeps the current model selected', async () => {
+    api.discoverModels.mockResolvedValue({ success: true, supported: true, models: LISTED_MODELS });
+    renderDialog(vi.fn(), vi.fn(), {
+      mode: 'edit',
+      provider: LISTING_PROVIDER,
+      editModel: configuredModel(),
+    });
+
+    expect(screen.getByRole('button', { name: 'Remove gpt-5-mini' })).toBeTruthy();
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+    expect(api.discoverModels.mock.calls[0][0]).toMatchObject({
+      provider: 'openAI',
+      capability: 'text_generation',
+      modelKey: 'llm-1',
+    });
+    expect(await screen.findByText('2 models available. Search, or type any model name.')).toBeTruthy();
+
+    fireEvent.focus(screen.getByRole('combobox', { name: 'model' }));
+    expect(screen.getByRole('option', { name: /gpt-5-mini/ })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /gpt-5.4/ })).toBeTruthy();
+    expect((screen.getByPlaceholderText('e.g. 128000') as HTMLInputElement).value).toBe('128000');
+  });
+
+  it('lets the user pick a different listed model and does not overwrite a stored Azure deployment name', async () => {
+    api.discoverModels.mockResolvedValue({ success: true, supported: true, models: LISTED_MODELS });
+    api.updateProvider.mockResolvedValue({});
+    const azure = {
+      ...LISTING_PROVIDER,
+      providerId: 'azureOpenAI',
+      name: 'Azure OpenAI',
+      discovery: { mode: 'list', requiredFields: ['apiKey', 'endpoint'] },
+      fields: {
+        text_generation: [
+          ...LISTING_PROVIDER.fields.text_generation,
+          field('endpoint', { required: true, placeholder: 'Endpoint' }),
+          field('deploymentName', { required: true, placeholder: 'Deployment' }),
+        ],
+      },
+    } as unknown as AIModelProvider;
+    renderDialog(vi.fn(), vi.fn(), {
+      mode: 'edit',
+      provider: azure,
+      editModel: configuredModel({
+        provider: 'azureOpenAI',
+        configuration: { model: 'gpt-5-mini' },
+        configuredFields: ['apiKey', 'endpoint', 'model', 'deploymentName'],
+      }),
+    });
+
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+    expect(api.discoverModels.mock.calls[0][0]).toMatchObject({
+      provider: 'azureOpenAI',
+      modelKey: 'llm-1',
+    });
+    expect(screen.queryByPlaceholderText('Deployment')).toBeNull();
+
+    fireEvent.focus(screen.getByRole('combobox', { name: 'model' }));
+    fireEvent.click(screen.getByRole('option', { name: /gpt-5.4/ }));
+    expect(screen.getByRole('button', { name: 'Remove gpt-5.4' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update model' }));
+    await waitFor(() => expect(api.updateProvider).toHaveBeenCalledTimes(1));
+    const payload = api.updateProvider.mock.calls[0][2] as { configuration: Record<string, unknown> };
+    expect(payload.configuration).toMatchObject({ model: 'gpt-5.4' });
+    expect(payload.configuration).not.toHaveProperty('deploymentName');
+    expect(payload.configuration).not.toHaveProperty('apiKey');
   });
 });
 

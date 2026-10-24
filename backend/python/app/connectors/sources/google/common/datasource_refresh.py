@@ -132,7 +132,8 @@ def _credentials_from_saved(saved: _TokenState, current: object) -> Credentials:
     replacement = Credentials(
         token=saved.access_token,
         refresh_token=saved.refresh_token,
-        token_uri=GOOGLE_TOKEN_URI,
+        # Kept from the credentials being replaced: they were built for this connector's token endpoint.
+        token_uri=getattr(current, "token_uri", None) or GOOGLE_TOKEN_URI,
         client_id=getattr(current, "client_id", None),
         client_secret=getattr(current, "client_secret", None),
         scopes=getattr(current, "scopes", None),

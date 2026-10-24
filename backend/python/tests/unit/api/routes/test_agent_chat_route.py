@@ -119,6 +119,50 @@ class TestChatStreamAccess:
         assert call["query_info"]["is_service_account"] is True
         assert call["cancellation_owner"].user_id == "u-bob"
 
+    def test_service_account_artifacts_belong_to_the_person_chatting(self, graph, loop) -> None:
+        c, _ = make_client(graph)
+        assert _stream(c, "sa", "bob", {"query": "hi", "callerDisplayName": "Bob B."}).status_code == 200
+        (call,) = loop.calls
+        # Only what the run makes changes hands; the run itself is still the creator's.
+        assert call["query_info"]["artifact_owner_user_id"] == "u-bob"
+        assert call["user_info"]["userId"] == "u-alice"
+
+    def test_service_account_artifacts_of_a_service_caller_stay_the_creators(self, graph, loop) -> None:
+        """The Slack bot's JWT is a service identity with no user to grant files to."""
+        bot = {"slack-bot": {"userId": "u-slack-bot", "orgId": "org-1", "isServiceAccount": True}}
+        c, _ = make_client(graph, extra_users=bot)
+        assert _stream(c, "sa", "slack-bot", {"query": "hi", "callerDisplayName": "Bob"}).status_code == 200
+        (call,) = loop.calls
+        assert call["query_info"]["artifact_owner_user_id"] is None
+        assert call["user_info"]["userId"] == "u-alice"
+
+    @pytest.mark.parametrize("change", ["missing", "other-org"])
+    def test_service_account_artifacts_of_an_unknown_caller_stay_the_creators(self, graph, loop, change) -> None:
+        if change == "missing":
+            del graph.nodes["users"][user_key("bob")]
+        else:
+            graph.nodes["users"][user_key("bob")]["orgId"] = "org-2"
+        c, _ = make_client(graph)
+        assert _stream(c, "sa", "bob", {"query": "hi", "callerDisplayName": "Bob B."}).status_code == 200
+        (call,) = loop.calls
+        assert call["query_info"]["artifact_owner_user_id"] is None
+
+    def test_service_account_chat_fails_rather_than_guess_the_owner(self, graph, loop) -> None:
+        """A caller who cannot be read is not handed to the creator: their files would go to the wrong person."""
+        graph.fail("get_user_by_user_id")
+        c, _ = make_client(graph)
+        response = _stream(c, "sa", "bob", {"query": "hi", "callerDisplayName": "Bob B."})
+        assert response.status_code == 503
+        assert not loop.calls
+
+    @pytest.mark.parametrize("agent", ["private", "shared"])
+    def test_other_agents_set_no_artifact_owner(self, graph, loop, agent) -> None:
+        c, _ = make_client(graph)
+        caller = "alice" if agent == "private" else "bob"
+        assert _stream(c, agent, caller).status_code == 200
+        (call,) = loop.calls
+        assert call["query_info"]["artifact_owner_user_id"] is None
+
     def test_service_account_creator_in_another_org_is_refused(self, graph, loop) -> None:
         graph.nodes["users"][user_key("alice")]["orgId"] = "org-2"
         c, _ = make_client(graph)
@@ -156,6 +200,14 @@ class TestChatStreamInput:
         response = _stream(c, "private", "alice", {"query": "hi", "runId": "not-a-uuid"})
         assert response.status_code == 400
         assert "Traceback" not in response.text
+
+    def test_unknown_filter_key_is_rejected_with_the_allowed_keys(self, graph, loop) -> None:
+        c, _ = make_client(graph)
+        response = _stream(c, "private", "alice", {"query": "hi", "filters": {"connectors": ["x"]}})
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "Unknown filter key(s): connectors" in detail
+        assert "Allowed keys: apps" in detail
 
     def test_missing_query_is_rejected(self, graph, loop) -> None:
         c, _ = make_client(graph)
@@ -223,6 +275,78 @@ class TestChatStreamToolsets:
         assert call["query_info"]["toolsets"] == []
 
 
+class TestChatStreamMcpServers:
+    """An MCP server the run can't use stops it with a frame the chat can act on."""
+
+    def _attach(self, graph: InMemoryGraph, agent: str, instance_id: str = "inst-m", name: str = "GitHub") -> None:
+        graph.add_node("agentMcpServers", {"_key": "ms", "instanceId": instance_id, "name": "github", "displayName": name})
+        graph.add_edge("agentHasMcpServer", {"_from": f"{AGENTS}/{agent}", "_to": "agentMcpServers/ms"})
+
+    def _config(self, **records: dict) -> FakeConfigService:
+        from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
+
+        return FakeConfigService({PLATFORM_SETTINGS_KEY: {"featureFlags": {"ENABLE_MCP": True}}, **records})
+
+    @staticmethod
+    def _instance(**overrides: object) -> dict:
+        return {
+            "_id": "inst-m", "orgId": "org-1", "createdBy": "u-alice", "name": "GitHub", "transport": "streamable_http",
+            "url": "https://mcp.example.com/mcp", "authMode": "oauth", "useAdminAuth": False, "scope": "org",
+            **overrides,
+        }
+
+    @staticmethod
+    def _run_error(response: Response) -> dict:
+        for block in response.text.split("\n\n"):
+            if block.startswith("event: RUN_ERROR"):
+                return json.loads(block.split("data: ", 1)[1])
+        raise AssertionError(f"no RUN_ERROR in {response.text!r}")
+
+    def test_a_server_the_user_has_not_connected_is_named_with_its_sign_in(self, graph, loop) -> None:
+        self._attach(graph, "private")
+        c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": self._instance()}))
+
+        error = self._run_error(_stream(c, "private", "alice"))
+
+        assert error["code"] == "mcp_server_config_missing"
+        assert error["details"] == {
+            "agentId": "private",
+            "serviceAccount": False,
+            "servers": [{
+                "instanceId": "inst-m", "name": "GitHub", "problem": "not_connected",
+                "authMode": "oauth", "sharedCredential": False,
+            }],
+        }
+        assert not loop.calls
+
+    def test_a_removed_server_is_marked_not_found(self, graph, loop) -> None:
+        self._attach(graph, "private")
+        c, _ = make_client(graph, self._config())
+
+        error = self._run_error(_stream(c, "private", "alice"))
+
+        assert error["details"]["servers"] == [{"instanceId": "inst-m", "name": "GitHub", "problem": "not_found"}]
+
+    def test_a_missing_shared_credential_is_flagged(self, graph, loop) -> None:
+        self._attach(graph, "private")
+        shared = self._instance(authMode="api_token", useAdminAuth=True)
+        c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": shared}))
+
+        (server,) = self._run_error(_stream(c, "private", "alice"))["details"]["servers"]
+
+        assert server["sharedCredential"] is True
+        assert server["authMode"] == "api_token"
+
+    def test_a_service_account_agent_says_so(self, graph, loop) -> None:
+        self._attach(graph, "sa")
+        c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": self._instance()}))
+
+        error = self._run_error(_stream(c, "sa", "bob"))
+
+        assert error["details"]["serviceAccount"] is True
+        assert error["details"]["agentId"] == "sa"
+
+
 class TestChatStreamKnowledge:
     def test_agent_knowledge_becomes_the_retrieval_scope(self, graph, loop) -> None:
         graph.add_node("agentKnowledge", {"_key": "k1", "connectorId": "conn-1", "type": "APP"})
@@ -230,7 +354,11 @@ class TestChatStreamKnowledge:
         c, _ = make_client(graph)
         _stream(c, "private", "alice")
         (call,) = loop.calls
-        assert call["query_info"]["filters"] == {"apps": ["conn-1"], "kb": ["NO_KB_SELECTED"]}
+        # The agent's sources also bound what a tool may read by id.
+        assert call["query_info"]["filters"] == {
+            "apps": ["conn-1"], "kb": ["NO_KB_SELECTED"],
+            "allowedApps": ["conn-1"], "allowedRecordGroups": [], "allowedRecords": [],
+        }
         assert call["query_info"]["systemPrompt"] == "be brief"
 
     def test_internal_search_switched_off_clears_knowledge(self, graph, loop) -> None:

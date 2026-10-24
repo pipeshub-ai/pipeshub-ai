@@ -1476,10 +1476,8 @@ class TestExcelGetTableSummary:
         assert result == "Table of employees"
 
     @pytest.mark.asyncio
-    async def test_exception_propagates(self):
-        """When LLM fails, exception propagates (for retry decorator)."""
-        import tenacity
-
+    async def test_a_failed_summary_falls_back_to_a_plain_one(self) -> None:
+        """A model failure never costs the record: the summary is written without the model."""
         ep = _make_excel_parser()
         ep.llm = AsyncMock()
         ep.llm.ainvoke = AsyncMock(side_effect=RuntimeError("LLM failure"))
@@ -1488,8 +1486,7 @@ class TestExcelGetTableSummary:
             "headers": ["Name"],
             "data": [[{"header": "Name", "value": "Alice", "row": 2, "data_type": "s"}]],
         }
-        with pytest.raises((RuntimeError, tenacity.RetryError)):
-            await ep.get_table_summary(table)
+        assert await ep.get_table_summary(table) == "A table with 1 row and columns: Name."
 
 
 # ---------------------------------------------------------------------------

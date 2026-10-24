@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import type { PreviewCitation } from '../types';
-import { useTextHighlighter } from '../use-text-highlighter';
+import { sanitizePreviewHtml } from '../sandboxed-html';
+import { SandboxedHtmlFrame } from '../sandboxed-html-frame';
 
 interface DocxRendererProps {
   fileUrl: string;
@@ -20,6 +21,9 @@ interface DocxRendererProps {
   onHighlightClick?: (citationId: string) => void;
 }
 
+// renderAltChunks stays off: docx-preview puts embedded HTML chunks in an
+// unsandboxed srcdoc iframe, i.e. script in the app origin. Base64 URLs keep
+// images and embedded fonts loadable inside the sandboxed frame's CSP.
 const DOCX_PREVIEW_OPTIONS = {
   className: 'docx',
   inWrapper: true,
@@ -32,33 +36,83 @@ const DOCX_PREVIEW_OPTIONS = {
   ignoreLastRenderedPageBreak: true,
   experimental: false,
   trimXmlDeclaration: true,
-  useBase64URL: false,
+  useBase64URL: true,
   renderChanges: false,
   renderHeaders: true,
   renderFooters: true,
   renderFootnotes: true,
   renderEndnotes: true,
   renderComments: false,
-  renderAltChunks: true,
+  renderAltChunks: false,
 };
 
-export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations, activeCitationId, onHighlightClick }: DocxRendererProps) {
+const SYMBOL_CHAR = /^[0-9a-fA-F]{1,6}$/;
+
+/**
+ * docx-preview writes a `<w:sym w:char>` value into `innerHTML` unescaped, so a
+ * crafted document runs script in the app while it renders. Replace any
+ * symbol that is not a hex code point before rendering.
+ */
+export function neutralizeDocxSymbols(parts: readonly unknown[]): void {
+  const seen = new WeakSet<object>();
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const node = value as Record<string, unknown>;
+    if (node.type === 'symbol' && !(typeof node.char === 'string' && SYMBOL_CHAR.test(node.char))) {
+      node.char = 'FFFD';
+    }
+    for (const [key, child] of Object.entries(node)) {
+      if (key === 'parent' || !child || typeof child !== 'object') continue;
+      if (Array.isArray(child) || Object.getPrototypeOf(child) === Object.prototype) visit(child);
+    }
+  };
+  for (const part of parts) {
+    if (part && typeof part === 'object') {
+      for (const child of Object.values(part)) {
+        if (child && typeof child === 'object' && (Array.isArray(child) || Object.getPrototypeOf(child) === Object.prototype)) {
+          visit(child);
+        }
+      }
+    }
+  }
+}
+
+const DOCX_FRAME_CSS = `
+  html, body { margin: 0; background: white; }
+  /* Fill frame width — docx-preview defaults can leave fixed "page" widths */
+  .docx-wrapper {
+    background: white !important;
+    padding: 16px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+  .docx-wrapper > section.docx {
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08) !important;
+    margin-bottom: 16px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+  .docx-wrapper .docx { max-width: 100% !important; box-sizing: border-box !important; }
+  .docx-wrapper table { max-width: 100% !important; }
+  .docx .ph-highlight * { color: inherit !important; }
+`;
+
+/**
+ * DOCX is converted to HTML on a detached element (nothing in it loads or
+ * runs), sanitised, and shown in the same isolated frame as HTML previews.
+ */
+export function DocxRenderer({ fileUrl, fileName, fileBlob, citations, activeCitationId, onHighlightClick }: DocxRendererProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [documentReady, setDocumentReady] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const activeCitationIdRef = useRef<string | null | undefined>(activeCitationId);
-  useLayoutEffect(() => {
-    activeCitationIdRef.current = activeCitationId;
-  }, [activeCitationId]);
+  const [sanitizedHtml, setSanitizedHtml] = useState('');
 
-  const { applyHighlights, clearHighlights, scrollToHighlight } = useTextHighlighter({
-    citations,
-    activeCitationId,
-    onHighlightClick,
-  });
-
-  // ── Step 1: Fetch buffer & render with docx-preview ───────────────
   useEffect(() => {
     const hasBlob = fileBlob instanceof Blob;
     const hasUrl = !!fileUrl && fileUrl.trim() !== '';
@@ -74,11 +128,8 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
     const renderDocument = async () => {
       try {
         setIsLoading(true);
-        setDocumentReady(false);
+        setSanitizedHtml('');
 
-        // Prefer the in-memory Blob when present — avoids a redundant
-        // round-trip through a `URL.createObjectURL` blob URL, which was
-        // the root cause of the blank DOCX preview.
         let arrayBuffer: ArrayBuffer;
         if (hasBlob) {
           if (fileBlob.size === 0) {
@@ -95,42 +146,25 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
           throw new Error('Document is empty.');
         }
 
-        if (cancelled || !containerRef.current) return;
-
         // Dynamic import to avoid SSR issues (docx-preview uses DOM APIs)
         const docxPreview = await import('docx-preview');
+        if (cancelled) return;
 
-        if (cancelled || !containerRef.current) return;
-
-        // Clear any previous content
-        containerRef.current.innerHTML = '';
-
-        await docxPreview.renderAsync(arrayBuffer, containerRef.current, undefined, DOCX_PREVIEW_OPTIONS);
-
+        const parsed = await docxPreview.parseAsync(arrayBuffer, DOCX_PREVIEW_OPTIONS);
+        neutralizeDocxSymbols((parsed as unknown as { parts?: unknown[] }).parts ?? []);
+        const container = document.createElement('div');
+        await docxPreview.renderDocument(parsed, container, undefined, DOCX_PREVIEW_OPTIONS);
         if (cancelled) return;
 
         // If docx-preview produced no output (invalid file, silent failure,
         // etc.) show a concrete error instead of a blank pane.
-        const container = containerRef.current;
-        const renderedNodes = container.childElementCount;
-        if (renderedNodes === 0) {
+        if (!container.querySelector('.docx-wrapper, section')) {
           throw new Error(
             'Unable to render this document. It may not be a valid .docx file (legacy .doc files are not supported).'
           );
         }
 
-        // Add IDs to elements for highlight targeting
-        let idCounter = 0;
-        const addIds = (selector: string, prefix: string) => {
-          container.querySelectorAll(selector).forEach((el) => {
-            el.id = `${prefix}-${idCounter++}`;
-          });
-        };
-        addIds('p:not([id])', 'p');
-        addIds('span:not([id])', 'span');
-        addIds('div:not([id]):not(:has(p, div))', 'div');
-
-        setDocumentReady(true);
+        setSanitizedHtml(sanitizePreviewHtml(container.innerHTML, { rich: true }));
         setError(null);
       } catch (err) {
         if (!cancelled) {
@@ -146,113 +180,6 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
     return () => { cancelled = true; };
   }, [fileUrl, fileBlob]);
 
-  // ── Step 2: Apply citation highlights once document is rendered ────
-  useEffect(() => {
-    if (!documentReady || !citations?.length) return;
-    const container = containerRef.current;
-    if (!container) return;
-
-    applyHighlights(container);
-    return () => { clearHighlights(); };
-  }, [documentReady, citations, applyHighlights, clearHighlights]);
-
-  // ── Step 3: Scroll to active citation (retry pattern) ─────────────
-  // `useTextHighlighter.applyHighlights` schedules work in rAF; wait briefly before scrolling
-  // so the `.highlight-*` spans exist (mirrors `TextRenderer` / `HtmlRenderer`).
-  // Cleanup cancels the initial delay and all nested retries; a ref avoids scrolling to a superseded id.
-  useEffect(() => {
-    if (!activeCitationId || !documentReady || !citations?.length) return;
-    if (!containerRef.current) return;
-
-    const targetId = activeCitationId;
-    const timeouts: ReturnType<typeof setTimeout>[] = [];
-    let cancelled = false;
-
-    const clearAll = () => {
-      cancelled = true;
-      for (const t of timeouts) clearTimeout(t);
-      timeouts.length = 0;
-    };
-
-    const schedule = (fn: () => void, ms: number) => {
-      const id = setTimeout(() => {
-        if (cancelled) return;
-        fn();
-      }, ms);
-      timeouts.push(id);
-    };
-
-    schedule(() => {
-      if (activeCitationIdRef.current !== targetId) return;
-      const attemptScroll = (attempts: number) => {
-        if (cancelled) return;
-        if (activeCitationIdRef.current !== targetId) return;
-        const root = containerRef.current;
-        if (attempts <= 0 || !root) return;
-        const el = root.querySelector(`.highlight-${CSS.escape(targetId)}`);
-        if (el) {
-          if (activeCitationIdRef.current !== targetId) return;
-          scrollToHighlight(targetId, root);
-        } else if (attempts > 1) {
-          schedule(() => {
-            if (activeCitationIdRef.current === targetId) {
-              attemptScroll(attempts - 1);
-            }
-          }, 120);
-        }
-      };
-      attemptScroll(12);
-    }, 150);
-
-    return clearAll;
-  }, [activeCitationId, documentReady, scrollToHighlight, citations]);
-
-  // ── Inject scoped styles for docx-preview highlights ──────────────
-  useEffect(() => {
-    const styleId = 'ph-docx-renderer-styles';
-    if (document.getElementById(styleId)) return;
-
-    const style = document.createElement('style');
-    style.id = styleId;
-    style.textContent = `
-      /* Fill parent width — docx-preview defaults can leave fixed "page" widths */
-      .docx-wrapper {
-        background: white !important;
-        padding: 16px !important;
-        width: 100% !important;
-        max-width: 100% !important;
-        box-sizing: border-box !important;
-      }
-      .docx-wrapper > section.docx {
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08) !important;
-        margin-bottom: 16px !important;
-        width: 100% !important;
-        max-width: 100% !important;
-        box-sizing: border-box !important;
-      }
-      .docx-wrapper .docx {
-        max-width: 100% !important;
-        box-sizing: border-box !important;
-      }
-      .docx-wrapper table {
-        max-width: 100% !important;
-      }
-      /* Ensure highlights inherit text color inside docx-preview */
-      .docx .ph-highlight * {
-        color: inherit !important;
-      }
-    `;
-    document.head.appendChild(style);
-
-    return () => {
-      const existing = document.getElementById(styleId);
-      if (existing) existing.remove();
-    };
-  }, []);
-
-  // IMPORTANT: The mount target for `docx-preview.renderAsync` must stay in the DOM while
-  // we async-load bytes + the library. If we only render a loading screen, `containerRef`
-  // is null and the effect bails out — same symptom as the old "blank preview" bug.
   return (
     <Box
       style={{
@@ -266,24 +193,20 @@ export function DocxRenderer({ fileUrl, fileName: _fileName, fileBlob, citations
         borderRadius: 'var(--radius-3)',
         border: '1px solid var(--olive-6)',
         boxSizing: 'border-box',
+        background: 'white',
       }}
     >
-      <Box
-        ref={containerRef}
-        className="file-preview-scroll-area"
-        style={{
-          width: '100%',
-          maxWidth: '100%',
-          minWidth: 0,
-          height: '100%',
-          minHeight: 0,
-          overflow: 'auto',
-          boxSizing: 'border-box',
-          WebkitOverflowScrolling: 'touch',
-          visibility: error ? 'hidden' : 'visible',
-        }}
-      />
-
+      {sanitizedHtml && !error && (
+        <SandboxedHtmlFrame
+          sanitizedHtml={sanitizedHtml}
+          title={fileName}
+          dark={false}
+          baseCss={DOCX_FRAME_CSS}
+          citations={citations}
+          activeCitationId={activeCitationId}
+          onHighlightClick={onHighlightClick}
+        />
+      )}
       {isLoading && (
         <Flex
           align="center"

@@ -15,10 +15,16 @@ import type { KnowledgeHubNode } from '../types';
 
 const getNavigationNodes = vi.hoisted(() => vi.fn());
 const getNodeChildren = vi.hoisted(() => vi.fn());
-vi.mock('../api', () => ({
-  KnowledgeHubApi: { getNavigationNodes, getNodeChildren },
-  forgetPendingNodeChildrenRequests: () => {},
-}));
+vi.mock('../api', async () => {
+  const { pagedByCursor } = await import('./kb-page-harness');
+  return {
+    KnowledgeHubApi: {
+      getNavigationNodes: pagedByCursor(getNavigationNodes, 0),
+      getNodeChildren: pagedByCursor(getNodeChildren, 2),
+    },
+    forgetPendingNodeChildrenRequests: () => {},
+  };
+});
 
 const ENGINEERING = collection('kb-eng', 'Engineering');
 const DRIVE = hubNode({ id: 'app-drive', name: 'Google Drive', nodeType: 'app', origin: 'CONNECTOR', connector: 'DRIVE' });
@@ -113,7 +119,7 @@ describe('refreshKbTree', () => {
     await refreshKbTree();
 
     expect(sidebarCollectionIds().sort()).toEqual(['kb-a', 'kb-b']);
-    expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: false, nextPage: 3 });
+    expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: false, nextCursor: null });
 
     await loadMoreRootAppList();
 
@@ -135,7 +141,7 @@ describe('refreshKbTree', () => {
 
     expect(getNavigationNodes).toHaveBeenCalledTimes(50);
     expect(sidebarCollectionIds().sort()).toEqual(['kb-a', 'kb-b']);
-    expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: true, nextPage: 51 });
+    expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: true, nextCursor: 'p51' });
 
     await loadMoreRootAppList();
 
@@ -201,11 +207,11 @@ describe('refreshKbTree', () => {
 
     await expect(firstLoad).resolves.toBe(false);
     expect(cachedCollectionIds().sort()).toEqual(['kb-eng', 'kb-new']);
-    expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: false, nextPage: 1 });
+    expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: false, nextCursor: null });
   });
 
   it('ignores a "load more" page that arrives after a refresh started', async () => {
-    useKnowledgeBaseStore.getState().setAppRootListPagination({ hasNext: true, nextPage: 2 });
+    useKnowledgeBaseStore.getState().setAppRootListPagination({ hasNext: true, nextCursor: 'p2' });
     let releaseLoadMore: (value: unknown) => void = () => {};
     getNavigationNodes.mockImplementationOnce(() => new Promise((resolve) => { releaseLoadMore = resolve; }));
     const loadMore = loadMoreRootAppList();
@@ -219,14 +225,14 @@ describe('refreshKbTree', () => {
 
     expect(cachedCollectionIds()).toEqual(['kb-eng']);
     expect(sidebarCollectionIds()).toEqual(['kb-eng']);
-    expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: false, nextPage: 1 });
+    expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: false, nextCursor: null });
   });
 
   it.each([
-    { label: 'a walk that reads the whole list', totalPages: 3, walked: 3, cursor: { hasNext: false, nextPage: 3 } },
-    { label: 'a walk that stops at its page limit', totalPages: 60, walked: 50, cursor: { hasNext: true, nextPage: 51 } },
+    { label: 'a walk that reads the whole list', totalPages: 3, walked: 3, cursor: { hasNext: false, nextCursor: null } },
+    { label: 'a walk that stops at its page limit', totalPages: 60, walked: 50, cursor: { hasNext: true, nextCursor: 'p51' } },
   ])('keeps the paging from $label when "load more" is clicked during it', async ({ totalPages, walked, cursor }) => {
-    useKnowledgeBaseStore.getState().setAppRootListPagination({ hasNext: true, nextPage: 2 });
+    useKnowledgeBaseStore.getState().setAppRootListPagination({ hasNext: true, nextCursor: 'p2' });
     const pageItems = (page: number) =>
       page === 1 ? [collection('kb-a', 'Alpha')] : page === walked ? [collection('kb-b', 'Beta')] : connectors(20, page * 20);
     const respond = (page: number) =>
@@ -252,7 +258,7 @@ describe('refreshKbTree', () => {
   });
 
   it('drops a "load more" page that arrives while a refresh is still reading pages', async () => {
-    useKnowledgeBaseStore.getState().setAppRootListPagination({ hasNext: true, nextPage: 51 });
+    useKnowledgeBaseStore.getState().setAppRootListPagination({ hasNext: true, nextCursor: 'p51' });
     const respond = (page: number, items: KnowledgeHubNode[], hasNext: boolean) =>
       hubResponse(items, { pagination: { page, limit: 20, totalItems: 0, totalPages: 60, hasNext, hasPrev: page > 1 } });
     let releaseWalk: () => void = () => {};
@@ -275,11 +281,11 @@ describe('refreshKbTree', () => {
 
     expect(sidebarCollectionIds()).toEqual(['kb-eng']);
     expect(cachedCollectionIds()).toEqual(['kb-eng']);
-    expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: false, nextPage: 1 });
+    expect(useKnowledgeBaseStore.getState().appRootListPagination).toEqual({ hasNext: false, nextCursor: null });
   });
 
   it('does not start a "load more" while a refresh is reading pages', async () => {
-    useKnowledgeBaseStore.getState().setAppRootListPagination({ hasNext: true, nextPage: 2 });
+    useKnowledgeBaseStore.getState().setAppRootListPagination({ hasNext: true, nextCursor: 'p2' });
     let releaseWalk: () => void = () => {};
     getNavigationNodes.mockImplementation(({ page }: { page: number }) =>
       page === 1
@@ -341,7 +347,7 @@ describe('refreshKbTree', () => {
     );
     const kb = useKnowledgeBaseStore.getState();
     kb.cacheNodeChildren('folder-designs', byName);
-    kb.setNodeChildrenPagination('folder-designs', { hasNext: true, nextPage: 2, nodeType: 'folder' });
+    kb.setNodeChildrenPagination('folder-designs', { hasNext: true, nextCursor: 'p2', nodeType: 'folder', pagesLoaded: 1 });
     let release: () => void = () => {};
     getNodeChildren.mockImplementation(
       () =>
@@ -354,7 +360,7 @@ describe('refreshKbTree', () => {
     );
 
     const loadMore = loadMoreNodeChildrenPage('folder-designs');
-    const reloaded = { hasNext: true, nextPage: 4, nodeType: 'folder' as const };
+    const reloaded = { hasNext: true, nextCursor: 'p4', nodeType: 'folder' as const, pagesLoaded: 3 };
     storeChildrenList('folder-designs', newest, reloaded);
     release();
     await loadMore;
@@ -393,7 +399,7 @@ describe('refreshKbTree', () => {
     const onlyChild = hubNode({ id: 'folder-x', name: 'X', nodeType: 'folder', parentId: 'folder-designs' });
     const kb = useKnowledgeBaseStore.getState();
     kb.cacheNodeChildren('folder-designs', [onlyChild]);
-    kb.setNodeChildrenPagination('folder-designs', { hasNext: true, nextPage: 2, nodeType: 'folder' });
+    kb.setNodeChildrenPagination('folder-designs', { hasNext: true, nextCursor: 'p2', nodeType: 'folder', pagesLoaded: 1 });
     let release: () => void = () => {};
     getNodeChildren.mockImplementation(
       () =>
@@ -417,7 +423,7 @@ describe('refreshKbTree', () => {
     const kb = useKnowledgeBaseStore.getState();
     kb.setNodes([]);
     kb.cacheNodeChildren('kb-eng', [hubNode({ id: 'folder-a', name: 'A', nodeType: 'folder', parentId: 'kb-eng' })]);
-    kb.setNodeChildrenPagination('kb-eng', { hasNext: false, nextPage: 1, nodeType: 'app' });
+    kb.setNodeChildrenPagination('kb-eng', { hasNext: false, nextCursor: null, nodeType: 'app', pagesLoaded: 1 });
     kb.toggleFolderExpanded('kb-eng');
     getNodeChildren.mockResolvedValue(hubResponse([hubNode({ id: 'folder-a', name: 'A renamed', nodeType: 'folder', parentId: 'kb-eng' })]));
 

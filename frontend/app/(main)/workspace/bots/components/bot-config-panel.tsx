@@ -296,6 +296,8 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
         setSigningSecret((prev) =>
           prev === CONFIG_SECRET_PLACEHOLDER ? stored.signingSecret : prev,
         );
+        setShowBotToken(true);
+        setShowSigningSecret(true);
       }
     } catch {
       // The fields keep their placeholders, which still save correctly.
@@ -383,7 +385,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
             onChange={(e) => setBotToken(e.target.value)}
           >
             <TextField.Slot side="right">
-              <IconButton
+              <IconButton className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="1"
@@ -409,7 +411,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
             onChange={(e) => setSigningSecret(e.target.value)}
           >
             <TextField.Slot side="right">
-              <IconButton
+              <IconButton className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="1"

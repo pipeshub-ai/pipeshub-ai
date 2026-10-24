@@ -121,6 +121,9 @@ class InMemoryGraph:
             CollectionNames.PERMISSION.value,
         )
 
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return False
+
     async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         return "txn-1"
 
@@ -156,6 +159,12 @@ def broker() -> Iterator[FakeKafkaBroker]:
 @pytest.fixture(autouse=True)
 def _fast_polls(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MESSAGE_TIMEOUT_MS", "10")
+
+
+@pytest.fixture(autouse=True)
+def _open_source_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These cases describe the open-source handler; an edition may install its own.
+    monkeypatch.setattr(KafkaUtils.__module__ + ".EntityEventService", entity_module.EntityEventService)
 
 
 @pytest.fixture

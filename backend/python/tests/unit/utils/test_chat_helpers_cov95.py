@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import re
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -44,6 +45,9 @@ from app.utils.chat_helpers import (
 from app.utils.image_admission import ImageAdmission
 from app.utils.image_policy import resolve_image_policy
 from tests.unit.utils.test_chat_helpers import _make_record_blob, _make_text_block
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _MIN_PNG_DATA_URI = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
@@ -384,6 +388,7 @@ class TestIsBase64ImageBranches:
             return real(data, *a, **k)
 
         monkeypatch.setattr(chat_helpers_module.base64, "b64decode", spy)
+        monkeypatch.setattr(chat_helpers_module, "_base64_image_verdicts", {})
         big = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 40_000).decode()
         assert is_base64_image(big) is True
         assert seen and max(seen) <= 272, f"decoded {max(seen)} chars, expected <= 272"
@@ -1053,6 +1058,13 @@ class TestGenerateTextFragmentUrlEdgeBranches:
         assert "#:~:text=" in url
 
 class TestEnrichFkChildrenExtraBranches:
+    @pytest.fixture(autouse=True)
+    def _access_unfiltered(self) -> "Iterator[None]":
+        """These cover blob and DDL handling; the access filter has its own tests,
+        so every asked table is admitted."""
+        with patch("app.utils.chat_helpers.accessible_node_ids", AsyncMock(side_effect=lambda _provider, ids, *_args, **_kwargs: set(ids))):
+            yield
+
     @pytest.mark.asyncio
     async def test_skips_non_dict_record_entries(self):
         gp = AsyncMock()

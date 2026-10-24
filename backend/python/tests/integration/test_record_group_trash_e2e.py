@@ -5,13 +5,13 @@ and then the group, which takes the group's edges with it, the records'
 BELONGS_TO links included. With ``ENABLE_SOFT_DELETE`` on, those records are
 only in the trash, so ``on_record_group_deleted`` keeps the group and its
 edges while any of them still belongs to it; a restore then puts them back in
-it, and the purge removes the group later. With the flag off, it is deleted
-as on main.
+it, and the purge removes the group later. With the flag off, the group is
+deleted with every record still in it.
 
 - PostgreSQL: a schema dropped at the source, on full and incremental sync.
 - Dropbox: a team folder permanently deleted, before the drive sync reaches its
   files (the order ``run_sync`` uses) and after.
-- With the trash on, a group holding only live records is still deleted.
+- With the trash on, a group's live records go to the trash with it.
 
 Writes records through ``DataSourceEntitiesProcessor.on_new_records`` over a
 real ``GraphDataStore``, so the group and BELONGS_TO edge are the ones a sync
@@ -60,6 +60,7 @@ from app.connectors.sources.postgres.connector import PostgreSQLConnector
 from app.models.entities import FileRecord, RecordGroupType, RecordType, SQLTableRecord
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support.edition_defaults import postgres_sync_state
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -139,7 +140,7 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
         )
     for edges in (CollectionNames.PERMISSION.value, CollectionNames.BELONGS_TO.value,
                   CollectionNames.IS_OF_TYPE.value, CollectionNames.INHERIT_PERMISSIONS.value,
-                  CollectionNames.RECORD_RELATIONS.value):
+                  CollectionNames.NODE_RELATIONS.value):
         await graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
             f"OR PARSE_IDENTIFIER(e._to).key IN @ids REMOVE e IN {edges}",
@@ -206,13 +207,18 @@ def _table(w: _World, schema: str, name: str) -> SQLTableRecord:
     )
 
 
-def _postgres(w: _World) -> SimpleNamespace:
-    connector = SimpleNamespace(
-        data_entities_processor=w.processor, data_store_provider=w.processor.data_store_provider,
-        connector_id=w.connector_id, logger=logger, sync_stats=SimpleNamespace(errors=0), database_name="shop",
-        _fetch_schemas=AsyncMock(return_value=[]), _passes_filter=PostgreSQLConnector._passes_filter,
-    )
-    connector._schema_group_id = lambda name: PostgreSQLConnector._schema_group_id(connector, name)
+def _postgres(w: _World) -> PostgreSQLConnector:
+    """The connector without its __init__: the removals run the connector's own helpers,
+    whichever they call, and only the schema listing is stubbed."""
+    connector = PostgreSQLConnector.__new__(PostgreSQLConnector)
+    connector.data_entities_processor = w.processor
+    connector.data_store_provider = w.processor.data_store_provider
+    connector.connector_id = w.connector_id
+    connector.logger = logger
+    for name, value in postgres_sync_state().items():
+        setattr(connector, name, value)
+    connector.database_name = "shop"
+    connector._fetch_schemas = AsyncMock(return_value=[])
     return connector
 
 
@@ -279,23 +285,20 @@ async def test_a_deleted_dropbox_team_folder_keeps_its_group_with_its_file_in_th
         )
     await DropboxConnector._handle_record_group_deleted_event(connector, _team_folder_deleted(team_folder_id))
 
-    if trash_on or file_deleted_first:
-        await _assert_kept_or_gone(world, file.id, group, team_folder_id, trash_on)
-    else:
-        # As on main: the group and its edges go, and the file stays until the drive sync deletes it.
-        assert await world.group(team_folder_id) is None
-        assert await world.belongs_to(file.id, group.get("_key") or group["id"]) is None
-        assert (await world.graph.get_document(file.id, RECORDS))["isDeleted"] is not True
+    # A group takes its records with it, whichever is deleted first: a file left
+    # behind would point at a group that no longer exists.
+    await _assert_kept_or_gone(world, file.id, group, team_folder_id, trash_on)
 
 
-async def test_with_the_trash_on_a_group_holding_only_live_records_is_still_deleted(
-    world: _World, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("trash_on", [True, False])
+async def test_a_deleted_group_takes_its_live_records_with_it(
+    world: _World, monkeypatch: pytest.MonkeyPatch, trash_on: bool,
 ) -> None:
-    _trash(monkeypatch, True)
+    """Without ``trash_live_records``: the records go to the trash, or are deleted with the trash off."""
+    _trash(monkeypatch, trash_on)
     table = _table(world, "staging", "events")
-    await _synced(world, table)
+    group = await _synced(world, table)
 
     assert await world.processor.on_record_group_deleted("staging", world.connector_id) is True
 
-    assert await world.group("staging") is None
-    assert (await world.graph.get_document(table.id, RECORDS))["isDeleted"] is not True
+    await _assert_kept_or_gone(world, table.id, group, "staging", trash_on)

@@ -156,6 +156,7 @@ export class PatService {
       {
         accessTokenLifetimeOverrideSeconds: lifetimeSeconds,
         name: request.name,
+        knowledgeLimit: request.knowledgeLimit,
       },
     )
 
@@ -177,6 +178,7 @@ export class PatService {
       // scanners, unlike a bare JWT. verifyAccessToken strips this back
       // off before hashing/verifying, so it's display-only.
       accessToken: `${PAT_TOKEN_PREFIX}${tokens.accessToken}`,
+      knowledgeLimit: request.knowledgeLimit,
     }
   }
 
@@ -203,6 +205,7 @@ export class PatService {
       createdAt: t.createdAt,
       expiresAt: t.expiresAt,
       lastUsedAt: t.lastUsedAt,
+      knowledgeLimit: t.knowledgeLimit,
     }))
   }
 
@@ -289,6 +292,7 @@ export class PatService {
         createdAt: t.createdAt,
         expiresAt: t.expiresAt,
         lastUsedAt: t.lastUsedAt,
+        knowledgeLimit: t.knowledgeLimit,
         userId: t.userId ?? '',
         ownerEmail: owner?.email,
         ownerFullName: owner?.fullName,

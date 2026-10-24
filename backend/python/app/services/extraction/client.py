@@ -22,10 +22,12 @@ from app.config.constants.service import TokenScopes, config_node_constants
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.modules.transformers.document_extraction import (
     DEFAULT_CONTEXT_LENGTH,
+    _classifies_as_code,
     classify_request_blocks,
 )
-from app.services.base_client import BaseServiceClient, ServiceCallError
+from app.services.base_client import BaseServiceClient, parse_retry_after
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
@@ -79,14 +81,27 @@ class ExtractionClient(BaseServiceClient):
         Returns ``None`` when the LLM produced no classification (e.g. empty
         document).  Raises :class:`ExtractionClientError` on explicit failures.
         Raises :class:`ServiceCallError` on connection problems.
+
+        The service has no record of its own, so *record_name* and *record_type*
+        travel with the request: the type selects the code prompt (``CODE_FILE``)
+        over the document prompt, and both give the document prompt its file
+        context.
         """
-        context_length_ceiling = await self._context_length_ceiling()
-        payload = {
-            "block_container": {
+        if _classifies_as_code(record_type):
+            # The code prompt reads the file-summary block, each block's
+            # code_metadata and the block groups (a class's docstring and its
+            # INHERITS edges), all of which the trimmed document request drops.
+            # The service still cuts the rendered file to its token budget.
+            container = block_container.model_dump(mode="json")
+        else:
+            context_length_ceiling = await self._context_length_ceiling()
+            container = {
                 "blocks": classify_request_blocks(
                     block_container.blocks, context_length_ceiling
                 ),
-            },
+            }
+        payload = {
+            "block_container": container,
             "org_id": org_id,
             "departments": departments or [],
             "record_name": record_name,
@@ -104,6 +119,12 @@ class ExtractionClient(BaseServiceClient):
 
         if not body.get("success"):
             error_msg = body.get("error") or "Classification failed"
+            if body.get("error_code") == LLMNotConfiguredError.code:
+                raise LLMNotConfiguredError(error_msg)
+            if body.get("error_code") == LLMUnavailableError.code:
+                # Set while the provider's circuit is open behind that service.
+                retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                raise LLMUnavailableError(error_msg, retry_after=retry_after)
             raise ExtractionClientError(message=error_msg)
 
         classification_dict = body.get("classification")
@@ -152,3 +173,45 @@ class ExtractionClient(BaseServiceClient):
                     return None
                 ceiling = value if ceiling is None else max(ceiling, value)
         return ceiling
+
+    async def extract_entities(
+        self,
+        block_container: BlocksContainer,
+        org_id: str,
+        record_name: str = "",
+        record_type: str = "",
+        reference_time_ms: int | None = None,
+        tz: str = "UTC",
+        enabled_kinds: list[str] | None = None,
+        budgets: dict | None = None,
+    ):
+        """Call ``POST /api/v1/extract/entities``. Read timeout covers the agent wall clock."""
+        from app.modules.named_entities.domain.models import (
+            NamedEntityExtraction,
+            read_stored_extraction,
+        )
+
+        payload = {
+            "block_container": block_container.model_dump(mode="json"),
+            "org_id": org_id,
+            "record_name": record_name,
+            "record_type": record_type,
+            "reference_time_ms": reference_time_ms,
+            "tz": tz,
+            "enabled_kinds": enabled_kinds or [],
+            "budgets": budgets,
+        }
+        response = await self._post_json(
+            "/api/v1/extract/entities",
+            payload,
+            operation="extract_entities",
+            org_id=org_id,
+        )
+        body = response.json()
+        if not body.get("success"):
+            raise ExtractionClientError(message=body.get("error") or "Entity extraction failed")
+        # The service can be a newer build than this one.
+        extraction = read_stored_extraction(body.get("extraction"))
+        if extraction is None:
+            return NamedEntityExtraction(status="FAILED", termination_reason="llm_error")
+        return extraction

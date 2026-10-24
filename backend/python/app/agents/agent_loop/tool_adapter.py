@@ -7,15 +7,28 @@ that are built by factory functions and have no toolset registry entry.
 
 from __future__ import annotations
 
+import copy
+import functools
 import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
+from app.agent_loop_lib.tools.base import (
+    _PYTHON_TYPES,
+    ParameterType,
+    Tool,
+    ToolOutput,
+    ToolParameter,
+    _fuzzy_match_enum,
+)
+from app.agent_loop_lib.tools.decorators import (
+    accepted_argument_names,
+    reject_unknown_arguments,
+)
+from app.agent_loop_lib.tools.errors import ToolValidationError
 from app.modules.agents.context.tool_descriptions import _extract_parameters_from_schema
 from app.modules.agents.context.tool_result_extractor import ToolResultExtractor
 from app.modules.agents.qna.helpers import clean_tool_result
-
 
 if TYPE_CHECKING:
     from langchain_core.tools import StructuredTool
@@ -100,7 +113,59 @@ def _normalized_schema_keywords(node: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _resolve_json_refs(node: Any, defs: dict[str, Any], seen: frozenset[str] = frozenset()) -> Any:  # noqa: ANN401
+# Nodes one schema may cost while its `$ref`s are inlined. Definitions that share sub-definitions
+# expand exponentially (a 2 KB schema became 17 MB), so past this a reference is left as a
+# placeholder: one server's schema can't stall the event loop or flood the model's context.
+MAX_INLINED_SCHEMA_NODES = 5_000
+
+
+class _NodeBudget:
+    __slots__ = ("remaining",)
+
+    def __init__(self, limit: int) -> None:
+        self.remaining = limit
+
+    def spend(self) -> bool:
+        """Take one node; False once the budget is gone."""
+        self.remaining -= 1
+        return self.remaining >= 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.remaining < 0
+
+
+def _ref_target(ref: str, defs: dict[str, Any], root: Any) -> Any:  # noqa: ANN401
+    """What a local `$ref` points at, or None. `#/$defs/X` and `#/definitions/X` use `defs`;
+    any other `#/...` pointer is walked through the document; a remote reference isn't
+    fetched. A pointer that doesn't resolve falls back to its last segment in `defs`, which
+    is how references were looked up before."""
+    if not ref.startswith("#"):
+        return None
+    segments = [part.replace("~1", "/").replace("~0", "~") for part in ref[2:].split("/")] if ref[2:] else []
+    if len(segments) == 2 and segments[0] in ("$defs", "definitions") and segments[1] in defs:
+        return defs[segments[1]]
+    node = root
+    for part in segments:
+        if isinstance(node, dict) and part in node:
+            node = node[part]
+        elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
+            node = node[int(part)]
+        else:
+            node = None
+            break
+    if node is not None:
+        return node
+    return defs.get(segments[-1]) if segments else None
+
+
+def _resolve_json_refs(
+    node: Any,  # noqa: ANN401
+    defs: dict[str, Any],
+    seen: frozenset[str] = frozenset(),
+    budget: _NodeBudget | None = None,
+    root: Any = None,  # noqa: ANN401
+) -> Any:  # noqa: ANN401
     """Inlines every `$ref`/`$defs` indirection in `node` into a single
     self-contained schema fragment, and normalizes union spellings on the way
     through (see `_normalized_schema_keywords`).
@@ -114,17 +179,33 @@ def _resolve_json_refs(node: Any, defs: dict[str, Any], seen: frozenset[str] = f
     recursive branch. Once a ref name is on the current resolution path, a
     revisit returns a bounded placeholder instead of recursing again; every
     OTHER branch of the schema still resolves normally.
+
+    `budget` caps the nodes one schema may cost (`MAX_INLINED_SCHEMA_NODES`); once it is spent,
+    a reference is left as a placeholder like a recursive one, so the walk stays linear in the
+    input however the definitions are shared.
     """
+    if budget is None:
+        budget = _NodeBudget(MAX_INLINED_SCHEMA_NODES)
     if isinstance(node, dict):
+        within_budget = budget.spend()
         ref = node.get("$ref")
-        if ref:
-            ref_name = ref.rsplit("/", 1)[-1]
-            if ref_name in seen:
+        if isinstance(ref, str) and ref:
+            ref_name = ref.rsplit("/", 1)[-1] or ref
+            if ref in seen:
                 return {
                     "type": "object",
                     "description": f"(recursive reference to '{ref_name}', not expanded further)",
                 }
-            resolved = _resolve_json_refs(defs.get(ref_name, {}), defs, seen | {ref_name})
+            if not within_budget:
+                return {
+                    "type": "object",
+                    "description": f"(reference to '{ref_name}' not expanded: the schema is too large)",
+                }
+            target = _ref_target(ref, defs, root)
+            if not isinstance(target, dict):
+                # `{}` here would be a typeless schema, which Gemini rejects for the whole request.
+                target = {"type": "object", "description": f"(reference to '{ref_name}' could not be resolved)"}
+            resolved = _resolve_json_refs(target, defs, seen | {ref}, budget, root)
             # Siblings are resolved too, not copied verbatim: a `$ref` nested
             # inside one (`{"$ref": ..., "items": {"$ref": ...}}`, legal since
             # draft 2019-09) would otherwise survive to the transports, where
@@ -133,18 +214,19 @@ def _resolve_json_refs(node: Any, defs: dict[str, Any], seen: frozenset[str] = f
             # {ref_name}`) because a sibling is at the referencing node's
             # level, not inside the definition being expanded.
             siblings = {
-                key: value if key in _NON_SCHEMA_VALUE_KEYS else _resolve_json_refs(value, defs, seen)
+                key: value if key in _NON_SCHEMA_VALUE_KEYS else _resolve_json_refs(value, defs, seen, budget, root)
                 for key, value in node.items()
                 if key != "$ref"
             }
             return _normalized_schema_keywords({**resolved, **siblings})
         return _normalized_schema_keywords({
-            k: v if k in _NON_SCHEMA_VALUE_KEYS else _resolve_json_refs(v, defs, seen)
+            k: v if k in _NON_SCHEMA_VALUE_KEYS else _resolve_json_refs(v, defs, seen, budget, root)
             for k, v in node.items()
             if k != "$defs"
         })
     if isinstance(node, list):
-        return [_resolve_json_refs(item, defs, seen) for item in node]
+        budget.spend()
+        return [_resolve_json_refs(item, defs, seen, budget, root) for item in node]
     return node
 
 
@@ -159,7 +241,25 @@ def _unwrap_any_of(prop_schema: dict[str, Any]) -> dict[str, Any]:
     return chosen
 
 
+# Resolved schemas of pydantic model classes. Every request binds the same tool
+# classes, and generating plus inlining each schema was ~2% of query CPU.
+_resolved_schema_by_class: dict[type, dict[str, Any] | None] = {}
+
+
 def _json_schema_dict_from_source(schema: Any) -> dict[str, Any] | None:  # noqa: ANN401
+    if isinstance(schema, type):
+        if schema not in _resolved_schema_by_class:
+            # Tools built per request can carry a fresh class each time.
+            if len(_resolved_schema_by_class) >= 2000:
+                _resolved_schema_by_class.clear()
+            _resolved_schema_by_class[schema] = _json_schema_dict_uncached(schema)
+        cached = _resolved_schema_by_class[schema]
+        # Callers adjust the dict they get (descriptions, required lists).
+        return copy.deepcopy(cached) if cached is not None else None
+    return _json_schema_dict_uncached(schema)
+
+
+def _json_schema_dict_uncached(schema: Any) -> dict[str, Any] | None:  # noqa: ANN401
     if schema is None:
         return None
     if isinstance(schema, dict):
@@ -174,7 +274,70 @@ def _json_schema_dict_from_source(schema: Any) -> dict[str, Any] | None:  # noqa
     # Walked even with no `$defs` to resolve: `_resolve_json_refs` also
     # normalizes the union spellings Gemini can't consume, which a schema
     # carrying no indirection at all still needs.
-    return _resolve_json_refs(raw, defs)
+    budget = _NodeBudget(MAX_INLINED_SCHEMA_NODES)
+    resolved = _resolve_json_refs(raw, defs, budget=budget, root=raw)
+    if budget.exhausted:
+        logger.warning(
+            "Tool schema %r exceeded %d nodes while inlining references; the rest were left as placeholders",
+            raw.get("title") or "<untitled>", MAX_INLINED_SCHEMA_NODES,
+        )
+    return resolved
+
+
+_COMBINATORS = ("anyOf", "oneOf", "allOf")
+# Missing `items` is rejected by OpenAI and Gemini; a string is what every provider accepts.
+_DEFAULT_ARRAY_ITEMS = {"type": "string"}
+
+
+def _is_object_schema(node: Any) -> bool:  # noqa: ANN401
+    return isinstance(node, dict) and (node.get("type") == "object" or "properties" in node)
+
+
+def _merge_object_arms(base: dict[str, Any], arms: list[dict[str, Any]], *, all_apply: bool) -> dict[str, Any]:
+    """One object from a root `anyOf`/`oneOf` (any one arm applies) or `allOf` (all apply):
+    every arm's properties, and as required what every arm requires, or what any does."""
+    properties = dict(base.get("properties") or {})
+    for arm in arms:
+        for name, prop in (arm.get("properties") or {}).items():
+            properties.setdefault(name, prop)
+    required_sets = [set(arm.get("required") or []) for arm in arms]
+    arm_required = set.union(*required_sets) if all_apply else set.intersection(*required_sets)
+    required = [name for name in properties if name in set(base.get("required") or []) | arm_required]
+    merged = {k: v for k, v in base.items() if k not in (*_COMBINATORS, "properties", "required", "type")}
+    merged.update(type="object", properties=properties)
+    if required:
+        merged["required"] = required
+    return merged
+
+
+def _object_root(schema: dict[str, Any]) -> dict[str, Any]:
+    """A tool's parameters as one object without a combinator at the top: Anthropic rejects
+    `anyOf`/`oneOf`/`allOf` there and OpenAI wants `type: object`, and one tool they reject
+    fails every tool in the request."""
+    combinator = next((key for key in _COMBINATORS if isinstance(schema.get(key), list) and schema[key]), None)
+    if combinator:
+        # A `null` arm only makes the whole argument object optional, which it already is.
+        arms = [arm for arm in schema[combinator] if isinstance(arm, dict) and arm.get("type") != "null"]
+        object_arms = [arm for arm in arms if _is_object_schema(arm)]
+        if object_arms and (len(object_arms) == len(arms) or _is_object_schema(schema)):
+            return _merge_object_arms(schema, object_arms, all_apply=combinator == "allOf")
+    if _is_object_schema(schema):
+        return {**{k: v for k, v in schema.items() if k not in _COMBINATORS}, "type": "object"}
+    if schema.get("type") is None and not combinator and not any(k in schema for k in ("items", "enum", "const")):
+        return {**schema, "type": "object", "properties": {}}
+    logger.warning("Tool schema %r is not an object; the tool is offered without parameters", schema.get("title"))
+    return {"type": "object", "properties": {}, **({"description": schema["description"]} if "description" in schema else {})}
+
+
+def _with_array_items(node: Any) -> Any:  # noqa: ANN401
+    if isinstance(node, list):
+        return [_with_array_items(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out = {k: v if k in _NON_SCHEMA_VALUE_KEYS else _with_array_items(v) for k, v in node.items()}
+    if out.get("type") == "array" and not isinstance(out.get("items"), (dict, list)):
+        out["items"] = dict(_DEFAULT_ARRAY_ITEMS)
+    return out
 
 
 def resolve_json_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
@@ -192,7 +355,9 @@ def resolve_json_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
     the request, since they all go up in one API call.
     """
     resolved = _json_schema_dict_from_source(schema)
-    return resolved or {"type": "object", "properties": {}}
+    if not resolved:
+        return {"type": "object", "properties": {}}
+    return _with_array_items(_object_root(resolved))
 
 
 def _tool_parameter_from_json_schema(name: str, prop_schema: dict[str, Any], required: bool) -> ToolParameter:
@@ -283,34 +448,175 @@ def _stringify(payload: Any) -> str:  # noqa: ANN401
         return str(payload)
 
 
-class _PermissiveValidationMixin:
-    """PipesHub tools tolerate loosely-typed LLM tool-call arguments today
-    (no Pydantic re-validation happens between `RegistryToolWrapper.arun()`
-    and the underlying action — see `_execute_class_method_async`, which
-    just filters to known parameter names). `agent_loop.tools.base.Tool`'s
-    default `validate()` is strict (rejects unknown keys, raises on type
-    mismatches like an LLM sending `"5"` for an int field) and runs BEFORE
-    `execute()` inside `ToolExecutor._run()`, so overriding it here is the
-    only way to preserve the legacy path's lenient behavior — real failures
-    still surface as a normal `ToolOutput(success=False, ...)` from
-    `execute()`'s own error handling instead of a hard `ToolValidationError`.
-    """
+_MAX_DERIVED_SHORT_DESCRIPTION_CHARS = 160
+
+
+def _derive_short_description(description: str, fallback: str) -> str:
+    """Best-effort one-liner from a full LangChain tool docstring: the
+    first paragraph (up to the first blank line — the convention every
+    docstring in `app/utils/*_tool.py` already follows), whitespace-
+    collapsed and capped so a verbose opening paragraph still can't
+    balloon the system prompt the way the full multi-paragraph docstring
+    would. Callers that know a better one-liner pass `short_description`."""
+    text = (description or "").strip()
+    if not text:
+        return fallback
+    first_paragraph = text.split("\n\n", 1)[0]
+    one_line = " ".join(first_paragraph.split())
+    if not one_line:
+        return fallback
+    if len(one_line) > _MAX_DERIVED_SHORT_DESCRIPTION_CHARS:
+        one_line = one_line[: _MAX_DERIVED_SHORT_DESCRIPTION_CHARS - 1].rstrip() + "…"
+    return one_line
+
+
+_NO_COERCION = object()
+
+
+def _coerce_primitive(value: Any, accepted_types: tuple[type, ...]) -> Any:  # noqa: ANN401
+    """Best-effort coercion for the common LLM stringification case — e.g.
+    `"5"` sent for an integer parameter, or `"true"` for a boolean one.
+    Returns `_NO_COERCION` rather than guessing when `value` isn't
+    unambiguously one of `accepted_types`, so a genuine type mismatch
+    (a dict where a string was expected) still fails validation instead of
+    being silently passed through."""
+    if isinstance(value, bool):
+        # `isinstance(True, int)` is True, so bool has to be rejected up
+        # front or it coerces into every numeric parameter.
+        return _NO_COERCION
+    if isinstance(value, float) and int in accepted_types and float not in accepted_types:
+        # JSON has a single number type: `5.0` for an integer parameter means
+        # 5, but `isinstance(5.0, int)` is False. A fractional value is a real
+        # mismatch and still rejected.
+        return int(value) if value.is_integer() else _NO_COERCION
+    if not isinstance(value, str):
+        return _NO_COERCION
+    if int in accepted_types and float not in accepted_types:
+        try:
+            return int(value)
+        except ValueError:
+            return _NO_COERCION
+    if float in accepted_types:
+        try:
+            return float(value)
+        except ValueError:
+            return _NO_COERCION
+    if accepted_types == (bool,) and value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    return _NO_COERCION
+
+
+class SchemaShallowValidationMixin:
+    """`validate` for a tool whose schema comes from outside PipesHub (an MCP server, an
+    OpenAPI spec). The tool supplies `parameters` and `raw_input_schema`."""
+
+    def _properties_with_authoritative_type(self) -> frozenset[str]:
+        """Property names whose schema declares exactly ONE concrete JSON
+        type — the only ones a local type check can enforce without
+        contradicting the server's own contract.
+
+        `parameters` is a lossy view of the schema: `_tool_parameter_from_json_schema`
+        (`tool_adapter.py`) reports STRING for a property that declares no
+        `type` at all, and `_unwrap_any_of` collapses a union to its first
+        non-null arm. Type-checking against that view rejects calls the real
+        schema permits — an untyped property accepts any JSON value, a
+        `string | array` union accepts both — and because `ToolExecutor`'s
+        `_usage_hint` is built from the same `parameters`, the correction
+        handed back to the model repeats the wrong type, so it cannot
+        recover. Three such turns and `ToolErrorTracker` blocks the tool for
+        the rest of the request.
+        """
+        properties = (self.raw_input_schema or {}).get("properties")
+        if not isinstance(properties, dict):
+            return frozenset()
+        return frozenset(
+            name
+            for name, prop in properties.items()
+            if isinstance(prop, dict)
+            and isinstance(prop.get("type"), str)
+            and not prop.get("anyOf")
+            and not prop.get("oneOf")
+        )
 
     def validate(self, kwargs: dict[str, Any]) -> None:
-        return
+        """Shallow validation against the tool's own schema — an MCP server's or an
+        OpenAPI spec's (via
+        `parameters`, sourced from the same `raw_input_schema` above):
+        required keys present, enum membership, and — only for a property
+        that declares a single concrete type (see
+        `_properties_with_authoritative_type`) — a loose primitive-type
+        check that coerces the common case of an LLM stringifying a number
+        or boolean rather than rejecting it outright.
+
+        Deliberately NOT `Tool.validate()`'s stricter default: that also
+        rejects unknown keys, which is too easy to false-positive on here —
+        a remote `additionalProperties` schema legitimately allows keys
+        `parameters` doesn't know about, and a false rejection blocks a call
+        that would have succeeded, which is worse than letting the server
+        reject it itself. A validation failure here still turns into a
+        normal, correctable `ToolOutput(success=False, ...)` for the model
+        (`ToolExecutor._run`, `executor.py`) instead of an opaque provider
+        400 after a network round trip — that's the point of overriding the
+        old no-op mixin at all.
+        """
+        params_by_name = {p.name: p for p in self.parameters}
+        typed_properties = self._properties_with_authoritative_type()
+        for param in params_by_name.values():
+            if param.name not in kwargs:
+                if param.required:
+                    # No tool prefix: the message is that call's own result, and the card shows it.
+                    raise ToolValidationError(f"missing required argument '{param.name}'")
+                continue
+
+            value = kwargs[param.name]
+            if value is None:
+                continue
+
+            accepted_types = (
+                _PYTHON_TYPES.get(param.type) if param.name in typed_properties else None
+            )
+            if accepted_types:
+                is_bool_leaking_into_numeric = isinstance(value, bool) and param.type in (
+                    ParameterType.INTEGER, ParameterType.FLOAT,
+                )
+                if not isinstance(value, accepted_types) or is_bool_leaking_into_numeric:
+                    coerced = (
+                        _NO_COERCION if is_bool_leaking_into_numeric
+                        else _coerce_primitive(value, accepted_types)
+                    )
+                    if coerced is _NO_COERCION:
+                        raise ToolValidationError(
+                            f"argument '{param.name}' expected type {param.type.value!r}, got {type(value).__name__!r}"
+                        )
+                    kwargs[param.name] = value = coerced
+
+            if param.enum is not None and value not in param.enum:
+                matched = _fuzzy_match_enum(value, param.enum)
+                if matched is not None:
+                    kwargs[param.name] = matched
+                else:
+                    raise ToolValidationError(f"argument '{param.name}' must be one of {param.enum}, got {value!r}")
 
 
-class PipesHubStructuredToolAdapter(_PermissiveValidationMixin, Tool):
+class PipesHubStructuredToolAdapter(Tool):
     """Wraps a per-request dynamic LangChain `StructuredTool` (built by the
     factory functions in `tool_system.py`/`app/utils/*_tool.py`) as an
     agent-loop `Tool`. These have no `_global_tools_registry` entry, so
     identity/description/parameters come from the `StructuredTool` object
     itself rather than a `RegistryTool`."""
 
-    def __init__(self, structured_tool: StructuredTool, app_name: str, tool_name: str) -> None:
+    def __init__(
+        self,
+        structured_tool: StructuredTool,
+        app_name: str,
+        tool_name: str,
+        *,
+        short_description: str | None = None,
+    ) -> None:
         self._structured_tool = structured_tool
         self._app_name = app_name
         self._tool_name = tool_name
+        self._short_description = short_description
 
     @property
     def app_name(self) -> str:
@@ -322,7 +628,15 @@ class PipesHubStructuredToolAdapter(_PermissiveValidationMixin, Tool):
 
     @property
     def short_description(self) -> str:
-        return self._structured_tool.description or self.name
+        if self._short_description:
+            return self._short_description
+        # Code-graph tools carry their one-liner in the StructuredTool's metadata.
+        meta = getattr(self._structured_tool, "metadata", None) or {}
+        if isinstance(meta, dict):
+            short = meta.get("short_description")
+            if isinstance(short, str) and short.strip():
+                return short.strip()
+        return _derive_short_description(self._structured_tool.description, self.name)
 
     @property
     def description(self) -> str:
@@ -337,7 +651,14 @@ class PipesHubStructuredToolAdapter(_PermissiveValidationMixin, Tool):
         return _params_from_schema(getattr(self._structured_tool, "args_schema", None), self.name)
 
     def validate(self, kwargs: dict[str, Any]) -> None:
-        """Permissive validation — dynamic tools handle their own input normalization."""
+        """Only unknown argument names are rejected; dynamic tools normalize
+        loosely typed values themselves."""
+        reject_unknown_arguments(self._accepted_args, kwargs)
+
+    @functools.cached_property
+    def _accepted_args(self) -> frozenset[str] | None:
+        target = getattr(self._structured_tool, "coroutine", None) or getattr(self._structured_tool, "func", None)
+        return accepted_argument_names(target) if target is not None else None
 
     async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
         coroutine = getattr(self._structured_tool, "coroutine", None)

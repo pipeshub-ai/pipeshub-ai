@@ -131,8 +131,11 @@ class TestCaseC02CanFail:
         assert "writes to jira" in text or "cannot be undone" in text
 
     def test_the_ask_tool_carries_its_real_contract(self) -> None:
+        from app.agents.actions.internal_tools.intrim_tools import InternalTools
+
         card = card_for_tool("internaltools__ask_user_question")
-        assert card.description.startswith("MANDATORY")
+        assert card.description == InternalTools.ask_user_question._agent_tool_meta.description
+        assert "Before changing data the user did not ask you to change, confirm with this tool" in card.description
         assert any(t.key == "lifecycle" and t.value == "terminal" for t in card.tags)
 
 

@@ -6,6 +6,7 @@ import { Node, Edge } from '@xyflow/react';
 import {
   truncateText,
   normalizeDisplayName,
+  normalizePaletteLabel,
   formattedProvider,
 } from '../display-utils';
 import { WEB_SEARCH_PROVIDER_META } from '../../../workspace/web-search/types';
@@ -20,6 +21,21 @@ import type {
 } from '../../types';
 import type { AgentReconstructionSource, FlowNodeData } from '../types';
 import { skillNodeWarning } from '../skill-node-warning';
+import { apiToolsetsOnAgent } from '../api-toolset-attachments';
+import type { ApiToolset } from '../../../workspace/api-toolsets/types';
+import { flowLayerX } from '../flow-layout';
+
+/** Toolset nodes: one per toolset, or one per app for agents saved with the legacy flat `tools` list. */
+function countToolsetApps(agent: AgentReconstructionSource, toolsetCount: number): number {
+  if (toolsetCount > 0) return toolsetCount;
+  if (!agent.tools || agent.tools.length === 0) return 0;
+  const uniqueApps = new Set<string>();
+  agent.tools.forEach((toolName: string) => {
+    if (typeof toolName !== 'string') return;
+    uniqueApps.add(toolName.split('.')[0]);
+  });
+  return uniqueApps.size;
+}
 
 /** Reconstructed model config — unified shape for both object and legacy string entries. */
 interface ModelConfigObject {
@@ -50,12 +66,19 @@ export function useAgentBuilderReconstruction(): {
     agent: AgentReconstructionSource,
     models: unknown[],
     tools: unknown[],
-    knowledgeBases: { id: string; name: string; connectorId?: string }[]
+    knowledgeBases: { id: string; name: string; connectorId?: string }[],
+    apiToolsets?: ApiToolset[]
   ) => { nodes: Node<FlowNodeData>[]; edges: Edge[] };
 } {
   const { t } = useTranslation();
   const reconstructFlowFromAgent = useCallback(
-    (agent: AgentReconstructionSource, models: unknown[], tools: unknown[], knowledgeBases: { id: string; name: string; connectorId?: string }[]) => {
+    (
+      agent: AgentReconstructionSource,
+      models: unknown[],
+      tools: unknown[],
+      knowledgeBases: { id: string; name: string; connectorId?: string }[],
+      apiToolsets: ApiToolset[] = []
+    ) => {
       const nodes: Node<FlowNodeData>[] = [];
       const edges: Edge[] = [];
       let nodeCounter = 1;
@@ -78,18 +101,39 @@ export function useAgentBuilderReconstruction(): {
         description?: string;
       }>;
 
-      // Enhanced Tree Layout - Optimized for visual clarity and scalability
+      // Layer columns left to right; skills and MCP servers share the tools column, below toolsets.
+      // Empty layers take no column (see flowLayerX), so the counts are worked out first.
+      // API toolsets are stored as a flat list but drawn as toolset nodes like any action.
+      const agentToolsets: AgentToolset[] = [
+        ...(agent.toolsets ?? []),
+        ...apiToolsetsOnAgent(agent.apiToolsetTools ?? [], apiToolsets, t('agentBuilder.apiToolsets.section')),
+      ];
+
+      const counts = {
+        // Agents saved with no models render with zero LLM nodes — see the
+        // "Create LLM nodes" section below, which no longer injects a
+        // default node when `agent.models` is empty.
+        llm: agent.models?.length || 0,
+        toolsets: countToolsetApps(agent, agentToolsets.length),
+        knowledge: agent.knowledge?.length || 0,
+        skills: agent.skills?.length || 0,
+        mcp: agent.mcpServers?.length || 0,
+      };
+      const columnX = flowLayerX({
+        knowledge: counts.knowledge,
+        llm: counts.llm,
+        tools: counts.toolsets + counts.skills + counts.mcp + (agent.webSearch?.provider ? 1 : 0),
+      });
       const layout = {
-        // Six distinct horizontal layers with proper separation
         layers: {
-          input: { x: 100, baseY: 400 },         // Layer 1: User Input (left)
-          knowledge: { x: 500, baseY: 400 },     // Layer 2: Knowledge & Context
-          llm: { x: 950, baseY: 400 },           // Layer 3: LLMs
-          tools: { x: 1400, baseY: 400 },        // Layer 4: Toolsets (separate layer)
-          skills: { x: 1400, baseY: 750 },       // Layer 4b: Skills (below toolsets, same column)
-          mcp: { x: 1400, baseY: 1050 },         // Layer 4c: MCP servers (below skills, same column)
-          agent: { x: 1850, baseY: 400 },        // Layer 5: Agent Core
-          output: { x: 2300, baseY: 400 },       // Layer 6: Response Output
+          input: { x: columnX.input, baseY: 400 },
+          knowledge: { x: columnX.knowledge, baseY: 400 },
+          llm: { x: columnX.llm, baseY: 400 },
+          tools: { x: columnX.tools, baseY: 400 },
+          skills: { x: columnX.tools, baseY: 750 },
+          mcp: { x: columnX.tools, baseY: 1050 },
+          agent: { x: columnX.agent, baseY: 400 },
+          output: { x: columnX.output, baseY: 400 },
         },
 
         // Dynamic spacing based on node density
@@ -111,32 +155,6 @@ export function useAgentBuilderReconstruction(): {
           minHorizontalGap: 350,
         },
       };
-
-      // Calculate node counts for intelligent positioning
-      let toolsetsCount = 0;
-      if (agent.toolsets && agent.toolsets.length > 0) {
-        toolsetsCount = agent.toolsets.length;
-      } else if (agent.tools && agent.tools.length > 0) {
-        const uniqueApps = new Set<string>();
-        agent.tools.forEach((toolName: string) => {
-          const appName = toolName.split('.')[0];
-          uniqueApps.add(appName);
-        });
-        toolsetsCount = uniqueApps.size;
-      }
-
-      const counts = {
-        // Agents saved with no models render with zero LLM nodes — see the
-        // "Create LLM nodes" section below, which no longer injects a
-        // default node when `agent.models` is empty.
-        llm: agent.models?.length || 0,
-        tools: 0,
-        toolsets: toolsetsCount,
-        knowledge: agent.knowledge?.length || 0,
-        skills: agent.skills?.length || 0,
-        mcp: agent.mcpServers?.length || 0,
-      };
-
 
       // Smart positioning system with visual balance
       const calculateOptimalPosition = (
@@ -291,6 +309,7 @@ export function useAgentBuilderReconstruction(): {
                   connectorInstanceId: kbConnectorId,
                   filters: {
                     records,
+                    ...(Array.isArray(filtersParsed.nodes) ? { nodes: filtersParsed.nodes } : {}),
                   },
                   selectedRecords: records,
                   similarity: 0.8,
@@ -436,11 +455,11 @@ export function useAgentBuilderReconstruction(): {
       // 4. Create Toolset nodes
       const toolsetNodes: Node<FlowNodeData>[] = [];
 
-      const hasToolsets = agent.toolsets && agent.toolsets.length > 0;
+      const hasToolsets = agentToolsets.length > 0;
       const hasLegacyTools = !hasToolsets && agent.tools && agent.tools.length > 0;
 
-      if (hasToolsets && agent.toolsets) {
-        agent.toolsets.forEach((toolset: AgentToolset, index: number) => {
+      if (hasToolsets) {
+        agentToolsets.forEach((toolset: AgentToolset, index: number) => {
           const toolsetName = toolset.name || '';
           const toolsetDisplayName = toolset.displayName || toolset.name || t('agentBuilder.toolsetDefaultName');
           const toolsetInstanceName = toolset.instanceName?.trim();
@@ -518,7 +537,7 @@ export function useAgentBuilderReconstruction(): {
             data: {
               id: nodeId,
               type: `toolset-${toolsetName}`,
-              label: normalizeDisplayName(nodeHeaderLabel),
+              label: normalizePaletteLabel(nodeHeaderLabel),
               description: t('agentBuilder.toolsetWithToolCount', {
                 name: toolsetDisplayName,
                 count: toolsForNode.length,
@@ -551,6 +570,7 @@ export function useAgentBuilderReconstruction(): {
         const toolsByApp = new Map<string, CatalogEntry[]>();
 
         agent.tools.forEach((toolName: string) => {
+          if (typeof toolName !== 'string') return;
           const matchingTool = toolCatalog.find(
             (t) => t.full_name === toolName || t.tool_name === toolName || t.tool_id === toolName
           );
@@ -723,7 +743,7 @@ export function useAgentBuilderReconstruction(): {
           const displayName = mcpServer.displayName || mcpServer.name || t('agentBuilder.mcpServerDefaultName');
           const mcpTools = (mcpServer.tools || []).map((tool) => ({
             name: tool.name,
-            fullName: tool.fullName || `${mcpServer.name}.${tool.name}`,
+            fullName: tool.fullName || '',
             description: tool.description || '',
           }));
 
@@ -747,7 +767,9 @@ export function useAgentBuilderReconstruction(): {
                 name: mcpServer.name,
                 displayName,
                 typeId: mcpServer.typeId || undefined,
+                allTools: mcpServer.allTools === true,
                 tools: mcpTools,
+                availableTools: mcpTools,
                 isAuthenticated: true,
               },
               inputs: [],

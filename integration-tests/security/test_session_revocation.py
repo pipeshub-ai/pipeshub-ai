@@ -30,9 +30,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
+import jwt
 import pytest
 import requests
-from jose import jwt
 from pymongo import MongoClient
 
 from helper import local_auth

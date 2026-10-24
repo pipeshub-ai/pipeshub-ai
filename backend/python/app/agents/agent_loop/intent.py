@@ -14,7 +14,7 @@ Output format: the prompt asks for a detailed markdown write-up (headed
 sections for the restatement/requirements/success criteria/open
 questions, when applicable) and — for auto mode — a trailing tier word.
 The output is still NOT parsed into structured fields: the model's
-entire markdown text becomes `rewritten_query` (i.e. `Goal.description`)
+entire markdown text becomes `rewritten_query` (i.e. `Goal.interpretation`)
 verbatim, headers and all, and the only extraction is a single-word
 regex scan for the `route`. The richer shape is purely for the model's
 (and a human reading the trace's) benefit — downstream consumers
@@ -42,7 +42,11 @@ from app.agent_loop_lib.agent.spec import ModelSpec
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.transport.opik_tracing import is_opik_configured, wrap_if_enabled
 from app.agent_loop_lib.transport.registry import TransportRegistry
-from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
+from app.agents.actions.internal_tools.intrim_tools import (
+    ASK_USER_QUESTION_MAX_QUESTIONS,
+    AskUserQuestionItemInput,
+    asked_questions,
+)
 from app.agents.agent_loop.converters import convert_message_from_langchain
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.modules.agents.qna.router import (
@@ -63,7 +67,9 @@ class IntentRouteDecision(BaseModel):
 
     rewritten_query: the model's full free-form output — a self-contained
                restatement of the request with reasoning, requirements,
-               and success criteria baked in. Becomes `Goal.description`.
+               and success criteria baked in. Becomes `Goal.interpretation`
+               (and the `description` planners work from); the person's own
+               words stay the current user message.
     route: quick/react/deep — only populated when `include_routing=True`
                was passed; `None` otherwise.
     clarifying_questions: empty unless the model judged the request FATALLY
@@ -99,9 +105,12 @@ _INTENT_INSTRUCTIONS = (
     "for the agent that will execute it.\n\n"
     "1. Resolve pronouns and follow-ups ('do it', 'the second one', 'yes') "
     "against the conversation history.\n"
-    "2. Preserve every explicit ID, name, key, date, or value from the "
+    "2. Name an earlier topic of the conversation only when the request refers back "
+    "to it. A request that makes sense on its own is a new question: restate it "
+    "without bringing in earlier topics, and do not describe the conversation.\n"
+    "3. Preserve every explicit ID, name, key, date, or value from the "
     "original query VERBATIM.\n"
-    "3. Do NOT add assumptions, new constraints, or invented detail — only "
+    "4. Do NOT add assumptions, new constraints, or invented detail — only "
     "surface what the request already implies.\n\n"
     "Structure your markdown with these headings, skipping any that don't "
     "apply to this request (this is guidance, not a schema — write "
@@ -136,8 +145,8 @@ _CLARIFY_INSTRUCTIONS = (
     '"options": [{"label": "<option 1>"}, {"label": "<option 2>"}, '
     '{"label": "<option 3>"}]}]}\n'
     "```\n"
-    "1-3 questions max, each with 3-7 concrete tappable options — expand "
-    "the example's 3 options up to 7 if more concrete choices apply; never "
+    "1-3 questions max, each with 2-4 concrete tappable options that lead "
+    "to different results; never "
     "an 'Other'/'Something else' catch-all (the UI adds one automatically). "
     "Use this exception RARELY — only when there is truly nothing to work "
     "with."
@@ -166,7 +175,8 @@ def _parse_clarify_block(text: str) -> list["AskUserQuestionItemInput"] | None:
         questions = payload.get("questions") if isinstance(payload, dict) else None
         if not questions:
             return None
-        return [AskUserQuestionItemInput.model_validate(q) for q in questions]
+        asked = asked_questions([AskUserQuestionItemInput.model_validate(q) for q in questions])
+        return asked[:ASK_USER_QUESTION_MAX_QUESTIONS] or None
     except (ValueError, ValidationError, AttributeError, TypeError) as e:
         logger.warning("Intent: malformed ```clarify block, ignoring: %s", e)
         return None
@@ -335,8 +345,13 @@ async def parse_intent_and_route(
     if not user_query:
         return _fallback_decision(user_query, include_routing=include_routing, reason="empty query")
 
+    from app.agent_loop_lib.context.base import ContextBudget
+    from app.agent_loop_lib.core.tokens import count_text_tokens
+    from app.agents.agent_loop.history_window import current_attachment_chars
+    from app.modules.agents.qna.router import default_earlier_attachment_chars
     from app.modules.transformers.blob_storage import BlobStorage
     from app.utils.attachment_utils import resolve_attachments
+    from app.utils.render_budget import RenderBudget
 
     capability_block, n_knowledge, _sources, _tools_data = (
         build_capability_context(query_info)
@@ -353,9 +368,11 @@ async def parse_intent_and_route(
         except Exception as _bs_exc:
             logger.warning("Intent: failed to create blob_store: %s", _bs_exc)
 
+    context_window = query_info.get("context_window")
     prior_messages = await build_prior_routing_messages(
         query_info, blob_store=blob_store, org_id=org_id, is_multimodal_llm=is_multimodal_llm,
         user_id=user_id, graph_provider=graph_provider, is_service_account=is_service_account,
+        max_attachment_chars=default_earlier_attachment_chars(model_name, context_window),
     )
 
     human_content: Any = f"user query : {user_query}"
@@ -367,6 +384,10 @@ async def parse_intent_and_route(
                 is_multimodal_llm=is_multimodal_llm, logger=logger,
                 user_id=user_id, graph_provider=graph_provider,
                 is_service_account=is_service_account,
+                render_budget=RenderBudget(max_chars=current_attachment_chars(
+                    ContextBudget.for_model(model_name or None, context_window=context_window).effective_max_tokens,
+                    count_text_tokens(user_query),
+                )),
             )
             if attachment_blocks:
                 human_content = [
@@ -412,8 +433,8 @@ async def parse_intent_and_route(
         if not decision.rewritten_query.strip():
             decision.rewritten_query = user_query
         logger.info(
-            "Intent parsed: route=%s | rewritten_query=%s",
-            decision.route, decision.rewritten_query[:120],
+            "Intent parsed: route=%s | interpretation_chars=%d | prior_messages=%d",
+            decision.route, len(decision.rewritten_query), len(prior_messages),
         )
         return decision
     except StructuredSingleShotError as e:

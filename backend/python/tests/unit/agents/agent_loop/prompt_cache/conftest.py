@@ -44,6 +44,26 @@ def anthropic_reply(content: list[dict], stop_reason: str = "end_turn") -> dict:
     return {**_ANTHROPIC, "content": content, "stop_reason": stop_reason}
 
 
+def chat_reply(*, text: str | None = None, call: dict | None = None) -> dict:
+    """A Chat Completions reply with ``text`` or one tool ``call`` (id, name, arguments)."""
+    message: dict = {"role": "assistant", "content": text}
+    if call:
+        message["tool_calls"] = [{"id": call["id"], "type": "function",
+                                  "function": {"name": call["name"], "arguments": call["arguments"]}}]
+    choice = {"index": 0, "message": message, "finish_reason": "tool_calls" if call else "stop"}
+    return {**_CHAT, "choices": [choice]}
+
+
+def responses_reply(*, text: str | None = None, call: dict | None = None) -> dict:
+    """A Responses API reply with ``text`` or one function ``call`` (call_id, name, arguments)."""
+    if call:
+        output = [{"type": "function_call", "id": f"fc_{call['call_id']}", "status": "completed", **call}]
+    else:
+        output = [{"type": "message", "id": "m1", "status": "completed", "role": "assistant",
+                   "content": [{"type": "output_text", "text": text or "", "annotations": []}]}]
+    return {**_RESPONSES, "output": output}
+
+
 class RecordingEndpoint:
     def __init__(self) -> None:
         self.bodies: list[dict] = []

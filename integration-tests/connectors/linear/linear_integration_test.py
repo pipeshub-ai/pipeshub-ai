@@ -7,6 +7,7 @@ Linear Connector – Integration Tests
 Test cases:
   TC-SYNC-001         — Full sync + strict graph baselines vs API snapshot
   TC-LINEAR-001       — User exists; USER_APP_RELATION == connector-style Linear user fetch
+  TC-LINEAR-AUTH-001  — The creator's link to the Linear account the token belongs to
   TC-LINEAR-002       — Filtered teams as UserGroups + member edges
   TC-LINEAR-003       — Primary team as RecordGroup; reference issue belongs to team
   TC-LINEAR-004       — Reference issue TICKET fields, webUrl, edges
@@ -17,9 +18,14 @@ Test cases:
   TC-LINEAR-IDX-001   — Reference issue ``indexing_status`` COMPLETED
   TC-INCR-001         — Create new issue (test-time); incremental sync picks it up; cleanup
   TC-UPDATE-001       — Create + edit title (test-owned issue); version +1; revision match; delete
+  TC-INCR-002         — A comment added later (Linear keeps the issue's updatedAt) is re-indexed
   TC-LINEAR-PH-001    — Placeholder ancestors: minted → swept → promoted
   TC-LINEAR-EDGES-001 — Edge inventory after incremental tests
-  TC-LINEAR-PERM-001  — Team privacy → ORG or GROUP permission on RecordGroup
+  TC-LINEAR-PERM-001  — Team visibility → exactly the GROUP grants Linear's rules call for
+  TC-LINEAR-PERM-002  — A colleague with no Linear account is refused every record
+  TC-LINEAR-SEC-001   — Every FILE record is a Linear upload (the API key goes nowhere else)
+  TC-LINEAR-SCOPE-001 — Every stored issue is filed under its current Linear team
+  TC-LINEAR-SCOPE-002 — No stored issue comes from a team outside the filter (sub-teams included)
 
 Every run shares one Linear workspace with every other CI leg and PR; ``README.md`` in
 this directory is the contract that keeps them from touching each other. In short: the
@@ -31,6 +37,7 @@ own sync history runs on ``_dedicated_connector``, and every created issue carri
 import logging
 import os
 import sys
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict
@@ -51,12 +58,12 @@ from app.models.entities import (  # type: ignore[import-not-found]  # noqa: E40
 )
 from app.sources.external.linear.linear import LinearDataSource  # type: ignore[import-not-found]  # noqa: E402
 from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     apply_filter_full_sync,
     async_poll_until,
     count_owned_records,
-    wait_for_record_by_external_id,
     wait_for_sync_completion,
 )
 from connectors.linear.linear_expected import LinearExpected  # noqa: E402
@@ -68,6 +75,7 @@ from validation.graph_entity_validator import (  # noqa: E402
 from validation.graph_edge_validator import (  # noqa: E402
     assert_graph_edges,
     build_record_edge_expectations,
+    resolve_parent_record,
 )
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from connectors.linear.constants import (  # noqa: E402
@@ -79,18 +87,25 @@ from connectors.linear.constants import (  # noqa: E402
 )
 from connectors.linear.linear_test_utils import (  # noqa: E402
     _api_call_with_retry,
+    _paginate_team_issues,
     assert_linear_issues_match_graph_records,
     check_issue_exists_bool,
     count_linear_users_with_email,
     create_artifact_issue,
     delete_artifact_issue,
     fetch_ancestor_chain,
+    fetch_teams_by_ids,
     get_linear_issue_updated_ms,
     parse_linear_timestamp,
     resolve_issue_by_identifier,
     wait_until_linear_condition,
+)
+from helper.indexing_wait import (  # noqa: E402
     wait_until_record_indexing_completed,
 )
+from helper.record_access import wait_for_record_access  # noqa: E402
+from helper.second_user import SecondUser  # noqa: E402
+from app.sources.client.linear.upload_urls import is_linear_upload_url  # type: ignore[import-not-found]  # noqa: E402
 
 logger = logging.getLogger("linear-lifecycle-test")
 
@@ -101,6 +116,35 @@ def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
     pipeshub_client.wait(5)
     pipeshub_client.toggle_sync(connector_id, enable=True)
     pipeshub_client.wait(8)
+
+
+_SYNC_ATTEMPTS = 3
+
+
+async def _sync_until(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    condition: Callable[[], Awaitable[bool]],
+    description: str,
+) -> None:
+    """Incremental-sync until ``condition`` holds.
+
+    The connector finds changes with filtered queries (``updatedAt``, ``archivedAt``) that
+    can lag a write the issue query already returns; that sync logs "No new/updated issues"
+    or "No deleted issues found" and only a later one sees it.
+    """
+    for attempt in range(1, _SYNC_ATTEMPTS + 1):
+        _restart_sync(pipeshub_client, connector_id)
+        await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
+        # An edit leaves the record counts the wait settles on unchanged, and the next
+        # restart would cancel a sync still writing it, so give the graph time first.
+        try:
+            await async_poll_until(condition, timeout=60, interval=5, description=description)
+            return
+        except TimeoutError:
+            logger.warning("%s not seen after sync %d of %d", description, attempt, _SYNC_ATTEMPTS)
+    raise AssertionError(f"{description} not seen after {_SYNC_ATTEMPTS} incremental syncs")
 
 
 def _team_filters(team_ids: list[str], **extra: Any) -> Dict[str, Any]:
@@ -167,6 +211,12 @@ async def _record_absent(
     graph_provider: GraphProviderProtocol, connector_id: str, external_id: str,
 ) -> bool:
     return await graph_provider.get_record_by_external_id(connector_id, external_id) is None
+
+
+async def _record_present(
+    graph_provider: GraphProviderProtocol, connector_id: str, external_id: str,
+) -> bool:
+    return not await _record_absent(graph_provider, connector_id, external_id)
 
 
 pytestmark = [
@@ -237,13 +287,17 @@ class TestLinearConnector:
             f"PARENT_CHILD edges: {pc_edges} < expected={linear_connector['expected_parent_child_edges']}"
         )
 
+        # One team per record, plus one per extra synced team of a shared project and
+        # of each record that hangs off it.
+        shared = linear_connector["expected_shared_memberships"]
         rg_edges = await graph_provider.count_record_group_edges(connector_id)
-        assert rg_edges == all_records, (
-            f"BELONGS_TO record->group count {rg_edges} must equal total records {all_records}"
+        assert rg_edges == all_records + shared, (
+            f"BELONGS_TO record->group count {rg_edges} must equal total records {all_records} "
+            f"plus {shared} shared-team membership(s)"
         )
 
         inherit = await graph_provider.count_inherit_permissions_edges(connector_id)
-        assert inherit == all_records
+        assert inherit == all_records + shared
 
         app_edges = await graph_provider.count_app_record_group_edges(connector_id)
         rgs = await graph_provider.count_record_groups(connector_id)
@@ -304,13 +358,10 @@ class TestLinearConnector:
                     timeout=120,
                 )
 
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(
-                    pipeshub_client, graph_provider, connector_id, timeout=240,
-                )
-                await wait_for_record_by_external_id(
-                    graph_provider, connector_id, issue_id,
-                    timeout=120, description="TC-INCR-001 new issue",
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id,
+                    lambda: _record_present(graph_provider, connector_id, issue_id),
+                    f"TC-INCR-001 new issue {issue_id}",
                 )
 
                 actual = await graph_provider.get_typed_record_by_external_id(connector_id, issue_id)
@@ -336,14 +387,10 @@ class TestLinearConnector:
                 assert await delete_artifact_issue(
                     linear_datasource, issue_id=issue_id, context="TC-INCR-001",
                 ), f"TC-INCR-001: {issue_id} was not confirmed trashed in Linear"
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(
-                    pipeshub_client, graph_provider, connector_id, timeout=240,
-                )
-                await async_poll_until(
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id,
                     lambda: _record_absent(graph_provider, connector_id, issue_id),
-                    timeout=90, interval=5,
-                    description=f"TC-INCR-001: trashed issue {issue_id} removed from the graph",
+                    f"TC-INCR-001 removal of trashed issue {issue_id}",
                 )
                 logger.info("TC-INCR-001 passed: %s synced, then removed after trashing", issue_id)
             finally:
@@ -385,14 +432,12 @@ class TestLinearConnector:
                     timeout=120,
                 )
 
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(
-                    pipeshub_client, graph_provider, connector_id, timeout=240,
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id,
+                    lambda: _record_present(graph_provider, connector_id, target_id),
+                    f"TC-UPDATE-001 baseline record {target_id}",
                 )
-                record_before = await wait_for_record_by_external_id(
-                    graph_provider, connector_id, target_id,
-                    timeout=120, description="TC-UPDATE-001 baseline record",
-                )
+                record_before = await graph_provider.get_record_by_external_id(connector_id, target_id)
                 old_version = int(record_before.version)
 
                 new_title = artifact_title("Edited")
@@ -403,9 +448,13 @@ class TestLinearConnector:
 
                 pipeshub_client.wait(5)
 
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(
-                    pipeshub_client, graph_provider, connector_id, timeout=240,
+                async def _edit_synced() -> bool:
+                    record = await graph_provider.get_record_by_external_id(connector_id, target_id)
+                    return record is not None and new_title in (record.record_name or "")
+
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id, _edit_synced,
+                    f"TC-UPDATE-001 edited title of {target_id}",
                 )
 
                 record_after = await graph_provider.get_record_by_external_id(connector_id, target_id)
@@ -428,6 +477,69 @@ class TestLinearConnector:
                 if target_id:
                     await delete_artifact_issue(
                         linear_datasource, issue_id=target_id, context="TC-UPDATE-001 cleanup",
+                    )
+
+    @pytest.mark.order(9)
+    async def test_tc_incr_002_comment_added_later_reaches_the_index(
+        self,
+        linear_connector: Dict[str, Any],
+        linear_datasource: LinearDataSource,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+        vector_store: Any,
+    ) -> None:
+        """TC-INCR-002: a comment written after the issue was indexed reaches its vectors.
+
+        Linear does not change an issue's ``updatedAt`` for a new comment, so the issue
+        listing never returns it again; the connector's comment-activity pass must queue
+        the issue for re-indexing. Checked in the vector store: streaming the record reads
+        Linear live and would show the comment either way.
+        """
+        team_id = linear_connector["mutation_team_id"]
+        issue_id: str | None = None
+        marker = f"comment-later-{LINEAR_IT_RUN_ID}"
+
+        async def _vectors_hold(text: str | None) -> bool:
+            record = await graph_provider.get_record_by_external_id(connector_id, issue_id)
+            if (record is None or record.indexing_status != ProgressStatus.COMPLETED.value
+                    or not record.virtual_record_id):
+                return False
+            texts = "\n".join(await vector_store.content_texts(record.virtual_record_id))
+            return bool(texts) and (text is None or text in texts)
+
+        async with _dedicated_connector(
+            pipeshub_client, graph_provider,
+            name=f"linear-comment-{LINEAR_IT_RUN_ID}", filters=_team_filters([team_id]),
+        ) as connector_id:
+            try:
+                issue_id = await create_artifact_issue(
+                    linear_datasource, team_id=team_id, title=artifact_title("CommentTest"),
+                    context="TC-INCR-002",
+                )
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id,
+                    lambda: _record_present(graph_provider, connector_id, issue_id),
+                    f"TC-INCR-002 baseline record {issue_id}",
+                )
+                # Indexed before the comment exists, so only a re-index can bring it in.
+                await async_poll_until(
+                    lambda: _vectors_hold(None), timeout=300, interval=5,
+                    description=f"TC-INCR-002 first indexing of {issue_id}",
+                )
+                assert not await _vectors_hold(marker)
+                await _api_call_with_retry(
+                    linear_datasource.commentCreate, input={"issueId": issue_id, "body": marker},
+                    context="TC-INCR-002 commentCreate",
+                )
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id, lambda: _vectors_hold(marker),
+                    f"TC-INCR-002 later comment re-indexed on {issue_id}",
+                )
+                logger.info("TC-INCR-002 passed: the later comment is in %s's vectors", issue_id)
+            finally:
+                if issue_id:
+                    await delete_artifact_issue(
+                        linear_datasource, issue_id=issue_id, context="TC-INCR-002 cleanup",
                     )
 
 
@@ -472,6 +584,25 @@ class TestLinearValidation:
 
         logger.info("TC-LINEAR-001 passed: %d users validated", rel_count)
 
+    @pytest.mark.order(2)
+    async def test_tc_linear_auth_001_authenticated_identity(
+        self,
+        linear_connector: Dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-LINEAR-AUTH-001: the creator is linked to the Linear account the token belongs to.
+
+        That link is what lets a creator whose PipesHub email differs see the account's
+        permissions on this connector. The fixture read the same ``viewer`` the connector reads.
+        """
+        email = linear_connector.get("viewer_email")
+        await assert_authenticated_identity_link(
+            graph_provider, linear_connector["connector_id"],
+            email.strip() if isinstance(email, str) else None,
+            linear_connector.get("viewer_id"),
+        )
+        logger.info("TC-LINEAR-AUTH-001 passed: Linear account %s", linear_connector.get("viewer_id"))
+
     @pytest.mark.order(3)
     async def test_tc_linear_002_team_as_user_group(
         self,
@@ -483,9 +614,10 @@ class TestLinearValidation:
         connector_id = linear_connector["connector_id"]
         teams = linear_connector["teams"]
 
+        # One UserGroup per team, plus the workspace-members group public teams are granted to.
         graph_group_total = await graph_provider.count_user_groups(connector_id)
-        assert graph_group_total == len(teams), (
-            f"Graph UserGroup count {graph_group_total} != filtered team count {len(teams)}"
+        assert graph_group_total == len(teams) + 1, (
+            f"Graph UserGroup count {graph_group_total} != filtered team count {len(teams)} + 1"
         )
 
         primary = teams[0]
@@ -577,7 +709,10 @@ class TestLinearValidation:
         )
         assert record.source_created_at is not None
 
-        record_edges = build_record_edge_expectations(record, connector_id)
+        record_edges = build_record_edge_expectations(
+            record, connector_id,
+            parent=await resolve_parent_record(graph_provider, record, connector_id),
+        )
         await assert_graph_edges(graph_provider, record_edges)
 
         logger.info("TC-LINEAR-004 passed: issue %s validated", ref_id)
@@ -596,13 +731,12 @@ class TestLinearValidation:
             pytest.skip("No projects in primary team — skipping")
 
         connector_id = linear_connector["connector_id"]
-        primary_team_id = linear_connector["primary_team_id"]
-
+        # A project in several synced teams is filed under the first by id.
         expected = RecordAssertion(
             external_record_id=ref_project_id,
             record_type=RecordType.PROJECT.value,
             mime_type="application/blocks",
-            external_record_group_id=primary_team_id,
+            external_record_group_id=linear_connector["reference_project_team_id"],
         )
         record = await connector_assertions.assert_record_exists(
             connector_id, ref_project_id, expected,
@@ -744,7 +878,8 @@ class TestLinearValidation:
             parent_node_id=parent.id,
             size_in_bytes=size_in_bytes,
         )
-        actual = await graph_provider.get_typed_record_by_external_id(connector_id, file_url)
+        actual = await graph_provider.get_typed_record_by_external_id(
+            connector_id, expected.external_record_id)
         assert actual is not None, f"FILE record missing for url {file_url}"
 
         await assert_graph_entity_with_edges(
@@ -1051,9 +1186,10 @@ class TestLinearEdges:
             f"< expected={linear_connector['expected_total_records']}"
         )
 
+        shared = linear_connector["expected_shared_memberships"]
         rg_edges = await graph_provider.count_record_group_edges(connector_id)
-        assert rg_edges == all_records, (
-            f"BELONGS_TO record->group {rg_edges} must equal records {all_records}"
+        assert rg_edges == all_records + shared, (
+            f"BELONGS_TO record->group {rg_edges} must equal records {all_records} plus {shared} shared"
         )
 
         pc = await graph_provider.count_parent_child_edges(connector_id)
@@ -1062,8 +1198,8 @@ class TestLinearEdges:
         )
 
         inherit = await graph_provider.count_inherit_permissions_edges(connector_id)
-        assert inherit == all_records, (
-            f"INHERIT_PERMISSIONS {inherit} must equal records {all_records}"
+        assert inherit == all_records + shared, (
+            f"INHERIT_PERMISSIONS {inherit} must equal records {all_records} plus {shared} shared"
         )
 
         app_edges = await graph_provider.count_app_record_group_edges(connector_id)
@@ -1074,12 +1210,18 @@ class TestLinearEdges:
 
 
 # =============================================================================
-# TestLinearPermissions — team privacy → ORG or GROUP permission
+# TestLinearPermissions — team privacy → GROUP permissions
 # =============================================================================
 
 
 class TestLinearPermissions:
-    """Team privacy-based permission validation on RecordGroups."""
+    """Who may read a team, checked edge by edge and then through the product.
+
+    Linear's rules (linear.app/docs/private-teams, /members-roles): a private team is
+    open to its members; a public team to every member but not guests or suspended
+    accounts; a restricted team (a non-private team inside a private one) to its members
+    and the members of its parent teams up to that private one.
+    """
 
     @pytest.mark.order(21)
     async def test_tc_linear_perm_001_team_privacy_permissions(
@@ -1088,29 +1230,153 @@ class TestLinearPermissions:
         linear_datasource: LinearDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-LINEAR-PERM-001: verify PERMISSION edges to RecordGroups reflect team privacy.
-
-        Public teams get an ORG-level PERMISSION edge.
-        Private teams get a GROUP-level PERMISSION edge (external_id = team_id).
-        """
+        """TC-LINEAR-PERM-001: each team's RecordGroup carries exactly the grants its
+        visibility calls for: its own member group, plus the full-workspace-members group
+        when public, plus its parents' member groups when restricted. Never the org."""
         connector_id = linear_connector["connector_id"]
         teams = linear_connector["teams"]
+        by_id = {t["id"]: t for t in teams}
 
+        problems = []
         for team in teams:
             team_id = team["id"]
-            is_private = team.get("private", False)
-
-            rg = await graph_provider.get_record_group_by_external_id(connector_id, team_id)
-            if rg is None:
-                logger.warning("Team %s not found as RecordGroup — skipping", team_id)
+            if await graph_provider.get_record_group_by_external_id(connector_id, team_id) is None:
+                problems.append(f"team {team['key']} has no RecordGroup")
                 continue
-
-            perm_count = await graph_provider.count_permission_edges_to_record_groups(
-                connector_id, team_id,
-            )
-            assert perm_count >= 1, (
-                f"Team {team_id} ({'private' if is_private else 'public'}) "
-                f"should have at least 1 PERMISSION edge to its RecordGroup, got {perm_count}"
-            )
-
+            expected = 1
+            if team["visibility"] == "public":
+                expected += 1
+            elif team["visibility"] == "restricted":
+                parent_id = team.get("parent_id")
+                while parent_id:  # up to and including the nearest private parent
+                    expected += 1
+                    parent = by_id.get(parent_id)
+                    if parent is None:
+                        parent = await _team_from_linear(linear_datasource, parent_id)
+                    if parent is None or parent["visibility"] == "private":
+                        break
+                    parent_id = parent.get("parent_id")
+            got = await graph_provider.count_permission_edges_to_record_groups(connector_id, team_id)
+            if got != expected:
+                problems.append(f"team {team['key']} ({team['visibility']}): {got} grants, expected {expected}")
+        assert not problems, "; ".join(problems)
         logger.info("TC-LINEAR-PERM-001 passed: %d teams checked", len(teams))
+
+    @pytest.mark.order(22)
+    async def test_tc_linear_perm_002_colleague_without_a_linear_account(
+        self,
+        linear_connector: Dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+        second_user: SecondUser,
+    ) -> None:
+        """TC-LINEAR-PERM-002: a colleague with no Linear account opens no Linear record.
+
+        The edge counts above say what was written; this asks the product. Whatever the
+        teams' visibility, Linear shows nothing to someone who is not in the workspace,
+        so a grant to the whole PipesHub org (or any other leak) fails here.
+        """
+        connector_id = linear_connector["connector_id"]
+        refs = {
+            "issue": linear_connector.get("reference_issue_id"),
+            "attachment": linear_connector.get("reference_attachment_id"),
+            "document": linear_connector.get("reference_document_id"),
+        }
+        if linear_connector.get("reference_file_url"):
+            refs["file"] = (f"{linear_connector['reference_file_url']}"
+                            f"#parent={linear_connector['reference_file_parent_id']}")
+        checked = 0
+        for kind, external_id in refs.items():
+            if not external_id:
+                continue
+            record = await graph_provider.get_record_by_external_id(connector_id, external_id)
+            assert record is not None, f"reference {kind} {external_id} is not in the graph"
+            wait_for_record_access(
+                second_user, record.id, expect_access=False,
+                description=f"Linear {kind} {external_id}, as {second_user.email} who has no Linear account",
+            )
+            checked += 1
+        assert checked, "no reference record to check: the workspace needs at least one issue"
+        logger.info("TC-LINEAR-PERM-002 passed: %d records refused", checked)
+
+
+class TestLinearInvariants:
+    """Properties of a synced graph that must hold whatever the workspace contains."""
+
+    @pytest.mark.order(23)
+    async def test_tc_linear_sec_001_only_linear_uploads_become_files(
+        self,
+        linear_connector: Dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-LINEAR-SEC-001: every FILE record is an https://uploads.linear.app URL.
+
+        The connector sends the workspace's API key with every file it fetches, so a
+        FILE record for any other host means the key went there too (or was about to).
+        """
+        files = await graph_provider.fetch_records_by_type(linear_connector["connector_id"], "FILE")
+        foreign = [
+            doc.get("externalRecordId") for doc in files
+            if not is_linear_upload_url(str(doc.get("externalRecordId") or "").split("#parent=", 1)[0])
+        ]
+        assert not foreign, f"FILE records outside uploads.linear.app: {foreign[:5]}"
+
+    @pytest.mark.order(24)
+    async def test_tc_linear_scope_001_every_issue_is_filed_under_its_current_team(
+        self,
+        linear_connector: Dict[str, Any],
+        linear_datasource: LinearDataSource,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-LINEAR-SCOPE-001: a stored issue sits in the team Linear has it in now.
+
+        An issue left under a team it has moved out of stays readable by that team's
+        members. Compared for every issue Linear lists in the synced teams.
+        """
+        connector_id = linear_connector["connector_id"]
+        current: Dict[str, str] = {}
+        for team_id in linear_connector["team_ids"]:
+            for issue in await _paginate_team_issues(linear_datasource, team_id):
+                if issue.get("id") and (issue.get("team") or {}).get("id"):
+                    current[issue["id"]] = issue["team"]["id"]
+        tickets = await graph_provider.fetch_records_by_type(connector_id, "TICKET")
+        misfiled = [
+            (doc.get("recordName"), doc.get("externalGroupId"), current[doc["externalRecordId"]])
+            for doc in tickets
+            if not doc.get("isPlaceholder")
+            and doc.get("externalRecordId") in current
+            and doc.get("externalGroupId") != current[doc["externalRecordId"]]
+            and not str(doc.get("recordName") or "").startswith(LINEAR_IT_ARTIFACT_PREFIX)
+        ]
+        assert not misfiled, f"issues filed under a team they are no longer in (name, stored, current): {misfiled[:5]}"
+
+    @pytest.mark.order(25)
+    async def test_tc_linear_scope_002_no_issue_from_outside_the_filter(
+        self,
+        linear_connector: Dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-LINEAR-SCOPE-002: every stored issue belongs to a team the filter names.
+
+        Linear's team filter also returns the issues of the team's sub-teams. A sub-team
+        the filter leaves out (often a private one) must not reach PipesHub through its
+        parent's listing.
+        """
+        synced = set(linear_connector["team_ids"])
+        tickets = await graph_provider.fetch_records_by_type(linear_connector["connector_id"], "TICKET")
+        outside = [
+            (doc.get("recordName"), doc.get("externalGroupId")) for doc in tickets
+            if not doc.get("isPlaceholder") and doc.get("externalGroupId") not in synced
+        ]
+        assert not outside, f"issues from teams outside the filter (name, team): {outside[:5]}"
+
+async def _team_from_linear(datasource: LinearDataSource, team_id: str) -> Dict[str, Any] | None:
+    """A team outside the suite's filter, as the connector reads it for a restricted child."""
+    teams = await fetch_teams_by_ids(datasource, [team_id])
+    if not teams:
+        return None
+    team = teams[0]
+    return {
+        "id": team["id"],
+        "visibility": team.get("visibility") or ("private" if team.get("private") else "public"),
+        "parent_id": (team.get("parent") or {}).get("id"),
+    }

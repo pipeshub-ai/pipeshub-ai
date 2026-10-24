@@ -200,6 +200,26 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     requiresUserConsent: true,
   },
 
+  // Toolsets
+  'toolset:read': {
+    name: 'toolset:read',
+    description: 'Read toolsets and their authentication status',
+    category: 'Toolsets',
+    requiresUserConsent: true,
+  },
+  'toolset:write': {
+    name: 'toolset:write',
+    description: 'Add, configure and authenticate toolsets',
+    category: 'Toolsets',
+    requiresUserConsent: true,
+  },
+  'toolset:delete': {
+    name: 'toolset:delete',
+    description: 'Remove toolsets and their credentials',
+    category: 'Toolsets',
+    requiresUserConsent: true,
+  },
+
   // Projects
   'project:read': {
     name: 'project:read',
@@ -243,6 +263,14 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     name: 'connector:delete',
     description: 'Delete connectors',
     category: 'Connectors',
+    requiresUserConsent: true,
+  },
+
+  // Code graph
+  'code:read': {
+    name: 'code:read',
+    description: 'Read indexed code repositories and their code graph',
+    category: 'Code',
     requiresUserConsent: true,
   },
 
@@ -327,6 +355,7 @@ export const DefaultMcpScopes = [
   'profile',
   'email',
   'offline_access',
+  'semantic:read',
   'semantic:write',
   'conversation:write',
   'conversation:chat',
@@ -338,6 +367,7 @@ export const DefaultMcpScopes = [
   'agent:read',
   'agent:execute',
   'connector:read',
+  'code:read',
 ];
 
 /**
@@ -356,6 +386,7 @@ export const AgentMcpScopes = [
   'kb:read',
   'user:read',
   'connector:read',
+  'code:read',
 ] as const;
 
 export const ScopeCategories = [
@@ -370,8 +401,10 @@ export const ScopeCategories = [
   'Conversations',
   'Agents',
   'MCP Servers',
+  'Toolsets',
   'Projects',
   'Connectors',
+  'Code',
   'Configuration',
   'Crawling',
 ];

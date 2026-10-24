@@ -15,11 +15,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.utils.user_messages import DATABASE_UNREACHABLE
 from tests.support.agent_routes import (
     AGENTS,
     ORGS_COLL,
     PERMISSION,
     USERS_COLL,
+    FakeConfigService,
     InMemoryGraph,
     as_user,
     make_client,
@@ -40,9 +42,29 @@ def graph() -> InMemoryGraph:
     return g
 
 
+# MCP server instances the attach tests use; `other-org` belongs to mallory's org. An
+# attachment takes its name and type from these stored records, not from the request.
+_MCP_INSTANCES = {
+    f"/services/mcp/instances/{instance_id}": {"_id": instance_id, "orgId": org_id, "name": name, "typeId": name}
+    for instance_id, org_id, name in (
+        ("inst-9", "org-1", "github"), ("i1", "org-1", "github"), ("i2", "org-1", "linear"), ("other-org", "org-2", "github"),
+    )
+}
+
+
+# The toolset instances they attach: org-1's `inst-1`, and a personal one of alice's.
+_TOOLSET_INSTANCES = {
+    "/services/toolset-instances": [{"_id": "inst-1", "orgId": "org-1", "instanceName": "Slack", "toolsetType": "slack"}],
+    "/services/toolset-user-instances/org-1/u-alice/alice-slack": {
+        "_id": "alice-slack", "orgId": "org-1", "createdBy": "u-alice", "scope": "personal",
+        "instanceName": "My Slack", "toolsetType": "slack",
+    },
+}
+
+
 @pytest.fixture
 def client(graph: InMemoryGraph) -> TestClient:
-    c, _ = make_client(graph)
+    c, _ = make_client(graph, FakeConfigService({**_MCP_INSTANCES, **_TOOLSET_INSTANCES}))
     return c
 
 
@@ -123,8 +145,9 @@ class TestReadAgent:
     def test_user_lookup_outage_is_not_reported_as_not_found(self, client, graph) -> None:
         graph.fail("get_user_by_user_id")
         response = client.get("/api/v1/agent/private", headers=as_user("alice"))
-        assert response.status_code == 500
-        assert response.json()["detail"] == "Failed to retrieve user information"
+        assert response.status_code == 503
+        assert response.json()["detail"] == DATABASE_UNREACHABLE
+        assert response.headers["retry-after"] == "5"
         _no_leak(response)
 
     def test_models_are_enriched_from_the_model_catalogue(self, graph) -> None:
@@ -312,6 +335,21 @@ class TestUpdateAttachments:
         assert toolset["name"] == "slack" and toolset["instanceId"] == "inst-1"
         (tool,) = graph.nodes["agentTools"].values()
         assert tool["fullName"] == "slack.send"
+
+    def test_a_toolset_instance_that_doesnt_exist_is_refused(self, client, graph) -> None:
+        self._seed_toolset(graph)
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [
+            {"name": "Slack", "instanceId": "never-existed", "tools": [{"name": "send"}]},
+        ]})
+        assert response.status_code == 400
+        assert "ts-old" in graph.nodes["agentToolsets"]
+
+    def test_a_personal_toolset_stays_off_an_agent_shared_with_the_org(self, client, graph) -> None:
+        personal = {"name": "Slack", "instanceId": "alice-slack", "tools": [{"name": "send"}]}
+        response = client.put("/api/v1/agent/shared", headers=as_user("alice"), json={"toolsets": [personal]})
+        assert response.status_code == 400
+        assert "Personal actions" in response.json()["detail"]
+        assert client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [personal]}).status_code == 200
 
     def test_replacing_with_several_toolsets_files_each_tool_correctly(self, client, graph) -> None:
         response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [
@@ -506,8 +544,21 @@ class TestUpdateAttachments:
         assert server["instanceId"] == "inst-9" and server["typeId"] == "github"
         assert server["userId"] == "u-alice"
         (tool,) = graph.nodes["agentTools"].values()
-        assert tool["fullName"] == "github.list_issues"
-        assert len(graph.committed) == 2
+        assert tool["fullName"] == "mcp_github_list_issues"
+        # Removing the old servers and attaching the new ones is one transaction.
+        assert len(graph.committed) == 1
+
+    @pytest.mark.parametrize("instance_id", ["never-existed", "other-org"])
+    def test_attaching_an_mcp_server_outside_the_org_is_rejected_before_any_write(
+        self, client, graph, instance_id,
+    ) -> None:
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"mcpServers": [
+            {"instanceId": instance_id, "name": "github", "displayName": "GitHub", "tools": [{"name": "t"}]},
+        ]})
+        assert response.status_code == 400
+        assert "MCP server(s) not found: GitHub" in response.json()["detail"]
+        assert not graph.calls_to("update_agent")
+        assert graph.committed == []
 
     def test_detaching_every_mcp_server(self, client, graph) -> None:
         graph.add_node("agentMcpServers", {"_key": "mcp-old", "instanceId": "old"})
@@ -944,7 +995,7 @@ class TestCreateAgent:
             "webSearch": {"provider": "Tavily", "providerLabel": "Tavily"},
             "toolsets": [{"name": "jira", "tools": [{"name": "search"}]}, "junk", {"name": ""}],
             "mcpServers": [{"instanceId": "i1", "name": "github", "tools": [{"name": "t"}]}],
-            "knowledge": [{"connectorId": "c1", "filters": "not json"}],
+            "knowledge": [{"connectorId": "c1", "filters": "{}"}],
             "skills": ["mine"],
         })
         assert response.status_code == 200
@@ -960,6 +1011,25 @@ class TestCreateAgent:
         assert len(graph.committed) == 2
         assert response.json()["status"] == "success"
         assert response.json()["warnings"] is None
+
+    def test_creating_with_an_unknown_mcp_server_writes_nothing(self, client, graph) -> None:
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Bad", "mcpServers": [{"instanceId": "never-existed", "name": "github", "tools": []}],
+        })
+        assert response.status_code == 400
+        assert not graph.calls_to("begin_transaction")
+
+    @pytest.mark.parametrize("filters", ["not json", {"records": "x"}, {"records": [123]}, [1, 2]])
+    def test_a_knowledge_limit_that_cannot_be_read_is_refused_before_anything_is_written(
+        self, client, graph, filters,
+    ) -> None:
+        """Saved as "no filters" it would let the agent search the whole source."""
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Limited", "knowledge": [{"connectorId": "c1", "filters": filters}],
+        })
+        assert response.status_code == 400
+        assert "cannot be read" in response.json()["detail"]
+        assert not graph.calls_to("begin_transaction")
 
     def test_each_tool_is_filed_under_its_own_toolset(self, client, graph) -> None:
         response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
@@ -1110,7 +1180,17 @@ class TestCreateAgent:
     ) -> None:
         graph.rollback_undoes_writes = False
         graph.honours_explicit = False
-        self._refuse_github_write(graph, "mcpServerHasTool", "raises")
+        # The agent is linked last, so only a link that landed and then reported a failure
+        # leaves a server partly attached.
+        real = graph.batch_create_edges
+
+        async def link_then_fail(edges: list[dict], collection: str, transaction: str | None = None) -> bool:
+            result = await real(edges, collection, transaction)
+            server_key = edges[0]["_to"].split("/", 1)[1]
+            if collection == "agentHasMcpServer" and graph.nodes["agentMcpServers"][server_key]["instanceId"] == "i1":
+                raise RuntimeError("connection reset after the write")
+            return result
+        graph.batch_create_edges = link_then_fail
         graph.fail(failing)
 
         response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={

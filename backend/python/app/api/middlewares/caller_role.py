@@ -94,10 +94,13 @@ async def _nodejs_endpoint(config_service: ConfigurationService) -> str:
             type(exc).__name__,
         )
         endpoints = None
-    endpoint = _str_field(_str_field(endpoints, "nodejs"), "endpoint")
-    if not isinstance(endpoint, str) or not endpoint:
-        endpoint = DefaultEndpoints.NODEJS_ENDPOINT.value
-    return endpoint.rstrip("/")
+    # Node never writes "nodejs"; it writes "iam" with the port it listens on,
+    # which is 3001 under Helm, not the 3000 default.
+    for service in ("nodejs", "iam"):
+        endpoint = _str_field(_str_field(endpoints, service), "endpoint")
+        if isinstance(endpoint, str) and endpoint:
+            return endpoint.rstrip("/")
+    return DefaultEndpoints.NODEJS_ENDPOINT.value.rstrip("/")
 
 
 @functools.cache

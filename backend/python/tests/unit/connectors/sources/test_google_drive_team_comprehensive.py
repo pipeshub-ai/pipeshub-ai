@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 
+from app.connectors.sources.google.drive.team.user_status import UserStatusChange
 from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import (
@@ -143,6 +144,13 @@ def connector():
         c.drive_data_source = AsyncMock()
         c.sync_filters = FilterCollection()
         c.indexing_filters = FilterCollection()
+        # Collaborators the run safety fixes call: account status, groups, access withdrawal.
+        c._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock())
+        dep.get_all_user_groups = AsyncMock(return_value=[])
+        dep.remove_user_access_to_connector = AsyncMock(return_value=0)
+        dep.on_new_user_groups = AsyncMock()
+        dep.inheritance_when_unreadable = AsyncMock(return_value=False)
+        dep.add_permission_to_record = AsyncMock()
         yield c
 
 
@@ -282,7 +290,7 @@ class TestPermissionMappingComprehensive:
         assert connector._map_drive_role_to_permission_type("writer") == PermissionType.WRITE
 
     def test_map_role_commenter(self, connector):
-        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.COMMENT
+        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.READ
 
     def test_map_role_reader(self, connector):
         assert connector._map_drive_role_to_permission_type("reader") == PermissionType.READ
@@ -297,16 +305,7 @@ class TestPermissionMappingComprehensive:
         assert connector._map_drive_permission_type_to_entity_type("group") == EntityType.GROUP
 
     def test_map_perm_type_domain(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("domain") == EntityType.DOMAIN
-
-    def test_map_perm_type_anyone(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyone") == EntityType.ANYONE
-
-    def test_map_perm_type_anyone_with_link(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyoneWithLink") == EntityType.ANYONE_WITH_LINK
-
-    def test_map_perm_type_anyone_with_link_underscore(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyone_with_link") == EntityType.ANYONE_WITH_LINK
+        assert connector._map_drive_permission_type_to_entity_type("domain") is None
 
     def test_map_perm_type_unknown(self, connector):
         assert connector._map_drive_permission_type_to_entity_type("unknown") == EntityType.USER

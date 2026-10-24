@@ -74,6 +74,7 @@ describe('StorageController purge', () => {
     controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
     adapter = { deleteObject: sinon.stub().resolves() }
     sinon.stub(controller, 'initializeStorageAdapter').resolves(adapter as any)
+    sinon.stub(controller as any, 'getConfiguredStorageType').resolves('s3')
     sinon.stub(DocumentModel, 'findOne').callsFake(((filter: Filter) =>
       Promise.resolve(rows.find((r) => matches(r, filter)) ?? null)) as never)
     sinon.stub(DocumentModel, 'find').callsFake(((filter: Filter) =>
@@ -87,6 +88,24 @@ describe('StorageController purge', () => {
   afterEach(() => sinon.restore())
 
   describe('purgeDocumentById', () => {
+    it('reads the document only once it holds the local-storage lock', async () => {
+      // A move finishing while this request waits would otherwise leave it the old path.
+      const doc = row()
+      const order: string[] = []
+      ;(controller as any).withLocalStorageLock = async (_req: unknown, _org: string, fn: () => Promise<unknown>) => {
+        order.push('locked')
+        return fn()
+      }
+      ;(DocumentModel.findOne as sinon.SinonStub).callsFake(((filter: Filter) => {
+        order.push('read')
+        return Promise.resolve(rows.find((r) => matches(r, filter)) ?? null)
+      }) as never)
+      const res = makeRes()
+      await controller.purgeDocumentById(request({ documentId: String(doc._id) }), res, sinon.stub())
+      expect(order).to.deep.equal(['locked', 'read'])
+      expect(res.body).to.deep.equal({ purged: 1 })
+    })
+
     it('removes every stored copy once, then the document', async () => {
       const doc = row()
       const res = makeRes()
@@ -173,8 +192,16 @@ describe('StorageController purge', () => {
 
       const filter = (DocumentModel.find as unknown as sinon.SinonStub).firstCall.args[0]
       const indexed = DocumentModel.schema.indexes().map(([keys]) => Object.keys(keys))
+      // An index serves a branch when all its keys are in the branch, or when
+      // its leading keys are exactly the branch's (a compound index's prefix).
       for (const branch of filter.$or as Filter[]) {
-        const covered = indexed.some((keys) => keys.every((key) => key in branch))
+        const branchKeys = Object.keys(branch)
+        const covered = indexed.some(
+          (keys) =>
+            keys.every((key) => key in branch) ||
+            (keys.length > branchKeys.length &&
+              keys.slice(0, branchKeys.length).every((key) => key in branch)),
+        )
         expect(covered, `no index serves ${Object.keys(branch).join(', ')}`).to.be.true
       }
     })
@@ -186,6 +213,56 @@ describe('StorageController purge', () => {
 
       expect(res.body).to.deep.equal({ purged: 0 })
       expect(adapter.deleteObject.called).to.be.false
+    })
+  })
+
+  describe('purgeConversationDocuments', () => {
+    const conversationId = '507f1f77bcf86cd799439099'
+
+    it("removes every file the assistant stored for the chat, in both of its folders, and nothing else", async () => {
+      row({ documentPath: `${orgId}/PipesHub/artifacts/${conversationId}` })
+      row({ documentPath: `${orgId}/PipesHub/conversations/${conversationId}`, s3: { url: 'https://bucket/legacy' }, versionHistory: [] })
+      const otherChat = row({ documentPath: `${orgId}/PipesHub/artifacts/507f1f77bcf86cd799439098`, s3: { url: 'https://bucket/o' } })
+      const otherOrgSameChat = row({ orgId: otherOrg, documentPath: `${otherOrg}/PipesHub/artifacts/${conversationId}` })
+      const nested = row({ documentPath: `${orgId}/PipesHub/artifacts/${conversationId}/x`, s3: { url: 'https://bucket/n' } })
+      const res = makeRes()
+      const next = sinon.stub()
+
+      await controller.purgeConversationDocuments(request({ conversationId }), res, next)
+
+      expect(next.called).to.be.false
+      expect(res.body).to.deep.equal({ purged: 2 })
+      expect(adapter.deleteObject.getCalls().map((c) => c.args[0].s3.url)).to.deep.equal([
+        'https://bucket/current', 'https://bucket/v0', 'https://bucket/legacy',
+      ])
+      expect(rows).to.deep.equal([otherChat, otherOrgSameChat, nested])
+    })
+
+    it('keeps documents when a file cannot be removed, so a retry finishes', async () => {
+      const doc = row({ documentPath: `${orgId}/PipesHub/artifacts/${conversationId}` })
+      adapter.deleteObject.rejects(new Error('disk gone'))
+      const next = sinon.stub()
+
+      await controller.purgeConversationDocuments(request({ conversationId }), makeRes(), next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(ServiceUnavailableError)
+      expect(rows).to.deep.equal([doc])
+    })
+
+    it('answers purged 0 for a chat with no files', async () => {
+      const res = makeRes()
+
+      await controller.purgeConversationDocuments(request({ conversationId }), res, sinon.stub())
+
+      expect(res.body).to.deep.equal({ purged: 0 })
+    })
+
+    it('looks documents up through the documentPath index', async () => {
+      await controller.purgeConversationDocuments(request({ conversationId }), makeRes(), sinon.stub())
+
+      const filter = (DocumentModel.find as unknown as sinon.SinonStub).firstCall.args[0]
+      expect(filter).to.have.property('documentPath')
+      expect(DocumentModel.schema.path('documentPath').options.index).to.equal(true)
     })
   })
 })

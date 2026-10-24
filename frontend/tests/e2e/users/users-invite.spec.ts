@@ -77,7 +77,7 @@ test.describe('Users Invite', () => {
     await tagInput.fill('not-a-valid-email');
     await tagInput.press('Enter');
 
-    await expect(dialog.getByRole('button', { name: 'Send Invite' })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Send invite' })).toBeDisabled();
   });
 
   test('submit invite sends invitations and lists the invited user', async ({ page, apiContext }) => {
@@ -94,12 +94,14 @@ test.describe('Users Invite', () => {
       await tagInput.fill(email);
       await tagInput.press('Enter');
 
-      const submitButton = dialog.getByRole('button', { name: 'Send Invite' });
+      const submitButton = dialog.getByRole('button', { name: 'Send invite' });
       await expect(submitButton).toBeEnabled();
       await submitButton.click();
 
-      await expect(page.getByText('Invites queued').first()).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText(/Invites queued|Invite sent!/).first()).toBeVisible({ timeout: 15_000 });
       await page.reload();
+      // Search rather than scan: earlier users can push the new one past the first page.
+      await page.locator('input[placeholder*="Search"]').fill(email);
       await expect(page.getByText(email).first(), 'the invited user should be listed').toBeVisible({
         timeout: 15_000,
       });

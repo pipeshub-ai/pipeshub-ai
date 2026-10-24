@@ -17,6 +17,8 @@ on:
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
       - 'backend/python/.coveragerc'
+      - 'scripts/unit_shards.py'
+      - '.github/workflows/unit-test.yml'
       # The integration-suite guards run in integration-suite-guards.yml.
 
   workflow_call:
@@ -36,6 +38,12 @@ on:
 
 permissions:
   contents: read
+
+# A push to a pull request supersedes its earlier run; with a dozen jobs per run,
+# letting them stack wastes runners other pull requests are waiting for.
+concurrency:
+  group: unit-test-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   nodejs-unit-tests:
@@ -100,35 +108,38 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  python-unit-tests:
-    runs-on: ${{ matrix.os }}
+  # The Python unit suite runs as one job per shard (scripts/unit_shards.py owns
+  # the split), each spread over the runner's cores with pytest-xdist. Run as one
+  # process it took ~48 min: ~5 min collecting 78k tests and ~36 min running them.
+  # Coverage is gated once, in python-coverage, over every shard's data combined:
+  # one shard's percentage on its own means nothing.
+  python-unit:
+    name: python-unit (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
-        python-version: ['3.12']
+        # Must list exactly the shards in scripts/unit_shards.py, in its order;
+        # scripts/test_unit_shards.py checks this.
+        shard: [connectors-a, connectors-b, connectors-c, agents, services, modules, core]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.12
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.12'
 
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libmariadb-dev
-
-      - name: Install MariaDB Connector/C (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install mariadb-connector-c -y
 
       - name: Install uv
         run: pip install uv
@@ -141,83 +152,214 @@ jobs:
           # fakeredis[lua], which the FakeClusterRedis contract suites (the
           # CROSSSLOT/multi-key guards for MemoryDB readiness) need. Without
           # it those suites skip and the cluster-safety checks never actually
-          # run here.
+          # run here. It also brings pytest-xdist and pytest-cov.
           uv pip install --system -e ".[dev]"
 
-      - name: Run unit tests with coverage
+      # -n logical: one worker per vCPU (`auto` counts physical cores). --dist
+      # loadfile keeps each file's tests on one worker, so tests in a file that
+      # share module state still run together and in order. pytest-cov merges
+      # the workers' data into COVERAGE_FILE. GitHub's 4 vCPUs are 2 cores, so
+      # each of the 4 workers runs a test at about half serial speed:
+      # --timeout=60 keeps pytest.ini's 30s hang guard at the same CPU budget.
+      - name: Run unit tests (${{ matrix.shard }})
+        working-directory: backend/python
+        env:
+          SHARD: ${{ matrix.shard }}
+          COVERAGE_FILE: .coverage.${{ matrix.shard }}
+        # Captured first so a failing script stops the step: with no paths
+        # pytest falls back to testpaths and runs the whole suite here.
         run: |
-          cd backend/python
-          coverage run -m pytest tests/unit -v
-          coverage report --fail-under=${{ inputs.python-coverage-threshold || 89.8 }}
+          args=$(python3 ../../scripts/unit_shards.py args "$SHARD")
+          mapfile -t shard_args <<< "$args"
+          pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15 \
+            --junitxml="junit-$SHARD.xml"
 
-      # The only automated check on agent behaviour: six golden properties the
-      # prompt and loop must hold (tool choice, no placeholder write params, a
-      # single final_answer, no write without user intent, resolvable citations,
-      # confidence capped when sources are missing). Kept out of the coverage run
-      # above so a failure reads as a behaviour regression rather than a coverage
-      # change. Structural only — no model call, no network, no API key.
-      - name: Run golden agent evals
-        # Runs even when the coverage step above failed. A step's implicit
-        # condition is success(), so a coverage regression would otherwise skip
-        # this and hide whether agent behaviour also changed — two separate
-        # questions, and the second is the more expensive one to discover late.
-        # A failure here still fails the job.
+      # upload-artifact skips dotfiles unless told otherwise, and every coverage
+      # data file is one. Not named python-coverage-report-*: weekly-coverage.yml
+      # posts everything under that name to Slack.
+      - name: Upload coverage data
         if: ${{ !cancelled() }}
-        run: |
-          cd backend/python
-          pytest tests/evals -v
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: py-cov-data-${{ matrix.shard }}
+          path: backend/python/.coverage.${{ matrix.shard }}*
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
 
-      # backend/python/tests/integration holds 24 files and only the three under
-      # redis_cluster were run by any workflow. Despite the name most need no
-      # services: the ones that do are written to skip when the service is
-      # absent, so on a bare runner they skip cleanly and the rest execute.
-      # Two paths are excluded below.
-      #
-      # test_npm_import_live.py is excluded because it is not offline: it pulls
-      # real tarballs from registry.npmjs.org. It skips when the registry is
-      # unreachable, but a CI runner can reach it, so leaving it in would make
-      # every Python pull request depend on the public npm registry and on the
-      # pinned packages staying published.
-      - name: Run Python integration tests
+      # Per-test times: scripts/unit_shards.py durations turns these into the
+      # per-file minutes the shard balance check reads.
+      - name: Upload test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: py-junit-${{ matrix.shard }}
+          path: backend/python/junit-${{ matrix.shard }}.xml
+          retention-days: 14
+          if-no-files-found: warn
+
+  python-coverage:
+    needs: python-unit
+    # Still runs when a shard failed: the coverage result is a separate question,
+    # and python-unit-tests fails on the shard either way.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install coverage
+        run: pip install coverage
+
+      - name: Download coverage data
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: py-cov-data-*
+          path: backend/python
+          merge-multiple: true
+
+      - name: Check coverage
+        working-directory: backend/python
         run: |
-          cd backend/python
-          pytest tests/integration \
-            --ignore=tests/integration/redis_cluster \
-            --ignore=tests/integration/skills/test_npm_import_live.py \
-            -v --timeout=300 --session-timeout=900
+          coverage combine
+          coverage report --fail-under=${{ inputs.python-coverage-threshold || 89.8 }}
 
       - name: Generate coverage reports
         if: ${{ always() && inputs.generate-coverage-reports == true }}
+        working-directory: backend/python
         run: |
-          cd backend/python
           coverage json -o coverage/coverage-summary.json
           coverage html -d coverage/htmlcov
 
-      - name: Zip Python coverage folder (Linux)
-        if: ${{ always() && inputs.generate-coverage-reports == true && runner.os == 'Linux' }}
+      - name: Zip Python coverage folder
+        if: ${{ always() && inputs.generate-coverage-reports == true }}
         working-directory: backend/python
         run: |
           if [ -d "coverage" ]; then
             zip -r python-coverage-report.zip coverage/
           fi
 
-      - name: Zip Python coverage folder (Windows)
-        if: ${{ always() && inputs.generate-coverage-reports == true && runner.os == 'Windows' }}
-        working-directory: backend/python
-        shell: pwsh
-        run: |
-          if (Test-Path coverage) {
-            Compress-Archive -Path coverage -DestinationPath python-coverage-report.zip
-          }
-
       - name: Upload Python coverage artifact
         if: ${{ always() && inputs.generate-coverage-reports == true }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: python-coverage-report-${{ matrix.os }}-${{ matrix.python-version }}
+          # weekly-coverage.yml labels the Slack upload from the part after
+          # python-coverage-report-.
+          name: python-coverage-report-ubuntu-latest-3.12
           path: backend/python/python-coverage-report.zip
           retention-days: 7
           if-no-files-found: ignore
+
+  # The only automated check on agent behaviour: six golden properties the
+  # prompt and loop must hold (tool choice, no placeholder write params, a
+  # single final_answer, no write without user intent, resolvable citations,
+  # confidence capped when sources are missing). Kept out of the coverage run
+  # so a failure reads as a behaviour regression rather than a coverage
+  # change. Structural only — no model call, no network, no API key.
+  python-agent-evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      - name: Run golden agent evals
+        working-directory: backend/python
+        run: pytest tests/evals -v
+
+  # backend/python/tests/integration holds 24 files and only the three under
+  # redis_cluster were run by any workflow. Despite the name most need no
+  # services: the ones that do are written to skip when the service is
+  # absent, so on a bare runner they skip cleanly and the rest execute.
+  # Two paths are excluded below.
+  #
+  # test_npm_import_live.py is excluded because it is not offline: it pulls
+  # real tarballs from registry.npmjs.org. It skips when the registry is
+  # unreachable, but a CI runner can reach it, so leaving it in would make
+  # every Python pull request depend on the public npm registry and on the
+  # pinned packages staying published.
+  python-integration-offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      - name: Run Python integration tests
+        working-directory: backend/python
+        run: |
+          pytest tests/integration \
+            --ignore=tests/integration/redis_cluster \
+            --ignore=tests/integration/skills/test_npm_import_live.py \
+            -v --timeout=300 --session-timeout=900
+
+  # One check for everything the single python-unit-tests job used to run, so a
+  # required status check keeps one name however the shards change.
+  python-unit-tests:
+    needs: [python-unit, python-coverage, python-agent-evals, python-integration-offline]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check the Python jobs passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")' > /dev/null
 
   redis-cluster-integration-tests:
     # A real 3-master Redis Cluster (grokzen/redis-cluster) is the only way to

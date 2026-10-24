@@ -13,6 +13,7 @@ from markdown_it import MarkdownIt
 from app.models.blocks import BlockType
 from app.modules.parsers.html_parser.html_to_blocks import HtmlToBlocksConverter
 from app.utils.chat_helpers import _fragment_source_format
+from app.utils.html_to_blocks import TextBlock, html_to_blocks
 from app.utils.text_fragments import SourceFormat, TextFragmentGenerator
 from tests.support.text_fragment_corpus import (
     HTML_DIR,
@@ -124,6 +125,7 @@ _NOT_VISIBLE_ON_PAGE = (
     "Quarterly report",
     "Structured content",
     "International content",
+    "Connectors overview",
     "Hidden text should never be highlighted",
     "Display none text should never be highlighted",
 )
@@ -165,3 +167,38 @@ def test_blocks_from_the_production_html_parser_are_highlightable_on_their_own_p
         assert highlight, f"{fixture}: no highlight for block {text!r}\n  url={url}"
         checked += 1
     assert checked >= 5
+
+
+# Text the web fetcher must never turn into a citation: screen-reader-only links and <template> payloads.
+_NEVER_CITED = ("Skip to main content", "_jsx(", "deploymentId")
+
+
+def _web_fetcher_urls(fixture: str) -> list[tuple[str, str]]:
+    """Citation URL of every block the web fetcher reads from a fixture page, as UrlContentHandler builds it."""
+    html = (HTML_DIR / f"{fixture}.html").read_text(encoding="utf-8")
+    blocks = html_to_blocks(html, base_url="https://pages.example.test/p.html", use_trafilatura=False)
+    return [
+        (block.content, generator.build_url("https://pages.example.test/p.html", block.content, SourceFormat.PLAIN))
+        for block in blocks
+        if isinstance(block, TextBlock)
+    ]
+
+
+@pytest.mark.parametrize("fixture", _FIXTURES)
+def test_blocks_from_the_web_fetcher_are_highlightable_on_their_own_page(fixture: str) -> None:
+    """End to end for fetched pages: web fetcher -> per-block citation URL -> reference browser."""
+    html = (HTML_DIR / f"{fixture}.html").read_text(encoding="utf-8")
+    # Text a reader never sees (inline display:none) is still read, so the model keeps it, but cannot be highlighted.
+    urls = [url for text, url in _web_fetcher_urls(fixture) if ":~:" in url and text.strip() not in _NOT_VISIBLE_ON_PAGE]
+    assert urls, f"{fixture}: the web fetcher produced no citable block"
+    for url in urls:
+        highlight = highlight_for_url(html, url)
+        assert highlight, f"{fixture}: no highlight for {url}"
+        for hidden in _NEVER_CITED:
+            assert hidden not in highlight, f"{fixture}: highlight includes {hidden!r}: {highlight!r}"
+
+
+def test_first_web_fetcher_citation_on_a_docs_page_starts_in_the_article() -> None:
+    html = (HTML_DIR / "webpage.html").read_text(encoding="utf-8")
+    highlight = highlight_for_url(html, _web_fetcher_urls("webpage")[0][1])
+    assert highlight is not None and highlight.startswith("What are Connectors?"), highlight

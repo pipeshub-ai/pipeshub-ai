@@ -9,6 +9,7 @@ import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
 } from '../../storage/utils/s3-credentials.util';
+import { canSearch } from '../types/web-search.types';
 
 export const baseStorageSchema = z.object({
   storageType: z.enum([
@@ -146,16 +147,6 @@ export const azureAdConfigSchema = z.object({
   }),
 });
 
-export const ssoConfigSchema = z.object({
-  body: z.object({
-    entryPoint: z.string().min(1, { message: 'SSO entry point is required' }),
-    certificate: z.string().min(1, { message: 'SSO certificate is required' }),
-    emailKey: z.string().min(1, { message: 'SSO Email Key is required' }),
-    enableJit: z.boolean().optional().default(true),
-    samlPlatform: z.string().optional(),
-  }),
-});
-
 export const googleAuthConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'Google client ID is required' }),
@@ -167,20 +158,6 @@ export const githubAuthConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'GitHub client ID is required' }),
     clientSecret: z.string().min(1, { message: 'GitHub client secret is required' }),
-  }),
-});
-
-export const oauthConfigSchema = z.object({
-  body: z.object({
-    providerName: z.string().min(1, { message: 'Provider name is required' }),
-    clientId: z.string().min(1, { message: 'Client ID is required' }),
-    clientSecret: z.string().optional(),
-    authorizationUrl: z.string().url().optional().or(z.literal('')),
-    tokenEndpoint: z.string().url().optional().or(z.literal('')),
-    userInfoEndpoint: z.string().url().optional().or(z.literal('')),
-    scope: z.string().optional(),
-    redirectUri: z.string().url().optional().or(z.literal('')),
-    enableJit: z.boolean().optional().default(true),
   }),
 });
 
@@ -657,9 +634,10 @@ export const aiModelsConfigSchema = z.object({
       imageGeneration: z.array(modelConfigurationSchema).optional(),
       tts: z.array(modelConfigurationSchema).optional(),
       stt: z.array(modelConfigurationSchema).optional(),
+      decision: z.array(modelConfigurationSchema).optional(),
     })
     .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, decision',
     })
     .refine(
       (data) => {
@@ -702,12 +680,52 @@ export const webSearchProviderType = z.enum([
   'serper',
   'tavily',
   'exa',
+  'brave',
+  'searxng',
+  'firecrawl',
+  'crawl4ai',
 ]);
+
+const notADefaultPageReader = (body: {
+  provider: string;
+  isDefault?: boolean;
+}): boolean => !(body.isDefault && !canSearch(body.provider));
+const PAGE_READER_DEFAULT_MESSAGE = {
+  message:
+    'This provider only reads pages, so it cannot be the default web search provider',
+  path: ['isDefault'],
+};
+
+const isServerAddress = (value: unknown): boolean => {
+  if (typeof value !== 'string' || value.length > 2048) {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+};
 
 export const webSearchConfigurationSchema = z
   .record(z.any())
+  .refine(
+    (configuration) =>
+      configuration.baseUrl === undefined ||
+      isServerAddress(configuration.baseUrl),
+    {
+      message:
+        'baseUrl must be an http(s) address of at most 2048 characters, without a user name or password',
+      path: ['baseUrl'],
+    },
+  )
   .describe(
-    'Provider-specific configuration (e.g., apiKey, cx, endpoint, engine)',
+    'Provider-specific configuration (apiKey; baseUrl for searxng, firecrawl and crawl4ai)',
   );
 
 export const webSearchProviderConfigSchema = z.object({
@@ -720,28 +738,32 @@ export const webSearchProviderConfigSchema = z.object({
 });
 
 export const addWebSearchProviderSchema = z.object({
-  body: z.object({
-    provider: webSearchProviderType,
-    configuration: webSearchConfigurationSchema,
-    isDefault: z
-      .boolean()
-      .default(false)
-      .describe('Whether this should be the default provider'),
-  }),
+  body: z
+    .object({
+      provider: webSearchProviderType,
+      configuration: webSearchConfigurationSchema,
+      isDefault: z
+        .boolean()
+        .default(false)
+        .describe('Whether this should be the default provider'),
+    })
+    .refine(notADefaultPageReader, PAGE_READER_DEFAULT_MESSAGE),
 });
 
 export const updateWebSearchProviderSchema = z.object({
   params: z.object({
     providerKey: z.string().min(1, { message: 'Provider key is required' }),
   }),
-  body: z.object({
-    provider: webSearchProviderType,
-    configuration: webSearchConfigurationSchema,
-    isDefault: z
-      .boolean()
-      .default(false)
-      .describe('Whether this should be the default provider'),
-  }),
+  body: z
+    .object({
+      provider: webSearchProviderType,
+      configuration: webSearchConfigurationSchema,
+      isDefault: z
+        .boolean()
+        .default(false)
+        .describe('Whether this should be the default provider'),
+    })
+    .refine(notADefaultPageReader, PAGE_READER_DEFAULT_MESSAGE),
 });
 
 export const deleteWebSearchProviderSchema = z.object({
@@ -773,4 +795,85 @@ export const webSearchSettingsSchema = z
 
 export const updateWebSearchSettingsSchema = z.object({
   body: webSearchSettingsSchema,
+});
+
+const identityHeaderName = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/, {
+    message: 'Not a valid header name',
+  });
+
+export const identityPolicyBodySchema = z
+  .object({
+    subjectSource: z.enum(['userId', 'email', 'idpObjectId']).default('userId'),
+    includeEmail: z.boolean().default(false),
+    includeDisplayName: z.boolean().default(false),
+    groups: z
+      .object({
+        enabled: z.boolean().default(true),
+        allowList: z
+          .array(z.string().trim().min(1).max(256))
+          .max(500)
+          .default([]),
+        maxForwarded: z.number().int().min(1).max(500).default(50),
+      })
+      .strict()
+      .default({}),
+    pseudonymize: z.boolean().default(false),
+    onMissingIdentity: z.enum(['service', 'block']).default('service'),
+    queryEmbeddingIdentity: z.enum(['user', 'service']).default('user'),
+    serviceIdentityPrefix: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .default('svc:pipeshub'),
+  })
+  .strict();
+
+export const identityPolicySchema = z.object({
+  body: identityPolicyBodySchema,
+});
+
+export const connectionIdentityForwardingSchema = z.object({
+  params: z.object({ connectionId: z.string().min(1) }),
+  body: z
+    .object({
+      enabled: z.boolean(),
+      mode: z.enum(['headers', 'template', 'signedJwt']).default('headers'),
+      preset: z
+        .enum([
+          'litellm',
+          'portkey',
+          'helicone',
+          'cloudflare',
+          'apim',
+          'custom',
+        ])
+        .default('litellm'),
+      headerTemplates: z
+        .record(identityHeaderName, z.string().max(512))
+        .refine((templates) => Object.keys(templates).length <= 16, {
+          message: 'At most 16 header templates',
+        })
+        .default({}),
+      jwtAudience: z.string().trim().max(256).optional(),
+      serviceAuth: z.enum(['apiKey', 'jwt']).default('apiKey'),
+      // Absent keeps the stored key; an empty string clears it.
+      serviceApiKey: z.string().max(512).optional(),
+    })
+    .strict(),
+});
+
+export const identityPreviewSchema = z.object({
+  body: z
+    .object({
+      userId: z.string().min(1).optional(),
+      workload: z.string().min(1).max(64).default('chat'),
+      configuration: z.record(z.any()).default({}),
+      connectionId: z.string().min(1).optional(),
+    })
+    .strict(),
 });

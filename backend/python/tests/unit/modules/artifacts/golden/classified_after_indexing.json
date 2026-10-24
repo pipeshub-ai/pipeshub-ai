@@ -1,0 +1,100 @@
+{
+  "multimodal": false,
+  "artifacts": {
+    "index_time_semantic_metadata": {
+      "named_entities": {
+        "organizations": [
+          "Northwind"
+        ]
+      },
+      "categories": []
+    }
+  },
+  "record": {
+    "virtual_record_id": "vr-classified-later",
+    "record_name": "vendor-review.pdf",
+    "mime_type": "application/pdf",
+    "semantic_metadata": {
+      "entities": null,
+      "section_numbers": null,
+      "summary": "Quarterly vendor review for Northwind.",
+      "keywords": null,
+      "departments": [
+        "Operations"
+      ],
+      "languages": [
+        "English"
+      ],
+      "topics": [
+        "Vendors"
+      ],
+      "record_id": null,
+      "categories": [
+        "Procurement"
+      ],
+      "sub_category_level_1": "Vendor management",
+      "sub_category_level_2": null,
+      "sub_category_level_3": null,
+      "confidence": "high",
+      "own_labels": null,
+      "architecture_role": null,
+      "design_patterns": null,
+      "external_dependencies": null,
+      "named_entities": {
+        "organizations": [
+          "Northwind"
+        ]
+      }
+    },
+    "block_containers": {
+      "blocks": [
+        {
+          "index": 0,
+          "type": "text",
+          "data": "Northwind delivered every order on time this quarter.",
+          "citation_metadata": {
+            "page_number": 1
+          }
+        },
+        {
+          "index": 1,
+          "type": "text",
+          "data": "Renew the contract for another year.",
+          "citation_metadata": {
+            "page_number": 2
+          }
+        }
+      ],
+      "block_groups": []
+    }
+  },
+  "hits": [
+    {
+      "metadata": {
+        "virtualRecordId": "vr-classified-later",
+        "isRecordSummary": true,
+        "isBlockGroup": false
+      },
+      "score": 0.91,
+      "content": "Quarterly vendor review for Northwind."
+    },
+    {
+      "metadata": {
+        "virtualRecordId": "vr-classified-later",
+        "isBlockGroup": false,
+        "blockIndex": 0
+      },
+      "score": 0.82,
+      "content": "Northwind delivered every order on time this quarter."
+    },
+    {
+      "metadata": {
+        "virtualRecordId": "vr-classified-later",
+        "isBlockGroup": false,
+        "blockIndex": 1
+      },
+      "score": 0.7,
+      "content": "Renew the contract for another year."
+    }
+  ]
+}

@@ -307,15 +307,38 @@ export const deleteKBSchema = z.object({
 });
 
 export const createFolderSchema = z.object({
-  body: z.object({
-    folderName: z.string().min(1).max(255),
-  }),
+  body: z
+    .object({
+      folderName: z.string().min(1).max(255),
+      folderId: z.unknown().optional(),
+      parentId: z.unknown().optional(),
+      parent_id: z.unknown().optional(),
+    })
+    .refine(
+      (data) =>
+        data.folderId === undefined &&
+        data.parentId === undefined &&
+        data.parent_id === undefined,
+      {
+        message: 'To create a subfolder, use the subfolder route.',
+      },
+    ),
   params: z.object({
     kbId: z.string().uuid(),
+    folderId: z.string().uuid().optional(),
   }),
-  query: z.object({
-    folderId: z.string().min(1).optional(),
-  }),
+  query: z
+    .object({
+      folderId: z.string().min(1).optional(),
+      parentId: z.unknown().optional(),
+      parent_id: z.unknown().optional(),
+    })
+    .refine(
+      (data) => data.parentId === undefined && data.parent_id === undefined,
+      {
+        message: 'To create a subfolder, use the subfolder route.',
+      },
+    ),
 });
 
 export const kbPermissionSchema = z.object({

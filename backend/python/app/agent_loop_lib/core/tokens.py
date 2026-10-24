@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
@@ -13,6 +14,9 @@ from app.agent_loop_lib.core.messages import (
     UserMessage,
 )
 
+if TYPE_CHECKING:
+    from app.agent_loop_lib.core.tool_schema import ToolSchema
+
 """Single source of truth for pre-call token estimation.
 
 This is deliberately a fast heuristic, not a real tokenizer: it runs on
@@ -23,7 +27,7 @@ decisions (should we truncate? evict? compact?) — being off by ~10-20% here
 has zero cost impact since it never feeds the budget ledger.
 """
 
-_CHARS_PER_TOKEN = 4
+CHARS_PER_TOKEN = 4
 # Every message costs a few tokens of protocol overhead (role marker,
 # separators) regardless of content, on top of raw character count.
 _MESSAGE_OVERHEAD_TOKENS = 4
@@ -82,11 +86,27 @@ def count_image_tokens(part: ImagePart) -> int:
     return min(patches, _MAX_IMAGE_TOKENS)
 
 
+def _sent_text(message: Message) -> str:
+    """The text a transport puts on the wire for `message`.
+
+    A tool result's step footer is sent after its content, so it costs tokens
+    like the content does. Thinking is never resent: every transport replays
+    an assistant turn's text parts only, so counting thinking made shapers
+    compact for tokens no request carried.
+    """
+    match message:
+        case ToolMessage():
+            return message.text + message.step_footer
+        case AssistantMessage():
+            return message.text
+        case _:
+            return extract_text(message)
+
+
 def count_message_tokens(message: Message) -> int:
-    """Estimate tokens for a single message (content + images + tool_calls +
-    overhead)."""
-    text = extract_text(message)
-    total_chars = len(text)
+    """Estimate tokens for a single message as sent (content + images +
+    tool_calls + overhead)."""
+    total_chars = len(_sent_text(message))
     tool_calls = getattr(message, "tool_calls", None)
     if tool_calls:
         for tc in tool_calls:
@@ -96,7 +116,7 @@ def count_message_tokens(message: Message) -> int:
         sum(count_image_tokens(p) for p in content if isinstance(p, ImagePart))
         if isinstance(content, list) else 0
     )
-    return _MESSAGE_OVERHEAD_TOKENS + (total_chars // _CHARS_PER_TOKEN) + image_tokens
+    return _MESSAGE_OVERHEAD_TOKENS + (total_chars // CHARS_PER_TOKEN) + image_tokens
 
 
 def count_tokens(messages: list[Message]) -> int:
@@ -104,4 +124,9 @@ def count_tokens(messages: list[Message]) -> int:
 
 
 def count_text_tokens(text: str) -> int:
-    return len(text) // _CHARS_PER_TOKEN
+    return len(text) // CHARS_PER_TOKEN
+
+
+def count_schema_tokens(schemas: list[ToolSchema]) -> int:
+    """Tool definitions as sent beside the messages, at the same rate."""
+    return sum(count_text_tokens(schema.model_dump_json()) for schema in schemas)

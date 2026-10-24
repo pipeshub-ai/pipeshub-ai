@@ -7,9 +7,10 @@ graph shapes are the ones that made the backends disagree before: a second
 non-canonical parent, a non-canonical link on the way up, duplicate edges,
 equal-length ties and cycles.
 
-The group-scoping cases check that pattern match narrows grep to every record
-group of a connector the user reaches, including groups that inherit from a
-grant on another connector.
+The group-scoping cases check what pattern match narrows grep to. The containers
+name the connectors a user can enter and no record group, so grep is never
+narrowed to some of a connector's groups: it covers the connector and the batch
+access check decides every hit, admitting the groups the user reaches.
 
 Needs Docker services, and skips cleanly when they are not reachable:
 
@@ -51,7 +52,7 @@ GROUPS = CollectionNames.RECORD_GROUPS.value
 APPS = CollectionNames.APPS.value
 USERS = CollectionNames.USERS.value
 EDGE_COLLECTIONS = (
-    CollectionNames.RECORD_RELATIONS.value,
+    CollectionNames.NODE_RELATIONS.value,
     CollectionNames.BELONGS_TO.value,
     CollectionNames.PERMISSION.value,
     CollectionNames.INHERIT_PERMISSIONS.value,
@@ -181,7 +182,7 @@ class _Env:
 
     async def child_of(self, parent: str, child: str, relation: str = "PARENT_CHILD", **kw: object) -> None:
         await self.edge(
-            CollectionNames.RECORD_RELATIONS.value, RECORDS, parent, RECORDS, child,
+            CollectionNames.NODE_RELATIONS.value, RECORDS, parent, RECORDS, child,
             relationshipType=relation, **kw,
         )
 
@@ -191,14 +192,14 @@ class _Env:
         if isinstance(self.graph, Neo4jProvider):
             await self.graph.client.execute_query(
                 "MATCH (p:Record {id: $p}), (c:Record {id: $c}) "
-                "CREATE (p)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD', createdAtTimestamp: $t}]->(c)",
+                "CREATE (p)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD', createdAtTimestamp: $t}]->(c)",
                 parameters={"p": parent, "c": child, "t": now},
             )
             return
         await self.graph.http_client.execute_aql(
             f"INSERT {{_from: CONCAT('{RECORDS}/', @p), _to: CONCAT('{RECORDS}/', @c), "
             f"relationshipType: 'PARENT_CHILD', createdAtTimestamp: @t}} "
-            f"INTO {CollectionNames.RECORD_RELATIONS.value}",
+            f"INTO {CollectionNames.NODE_RELATIONS.value}",
             {"p": parent, "c": child, "t": now},
         )
 
@@ -503,8 +504,8 @@ async def test_descendants_see_uncommitted_edges_inside_a_transaction(env: _Env)
     folder = await env.record("Folder", content=False)
     leaf = await env.record("f.txt", parent="Folder")
     txn = await env.graph.begin_transaction(
-        read=[RECORDS, CollectionNames.RECORD_RELATIONS.value],
-        write=[RECORDS, CollectionNames.RECORD_RELATIONS.value],
+        read=[RECORDS, CollectionNames.NODE_RELATIONS.value],
+        write=[RECORDS, CollectionNames.NODE_RELATIONS.value],
     )
     try:
         await env.child_of(folder, leaf, transaction=txn)
@@ -524,6 +525,33 @@ async def test_walk_stops_at_a_non_canonical_relation(env: _Env) -> None:
     await env.child_of(issue, leaf, relation="LINKED_TO")
 
     assert await env.graph.get_record_path_segments(leaf) == ["Folder", "f.txt"]
+
+
+async def test_an_ancestor_also_reached_by_a_shortcut_link_keeps_its_place(env: _Env) -> None:
+    """Epic -> Story -> Subtask, plus a link edge Epic -> Subtask: the link reaches
+    Epic one step early. A walk that visits each record once must not let that
+    early, non-canonical visit hide Epic from the canonical chain."""
+    epic = await env.record("Epic")
+    story = await env.record("Story", parent="Epic")
+    subtask = await env.record("Subtask", parent="Story")
+    await env.child_of(epic, story)
+    await env.child_of(story, subtask)
+    await env.child_of(epic, subtask, relation="LINKED_TO")
+
+    assert await env.graph.get_record_path_segments(subtask) == ["Epic", "Story", "Subtask"]
+
+
+async def test_an_ancestor_also_reached_by_a_stale_parent_edge_keeps_its_place(env: _Env) -> None:
+    """The same with a leftover PARENT_CHILD edge from Epic, whose externalParentId
+    the subtask no longer names."""
+    epic = await env.record("Epic")
+    story = await env.record("Story", parent="Epic")
+    subtask = await env.record("Subtask", parent="Story")
+    await env.child_of(epic, story)
+    await env.child_of(story, subtask)
+    await env.child_of(epic, subtask)
+
+    assert await env.graph.get_record_path_segments(subtask) == ["Epic", "Story", "Subtask"]
 
 
 async def test_attachment_edges_and_parent_matched_by_id(env: _Env) -> None:
@@ -595,8 +623,8 @@ async def test_record_path_sees_uncommitted_edges_inside_a_transaction(env: _Env
     docs = await env.record("Docs")
     leaf = await env.record("f.txt", parent="Docs")
     txn = await env.graph.begin_transaction(
-        read=[RECORDS, CollectionNames.RECORD_RELATIONS.value],
-        write=[RECORDS, CollectionNames.RECORD_RELATIONS.value],
+        read=[RECORDS, CollectionNames.NODE_RELATIONS.value],
+        write=[RECORDS, CollectionNames.NODE_RELATIONS.value],
     )
     try:
         await env.child_of(docs, leaf, transaction=txn)
@@ -697,7 +725,11 @@ async def _grant(env: _Env, user: str, group: str) -> None:
     )
 
 
-async def _inherits(env: _Env, child: str, parent: str) -> None:
+async def _nests_under(env: _Env, child: str, parent: str) -> None:
+    """A group inside another, inheriting from it."""
+    await env.edge(
+        CollectionNames.NODE_RELATIONS.value, GROUPS, parent, GROUPS, child, relationshipType="PARENT_CHILD",
+    )
     await env.edge(CollectionNames.INHERIT_PERMISSIONS.value, GROUPS, child, GROUPS, parent)
 
 
@@ -717,9 +749,8 @@ async def _groups_for(env: _Env, containers: object, connector_id: str) -> list[
     return [g["id"] for g in groups]
 
 
-async def test_scoping_reaches_every_group_the_user_can_read_including_cross_connector_inheritance(
-    env: _Env,
-) -> None:
+async def test_scoping_leaves_out_no_group_the_user_can_read(env: _Env) -> None:
+    """Grep is narrowed to no group, and the access check admits each group the user reaches."""
     trusted = PermissionModel.RECORD_GROUP_LEVEL.value
     user = await env.user("user")
     jira = await env.app("jira")
@@ -734,16 +765,21 @@ async def test_scoping_reaches_every_group_the_user_can_read_including_cross_con
     other_granted = await env.group("other-granted", connector_id=other, permission_model=trusted)
     await _grant(env, user, granted)
     await _grant(env, user, other_granted)
-    await _inherits(env, inherited, granted)
-    # A Jira group inheriting from a grant on another connector.
-    await _inherits(env, cross, other_granted)
+    await _nests_under(env, inherited, granted)
+    # A Jira group under a granted group of another connector: a node is judged
+    # inside its own connector, so that grant opens nothing here.
+    await _nests_under(env, cross, other_granted)
 
     containers = await env.graph.get_accessible_containers(user_id=user, org_id=env.org_id)
 
     assert containers.fallback_reason is None
-    assert await _groups_for(env, containers, jira) == sorted([granted, inherited, cross])
-    assert hidden not in await _groups_for(env, containers, jira)
-    assert await _groups_for(env, containers, other) == [other_granted]
+    assert containers.app_ids == {jira, other}
+    assert await _groups_for(env, containers, jira) == []
+    assert await _groups_for(env, containers, other) == []
+    readable = (await env.graph.check_access(
+        user, env.org_id, node_ids=[granted, inherited, cross, hidden, other_granted],
+    )).node_ids
+    assert readable == {granted, inherited, other_granted}
 
 
 async def test_scoping_is_off_for_a_connector_the_user_cannot_reach(env: _Env) -> None:
@@ -766,5 +802,70 @@ async def test_scoping_is_off_for_root_scoped_connectors(env: _Env) -> None:
 
     containers = await env.graph.get_accessible_containers(user_id=user, org_id=env.org_id)
 
-    assert channel in containers.root_group_ids
+    assert containers.app_ids == {slack}
     assert await _groups_for(env, containers, slack) == []
+    assert channel in (await env.graph.check_access(user, env.org_id, node_ids=[channel])).node_ids
+
+
+# get_record_group_virtual_record_ids: the content stored under a group's prefix,
+# which a group rename moves (and nothing else under the same prefix).
+
+
+async def _in_group(env: _Env, record: str, group: str) -> None:
+    await env.edge(CollectionNames.BELONGS_TO.value, RECORDS, record, GROUPS, group)
+
+
+async def test_group_content_includes_every_nested_group(env: _Env) -> None:
+    top = await env.group("Top")
+    child = await env.group("Child")
+    grand = await env.group("Grand")
+    await env.belongs_to(child, top)
+    await env.belongs_to(grand, child)
+    in_top = await env.record("in-top")
+    in_child = await env.record("in-child")
+    in_grand = await env.record("in-grand")
+    await _in_group(env, in_top, top)
+    await _in_group(env, in_child, child)
+    await _in_group(env, in_grand, grand)
+
+    assert sorted(await env.graph.get_record_group_virtual_record_ids(top)) == _vr(in_top, in_child, in_grand)
+    assert sorted(await env.graph.get_record_group_virtual_record_ids(child)) == _vr(in_child, in_grand)
+
+
+async def test_group_content_leaves_out_a_same_named_twin_and_folders(env: _Env) -> None:
+    team = await env.group("Team")
+    twin = await env.group("Team-twin")  # sanitizes alike in production; separate here
+    mine = await env.record("mine")
+    await _in_group(env, mine, team)
+    await _in_group(env, await env.record("folder", content=False), team)
+    await _in_group(env, await env.record("theirs"), twin)
+
+    assert await env.graph.get_record_group_virtual_record_ids(team) == _vr(mine)
+
+
+async def test_group_content_lists_a_shared_vrid_once_and_survives_duplicate_edges(env: _Env) -> None:
+    top = await env.group("Top")
+    child = await env.group("Child")
+    await env.belongs_to(child, top)
+    await env.belongs_to(child, top)  # duplicate parent edge
+    a = await env.record("a")
+    b = await env.record("b", vrid_of="a")
+    await _in_group(env, a, top)
+    await _in_group(env, b, child)
+
+    assert await env.graph.get_record_group_virtual_record_ids(top) == _vr(a)
+
+
+async def test_group_content_of_a_cycle_terminates(env: _Env) -> None:
+    a = await env.group("A")
+    b = await env.group("B")
+    await env.belongs_to(a, b)
+    await env.belongs_to(b, a)
+    r = await env.record("r")
+    await _in_group(env, r, b)
+
+    assert await env.graph.get_record_group_virtual_record_ids(a) == _vr(r)
+
+
+async def test_content_of_a_missing_group_is_empty(env: _Env) -> None:
+    assert await env.graph.get_record_group_virtual_record_ids(env.key("missing")) == []

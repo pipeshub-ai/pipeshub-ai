@@ -127,6 +127,20 @@ class TestFindRecordsByEntity:
         assert kwargs["limit"] == 50
 
     @pytest.mark.asyncio
+    async def test_listed_records_are_noted_as_found_by_entity(self, patched) -> None:
+        patched[1].return_value = EntityRecordPage(
+            records=[_row("r1", virtualRecordId="vr-1")], next_cursor=None,
+        )
+        state = _state(include_retrieval_context=True)
+
+        await execute_find_records_by_entity(state, "t1", entity_type="topic")
+
+        provenance = state["retrieved_by"]["vr-1"]
+        assert (provenance.layers, provenance.record_id, provenance.record_name) == (
+            ["entity"], "r1", "doc r1",
+        )
+
+    @pytest.mark.asyncio
     async def test_hidden_urls_are_not_shown(self, patched) -> None:
         patched[1].return_value = EntityRecordPage(
             records=[_row("r1", webUrl="https://x/secret", hideWeburl=True)], next_cursor=None,
@@ -268,3 +282,23 @@ class TestEmptyWindow:
 def test_candidate_rows_carry_the_hide_url_flag() -> None:
     assert "hideWeburl" in Neo4jProvider._ENTITY_CANDIDATE_RECORD_PROJECTION
     assert "hideWeburl" in ArangoHTTPProvider._ENTITY_CANDIDATE_RECORD_FIELDS
+
+
+class TestUploadDates:
+    @pytest.mark.asyncio
+    async def test_a_knowledge_base_upload_is_listed_by_its_upload_time(self, patched) -> None:
+        uploaded = 1_792_090_099_000  # 2026-10-15
+        patched[1].return_value = EntityRecordPage(
+            records=[_row(
+                "r1", connectorId="kb-1", connectorName="KB", origin="UPLOAD",
+                createdAtTimestamp=uploaded, sourceCreatedAtTimestamp=uploaded - 30,
+                sourceLastModifiedTimestamp=uploaded - 30,
+            )],
+            next_cursor=None,
+        )
+
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+
+        assert ok is True
+        assert "uploaded: 2026-10-15" in text
+        assert "modified:" not in text

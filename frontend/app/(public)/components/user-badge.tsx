@@ -10,6 +10,8 @@ export interface UserBadgeProps {
   user: JwtUser;
 }
 
+const ELLIPSIS: React.CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 /**
@@ -21,7 +23,7 @@ export default function UserBadge({ user }: UserBadgeProps) {
   if (!user.email && !user.name) return null;
 
   return (
-    <Flex align="center" gap="2">
+    <Flex align="center" gap="2" style={{ minWidth: 0, maxWidth: '100%' }}>
       {user.initials && (
         <Flex
           align="center"
@@ -39,14 +41,14 @@ export default function UserBadge({ user }: UserBadgeProps) {
           </Text>
         </Flex>
       )}
-      <Flex direction="column">
+      <Flex direction="column" style={{ minWidth: 0 }}>
         {user.name && (
-          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)', ...ELLIPSIS }}>
             {user.name}
           </Text>
         )}
         {user.email && (
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: 'var(--gray-10)', ...ELLIPSIS }}>
             {user.email}
           </Text>
         )}

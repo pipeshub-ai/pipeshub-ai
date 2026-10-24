@@ -12,9 +12,9 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolDefinition,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.s3.s3 import S3Client
 from app.sources.external.s3.s3 import S3DataSource
@@ -101,7 +101,7 @@ tools: List[ToolDefinition] = [
 @ToolsetBuilder("AWS S3")\
     .in_group("Storage")\
     .with_description("AWS S3 integration for object storage and bucket management")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.API_TOKEN).fields([
             CommonFields.api_token("AWS Access Key ID", "your-access-key-id", field_name="accessKeyId"),

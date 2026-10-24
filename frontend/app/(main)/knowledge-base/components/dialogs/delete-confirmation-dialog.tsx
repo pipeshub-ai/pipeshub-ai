@@ -7,6 +7,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
 import { matchesConfirmationKeyword } from '@/lib/utils/validators';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { touchTarget } from '@/app/components/ui/responsive';
 
 interface DeleteConfirmationDialogProps {
   open: boolean;
@@ -28,6 +30,7 @@ export function DeleteConfirmationDialog({
   isDeleting = false,
 }: DeleteConfirmationDialogProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [confirmText, setConfirmText] = useState('');
   const deleteKeyword = t('dialog.deleteKeyword', { defaultValue: 'DELETE' });
   const isConfirmed = matchesConfirmationKeyword(confirmText, deleteKeyword);
@@ -45,18 +48,11 @@ export function DeleteConfirmationDialog({
     onOpenChange(newOpen);
   };
 
-  const getItemTypeLabel = () => {
-    switch (itemType) {
-      case 'KB':
-        return t('itemType.knowledgeBase') + ' will be deleted';
-      case 'folder':
-        return t('itemType.folder') + ' will be deleted from the collection';
-      case 'record':
-        return t('itemType.file') + ' will be deleted from the collection';
-      default:
-        return t('itemType.file');
-    }
-  };
+  const BODY_KEY = {
+    KB: 'dialog.deleteCollectionBody',
+    folder: 'dialog.deleteFolderBody',
+    record: 'dialog.deleteFileBody',
+  } as const;
 
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
@@ -81,14 +77,16 @@ export function DeleteConfirmationDialog({
         }}
       >
         <VisuallyHidden>
-          <Dialog.Title>Delete Confirmation</Dialog.Title>
+          <Dialog.Title>{t('dialog.deleteConfirmation')}</Dialog.Title>
         </VisuallyHidden>
         <Flex direction="column" gap="4">
           <Flex direction="column" gap="1">
             <Text size="5" weight="bold">
               {t('dialog.areYouSure')}
             </Text>
-              <Text size="2" weight="bold" style={{ color: 'var(--slate-12)', marginRight: '4px' }}>&apos;{itemName}&apos;<Text size="2" style={{ color: 'var(--slate-11)' }}> {getItemTypeLabel()} </Text></Text>
+            <Text size="2" style={{ color: 'var(--slate-11)', overflowWrap: 'anywhere' }}>
+              {t(BODY_KEY[itemType], { name: itemName })}
+            </Text>
           </Flex>
 
           {warningMessage && (
@@ -120,6 +118,7 @@ export function DeleteConfirmationDialog({
             <Button
               variant="outline"
               color="gray"
+              size={isMobile ? '3' : '2'}
               onClick={() => onOpenChange(false)}
               disabled={isDeleting}
             >
@@ -127,6 +126,8 @@ export function DeleteConfirmationDialog({
             </Button>
             <LoadingButton
               color="red"
+              size={isMobile ? '3' : '2'}
+              style={touchTarget(isMobile)}
               onClick={handleConfirm}
               disabled={!isConfirmed}
               loading={isDeleting}

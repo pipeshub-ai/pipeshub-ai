@@ -231,6 +231,56 @@ class TestAdmissionGateDemandAccounting:
         assert demand.blocked_acquires >= 290
 
 
+class TestRecentHoldTimes:
+    """The hold times a holder reports on release, kept per sample for the
+    pool's median (``PoolDemand.hold_seconds_by_sample``)."""
+
+    @staticmethod
+    def _gate() -> AdmissionGate:
+        return AdmissionGate(Pool.INDEX_LIGHT, _registry(limit=64, pool=Pool.INDEX_LIGHT))
+
+    def test_reported_holds_reach_the_demand(self) -> None:
+        gate = self._gate()
+
+        async def scenario() -> None:
+            for held in (17.6, 18.0, 600.0):
+                await gate.acquire()
+                gate.release(held_seconds=held)
+            await gate.acquire()
+            gate.release()  # nothing reported: not a sample
+
+        asyncio.run(scenario())
+        demand = gate.drain_demand()
+        assert demand.hold_seconds_by_sample == ((17.6, 18.0, 600.0),)
+        assert demand.completions == 4
+
+    def test_earlier_samples_are_kept_newest_last(self) -> None:
+        gate = self._gate()
+
+        async def scenario() -> tuple[tuple[float, ...], ...]:
+            for held in (1.0, 2.0, 3.0, 4.0, 5.0, 6.0):
+                await gate.acquire()
+                gate.release(held_seconds=held)
+                gate.drain_demand()
+            return gate.drain_demand().hold_seconds_by_sample
+
+        # The last four drained samples, then this (empty) one.
+        assert asyncio.run(scenario()) == ((3.0,), (4.0,), (5.0,), (6.0,), ())
+
+    def test_one_sample_keeps_a_bounded_number_of_holds(self) -> None:
+        gate = self._gate()
+
+        async def scenario() -> tuple[float, ...]:
+            for i in range(1100):
+                await gate.acquire()
+                gate.release(held_seconds=float(i))
+            return gate.drain_demand().hold_seconds_by_sample[-1]
+
+        holds = asyncio.run(scenario())
+        assert len(holds) == 1024
+        assert holds[-1] == 1099.0
+
+
 class TestArrivalOrder:
     """Waiters are admitted in the order they arrived. With every waiter
     woken at once they raced for the permit, and one could lose that race
@@ -302,3 +352,15 @@ class TestArrivalOrder:
         gate.release()
         await asyncio.sleep(0.01)
         assert patient.done() and patient.result() is True
+
+
+@pytest.mark.asyncio
+async def test_a_cap_admits_past_a_shrunk_limit_but_not_past_the_cap() -> None:
+    gate = AdmissionGate(Pool.HEAVY_PARSE, _registry(limit=1))
+    assert await gate.acquire(cost=1)
+    # The braked limit is full; work already braked in this memory is bounded by the cap.
+    assert await gate.acquire(cost=1, timeout=0.01) is False
+    assert await gate.acquire(cost=1, timeout=0.01, cap=3)
+    assert await gate.acquire(cost=1, timeout=0.01, cap=3)
+    assert await gate.acquire(cost=1, timeout=0.01, cap=3) is False
+    assert gate.in_use == 3

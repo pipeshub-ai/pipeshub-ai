@@ -1,0 +1,19 @@
+query ($fullPath: ID!, $branch: String!, $afterCursor: String!) {
+          project(fullPath: $fullPath) {
+            name
+            repository {
+              rootRef
+              paginatedTree(recursive: true, ref: $branch, after: $afterCursor) {
+                nodes {
+                  trees {
+                    nodes { name path sha type webPath webUrl }
+                  }
+                  blobs {
+                    nodes { name path sha type webPath webUrl }
+                  }
+                }
+                pageInfo { endCursor hasNextPage }
+              }
+            }
+          }
+        }

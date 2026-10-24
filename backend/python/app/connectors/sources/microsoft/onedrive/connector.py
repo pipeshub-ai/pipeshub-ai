@@ -20,7 +20,13 @@ from msgraph.generated.models.subscription import Subscription
 from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -56,7 +62,7 @@ from app.connectors.sources.microsoft.common.apps import OneDriveApp
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
     RecordUpdate,
-    map_msgraph_role_to_permission_type,
+    map_msgraph_roles_to_permission_type,
 )
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import (
@@ -498,11 +504,18 @@ class OneDriveConnector(BaseConnector):
 
             new_permissions = await self._convert_to_permissions(permission_result)
 
-            if existing_record:
-                # compare permissions with existing permissions (To be implemented)
-                if new_permissions:
-                    permissions_changed = True
+            if permission_failure is None:
+                # OneDrive does not say which grants were inherited. Matching the
+                # parent is not inheritance: a later parent share would leak in.
+                file_record.inherit_permissions = False
+                file_record.rewrite_permissions = True
+                permissions_changed = True
+                if existing_record:
                     is_updated = True
+            else:
+                file_record.inherit_permissions = await self.data_entities_processor.inheritance_when_unreadable(
+                    CollectionNames.RECORDS.value, existing_record.id if existing_record else None
+                )
 
             if existing_record and existing_record.is_shared != is_shared_folder:
                 metadata_changed = True
@@ -566,7 +579,7 @@ class OneDriveConnector(BaseConnector):
                         permissions.append(Permission(
                             external_id=user.id,
                             email=user.additional_data.get("email", None) if hasattr(user, 'additional_data') else None,
-                            type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                            type=map_msgraph_roles_to_permission_type(perm.roles),
                             entity_type=EntityType.USER
                         ))
                     if hasattr(perm.granted_to_v2, 'group') and perm.granted_to_v2.group:
@@ -574,7 +587,7 @@ class OneDriveConnector(BaseConnector):
                         permissions.append(Permission(
                             external_id=group.id,
                             email=group.additional_data.get("email", None) if hasattr(group, 'additional_data') else None,
-                            type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                            type=map_msgraph_roles_to_permission_type(perm.roles),
                             entity_type=EntityType.GROUP
                         ))
 
@@ -587,7 +600,7 @@ class OneDriveConnector(BaseConnector):
                             permissions.append(Permission(
                                 external_id=group.id,
                                 email=group.additional_data.get("email", None) if hasattr(group, 'additional_data') else None,
-                                type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                                type=map_msgraph_roles_to_permission_type(perm.roles),
                                 entity_type=EntityType.GROUP
                             ))
                         elif hasattr(identity, 'user') and identity.user:
@@ -595,27 +608,13 @@ class OneDriveConnector(BaseConnector):
                             permissions.append(Permission(
                                 external_id=user.id,
                                 email=user.additional_data.get("email", None) if hasattr(user, 'additional_data') else None,
-                                type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                                type=map_msgraph_roles_to_permission_type(perm.roles),
                                 entity_type=EntityType.USER
                             ))
 
-                # Handle link permissions (anyone with link)
-                if hasattr(perm, 'link') and perm.link:
-                    link = perm.link
-                    if link.scope == "anonymous":
-                        permissions.append(Permission(
-                            external_id="anyone_with_link",
-                            email=None,
-                            type=map_msgraph_role_to_permission_type(link.type),
-                            entity_type=EntityType.ANYONE_WITH_LINK
-                        ))
-                    elif link.scope == "organization":
-                        permissions.append(Permission(
-                            external_id="anyone_in_org",
-                            email=None,
-                            type=map_msgraph_role_to_permission_type(link.type),
-                            entity_type=EntityType.ORG
-                        ))
+                # A link grants only the identities Graph lists on it. An organization or
+                # anonymous link opens the item only to the people who redeem it, and Graph
+                # does not list them, so they get no grant here: under-shared, never over-shared.
 
             except Exception as e:
                 self.logger.error(f"❌ Error converting permission: {e}", exc_info=True)
@@ -834,6 +833,8 @@ class OneDriveConnector(BaseConnector):
 
                 if child_permissions is not None and existing_child_record:
                     converted_permissions = await self._convert_to_permissions(child_permissions)
+                    existing_child_record.inherit_permissions = False
+                    existing_child_record.rewrite_permissions = True
                     await self.data_entities_processor.on_updated_record_permissions(
                         record=existing_child_record,
                         permissions=converted_permissions
@@ -879,6 +880,8 @@ class OneDriveConnector(BaseConnector):
             records.extend(await self._stored_descendants(unlisted_folder))
 
         for record in records:
+            record.inherit_permissions = False
+            record.rewrite_permissions = True
             await self.data_entities_processor.on_updated_record_permissions(record, list(folder_permissions))
         self.logger.error(
             f"❌ Folder {folder_id} was unshared, but the access of {[r.external_record_id for r in records]} could not be "
@@ -1618,12 +1621,14 @@ class OneDriveConnector(BaseConnector):
             if not record:
                 continue
             try:
-                grants = await self.msgraph_client.get_file_permission(
-                    record.external_record_group_id, item_id, raise_on_error=True
+                grants = await self._convert_to_permissions(
+                    await self.msgraph_client.get_file_permission(
+                        record.external_record_group_id, item_id, raise_on_error=True
+                    )
                 )
-                await self.data_entities_processor.on_updated_record_permissions(
-                    record, await self._convert_to_permissions(grants)
-                )
+                record.inherit_permissions = False
+                record.rewrite_permissions = True
+                await self.data_entities_processor.on_updated_record_permissions(record, grants)
             except Exception as ex:
                 self.logger.warning(f"Access of item {item_id} still could not be read or saved: {ex}")
                 remaining.append(item_id)

@@ -3,29 +3,35 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Text } from '@radix-ui/themes';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { CHAT_ITEM_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import type { McpMyServerEntry } from '../../../workspace/mcp-servers/types';
+import { isPersonalMcpInstance } from '../../../workspace/mcp-servers/types';
 import {
   buildMcpServerDragPayload,
-  collectActiveMcpInstanceIdsFromNodes,
+  buildMcpToolDragPayload,
   collectActiveMcpTypeIdsFromNodes,
   getMcpSidebarStatus,
   isMcpTypeIdConflict,
 } from '../sidebar-mcp-utils';
 import type { McpInstanceIdFlowNode } from '../sidebar-mcp-utils';
+import { filterMcpServerTools } from '../sidebar-utils';
+import { useSearchAwareExpanded } from '../sidebar-expand-utils';
 import { SidebarCategoryRow } from './sidebar-category-row';
+import { SidebarToolDragRow } from './sidebar-draggable-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
 import { McpCredentialsDialog } from './agent-mcp-credentials-dialog';
 import { isMcpOAuthSuccessMessageType } from '../../../workspace/mcp-servers/oauth/mcp-oauth-window-messages';
 
 export function AgentBuilderMcpSection(props: {
   mcpServers: McpMyServerEntry[];
+  /** Palette search query: matches server names/descriptions and their tools. */
+  search?: string;
   loading: boolean;
   refreshMcpServers: () => Promise<void>;
   mcpMergeCheckNodes: McpInstanceIdFlowNode[];
   agentKey?: string | null;
   isServiceAccount?: boolean;
+  /** Shared with the org (or a service account): only org servers can be attached. */
+  agentShared?: boolean;
   onNotify: (message: string) => void;
   /** Viewer without edit: block MCP drags onto the canvas. */
   structureLocked?: boolean;
@@ -33,23 +39,24 @@ export function AgentBuilderMcpSection(props: {
 }) {
   const {
     mcpServers,
+    search = '',
     loading,
     refreshMcpServers,
     mcpMergeCheckNodes,
     agentKey = null,
     isServiceAccount = false,
+    agentShared = false,
     onNotify,
     structureLocked = false,
     onPaletteStructureDragBlocked,
   } = props;
 
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const { isOpen, toggle } = useSearchAwareExpanded(search.trim() !== '');
   const [credentialsDialogInstance, setCredentialsDialogInstance] = useState<McpMyServerEntry | null>(
     null
   );
 
-  const activeInstanceIds = collectActiveMcpInstanceIdsFromNodes(mcpMergeCheckNodes);
   const activeTypeIds = collectActiveMcpTypeIdsFromNodes(mcpMergeCheckNodes);
 
   const notifyStructureDragBlocked = useCallback(() => {
@@ -72,6 +79,13 @@ export function AgentBuilderMcpSection(props: {
   const notifyDuplicate = useCallback(
     (entry: McpMyServerEntry) => {
       onNotify(t('agentBuilder.mcpServerAlreadyAttachedNotify', { name: entry.name }));
+    },
+    [onNotify, t]
+  );
+
+  const notifyPersonalOnSharedAgent = useCallback(
+    (entry: McpMyServerEntry) => {
+      onNotify(t('agentBuilder.mcpPersonalOnSharedAgentNotify', { name: entry.name }));
     },
     [onNotify, t]
   );
@@ -101,22 +115,29 @@ export function AgentBuilderMcpSection(props: {
   return (
     <Box>
       {mcpServers.map((entry) => {
+        const shownTools = filterMcpServerTools(entry, search);
+        if (shownTools === null) return null;
         const key = `mcp-row-${entry._id}`;
-        const isExpanded = expanded[key] ?? false;
+        const isExpanded = isOpen(key, false);
         const status = getMcpSidebarStatus(entry);
-        const isDuplicate =
-          activeInstanceIds.has(entry._id) || isMcpTypeIdConflict(activeTypeIds, entry._id, entry.typeId);
-        const dragBlocked = !entry.isAuthenticated || isDuplicate;
+        const isPersonal = isPersonalMcpInstance(entry);
+        const personalBlocked = isPersonal && agentShared;
+        // Dropping the same instance again merges into its node; only another instance of
+        // the same type is refused.
+        const isTypeConflict = isMcpTypeIdConflict(activeTypeIds, entry._id, entry.typeId);
+        const dragBlocked = structureLocked || !entry.isAuthenticated || isTypeConflict || personalBlocked;
         const dragPayload = buildMcpServerDragPayload(entry);
         const dragType = dragBlocked ? undefined : dragPayload['application/reactflow'];
 
         const onDragAttempt = structureLocked
           ? notifyStructureDragBlocked
-          : isDuplicate
-            ? () => notifyDuplicate(entry)
-            : !entry.isAuthenticated
-              ? () => notifyUnauthenticated(entry)
-              : undefined;
+          : personalBlocked
+            ? () => notifyPersonalOnSharedAgent(entry)
+            : isTypeConflict
+              ? () => notifyDuplicate(entry)
+              : !entry.isAuthenticated
+                ? () => notifyUnauthenticated(entry)
+                : undefined;
 
         const showConfigureIcon = entry.authMode !== 'none' && !entry.useAdminAuth;
 
@@ -124,12 +145,12 @@ export function AgentBuilderMcpSection(props: {
           <SidebarCategoryRow
             key={entry._id}
             groupLabel={entry.name}
-            groupMaterialIcon={entry.isCustom ? 'dns' : 'hub'}
-            itemCount={entry.tools.length}
+            groupMaterialIcon={isPersonal ? 'person' : entry.isCustom ? 'dns' : 'hub'}
+            itemCount={shownTools.length}
             isExpanded={isExpanded}
-            onToggle={() => setExpanded((p) => ({ ...p, [key]: !isExpanded }))}
-            dragType={structureLocked ? undefined : dragType}
-            dragData={structureLocked || dragBlocked ? undefined : dragPayload}
+            onToggle={() => toggle(key, false)}
+            dragType={dragType}
+            dragData={dragBlocked ? undefined : dragPayload}
             onDragAttempt={onDragAttempt}
             showConfigureIcon={showConfigureIcon}
             onConfigureClick={
@@ -148,45 +169,20 @@ export function AgentBuilderMcpSection(props: {
             configureIconColor="var(--slate-11)"
             toolsetStatus={status}
           >
-            {entry.tools.length === 0 ? (
+            {shownTools.length === 0 ? (
               <Text size="1" style={{ color: 'var(--slate-11)', fontStyle: 'italic', padding: '4px 8px' }}>
                 {t('agentBuilder.noToolsSelected')}
               </Text>
             ) : (
-              entry.tools.map((tool) => (
-                <Box
+              shownTools.map((tool) => (
+                <SidebarToolDragRow
                   key={tool.namespacedName || tool.name}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    width: '100%',
-                    minWidth: 0,
-                    minHeight: CHAT_ITEM_HEIGHT,
-                    padding: '0 12px',
-                    boxSizing: 'border-box',
-                    gap: 8,
-                  }}
-                >
-                  <MaterialIcon
-                    name="build"
-                    size={ICON_SIZE_DEFAULT}
-                    color="var(--slate-11)"
-                    style={{ flexShrink: 0, lineHeight: 0 }}
-                  />
-                  <span
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      fontSize: 14,
-                      color: 'var(--slate-11)',
-                      whiteSpace: 'normal',
-                      overflowWrap: 'anywhere',
-                      wordBreak: 'break-word',
-                    }}
-                  >
-                    {tool.name.replace(/_/g, ' ')}
-                  </span>
-                </Box>
+                  name={tool.name}
+                  description={tool.description}
+                  data={buildMcpToolDragPayload(entry, tool)}
+                  disabled={dragBlocked}
+                  onBlocked={onDragAttempt}
+                />
               ))
             )}
           </SidebarCategoryRow>

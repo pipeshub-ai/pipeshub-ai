@@ -307,7 +307,9 @@ function parseSSEBuffer(buffer: string): {
 
     // Parse data field
     if (line.startsWith('data: ')) {
-      currentEvent.data = line.substring(6).trim();
+      // A frame may carry several data lines; the SSE format joins them with a newline.
+      const chunk = line.substring(6).trim();
+      currentEvent.data = currentEvent.data === undefined ? chunk : `${currentEvent.data}\n${chunk}`;
       i++;
       continue;
     }

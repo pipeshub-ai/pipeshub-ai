@@ -106,6 +106,91 @@ class TestCitationNumbersAgreeAcrossParts:
         assert len(result["citations"]) == 1
 
 
+class TestTheSignInCard:
+    SERVER = {"instanceId": "inst-drive", "serverName": "Drive", "scopes": ["files.write"]}
+
+    async def test_the_saved_parts_end_with_it(self) -> None:
+        context = _context(client_name="pipeshub-ai", conversation_id="conv-agentloop-sign-in")
+        context.mcp_sign_in_needed.append(dict(self.SERVER))
+        final = "Drive needs more permission to upload that."
+        await _stream_turns(context.transcript_collector, final)
+
+        result = await AnswerFinalizer(context, CitationCollector(context)).run(
+            agent_success=True, agent_error=None, agent_output=final, streamed_answer=final, event_sink=_Sink(),
+        )
+
+        assert result["parts"][-1] == {"type": "mcp_sign_in", "servers": [self.SERVER]}
+        assert result["answer"] == final
+        # The transcript itself is unchanged: the card isn't activity.
+        assert all(part["type"] != "mcp_sign_in" for part in context.transcript_collector.parts)
+
+    async def test_without_a_server_to_sign_in_to_nothing_is_added(self) -> None:
+        context = _context(client_name="pipeshub-ai", conversation_id="conv-agentloop-no-sign-in")
+        final = "Done."
+        await _stream_turns(context.transcript_collector, final)
+
+        result = await AnswerFinalizer(context, CitationCollector(context)).run(
+            agent_success=True, agent_error=None, agent_output=final, streamed_answer=final, event_sink=_Sink(),
+        )
+
+        assert all(part["type"] != "mcp_sign_in" for part in result["parts"])
+
+
+class TestATurnThatEndedWaitingForApproval:
+    async def test_the_models_text_stays_and_the_approval_message_comes_last(self) -> None:
+        from unittest.mock import patch
+
+        from app.agents.agent_loop.tool_approvals import PENDING_MESSAGE
+
+        context = _context()
+        message = "Waiting for your approval to run create_issue on Jira."
+        context.tool_state[PENDING_MESSAGE] = message
+        await _stream_turns(context.transcript_collector, "I found the bug report; filing it now.")
+
+        with patch("app.agents.agent_loop.respond._record_answer_generated") as recorded:
+            result = await AnswerFinalizer(context, CitationCollector(context)).run(
+                agent_success=True, agent_error=None, agent_output=message,
+                streamed_answer="I found the bug report; filing it now.", event_sink=_Sink(),
+            )
+
+        narration, final = _text_parts(context)
+        assert narration["content"] == "I found the bug report; filing it now."
+        assert final == {"type": "text", "content": message, "isFinal": True}
+        assert result["answer"] == message
+        assert result["answerMatchType"] == "Approval Needed"
+        recorded.assert_not_called()
+
+    async def test_a_call_a_sub_agent_left_waiting_still_shows_in_the_answer(self) -> None:
+        """A sub-agent run without the parent's scope (static composition) can ask while the parent
+        carries on: its card is showing, so the answer says a call is waiting."""
+        from app.agents.agent_loop.tool_approvals import PENDING_MESSAGE
+
+        context = _context()
+        message = "Waiting for your approval to run create_issue on Jira."
+        context.tool_state[PENDING_MESSAGE] = message
+        await _stream_turns(context.transcript_collector, "All done.")
+
+        result = await AnswerFinalizer(context, CitationCollector(context)).run(
+            agent_success=True, agent_error=None, agent_output="All done.", streamed_answer="All done.", event_sink=_Sink(),
+        )
+
+        [only] = _text_parts(context)
+        assert only["content"] == result["answer"] == f"All done.\n\n{message}"
+        assert result["answerMatchType"] == "Approval Needed"
+
+    async def test_an_ordinary_answer_is_unaffected(self) -> None:
+        context = _context()
+        await _stream_turns(context.transcript_collector, "All done.")
+
+        result = await AnswerFinalizer(context, CitationCollector(context)).run(
+            agent_success=True, agent_error=None, agent_output="All done.", streamed_answer="All done.", event_sink=_Sink(),
+        )
+
+        [only] = _text_parts(context)
+        assert only["content"] == "All done."
+        assert result.get("answerMatchType") != "Approval Needed"
+
+
 class TestDownloadCards:
     async def test_files_made_during_the_run_are_attached_to_the_final_answer_only(self) -> None:
         context = _context(conversation_id="conv-agentloop-downloads")

@@ -14,11 +14,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.agent import Agent
-from app.agent_loop_lib.agent.loops import ReActLoop
+from app.agent_loop_lib.agent.loops import LoopStrategy, ReActLoop, ReflexionLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.context import CancellationToken
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
+    SystemMessage,
     ToolCall,
     ToolMessage,
     UserMessage,
@@ -81,6 +82,7 @@ def _build(
     max_turns: int,
     cancellation_token: CancellationToken | None = None,
     extra_tools: tuple[Tool, ...] = (),
+    loop: LoopStrategy | None = None,
 ) -> Agent:
     registry = ToolRegistry()
     for registered in (tool, *extra_tools):
@@ -91,7 +93,7 @@ def _build(
         name="agent-under-test",
         system_prompt="You are a helpful assistant.",
         model=ModelSpec(provider="scripted", model="scripted-model"),
-        loop=ReActLoop(),
+        loop=loop or ReActLoop(),
         max_turns=max_turns,
     )
     runtime = AgentRuntime(
@@ -150,12 +152,73 @@ class TestFinalAnswerTurn:
 
         assert len(transport.calls) == 4
         final_call = transport.calls[-1]
-        instruction = final_call["messages"][-1]
-        assert isinstance(instruction, UserMessage)
-        assert "maximum number of steps" in instruction.content
-        assert "Do not call any more tools" in instruction.content
+        carrier = final_call["messages"][-1]
+        assert isinstance(carrier, ToolMessage)
+        assert carrier.tool_call_id == "last"
+        assert carrier.step_footer.startswith("\n\n[loop: step 3/3")
+        assert "maximum number of steps" in carrier.step_footer
+        assert "Do not call any more tools" in carrier.step_footer
         # Still sent: providers reject tool history without tool definitions.
         assert [schema.name for schema in final_call["tools"]] == ["run_query"]
+        assert final_call["tool_choice"] == "none"
+        assert [call["tool_choice"] for call in transport.calls[:-1]] == [None, None, None]
+
+    async def test_a_streamed_final_turn_also_asks_for_no_tool_calls(self) -> None:
+        transport = ScriptedTransport(script=[
+            *_tool_turns(2),
+            ScriptedStep(message=AssistantMessage(content=_ANSWER), text_chunks=[_ANSWER]),
+        ])
+        agent = _build(transport, _CountingTool(), max_turns=2)
+
+        _ = [event async for event in agent.stream(_GOAL)]
+
+        assert [call["tool_choice"] for call in transport.calls] == [None, None, "none"]
+
+    async def test_the_instruction_never_poses_as_the_user_after_tool_output(self) -> None:
+        # Azure OpenAI's content filter rejects an imperative user message
+        # right after tool results, which turned this turn into a 400.
+        transport = ScriptedTransport(script=[
+            *_tool_turns(3),
+            ScriptedStep(message=AssistantMessage(content=_ANSWER)),
+        ])
+        agent = _build(transport, _CountingTool(), max_turns=3)
+
+        await agent.run(_GOAL)
+
+        final_messages = transport.calls[-1]["messages"]
+        assert not any(isinstance(m, UserMessage) and m.injected for m in final_messages)
+        stored = await agent.context.messages()
+        assert not any(isinstance(m, UserMessage) and m.injected for m in stored)
+        stored_result = next(m for m in stored if isinstance(m, ToolMessage) and m.tool_call_id == "last")
+        assert "maximum number of steps" not in stored_result.step_footer
+
+    async def test_without_a_tool_result_last_the_instruction_goes_in_the_system_prompt(self) -> None:
+        """No tool result to hang the footer on, so the note must not be sent
+        as the user either: `add_loop_note`'s own docstring says an
+        instruction posing as the user after tool output reads as a prompt
+        attack, and a `SystemMessage` among the messages is refused outright
+        by Anthropic's Messages API. The system prompt is the one channel
+        every transport accepts."""
+        async def always_critique(_turn: object) -> str:
+            return "Self-critique: try a narrower query."
+
+        transport = ScriptedTransport(script=[
+            *_tool_turns(2),
+            ScriptedStep(message=AssistantMessage(content=_ANSWER)),
+        ])
+        agent = _build(transport, _CountingTool(), max_turns=2, loop=ReflexionLoop(always_critique))
+
+        result = await agent.run(_GOAL)
+
+        assert result.output == _ANSWER
+        final_call = transport.calls[-1]
+        assert "maximum number of steps" in final_call["system"]
+        # Not smuggled back in as a message on any channel.
+        for message in final_call["messages"]:
+            assert "maximum number of steps" not in str(getattr(message, "content", ""))
+            assert not isinstance(message, SystemMessage)
+        stored = await agent.context.messages()
+        assert not any("maximum number of steps" in str(getattr(m, "content", "")) for m in stored)
 
     async def test_tool_calls_in_the_final_turn_are_not_executed(self) -> None:
         transport = ScriptedTransport(script=[*_tool_turns(3), _tool_turn(call_id="ignored")])
@@ -171,10 +234,13 @@ class TestFinalAnswerTurn:
         # The saved history must stay valid to send to a provider again.
         assert await _unanswered_tool_calls(agent) == []
 
-    async def test_text_written_beside_a_dropped_call_is_the_answer(self) -> None:
-        reply = "The members are Trent Smith, Tyler Hewitt and Annabella Warren. Let me double-check."
+    async def test_text_before_a_dropped_call_is_not_the_answer(self) -> None:
+        # A model that ignores "no more tools" says what it will look up next
+        # and calls a tool; that sentence is not an answer to the question.
+        reply = "I'll check the late-July call record for the exact search-route tuning settings."
         transport = ScriptedTransport(script=[
-            *_tool_turns(2),
+            _tool_turn(call_id="a"),
+            _tool_turn(call_id="b"),
             ScriptedStep(message=AssistantMessage(content=reply, tool_calls=[
                 ToolCall(id="ignored", name="run_query", arguments={"sql": "SELECT 2"}),
             ]), text_chunks=[reply]),
@@ -182,13 +248,14 @@ class TestFinalAnswerTurn:
         tool = _CountingTool()
         agent = _build(transport, tool, max_turns=2)
 
-        events = [event async for event in agent.stream(_GOAL)]
+        _ = [event async for event in agent.stream(_GOAL)]
 
+        result = agent.last_stream_result
         assert tool.executions == 2
-        # It was already streamed, so it must not be swapped for older narration.
-        assert agent.last_stream_result.output == reply
-        streamed = "".join(e.payload.get("delta", "") for e in events if e.event_type == EventType.TEXT_MESSAGE_CONTENT)
-        assert streamed.endswith(reply)
+        assert result.output != reply
+        # The same tail as an empty final reply.
+        assert result.success is False
+        assert "Exceeded max_turns=2" in result.error
         assert await _unanswered_tool_calls(agent) == []
 
     async def test_a_run_ending_call_in_the_final_turn_still_ends_the_run(self) -> None:
@@ -283,10 +350,11 @@ class TestDeadlineWarningInARun:
 
         warned = [
             call for call in transport.calls
-            if "turns remaining" in str(getattr(call["messages"][-1], "content", ""))
+            if "last tool round" in getattr(call["messages"][-1], "step_footer", "")
         ]
         assert len(warned) == 1
-        warning = warned[0]["messages"][-1].content
         assert warned[0] is transport.calls[2]
+        assert isinstance(warned[0]["messages"][-1], ToolMessage)
+        warning = warned[0]["messages"][-1].step_footer
         assert "task_complete" not in warning
-        assert "Reply with your final answer" in warning
+        assert "reply with your final answer as plain text" in warning

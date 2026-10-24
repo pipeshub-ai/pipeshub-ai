@@ -1,4 +1,6 @@
 import { apiClient } from '@/lib/api';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
+import { desktopAuthorizeParams } from '@/lib/electron';
 import type { ConnectorOAuthCallbackRaw } from '@/app/(main)/connectors/oauth/connector-oauth-callback-response';
 import type {
   Connector,
@@ -10,12 +12,15 @@ import type {
   FilterOptionsResponse,
   ConnectorStatsResponse,
   ConnectionCheckResponse,
+  ReindexStage,
+  CodeGraphRepo,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
 import { expandRelativeDatetimeFiltersForSave } from './utils/expand-relative-datetime-filters-for-save';
 import { pruneInactiveFilterValues } from './utils/prune-inactive-filter-values';
 import { isDesktopOfflineError } from './utils/local-fs-helpers';
+import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 const BASE_URL = '/api/v1/connectors';
 
 /** Normalized DELETE /connectors/:id body for optimistic UI merge. */
@@ -288,9 +293,14 @@ export const ConnectorsApi = {
   },
 
   /** Fetch one OAuth config by id (admin fallback when list entry has no embedded config). */
-  async getOAuthConfig(connectorType: string, oauthConfigId: string): Promise<Record<string, unknown>> {
+  async getOAuthConfig(
+    connectorType: string,
+    oauthConfigId: string,
+    options?: { reveal?: boolean }
+  ): Promise<Record<string, unknown>> {
     const { data } = await apiClient.get<{ oauthConfig?: Record<string, unknown> }>(
-      `/api/v1/oauth/${encodeURIComponent(connectorType)}/${encodeURIComponent(oauthConfigId)}`
+      `/api/v1/oauth/${encodeURIComponent(connectorType)}/${encodeURIComponent(oauthConfigId)}`,
+      { params: options?.reveal ? REVEAL_PARAMS : undefined }
     );
     return (data.oauthConfig ?? {}) as Record<string, unknown>;
   },
@@ -299,13 +309,13 @@ export const ConnectorsApi = {
   async getOAuthAuthorizationUrl(
     connectorId: string
   ): Promise<{ authorizationUrl: string; state: string }> {
-    const baseUrl = window.location.origin;
+    const baseUrl = browserOAuthBaseUrl();
     const { data } = await apiClient.get<{
       authorizationUrl: string;
       state: string;
     }>(
       `${BASE_URL}/${connectorId}/oauth/authorize`,
-      { params: { baseUrl } }
+      { params: { baseUrl, ...desktopAuthorizeParams() } }
     );
     return data;
   },
@@ -414,12 +424,20 @@ export const ConnectorsApi = {
    * Reindex all records for a connector instance, optionally filtered by
    * indexing status. Omitting statusFilters reindexes everything for a KB
    * connector; other connector types default server-side to FAILED-only.
+   * With `stages`, only those pipeline stages re-run and statusFilters match
+   * the stage's own status (classify -> extractionStatus,
+   * entities -> entitiesStatus).
    */
-  async reindexConnector(connectorId: string, statusFilters?: string[]) {
+  async reindexConnector(
+    connectorId: string,
+    statusFilters?: string[],
+    stages?: ReindexStage[]
+  ) {
     const { data } = await apiClient.post(
       `${BASE_URL}/${connectorId}/reindex`,
       {
         ...(statusFilters?.length ? { statusFilters } : {}),
+        ...(stages?.length ? { stages } : {}),
       }
     );
     return data;
@@ -488,5 +506,14 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}/stats`
     );
     return data;
+  },
+
+  /** Code repositories the caller can read, with each one's code-graph status. */
+  async getCodeGraphRepos(): Promise<CodeGraphRepo[]> {
+    const { data } = await apiClient.get<{ repos?: CodeGraphRepo[] }>(
+      '/api/v1/code-graph/repos',
+      { suppressErrorToast: true }
+    );
+    return data.repos ?? [];
   },
 };

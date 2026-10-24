@@ -7,11 +7,16 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from pathlib import Path
+from typing import Any
 
 from google.auth.transport.requests import Request  # type: ignore[import-not-found]
 from google.oauth2.credentials import Credentials  # type: ignore[import-not-found]
 from googleapiclient.discovery import build  # type: ignore[import-not-found]
 
+from app.connectors.sources.google.common.drive_file_fields import (  # type: ignore[import-not-found]
+    DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
+)
 from app.sources.external.google.drive.drive import (  # type: ignore[import-not-found]
     GoogleDriveDataSource,
 )
@@ -19,6 +24,8 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # ty
     FULL_DRIVE_SCOPE,
     create_drive_folder,
     create_drive_text_file,
+    pick_entity_sample_files,
+    upload_drive_local_file,
 )
 
 logger = logging.getLogger("drive-individual-test-utils")
@@ -136,3 +143,65 @@ async def create_folder_filter_fixtures(
     }
     logger.info("Created Drive personal folder-filter fixtures: %s", fixtures)
     return fixtures
+
+
+async def create_entity_fixtures(
+    drive: GoogleDriveDataSource,
+    sample_data_root: Path,
+) -> dict[str, Any]:
+    """Folder-filter tree plus two sample files uploaded under ``nested``.
+
+    The entity suite runs unfiltered, so the extra files give it real binary
+    records (not just text stubs) to compare against live Drive metadata.
+    """
+    fixtures: dict[str, Any] = dict(await create_folder_filter_fixtures(drive))
+
+    nested_folder_id = fixtures["nested_folder_id"]
+    entity_sample_files: list[dict[str, str]] = []
+    for local_path in pick_entity_sample_files(sample_data_root, n=2):
+        sample_id = await upload_drive_local_file(
+            drive,
+            local_path,
+            nested_folder_id,
+            name=local_path.name,
+        )
+        entity_sample_files.append(
+            {
+                "id": sample_id,
+                "name": local_path.name,
+                "local_rel": str(local_path.relative_to(sample_data_root)),
+            }
+        )
+    fixtures["entity_sample_files"] = entity_sample_files
+    logger.info("Created Drive personal entity fixtures: %s", fixtures)
+    return fixtures
+
+
+async def drive_about_get(drive: GoogleDriveDataSource) -> dict[str, Any]:
+    """Return ``about.get`` ``user`` dict with the field mask ``run_sync`` uses."""
+    about = await drive.about_get(
+        fields="user(displayName,emailAddress,permissionId)"
+    )
+    user = (about or {}).get("user") or {}
+    if not user.get("permissionId"):
+        raise RuntimeError(f"about.get returned no user permissionId: {about}")
+    return user
+
+
+async def drive_files_get_personal(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+) -> dict[str, Any]:
+    """``files.get`` with the same field mask the personal connector uses.
+
+    The personal mask omits ``owners`` and ``driveId``; using the Workspace
+    helper here would compare against fields this connector never requests.
+    """
+    meta = await drive.files_get(
+        fileId=file_id,
+        supportsAllDrives=True,
+        fields=DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
+    )
+    if not isinstance(meta, dict) or not meta.get("id"):
+        raise RuntimeError(f"files.get({file_id!r}) failed: {meta}")
+    return meta

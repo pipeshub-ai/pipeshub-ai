@@ -12,7 +12,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext, ToolCallStatus
-from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
+from app.agents.agent_loop.protocol.agui_emitter import MESSAGE_DISCARDED_EVENT_NAME, AGUIEventEmitter
+from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
 
 _ROOT_CTX = RunContext(role_name="pipeshub-agent", model="gpt-4")
 _CHILD_CTX = _ROOT_CTX.child(role_name="internal_exploration_agent", model="gpt-4")
@@ -117,6 +118,7 @@ class TestToolCallTranslation:
         assert start_frame["data"]["toolCallName"] == "jira_search"
         assert args_frame["event"] == "TOOL_CALL_ARGS"
         assert json.loads(args_frame["data"]["delta"]) == {"q": "bug"}
+        assert args_frame["data"]["argsPreview"] == args_frame["data"]["delta"]
 
     async def test_tool_call_end_success_emits_end_and_result(self) -> None:
         emitter, sink = _make_emitter()
@@ -161,6 +163,32 @@ class TestToolCallTranslation:
         assert result_frame["data"]["content"] == "blocked after 3 failures"
         assert result_frame["data"]["status"] == "blocked"
 
+    async def test_a_call_awaiting_approval_says_so(self) -> None:
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(
+            _event(EventType.TOOL_CALL_END, {
+                "tool": "mcp_jira_create_issue", "reason": "Waiting for your approval.", "tool_call_id": "call-2",
+                "status": ToolCallStatus.AWAITING_APPROVAL, "approval": {"approvalId": "ap-1"},
+            })
+        )
+
+        _, result_frame = (call.args[0] for call in sink.write.await_args_list)
+        assert result_frame["data"]["content"] == "Waiting for your approval."
+        assert result_frame["data"]["status"] == "awaiting_approval"
+        assert result_frame["data"]["approval"] == {"approvalId": "ap-1"}
+
+    async def test_a_blocked_call_carries_no_approval(self) -> None:
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(_event(EventType.TOOL_CALL_END, {
+            "tool": "jira_search", "reason": "blocked", "tool_call_id": "call-9", "status": ToolCallStatus.BLOCKED,
+            "approval": {"approvalId": "never-shown"},
+        }))
+
+        _, result_frame = (call.args[0] for call in sink.write.await_args_list)
+        assert "approval" not in result_frame["data"]
+
     async def test_missing_tool_call_id_falls_back_to_generated_id(self) -> None:
         emitter, sink = _make_emitter()
 
@@ -168,6 +196,16 @@ class TestToolCallTranslation:
 
         start_frame = sink.write.await_args_list[0].args[0]
         assert start_frame["data"]["toolCallId"].startswith("call_")
+
+    async def test_an_approved_calls_start_says_so(self) -> None:
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(_event(EventType.TOOL_CALL_START, {"tool": "x", "args": {}, "tool_call_id": "approved_1", "approved": True}))
+        await emitter.emit(_event(EventType.TOOL_CALL_START, {"tool": "y", "args": {}, "tool_call_id": "call-2"}))
+
+        starts = [c.args[0]["data"] for c in sink.write.await_args_list if c.args[0]["event"] == "TOOL_CALL_START"]
+        assert starts[0]["approved"] is True
+        assert "approved" not in starts[1]
 
     async def test_tool_call_start_forwards_args_summary(self) -> None:
         emitter, sink = _make_emitter()
@@ -182,6 +220,25 @@ class TestToolCallTranslation:
         _, args_frame = (call.args[0] for call in sink.write.await_args_list)
         assert args_frame["data"]["argsSummary"] == "Searched for 'bug'"
 
+    async def test_a_long_query_streams_as_the_transcript_saves_it(self) -> None:
+        query = "SELECT id FROM users WHERE active = true" + "".join(f" AND c{i} = {i}" for i in range(300))
+        start = _event(EventType.TOOL_CALL_START, {
+            "tool": "sql__execute_sql_query", "args": {"query": query, "source_name": "PostgreSQL"},
+            "tool_call_id": "call-7",
+        })
+        emitter, sink = _make_emitter()
+        collector = TranscriptCollector()
+
+        await emitter.emit(start)
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(start)
+
+        _, args_frame = (call.args[0] for call in sink.write.await_args_list)
+        preview = args_frame["data"]["argsPreview"]
+        assert preview == collector.parts[0]["args"]
+        assert json.loads(preview)["query"].endswith(f"… [truncated, 1200 of {len(query)} chars]")
+        assert json.loads(args_frame["data"]["delta"])["query"] == query
+
     async def test_tool_call_end_forwards_result_summary(self) -> None:
         emitter, sink = _make_emitter()
 
@@ -194,6 +251,28 @@ class TestToolCallTranslation:
 
         _, result_frame = (call.args[0] for call in sink.write.await_args_list)
         assert result_frame["data"]["resultSummary"] == "Found 3 issues"
+        assert "resultView" not in result_frame["data"]
+
+    async def test_tool_call_end_forwards_the_result_view_within_the_replys_budget(self) -> None:
+        emitter, sink = _make_emitter()
+        view = {"kind": "records", "columns": ["Key"], "rows": [{"cells": ["PA-1"]}], "total": 1}
+        big = {"kind": "records", "columns": ["Text"], "rows": [{"cells": ["x" * 120]}] * 50, "total": 50}
+        mid = {"kind": "records", "columns": ["Text"], "rows": [{"cells": ["y" * 100]}] * 20, "total": 20}
+
+        for n, result_view in enumerate([view, big, *[mid] * 40]):
+            await emitter.emit(
+                _event(EventType.TOOL_CALL_END, {
+                    "tool": "jira_search", "content": "[]", "is_error": False, "tool_call_id": f"call-{n}",
+                    "result_view": result_view,
+                })
+            )
+
+        results = [call.args[0]["data"] for call in sink.write.await_args_list if call.args[0]["data"].get("role") == "tool"]
+        assert results[0]["resultView"] == view
+        assert "resultView" not in results[1], "one view over its own limit"
+        kept = sum("resultView" in result for result in results)
+        assert 3 < kept < len(results), "the reply's budget runs out"
+        assert all("resultView" not in result for result in results[kept + 1:])
 
     async def test_tool_call_without_summaries_omits_fields(self) -> None:
         emitter, sink = _make_emitter()
@@ -208,6 +287,7 @@ class TestToolCallTranslation:
         _, args_frame, _, result_frame = (call.args[0] for call in sink.write.await_args_list)
         assert args_frame["data"]["argsSummary"] is None
         assert result_frame["data"]["resultSummary"] is None
+        assert "resultView" not in result_frame["data"]
 
 
 class TestTextMessageTranslation:
@@ -241,6 +321,27 @@ class TestTextMessageTranslation:
         second_id = sink.write.await_args.args[0]["data"]["messageId"]
 
         assert first_id != second_id
+
+    async def test_discarded_message_is_closed_and_taken_back_without_its_withheld_text(self) -> None:
+        """A model call that failed mid-stream: the client must drop the
+        message rather than keep it as narration, and the partial confidence
+        trailer withheld from it must not be flushed on the way out."""
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_START, {}))
+        message_id = sink.write.await_args.args[0]["data"]["messageId"]
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Partial answer\n---\nConf"}))
+        sink.write.reset_mock()
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_END, {"turn_index": 0, "discarded": True}))
+
+        frames = [call.args[0]["data"] for call in sink.write.await_args_list]
+        assert [f["type"] for f in frames] == ["TEXT_MESSAGE_END", "CUSTOM"]
+        assert frames[1]["name"] == MESSAGE_DISCARDED_EVENT_NAME
+        assert frames[1]["value"] == {"messageId": message_id}
+
+        sink.write.reset_mock()
+        await emitter.emit(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "late"}))
+        sink.write.assert_not_awaited()
 
 
 class TestReasoningTranslation:

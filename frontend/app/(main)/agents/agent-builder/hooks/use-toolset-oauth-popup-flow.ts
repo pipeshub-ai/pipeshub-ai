@@ -13,6 +13,14 @@ import {
   isToolsetOAuthErrorMessageType,
   isToolsetOAuthSuccessMessageType,
 } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
+import { isWebUrl } from '@/app/(main)/workspace/mcp-servers/hooks/use-mcp-oauth-popup';
+import { ToolsetsApi } from '@/app/(main)/toolsets/api';
+import {
+  DesktopOAuthError,
+  desktopIntegrationErrorMessage,
+  isElectron,
+  runDesktopIntegrationOAuth,
+} from '@/lib/electron';
 
 export interface UseToolsetOauthPopupFlowOptions {
   t: TFunction;
@@ -32,6 +40,10 @@ export interface ToolsetOauthBeginHandlers {
 /**
  * Popup OAuth for toolsets: open window, poll until it closes, verify with backoff,
  * listen for toolset OAuth popup messages (`TOOLSET_OAUTH_POST_MESSAGE` success/error payloads).
+ *
+ * Call `beginOAuth` straight from the click handler: the popup opens (blank) before the sign-in
+ * address is fetched, because browsers with strict popup rules block a window opened after an
+ * async gap.
  */
 export function useToolsetOauthPopupFlow({
   t,
@@ -48,6 +60,8 @@ export function useToolsetOauthPopupFlow({
   const oauthVerifyAbortRef = useRef(false);
   const authenticatingRef = useRef(false);
   const aliveRef = useRef(true);
+  /** Desktop only: cancels the wait for the browser to hand the callback back. */
+  const desktopWaitStopRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     authenticatingRef.current = authenticating;
@@ -58,6 +72,8 @@ export function useToolsetOauthPopupFlow({
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
+    desktopWaitStopRef.current?.();
+    desktopWaitStopRef.current = null;
   }, []);
 
   useEffect(
@@ -180,19 +196,78 @@ export function useToolsetOauthPopupFlow({
 
   const beginOAuth = useCallback(
     async (
-      fetchAuthorization: () => Promise<{ authorizationUrl: string; windowName: string }>,
+      windowName: string,
+      fetchAuthorizationUrl: () => Promise<string>,
       handlers: ToolsetOauthBeginHandlers
     ) => {
       oauthCompletionHandledRef.current = false;
       oauthVerifyAbortRef.current = false;
       setAuthenticating(true);
+      if (isElectron()) {
+        try {
+          const authorizationUrl = await fetchAuthorizationUrl();
+          if (!isWebUrl(authorizationUrl)) {
+            throw new Error(t('agentBuilder.oauthUrlFailed'));
+          }
+          clearOAuthPoll();
+          const flow = runDesktopIntegrationOAuth({
+            family: 'toolset',
+            authUrl: authorizationUrl,
+            complete: async ({ code, state }) => {
+              const data = await ToolsetsApi.completeToolsetOAuthCallback({
+                code,
+                state,
+                oauthError: null,
+                baseUrl: '',
+              });
+              if (data.success === false || !(data.success || data.redirectUrl || data.redirect_url)) {
+                throw new Error(data.errorMessage?.trim() || t('agentBuilder.toolsetOAuthBackendRejected'));
+              }
+            },
+          });
+          desktopWaitStopRef.current = flow.cancel;
+          flow.promise.then(
+            () => {
+              desktopWaitStopRef.current = null;
+              void completeOAuthFlowIfNeeded();
+            },
+            (error: unknown) => {
+              desktopWaitStopRef.current = null;
+              const message = desktopIntegrationErrorMessage(error);
+              if (message === null || !aliveRef.current) return;
+              oauthCompletionHandledRef.current = false;
+              setAuthenticating(false);
+              const reason = error instanceof DesktopOAuthError ? error.reason : null;
+              if (reason === 'timeout') handlers.onTimeout();
+              else if (reason === 'open-failed' || reason === 'unavailable') handlers.onOpenError(new Error(message));
+              else if (onOAuthPopupError) onOAuthPopupError(message);
+              else onIncomplete();
+            }
+          );
+        } catch (e) {
+          clearOAuthPoll();
+          setAuthenticating(false);
+          handlers.onOpenError(e);
+        }
+        return;
+      }
+      const popup = openCenteredOAuthWindow('about:blank', windowName);
       try {
-        const { authorizationUrl, windowName } = await fetchAuthorization();
-        const popup = openCenteredOAuthWindow(authorizationUrl, windowName);
-        if (!popup) {
+        if (!popup || popup.closed) {
           throw new Error(t('agentBuilder.oauthPopupBlocked'));
         }
         oauthPopupRef.current = popup;
+        const authorizationUrl = await fetchAuthorizationUrl();
+        if (!isWebUrl(authorizationUrl)) {
+          throw new Error(t('agentBuilder.oauthUrlFailed'));
+        }
+        if (popup.closed) {
+          // Closed while the address was on its way: the person changed their mind.
+          oauthPopupRef.current = null;
+          setAuthenticating(false);
+          return;
+        }
+        popup.location.href = authorizationUrl;
         popup.focus();
 
         let statusChecked = false;
@@ -222,11 +297,12 @@ export function useToolsetOauthPopupFlow({
       } catch (e) {
         clearOAuthPoll();
         oauthPopupRef.current = null;
+        if (popup && !popup.closed) popup.close();
         setAuthenticating(false);
         handlers.onOpenError(e);
       }
     },
-    [clearOAuthPoll, completeOAuthFlowIfNeeded, t]
+    [clearOAuthPoll, completeOAuthFlowIfNeeded, onIncomplete, onOAuthPopupError, t]
   );
 
   const cancelForUserDismissal = useCallback(() => {

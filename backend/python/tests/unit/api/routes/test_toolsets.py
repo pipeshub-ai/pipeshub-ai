@@ -852,15 +852,11 @@ class TestConstants:
 
     def test_default_constants(self) -> None:
         from app.api.routes.toolsets import (
-            DEFAULT_BASE_URL,
-            DEFAULT_ENDPOINTS_PATH,
             DEFAULT_TOOLSET_INSTANCES_PATH,
             ENCRYPTED_KEY_PARTS_COUNT,
             MAX_AGENT_NAMES_DISPLAY,
             SPLIT_PATH_EXPECTED_PARTS,
         )
-        assert DEFAULT_BASE_URL == "http://localhost:3001"
-        assert DEFAULT_ENDPOINTS_PATH == "/services/endpoints"
         assert DEFAULT_TOOLSET_INSTANCES_PATH == "/services/toolset-instances"
         assert MAX_AGENT_NAMES_DISPLAY == 3
         assert SPLIT_PATH_EXPECTED_PARTS == 2
@@ -2620,21 +2616,23 @@ class TestGetToolsetTools:
 
 class TestCreateToolsetInstance:
     @pytest.mark.asyncio
-    async def test_non_admin_rejected(self) -> None:
+    async def test_unconfirmed_role_creates_nothing(self) -> None:
+        """Read as "member", an administrator's new instance would become personal for good."""
+        from app.api.middlewares.caller_role import CallerRoleStatus
         from app.api.routes.toolsets import create_toolset_instance
 
-        request = MagicMock()
-        request.state.user = {"userId": "u1", "orgId": "o1"}
-        request.headers = {}
-
+        request = _make_request(body_dict={"instanceName": "x", "toolsetType": "jira", "authType": "NONE"})
+        request.app.state.toolset_registry = _make_registry("jira")
         config_service = AsyncMock()
 
-        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=False):
+        with patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=False), \
+             patch("app.api.routes.toolsets.fetch_caller_role", new_callable=AsyncMock,
+                   return_value=MagicMock(status=CallerRoleStatus.UNKNOWN)):
 
             with pytest.raises(HTTPException) as exc:
                 await create_toolset_instance(request, config_service=config_service)
-            assert exc.value.status_code == 403
+            assert exc.value.status_code == 503
+        config_service.set_config.assert_not_called()
 
 
 class TestGetToolsetInstances:
@@ -5473,7 +5471,7 @@ class TestCreateToolsetInstanceRoute:
 
     @pytest.mark.asyncio
     async def test_create_instance_oauth_create_config_fails(self) -> None:
-        """Cover lines 1330-1335 (OAuth config creation fails)."""
+        """A failed OAuth app save refuses the create rather than storing the client secret inline."""
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
@@ -5493,11 +5491,12 @@ class TestCreateToolsetInstanceRoute:
              patch("app.api.routes.toolsets._load_instances_for_mutation", return_value=[]), \
              patch("app.api.routes.toolsets._get_oauth_configs_for_type", return_value=[]), \
              patch("app.api.routes.toolsets._check_oauth_name_conflict", return_value=False), \
-             patch("app.api.routes.toolsets._create_or_update_toolset_oauth_config", return_value=None):
-            result = await create_toolset_instance(req, cs)
+             patch("app.api.routes.toolsets._create_or_update_toolset_oauth_config", return_value=None), \
+             pytest.raises(HTTPException) as exc:
+            await create_toolset_instance(req, cs)
 
-        # Should still succeed even if OAuth config creation fails
-        assert result["status"] == "success"
+        assert exc.value.status_code == 500
+        cs.set_config.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_create_instance_oauth_config_no_auth_config(self) -> None:
@@ -5529,13 +5528,20 @@ class TestCreateToolsetInstanceRoute:
 
     @pytest.mark.asyncio
     async def test_create_instance_not_admin(self) -> None:
+        """A member's new instance is their own, under their key, never in the org list."""
+        from app.api.middlewares.caller_role import CallerRoleStatus
         from app.api.routes.toolsets import create_toolset_instance
         cs = AsyncMock()
+        cs.list_keys_in_directory = AsyncMock(return_value=[])
         req = _make_request(body_dict={"instanceName": "x", "toolsetType": "jira", "authType": "NONE"})
-        with patch("app.api.routes.toolsets._check_user_is_admin", return_value=False):
-            with pytest.raises(HTTPException) as exc:
-                await create_toolset_instance(req, cs)
-            assert exc.value.status_code == 403
+        req.app.state.toolset_registry = _make_registry("jira")
+        with patch("app.api.routes.toolsets._check_user_is_admin", return_value=False), \
+             patch("app.api.routes.toolsets.fetch_caller_role", new_callable=AsyncMock,
+                   return_value=MagicMock(status=CallerRoleStatus.VALID)):
+            result = await create_toolset_instance(req, cs)
+        assert result["instance"]["scope"] == "personal"
+        (path, _record), _ = cs.set_config.call_args
+        assert path == f"/services/toolset-user-instances/o1/u1/{result['instance']['_id']}"
 
 
 class TestUpdateToolsetInstanceRoute:
@@ -6776,7 +6782,8 @@ class TestListToolsetOAuthConfigsNonAdmin:
                 assert "clientSecret" not in cfg
 
     @pytest.mark.asyncio
-    async def test_admin_sees_secret_fields_masked(self) -> None:
+    async def test_admin_sees_secret_fields_masked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HIDE_SECRET_CONFIG", "true")
         from app.api.routes.toolsets import list_toolset_oauth_configs
         from app.edition_config import REDACTED_PLACEHOLDER
         cs = AsyncMock()
@@ -7425,13 +7432,30 @@ class TestAgentScopedToolsets:
 
         request = _make_request()
         graph_provider = AsyncMock()
-        graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("db down"))
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        graph_provider.check_agent_permission = AsyncMock(side_effect=RuntimeError("db down"))
 
         with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
              patch("app.api.routes.toolsets._get_graph_provider", return_value=graph_provider):
             with pytest.raises(HTTPException) as exc:
                 await _resolve_agent_with_permission("a1", request)
         assert exc.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_a_failed_user_read_is_503_not_a_sign_out(self) -> None:
+        """A 401 here would make the web app sign the person out."""
+        from app.api.routes.toolsets import _resolve_agent_with_permission
+
+        request = _make_request()
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("db down"))
+
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._get_graph_provider", return_value=graph_provider):
+            with pytest.raises(HTTPException) as exc:
+                await _resolve_agent_with_permission("a1", request)
+        assert exc.value.status_code == 503
+        graph_provider.get_user_by_user_id.assert_awaited_once_with("u1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_resolve_agent_success_merges_perm(self) -> None:
@@ -7987,9 +8011,9 @@ class TestGetAuthenticatedToolsets:
 class TestIsActionsEnabled:
     """No env override exists — resolution is `config_service` (via the shared
     `read_platform_feature_flag` helper) -> `FeatureFlagService` fallback ->
-    default True. Every "no signal" path must resolve to `True` here (the
-    opposite of `is_mcp_enabled`'s `False`), since Actions/toolsets are
-    pre-existing functionality rather than an opt-in feature."""
+    default True. Every "no signal" path must resolve to `True`, since
+    Actions/toolsets are pre-existing functionality rather than an opt-in
+    feature."""
 
     @pytest.mark.asyncio
     async def test_reads_platform_settings_flag_true(self) -> None:

@@ -139,7 +139,7 @@ class UnknownToolError(RuntimeError):
 def _ask_user_question_card() -> ToolCard:
     """The real ask_user_question tool's own metadata.
 
-    Its mandatory-ask contract and terminal tag are the whole point of the
+    Its confirm-before-writing contract and terminal tag are the whole point of the
     write-gating case; a stub without them would test nothing.
     """
     from app.agents.actions.internal_tools.intrim_tools import InternalTools

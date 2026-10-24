@@ -632,7 +632,7 @@ export function TeamDetailSidebar({
             weight="medium"
             style={{ color: 'var(--slate-12)' }}
           >
-            {t('workspace.teams.detail.createdBy', 'Created By')}
+            {t('workspace.teams.detail.createdBy')}
           </Text>
           {creatorUser ? (
             <AvatarCell

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 try:
@@ -19,6 +19,31 @@ except ImportError:
     raise ImportError("azure-storage-blob is not installed. Please install it with `pip install azure-storage-blob`")
 
 from app.sources.client.azure.azure_blob import AzureBlobClient, AzureBlobResponse
+from app.utils.url_redaction import redact_urls_in_text
+
+_ERROR_TEXT_LIMIT = 300
+
+
+def azure_error_text(error: BaseException) -> str:
+    """The HTTP status, Azure's error code and the first line of its message.
+
+    The SDK's own text is not safe to log or show: on a failed signature it holds the
+    request's SharedKey signature and the string it signed, and it ends with the whole
+    XML response body.
+    """
+    status = getattr(error, "status_code", None)
+    code = getattr(error, "error_code", None)
+    code = getattr(code, "value", code)
+    message = (str(error).strip().splitlines() or [type(error).__name__])[0]
+    head = " ".join(str(part) for part in (f"HTTP {status}" if status else None, code) if part)
+    text = f"{head}: {message}" if head else message
+    return redact_urls_in_text(text)[:_ERROR_TEXT_LIMIT]
+
+
+def azure_error_code(error: BaseException) -> str | None:
+    """Azure's x-ms-error-code (e.g. ContainerNotFound), or None."""
+    code = getattr(error, "error_code", None)
+    return getattr(code, "value", code)
 
 
 class AzureBlobDataSource:
@@ -38,6 +63,7 @@ class AzureBlobDataSource:
         """Initialize with AzureBlobClient."""
         self._azure_blob_client_wrapper = azure_blob_client
         self._async_blob_service_client: Optional[AsyncBlobServiceClient] = None
+        self._user_delegation_key: UserDelegationKey | None = None
 
     async def _get_async_blob_service_client(self) -> AsyncBlobServiceClient:
         """Get the async blob service client, creating it if needed."""
@@ -93,7 +119,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_service_properties(
         self,
@@ -116,7 +142,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_service_stats(
         self,
@@ -139,7 +165,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def list_containers(
         self,
@@ -204,7 +230,32 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=containers)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
+
+    async def list_containers_page(
+        self,
+        prefix: str | None = None,
+        results_per_page: int = 20,
+        continuation_token: str | None = None,
+    ) -> AzureBlobResponse:
+        """One page of container names, server-side filtered by name prefix.
+
+        data: {"names": [...], "continuation_token": str | None}; pass the token back for the next page.
+        """
+        try:
+            client = await self._get_async_blob_service_client()
+            pages = client.list_containers(
+                name_starts_with=prefix or None, results_per_page=results_per_page
+            ).by_page(continuation_token=continuation_token)
+            names: list[str] = []
+            async for page in pages:
+                names = [c.name async for c in page if getattr(c, "name", None)]
+                break
+            return AzureBlobResponse(
+                success=True, data={"names": names, "continuation_token": pages.continuation_token or None}
+            )
+        except Exception as e:
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_user_delegation_key(
         self,
@@ -229,7 +280,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_account_information(
         self,
@@ -252,7 +303,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def submit_batch(
         self,
@@ -279,7 +330,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def find_blobs_by_tags(
         self,
@@ -310,7 +361,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def create_container(
         self,
@@ -339,7 +390,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_container_properties(
         self,
@@ -365,7 +416,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def delete_container(
         self,
@@ -393,7 +444,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def set_container_metadata(
         self,
@@ -421,7 +472,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_container_access_policy(
         self,
@@ -447,7 +498,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def set_container_access_policy(
         self,
@@ -478,7 +529,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def restore_container(
         self,
@@ -505,7 +556,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def rename_container(
         self,
@@ -532,7 +583,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def submit_container_batch(
         self,
@@ -561,7 +612,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def filter_blobs_in_container(
         self,
@@ -594,7 +645,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def acquire_container_lease(
         self,
@@ -623,7 +674,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def release_container_lease(
         self,
@@ -651,7 +702,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def renew_container_lease(
         self,
@@ -679,7 +730,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def break_container_lease(
         self,
@@ -707,7 +758,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def change_container_lease(
         self,
@@ -736,7 +787,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def list_blobs(
         self,
@@ -762,7 +813,8 @@ class AzureBlobDataSource:
             result = container_client.list_blobs(
                 name_starts_with=prefix,
                 marker=marker,
-                maxresults=maxresults,
+                # The SDK's page size keyword; it ignores maxresults.
+                results_per_page=maxresults,
                 include=include,
                 timeout=timeout,
                 headers=request_headers
@@ -770,7 +822,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_account_info_from_container(
         self,
@@ -795,7 +847,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def download_blob(
         self,
@@ -843,7 +895,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_blob_properties(
         self,
@@ -871,23 +923,22 @@ class AzureBlobDataSource:
         """
         try:
             client = await self._get_async_blob_service_client()
+            # The SDK's keyword is version_id; versionid made every call fail.
             blob_client = client.get_blob_client(
                 container=container_name,
                 blob=blob_name,
-                snapshot=snapshot if "snapshot" in locals() else None,
-                versionid=versionid if "versionid" in locals() else None
+                snapshot=snapshot,
+                version_id=versionid,
             )
             request_headers = self._build_headers(headers, **kwargs)
             result = await blob_client.get_blob_properties(
-                snapshot=snapshot,
-                versionid=versionid,
                 timeout=timeout,
                 headers=request_headers
             )
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def delete_blob(
         self,
@@ -931,7 +982,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def create_page_blob(
         self,
@@ -985,7 +1036,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def create_append_blob(
         self,
@@ -1036,7 +1087,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def upload_blob(
         self,
@@ -1094,7 +1145,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def put_block_blob_from_url(
         self,
@@ -1155,7 +1206,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def undelete_blob(
         self,
@@ -1184,7 +1235,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def set_blob_expiry(
         self,
@@ -1215,7 +1266,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def set_blob_http_headers(
         self,
@@ -1256,7 +1307,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def set_blob_immutability_policy(
         self,
@@ -1294,7 +1345,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def delete_blob_immutability_policy(
         self,
@@ -1329,7 +1380,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def set_blob_legal_hold(
         self,
@@ -1365,7 +1416,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def set_blob_metadata(
         self,
@@ -1405,7 +1456,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def acquire_blob_lease(
         self,
@@ -1441,7 +1492,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def release_blob_lease(
         self,
@@ -1476,7 +1527,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def renew_blob_lease(
         self,
@@ -1511,7 +1562,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def change_blob_lease(
         self,
@@ -1547,7 +1598,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def break_blob_lease(
         self,
@@ -1582,7 +1633,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def create_blob_snapshot(
         self,
@@ -1622,7 +1673,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def start_copy_blob_from_url(
         self,
@@ -1671,7 +1722,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def copy_blob_from_url(
         self,
@@ -1722,7 +1773,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def abort_copy_blob_from_url(
         self,
@@ -1754,7 +1805,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def set_blob_tier(
         self,
@@ -1793,7 +1844,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_account_info_from_blob(
         self,
@@ -1822,7 +1873,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def stage_block(
         self,
@@ -1865,7 +1916,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def stage_block_from_url(
         self,
@@ -1912,7 +1963,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def commit_block_list(
         self,
@@ -1967,7 +2018,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_block_list(
         self,
@@ -2003,7 +2054,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def upload_pages(
         self,
@@ -2053,7 +2104,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def clear_pages(
         self,
@@ -2097,7 +2148,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def upload_pages_from_url(
         self,
@@ -2151,7 +2202,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_page_ranges(
         self,
@@ -2194,7 +2245,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_page_ranges_diff(
         self,
@@ -2240,7 +2291,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def resize_page_blob(
         self,
@@ -2280,7 +2331,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def update_page_blob_sequence_number(
         self,
@@ -2317,7 +2368,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def incremental_copy_blob(
         self,
@@ -2352,7 +2403,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def append_block(
         self,
@@ -2400,7 +2451,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def append_block_from_url(
         self,
@@ -2453,7 +2504,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def seal_append_blob(
         self,
@@ -2488,7 +2539,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def query_blob_contents(
         self,
@@ -2531,7 +2582,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def get_blob_tags(
         self,
@@ -2568,7 +2619,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
     async def set_blob_tags(
         self,
@@ -2606,7 +2657,7 @@ class AzureBlobDataSource:
 
             return AzureBlobResponse(success=True, data=result)
         except Exception as e:
-            return AzureBlobResponse(success=False, error=str(e))
+            return AzureBlobResponse(success=False, error=azure_error_text(e), error_code=azure_error_code(e))
 
 
     # =================================
@@ -2659,7 +2710,7 @@ class AzureBlobDataSource:
                 protocol=protocol
             )
 
-            account_url = f"https://{account_name}.blob.core.windows.net"
+            account_url = client.primary_endpoint.split("?", 1)[0].rstrip("/")
             sas_url = f"{account_url}?{sas_token}"
 
             return AzureBlobResponse(
@@ -2674,7 +2725,7 @@ class AzureBlobDataSource:
                 }
             )
         except Exception as e:
-            return AzureBlobResponse(success=False, error=f"SAS generation failed: {str(e)}")
+            return AzureBlobResponse(success=False, error=f"SAS generation failed: {azure_error_text(e)}", error_code=azure_error_code(e))
 
     async def generate_container_sas_url(
         self,
@@ -2725,7 +2776,7 @@ class AzureBlobDataSource:
                 protocol=protocol
             )
 
-            container_url = f"https://{account_name}.blob.core.windows.net/{container_name}"
+            container_url = client.get_container_client(container_name).url.split("?", 1)[0]
             sas_url = f"{container_url}?{sas_token}"
 
             return AzureBlobResponse(
@@ -2740,7 +2791,7 @@ class AzureBlobDataSource:
                 }
             )
         except Exception as e:
-            return AzureBlobResponse(success=False, error=f"Container SAS generation failed: {str(e)}")
+            return AzureBlobResponse(success=False, error=f"Container SAS generation failed: {azure_error_text(e)}", error_code=azure_error_code(e))
 
     async def generate_blob_sas_url(
         self,
@@ -2783,19 +2834,41 @@ class AzureBlobDataSource:
         try:
             client = await self._get_async_blob_service_client()
             account_name = client.account_name
-            account_key = client.credential.account_key if hasattr(client.credential, "account_key") else None
-
-            if not account_key:
+            # The SDK URL quotes the blob name ('#', '?', '%') and uses the account's real endpoint.
+            blob_client = client.get_blob_client(container=container_name, blob=blob_name)
+            blob_url, _, given_sas = blob_client.url.partition("?")
+            account_key = getattr(client.credential, "account_key", None)
+            signing: dict[str, Any] = {}
+            if account_key:
+                signing = {"account_key": account_key}
+            elif hasattr(client.credential, "get_token"):
+                # Entra ID: a user delegation SAS, which Storage Blob Data Reader may sign.
+                signing = {"user_delegation_key": await self._delegation_key(client, expiry)}
+            elif given_sas:
+                # A SAS connection string: the URL already carries the admin's token; it cannot sign another.
+                return AzureBlobResponse(
+                    success=True,
+                    data={
+                        "sas_url": blob_client.url,
+                        "sas_token": given_sas,
+                        "blob_url": blob_url,
+                        "container_name": container_name,
+                        "blob_name": blob_name,
+                        "expiry": None,
+                        "permissions": permission,
+                    },
+                )
+            else:
                 return AzureBlobResponse(
                     success=False,
-                    error="Account key required for SAS generation. Use connection string or account key authentication."
+                    error="Account key, Entra ID credential or SAS token required for SAS generation."
                 )
 
             sas_token = generate_blob_sas(
                 account_name=account_name,
                 container_name=container_name,
                 blob_name=blob_name,
-                account_key=account_key,
+                **signing,
                 permission=BlobSasPermissions.from_string(permission) if not policy_id else None,
                 expiry=expiry,
                 start=start,
@@ -2809,7 +2882,6 @@ class AzureBlobDataSource:
                 content_type=content_type
             )
 
-            blob_url = f"https://{account_name}.blob.core.windows.net/{container_name}/{blob_name}"
             sas_url = f"{blob_url}?{sas_token}"
 
             return AzureBlobResponse(
@@ -2825,7 +2897,19 @@ class AzureBlobDataSource:
                 }
             )
         except Exception as e:
-            return AzureBlobResponse(success=False, error=f"Blob SAS generation failed: {str(e)}")
+            return AzureBlobResponse(success=False, error=f"Blob SAS generation failed: {azure_error_text(e)}", error_code=azure_error_code(e))
+
+    async def _delegation_key(self, client: AsyncBlobServiceClient, sas_expiry: datetime) -> UserDelegationKey:
+        """A user delegation key valid past ``sas_expiry``, reused until then (one Entra call per hour, not per download)."""
+        key = self._user_delegation_key
+        if key is None or datetime.fromisoformat(key.signed_expiry.replace("Z", "+00:00")) <= sas_expiry:
+            now = datetime.now(timezone.utc)
+            key = await client.get_user_delegation_key(
+                key_start_time=now - timedelta(minutes=5),
+                key_expiry_time=max(sas_expiry, now) + timedelta(hours=1),
+            )
+            self._user_delegation_key = key
+        return key
 
     async def generate_user_delegation_sas_url(
         self,
@@ -2887,7 +2971,7 @@ class AzureBlobDataSource:
                 protocol=protocol
             )
 
-            blob_url = f"https://{account_name}.blob.core.windows.net/{container_name}/{blob_name}"
+            blob_url = client.get_blob_client(container=container_name, blob=blob_name).url.split("?", 1)[0]
             sas_url = f"{blob_url}?{sas_token}"
 
             return AzureBlobResponse(
@@ -2904,12 +2988,12 @@ class AzureBlobDataSource:
                 }
             )
         except Exception as e:
-            return AzureBlobResponse(success=False, error=f"User delegation SAS generation failed: {str(e)}")
+            return AzureBlobResponse(success=False, error=f"User delegation SAS generation failed: {azure_error_text(e)}", error_code=azure_error_code(e))
 
     async def close_async_client(self) -> None:
-        """Close the async client if it exists."""
+        """Close the async client, and the Entra ID credential behind it, if they exist."""
         if self._async_blob_service_client:
-            await self._async_blob_service_client.close()
+            await self._azure_blob_client_wrapper.close_async_client()
             self._async_blob_service_client = None
 
     async def __aenter__(self) -> "AzureBlobDataSource":

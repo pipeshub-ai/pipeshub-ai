@@ -15,12 +15,19 @@ from collections.abc import Iterable
 # shape the request used.
 # - "please use /v1/responses instead": Chat Completions rejected the
 #   combination.
+# - "to use function tools, use /v1/responses": the same refusal as Azure
+#   OpenAI words it for gpt-6 models ("Function tools with reasoning_effort
+#   are not supported for this model in /v1/chat/completions. To use function
+#   tools, use /v1/responses or set reasoning_effort to 'none'."). It comes
+#   back even when the request carried no reasoning setting, because those
+#   models reason by default.
 # - "please use /v1/chat/completions instead": the inverse -- a Responses-API
 #   attempt landed on a backend that only supports this on Chat Completions.
 # - "tool_choice.function": Chat-Completions-shaped tool_choice sent to a
 #   Responses-only model/deployment.
 API_SHAPE_CONFLICT_MARKERS = (
     "please use /v1/responses instead",
+    "to use function tools, use /v1/responses",
     "please use /v1/chat/completions instead",
     "tool_choice.function",
 )
@@ -64,25 +71,38 @@ def wants_responses_api(exc: Exception) -> bool:
     transport can pick a shape from the error rather than blindly toggling.
     """
     message = str(exc).lower()
-    return "please use /v1/responses instead" in message or "tool_choice.function" in message
+    return any(
+        marker in message
+        for marker in (
+            "please use /v1/responses instead",
+            "to use function tools, use /v1/responses",
+            "tool_choice.function",
+        )
+    )
 
 
 def is_prompt_cache_param_conflict(exc: Exception, sent: Iterable[str]) -> bool:
     """True when the provider refused the request over a prompt-cache parameter
-    this request actually carried (a 400 naming it: "Unrecognized request
-    argument supplied: prompt_cache_retention", "cache_control: Extra inputs are
-    not permitted", ...). Recovering means resending without the cache
-    parameters, never changing the model's configuration."""
+    this request actually carried. Recovering means resending without it, never
+    changing the model's configuration."""
+    return bool(refused_cache_params(exc, sent))
+
+
+def refused_cache_params(exc: Exception, sent: Iterable[str]) -> frozenset[str]:
+    """The prompt-cache parameters this request carried that a 400 names
+    ("Unrecognized request argument supplied: prompt_cache_retention",
+    "prompt_cache_breakpoint is not supported on this model", "cache_control:
+    Extra inputs are not permitted", ...); empty for any other error."""
     names = {name.lower() for name in sent if name}
     if not names:
-        return False
+        return frozenset()
     status = _http_status(exc)
     message = str(exc).lower()
     if status is not None and status != 400:
-        return False
+        return frozenset()
     if status is None and not any(hint in message for hint in ("400", "bad request", "invalid", "validation")):
-        return False
-    return any(name in message for name in names)
+        return frozenset()
+    return frozenset(name for name in names if name in message)
 
 
 def _http_status(exc: Exception) -> int | None:

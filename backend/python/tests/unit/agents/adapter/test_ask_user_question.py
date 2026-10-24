@@ -46,13 +46,11 @@ class TestAskUserQuestionSSE:
         )
 
         assert len(sink.events) == 1
-        assert sink.events[0] == {
-            "event": "ask_user_question",
-            "data": {
-                "status": "success",
-                "toolData": {"question": "Which one?", "options": ["a", "b"]},
-            },
-        }
+        tool_data = sink.events[0]["data"].pop("toolData")
+        assert sink.events[0] == {"event": "ask_user_question", "data": {"status": "success"}}
+        # The card says when it stops being answerable; the rest is the tool's payload as it was.
+        assert tool_data.pop("expiresAt").endswith("Z")
+        assert tool_data == {"question": "Which one?", "options": ["a", "b"]}
         assert context.tool_state["ask_user_question_emitted"] is True
 
     async def test_non_json_payload_passed_through_as_raw_string(self) -> None:
@@ -66,7 +64,9 @@ class TestAskUserQuestionSSE:
 
         assert sink.events[0]["data"]["toolData"] == "not json"
 
-    async def test_error_output_still_emits_with_error_status(self) -> None:
+    async def test_a_failed_call_emits_nothing(self) -> None:
+        """A refused or failed call asked nothing and the run goes on; an
+        event would make the client drop the answer that follows."""
         sink = _RecordingSink()
         context = _make_context(event_sink=sink, has_ui_client=True)
 
@@ -75,8 +75,8 @@ class TestAskUserQuestionSSE:
             middleware, ToolOutput(success=False, error="boom"), tool_path=_TOOL_PATH
         )
 
-        assert sink.events[0]["data"]["status"] == "error"
-        assert sink.events[0]["data"]["toolData"] == "boom"
+        assert sink.events == []
+        assert "ask_user_question_emitted" not in context.tool_state
 
     async def test_no_emission_when_no_ui_client(self) -> None:
         context = _make_context(event_sink=_RecordingSink(), has_ui_client=False)

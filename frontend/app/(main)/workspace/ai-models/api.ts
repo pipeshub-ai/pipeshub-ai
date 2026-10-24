@@ -8,6 +8,9 @@ import type {
   ModelRoleAssignment,
   ModelRolesResponse,
   ModelsByTypeResponse,
+  IdentityForwardingSettings,
+  IdentityPolicy,
+  IdentityPreview,
   RegistryResponse,
 } from './types';
 
@@ -61,6 +64,41 @@ export const AIModelsApi = {
     return data;
   },
 
+  setConnectionIdentityForwarding: async (
+    connectionId: string,
+    settings: IdentityForwardingSettings,
+  ) => {
+    const { data } = await apiClient.put(
+      `${BASE}/ai-models/connections/${encodeURIComponent(connectionId)}/identity-forwarding`,
+      settings,
+    );
+    return data;
+  },
+
+  getIdentityPolicy: async () => {
+    const { data } = await apiClient.get<{ policy: IdentityPolicy; damaged?: boolean }>(
+      `${BASE}/ai-models/identity-policy`,
+    );
+    return { policy: data.policy, damaged: data.damaged === true };
+  },
+
+  putIdentityPolicy: async (policy: IdentityPolicy) => {
+    const { data } = await apiClient.put<{ policy: IdentityPolicy }>(
+      `${BASE}/ai-models/identity-policy`,
+      policy,
+    );
+    return data.policy;
+  },
+
+  previewIdentity: async (body: {
+    connectionId?: string;
+    workload?: string;
+    configuration?: Record<string, unknown>;
+  }) => {
+    const { data } = await apiClient.post<IdentityPreview>(`${BASE}/ai-models/identity/preview`, body);
+    return data;
+  },
+
   // CRUD endpoints (existing Node.js backend)
   getAllModels: async () => {
     const { data } = await apiClient.get<AllModelsResponse>(`${BASE}/ai-models`);
@@ -99,7 +137,11 @@ export const AIModelsApi = {
       payload.provider === 'default' && modelName
         ? { ...rest, configuration: { model: modelName } }
         : rest;
-    const { data } = await apiClient.post(`${BASE}/ai-models/providers`, body);
+    // The model dialog shows the check failure itself; the global toast would
+    // repeat it under a generic "Invalid Request" title.
+    const { data } = await apiClient.post(`${BASE}/ai-models/providers`, body, {
+      suppressErrorToast: true,
+    });
     return data;
   },
 
@@ -117,7 +159,8 @@ export const AIModelsApi = {
   ) => {
     const { data } = await apiClient.put(
       `${BASE}/ai-models/providers/${modelType}/${modelKey}`,
-      payload
+      payload,
+      { suppressErrorToast: true }
     );
     return data;
   },

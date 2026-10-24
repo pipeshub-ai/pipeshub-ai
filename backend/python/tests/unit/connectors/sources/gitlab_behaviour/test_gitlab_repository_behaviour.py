@@ -111,7 +111,7 @@ async def test_a_tree_walk_that_keeps_failing_withholds_the_checkpoint_until_it_
     gitlab.graphql_page_size = 2
     gitlab.fail("POST", r"^/api/graphql$", 502, skip=1, body_contains='"acme/web"')
 
-    await harness.sync()
+    await harness.sync_incomplete()
     assert repo_backoff == [2.0, 4.0]
     assert checkpoints.code_checkpoint(WEB) is None
 
@@ -132,7 +132,7 @@ async def test_a_tree_walk_whose_cursor_stops_moving_is_abandoned_without_a_chec
     gitlab.fail("POST", r"^/api/graphql$", 200, body=stuck,
                 body_contains='"fullPath":"acme/web","branch":"HEAD","afterCursor":"2"')
 
-    await harness.sync()
+    await harness.sync_incomplete()
 
     assert checkpoints.code_checkpoint(WEB) is None
     assert checkpoints.code_checkpoint(API) is not None
@@ -192,10 +192,6 @@ async def test_streaming_a_code_file_returns_its_bytes(harness, gitlab, db) -> N
     assert body == b"print('app')\n"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "repos.py falls back to a full walk when the compare cannot be used (history rewritten, too many "
-    "changes), and a full walk only adds and updates, so files deleted in that range are never removed"
-))
 async def test_files_deleted_across_a_force_push_are_removed(harness, gitlab, db) -> None:
     build_acme(gitlab)
     await harness.sync()
@@ -210,10 +206,6 @@ async def test_files_deleted_across_a_force_push_are_removed(harness, gitlab, db
     assert blob("src/util/helpers.py") not in db.records
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "repos.py keys code files by the project path, so after a project is renamed or moved the next "
-    "change creates a second record for the same file and deletions no longer find the old one"
-))
 async def test_renaming_a_project_does_not_duplicate_its_files(harness, gitlab, db) -> None:
     build_acme(gitlab)
     await harness.sync()
@@ -227,10 +219,6 @@ async def test_renaming_a_project_does_not_duplicate_its_files(harness, gitlab, 
     assert len(code) == 2
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "repos.py retries a rate-limited tree page after a fixed 2s/4s backoff and ignores Retry-After, so "
-    "the retries land inside the limit window and a large walk is abandoned"
-))
 async def test_a_rate_limited_tree_page_waits_as_long_as_gitlab_asks(harness, gitlab, db, repo_backoff) -> None:
     build_acme(gitlab)
     gitlab.fail("POST", r"^/api/graphql$", 429, times=1, headers={"Retry-After": "30"})

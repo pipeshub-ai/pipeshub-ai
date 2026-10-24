@@ -30,7 +30,6 @@ from slack_behaviour_setup import (
 )
 
 from app.models.entities import FileRecord, ProgressStatus
-from app.models.permission import EntityType
 
 DM_BOB, DM_DAVE, GROUP_DM, RANDOM = "D0BOB", "D0DAVE", "G0MPIM", "C0RANDOM"
 
@@ -63,8 +62,8 @@ class TestWhatThePersonSees:
 
         assert set(store.record_groups) == {GENERAL, SECRET, PARTNERS, DM_BOB, GROUP_DM}
         for channel in store.record_groups:
-            (grant,) = store.group_access[channel]
-            assert (grant.entity_type, grant.email) == (EntityType.USER, "alice@acme.com")
+            assert store.group_access[channel] == [], "conversations inherit the app, which only the person is linked to"
+            assert store.record_groups[channel].inherit_permissions is True
         assert store.record_groups[DM_BOB].name == "DM: Bob"
         assert store.record_groups[GROUP_DM].name.startswith("Group DM: ")
         assert {"Bob", "Carol"} <= set(store.record_groups[GROUP_DM].name.removeprefix("Group DM: ").split(", "))
@@ -150,7 +149,9 @@ class TestAccountAndTokens:
 
         await connector.run_sync()
 
-        assert store.access_emails(DM_BOB) == {"alice@acme.com"}
+        assert [u.email for u in store.app_users.values()] == ["alice@acme.com"]
+        assert DM_BOB in store.record_groups
+        assert store.group_access[DM_BOB] == []
 
     async def test_the_persons_own_token_is_preferred_over_a_bot_token(self, workspace, store, checkpoints) -> None:
         config = personal_config()
@@ -226,10 +227,6 @@ class TestTokenScopes:
 
 
 class TestSyncing:
-    @pytest.mark.xfail(strict=True, reason=(
-        "When a later page of history fails, the personal connector still moves the checkpoint "
-        "to the newest message it saw, so the older messages on the failed pages are never synced."
-    ))
     async def test_a_failed_later_page_does_not_lose_older_messages(self, workspace, store, checkpoints) -> None:
         stamps = [ts_minutes_ago(m) for m in (400, 300, 200, 100)]
         for ts in stamps:

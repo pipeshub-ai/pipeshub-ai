@@ -11,7 +11,7 @@ import { SidebarItem } from './sidebar-item';
 import { TimeGroup } from './time-group';
 import type { Conversation } from '@/chat/types';
 import type { PendingConversation } from '@/chat/store';
-import type { TimeGroupKey } from './time-group';
+import type { SidebarGroupKey } from './time-group';
 
 interface ChatSectionBaseProps {
   /** Section label shown in the header. Omit to suppress the header entirely. */
@@ -31,7 +31,7 @@ interface ChatSectionBaseProps {
   onMore?: () => void;
   /** Pending conversations to show as "Generating Title…" shimmers in Today group */
   pendingConversations?: PendingConversation[];
-  /** When provided, show this text as the empty state instead of StartChatButton */
+  /** Empty-state text; defaults to "No chats yet" */
   emptyStateText?: string;
   /** Agent sidebar: agent-scoped row actions (delete only) */
   agentId?: string;
@@ -45,7 +45,7 @@ interface ChatSectionBaseProps {
  * Props when time groups are provided (Your Chats mode).
  */
 interface TimeGroupedSectionProps extends ChatSectionBaseProps {
-  timeGroups: Array<[TimeGroupKey, Conversation[]]>;
+  timeGroups: Array<[SidebarGroupKey, Conversation[]]>;
   conversations?: never;
 }
 
@@ -132,17 +132,13 @@ export function ChatSection({
               ))}
             </Flex>
           ) : isEmpty && !showGenerating ? (
-            /* Empty state */
-            emptyStateText ? (
-              <Text
-                size="1"
-                style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-10)' }}
-              >
-                {emptyStateText}
-              </Text>
-            ) : (
-              <StartChatButton onClick={onNewChat} />
-            )
+            /* Empty state: plain text, since the sidebar's New chat already starts one */
+            <Text
+              size="1"
+              style={{ padding: 'var(--space-2) var(--space-3)', color: 'var(--slate-10)' }}
+            >
+              {emptyStateText ?? t('chat.noChatsYet')}
+            </Text>
           ) : isTimeGrouped ? (
             /* Time-grouped list (Your Chats) */
             <Flex direction="column">
