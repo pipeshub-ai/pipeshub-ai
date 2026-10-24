@@ -399,6 +399,59 @@ class TestMakeFilesRecordsFromNotes:
 # ===========================================================================
 
 
+class TestUploadLinksStayInUploads:
+    async def test_a_filename_with_dot_segments_is_not_an_attachment(self) -> None:
+        """``..`` would resolve to another API path, fetched with the connector's token."""
+        _, helper = _make_attachment_helper()
+        text = f"[x](/uploads/{_HASH32}/../../../../projects/7/repository/files/s.yml/raw?ref=main)"
+        attachments, _ = await helper.parse_gitlab_uploads(text)
+        assert attachments == []
+
+    async def test_a_stored_record_that_leaves_uploads_is_refused_before_any_request(self) -> None:
+        c, helper = _make_attachment_helper()
+        record = MagicMock()
+        record.id = "rec-1"
+        record.weburl = (f"{c._gitlab_base_url}/api/v4/projects/42/uploads/{_HASH32}"
+                         "/../../../../projects/7/repository/files/s.yml/raw")
+        record.external_record_id = record.weburl
+        c.data_source.get_attachment_files_content = MagicMock()
+        with pytest.raises(HTTPException):
+            async for _ in helper.fetch_attachment_content(record):
+                pass
+        c.data_source.get_attachment_files_content.assert_not_called()
+
+    def test_is_upload_url(self) -> None:
+        from app.connectors.sources.gitlab.attachments import is_upload_url
+
+        base = "https://gitlab.example.com"
+        good = f"{base}/api/v4/projects/1/uploads/{_HASH32}/r%C3%A9sum%C3%A9.pdf"
+        assert is_upload_url(good, base)
+        assert not is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/../../../2/variables", base)
+        assert not is_upload_url(f"https://evil.example/api/v4/projects/1/uploads/{_HASH32}/a.pdf", base)
+
+    def test_is_upload_url_under_a_relative_url_install(self) -> None:
+        from app.connectors.sources.gitlab.attachments import is_upload_url
+
+        base = "https://example.com/gitlab"
+        assert is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/a.pdf", base)
+        assert is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/a.pdf", f"{base}/")
+        assert not is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/../../../2/variables", base)
+        # Climbing out of the prefix lands outside the instance's API.
+        assert not is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/../../../../../../api/v4/user", base)
+        assert not is_upload_url(f"https://example.com/api/v4/projects/1/uploads/{_HASH32}/a.pdf", base)
+        assert not is_upload_url(f"{base}.evil.example/api/v4/projects/1/uploads/{_HASH32}/a.pdf", base)
+        assert not is_upload_url(f"{base}/api/v4/projects/1/uploads/{_HASH32}/a.pdf?x=1", base)
+
+
+class TestInternalNotes:
+    async def test_attachments_of_an_internal_note_are_not_filed_under_the_issue(self) -> None:
+        c, helper = _make_attachment_helper()
+        issue = MagicMock(project_id=42, iid=1, title="t")
+        note = MagicMock(body=f"[doc.pdf](/uploads/{_HASH32}/doc.pdf)", internal=True)
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=True, data=[note], error=None))
+        assert await helper.make_files_records_from_notes(issue, _record()) == []
+
+
 class TestMakeFilesRecordsFromNotesMr:
     async def test_happy_path_returns_file_records(self) -> None:
         """MR notes with attachments produce FileRecord updates."""
@@ -447,8 +500,8 @@ class TestFetchAttachmentContent:
 
         record = MagicMock()
         record.id = "rec-1"
-        record.external_record_id = "https://gitlab.com/uploads/abc/file.pdf"
-        record.weburl = "https://gitlab.com/uploads/abc/file.pdf"
+        record.external_record_id = f"{c._gitlab_base_url}/api/v4/projects/42/uploads/{_HASH32}/file.pdf"
+        record.weburl = record.external_record_id
 
         async def _gen():
             yield b"chunk1"
@@ -471,8 +524,8 @@ class TestFetchAttachmentContent:
 
         record = MagicMock()
         record.id = "rec-1"
-        record.external_record_id = "https://gitlab.com/uploads/abc/file.pdf"
-        record.weburl = "https://gitlab.com/uploads/abc/file.pdf"
+        record.external_record_id = f"{c._gitlab_base_url}/api/v4/projects/42/uploads/{_HASH32}/file.pdf"
+        record.weburl = record.external_record_id
 
         request = httpx.Request("GET", record.weburl)
         response = httpx.Response(HttpStatusCode.NOT_FOUND.value, request=request)

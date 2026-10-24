@@ -83,7 +83,7 @@ def _make_incremental_connector() -> tuple[MagicMock, ReposSync]:
     repos._upsert_code_files_by_paths = AsyncMock(return_value=True)
     repos._cleanup_emptied_folders = AsyncMock()
     repos._sync_repo_full = AsyncMock(return_value=True)
-    repos._get_code_repo_checkpoint = AsyncMock(return_value=None)
+    repos._get_code_repo_checkpoint = AsyncMock(return_value=(None, None))
     repos._update_code_repo_checkpoint = AsyncMock()
     repos.build_code_file_records = AsyncMock()
     return c, repos
@@ -755,17 +755,27 @@ class TestSyncRepoMainRouting:
     async def test_no_checkpoint_runs_full_sync(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("sha-new"))
-        repos._get_code_repo_checkpoint = AsyncMock(return_value=None)
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=(None, None))
         repos._sync_repo_full = AsyncMock(return_value=True)
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
         repos._sync_repo_full.assert_called_once_with(_PROJECT_ID, _PROJECT_PATH)
-        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "sha-new")
+        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "sha-new", _PROJECT_PATH)
+
+    async def test_a_project_path_change_walks_the_whole_tree(self) -> None:
+        """Code records are keyed by the path: after a rename only a walk re-keys them."""
+        c, repos = _make_incremental_connector()
+        c.runtime.ds_call = AsyncMock(return_value=branch_res("same-sha"))
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("same-sha", "acme/old-name"))
+
+        await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
+        repos._sync_repo_full.assert_called_once_with(_PROJECT_ID, _PROJECT_PATH)
+        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "same-sha", _PROJECT_PATH)
 
     async def test_unchanged_head_skips_all_sync(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("same-sha"))
-        repos._get_code_repo_checkpoint = AsyncMock(return_value="same-sha")
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("same-sha", _PROJECT_PATH))
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
         repos._sync_repo_full.assert_not_called()
@@ -774,17 +784,17 @@ class TestSyncRepoMainRouting:
     async def test_incremental_success_updates_checkpoint(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("new-sha"))
-        repos._get_code_repo_checkpoint = AsyncMock(return_value="old-sha")
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("old-sha", _PROJECT_PATH))
         repos._sync_repo_incremental = AsyncMock(return_value=True)
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
-        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "new-sha")
+        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "new-sha", _PROJECT_PATH)
         repos._sync_repo_full.assert_not_called()
 
     async def test_incremental_failure_falls_back_to_full_sync(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("new-sha"))
-        repos._get_code_repo_checkpoint = AsyncMock(return_value="old-sha")
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("old-sha", _PROJECT_PATH))
         repos._sync_repo_incremental = AsyncMock(return_value=False)
         repos._sync_repo_full = AsyncMock(return_value=True)
 
@@ -794,25 +804,25 @@ class TestSyncRepoMainRouting:
     async def test_incremental_raise_falls_back_to_full_sync(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("new-sha"))
-        repos._get_code_repo_checkpoint = AsyncMock(return_value="old-sha")
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("old-sha", _PROJECT_PATH))
         repos._sync_repo_incremental = AsyncMock(side_effect=RuntimeError("graph fail"))
         repos._sync_repo_full = AsyncMock(return_value=True)
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
         repos._sync_repo_full.assert_called_once_with(_PROJECT_ID, _PROJECT_PATH)
-        # The full walk never deletes, so the raised pass's pending deletes need a compare
-        # from last_sha next run — advancing the checkpoint would lose them.
+        # The interrupted pass may have left folders it owed a cleanup; a compare from
+        # last_sha next run names them again, so the checkpoint stays.
         repos._update_code_repo_checkpoint.assert_not_called()
 
     async def test_incremental_failure_checkpoint_updated_on_full_success(self) -> None:
         c, repos = _make_incremental_connector()
         c.runtime.ds_call = AsyncMock(return_value=branch_res("new-sha"))
-        repos._get_code_repo_checkpoint = AsyncMock(return_value="old-sha")
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("old-sha", _PROJECT_PATH))
         repos._sync_repo_incremental = AsyncMock(return_value=False)
         repos._sync_repo_full = AsyncMock(return_value=True)
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
-        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "new-sha")
+        repos._update_code_repo_checkpoint.assert_called_once_with(_PROJECT_ID, "new-sha", _PROJECT_PATH)
 
 
 # ===========================================================================
@@ -970,7 +980,7 @@ class TestPathPolicy:
         c.sync_filters = FilterCollection.model_validate({"filters": [{
             "key": SyncFilterKey.EXCLUDE_PATHS.value, "type": "list", "operator": "in",
             "value": ["docs/"]}]})
-        repos._get_code_repo_checkpoint = AsyncMock(return_value="new-sha")
+        repos._get_code_repo_checkpoint = AsyncMock(return_value=("new-sha", _PROJECT_PATH))
 
         await repos.run(_PROJECT_ID, _PROJECT_PATH, "main")
         diffs = [diff_entry(old_path=p, new_path=p) for p in ("src/a.py", "gen/b.py", "docs/c.py")]

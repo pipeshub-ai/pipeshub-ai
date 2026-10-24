@@ -53,6 +53,7 @@ from app.modules.parsers.code_parser.gitattributes import (
 )
 from app.modules.parsers.code_parser.lang_config import detect_language
 from app.modules.parsers.code_parser.path_policy import PathPolicy
+from app.sources.client.gitlab.gitlab import _resolve_max_retry_after_seconds
 
 from .constants import (
     _GITLAB_BACKFILL_CONCURRENCY,
@@ -117,6 +118,8 @@ class ReposSync:
                 "Failed to fetch branch %s for project %s (%s): %s",
                 default_branch, project_id, project_path, branch_res.error,
             )
+            # 404: an empty repository has no branch yet.
+            c.note_failed_read(f"default branch of project {project_path}", branch_res)
             return
 
         current_sha = _branch_head_commit_sha(branch_res.data)
@@ -131,18 +134,27 @@ class ReposSync:
             linguist=await self._load_linguist_exclusions(project_id, current_sha),
             exclude_globs=code_exclude_globs(c.sync_filters),
         )
-        last_sha = await self._get_code_repo_checkpoint(project_id)
+        last_sha, last_path = await self._get_code_repo_checkpoint(project_id)
+        if last_sha is not None and last_path != project_path:
+            # Code records are keyed by the project's path. After a rename or a transfer
+            # (or a checkpoint written before the path was kept) only a walk re-keys them.
+            self.logger.info(
+                "Project %s path is %s, code was synced as %s; walking the whole tree",
+                project_id, project_path, last_path,
+            )
+            last_sha = None
         if last_sha is None:
             self.logger.info("No code-repo checkpoint for project %s; running full sync", project_id)
             full_ok = await self._sync_repo_full(project_id, project_path)
             if full_ok:
-                await self._update_code_repo_checkpoint(project_id, current_sha)
+                await self._update_code_repo_checkpoint(project_id, current_sha, project_path)
             else:
                 self.logger.warning(
                     "Full sync for project %s completed with errors; "
                     "checkpoint not advanced so the next run will retry",
                     project_id,
                 )
+                c.note_sync_problem(f"code of project {project_path}: the repository walk did not finish")
             return
 
         if last_sha == current_sha:
@@ -163,7 +175,7 @@ class ReposSync:
             incremental_ok = False
             incremental_raised = True
         if incremental_ok:
-            await self._update_code_repo_checkpoint(project_id, current_sha)
+            await self._update_code_repo_checkpoint(project_id, current_sha, project_path)
             return
 
         self.logger.warning("Incremental code sync failed for project %s; falling back to full sync", project_id)
@@ -174,24 +186,26 @@ class ReposSync:
                 "checkpoint not advanced so the next run will retry",
                 project_id,
             )
+            c.note_sync_problem(f"code of project {project_path}: the repository walk did not finish")
         elif incremental_raised:
-            # The full walk only upserts. Whatever the interrupted incremental pass still owed
-            # — deleted files, emptied folders — stays pending, and only a compare from
-            # last_sha names those paths again. Advancing here would strand them forever.
+            # The walk removes what it did not meet only when it saw a tree; an empty one
+            # removes nothing. Whatever the interrupted incremental pass still owed stays
+            # pending, and a compare from last_sha names those paths again.
             self.logger.warning(
                 "Full sync fallback for project %s succeeded, but the incremental pass raised; "
                 "checkpoint left at %s so its pending deletes are retried next run",
                 project_id, last_sha,
             )
+            c.note_sync_problem(f"code of project {project_path}: changes since {last_sha[:8]} are pending")
         else:
-            await self._update_code_repo_checkpoint(project_id, current_sha)
+            await self._update_code_repo_checkpoint(project_id, current_sha, project_path)
 
     # ------------------------------------------------------------------
     # Checkpoints
     # ------------------------------------------------------------------
 
-    async def _get_code_repo_checkpoint(self, project_id: int) -> str | None:
-        """Return the last synced HEAD commit SHA for a project's code repository."""
+    async def _get_code_repo_checkpoint(self, project_id: int) -> tuple[str | None, str | None]:
+        """Return the last synced HEAD commit SHA and the project path it was synced under."""
         from app.config.constants.arangodb import Connectors
         from app.connectors.core.base.sync_point.sync_point import (
             generate_record_sync_point_key,
@@ -201,14 +215,14 @@ class ReposSync:
             key = generate_record_sync_point_key(Connectors.GITLAB.value, group_project_id, "")
             data = await self.c.record_sync_point.read_sync_point(key)
             if not data:
-                return None
+                return None, None
             sha = data.get(GitlabLiterals.LAST_COMMIT_SHA.value)
-            return str(sha) if sha else None
+            return (str(sha) if sha else None), data.get("project_path")
         except Exception:
-            return None
+            return None, None
 
-    async def _update_code_repo_checkpoint(self, project_id: int, commit_sha: str) -> None:
-        """Persist the HEAD commit SHA after a successful code repository sync."""
+    async def _update_code_repo_checkpoint(self, project_id: int, commit_sha: str, project_path: str) -> None:
+        """Persist the HEAD commit SHA, and the path it was synced under, after a successful sync."""
         from app.config.constants.arangodb import Connectors
         from app.connectors.core.base.sync_point.sync_point import (
             generate_record_sync_point_key,
@@ -217,7 +231,7 @@ class ReposSync:
             Connectors.GITLAB.value, f"{project_id}-code-repository", ""
         )
         await self.c.record_sync_point.update_sync_point(
-            key, {GitlabLiterals.LAST_COMMIT_SHA.value: commit_sha}
+            key, {GitlabLiterals.LAST_COMMIT_SHA.value: commit_sha, "project_path": project_path}
         )
 
     # ------------------------------------------------------------------
@@ -238,6 +252,7 @@ class ReposSync:
         recoverable error (caller must not advance checkpoint).
         """
         after_cursor = ""
+        seen: set[str] = set()
         folders_walked = 0
         blobs_walked = 0
         any_data = False
@@ -268,6 +283,10 @@ class ReposSync:
                     pending = asyncio.create_task(
                         self._fetch_entries_page(project_path, project_id, after_cursor)
                     )
+                # What this walk writes: a blob the path policy leaves out is not kept.
+                seen.update(str(n["webPath"]) for n in page_trees if n.get("webPath"))
+                seen.update(str(n["webPath"]) for n in page_blobs if n.get("webPath")
+                            and not _should_skip_dotfile_repo_path(str(n.get("path") or ""), self._policy))
                 if page_trees:
                     all_ok = await self._persist_folder_records(page_trees, project_id) and all_ok
                     folders_walked += len(page_trees)
@@ -293,7 +312,31 @@ class ReposSync:
             project_id, folders_walked, blobs_walked,
             "" if all_ok else " (INCOMPLETE - checkpoint withheld)",
         )
+        if all_ok:
+            all_ok = await self._remove_unwalked(project_id, seen)
         return all_ok
+
+    async def _remove_unwalked(self, project_id: int, seen: set[str]) -> bool:
+        """After a complete walk, remove the stored files and folders it did not meet:
+        deleted, moved, renamed, now excluded, or stored under an old project path."""
+        c = self.c
+        try:
+            async with c.data_store_provider.transaction() as tx_store:
+                # Ids and paths only: a large repository has many stored records.
+                nodes = await tx_store.get_nodes_by_filters(
+                    collection=CollectionNames.RECORDS.value,
+                    filters={"connectorId": c.connector_id, "externalGroupId": f"{project_id}-code-repository"},
+                    return_fields=["_key", "externalRecordId", "isDeleted"],
+                )
+            gone = [n for n in nodes if not n.get("isDeleted") and n.get("externalRecordId") not in seen]
+            for node in gone:
+                await c.data_entities_processor.on_record_deleted(node.get("id") or node.get("_key"))
+        except Exception as e:
+            self.logger.error("Could not remove files the walk of project %s did not find: %s", project_id, e)
+            return False
+        if gone:
+            self.logger.info("Removed %s file/folder record(s) no longer in project %s", len(gone), project_id)
+        return True
 
     async def _persist_folder_records(
         self, tree_nodes: list[dict[str, Any]], project_id: int
@@ -349,9 +392,13 @@ class ReposSync:
         query-shape problem a retry cannot change.
         """
         last_error: str | None = None
+        wait_asked: float | None = None
         for attempt in range(1, _GITLAB_TREE_PAGE_MAX_ATTEMPTS + 1):
             if attempt > 1:
                 delay = _GITLAB_TREE_PAGE_RETRY_BACKOFF_SECONDS * (2 ** (attempt - 2))
+                if isinstance(wait_asked, (int, float)) and wait_asked > 0:
+                    # A rate limit says when it lifts; retrying sooner only spends attempts.
+                    delay = max(delay, min(wait_asked, _resolve_max_retry_after_seconds(self.logger)))
                 self.logger.warning(
                     "Retrying repository entries page for project %s "
                     "(attempt %s/%s, cursor=%r) in %.0fs: %s",
@@ -359,7 +406,7 @@ class ReposSync:
                     after_cursor, delay, last_error,
                 )
                 await asyncio.sleep(delay)
-            kind, trees, blobs, page_info, last_error = await self._fetch_entries_page_once(
+            kind, trees, blobs, page_info, last_error, wait_asked = await self._fetch_entries_page_once(
                 project_path, project_id, after_cursor
             )
             if kind != "retry":
@@ -374,10 +421,10 @@ class ReposSync:
 
     async def _fetch_entries_page_once(
         self, project_path: str, project_id: int, after_cursor: str
-    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], str | None]:
+    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], str | None, float | None]:
         """One attempt at a ``paginatedTree`` page.
 
-        Returns ``(kind, trees, blobs, page_info, error)`` where ``kind`` adds
+        Returns ``(kind, trees, blobs, page_info, error, retry_after)`` where ``kind`` adds
         ``"retry"`` (transient transport failure) to the caller-facing kinds.
         """
         c = self.c
@@ -388,19 +435,19 @@ class ReposSync:
                 project_id=project_path, ref="HEAD", after_cursor=after_cursor,
             )
         except Exception as e:
-            return "retry", empty, empty, {}, f"{type(e).__name__}: {e}"
+            return "retry", empty, empty, {}, f"{type(e).__name__}: {e}", None
         if not res.success or not res.data:
-            return "retry", empty, empty, {}, res.error or "empty response body"
+            return "retry", empty, empty, {}, res.error or "empty response body", res.retry_after
         try:
             data: dict[str, Any] = json.loads(res.data)
         except json.JSONDecodeError as e:
             # A truncated body is a transport problem, not a semantic one.
-            return "retry", empty, empty, {}, f"malformed JSON: {e}"
+            return "retry", empty, empty, {}, f"malformed JSON: {e}", None
         if "errors" in data:
             self.logger.error(
                 "GraphQL errors for project %s: %s", project_id, json.dumps(data["errors"])
             )
-            return "abort", empty, empty, {}, None
+            return "abort", empty, empty, {}, None, None
 
         project = (data.get("data") or {}).get("project") or {}
         paginated_tree = (project.get("repository") or {}).get("paginatedTree") or {}
@@ -408,15 +455,15 @@ class ReposSync:
             self.logger.info(
                 "No repository tree for project %s (empty repo, missing scope, or archived)", project_id
             )
-            return "empty", empty, empty, {}, None
+            return "empty", empty, empty, {}, None, None
         nodes = paginated_tree.get("nodes") or []
         page_info = paginated_tree.get("pageInfo") or {}
         if not nodes:
-            return "empty", empty, empty, page_info, None
+            return "empty", empty, empty, page_info, None, None
         entry: dict[str, Any] = nodes[0]
         trees = (entry.get("trees") or {}).get("nodes") or []
         blobs = (entry.get("blobs") or {}).get("nodes") or []
-        return "data", trees, blobs, page_info, None
+        return "data", trees, blobs, page_info, None, None
 
     # ------------------------------------------------------------------
     # Incremental sync
@@ -436,12 +483,14 @@ class ReposSync:
             return False
 
         compare_data = compare_res.data
+        # GitLab cuts the diff list at the instance's limits and says so with
+        # ``compare_timeout``; there is no ``overflow`` field on this endpoint.
         if isinstance(compare_data, dict):
             diffs = compare_data.get("diffs") or []
-            overflow = compare_data.get("overflow")
+            overflow = compare_data.get("compare_timeout") or compare_data.get("overflow")
         else:
             diffs = getattr(compare_data, "diffs", None) or []
-            overflow = getattr(compare_data, "overflow", None)
+            overflow = getattr(compare_data, "compare_timeout", None) or getattr(compare_data, "overflow", None)
 
         # shortcut: unlike GitHub (SC-11) there is no tree-diff fallback -- GitLab's tree is a
         # paginated walk, so diffing two trees costs two full walks; add one if full syncs

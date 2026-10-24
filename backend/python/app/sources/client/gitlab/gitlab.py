@@ -60,6 +60,8 @@ class GitLabResponse(BaseModel):
     # Preserved separately from `error`: stringifying the SDK exception loses
     # the status, and callers need 401 (re-auth) apart from 403, 404 and 5xx.
     status_code: int | None = None
+    # Seconds GitLab asked the caller to wait (``Retry-After`` on a 429), when it said.
+    retry_after: float | None = None
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()

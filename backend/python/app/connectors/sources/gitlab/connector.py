@@ -72,11 +72,14 @@ from app.utils.oauth_config import resolve_instance_url
 from .attachments import AttachmentsHelper
 from .comments import CommentsHelper
 from .constants import GITLAB_CLOUD_URL
+from .deleted_work_items import ISSUES, MERGE_REQUESTS, DeletedWorkItems
 from .filters import FiltersHelper
 from .issues import IssuesSync
+from .listing import UpdateOrderedListing
 from .merge_requests import MergeRequestsSync
 from .models import GitlabLiterals
 from .projects import ProjectsSync
+from .removed_projects import RemovedProjects
 from .repos import ReposSync
 from .runtime import RuntimeHelper
 from .scope import ScopeHelper
@@ -85,6 +88,11 @@ from .users import UsersSync
 
 
 _GITLAB_EXECUTOR_MAX_WORKERS = 8
+
+
+class GitLabSyncIncompleteError(RuntimeError):
+    """Part of the source could not be read. Raised once the rest of the sync has run, so
+    the run is not reported as a success and a full sync unlinks nothing it did not see."""
 
 
 @(
@@ -276,6 +284,7 @@ class GitLabConnector(BaseConnector):
         self._is_auditor: bool = False
         self._auditor_fallback_warned: bool = False
         self._code_file_timestamp_backfill_task = None
+        self.sync_problems: list[str] = []
 
         # Dedicated executor: isolates blocking python-gitlab threads from the
         # shared loop executor so a stuck EE instance cannot freeze the service.
@@ -304,6 +313,10 @@ class GitLabConnector(BaseConnector):
         self.attachments = AttachmentsHelper(self)
         self.filters = FiltersHelper(self)
         self.streaming = StreamingHelper(self)
+        self.listing = UpdateOrderedListing(self.runtime)
+        self.removed_projects = RemovedProjects(self)
+        self.deleted_issues = DeletedWorkItems(self, ISSUES)
+        self.deleted_merge_requests = DeletedWorkItems(self, MERGE_REQUESTS)
 
     def _create_runtime(self) -> RuntimeHelper:
         """EE override point: return EE RuntimeHelper for org-scoped token refresh."""
@@ -413,6 +426,7 @@ class GitLabConnector(BaseConnector):
         """Run a full GitLab sync (users → projects → issues/MRs/repos)."""
         try:
             await self.repos.cancel_timestamp_backfill()
+            self.sync_problems = []
             await self.runtime.refresh_token_if_needed()
             await self._register_authenticated_identity()
             self.logger.info("Starting GitLab sync")
@@ -425,6 +439,7 @@ class GitLabConnector(BaseConnector):
             self.logger.info("Starting sync of GitLab projects")
             await self.projects.sync_all_projects()
             self.repos.schedule_timestamp_backfill()
+            self.raise_if_sync_incomplete()
         except Exception as e:
             self.logger.error("Error in GitLab sync: %s", e, exc_info=True)
             raise
@@ -492,6 +507,30 @@ class GitLabConnector(BaseConnector):
             self._gitlab_executor.shutdown(wait=False, cancel_futures=True)
         except Exception as e:
             self.logger.warning("GitLab executor shutdown raised; ignoring: %s", e)
+
+    # ------------------------------------------------------------------
+    # Sync outcome
+    # ------------------------------------------------------------------
+
+    def note_sync_problem(self, problem: str) -> None:
+        """Record a part of the source this sync could not read; the sync carries on."""
+        self.sync_problems.append(problem)
+
+    def note_failed_read(self, what: str, response: object) -> None:
+        """A read GitLab refused for good (403: not allowed or the feature is off; 404: gone)
+        is an answer, not a gap. Anything else, or a listing cut off part-way, left part of
+        the source unread."""
+        partial = bool(getattr(response, "data", None))
+        if getattr(response, "status_code", None) in (403, 404) and not partial:
+            self.logger.warning("GitLab refused %s: %s", what, getattr(response, "error", None))
+            return
+        self.note_sync_problem(f"{what}: {getattr(response, 'error', None)}")
+
+    def raise_if_sync_incomplete(self) -> None:
+        if self.sync_problems:
+            shown = "; ".join(self.sync_problems[:5])
+            more = f" (+{len(self.sync_problems) - 5} more)" if len(self.sync_problems) > 5 else ""
+            raise GitLabSyncIncompleteError(f"GitLab sync incomplete: {shown}{more}")
 
     # ------------------------------------------------------------------
     # Datetime filter helper (used by issues.py and merge_requests.py)

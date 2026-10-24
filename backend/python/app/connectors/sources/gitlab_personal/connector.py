@@ -278,6 +278,7 @@ class GitLabPersonalConnector(GitLabConnector):
     async def run_sync(self) -> None:
         """Sync GitLab content visible to the configured user. Groups inherit the app."""
         try:
+            self.sync_problems = []
             await self.runtime.refresh_token_if_needed()
             self.logger.info("Starting GitLab Personal sync")
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -303,6 +304,7 @@ class GitLabPersonalConnector(GitLabConnector):
 
             self.logger.info("Starting sync of projects")
             await self.projects.sync_all_projects()
+            self.raise_if_sync_incomplete()
         except Exception as e:
             self.logger.error(f"Error in GitLab Personal sync: {e}", exc_info=True)
             raise

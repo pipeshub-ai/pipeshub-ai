@@ -368,10 +368,16 @@ class GitLabDataSource:
         order_by: str | None = None,
         sort: str | None = None,
         get_all: bool | None = None,
+        per_page: int | None = None,
+        page: int | None = None,
+        *,
+        iterator: bool | None = None,
     ) -> GitLabResponse:
-        """List project issues with optional filters.  ``data`` is a list of ``ProjectIssue``."""
+        """List project issues with optional filters.  ``data`` is a list of ``ProjectIssue``,
+        or with ``iterator=True`` a ``GitlabList`` whose ``total`` is GitLab's x-total."""
         try:
-            p = self._sdk.projects.get(project_id)
+            p = self._project(project_id)
+            extra: dict[str, object] = {"iterator": iterator} if iterator is not None else {}
             params = self._params(
                 state=state,
                 labels=labels,
@@ -384,8 +390,10 @@ class GitLabDataSource:
                 created_before=created_before,
                 order_by=order_by,
                 sort=sort,
+                per_page=per_page,
+                page=page,
             )
-            return GitLabResponse(success=True, data=p.issues.list(get_all=get_all, **params))
+            return GitLabResponse(success=True, data=p.issues.list(get_all=get_all, **extra, **params))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
@@ -475,8 +483,8 @@ class GitLabDataSource:
     ) -> GitLabResponse:
         """List notes (comments) on an issue.  ``data`` is a list of ``ProjectIssueNote``."""
         try:
-            p = self._sdk.projects.get(project_id)
-            return GitLabResponse(success=True, data=p.issues.get(issue_iid).notes.list(get_all=get_all))
+            issue = self._project(project_id).issues.get(issue_iid, lazy=True)
+            return GitLabResponse(success=True, data=issue.notes.list(get_all=get_all))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
@@ -501,10 +509,16 @@ class GitLabDataSource:
         created_after: datetime | None = None,
         created_before: datetime | None = None,
         get_all: bool | None = None,
+        per_page: int | None = None,
+        page: int | None = None,
+        *,
+        iterator: bool | None = None,
     ) -> GitLabResponse:
-        """List merge requests with optional filters.  ``data`` is a list of ``ProjectMergeRequest``."""
+        """List merge requests with optional filters.  ``data`` is a list of ``ProjectMergeRequest``,
+        or with ``iterator=True`` a ``GitlabList`` whose ``total`` is GitLab's x-total."""
         try:
-            p = self._sdk.projects.get(project_id)
+            p = self._project(project_id)
+            extra: dict[str, object] = {"iterator": iterator} if iterator is not None else {}
             params = self._params(
                 state=state,
                 labels=labels,
@@ -517,8 +531,10 @@ class GitLabDataSource:
                 updated_before=updated_before,
                 created_after=created_after,
                 created_before=created_before,
+                per_page=per_page,
+                page=page,
             )
-            return GitLabResponse(success=True, data=p.mergerequests.list(get_all=get_all, **params))
+            return GitLabResponse(success=True, data=p.mergerequests.list(get_all=get_all, **extra, **params))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
@@ -758,7 +774,7 @@ class GitLabDataSource:
         returns a lazy ``GitlabList`` instead.  The two are mutually exclusive.
         """
         try:
-            p = self._sdk.projects.get(project_id)
+            p = self._project(project_id)
             payload = self._params(
                 ref=ref,
                 path=path,
@@ -781,7 +797,7 @@ class GitLabDataSource:
         ``data`` is a python-gitlab ``ProjectFile`` with a base64-encoded ``content`` attribute.
         """
         try:
-            p = self._sdk.projects.get(project_id)
+            p = self._project(project_id)
             return GitLabResponse(success=True, data=p.files.get(**self._params(ref=ref, file_path=file_path)))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
@@ -849,6 +865,12 @@ class GitLabDataSource:
             )
             resp.raise_for_status()
             return GitLabResponse(success=True, data=resp.content)
+        except httpx.HTTPStatusError as e:
+            retry_after = e.response.headers.get("Retry-After")
+            return GitLabResponse(
+                success=False, error=f"{type(e).__name__}: {e}", status_code=e.response.status_code,
+                retry_after=float(retry_after) if retry_after and retry_after.isdigit() else None,
+            )
         except Exception as e:
             return GitLabResponse(success=False, error=f"{type(e).__name__}: {e}", status_code=_status_of(e))
 
@@ -1036,17 +1058,25 @@ class GitLabDataSource:
 
     # Used by:
     #   gitlab/attachments.py - AttachmentsHelper.embed_images_as_base64
-    async def get_img_bytes(self, image_url: str) -> GitLabResponse:
+    async def get_img_bytes(self, image_url: str, max_bytes: int | None = None) -> GitLabResponse:
         """Fetch raw image bytes from a GitLab attachment URL.
 
         Returns ``GitLabResponse`` with ``data`` as ``bytes`` on success, or
-        ``success=False`` with the HTTP status or error message.
+        ``success=False`` with the HTTP status or error message. With ``max_bytes``
+        a larger image is not downloaded: reading stops past the limit and the
+        call fails with status 413.
         """
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "*/*"}
         try:
-            resp = await self.http_client.get(image_url, headers=headers)
-            resp.raise_for_status()
-            return GitLabResponse(success=True, data=resp.content)
+            async with self.http_client.stream("GET", image_url, headers=headers) as resp:
+                resp.raise_for_status()
+                body = bytearray()
+                async for chunk in resp.aiter_bytes(chunk_size=65536):
+                    body.extend(chunk)
+                    if max_bytes is not None and len(body) > max_bytes:
+                        return GitLabResponse(success=False, error=f"Image at {image_url} exceeds {max_bytes} bytes",
+                                              status_code=413)
+            return GitLabResponse(success=True, data=bytes(body))
         except httpx.HTTPStatusError as e:
             return GitLabResponse(
                 success=False,
